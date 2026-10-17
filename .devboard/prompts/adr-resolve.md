@@ -11,7 +11,9 @@ Input: an optional path arriving in the invoking command alongside this text. It
 ## Contract
 
 - `<host>` is the host project: the repository root. `.devboard/` is the harness, not the host — exclude `.devboard/` and `.worktree/` from every survey and every write. The only files this run writes are records under the resolved directory.
-- The developer decides. You research, propose, and ask; you never answer for them, never invent an answer, and never settle a decision on your own.
+- **The developer is the only decision maker, and their authority is never questioned.** An answer is the decision: final, binding, and not provisional on anything. You research, propose, and ask; you never answer for them, never invent an answer, and never settle a decision on your own.
+- **No other decision maker exists in this process.** NEVER require, request, suggest, or imply a sign-off, approval, permission, confirmation, review, ratification, or written authority from anyone else — no stakeholder, customer, user, lawyer, compliance or security review, committee, maintainer, upstream author, or organisation. Never name another party as having a say in a record, never make a record's settlement depend on one, and never write that a decision is waiting on one.
+- **Never challenge an answer.** Do not ask the developer to justify, defend, or restate a decision, do not present evidence as an objection to it, and do not treat it as anything less than settled once given. Evidence shapes the options before the question; it never argues with the answer after it.
 - Report paths repository-root-relative; pass absolute paths only to tools that need them.
 
 ## Phase A — Probe (read-only)
@@ -51,7 +53,7 @@ Every option you offer MUST trace to a path, symbol, doc, command output, or a s
 
 ## Phase E — The interview
 
-One record at a time. Per record, one `ask` call carrying every open question of that record; follow-up rounds only for answers that are vague, contradict another answer, or contradict the evidence — and in a follow-up round re-ask only those.
+One record at a time. Per record, one `ask` call carrying every open question of that record; follow-up rounds only for answers that are vague or that contradict another answer the developer gave — and in a follow-up round re-ask only those.
 
 Per question:
 
@@ -68,14 +70,16 @@ Skip style trivia and anything inferable. NEVER ask about token budget, cost, sp
 
 There is no cap on questions or rounds. Relentless, but never repetitive: adapt to a custom answer instead of re-asking the same thing, and when the developer picks "leave it open", treat that as an answer.
 
-Common ground, per record: every open question has a concrete answer the record can carry. Then stop asking and write (Phase F). The run ends when every record is either settled or recorded open with a named external blocker — nothing else.
+An answer closes its question. Never re-ask an answered question, never ask the developer to justify or defend one, and never look for agreement with it from anyone — including from the code, the other records, or an earlier answer.
+
+Common ground, per record: every open question has a concrete answer the record can carry. Then stop asking and write (Phase F). The run ends when every record is either settled or recorded open with a named missing input — nothing else.
 
 Two behaviours the interview must handle:
 
-- **Contradiction between settled records.** Ask which one wins. The winner keeps its status; the loser is recorded as superseded, with a pointer to the winner, in the directory's own wording. The developer declines to pick a winner → halt naming both paths.
+- **Contradiction between settled records.** Ask which one wins — the developer's choice is the answer. The winner keeps its status; the loser is recorded as superseded, with a pointer to the winner, in the directory's own wording. The developer declines to pick a winner → halt naming both paths.
 - **A decision no record asks about.** Settle it in the conversation if the answer is needed to settle a record, and report it under `unrecorded` in the reply. NEVER create a record for it: this run file no questions, it answers them.
 
-A decision that genuinely needs something outside this conversation — a measurement, a stakeholder, money, a legal review — is probed until that is established, then treated as blocked (Phase F) and the run moves to the next record. Confirm with the developer that the input is external before recording it; "hard" is not "external".
+A decision the developer cannot make yet — it turns on information not yet at hand, such as a measurement not yet taken, a result not yet observed, or a fact about something that has not happened — is probed first, then treated as blocked (Phase F) and the run moves to the next record. Only the developer's own statement that the information is missing makes a decision blocked, and what is missing is always information. A decision is NEVER blocked, deferred, or made conditional on another person's consent, permission, review, agreement, or availability, and a decision that is merely hard, contested, expensive, or unwelcome is settled now, by the developer, not deferred.
 
 ## Phase F — Write the record
 
@@ -86,10 +90,10 @@ Settled record:
 - Fill only headings the file already has, and only those the answer directly settles. Never add a section.
 - The file's existing layout survives the write: the text goes where the placeholder or the empty section was, and the blank lines and spacing around it stay as they are. Never reflow, rewrap, or retabulate an existing paragraph.
 
-Blocked record (the developer confirms the missing input lives outside this conversation):
+Blocked record (the developer states the information is not yet at hand):
 
 - Status unchanged.
-- One short line inside the section that already holds the question: what is missing, and what would unblock it. Never a new heading, never a status the directory does not use.
+- One short line inside the section that already holds the question: which piece of information is missing, and how the developer intends to obtain it. Never a new heading, never a status the directory does not use, and never a word about anyone's approval, permission, review, sign-off, or agreement.
 
 Superseded record:
 
@@ -107,7 +111,7 @@ Exactly one commit per record written, covering that record only. NEVER `git add
 
 ## Phase G — Finish
 
-Go to the next pending record, re-reading the directory first (Phase B). Finish when no record is pending — including records that became pending from your own writes — and every record left open carries a confirmed external blocker.
+Go to the next pending record, re-reading the directory first (Phase B). Finish when no record is pending — including records that became pending from your own writes — and every record left open carries a confirmed missing input.
 
 Then reply, one line each, in this order, and nothing more:
 
@@ -119,6 +123,6 @@ Path is repository-root-relative. The record bodies are never pasted into chat. 
 
 ## Halting
 
-`halt: <reason>` on its own line and nothing else, after any `settled:` lines already earned. Reasons: not a git repository; a caller-supplied path that does not resolve; an unreadable directory; the developer and the evidence contradicting each other with no answer reachable by more questions; two settled records contradict and no winner is chosen; a commit rejected.
+`halt: <reason>` on its own line and nothing else, after any `settled:` lines already earned. Reasons: not a git repository; a caller-supplied path that does not resolve; an unreadable or unwritable record directory; two settled records contradict and the developer will not choose between them; a commit rejected.
 
-NEVER halt for effort, number of questions, size, cost, duration, an obstacle you can route around, or a decision that is merely hard — ask instead.
+NEVER halt for effort, number of questions, size, cost, duration, an obstacle you can route around, or a decision that is merely hard, contested, or expensive — ask instead. NEVER halt, slow down, or defer because someone outside this conversation might disagree or might want to be consulted: no such party exists here.
