@@ -47,11 +47,34 @@ const EPIC_GITHUB = {
 
 function makeHarness(
   table: (command: string, args: string[]) => Reply | undefined,
-  options: { goalEnabled?: boolean; activeTools?: string[] } = {},
+  options: {
+    goalEnabled?: boolean;
+    activeTools?: string[];
+    goalMode?: "active" | "paused" | "none";
+  } = {},
 ) {
   const notifications: Array<{ message: string; type?: string }> = [];
   const sent: string[] = [];
   const activeTools = [...(options.activeTools ?? ["read", "write"])];
+  const branch =
+    options.goalMode === "active" || options.goalMode === "paused"
+      ? [
+          {
+            type: "mode_change",
+            mode: options.goalMode === "paused" ? "goal_paused" : "goal",
+            data: { goal: { id: "goal-1", objective: "Existing goal" } },
+          },
+        ]
+      : options.goalMode === "none"
+        ? [
+            {
+              type: "mode_change",
+              mode: "goal",
+              data: { goal: { id: "goal-1", objective: "Previous goal" } },
+            },
+            { type: "mode_change", mode: "none" },
+          ]
+        : [];
 
   const pi = {
     async exec(command: string, args: string[]) {
@@ -83,6 +106,9 @@ function makeHarness(
       notify(message: string, type?: string) {
         notifications.push({ message, type });
       },
+    },
+    sessionManager: {
+      getBranch: () => branch,
     },
     async waitForIdle() {},
   };
@@ -255,13 +281,38 @@ describe("runImplementNextEpic", () => {
     expect(harness.sent).toHaveLength(0);
   });
 
-  test("halts when a goal is already active", async () => {
+  test("does not treat an active goal tool as an existing goal", async () => {
     const harness = makeHarness(baseTable(), { activeTools: ["read", "goal"] });
+    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+
+    expect(result.ok).toBe(true);
+    expect(harness.sent).toHaveLength(1);
+  });
+
+  test("halts when the session branch has an active goal", async () => {
+    const harness = makeHarness(baseTable(), { goalMode: "active" });
     const result = await runImplementNextEpic(harness.pi, harness.ctx);
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("already active");
     expect(harness.sent).toHaveLength(0);
+  });
+
+  test("halts when the session branch has a paused goal", async () => {
+    const harness = makeHarness(baseTable(), { goalMode: "paused" });
+    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("already paused");
+    expect(harness.sent).toHaveLength(0);
+  });
+
+  test("starts a new epic after the latest mode change cleared the goal", async () => {
+    const harness = makeHarness(baseTable(), { goalMode: "none", activeTools: ["read", "goal"] });
+    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+
+    expect(result.ok).toBe(true);
+    expect(harness.sent).toHaveLength(1);
   });
 
   test("halts without an origin remote", async () => {

@@ -41,10 +41,19 @@ interface ExtensionAPI {
   sendUserMessage(content: string): void;
 }
 
+interface ModeChangeEntry {
+  type: string;
+  mode?: string;
+  data?: Record<string, unknown> | null;
+}
+
 interface ExtensionCommandContext {
   cwd: string;
   ui: {
     notify(message: string, type?: "info" | "warning" | "error"): void;
+  };
+  sessionManager: {
+    getBranch(): ModeChangeEntry[];
   };
   waitForIdle?(): Promise<void>;
 }
@@ -83,6 +92,27 @@ type Outcome<T> = T | Failure;
 
 function isFailure<T>(value: Outcome<T>): value is Failure {
   return typeof value === "object" && value !== null && "error" in value;
+}
+
+/**
+ * Detect an existing goal from the session's persisted mode changes.
+ *
+ * Active tools are not goal state: `goal` is an ordinary active tool whenever
+ * goal mode is enabled, even when no goal exists. The newest `mode_change` on
+ * the active branch is authoritative — `goal`/`goal_paused` with a goal record
+ * means a goal exists; `none` (or no mode change) means none.
+ */
+export function goalModeFromBranch(
+  entries: readonly ModeChangeEntry[],
+): "active" | "paused" | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.type !== "mode_change") continue;
+    if (entry.mode !== "goal" && entry.mode !== "goal_paused") return null;
+    if (!entry.data?.goal) return null;
+    return entry.mode === "goal_paused" ? "paused" : "active";
+  }
+  return null;
 }
 
 async function run(
@@ -550,6 +580,14 @@ export async function runImplementNextEpic(
   }
   const repo = top.stdout.trim();
 
+  const goalMode = goalModeFromBranch(ctx.sessionManager.getBranch());
+  if (goalMode) {
+    return fail(
+      ctx,
+      `a goal is already ${goalMode}; finish or drop it before starting another epic`,
+    );
+  }
+
   const origin = await run(pi, "git", ["remote", "get-url", "origin"], repo);
   if (origin.code !== 0 || !origin.stdout.trim()) {
     return fail(ctx, "origin remote is not configured; /epic-next cannot have filed an epic");
@@ -607,10 +645,6 @@ export async function runImplementNextEpic(
   if (isFailure(worktree)) return fail(ctx, worktree.error);
 
   const active = pi.getActiveTools();
-  if (active.includes("goal")) {
-    return fail(ctx, "a goal is already active; finish or drop it before starting another epic");
-  }
-
   try {
     await pi.setActiveTools([...active, "goal"]);
   } catch (error) {
