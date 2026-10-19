@@ -53,6 +53,8 @@
   let activity = $state<string[]>([]);
   let question = $state<RunQuestion | null>(null);
   let draft = $state("");
+  let revisionActive = $state(false);
+  let revisionRequest = $state("");
   let lifecycle = $state<LifecycleState>({ stage: "goal", pass: 1, work: null });
   let lifecycleSeen = $state(false);
 
@@ -65,7 +67,7 @@
         lifecycle.stage === "implementation" ||
         (lifecycle.stage === "epic" && lifecycle.work === null)),
   );
-  let controlsDisabled = $derived(running || lifecycleActive);
+  let controlsDisabled = $derived(running || lifecycleActive || revisionActive);
   let lifecycleStageLabel = $derived(STAGE_LABELS[lifecycle.stage]);
   let lifecycleWorkTitle = $derived(
     lifecycle.work === null
@@ -128,6 +130,31 @@
       value.type === "goal" &&
       "text" in value &&
       typeof value.text === "string"
+    );
+  }
+
+  function isGoalRevisionStartedEvent(
+    value: unknown,
+  ): value is { type: "goalRevisionStarted" } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "goalRevisionStarted"
+    );
+  }
+
+  function isGoalRevisionStoppedEvent(
+    value: unknown,
+  ): value is { type: "goalRevisionStopped"; completed: boolean; text?: string } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "goalRevisionStopped" &&
+      "completed" in value &&
+      typeof value.completed === "boolean" &&
+      (!("text" in value) || typeof value.text === "string")
     );
   }
 
@@ -247,6 +274,18 @@
     socket.send(JSON.stringify({ type: "saveGoal", text: goalText }));
   }
 
+  function reviseGoal() {
+    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
+      error = "Not connected to the server.";
+      return;
+    }
+    error = null;
+    const request = revisionRequest.trim();
+    socket.send(
+      JSON.stringify(request.length === 0 ? { type: "reviseGoal" } : { type: "reviseGoal", request }),
+    );
+  }
+
   function submitAnswer(value: string) {
     if (question === null) return;
     const trimmed = value.trim();
@@ -293,8 +332,21 @@
         records = message.records;
         next = message.next;
       } else if (isGoalEvent(message)) {
-        goalText = message.text;
+        if (!revisionActive) goalText = message.text;
         error = null;
+      } else if (isGoalRevisionStartedEvent(message)) {
+        revisionActive = true;
+        activity = [];
+        question = null;
+        draft = "";
+        error = null;
+      } else if (isGoalRevisionStoppedEvent(message)) {
+        revisionActive = false;
+        question = null;
+        draft = "";
+        if (message.completed && typeof message.text === "string") {
+          goalText = message.text;
+        }
       } else if (isRunStartedEvent(message)) {
         runFile = message.file;
         runTitle = message.title;
@@ -413,7 +465,37 @@
     >
       Save goal
     </button>
+
+    <div class="goal-revision">
+      <label class="goal-label" for="revision-request">Revision guidance</label>
+      <div class="revision-controls">
+        <input
+          id="revision-request"
+          class="revision-request"
+          type="text"
+          bind:value={revisionRequest}
+          placeholder="Optional guidance for the agent"
+          data-testid="revision-request"
+          disabled={controlsDisabled}
+        />
+        <button
+          type="button"
+          class="start-button"
+          data-testid="revise-goal"
+          disabled={controlsDisabled}
+          onclick={reviseGoal}
+        >
+          Revise goal
+        </button>
+      </div>
+    </div>
   </section>
+
+  {#if revisionActive}
+    <section class="run active-run" data-testid="goal-revision-active">
+      <p class="run-heading">Revising <strong>the goal</strong></p>
+    </section>
+  {/if}
 
   {#if runState === "active" && runTitle !== null}
     <section class="run active-run" data-testid="active-run">

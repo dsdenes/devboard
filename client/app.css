@@ -165,6 +165,33 @@ main {
   margin-top: 0.6rem;
 }
 
+.goal-revision {
+  border-top: 1px solid var(--border);
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+}
+
+.revision-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.revision-request {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  flex: 1;
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.6rem;
+}
+
+.revision-request:disabled {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
 .activity {
   background: var(--surface);
   border: 1px solid var(--border);

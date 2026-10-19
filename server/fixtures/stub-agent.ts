@@ -17,6 +17,8 @@ function argument(name: string): string | undefined {
 const logPath = argument("log");
 const delayMs = Number(argument("delay-ms") ?? 0);
 const forcedQuestions = argument("questions");
+const reviseGoal = process.argv.includes("--revise-goal");
+const goalFile = argument("goal");
 const resolveRecord = !process.argv.includes("--no-resolve");
 const removeRecord = process.argv.includes("--remove-record");
 const SETTLE_DELAY_MS = 400;
@@ -72,8 +74,21 @@ async function promptTurn(params: Record<string, unknown>) {
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
   const firstLine = text?.split("\n")[0] ?? "";
   log(`prompt ${firstLine}`);
+  if (reviseGoal) log(`request ${text ?? ""}`);
 
-  if (file === undefined) {
+  if (reviseGoal) {
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Revising the goal" },
+        },
+      },
+    });
+  } else if (file === undefined) {
     write({
       jsonrpc: "2.0",
       method: "session/update",
@@ -89,7 +104,7 @@ async function promptTurn(params: Record<string, unknown>) {
 
   if (delayMs > 0) await Bun.sleep(delayMs);
 
-  if (file !== undefined) {
+  if (file !== undefined && !reviseGoal) {
     write({
       jsonrpc: "2.0",
       method: "session/update",
@@ -103,8 +118,9 @@ async function promptTurn(params: Record<string, unknown>) {
     });
   }
 
-  const questionCount =
-    forcedQuestions !== undefined
+  const questionCount = reviseGoal
+    ? 1
+    : forcedQuestions !== undefined
       ? Number(forcedQuestions)
       : file !== undefined && pendingCount(dirname(file)) === 1
         ? 1
@@ -147,6 +163,25 @@ async function promptTurn(params: Record<string, unknown>) {
         },
       },
     });
+  }
+
+  if (reviseGoal) {
+    if (goalFile !== undefined) {
+      writeFileSync(goalFile, "# Revised goal\n\nThe agent rewrote this.");
+      log(`revised ${goalFile}`);
+      write({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "stub-session",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Revised the goal" },
+          },
+        },
+      });
+    }
+    return;
   }
 
   if (file !== undefined) {
