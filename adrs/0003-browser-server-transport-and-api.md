@@ -1,6 +1,6 @@
 # Browser-to-backend transport and API shape
 
-- Status: Proposed
+- Status: Accepted
 
 ## Context
 
@@ -14,3 +14,5 @@ The choice must support:
 - the runtime in `0001-interface-runtime-and-language.md`, the UI in `0002-browser-ui-framework.md`, and persistence in `0006-run-and-interview-state-persistence.md`.
 
 ## Decision
+
+Use a single WebSocket connection carrying JSON messages in both directions: commands from the client and events from the server.
