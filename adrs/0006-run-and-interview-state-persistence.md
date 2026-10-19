@@ -1,6 +1,6 @@
 # Run and interview state persistence
 
-- Status: Proposed
+- Status: Accepted
 
 ## Context
 
@@ -14,3 +14,5 @@ The choice must support:
 - introducing no storage mechanism beyond the persistence chosen here.
 
 ## Decision
+
+Active-run state lives in the backend process's memory for its lifetime: the record being worked on, the activity log, the current question, the answers, and the stop state. Restarting the backend ends the run. No other storage mechanism is introduced.
