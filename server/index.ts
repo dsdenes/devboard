@@ -1,11 +1,13 @@
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createApp } from "./app";
 
 const hostname = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? 8080);
-const adrDir = process.env.ADRS_DIR ?? "/repo/adrs";
+const adrDir = resolve(process.env.ADRS_DIR ?? "/repo/adrs");
+const repoDir = resolve(process.env.REPO_DIR ?? dirname(adrDir));
 const staticDir = process.env.STATIC_DIR ?? join(import.meta.dir, "..", "dist");
+const agentCommand = process.env.AGENT_COMMAND ?? "omp acp";
 
-const server = createApp({ adrDir, staticDir, hostname, port });
+const server = createApp({ adrDir, repoDir, agentCommand, staticDir, hostname, port });
 
 console.log(`ADR interface listening on http://${hostname}:${server.port}`);
