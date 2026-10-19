@@ -1,6 +1,6 @@
 # Agent invocation and interview protocol
 
-- Status: Proposed
+- Status: Accepted
 
 ## Context
 
@@ -17,3 +17,5 @@ The choice must support:
 - the runtime in `0001-interface-runtime-and-language.md`, the transport in `0003-browser-server-transport-and-api.md`, the status source in `0005-adr-status-source-of-truth.md`, and persistence in `0006-run-and-interview-state-persistence.md`.
 
 ## Decision
+
+Start the agent as an `omp acp` subprocess over stdio and speak the Agent Client Protocol: session updates carry activity, and elicitation requests carry the interview questions and return the developer's answers.
