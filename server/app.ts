@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { AcpConnection, agentPrompt, type AcpQuestion } from "./acp";
+import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
 
 export interface AppOptions {
@@ -10,6 +11,7 @@ export interface AppOptions {
   hostname: string;
   port: number;
   repoDir?: string;
+  goalFile?: string;
   agentCommand?: string;
 }
 
@@ -29,6 +31,8 @@ interface ActiveRun {
 
 type ClientMessage =
   | { type: "listRecords" }
+  | { type: "getGoal" }
+  | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
   | { type: "answer"; id?: unknown; value?: unknown };
 
@@ -37,6 +41,10 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
   switch (value.type) {
     case "listRecords":
       return { type: "listRecords" };
+    case "getGoal":
+      return { type: "getGoal" };
+    case "saveGoal":
+      return { type: "saveGoal", text: "text" in value ? value.text : undefined };
     case "startRun":
       return { type: "startRun", file: "file" in value ? value.file : undefined };
     case "answer":
@@ -54,6 +62,7 @@ export function createApp(options: AppOptions) {
   const staticRoot = resolve(options.staticDir);
   const adrDir = resolve(options.adrDir);
   const repoDir = options.repoDir ?? dirname(adrDir);
+  const goalFile = options.goalFile ?? defaultGoalPath(repoDir);
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
 
   const clients = new Set<ServerWebSocket<unknown>>();
@@ -84,6 +93,34 @@ export function createApp(options: AppOptions) {
       return parseRecord(file, await readFile(join(adrDir, file), "utf8"));
     } catch {
       return undefined;
+    }
+  }
+
+  async function getGoal(ws: { send(data: string): unknown }) {
+    try {
+      send(ws, { type: "goal", text: await readGoal(goalFile) });
+    } catch (error) {
+      send(ws, {
+        type: "error",
+        message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  async function saveGoal(ws: { send(data: string): unknown }, text: unknown) {
+    if (typeof text !== "string") {
+      send(ws, { type: "error", message: "saveGoal needs the goal text." });
+      return;
+    }
+
+    try {
+      await writeGoal(goalFile, text);
+      send(ws, { type: "goal", text });
+    } catch (error) {
+      send(ws, {
+        type: "error",
+        message: `Could not save the goal: ${error instanceof Error ? error.message : String(error)}`,
+      });
     }
   }
 
@@ -323,6 +360,10 @@ export function createApp(options: AppOptions) {
           if (command.type === "listRecords") {
             const list = await readRecords(adrDir);
             send(ws, { type: "records", ...list });
+          } else if (command.type === "getGoal") {
+            await getGoal(ws);
+          } else if (command.type === "saveGoal") {
+            await saveGoal(ws, command.text);
           } else if (command.type === "startRun") {
             await startRun(ws, command.file);
           } else if (command.type === "answer") {
