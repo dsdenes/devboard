@@ -6,7 +6,17 @@ description: Derive exactly one next epic from the host project's end goal, its 
 
 Deliverable: exactly one epic, created as an issue in the host project's own tracker — GitHub or GitLab, whichever `origin` points at. Supporting writes, only when the architectural record is insufficient: one new ADR file per open foundational decision under `<host>/adrs/`, each holding a question and no decision.
 
-Fully unattended. NEVER ask the user anything, never stop for confirmation, never offer to continue, never offer to implement, never create a branch, commit, or pull request. Every decision is made from the repository alone: the goal document, `<host>/adrs/`, and the code. A foundational choice that none of them fixes is never an assumption: it becomes a pending question record in Phase G, and the run halts before filing an issue. Foundational means the choice of language or runtime; framework or structure-setting major library (web, UI, ORM, CLI); storage, persistence, or a persistent data format; public interface or contract shape (API, wire format, CLI); authentication, authorization, or a security or privacy boundary; or deployment or hosting target. Every other silent choice is inferred, proceeded on, and recorded under Assumptions. Never resolve an architectural decision, and never invent an end goal.
+Fully unattended. NEVER ask the user anything, never stop for confirmation, never offer to
+continue, never offer to implement, never create a branch, commit, or pull request. Every
+decision is made from the repository alone: the goal document, `<host>/adrs/`, and the code.
+A foundational choice that none of them fixes is never an assumption: it becomes a pending
+question record in Phase G, and the run halts before filing an issue. Foundational means the
+choice of language or runtime; framework or structure-setting major library (web, UI, ORM,
+CLI); storage, persistence, or a persistent data format; public interface or contract shape
+(API, wire format, CLI); authentication, authorization, or a security or privacy boundary;
+or deployment or hosting target. Every other silent choice is inferred, proceeded on, and
+recorded under Assumptions. Never resolve an architectural decision, and never invent an
+end goal.
 
 Reply: the created issue URL on its own line, then one line per ADR file written this run — and no line at all when there were none. On a halt: `halt: <reason>` on its own line, after one line per ADR file the halt itself wrote. Never paste the issue body into chat.
 
@@ -73,7 +83,16 @@ Against the goal document, classify each implied capability as delivered, partia
 Enumerate candidate goals that would move the project toward the end goal. Every gate must pass; the first failure disqualifies the candidate.
 
 1. **Grounded.** Every prerequisite either exists in the repository, is produced by the goal's own work, or is the target surface the goal document names. Beyond those three, a candidate may not assume anything: no dependency, interface, or service that the record, the code, and the goal document do not contain. A choice the goal needs but nothing records does not disqualify the candidate — it is classified in the split below: a question record when foundational, an inference otherwise.
-2. **Observable.** A third party can prove completion by running one concrete command, request, or UI interaction against a real surface and observing changed output or persisted state. This gate is mode-independent: `granular` narrows the observable increment, never removes observability. The list that follows disqualifies a goal, not the work a goal entails: reaching an observable result by adding a manifest, a config key, or a scaffold is not itself disqualifying, so long as the goal's evidence is that observable result. Disqualified outright: refactors, renames, reorganisation, scaffolding, boilerplate, dependency bumps, lint or formatting, CI-only changes, documentation-only and test-only work, "set up X", "introduce Y", "wire up Z", and anything whose only evidence is a passing build, a new file, or a new test.
+2. **Observable.** A third party can prove completion by running one concrete command,
+   request, or UI interaction against a real surface and observing changed output or
+   persisted state. This gate is mode-independent: `granular` narrows the observable
+   increment, never removes observability. The list that follows disqualifies a goal, not
+   the work a goal entails: reaching an observable result by adding a manifest, a config key,
+   or a scaffold is not itself disqualifying, so long as the goal's evidence is that
+   observable result. Disqualified outright: refactors, renames, reorganisation, scaffolding,
+   boilerplate, dependency bumps, lint or formatting, CI-only changes, documentation-only and
+   test-only work, "set up X", "introduce Y", "wire up Z", and anything whose only evidence
+   is a passing build, a new file, or a new test.
 3. **Single pass.** The whole goal fits one implementation session and one pull request. Within that ceiling, cut according to the granularity mode:
    - `balanced` — cut to the smallest slice that still produces the observable result; prefer the slice that unblocks the most later work and depends on the fewest open decisions.
    - `granular` — cut the balanced slice further, to the smallest independently observable increment (one field, one flag, one route, one error path, or one UI state). The Observable gate is not relaxed: when the next smaller cut would stop being observable, stop cutting.

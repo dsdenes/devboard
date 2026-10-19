@@ -43,6 +43,13 @@ Split, never mix: host-specific detail in host files; generic mechanism in `.dev
 
 Do all work — host and harness — in an isolated git worktree: `<repo root>/.worktree/<name>`. Never outside the repo root. Never edit the opened checkout. One worktree per task; edit, build, and test inside it. Done means merged directly into main. Then delete the worktree and its branch.
 
+## Line length
+
+Never create a line longer than 768 bytes (UTF-8) in a repository text file. Hard-wrap
+prose, prompts, and Markdown list items; do not rely on a later reader re-opening a
+truncated line. Aim for 100 columns or less. Generated files such as lockfiles are exempt;
+never hand-edit them.
+
 ## Working rules
 
 - State mode and edit root before the first edit.
