@@ -173,6 +173,7 @@ describe("runImplementNextEpic", () => {
     expect(harness.sent[0]).toContain("Do not wait for confirmation");
     expect(harness.sent[0]).toContain("Never offer the user options");
     expect(harness.sent[0]).not.toContain("If blocked by genuine ambiguity");
+    expect(harness.sent[0]).toContain("gh issue close 42");
     expect(harness.notifications.at(-1)?.type).toBe("info");
   });
 
@@ -294,6 +295,7 @@ describe("runImplementNextEpic", () => {
 
     expect(result.ok).toBe(true);
     expect(harness.sent[0]).toContain(gitlabBody.web_url);
+    expect(harness.sent[0]).toContain("glab issue close 7");
   });
 });
 

@@ -481,6 +481,7 @@ export function buildGoalPrompt(
   repo: string,
   worktree: string,
   branch: string,
+  forge: RemoteInfo["forge"],
 ): string {
   return `Implement the next epic from the tracker. This run is fully autonomous.
 
@@ -489,7 +490,7 @@ Autonomy contract:
 - Do not wait for confirmation, approval, sign-off, or review. Never request permission to proceed.
 - Do not stop for a plan, a choice, or a progress check. Never offer the user options.
 - Decide from the epic, the repository, its tests, its documentation, and its ADRs. Where those are silent, choose the smallest reversible option, record the assumption in the final report, and continue.
-- Continue until every success criterion is verified, the branch is merged, and the worktree is removed.
+- Continue until every success criterion is verified, the branch is merged, the worktree is removed, and the epic is closed.
 
 Epic: ${epic.title}
 URL: ${epic.url}
@@ -514,6 +515,7 @@ After the goal tool succeeds, implement the epic end to end:
 - Follow every success criterion and verification step. Run the verification commands in the worktree and observe their actual output.
 - Keep the goal active until every criterion is verified. Call the \`goal\` tool with {"op":"complete"} only then.
 - When complete, merge ${branch} into main from ${repo}, delete the branch, and remove the worktree with \`git worktree remove\`, per AGENTS.md.
+- When complete, close the epic issue ${epic.ref} in ${repo}: ${forge === "github" ? `\`gh issue close ${epic.ref}\`` : `\`glab issue close ${epic.ref}\``}. Close it only after the merge succeeded and the worktree was removed. If closing fails, report that failure once as the run's blocker.
 - If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once. Do not ask for permission or guidance.`;
 }
 
@@ -626,7 +628,7 @@ export async function runImplementNextEpic(
 
   await ctx.waitForIdle?.();
 
-  const prompt = buildGoalPrompt(epic, objective, repo, worktree.path, worktree.branch);
+  const prompt = buildGoalPrompt(epic, objective, repo, worktree.path, worktree.branch, info.forge);
   try {
     pi.sendUserMessage(prompt);
   } catch (error) {
