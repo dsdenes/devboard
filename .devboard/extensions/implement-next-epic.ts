@@ -482,7 +482,14 @@ export function buildGoalPrompt(
   worktree: string,
   branch: string,
 ): string {
-  return `Implement the next epic from the tracker.
+  return `Implement the next epic from the tracker. This run is fully autonomous.
+
+Autonomy contract:
+- Do not ask the user anything. Never call the \`ask\` tool.
+- Do not wait for confirmation, approval, sign-off, or review. Never request permission to proceed.
+- Do not stop for a plan, a choice, or a progress check. Never offer the user options.
+- Decide from the epic, the repository, its tests, its documentation, and its ADRs. Where those are silent, choose the smallest reversible option, record the assumption in the final report, and continue.
+- Continue until every success criterion is verified, the branch is merged, and the worktree is removed.
 
 Epic: ${epic.title}
 URL: ${epic.url}
@@ -492,7 +499,7 @@ Branch: ${branch}
 
 Before doing any work:
 1. Call the \`goal\` tool with {"op":"get"}.
-2. If it returns any goal (active, paused, budget-limited, complete, or dropped), stop immediately and report it. Do not drop, resume, or replace it.
+2. If it returns any goal (active, paused, budget-limited, complete, or dropped), end the run immediately with that conflict as the result. Do not drop, resume, or replace it, and do not ask the user what to do.
 3. Otherwise call the \`goal\` tool with {"op":"create","objective": <the objective below>}. Pass the objective exactly as written.
 
 Objective:
@@ -507,7 +514,7 @@ After the goal tool succeeds, implement the epic end to end:
 - Follow every success criterion and verification step. Run the verification commands in the worktree and observe their actual output.
 - Keep the goal active until every criterion is verified. Call the \`goal\` tool with {"op":"complete"} only then.
 - When complete, merge ${branch} into main from ${repo}, delete the branch, and remove the worktree with \`git worktree remove\`, per AGENTS.md.
-- If blocked by genuine ambiguity, a risky or irreversible operation, a missing prerequisite, or a blocked external dependency, stop and report. Do not guess.`;
+- If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once. Do not ask for permission or guidance.`;
 }
 
 function notify(ctx: ExtensionCommandContext, message: string, type: "info" | "warning" | "error"): void {

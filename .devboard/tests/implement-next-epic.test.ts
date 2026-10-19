@@ -167,6 +167,12 @@ describe("runImplementNextEpic", () => {
     expect(harness.sent[0]).toContain("## Success criteria");
     expect(harness.sent[0]).toContain("/repo/.worktree/add-export-command");
     expect(harness.sent[0]).toContain("devboard/add-export-command");
+    expect(harness.sent[0]).toContain("This run is fully autonomous");
+    expect(harness.sent[0]).toContain("Do not ask the user anything");
+    expect(harness.sent[0]).toContain("Never call the `ask` tool");
+    expect(harness.sent[0]).toContain("Do not wait for confirmation");
+    expect(harness.sent[0]).toContain("Never offer the user options");
+    expect(harness.sent[0]).not.toContain("If blocked by genuine ambiguity");
     expect(harness.notifications.at(-1)?.type).toBe("info");
   });
 
