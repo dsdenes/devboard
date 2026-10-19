@@ -1,6 +1,6 @@
 # Access and security boundary
 
-- Status: Proposed
+- Status: Accepted
 
 ## Context
 
@@ -15,3 +15,5 @@ The choice must support:
 - the deployment target in `0008-deployment-and-hosting-target.md`.
 
 ## Decision
+
+The server binds to 127.0.0.1 and the interface requires no authentication. Only the developer on the local machine can reach it.
