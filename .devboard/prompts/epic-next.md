@@ -95,13 +95,22 @@ A forge search index can lag recent writes; a match counts regardless of age. Ze
 
 ## Phase G — Question records (`<host>/adrs/`)
 
-For each open decision from Phase E, add one new file to `<host>/adrs/` holding the question and nothing else: the decision to be made; the context forcing it now; the options visible from the goal document, the records, and the code — state plainly when none are evidenced, and never invent candidates to fill the section; the constraints any answer must satisfy; the consequences of leaving it open.
+For each open decision from Phase E, add one new file to `<host>/adrs/` holding the question and nothing else. The record must stand on its own for a human or implementation agent who has not read the goal document, the harness, or the repository survey.
+
+The file carries exactly these parts:
+
+- **Title** — the decision in a few words.
+- **Status** — `Proposed`, spelled as the directory spells it.
+- **Context** — the decision to be made; why it is required now; the constraints any answer must satisfy; and the tradeoffs that make the choice consequential. State all of it in domain terms. Refer to another decision record by filename when it is relevant; never cite any other document or path.
+- **Decision** — empty. It is the visible hole the question asks someone to fill.
+
+`Context` NEVER cites the goal document, any other project document, the harness, a repository path, a file listing, the current state of the code, or the process that produced the record. It NEVER narrates how the decision was found, what evidence is missing, or what will happen next. It NEVER lists options, alternatives, or candidates, and the file has NO `Consequences` section: the record asks the question and nothing else.
+
+NEVER write a decision, mark it Accepted or chosen, fill in the `Decision` section, or state a preference — the question is the deliverable.
+
+Match the directory's numbering, extension, filename pattern, and status vocabulary. Use the directory's own headings for the context and the decision when it has them; otherwise use `Context` and `Decision`. Ignore any convention that adds sections for options, alternatives, or consequences. No convention discoverable (directory absent or empty) → create the directory and use `NNNN-<kebab-slug>.md`, continuing from `0001`, with `Title`, `Status: Proposed`, `Context`, `Decision` (empty).
 
 Re-read the directory before writing. A decision already asked by a pending record is never written again, and no decision gets a second record: halt naming the existing record instead.
-
-NEVER write a decision, mark it Accepted or chosen, fill in a Decision section, or state a preference — the question is the deliverable.
-
-Match the directory's own convention: read the existing files and copy their numbering, extension, filename pattern, status vocabulary, and section headings. No convention discoverable (directory absent or empty) → create the directory and use `NNNN-<kebab-slug>.md`, continuing from `0001`, with a MADR-style skeleton — `Title`, `Status: Proposed`, `Context`, `Decision` (empty), `Consequences`. That skeleton is the shape of a file, not a limit of one. Where it has no section for the options or the constraints the question must carry, put them inside `Context` rather than inventing headings, and leave `Decision` empty — it is the visible hole the question asks someone to fill.
 
 No cap applies: write one record for every open decision from Phase E. Existing records are never modified, renamed, reordered, or deleted; this phase only adds files.
 
