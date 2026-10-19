@@ -1,6 +1,6 @@
 # Browser UI framework
 
-- Status: Proposed
+- Status: Accepted
 
 ## Context
 
@@ -15,3 +15,5 @@ The choice must support:
 - the runtime in `0001-interface-runtime-and-language.md` and the transport in `0003-browser-server-transport-and-api.md`.
 
 ## Decision
+
+Use Svelte with Vite for the browser client.
