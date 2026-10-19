@@ -1,6 +1,6 @@
 # Interface runtime and language
 
-- Status: Proposed
+- Status: Accepted
 
 ## Context
 
@@ -16,3 +16,5 @@ The language and runtime of that process determine the client's build and execut
 The choice also constrains the UI framework (`0002-browser-ui-framework.md`), the browser-to-backend contract (`0003-browser-server-transport-and-api.md`), and persistence (`0006-run-and-interview-state-persistence.md`).
 
 ## Decision
+
+Use TypeScript on the Bun runtime for the backend process.
