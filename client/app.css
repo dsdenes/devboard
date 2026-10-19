@@ -1,0 +1,165 @@
+:root {
+  color-scheme: light dark;
+  --background: #f6f5f2;
+  --surface: #ffffff;
+  --text: #1f2328;
+  --muted: #656d76;
+  --border: #d8dee4;
+  --pending: #9a6700;
+  --pending-surface: #fff8e5;
+  --pending-border: #d4a72c;
+  --resolved: #1a7f37;
+  --resolved-surface: #f0f7f2;
+  --error: #b42318;
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #14171a;
+    --surface: #1c2024;
+    --text: #e6edf3;
+    --muted: #9aa4ae;
+    --border: #30363d;
+    --pending: #e3b341;
+    --pending-surface: #2b2411;
+    --pending-border: #8a6d1f;
+    --resolved: #3fb950;
+    --resolved-surface: #16251b;
+    --error: #ff7b72;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+}
+
+main {
+  margin: 0 auto;
+  max-width: 60rem;
+  padding: 3rem 1.5rem 4rem;
+}
+
+.page-header {
+  margin-bottom: 2rem;
+}
+
+h1 {
+  font-size: 1.9rem;
+  line-height: 1.2;
+  margin: 0 0 0.5rem;
+}
+
+.summary {
+  color: var(--muted);
+  margin: 0;
+}
+
+.dot {
+  margin: 0 0.35rem;
+}
+
+.connection,
+.error {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.9rem;
+}
+
+.error {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.empty {
+  color: var(--muted);
+}
+
+.records {
+  display: grid;
+  gap: 0.75rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.record {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+}
+
+.record.pending {
+  background: var(--pending-surface);
+  border-color: var(--pending-border);
+  border-left-color: var(--pending);
+  box-shadow: 0 0 0 1px var(--pending-border);
+}
+
+.record.resolved {
+  border-left-color: var(--resolved);
+}
+
+.record-heading {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.record h2 {
+  font-size: 1.05rem;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.next-marker {
+  background: var(--pending);
+  border-radius: 999px;
+  color: var(--background);
+  flex: none;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 0.2rem 0.55rem;
+  text-transform: uppercase;
+}
+
+.meta {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  gap: 0.6rem;
+  margin-top: 0.55rem;
+}
+
+.status,
+.state {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+}
+
+.record.resolved .state {
+  color: var(--resolved);
+}
+
+.record.pending .state {
+  color: var(--pending);
+}
+
+code {
+  font-size: 0.8rem;
+}
