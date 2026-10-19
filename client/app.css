@@ -105,6 +105,40 @@ main {
   color: var(--muted);
 }
 
+.goal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+}
+
+.goal-label {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.goal-text {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  min-height: 9rem;
+  padding: 0.6rem 0.7rem;
+  resize: vertical;
+  width: 100%;
+}
+
+.save-goal {
+  margin-top: 0.6rem;
+}
+
 .activity {
   background: var(--surface);
   border: 1px solid var(--border);

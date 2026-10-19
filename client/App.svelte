@@ -24,6 +24,7 @@
   let next = $state<string | null>(null);
   let connection = $state<"connecting" | "open" | "closed">("connecting");
   let error = $state<string | null>(null);
+  let goalText = $state("");
 
   let runFile = $state<string | null>(null);
   let runTitle = $state<string | null>(null);
@@ -77,6 +78,17 @@
       value.type === "error" &&
       "message" in value &&
       typeof value.message === "string"
+    );
+  }
+
+  function isGoalEvent(value: unknown): value is { type: "goal"; text: string } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "goal" &&
+      "text" in value &&
+      typeof value.text === "string"
     );
   }
 
@@ -150,6 +162,15 @@
     socket.send(JSON.stringify(target === undefined ? { type: "startRun" } : { type: "startRun", file: target }));
   }
 
+  function saveGoal() {
+    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
+      error = "Not connected to the server.";
+      return;
+    }
+    error = null;
+    socket.send(JSON.stringify({ type: "saveGoal", text: goalText }));
+  }
+
   function submitAnswer(value: string) {
     if (question === null) return;
     const trimmed = value.trim();
@@ -171,6 +192,7 @@
       connection = "open";
       error = null;
       current.send(JSON.stringify({ type: "listRecords" }));
+      current.send(JSON.stringify({ type: "getGoal" }));
     };
 
     current.onmessage = (event) => {
@@ -184,6 +206,9 @@
       if (isRecordsEvent(message)) {
         records = message.records;
         next = message.next;
+      } else if (isGoalEvent(message)) {
+        goalText = message.text;
+        error = null;
       } else if (isRunStartedEvent(message)) {
         runFile = message.file;
         runTitle = message.title;
@@ -260,6 +285,19 @@
   {#if error}
     <p class="error" role="alert">{error}</p>
   {/if}
+
+  <section class="goal" data-testid="goal-editor">
+    <label class="goal-label" for="goal-text">Current goal</label>
+    <textarea
+      id="goal-text"
+      class="goal-text"
+      bind:value={goalText}
+      data-testid="goal-text"
+    ></textarea>
+    <button type="button" class="start-button save-goal" data-testid="save-goal" onclick={saveGoal}>
+      Save goal
+    </button>
+  </section>
 
   {#if runState === "active" && runTitle !== null}
     <section class="run active-run" data-testid="active-run">
