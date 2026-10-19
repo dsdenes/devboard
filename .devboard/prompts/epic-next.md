@@ -4,9 +4,9 @@ description: Derive exactly one next epic from the host project's end goal, its 
 
 `/epic-next`: file the next move, once.
 
-Deliverable: exactly one epic, created as an issue in the host project's own tracker — GitHub or GitLab, whichever `origin` points at. Supporting writes, only when the architectural record is insufficient: at most three new ADR files under `<host>/adrs/`, each holding a question and no decision.
+Deliverable: exactly one epic, created as an issue in the host project's own tracker — GitHub or GitLab, whichever `origin` points at. Supporting writes, only when the architectural record is insufficient: one new ADR file per open foundational decision under `<host>/adrs/`, each holding a question and no decision.
 
-Fully unattended. NEVER ask the user anything, never stop for confirmation, never offer to continue, never offer to implement, never create a branch, commit, or pull request. Every decision is made from the repository alone: the goal document, `<host>/adrs/`, the code. Where those are silent, infer, proceed, and record the inference as an assumption — never resolve an architectural decision, and never invent an end goal.
+Fully unattended. NEVER ask the user anything, never stop for confirmation, never offer to continue, never offer to implement, never create a branch, commit, or pull request. Every decision is made from the repository alone: the goal document, `<host>/adrs/`, and the code. A foundational choice that none of them fixes is never an assumption: it becomes a pending question record in Phase G, and the run halts before filing an issue. Foundational means the choice of language or runtime; framework or structure-setting major library (web, UI, ORM, CLI); storage, persistence, or a persistent data format; public interface or contract shape (API, wire format, CLI); authentication, authorization, or a security or privacy boundary; or deployment or hosting target. Every other silent choice is inferred, proceeded on, and recorded under Assumptions. Never resolve an architectural decision, and never invent an end goal.
 
 Reply: the created issue URL on its own line, then one line per ADR file written this run — and no line at all when there were none. On a halt: `halt: <reason>` on its own line, after one line per ADR file the halt itself wrote. Never paste the issue body into chat.
 
@@ -44,7 +44,7 @@ Carry forward: the end state; the capabilities it implies; what it explicitly de
 
 The only source of architectural authority is `<host>/adrs/`. Read every file in it. Do not read ADR tool configuration elsewhere, do not look in `docs/adr/` or any other directory, and never substitute README, code comments, or commit history for a recorded decision.
 
-A record binds unless it declares itself Superseded, Rejected, Deprecated, or Proposed, or another record declares it superseded. From the binding records collect: permitted and forbidden technologies; layering and module boundaries; data, wire, and persistence formats; public contracts and compatibility promises; auth, security, and privacy constraints; deployment and platform targets; performance budgets.
+A record binds unless it declares itself Superseded, Rejected, Deprecated, or Proposed, or another record declares it superseded. A Proposed record is a pending decision, not a binding one. It is neither authority nor silence: when the selected goal needs that subject, Phase E halts naming the record rather than duplicating or deciding it. From the binding records collect: permitted and forbidden technologies; layering and module boundaries; data, wire, and persistence formats; public contracts and compatibility promises; auth, security, and privacy constraints; deployment and platform targets; performance budgets.
 
 A record binds only within the domain it names. Never extend a constraint to a domain the record does not cover — a rule about runtime dependencies says nothing about build or development tooling — and never read a constraint out of a record's silence.
 
@@ -56,7 +56,7 @@ A missing or empty directory means no decisions are recorded. That is not licenc
 
 Read only. NEVER run the project's build, tests, migrations, package manager, formatter, or any project command; never install anything; never touch the working tree (no checkout, stash, fetch, pull, merge, or branch). Permitted shell commands: directory and file listing (`ls`, `find`), `git log`, `git status`, `git ls-files`, `git remote`, and file reads. Nothing that executes project code, and nothing that writes.
 
-Survey: entry points and public surfaces (CLI, HTTP routes, UI, exported API); modules and their responsibilities; manifests and declared dependencies; existing tests plus how the manifest or CI says they are invoked (read the invocation, never execute it); documentation; `TODO`/`FIXME` markers; the last ~30 commits for what moved recently.
+Survey: entry points and public surfaces (CLI, HTTP routes, UI, exported API); modules and their responsibilities; manifests and declared dependencies; the evidenced foundations — language and runtime, frameworks and major libraries, storage and data formats, public interfaces, authentication and security boundaries, deployment targets; existing tests plus how the manifest or CI says they are invoked (read the invocation, never execute it); documentation; `TODO`/`FIXME` markers; the last ~30 commits for what moved recently.
 
 Against the goal document, classify each implied capability as delivered, partial, absent, or stubbed (`NotImplemented`, empty bodies, hardcoded returns, a TODO standing in for the path).
 
@@ -64,7 +64,7 @@ Against the goal document, classify each implied capability as delivered, partia
 
 Enumerate candidate goals that would move the project toward the end goal. Every gate must pass; the first failure disqualifies the candidate.
 
-1. **Grounded.** Every prerequisite either exists in the repository, is produced by the goal's own work, or is the target surface the goal document names. Beyond those three, a candidate may not assume anything: no dependency, interface, or service that the record, the code, and the goal document do not contain. A choice the goal needs but nothing records does not disqualify the candidate — it is an open decision, handled in the split below.
+1. **Grounded.** Every prerequisite either exists in the repository, is produced by the goal's own work, or is the target surface the goal document names. Beyond those three, a candidate may not assume anything: no dependency, interface, or service that the record, the code, and the goal document do not contain. A choice the goal needs but nothing records does not disqualify the candidate — it is classified in the split below: a question record when foundational, an inference otherwise.
 2. **Observable.** A third party can prove completion by running one concrete command, request, or UI interaction against a real surface and observing changed output or persisted state. The list that follows disqualifies a goal, not the work a goal entails: reaching an observable result by adding a manifest, a config key, or a scaffold is not itself disqualifying, so long as the goal's evidence is that observable result. Disqualified outright: refactors, renames, reorganisation, scaffolding, boilerplate, dependency bumps, lint or formatting, CI-only changes, documentation-only and test-only work, "set up X", "introduce Y", "wire up Z", and anything whose only evidence is a passing build, a new file, or a new test.
 3. **Single pass.** The whole goal fits one implementation session and one pull request. Too large → cut it to the smallest slice that still produces the observable result; prefer the slice that unblocks the most later work and depends on the fewest open decisions. There is no second epic to carry the remainder — the remainder goes to Non-goals.
 4. **ADR-conformant.** The design sketch contradicts no binding record; every record it touches is cited by path.
@@ -72,12 +72,14 @@ Enumerate candidate goals that would move the project toward the end goal. Every
 
 No candidate passes all five → halt.
 
-Then split every decision the selected goal cannot be specified without:
+Then classify every decision the selected goal cannot be specified without, and every foundational choice its work would otherwise have to invent:
 
-- **recorded** — settled by a binding record; cite it;
-- **open** — the record is silent, the choice is expensive to reverse (data or persistence format, public API or contract shape, auth or security boundary, cross-module interface), and the goal depends on it. Each open decision becomes a question record in Phase G.
+- **recorded** — settled by a binding record, or already fixed by the goal document or existing code; cite the record by path or the code location.
+- **pending** — a non-binding (Proposed) record already asks it. Never decide it and never write a second record: halt naming the existing record.
+- **open** — the goal, the records, and the code are all silent, and the choice is foundational. Foundational means selecting any of: language or runtime; framework or structure-setting major library (web, UI, ORM, CLI); storage, persistence, or a persistent data format; public interface or contract shape (API, wire format, CLI); authentication, authorization, or a security or privacy boundary; deployment or hosting target. Every open decision becomes a question record in Phase G.
+- **inferred** — everything else: cheap to reverse, internal, or local to the implementation. Infer it from the existing code and record the inference under Assumptions.
 
-A decision that is cheap to reverse, internal, or local to the implementation is not open: infer it from the existing code and record the inference under Assumptions.
+A foundational choice is NEVER inferred, however local or conventional it looks. No default, common practice, personal preference, or convenience of the implementation stands in for evidence. Silence about a foundational choice is an open decision even when the epic could be implemented without naming it, because the work would otherwise bake it in. Phase F does not begin until this classification is complete and every open decision has a question record.
 
 ## Phase F — Dedupe gate (before any write)
 
@@ -95,17 +97,19 @@ A forge search index can lag recent writes; a match counts regardless of age. Ze
 
 For each open decision from Phase E, add one new file to `<host>/adrs/` holding the question and nothing else: the decision to be made; the context forcing it now; the options visible from the goal document, the records, and the code — state plainly when none are evidenced, and never invent candidates to fill the section; the constraints any answer must satisfy; the consequences of leaving it open.
 
+Re-read the directory before writing. A decision already asked by a pending record is never written again, and no decision gets a second record: halt naming the existing record instead.
+
 NEVER write a decision, mark it Accepted or chosen, fill in a Decision section, or state a preference — the question is the deliverable.
 
 Match the directory's own convention: read the existing files and copy their numbering, extension, filename pattern, status vocabulary, and section headings. No convention discoverable (directory absent or empty) → create the directory and use `NNNN-<kebab-slug>.md`, continuing from `0001`, with a MADR-style skeleton — `Title`, `Status: Proposed`, `Context`, `Decision` (empty), `Consequences`. That skeleton is the shape of a file, not a limit of one. Where it has no section for the options or the constraints the question must carry, put them inside `Context` rather than inventing headings, and leave `Decision` empty — it is the visible hole the question asks someone to fill.
 
-At most three files per run. More than three open decisions → keep the three constraining the goal hardest and record the rest under Assumptions in the issue body. Existing records are never modified, renamed, reordered, or deleted; this phase only adds files.
+No cap applies: write one record for every open decision from Phase E. Existing records are never modified, renamed, reordered, or deleted; this phase only adds files.
 
-If the goal's first observable result depends on one of these open decisions, stop here: write that record — and any other open-decision records already identified — then halt. The halt line names the blocking decision, and the reply lists the records written, per the reply contract. A goal resting on an unanswered decision is not specified, and this run may not answer it. On this halt no issue body exists, so assumptions and any decisions beyond the cap of three are recorded nowhere this run: they belong to the next one, once the blocking decision is settled.
+Having written the records: if Phase E found at least one open decision, stop here. The halt line names the decisions the records ask, and the reply lists the records written, per the reply contract. A goal whose foundations are undecided is not specified, and this run may not answer them. No issue body exists on this halt: the next run happens after `/adr-resolve` settles the records.
 
 ## Phase H — Create the epic
 
-Reached only when Phase E selected a goal and no open decision blocks it.
+Reached only when Phase E selected a goal and found no open or pending decision.
 
 Title: imperative, at most 72 characters, naming the observable result; no type prefix, no issue number, no `epic` prefix.
 
@@ -117,8 +121,8 @@ Body: exactly these sections, in this order, nothing before or after them except
 - **Boundaries** — the files, directories, and operations the work may touch, and explicitly what stays untouched.
 - **Non-goals** — what this epic deliberately excludes, including the remainder cut in Phase E.
 - **ADR alignment** — each binding record the work touches, by path, with how the design respects it. Empty only when no binding record is relevant, stated as such.
-- **Assumptions** — every inference made where the goal document, the records, and the code were silent, including open decisions demoted by the cap.
-- **Open questions** — the ADR paths written in Phase G, plus any question deliberately left unrecorded.
+- **Assumptions** — every inference made where the goal document, the records, and the code were silent. An assumption never selects a foundational choice: those are question records in Phase G, and their presence stops the run before this body exists.
+- **Open questions** — `None.` unless a question was deliberately left unrecorded, naming it. The run reaches this section only when no open or pending decision exists.
 - **Stop conditions** — no attempt cap and no token, time, or cost budget: continue until the criteria are verified. Halt only for genuine ambiguity, a risky or irreversible operation, a missing prerequisite, or a blocked external dependency.
 - `<!-- devboard-epic -->` — the marker, alone on the final line.
 
@@ -137,6 +141,6 @@ Never open an editor or a browser, never let a prompt appear. Creation failure �
 
 ## Halting
 
-`halt: <reason>` and nothing else — no epic, no writes from Phases G and H that had not already completed, existing state untouched. Reasons: not a git repository or no `origin`; unrecognised or unconfigured forge; CLI absent or unauthenticated; no goal document or one without an end state; two binding records contradicting; the selected goal's first observable result depending on an open decision; no candidate passing the Phase E gates; an open epic or a duplicate goal already on the tracker; the tracker rejecting the write.
+`halt: <reason>` and nothing else — no epic, no writes from Phases G and H that had not already completed, existing state untouched. Reasons: not a git repository or no `origin`; unrecognised or unconfigured forge; CLI absent or unauthenticated; no goal document or one without an end state; two binding records contradicting; one or more open foundational decisions (written as question records in Phase G), or a pending record already asking one; no candidate passing the Phase E gates; an open epic or a duplicate goal already on the tracker; the tracker rejecting the write.
 
 NEVER halt for effort, size, cost, duration, uncertainty about implementation detail, or a local obstacle you can route around — infer, record, and proceed.
