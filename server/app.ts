@@ -67,7 +67,7 @@ export function createApp(options: AppOptions) {
 
   const clients = new Set<ServerWebSocket<unknown>>();
   let activeRun: ActiveRun | undefined;
-  let starting = false;
+  let sequencing = false;
 
   function send(ws: { send(data: string): unknown }, event: unknown) {
     try {
@@ -124,7 +124,7 @@ export function createApp(options: AppOptions) {
     }
   }
 
-  async function runAgent(run: ActiveRun) {
+  async function runAgent(run: ActiveRun): Promise<boolean> {
     try {
       const agent = new AcpConnection({
         command: agentCommand,
@@ -156,20 +156,20 @@ export function createApp(options: AppOptions) {
 
       await agent.run(agentPrompt(adrDir, run.file));
       const record = await readRecord(run.file);
-      await stopRun(run, record !== undefined && !record.pending, record?.status ?? "");
+      return await stopRun(run, record !== undefined && !record.pending, record?.status ?? "");
     } catch (error) {
-      if (activeRun !== run) return;
+      if (activeRun !== run) return false;
       broadcast({
         type: "error",
         message: error instanceof Error ? error.message : String(error),
       });
       const record = await readRecord(run.file);
-      await stopRun(run, record !== undefined && !record.pending, record?.status ?? "");
+      return await stopRun(run, record !== undefined && !record.pending, record?.status ?? "");
     }
   }
 
-  async function stopRun(run: ActiveRun, resolved: boolean, status: string) {
-    if (activeRun !== run) return;
+  async function stopRun(run: ActiveRun, resolved: boolean, status: string): Promise<boolean> {
+    if (activeRun !== run) return false;
     activeRun = undefined;
     run.question = null;
     run.agent?.close();
@@ -190,51 +190,65 @@ export function createApp(options: AppOptions) {
         type: "error",
         message: error instanceof Error ? error.message : String(error),
       });
+      return false;
     }
+
+    return resolved;
   }
 
   async function startRun(ws: { send(data: string): unknown }, file: unknown) {
-    if (activeRun !== undefined || starting) {
+    if (activeRun !== undefined || sequencing) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
     }
 
-    starting = true;
+    sequencing = true;
+    let selected = typeof file === "string" ? file : undefined;
+    let first = true;
+
     try {
-      const list = await readRecords(adrDir);
-      let record: AdrRecord | undefined;
+      while (sequencing) {
+        const list = await readRecords(adrDir);
+        let record: AdrRecord | undefined;
 
-      if (typeof file === "string") {
-        record = list.records.find((candidate) => candidate.file === file && candidate.pending);
-        if (record === undefined) {
-          send(ws, { type: "error", message: "That ADR is not pending." });
-          return;
+        if (selected !== undefined) {
+          record = list.records.find(
+            (candidate) => candidate.file === selected && candidate.pending,
+          );
+          selected = undefined;
+          if (record === undefined) {
+            send(ws, { type: "error", message: "That ADR is not pending." });
+            return;
+          }
+        } else {
+          record = list.records.find((candidate) => candidate.file === list.next);
+          if (record === undefined) {
+            if (first) send(ws, { type: "error", message: "No pending ADRs to start." });
+            return;
+          }
         }
-      } else {
-        record = list.records.find((candidate) => candidate.file === list.next);
-        if (record === undefined) {
-          send(ws, { type: "error", message: "No pending ADRs to start." });
-          return;
-        }
+
+        first = false;
+        const run: ActiveRun = {
+          file: record.file,
+          title: record.title,
+          agent: undefined,
+          activity: [],
+          question: null,
+        };
+        activeRun = run;
+        broadcast({ type: "runStarted", file: run.file, title: run.title });
+
+        const resolved = await runAgent(run);
+        if (!resolved) return;
       }
-
-      const run: ActiveRun = {
-        file: record.file,
-        title: record.title,
-        agent: undefined,
-        activity: [],
-        question: null,
-      };
-      activeRun = run;
-      broadcast({ type: "runStarted", file: run.file, title: run.title });
-      await runAgent(run);
     } catch (error) {
       send(ws, {
         type: "error",
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      starting = false;
+      sequencing = false;
     }
   }
 
@@ -381,6 +395,7 @@ export function createApp(options: AppOptions) {
 
   const stop = server.stop.bind(server);
   server.stop = (closeActiveConnections?: boolean) => {
+    sequencing = false;
     activeRun?.agent?.close();
     activeRun = undefined;
     return stop(closeActiveConnections);

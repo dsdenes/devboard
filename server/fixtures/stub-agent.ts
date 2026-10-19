@@ -1,4 +1,4 @@
-import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 /**
@@ -18,6 +18,7 @@ const logPath = argument("log");
 const delayMs = Number(argument("delay-ms") ?? 0);
 const forcedQuestions = argument("questions");
 const resolveRecord = !process.argv.includes("--no-resolve");
+const removeRecord = process.argv.includes("--remove-record");
 const SETTLE_DELAY_MS = 400;
 
 function log(line: string) {
@@ -133,21 +134,26 @@ async function promptTurn(params: Record<string, unknown>) {
     });
   }
 
-  if (file !== undefined && resolveRecord) {
+  if (file !== undefined) {
     await Bun.sleep(SETTLE_DELAY_MS);
-    markAccepted(file);
-    log(`resolved ${file}`);
-    write({
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: {
-        sessionId: "stub-session",
-        update: {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: `Updated ${basename(file)}` },
+    if (removeRecord) {
+      unlinkSync(file);
+      log(`removed ${file}`);
+    } else if (resolveRecord) {
+      markAccepted(file);
+      log(`resolved ${file}`);
+      write({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "stub-session",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `Updated ${basename(file)}` },
+          },
         },
-      },
-    });
+      });
+    }
   }
 }
 

@@ -49,6 +49,7 @@ async function startServer(files: Record<string, string>, agentArguments = ""): 
 
 interface TestClient {
   socket: WebSocket;
+  events: Record<string, unknown>[];
   send(command: unknown): void;
   waitFor(predicate: (message: Record<string, unknown>) => boolean): Promise<Record<string, unknown>>;
   close(): void;
@@ -57,6 +58,7 @@ interface TestClient {
 function connect(url: string): Promise<TestClient> {
   const { promise, resolve, reject } = Promise.withResolvers<TestClient>();
   const socket = new WebSocket(`ws://${url}/ws`);
+  const events: Record<string, unknown>[] = [];
   const buffered: Record<string, unknown>[] = [];
   const waiters: {
     predicate: (message: Record<string, unknown>) => boolean;
@@ -67,6 +69,7 @@ function connect(url: string): Promise<TestClient> {
   socket.onopen = () => {
     resolve({
       socket,
+      events,
       send(command) {
         socket.send(JSON.stringify(command));
       },
@@ -94,6 +97,7 @@ function connect(url: string): Promise<TestClient> {
     } catch {
       return;
     }
+    events.push(message);
     const index = waiters.findIndex((waiter) => waiter.predicate(message));
     if (index >= 0) {
       const waiter = waiters.splice(index, 1)[0];
@@ -124,6 +128,25 @@ async function waitForStop(client: TestClient) {
   return await client.waitFor((message) => message.type === "runStopped");
 }
 
+function runSequence(client: TestClient): string[] {
+  return client.events
+    .filter(
+      (message) =>
+        message.type === "runStarted" ||
+        message.type === "runStopped" ||
+        message.type === "records",
+    )
+    .map((message) =>
+      message.type === "records"
+        ? `records:${String(message.next)}`
+        : `${String(message.type)}:${String(message.file)}:${String(message.resolved ?? "")}`,
+    );
+}
+
+function starts(client: TestClient): unknown[] {
+  return client.events.filter((message) => message.type === "runStarted").map((message) => message.file);
+}
+
 afterAll(async () => {
   await Promise.all(
     temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })),
@@ -132,51 +155,71 @@ afterAll(async () => {
 
 const PENDING_ONE = "# First decision\n\n- Status: Proposed\n\n## Context\n\nFirst.\n\n## Decision\n\n";
 const PENDING_TWO = "# Second decision\n\n- Status: Proposed\n\n## Context\n\nSecond.\n\n## Decision\n\n";
+const PENDING_THREE = "# Third decision\n\n- Status: Proposed\n\n## Context\n\nThird.\n\n## Decision\n\n";
 
 describe("agent runs", () => {
   test(
-    "starts the lowest pending ADR by default, relays activity, and refreshes records on stop",
+    "resolves every pending ADR in file-name order from one start",
     async () => {
       const { server, adrDir, logPath, url } = await startServer(
-        { "0001-first.md": PENDING_ONE, "0002-second.md": PENDING_TWO },
+        {
+          "0001-first.md": PENDING_ONE,
+          "0002-second.md": PENDING_TWO,
+          "0003-third.md": PENDING_THREE,
+        },
         "--questions=0",
       );
       const client = await connect(url);
 
       try {
-        client.send({ type: "listRecords" });
-        expect(await client.waitFor((message) => message.type === "records")).toMatchObject({
-          next: "0001-first.md",
-        });
-
         client.send({ type: "startRun" });
-        expect(await client.waitFor((message) => message.type === "runStarted")).toMatchObject({
-          file: "0001-first.md",
-          title: "First decision",
-        });
-        expect(await client.waitFor((message) => message.type === "activity")).toMatchObject({
-          text: "Inspecting 0001-first.md",
-        });
-        expect(await waitForStop(client)).toMatchObject({
-          file: "0001-first.md",
-          resolved: true,
-          status: "Accepted",
-        });
-        expect(await client.waitFor((message) => message.type === "records")).toMatchObject({
-          next: "0002-second.md",
+        expect(
+          await client.waitFor(
+            (message) => message.type === "records" && message.next === null,
+          ),
+        ).toMatchObject({
+          next: null,
+          records: [
+            { file: "0001-first.md", pending: false },
+            { file: "0002-second.md", pending: false },
+            { file: "0003-third.md", pending: false },
+          ],
         });
 
-        expect(await readFile(join(adrDir, "0001-first.md"), "utf8")).toContain(
-          "- Status: Accepted",
-        );
+        expect(runSequence(client)).toEqual([
+          "runStarted:0001-first.md:",
+          "runStopped:0001-first.md:true",
+          "records:0002-second.md",
+          "runStarted:0002-second.md:",
+          "runStopped:0002-second.md:true",
+          "records:0003-third.md",
+          "runStarted:0003-third.md:",
+          "runStopped:0003-third.md:true",
+          "records:null",
+        ]);
 
-        client.send({ type: "startRun" });
-        expect(await client.waitFor((message) => message.type === "runStarted")).toMatchObject({
-          file: "0002-second.md",
-          title: "Second decision",
-        });
-        expect(await waitForStop(client)).toMatchObject({ resolved: true });
-        expect(spawnCount(logPath)).toBe(2);
+        expect(
+          client.events
+            .filter((message) => message.type === "runStopped")
+            .map((message) => message.status),
+        ).toEqual(["Accepted", "Accepted", "Accepted"]);
+        expect(
+          client.events
+            .filter((message) => message.type === "activity")
+            .map((message) => message.text),
+        ).toEqual([
+          "Inspecting 0001-first.md",
+          "Updated 0001-first.md",
+          "Inspecting 0002-second.md",
+          "Updated 0002-second.md",
+          "Inspecting 0003-third.md",
+          "Updated 0003-third.md",
+        ]);
+        expect(spawnCount(logPath)).toBe(3);
+
+        for (const file of ["0001-first.md", "0002-second.md", "0003-third.md"]) {
+          expect(await readFile(join(adrDir, file), "utf8")).toContain("- Status: Accepted");
+        }
       } finally {
         client.close();
         server.stop(true);
@@ -186,38 +229,32 @@ describe("agent runs", () => {
   );
 
   test(
-    "starts a selected non-next pending ADR and leaves the earlier one pending",
+    "starts the selected ADR, then the lowest remaining pending records",
     async () => {
-      const { server, adrDir, logPath, url } = await startServer(
-        { "0001-first.md": PENDING_ONE, "0002-second.md": PENDING_TWO },
+      const { server, logPath, url } = await startServer(
+        {
+          "0001-first.md": PENDING_ONE,
+          "0002-second.md": PENDING_TWO,
+          "0003-third.md": PENDING_THREE,
+        },
         "--questions=0",
       );
       const client = await connect(url);
 
       try {
         client.send({ type: "startRun", file: "0002-second.md" });
-        expect(await client.waitFor((message) => message.type === "runStarted")).toMatchObject({
-          file: "0002-second.md",
-          title: "Second decision",
-        });
-        expect(await waitForStop(client)).toMatchObject({ file: "0002-second.md", resolved: true });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "records" && message.next === null,
+          ),
+        ).toMatchObject({ next: null });
 
-        expect(await readFile(join(adrDir, "0002-second.md"), "utf8")).toContain(
-          "- Status: Accepted",
-        );
-        expect(await readFile(join(adrDir, "0001-first.md"), "utf8")).toContain(
-          "- Status: Proposed",
-        );
-        expect(spawnCount(logPath)).toBe(1);
-
-        const refreshed = await client.waitFor((message) => message.type === "records");
-        expect(refreshed).toMatchObject({
-          next: "0001-first.md",
-          records: [
-            { file: "0001-first.md", pending: true },
-            { file: "0002-second.md", pending: false },
-          ],
-        });
+        expect(starts(client)).toEqual([
+          "0002-second.md",
+          "0001-first.md",
+          "0003-third.md",
+        ]);
+        expect(spawnCount(logPath)).toBe(3);
       } finally {
         client.close();
         server.stop(true);
@@ -227,30 +264,61 @@ describe("agent runs", () => {
   );
 
   test(
-    "refuses a second start while a run is active and spawns one process",
+    "refuses a second start during a run and between runs, spawning one process per record",
     async () => {
       const { server, logPath, url } = await startServer(
-        { "0001-first.md": PENDING_ONE },
-        "--questions=0 --delay-ms=400",
+        {
+          "0001-first.md": PENDING_ONE,
+          "0002-second.md": PENDING_TWO,
+          "0003-third.md": PENDING_THREE,
+        },
+        "--questions=0",
       );
       const client = await connect(url);
 
       try {
         client.send({ type: "startRun" });
-        await client.waitFor((message) => message.type === "runStarted");
-        await client.waitFor((message) => message.type === "activity");
+        await client.waitFor(
+          (message) => message.type === "runStarted" && message.file === "0001-first.md",
+        );
 
         client.send({ type: "startRun" });
         expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
           message: "A run is already active.",
         });
-        expect(await waitForStop(client)).toMatchObject({ resolved: true });
-        expect(spawnCount(logPath)).toBe(1);
+
+        expect(await waitForStop(client)).toMatchObject({
+          file: "0001-first.md",
+          resolved: true,
+        });
+
+        client.send({ type: "startRun" });
+        expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
+          message: "A run is already active.",
+        });
+
+        expect(
+          await client.waitFor(
+            (message) => message.type === "records" && message.next === null,
+          ),
+        ).toMatchObject({ next: null });
+
+        expect(
+          client.events
+            .filter((message) => message.type === "error")
+            .map((message) => message.message),
+        ).toEqual(["A run is already active.", "A run is already active."]);
+        expect(starts(client)).toEqual([
+          "0001-first.md",
+          "0002-second.md",
+          "0003-third.md",
+        ]);
+        expect(spawnCount(logPath)).toBe(3);
         expect(
           readFileSync(logPath, "utf8")
             .split("\n")
             .filter((line) => line.startsWith("prompt ")).length,
-        ).toBe(1);
+        ).toBe(3);
       } finally {
         client.close();
         server.stop(true);
@@ -313,10 +381,10 @@ describe("agent runs", () => {
   );
 
   test(
-    "stops without resolving when the agent turn ends unchanged",
+    "ends the sequence without starting another record when the agent turn does not resolve",
     async () => {
-      const { server, adrDir, url } = await startServer(
-        { "0001-first.md": PENDING_ONE },
+      const { server, adrDir, logPath, url } = await startServer(
+        { "0001-first.md": PENDING_ONE, "0002-second.md": PENDING_TWO },
         "--questions=0 --no-resolve",
       );
       const client = await connect(url);
@@ -332,11 +400,96 @@ describe("agent runs", () => {
 
         const refreshed = await client.waitFor((message) => message.type === "records");
         expect(refreshed).toMatchObject({ next: "0001-first.md" });
+
+        // Integration test: the sequence outcome is observable only as the
+        // absence of another runStarted from the real server subprocess.
+        await Bun.sleep(300);
+        expect(starts(client)).toEqual(["0001-first.md"]);
+        expect(spawnCount(logPath)).toBe(1);
         expect(await readFile(join(adrDir, "0001-first.md"), "utf8")).toContain(
+          "- Status: Proposed",
+        );
+        expect(await readFile(join(adrDir, "0002-second.md"), "utf8")).toContain(
           "- Status: Proposed",
         );
       } finally {
         client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "ends the sequence when the active record file is removed during its run",
+    async () => {
+      const { server, adrDir, logPath, url } = await startServer(
+        { "0001-first.md": PENDING_ONE, "0002-second.md": PENDING_TWO },
+        "--questions=0 --remove-record",
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startRun" });
+        await client.waitFor((message) => message.type === "runStarted");
+        expect(await waitForStop(client)).toMatchObject({
+          file: "0001-first.md",
+          resolved: false,
+        });
+
+        expect(await client.waitFor((message) => message.type === "records")).toMatchObject({
+          next: "0002-second.md",
+        });
+
+        // Integration test: the sequence outcome is observable only as the
+        // absence of another runStarted from the real server subprocess.
+        await Bun.sleep(300);
+        expect(starts(client)).toEqual(["0001-first.md"]);
+        expect(spawnCount(logPath)).toBe(1);
+        expect(existsSync(join(adrDir, "0001-first.md"))).toBe(false);
+        expect(await readFile(join(adrDir, "0002-second.md"), "utf8")).toContain(
+          "- Status: Proposed",
+        );
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "keeps resolving after the only client disconnects",
+    async () => {
+      const { server, adrDir, logPath, url } = await startServer(
+        {
+          "0001-first.md": PENDING_ONE,
+          "0002-second.md": PENDING_TWO,
+          "0003-third.md": PENDING_THREE,
+        },
+        "--questions=0",
+      );
+      const client = await connect(url);
+      const files = ["0001-first.md", "0002-second.md", "0003-third.md"];
+
+      try {
+        client.send({ type: "startRun" });
+        await client.waitFor((message) => message.type === "runStarted");
+        client.close();
+
+        const deadline = Date.now() + 15000;
+        let statuses: string[] = [];
+        while (Date.now() < deadline) {
+          statuses = await Promise.all(
+            files.map((file) => readFile(join(adrDir, file), "utf8")),
+          );
+          if (statuses.every((source) => source.includes("- Status: Accepted"))) break;
+          await Bun.sleep(100);
+        }
+
+        expect(statuses.every((source) => source.includes("- Status: Accepted"))).toBe(true);
+        expect(spawnCount(logPath)).toBe(3);
+      } finally {
         server.stop(true);
       }
     },

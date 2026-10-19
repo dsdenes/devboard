@@ -4,7 +4,7 @@ Local browser interface for the records in `adrs/`. It lists every record, disti
 
 It also shows the repository's current goal in a `Current goal` textarea. The developer can edit the text and select `Save goal`; the server writes the submitted text verbatim to the goal document, and every page load reads that file rather than browser state.
 
-While a run is active the interface names the record being resolved, appends the agent's ACP session updates to a live activity log, and presents each interview question with its choices plus a free-form answer field. The run stops when the agent's turn ends, without starting another record.
+While a run is active the interface names the record being resolved, appends the agent's ACP session updates to a live activity log, and presents each interview question with its choices plus a free-form answer field. One start resolves every pending record in ascending file-name order: after each run the server re-reads `adrs/`, and the sequence ends when no pending record remains or when the finished record is still `Proposed` (or has been removed). The chain runs in the server, so it continues if the browser disconnects.
 
 ## Stack
 
@@ -57,9 +57,10 @@ The client sends:
 
 - `getGoal` reads the goal document from disk and answers with its complete contents.
 - `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`.
-- `startRun` without `file` starts the lowest-numbered pending record.
-- `startRun` with `file` starts that record only when it is pending.
-- A start is refused with an `error` event while another run is active, when no record is pending, or when the named record is not pending.
+- `startRun` without `file` starts the sequence with the lowest-numbered pending record.
+- `startRun` with `file` starts that record first only when it is pending; the sequence then continues with the lowest-numbered remaining pending records.
+- Every accepted start resolves one record at a time until no pending record remains or a run ends without resolving its record. A still-`Proposed` or removed active record ends the sequence.
+- A start is refused with an `error` event while the sequence is running (including between records), when no record is pending, or when the named record is not pending.
 - `answer` supplies one value for the pending elicitation; the question is cleared after the first answer.
 
 The server answers with events:
@@ -77,7 +78,7 @@ The server answers with events:
 - A record's title is its first level-one heading.
 - A record is pending exactly when its status is `Proposed`; every other status is resolved.
 - Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).
-- The server reads ADR files and never writes them; the agent changes the status line. The goal document is the only file the server writes, and only in response to `saveGoal`. `runStopped` reports whether the active record is now resolved. Only one run exists at a time, in server memory; stopping the server terminates its child process.
+- The server reads ADR files and never writes them; the agent changes the status line. The goal document is the only file the server writes, and only in response to `saveGoal`. `runStopped` reports whether the active record is now resolved; a `records` event follows each `runStopped` before the next `runStarted`. Only one run and one sequence exist at a time, in server memory; stopping the server terminates its child process and the sequence.
 
 ## Tests
 
@@ -85,4 +86,4 @@ The server answers with events:
 bun test
 ```
 
-`server/run.test.ts` drives the interface against the stub ACP agent, covering default and selected starts, refusal while active, activity and question/answer relay, stop on status change, and records refresh. `server/app.test.ts` covers `getGoal`/`saveGoal`, including verbatim writes, failure responses, and the absence of agent startup.
+`server/run.test.ts` drives the interface against the stub ACP agent, covering sequential resolution in file-name order, selected first records, refusal of a second start during a run and between runs, activity and question/answer relay, the unresolved-record stop, the removed-record stop, disconnect continuation, and records refresh. `server/app.test.ts` covers `getGoal`/`saveGoal`, including verbatim writes, failure responses, and the absence of agent startup.
