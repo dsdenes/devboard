@@ -45,6 +45,7 @@ interface LifecycleState {
 }
 
 const EPIC_PROMPT = "/epic-next";
+const IMPLEMENT_PROMPT = "/implement-next-epic";
 
 type ClientMessage =
   | { type: "listRecords" }
@@ -313,8 +314,23 @@ export function createApp(options: AppOptions) {
       const existing = await tracker(repoDir);
       if (!lifecycleRunning) return;
       if (existing !== undefined) {
-        setLifecycle("epic", { kind: "epic", id: String(existing.number) });
-        return;
+        const id = String(existing.number);
+        setLifecycle("implementation", { kind: "epic", id });
+        await runLifecycleStage("", existing.title, IMPLEMENT_PROMPT);
+        if (!lifecycleRunning) return;
+
+        const remaining = await tracker(repoDir);
+        if (!lifecycleRunning) return;
+        if (remaining !== undefined && String(remaining.number) === id) {
+          broadcast({
+            type: "error",
+            message: `Implementation ended but epic #${id} is still open.`,
+          });
+          return;
+        }
+
+        lifecycle = { stage: "epic", pass: lifecycle.pass + 1, work: null };
+        continue;
       }
 
       setLifecycle("epic", null);
@@ -323,10 +339,7 @@ export function createApp(options: AppOptions) {
 
       const created = await tracker(repoDir);
       if (!lifecycleRunning) return;
-      if (created !== undefined) {
-        setLifecycle("epic", { kind: "epic", id: String(created.number) });
-        return;
-      }
+      if (created !== undefined) continue;
 
       const list = await readRecords(adrDir);
       if (!lifecycleRunning) return;

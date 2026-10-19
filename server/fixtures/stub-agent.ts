@@ -70,7 +70,22 @@ async function promptTurn(params: Record<string, unknown>) {
     })
     .find((candidate): candidate is string => typeof candidate === "string");
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
-  log(`prompt ${text?.split("\n")[0] ?? ""}`);
+  const firstLine = text?.split("\n")[0] ?? "";
+  log(`prompt ${firstLine}`);
+
+  if (file === undefined) {
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `Working on ${firstLine}` },
+        },
+      },
+    });
+  }
 
   if (delayMs > 0) await Bun.sleep(delayMs);
 
