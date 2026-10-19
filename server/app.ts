@@ -4,6 +4,7 @@ import type { ServerWebSocket } from "bun";
 import { AcpConnection, agentPrompt, type AcpQuestion } from "./acp";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
+import { findOpenEpic, type EpicLookup } from "./tracker";
 
 export interface AppOptions {
   adrDir: string;
@@ -13,6 +14,7 @@ export interface AppOptions {
   repoDir?: string;
   goalFile?: string;
   agentCommand?: string;
+  tracker?: EpicLookup;
 }
 
 interface RunQuestion {
@@ -29,11 +31,27 @@ interface ActiveRun {
   question: RunQuestion | null;
 }
 
+type LifecycleStage = "goal" | "epic" | "adr" | "implementation" | "finished";
+
+interface LifecycleWork {
+  kind: "adr" | "epic";
+  id: string;
+}
+
+interface LifecycleState {
+  stage: LifecycleStage;
+  pass: number;
+  work: LifecycleWork | null;
+}
+
+const EPIC_PROMPT = "/epic-next";
+
 type ClientMessage =
   | { type: "listRecords" }
   | { type: "getGoal" }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
+  | { type: "startLifecycle" }
   | { type: "answer"; id?: unknown; value?: unknown };
 
 function parseClientMessage(value: unknown): ClientMessage | undefined {
@@ -47,6 +65,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "saveGoal", text: "text" in value ? value.text : undefined };
     case "startRun":
       return { type: "startRun", file: "file" in value ? value.file : undefined };
+    case "startLifecycle":
+      return { type: "startLifecycle" };
     case "answer":
       return {
         type: "answer",
@@ -64,10 +84,13 @@ export function createApp(options: AppOptions) {
   const repoDir = options.repoDir ?? dirname(adrDir);
   const goalFile = options.goalFile ?? defaultGoalPath(repoDir);
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
+  const tracker = options.tracker ?? findOpenEpic;
 
   const clients = new Set<ServerWebSocket<unknown>>();
   let activeRun: ActiveRun | undefined;
   let sequencing = false;
+  let lifecycle: LifecycleState = { stage: "goal", pass: 1, work: null };
+  let lifecycleRunning = false;
 
   function send(ws: { send(data: string): unknown }, event: unknown) {
     try {
@@ -108,6 +131,11 @@ export function createApp(options: AppOptions) {
   }
 
   async function saveGoal(ws: { send(data: string): unknown }, text: unknown) {
+    if (lifecycleRunning) {
+      send(ws, { type: "error", message: "A lifecycle run is active." });
+      return;
+    }
+
     if (typeof text !== "string") {
       send(ws, { type: "error", message: "saveGoal needs the goal text." });
       return;
@@ -124,7 +152,10 @@ export function createApp(options: AppOptions) {
     }
   }
 
-  async function runAgent(run: ActiveRun): Promise<boolean> {
+  async function runAgent(
+    run: ActiveRun,
+    prompt = agentPrompt(adrDir, run.file),
+  ): Promise<boolean> {
     try {
       const agent = new AcpConnection({
         command: agentCommand,
@@ -154,7 +185,7 @@ export function createApp(options: AppOptions) {
       });
       run.agent = agent;
 
-      await agent.run(agentPrompt(adrDir, run.file));
+      await agent.run(prompt);
       const record = await readRecord(run.file);
       return await stopRun(run, record !== undefined && !record.pending, record?.status ?? "");
     } catch (error) {
@@ -197,6 +228,11 @@ export function createApp(options: AppOptions) {
   }
 
   async function startRun(ws: { send(data: string): unknown }, file: unknown) {
+    if (lifecycleRunning) {
+      send(ws, { type: "error", message: "A lifecycle run is active." });
+      return;
+    }
+
     if (activeRun !== undefined || sequencing) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
@@ -249,6 +285,104 @@ export function createApp(options: AppOptions) {
       });
     } finally {
       sequencing = false;
+    }
+  }
+
+  function setLifecycle(stage: LifecycleStage, work: LifecycleWork | null) {
+    lifecycle = { stage, pass: lifecycle.pass, work };
+    broadcast({ type: "lifecycleState", ...lifecycle });
+  }
+
+  async function runLifecycleStage(file: string, title: string, prompt: string) {
+    const run: ActiveRun = {
+      file,
+      title,
+      agent: undefined,
+      activity: [],
+      question: null,
+    };
+    activeRun = run;
+    broadcast({ type: "runStarted", file: run.file, title: run.title });
+    await runAgent(run, prompt);
+  }
+
+  async function runLifecycle() {
+    let previousPending: string | undefined;
+
+    while (lifecycleRunning) {
+      const existing = await tracker(repoDir);
+      if (!lifecycleRunning) return;
+      if (existing !== undefined) {
+        setLifecycle("epic", { kind: "epic", id: String(existing.number) });
+        return;
+      }
+
+      setLifecycle("epic", null);
+      await runLifecycleStage("", "Epic generation", EPIC_PROMPT);
+      if (!lifecycleRunning) return;
+
+      const created = await tracker(repoDir);
+      if (!lifecycleRunning) return;
+      if (created !== undefined) {
+        setLifecycle("epic", { kind: "epic", id: String(created.number) });
+        return;
+      }
+
+      const list = await readRecords(adrDir);
+      if (!lifecycleRunning) return;
+      const pending = list.records.filter((record) => record.pending).map((record) => record.file);
+
+      if (pending.length === 0) {
+        broadcast({
+          type: "error",
+          message: "Epic generation ended without an open epic or a pending ADR.",
+        });
+        return;
+      }
+
+      const signature = pending.join("\n");
+      if (signature === previousPending) {
+        broadcast({
+          type: "error",
+          message: "Epic generation left the same ADRs pending without opening an epic.",
+        });
+        return;
+      }
+      previousPending = signature;
+
+      for (const file of pending) {
+        if (!lifecycleRunning) return;
+        const record = await readRecord(file);
+        if (record === undefined || !record.pending) continue;
+
+        setLifecycle("adr", { kind: "adr", id: record.file });
+        await runLifecycleStage(record.file, record.title, agentPrompt(adrDir, record.file));
+        if (!lifecycleRunning) return;
+      }
+    }
+  }
+
+  async function startLifecycle(ws: { send(data: string): unknown }) {
+    if (lifecycleRunning) {
+      send(ws, { type: "error", message: "A lifecycle run is already active." });
+      return;
+    }
+
+    if (activeRun !== undefined || sequencing) {
+      send(ws, { type: "error", message: "A run is already active." });
+      return;
+    }
+
+    lifecycleRunning = true;
+    try {
+      await runLifecycle();
+    } catch (error) {
+      broadcast({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      lifecycleRunning = false;
     }
   }
 
@@ -339,6 +473,7 @@ export function createApp(options: AppOptions) {
     websocket: {
       open(ws) {
         clients.add(ws);
+        if (lifecycleRunning) send(ws, { type: "lifecycleState", ...lifecycle });
         if (activeRun === undefined) return;
 
         const run = activeRun;
@@ -380,6 +515,8 @@ export function createApp(options: AppOptions) {
             await saveGoal(ws, command.text);
           } else if (command.type === "startRun") {
             await startRun(ws, command.file);
+          } else if (command.type === "startLifecycle") {
+            await startLifecycle(ws);
           } else if (command.type === "answer") {
             answerQuestion(ws, command.id, command.value);
           }
@@ -396,6 +533,7 @@ export function createApp(options: AppOptions) {
   const stop = server.stop.bind(server);
   server.stop = (closeActiveConnections?: boolean) => {
     sequencing = false;
+    lifecycleRunning = false;
     activeRun?.agent?.close();
     activeRun = undefined;
     return stop(closeActiveConnections);

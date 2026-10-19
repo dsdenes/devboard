@@ -70,7 +70,7 @@ async function promptTurn(params: Record<string, unknown>) {
     })
     .find((candidate): candidate is string => typeof candidate === "string");
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
-  log(`prompt ${file ?? ""}`);
+  log(`prompt ${text?.split("\n")[0] ?? ""}`);
 
   if (delayMs > 0) await Bun.sleep(delayMs);
 

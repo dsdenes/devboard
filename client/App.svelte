@@ -20,6 +20,27 @@
     choices: string[];
   }
 
+  type LifecycleStage = "goal" | "epic" | "adr" | "implementation" | "finished";
+
+  interface LifecycleWork {
+    kind: "adr" | "epic";
+    id: string;
+  }
+
+  interface LifecycleState {
+    stage: LifecycleStage;
+    pass: number;
+    work: LifecycleWork | null;
+  }
+
+  const STAGE_LABELS: Record<LifecycleStage, string> = {
+    goal: "Goal setup",
+    epic: "Epic generation",
+    adr: "ADR resolution",
+    implementation: "Implementation",
+    finished: "Finished",
+  };
+
   let records = $state<AdrRecord[]>([]);
   let next = $state<string | null>(null);
   let connection = $state<"connecting" | "open" | "closed">("connecting");
@@ -32,10 +53,28 @@
   let activity = $state<string[]>([]);
   let question = $state<RunQuestion | null>(null);
   let draft = $state("");
+  let lifecycle = $state<LifecycleState>({ stage: "goal", pass: 1, work: null });
+  let lifecycleSeen = $state(false);
 
   let pendingCount = $derived(records.filter((record) => record.pending).length);
   let resolvedCount = $derived(records.length - pendingCount);
   let running = $derived(runState === "active");
+  let lifecycleActive = $derived(
+    lifecycleSeen &&
+      (lifecycle.stage === "adr" ||
+        lifecycle.stage === "implementation" ||
+        (lifecycle.stage === "epic" && lifecycle.work === null)),
+  );
+  let controlsDisabled = $derived(running || lifecycleActive);
+  let lifecycleStageLabel = $derived(STAGE_LABELS[lifecycle.stage]);
+  let lifecycleWorkTitle = $derived(
+    lifecycle.work === null
+      ? null
+      : lifecycle.work.kind === "epic"
+        ? `Epic #${lifecycle.work.id}`
+        : (records.find((record) => record.file === lifecycle.work?.id)?.title ??
+          lifecycle.work.id),
+  );
 
   let socket: WebSocket | undefined;
   let retryTimer: number | undefined;
@@ -153,6 +192,34 @@
     );
   }
 
+  function isLifecycleStateEvent(
+    value: unknown,
+  ): value is { type: "lifecycleState" } & LifecycleState {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      !("type" in value) ||
+      value.type !== "lifecycleState" ||
+      !("stage" in value) ||
+      !(value.stage in STAGE_LABELS) ||
+      !("pass" in value) ||
+      typeof value.pass !== "number" ||
+      !("work" in value)
+    ) {
+      return false;
+    }
+
+    if (value.work === null) return true;
+    return (
+      typeof value.work === "object" &&
+      value.work !== null &&
+      "kind" in value.work &&
+      (value.work.kind === "adr" || value.work.kind === "epic") &&
+      "id" in value.work &&
+      (typeof value.work.id === "string" || typeof value.work.id === "number")
+    );
+  }
+
   function start(target?: string) {
     if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
       error = "Not connected to the server.";
@@ -160,6 +227,15 @@
     }
     error = null;
     socket.send(JSON.stringify(target === undefined ? { type: "startRun" } : { type: "startRun", file: target }));
+  }
+
+  function startLifecycle() {
+    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
+      error = "Not connected to the server.";
+      return;
+    }
+    error = null;
+    socket.send(JSON.stringify({ type: "startLifecycle" }));
   }
 
   function saveGoal() {
@@ -203,7 +279,17 @@
         return;
       }
 
-      if (isRecordsEvent(message)) {
+      if (isLifecycleStateEvent(message)) {
+        lifecycle = {
+          stage: message.stage,
+          pass: message.pass,
+          work:
+            message.work === null
+              ? null
+              : { kind: message.work.kind, id: String(message.work.id) },
+        };
+        if (message.stage !== "goal") lifecycleSeen = true;
+      } else if (isRecordsEvent(message)) {
         records = message.records;
         next = message.next;
       } else if (isGoalEvent(message)) {
@@ -265,16 +351,39 @@
           {pendingCount} pending
         </p>
       </div>
-      <button
-        class="start-button"
-        data-testid="start-next"
-        disabled={running}
-        onclick={() => start()}
-      >
-        Start
-      </button>
+      <div class="header-actions">
+        <button
+          type="button"
+          class="start-button"
+          data-testid="start-lifecycle"
+          disabled={controlsDisabled}
+          onclick={startLifecycle}
+        >
+          Start lifecycle
+        </button>
+        <button
+          class="start-button"
+          data-testid="start-next"
+          disabled={controlsDisabled}
+          onclick={() => start()}
+        >
+          Start
+        </button>
+      </div>
     </div>
   </header>
+
+  <section class="lifecycle" data-testid="lifecycle">
+    <p class="lifecycle-line">
+      Stage <strong data-testid="lifecycle-stage">{lifecycleStageLabel}</strong>
+    </p>
+    <p class="lifecycle-line">
+      Pass <strong data-testid="lifecycle-pass">{lifecycle.pass}</strong>
+    </p>
+    {#if lifecycleWorkTitle !== null}
+      <p class="lifecycle-work" data-testid="lifecycle-work">{lifecycleWorkTitle}</p>
+    {/if}
+  </section>
 
   {#if connection !== "open"}
     <p class="connection" role="status">
@@ -292,9 +401,16 @@
       id="goal-text"
       class="goal-text"
       bind:value={goalText}
+      disabled={lifecycleActive}
       data-testid="goal-text"
     ></textarea>
-    <button type="button" class="start-button save-goal" data-testid="save-goal" onclick={saveGoal}>
+    <button
+      type="button"
+      class="start-button save-goal"
+      data-testid="save-goal"
+      disabled={lifecycleActive}
+      onclick={saveGoal}
+    >
       Save goal
     </button>
   </section>
@@ -385,7 +501,7 @@
                   class="start-button record-start"
                   data-testid="start"
                   data-file={record.file}
-                  disabled={running}
+                  disabled={controlsDisabled}
                   onclick={() => start(record.file === next ? undefined : record.file)}
                 >
                   Start

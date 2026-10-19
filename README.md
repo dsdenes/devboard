@@ -6,6 +6,8 @@ It also shows the repository's current goal in a `Current goal` textarea. The de
 
 While a run is active the interface names the record being resolved, appends the agent's ACP session updates to a live activity log, and presents each interview question with its choices plus a free-form answer field. One start resolves every pending record in ascending file-name order: after each run the server re-reads `adrs/`, and the sequence ends when no pending record remains or when the finished record is still `Proposed` (or has been removed). The chain runs in the server, so it continues if the browser disconnects.
 
+The page also shows a lifecycle stage and pass number. Selecting `Start lifecycle` gives the server the loop: it runs the `/epic-next` agent, resolves any pending ADRs the run leaves behind with `/adr-resolve` in file-name order, and repeats until an open epic exists on the origin tracker. An epic is an open issue carrying the label `epic` (ignoring case) or the `<!-- devboard-epic -->` marker in its body; the server reads it with read-only `gh` or `glab` queries. While a lifecycle run works, the goal editor and every start control are disabled, and a client that connects or reloads receives the current stage, pass, and work in progress first.
+
 ## Stack
 
 - Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`. Each run spawns one `omp acp` subprocess over stdio.
@@ -52,6 +54,7 @@ The client sends:
 { "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
 { "type": "startRun" }
 { "type": "startRun", "file": "0002-example.md" }
+{ "type": "startLifecycle" }
 { "type": "answer", "id": 1, "value": "Gamma" }
 ```
 
@@ -62,10 +65,16 @@ The client sends:
 - Every accepted start resolves one record at a time until no pending record remains or a run ends without resolving its record. A still-`Proposed` or removed active record ends the sequence.
 - A start is refused with an `error` event while the sequence is running (including between records), when no record is pending, or when the named record is not pending.
 - `answer` supplies one value for the pending elicitation; the question is cleared after the first answer.
+- `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run, a run sequence, or another lifecycle run is active. While the lifecycle run is active, `startLifecycle`, `startRun`, and `saveGoal` are also refused, because the lifecycle owns the tracker and the goal.
+- The lifecycle starts in the `epic` stage with pass `1`, sends `/epic-next` to one ACP peer, and checks the origin tracker. If no epic is open and `adrs/` has pending records, it reports each record in `adr` and resolves it with `/adr-resolve` in ascending file-name order. It returns to `epic` after the last one, repeating until an open epic exists. That epic is reported as `work` with kind `epic` and its issue number; no further peer starts, and the lifecycle run ends.
+- Each lifecycle stage is still one `omp acp` process and relays activity and questions through the existing `runStarted`, `activity`, `question`, `runStopped`, and `records` events. Lifecycle state lives in server memory only.
 
 The server answers with events:
 
 ```json
+{ "type": "lifecycleState", "stage": "epic", "pass": 1, "work": null }
+{ "type": "lifecycleState", "stage": "adr", "pass": 1, "work": { "kind": "adr", "id": "0002-example.md" } }
+{ "type": "lifecycleState", "stage": "epic", "pass": 1, "work": { "kind": "epic", "id": "42" } }
 { "type": "records", "records": [ { "file": "0001-example.md", "title": "Example", "status": "Accepted", "pending": false } ], "next": null }
 { "type": "goal", "text": "# Goal\n\nThe complete goal text." }
 { "type": "runStarted", "file": "0001-example.md", "title": "Example" }
@@ -78,7 +87,8 @@ The server answers with events:
 - A record's title is its first level-one heading.
 - A record is pending exactly when its status is `Proposed`; every other status is resolved.
 - Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).
-- The server reads ADR files and never writes them; the agent changes the status line. The goal document is the only file the server writes, and only in response to `saveGoal`. `runStopped` reports whether the active record is now resolved; a `records` event follows each `runStopped` before the next `runStarted`. Only one run and one sequence exist at a time, in server memory; stopping the server terminates its child process and the sequence.
+- `lifecycleState` reports `stage` (`goal`, `epic`, `adr`, `implementation`, or `finished`), the `pass` number, and `work` (`null`, an ADR filename, or an epic issue number). It is sent on every transition and, while the lifecycle is active, to each client that connects or reconnects before any other event. Stage `goal` is the state before any lifecycle run.
+- The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is the only file the server writes, and only in response to `saveGoal`. `runStopped` reports whether the active record is now resolved; a `records` event follows each `runStopped` before the next `runStarted`. Only one run, sequence, or lifecycle run exists at a time, in server memory; stopping the server terminates its child process and the loop.
 
 ## Tests
 
@@ -86,4 +96,4 @@ The server answers with events:
 bun test
 ```
 
-`server/run.test.ts` drives the interface against the stub ACP agent, covering sequential resolution in file-name order, selected first records, refusal of a second start during a run and between runs, activity and question/answer relay, the unresolved-record stop, the removed-record stop, disconnect continuation, and records refresh. `server/app.test.ts` covers `getGoal`/`saveGoal`, including verbatim writes, failure responses, and the absence of agent startup.
+`server/run.test.ts` drives the interface against the stub ACP agent, covering sequential resolution in file-name order, selected first records, refusal of a second start during a run and between runs, activity and question/answer relay, the unresolved-record stop, the removed-record stop, disconnect continuation, and records refresh. `server/app.test.ts` covers `getGoal`/`saveGoal`, including verbatim writes, failure responses, and the absence of agent startup. `server/lifecycle.test.ts` covers the `lifecycleState` sequence, the single `/epic-next` peer, ADR-order resolution, an already-open epic, an epic created by the agent, the three lifecycle refusals, and replay of the current state to a reconnecting client.

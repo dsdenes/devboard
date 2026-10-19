@@ -62,6 +62,32 @@ main {
   justify-content: space-between;
 }
 
+.header-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.lifecycle {
+  align-items: baseline;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  padding: 0.75rem 1rem;
+}
+
+.lifecycle-line {
+  margin: 0;
+}
+
+.lifecycle-work {
+  color: var(--accent);
+  margin: 0;
+}
+
 .start-button {
   background: var(--surface);
   border: 1px solid var(--border);
