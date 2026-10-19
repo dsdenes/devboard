@@ -1,6 +1,6 @@
 # Deployment and hosting target
 
-- Status: Proposed
+- Status: Accepted
 
 ## Context
 
@@ -15,3 +15,5 @@ The choice must support:
 - the runtime, UI, transport, and persistence choices in `0001-interface-runtime-and-language.md`, `0002-browser-ui-framework.md`, `0003-browser-server-transport-and-api.md`, and `0006-run-and-interview-state-persistence.md`.
 
 ## Decision
+
+Run the backend as a local container on the developer's machine, with the host repository mounted and the developer's omp credentials passed in.
