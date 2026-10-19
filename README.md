@@ -69,13 +69,15 @@ The client sends:
 { "type": "startRun" }
 { "type": "startRun", "file": "0002-example.md" }
 { "type": "startLifecycle" }
+{ "type": "pauseLifecycle" }
+{ "type": "resumeLifecycle" }
 { "type": "reviseGoal", "request": "Tighten the goal" }
 { "type": "reviseGoal" }
 { "type": "answer", "id": 1, "value": "Gamma" }
 ```
 
 - `getGoal` reads the goal document from disk and answers with its complete contents.
-- `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`.
+- `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`. It is accepted while the lifecycle is paused and refused while the lifecycle is advancing.
 - `startRun` without `file` starts the sequence with the lowest-numbered pending record.
 - `startRun` with `file` starts that record first only when it is pending; the sequence then continues with the lowest-numbered remaining pending records.
 - Every accepted start resolves one record at a time until no pending record remains or a run ends without resolving its record. A still-`Proposed` or removed active record ends the sequence.
@@ -83,7 +85,9 @@ The client sends:
 - `answer` supplies one value for the pending elicitation; the question is cleared after the first answer.
 - `reviseGoal` starts a guided goal revision with one ACP peer. `request` is optional free-form guidance passed to the agent; without it, the agent establishes the direction through its interview questions. The agent writes the goal document itself. Activity and questions use the existing `activity` and `question` events, and `answer` replies to a revision question exactly as it does to a run question.
 - A revision is refused with an `error` event while a lifecycle run, a run or run sequence, or another revision is active. While a revision is active, `startRun`, `startLifecycle`, and another `reviseGoal` are each refused with an `error`, and no agent is spawned.
-- `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run, a run sequence, a goal revision, or another lifecycle run is active. While the lifecycle run is active, `startLifecycle`, `startRun`, `reviseGoal`, and `saveGoal` are also refused, because the lifecycle owns the tracker and the goal.
+- `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run, a run sequence, a goal revision, or another lifecycle run is active. While the lifecycle run is active, `startLifecycle`, `startRun`, and `reviseGoal` are also refused, because the lifecycle owns the tracker. `saveGoal` is refused only while the lifecycle is advancing.
+- `pauseLifecycle` suspends an active lifecycle run with `SIGSTOP` on the current ACP child, or holds the loop before its next agent start when the run is between stages. It reports `lifecycleState` with the interrupted `stage`, `pass`, and `work` and `paused: true`. No stage transition, tracker result use, or new ACP peer happens until a resume. A pending question stays visible, and `answer` is accepted and buffered for the suspended child.
+- `resumeLifecycle` reports the same `stage`, `pass`, and `work` with `paused: false` and continues the same ACP child with `SIGCONT` or releases the held loop. Pause and resume are each refused with an `error` when no lifecycle run is active, when pausing an already-paused run, and when resuming a run that is not paused. The paused flag lives in server memory and is discarded when the run ends.
 - The lifecycle checks the origin tracker on every pass. When an epic is open, it reports
   `implementation` with that epic as `work`, sends `/implement-next-epic` to one ACP peer,
   and, after the peer exits, increments `pass` and returns to epic generation. If the same
@@ -101,10 +105,11 @@ The client sends:
 The server answers with events:
 
 ```json
-{ "type": "lifecycleState", "stage": "epic", "pass": 1, "work": null }
-{ "type": "lifecycleState", "stage": "adr", "pass": 1, "work": { "kind": "adr", "id": "0002-example.md" } }
-{ "type": "lifecycleState", "stage": "implementation", "pass": 1, "work": { "kind": "epic", "id": "42" } }
-{ "type": "lifecycleState", "stage": "epic", "pass": 2, "work": null }
+{ "type": "lifecycleState", "stage": "epic", "pass": 1, "work": null, "paused": false }
+{ "type": "lifecycleState", "stage": "adr", "pass": 1, "work": { "kind": "adr", "id": "0002-example.md" }, "paused": false }
+{ "type": "lifecycleState", "stage": "implementation", "pass": 1, "work": { "kind": "epic", "id": "42" }, "paused": false }
+{ "type": "lifecycleState", "stage": "implementation", "pass": 1, "work": { "kind": "epic", "id": "42" }, "paused": true }
+{ "type": "lifecycleState", "stage": "epic", "pass": 2, "work": null, "paused": false }
 { "type": "records", "records": [ { "file": "0001-example.md", "title": "Example", "status": "Accepted", "pending": false } ], "next": null }
 { "type": "goal", "text": "# Goal\n\nThe complete goal text." }
 { "type": "goalRevisionStarted" }
@@ -120,7 +125,7 @@ The server answers with events:
 - A record's title is its first level-one heading.
 - A record is pending exactly when its status is `Proposed`; every other status is resolved.
 - Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).
-- `lifecycleState` reports `stage` (`goal`, `epic`, `adr`, `implementation`, or `finished`), the `pass` number, and `work` (`null`, an ADR filename, or an epic issue number). It is sent on every transition and, while the lifecycle is active, to each client that connects or reconnects before any other event. Stage `goal` is the state before any lifecycle run.
+- `lifecycleState` reports `stage` (`goal`, `epic`, `adr`, `implementation`, or `finished`), the `pass` number, `work` (`null`, an ADR filename, or an epic issue number), and `paused`. It is sent on every transition and pause change, and, while the lifecycle is active, to each client that connects or reconnects before any other event. A client that connects while paused receives `paused: true`, followed by the in-progress `runStarted`, recorded activity, and pending `question`. Stage `goal` is the state before any lifecycle run.
 - `goalRevisionStarted` marks the beginning of a revision. `goalRevisionStopped` marks its end: `completed` is `true` only when the peer ended without error and the goal file could be read, in which case `text` carries the complete file contents. A failed revision has `completed: false`, omits `text`, and is accompanied by an `error` event.
 - A revision emits no `runStarted` or `runStopped` events and does not read or write `adrs/`.
 - A client that connects or reconnects during a revision receives `goalRevisionStarted`, every `activity` line recorded so far, and the pending `question` if one exists, before any other event.
@@ -146,3 +151,7 @@ peer, ADR-order resolution, implementation of an already-open epic, return to ep
 on the next pass, the same-epic stop, the finished transition when a pass yields no epic and
 no pending ADR, restart after that transition, the three lifecycle refusals during
 implementation, and replay of the implementation state and activity to a reconnecting client.
+`server/lifecycle-pause.test.ts` covers pausing during an implementation and resuming the same
+peer, pausing with a pending question and carrying its answer across the pause, pausing between
+stages while a tracker query is outstanding, paused replay with recorded activity and question,
+goal saving while paused, and every refusal path with unchanged state.

@@ -48,6 +48,7 @@ interface LifecycleState {
   stage: LifecycleStage;
   pass: number;
   work: LifecycleWork | null;
+  paused: boolean;
 }
 
 const EPIC_PROMPT = "/epic-next";
@@ -69,6 +70,8 @@ type ClientMessage =
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
   | { type: "startLifecycle" }
+  | { type: "pauseLifecycle" }
+  | { type: "resumeLifecycle" }
   | { type: "reviseGoal"; request?: unknown }
   | { type: "answer"; id?: unknown; value?: unknown };
 
@@ -85,6 +88,10 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "startRun", file: "file" in value ? value.file : undefined };
     case "startLifecycle":
       return { type: "startLifecycle" };
+    case "pauseLifecycle":
+      return { type: "pauseLifecycle" };
+    case "resumeLifecycle":
+      return { type: "resumeLifecycle" };
     case "reviseGoal":
       return { type: "reviseGoal", request: "request" in value ? value.request : undefined };
     case "answer":
@@ -110,8 +117,9 @@ export function createApp(options: AppOptions) {
   let activeRun: ActiveRun | undefined;
   let sequencing = false;
   let goalRevision: GoalRevision | undefined;
-  let lifecycle: LifecycleState = { stage: "goal", pass: 1, work: null };
+  let lifecycle: LifecycleState = { stage: "goal", pass: 1, work: null, paused: false };
   let lifecycleRunning = false;
+  const resumeWaiters: (() => void)[] = [];
 
   function send(ws: { send(data: string): unknown }, event: unknown) {
     try {
@@ -152,7 +160,7 @@ export function createApp(options: AppOptions) {
   }
 
   async function saveGoal(ws: { send(data: string): unknown }, text: unknown) {
-    if (lifecycleRunning) {
+    if (lifecycleRunning && !lifecycle.paused) {
       send(ws, { type: "error", message: "A lifecycle run is active." });
       return;
     }
@@ -407,8 +415,48 @@ export function createApp(options: AppOptions) {
   }
 
   function setLifecycle(stage: LifecycleStage, work: LifecycleWork | null) {
-    lifecycle = { stage, pass: lifecycle.pass, work };
+    lifecycle = { stage, pass: lifecycle.pass, work, paused: false };
     broadcast({ type: "lifecycleState", ...lifecycle });
+  }
+
+  /** Holds the lifecycle loop at the current stage until an explicit resume. */
+  async function holdWhilePaused() {
+    while (lifecycleRunning && lifecycle.paused) {
+      await new Promise<void>((resolve) => resumeWaiters.push(resolve));
+    }
+  }
+
+  function pauseLifecycle(ws: { send(data: string): unknown }) {
+    if (!lifecycleRunning) {
+      send(ws, { type: "error", message: "No lifecycle run is active." });
+      return;
+    }
+
+    if (lifecycle.paused) {
+      send(ws, { type: "error", message: "The lifecycle run is already paused." });
+      return;
+    }
+
+    activeRun?.agent?.pause();
+    lifecycle = { ...lifecycle, paused: true };
+    broadcast({ type: "lifecycleState", ...lifecycle });
+  }
+
+  function resumeLifecycle(ws: { send(data: string): unknown }) {
+    if (!lifecycleRunning) {
+      send(ws, { type: "error", message: "No lifecycle run is active." });
+      return;
+    }
+
+    if (!lifecycle.paused) {
+      send(ws, { type: "error", message: "The lifecycle run is not paused." });
+      return;
+    }
+
+    lifecycle = { ...lifecycle, paused: false };
+    broadcast({ type: "lifecycleState", ...lifecycle });
+    activeRun?.agent?.resume();
+    for (const resolve of resumeWaiters.splice(0)) resolve();
   }
 
   async function runLifecycleStage(file: string, title: string, prompt: string) {
@@ -428,15 +476,21 @@ export function createApp(options: AppOptions) {
     let previousPending: string | undefined;
 
     while (lifecycleRunning) {
+      await holdWhilePaused();
+      if (!lifecycleRunning) return;
+
       const existing = await tracker(repoDir);
+      await holdWhilePaused();
       if (!lifecycleRunning) return;
       if (existing !== undefined) {
         const id = String(existing.number);
         setLifecycle("implementation", { kind: "epic", id });
         await runLifecycleStage("", existing.title, IMPLEMENT_PROMPT);
+        await holdWhilePaused();
         if (!lifecycleRunning) return;
 
         const remaining = await tracker(repoDir);
+        await holdWhilePaused();
         if (!lifecycleRunning) return;
         if (remaining !== undefined && String(remaining.number) === id) {
           broadcast({
@@ -446,23 +500,31 @@ export function createApp(options: AppOptions) {
           return;
         }
 
-        lifecycle = { stage: "epic", pass: lifecycle.pass + 1, work: null };
+        lifecycle = { stage: "epic", pass: lifecycle.pass + 1, work: null, paused: false };
+        broadcast({ type: "lifecycleState", ...lifecycle });
         continue;
       }
 
-      setLifecycle("epic", null);
+      if (lifecycle.stage !== "epic" || lifecycle.work !== null) {
+        setLifecycle("epic", null);
+      }
       await runLifecycleStage("", "Epic generation", EPIC_PROMPT);
+      await holdWhilePaused();
       if (!lifecycleRunning) return;
 
       const created = await tracker(repoDir);
+      await holdWhilePaused();
       if (!lifecycleRunning) return;
       if (created !== undefined) continue;
 
       const list = await readRecords(adrDir);
+      await holdWhilePaused();
       if (!lifecycleRunning) return;
       const pending = list.records.filter((record) => record.pending).map((record) => record.file);
 
       if (pending.length === 0) {
+        await holdWhilePaused();
+        if (!lifecycleRunning) return;
         setLifecycle("finished", null);
         return;
       }
@@ -478,12 +540,16 @@ export function createApp(options: AppOptions) {
       previousPending = signature;
 
       for (const file of pending) {
+        await holdWhilePaused();
         if (!lifecycleRunning) return;
         const record = await readRecord(file);
+        await holdWhilePaused();
+        if (!lifecycleRunning) return;
         if (record === undefined || !record.pending) continue;
 
         setLifecycle("adr", { kind: "adr", id: record.file });
         await runLifecycleStage(record.file, record.title, agentPrompt(adrDir, record.file));
+        await holdWhilePaused();
         if (!lifecycleRunning) return;
       }
     }
@@ -514,7 +580,11 @@ export function createApp(options: AppOptions) {
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      const wasPaused = lifecycle.paused;
       lifecycleRunning = false;
+      lifecycle = { ...lifecycle, paused: false };
+      for (const resolve of resumeWaiters.splice(0)) resolve();
+      if (wasPaused) broadcast({ type: "lifecycleState", ...lifecycle });
     }
   }
 
@@ -664,6 +734,10 @@ export function createApp(options: AppOptions) {
             await startRun(ws, command.file);
           } else if (command.type === "startLifecycle") {
             await startLifecycle(ws);
+          } else if (command.type === "pauseLifecycle") {
+            pauseLifecycle(ws);
+          } else if (command.type === "resumeLifecycle") {
+            resumeLifecycle(ws);
           } else if (command.type === "reviseGoal") {
             await startGoalRevision(ws, command.request);
           } else if (command.type === "answer") {

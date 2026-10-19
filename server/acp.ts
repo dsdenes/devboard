@@ -209,9 +209,39 @@ export class AcpConnection {
     return true;
   }
 
+  /**
+   * Suspends the child without ending its ACP session. The pipe buffers keep
+   * any answer written meanwhile, and the pending request survives.
+   */
+  pause(): boolean {
+    if (this.#closed) return false;
+    try {
+      this.#process.kill("SIGSTOP");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  resume(): boolean {
+    if (this.#closed) return false;
+    try {
+      this.#process.kill("SIGCONT");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    try {
+      // A stopped child does not process SIGTERM until it runs again.
+      this.#process.kill("SIGCONT");
+    } catch {
+      // The process already exited.
+    }
     try {
       this.#process.kill();
     } catch {

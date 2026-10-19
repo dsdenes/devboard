@@ -31,6 +31,7 @@
     stage: LifecycleStage;
     pass: number;
     work: LifecycleWork | null;
+    paused: boolean;
   }
 
   const STAGE_LABELS: Record<LifecycleStage, string> = {
@@ -55,7 +56,7 @@
   let draft = $state("");
   let revisionActive = $state(false);
   let revisionRequest = $state("");
-  let lifecycle = $state<LifecycleState>({ stage: "goal", pass: 1, work: null });
+  let lifecycle = $state<LifecycleState>({ stage: "goal", pass: 1, work: null, paused: false });
   let lifecycleSeen = $state(false);
 
   let pendingCount = $derived(records.filter((record) => record.pending).length);
@@ -63,11 +64,13 @@
   let running = $derived(runState === "active");
   let lifecycleActive = $derived(
     lifecycleSeen &&
-      (lifecycle.stage === "adr" ||
+      (lifecycle.paused ||
+        lifecycle.stage === "adr" ||
         lifecycle.stage === "implementation" ||
         (lifecycle.stage === "epic" && lifecycle.work === null)),
   );
   let controlsDisabled = $derived(running || lifecycleActive || revisionActive);
+  let goalEditingDisabled = $derived(lifecycleActive && !lifecycle.paused);
   let lifecycleStageLabel = $derived(STAGE_LABELS[lifecycle.stage]);
   let lifecycleWorkTitle = $derived(
     lifecycle.work === null
@@ -231,7 +234,9 @@
       !(value.stage in STAGE_LABELS) ||
       !("pass" in value) ||
       typeof value.pass !== "number" ||
-      !("work" in value)
+      !("work" in value) ||
+      !("paused" in value) ||
+      typeof value.paused !== "boolean"
     ) {
       return false;
     }
@@ -263,6 +268,24 @@
     }
     error = null;
     socket.send(JSON.stringify({ type: "startLifecycle" }));
+  }
+
+  function pauseLifecycle() {
+    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
+      error = "Not connected to the server.";
+      return;
+    }
+    error = null;
+    socket.send(JSON.stringify({ type: "pauseLifecycle" }));
+  }
+
+  function resumeLifecycle() {
+    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
+      error = "Not connected to the server.";
+      return;
+    }
+    error = null;
+    socket.send(JSON.stringify({ type: "resumeLifecycle" }));
   }
 
   function saveGoal() {
@@ -326,8 +349,9 @@
             message.work === null
               ? null
               : { kind: message.work.kind, id: String(message.work.id) },
+          paused: message.paused,
         };
-        if (message.stage !== "goal") lifecycleSeen = true;
+        if (message.stage !== "goal" || message.paused) lifecycleSeen = true;
       } else if (isRecordsEvent(message)) {
         records = message.records;
         next = message.next;
@@ -435,6 +459,32 @@
     {#if lifecycleWorkTitle !== null}
       <p class="lifecycle-work" data-testid="lifecycle-work">{lifecycleWorkTitle}</p>
     {/if}
+    {#if lifecycleActive}
+      <div class="lifecycle-controls">
+        {#if lifecycle.paused}
+          <p class="lifecycle-paused" data-testid="lifecycle-paused">
+            Paused at {lifecycleStageLabel}
+          </p>
+          <button
+            type="button"
+            class="start-button"
+            data-testid="resume-lifecycle"
+            onclick={resumeLifecycle}
+          >
+            Resume lifecycle
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="start-button"
+            data-testid="pause-lifecycle"
+            onclick={pauseLifecycle}
+          >
+            Pause lifecycle
+          </button>
+        {/if}
+      </div>
+    {/if}
   </section>
 
   {#if connection !== "open"}
@@ -453,14 +503,14 @@
       id="goal-text"
       class="goal-text"
       bind:value={goalText}
-      disabled={lifecycleActive}
+      disabled={goalEditingDisabled}
       data-testid="goal-text"
     ></textarea>
     <button
       type="button"
       class="start-button save-goal"
       data-testid="save-goal"
-      disabled={lifecycleActive}
+      disabled={goalEditingDisabled}
       onclick={saveGoal}
     >
       Save goal
