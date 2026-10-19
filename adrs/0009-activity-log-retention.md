@@ -1,6 +1,6 @@
 # Activity log retention
 
-- Status: Proposed
+- Status: Accepted
 
 ## Context
 
@@ -18,4 +18,4 @@ How much activity should the interface keep for a run?
 
 ## Decision
 
-Open. The developer settles this during the run's interview.
+The interface keeps the full activity history for the life of the run.
