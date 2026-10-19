@@ -346,10 +346,7 @@ export function createApp(options: AppOptions) {
       const pending = list.records.filter((record) => record.pending).map((record) => record.file);
 
       if (pending.length === 0) {
-        broadcast({
-          type: "error",
-          message: "Epic generation ended without an open epic or a pending ADR.",
-        });
+        setLifecycle("finished", null);
         return;
       }
 

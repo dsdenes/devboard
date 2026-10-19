@@ -172,11 +172,92 @@ describe("lifecycle runs", () => {
           pass: 1,
           work: null,
         });
-        expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
-          message: "Epic generation ended without an open epic or a pending ADR.",
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "finished",
+          pass: 1,
+          work: null,
         });
+        expect(client.events.filter((message) => message.type === "error")).toEqual([]);
         expect(spawnCount(logPath)).toBe(1);
         expect(prompts(logPath)).toEqual(["/epic-next"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "finishes when epic generation yields no epic and no pending ADR",
+    async () => {
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        {},
+        {
+          tracker: async () => {
+            lookups += 1;
+            return undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+        });
+        const finished = await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
+        expect(finished).toEqual({
+          type: "lifecycleState",
+          stage: "finished",
+          pass: 1,
+          work: null,
+        });
+
+        const lookupsAtFinish = lookups;
+        await Bun.sleep(500);
+        const index = client.events.indexOf(finished);
+        expect(index).toBeGreaterThanOrEqual(0);
+        expect(client.events.slice(index + 1)).toEqual([]);
+        expect(
+          client.events.filter(
+            (message) => message.type === "lifecycleState" && message.stage === "finished",
+          ),
+        ).toHaveLength(1);
+        expect(
+          client.events.filter((message) => message.type === "error"),
+        ).toEqual([]);
+        expect(lookups).toBe(lookupsAtFinish);
+        expect(spawnCount(logPath)).toBe(1);
+        expect(prompts(logPath)).toEqual(["/epic-next"]);
+
+        client.send({ type: "startLifecycle" });
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+        });
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "finished",
+          pass: 1,
+          work: null,
+        });
+        expect(
+          client.events.filter((message) => message.type === "error"),
+        ).toEqual([]);
+        expect(lookups).toBe(lookupsAtFinish * 2);
+        expect(spawnCount(logPath)).toBe(2);
+        expect(prompts(logPath)).toEqual(["/epic-next", "/epic-next"]);
       } finally {
         client.close();
         server.stop(true);
@@ -230,9 +311,7 @@ describe("lifecycle runs", () => {
         expect(await readFile(goalFile, "utf8")).toBe(originalGoal);
 
         await client.waitFor(
-          (message) =>
-            message.type === "error" &&
-            message.message === "Epic generation ended without an open epic or a pending ADR.",
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
         );
         expect(spawnCount(logPath)).toBe(1);
       } finally {
@@ -416,6 +495,12 @@ describe("lifecycle runs", () => {
         while (prompts(logPath).length < 2 && Date.now() < started) await Bun.sleep(25);
         expect(spawnCount(logPath)).toBe(2);
         expect(prompts(logPath)).toEqual(["/implement-next-epic", "/epic-next"]);
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "finished",
+          pass: 2,
+          work: null,
+        });
         expect(lifecycleStates(client)).toEqual([
           {
             type: "lifecycleState",
@@ -424,10 +509,8 @@ describe("lifecycle runs", () => {
             work: { kind: "epic", id: "7" },
           },
           { type: "lifecycleState", stage: "epic", pass: 2, work: null },
+          { type: "lifecycleState", stage: "finished", pass: 2, work: null },
         ]);
-        expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
-          message: "Epic generation ended without an open epic or a pending ADR.",
-        });
       } finally {
         client.close();
         server.stop(true);
@@ -679,7 +762,9 @@ describe("lifecycle runs", () => {
           late.close();
         }
 
-        await client.waitFor((message) => message.type === "error");
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
         expect(spawnCount(logPath)).toBe(1);
       } finally {
         client.close();
