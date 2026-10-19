@@ -1,6 +1,6 @@
 # ADR status source of truth and format
 
-- Status: Proposed
+- Status: Accepted
 
 ## Context
 
@@ -16,3 +16,5 @@ The choice must support:
 - the transport in `0003-browser-server-transport-and-api.md` and persistence in `0006-run-and-interview-state-persistence.md`.
 
 ## Decision
+
+The ADR files are the only source of record status: the interface parses each record's status line on demand and stores no separate status. The first pending record is the pending record with the lowest numbered file name.
