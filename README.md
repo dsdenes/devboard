@@ -1,12 +1,14 @@
 # Devboard ADR interface
 
-Local browser interface for the records in `adrs/`. This slice lists every record, distinguishes records awaiting a decision (`Status: Proposed`) from resolved records, and marks the pending record an agent run would take up first.
+Local browser interface for the records in `adrs/`. It lists every record, distinguishes records awaiting a decision (`Status: Proposed`) from resolved records, marks the pending record an agent run would take up first, and starts an agent on that record or on one the developer selects.
+
+While a run is active the interface names the record being resolved, appends the agent's ACP session updates to a live activity log, and presents each interview question with its choices plus a free-form answer field. The run stops when the agent's turn ends, without starting another record.
 
 ## Stack
 
-- Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`.
+- Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`. Each run spawns one `omp acp` subprocess over stdio.
 - Client: Svelte built with Vite.
-- Records: read from `adrs/` on every `listRecords` command, so files added or removed while the server runs appear without a restart.
+- Records: read from `adrs/` on every `listRecords` command and after every run, so files added, removed, or resolved while the server runs appear without a restart.
 
 ## Build and run
 
@@ -16,7 +18,16 @@ bun run build
 ADRS_DIR="$PWD/adrs" bun run start
 ```
 
-Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default; set `HOST`, `PORT`, `ADRS_DIR`, or `STATIC_DIR` to override.
+Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
+
+|Variable|Default|Purpose|
+|---|---|---|
+|`HOST`|`127.0.0.1`|Listen address.|
+|`PORT`|`8080`|Listen port.|
+|`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
+|`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory.|
+|`STATIC_DIR`|`dist`|Built client directory.|
+|`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
 
 ## Container
 
@@ -34,26 +45,36 @@ The client sends:
 
 ```json
 { "type": "listRecords" }
+{ "type": "startRun" }
+{ "type": "startRun", "file": "0002-example.md" }
+{ "type": "answer", "id": 1, "value": "Gamma" }
 ```
 
-The server answers:
+- `startRun` without `file` starts the lowest-numbered pending record.
+- `startRun` with `file` starts that record only when it is pending.
+- A start is refused with an `error` event while another run is active, when no record is pending, or when the named record is not pending.
+- `answer` supplies one value for the pending elicitation; the question is cleared after the first answer.
+
+The server answers with events:
 
 ```json
-{
-  "type": "records",
-  "records": [
-    { "file": "0001-example.md", "title": "Example", "status": "Accepted", "pending": false }
-  ],
-  "next": null
-}
+{ "type": "records", "records": [ { "file": "0001-example.md", "title": "Example", "status": "Accepted", "pending": false } ], "next": null }
+{ "type": "runStarted", "file": "0001-example.md", "title": "Example" }
+{ "type": "activity", "text": "Inspecting 0001-example.md" }
+{ "type": "question", "id": 1, "message": "Choose an answer", "choices": ["Alpha", "Beta"] }
+{ "type": "runStopped", "file": "0001-example.md", "title": "Example", "resolved": true, "status": "Accepted" }
+{ "type": "error", "message": "No pending ADRs to start." }
 ```
 
 - A record's title is its first level-one heading.
 - A record is pending exactly when its status is `Proposed`; every other status is resolved.
 - Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).
+- The server reads ADR files and never writes them; the agent changes the status line. `runStopped` reports whether the active record is now resolved. Only one run exists at a time, in server memory; stopping the server terminates its child process.
 
 ## Tests
 
 ```bash
 bun test
 ```
+
+`server/run.test.ts` drives the interface against the stub ACP agent, covering default and selected starts, refusal while active, activity and question/answer relay, stop on status change, and records refresh.
