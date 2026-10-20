@@ -508,32 +508,33 @@ export function createApp(options: AppOptions) {
     await runAgent(run, prompt);
   }
 
-  async function runLifecycle() {
+  /** Returns true only when the pass produced no epic and no pending ADR. */
+  async function runLifecycle(): Promise<boolean> {
     let previousPending: string | undefined;
 
     while (lifecycleRunning) {
       await holdWhilePaused();
-      if (!lifecycleRunning) return;
+      if (!lifecycleRunning) return false;
 
       const existing = await tracker(repoDir);
       await holdWhilePaused();
-      if (!lifecycleRunning) return;
+      if (!lifecycleRunning) return false;
       if (existing !== undefined) {
         const id = String(existing.number);
         setLifecycle("implementation", { kind: "epic", id });
         await runLifecycleStage("", existing.title, IMPLEMENT_PROMPT);
         await holdWhilePaused();
-        if (!lifecycleRunning) return;
+        if (!lifecycleRunning) return false;
 
         const remaining = await tracker(repoDir);
         await holdWhilePaused();
-        if (!lifecycleRunning) return;
+        if (!lifecycleRunning) return false;
         if (remaining !== undefined && String(remaining.number) === id) {
           broadcast({
             type: "error",
             message: `Implementation ended but epic #${id} is still open.`,
           });
-          return;
+          return false;
         }
 
         lifecycle = { stage: "epic", pass: lifecycle.pass + 1, work: null, paused: false };
@@ -546,23 +547,23 @@ export function createApp(options: AppOptions) {
       }
       await runLifecycleStage("", "Epic generation", EPIC_PROMPT);
       await holdWhilePaused();
-      if (!lifecycleRunning) return;
+      if (!lifecycleRunning) return false;
 
       const created = await tracker(repoDir);
       await holdWhilePaused();
-      if (!lifecycleRunning) return;
+      if (!lifecycleRunning) return false;
       if (created !== undefined) continue;
 
       const list = await readRecords(adrDir);
       await holdWhilePaused();
-      if (!lifecycleRunning) return;
+      if (!lifecycleRunning) return false;
       const pending = list.records.filter((record) => record.pending).map((record) => record.file);
 
       if (pending.length === 0) {
         await holdWhilePaused();
-        if (!lifecycleRunning) return;
+        if (!lifecycleRunning) return false;
         setLifecycle("finished", null);
-        return;
+        return true;
       }
 
       const signature = pending.join("\n");
@@ -571,24 +572,26 @@ export function createApp(options: AppOptions) {
           type: "error",
           message: "Epic generation left the same ADRs pending without opening an epic.",
         });
-        return;
+        return false;
       }
       previousPending = signature;
 
       for (const file of pending) {
         await holdWhilePaused();
-        if (!lifecycleRunning) return;
+        if (!lifecycleRunning) return false;
         const record = await readRecord(file);
         await holdWhilePaused();
-        if (!lifecycleRunning) return;
+        if (!lifecycleRunning) return false;
         if (record === undefined || !record.pending) continue;
 
         setLifecycle("adr", { kind: "adr", id: record.file });
         await runLifecycleStage(record.file, record.title, agentPrompt(adrDir, record.file));
         await holdWhilePaused();
-        if (!lifecycleRunning) return;
+        if (!lifecycleRunning) return false;
       }
     }
+
+    return false;
   }
 
   async function startLifecycle(ws: { send(data: string): unknown }) {
@@ -622,8 +625,9 @@ export function createApp(options: AppOptions) {
     }
 
     lifecycleRunning = true;
+    let finished = false;
     try {
-      await runLifecycle();
+      finished = await runLifecycle();
     } catch (error) {
       broadcast({
         type: "error",
@@ -634,7 +638,14 @@ export function createApp(options: AppOptions) {
       lifecycleRunning = false;
       lifecycle = { ...lifecycle, paused: false };
       for (const resolve of resumeWaiters.splice(0)) resolve();
-      if (wasPaused) publishLifecycle();
+      if (finished) {
+        if (wasPaused) publishLifecycle();
+      } else {
+        // An aborted run leaves no work behind: report the idle goal stage,
+        // retain the pass already reached, and make the run available again.
+        lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
+        publishLifecycle();
+      }
     }
   }
 

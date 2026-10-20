@@ -681,6 +681,9 @@ describe("lifecycle runs", () => {
           message: "Implementation ended but epic #11 is still open.",
         });
 
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "goal",
+        );
         await Bun.sleep(300);
         expect(spawnCount(logPath)).toBe(1);
         expect(prompts(logPath)).toEqual(["/implement-next-epic"]);
@@ -690,6 +693,195 @@ describe("lifecycle runs", () => {
             stage: "implementation",
             pass: 1,
             work: { kind: "epic", id: "11" },
+            paused: false,
+          },
+          {
+            type: "lifecycleState",
+            stage: "goal",
+            pass: 1,
+            work: null,
+            paused: false,
+          },
+        ]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "returns an aborted run to an editable idle goal state for reconnecting clients",
+    async () => {
+      const epic: OpenEpic = {
+        number: 21,
+        title: "Aborted epic",
+        url: "https://example.test/issues/21",
+      };
+      let lookups = 0;
+      const { server, goalFile, logPath, url } = await startServer(
+        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        {
+          tracker: async () => {
+            lookups += 1;
+            return lookups <= 2 ? epic : undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+      const idle = {
+        type: "lifecycleState",
+        stage: "goal",
+        pass: 1,
+        work: null,
+        paused: false,
+      };
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "implementation",
+        );
+        await client.waitFor(
+          (message) =>
+            message.type === "error" &&
+            message.message === "Implementation ended but epic #21 is still open.",
+        );
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "goal",
+        );
+
+        const late = await connect(url);
+        try {
+          expect(await late.waitFor(() => true)).toEqual(idle);
+          expect(late.events[0]).toEqual(idle);
+          expect(lifecycleStates(late)).toEqual([idle]);
+        } finally {
+          late.close();
+        }
+
+        const revised = "# Goal\n\nRevised after the abort.\n";
+        client.send({ type: "saveGoal", text: revised });
+        expect(await client.waitFor((message) => message.type === "goal")).toEqual({
+          type: "goal",
+          text: revised,
+        });
+        expect(await readFile(goalFile, "utf8")).toBe(revised);
+
+        client.send({ type: "startLifecycle" });
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
+        expect(
+          client.events.filter(
+            (message) =>
+              message.type === "error" &&
+              message.message === "A lifecycle run is already active.",
+          ),
+        ).toEqual([]);
+        expect(prompts(logPath)).toEqual(["/implement-next-epic", "/epic-next"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "returns to the idle goal state when epic generation leaves the same ADRs pending",
+    async () => {
+      const { server, logPath, url } = await startServer(
+        { "0001-first.md": PENDING_ONE },
+        { agentArguments: "--no-resolve --questions=0" },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "epic",
+        );
+        await client.waitFor(
+          (message) =>
+            message.type === "error" &&
+            message.message ===
+              "Epic generation left the same ADRs pending without opening an epic.",
+        );
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.stage === "goal",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "goal",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+
+        await Bun.sleep(300);
+        expect(spawnCount(logPath)).toBe(3);
+        expect(prompts(logPath)).toEqual([
+          "/epic-next",
+          expect.stringContaining("/adr-resolve"),
+          "/epic-next",
+        ]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "returns to the idle goal state when a tracker query throws",
+    async () => {
+      const { server, logPath, url } = await startServer(
+        {},
+        {
+          tracker: async () => {
+            throw new Error("tracker unavailable");
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        expect(await client.waitFor((message) => message.type === "error")).toEqual({
+          type: "error",
+          message: "tracker unavailable",
+        });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.stage === "goal",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "goal",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+
+        await Bun.sleep(300);
+        expect(spawnCount(logPath)).toBe(0);
+        expect(lifecycleStates(client)).toEqual([
+          {
+            type: "lifecycleState",
+            stage: "goal",
+            pass: 1,
+            work: null,
             paused: false,
           },
         ]);

@@ -866,6 +866,9 @@ describe("lifecycle pause and resume", () => {
             message.type === "error" &&
             message.message === "Implementation ended but epic #12 is still open.",
         );
+        await failedClient.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "goal",
+        );
         const before = lifecycleStates(failedClient).length;
 
         failedClient.send({ type: "pauseLifecycle" });
