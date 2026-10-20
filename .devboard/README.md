@@ -13,6 +13,21 @@ is unavailable while a run is active or the lifecycle is advancing, but remains 
 while the lifecycle is paused; starting another run or revision is blocked while one is in
 progress.
 
+When the goal document is empty, the goal section also offers a `Create goal` control. Selecting
+it asks the server to start the installed `/goal-outcome` skill in one ACP peer, in the
+background; its activity and interview questions stream into the same live log and question UI,
+and the goal section shows `Creating the goal` while it runs. The developer answers the skill's
+questions; the skill interviews them and writes the goal document. The flow never starts on page
+load or reconnect, and the control is absent once the goal document contains non-whitespace text.
+When the peer ends, the server reads `<REPO_DIR>/GOAL.md` and the textarea shows those bytes, so
+`Goal ready` and `Start lifecycle` become available. The server owns the creation run, so closing
+the browser does not stop it, and a client that connects during it receives the start, every
+recorded activity line, and the pending question. While a creation runs, starting a run or the
+lifecycle, resuming a paused lifecycle, and revising the goal are each refused; while a run, the
+advancing lifecycle, or a revision is active, creation is refused in turn. A creation is
+accepted while the lifecycle is paused, and when it ends the server replays the suspended
+lifecycle conversation.
+
 While a run is active the interface names the record being resolved, appends the agent's ACP session updates to a live activity log, and presents each interview question with its choices plus a free-form answer field. One start resolves every pending record in ascending file-name order: after each run the server re-reads `adrs/`, and the sequence ends when no pending record remains or when the finished record is still `Proposed` (or has been removed). The chain runs in the server, so it continues if the browser disconnects.
 
 The page also shows a lifecycle stage and pass number. The lifecycle starts only from a settled
@@ -113,6 +128,7 @@ The client sends:
 { "type": "resumeLifecycle" }
 { "type": "reviseGoal", "request": "Tighten the goal" }
 { "type": "reviseGoal" }
+{ "type": "createGoal" }
 { "type": "answer", "id": 1, "value": "Gamma" }
 ```
 
@@ -125,10 +141,27 @@ The client sends:
 - `answer` supplies one value for the pending elicitation; the question is cleared after the first answer.
 - `reviseGoal` starts a guided goal revision with one ACP peer. `request` is optional free-form guidance passed to the agent; without it, the agent establishes the direction through its interview questions. The agent writes the goal document itself. Activity and questions use the existing `activity` and `question` events, and `answer` replies to a revision question exactly as it does to a run question. It is accepted while the lifecycle is paused, where the suspended peer keeps its stage and conversation.
 - A revision is refused with an `error` event while the lifecycle is advancing, a run or run sequence is active, or another revision is active. While a revision is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and another `reviseGoal` are each refused with an `error`, and no agent is spawned.
+- `createGoal` starts the guided goal creation with one ACP peer whose prompt is exactly
+  `/goal-outcome`, the installed skill command that reads the harness prompt and interviews the
+  developer. The server accepts it only while `<REPO_DIR>/GOAL.md` is absent or contains only
+  whitespace; it reads that file for the check and for the completion, while `getGoal` and
+  `saveGoal` keep using `GOAL_FILE`. It is accepted while a lifecycle run is paused, where the
+  suspended peer keeps its stage and conversation. Activity and questions use the existing
+  `activity` and `question` events, and `answer` replies to a creation question exactly as it
+  does to a revision question; a second answer for the same question id is refused with an
+  `error`.
+- A creation is refused with an `error` event, without spawning a peer, while the lifecycle is
+  advancing, an ADR run or run sequence is active, a goal revision is active, another creation
+  is active, `<REPO_DIR>/GOAL.md` contains non-whitespace text, or that file exists but cannot
+  be read. While a creation is active, `startRun`, `startLifecycle`, `resumeLifecycle`,
+  `reviseGoal`, and a second `createGoal` are each refused with an `error`, and no agent is
+  spawned. The creation runs in the server, so closing the browser does not stop it, and a
+  client that connects during it receives `goalCreationStarted`, the recorded activity, and the
+  pending question before its own command replies.
 - `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run,
-  a run sequence, a goal revision, or another lifecycle run is active, and when the goal
-  document is absent, unreadable, or contains only whitespace; a refused start spawns no
-  agent and reports no `lifecycleState`. An accepted start reports `lifecycleState` at
+  a run sequence, a goal revision, a goal creation, or another lifecycle run is active, and
+  when the goal document is absent, unreadable, or contains only whitespace; a refused start
+  spawns no agent and reports no `lifecycleState`. An accepted start reports `lifecycleState` at
   `epic` with `work: null`, the pass already held, and `paused: false` before its first
   tracker query and before any agent starts. While the lifecycle run is active, `startLifecycle`
   and `startRun` are also refused, because the lifecycle owns the tracker. `reviseGoal` and
@@ -173,6 +206,9 @@ The server answers with events:
 { "type": "goalRevisionStarted" }
 { "type": "goalRevisionStopped", "completed": true, "text": "# Revised goal\n\nThe agent rewrote this." }
 { "type": "goalRevisionStopped", "completed": false }
+{ "type": "goalCreationStarted" }
+{ "type": "goalCreationStopped", "completed": true, "text": "# Created goal\n\nThe agent wrote this." }
+{ "type": "goalCreationStopped", "completed": false }
 { "type": "runStarted", "file": "0001-example.md", "title": "Example" }
 { "type": "activity", "text": "Inspecting 0001-example.md" }
 { "type": "question", "id": 1, "message": "Choose an answer", "choices": ["Alpha", "Beta"] }
@@ -198,8 +234,18 @@ The server answers with events:
   `lifecycleState` on connection. Retained state lives in server memory, so a restart forgets it.
 - `goalRevisionStarted` marks the beginning of a revision. `goalRevisionStopped` marks its end: `completed` is `true` only when the peer ended without error and the goal file could be read, in which case `text` carries the complete file contents. A failed revision has `completed: false`, omits `text`, and is accompanied by an `error` event.
 - A revision emits no `runStarted` or `runStopped` events of its own and does not read or write `adrs/`. When it ends while a lifecycle run is paused, the server follows `goalRevisionStopped` with the suspended lifecycle `runStarted`, every recorded `activity` line, and the pending `question` if one exists, so every connected client restores the interrupted conversation.
+- `goalCreationStarted` marks the beginning of a guided goal creation. `goalCreationStopped`
+  marks its end: `completed` is `true` only when the peer ended without error and
+  `<REPO_DIR>/GOAL.md` could be read, in which case `text` carries the complete file contents.
+  A failed creation has `completed: false`, omits `text`, and is accompanied by an `error`
+  event. A creation emits no `runStarted` or `runStopped` events and does not read or write
+  `adrs/`. When it ends while a lifecycle run is paused, the server likewise replays the
+  suspended lifecycle `runStarted`, recorded activity, and pending question. A client that
+  connects or reconnects during a creation receives `goalCreationStarted`, every recorded
+  `activity` line, and the pending `question` if one exists, before any other event beyond the
+  lifecycle state and suspended conversation.
 - A client that connects or reconnects during a revision receives `goalRevisionStarted`, every `activity` line recorded so far, and the pending `question` if one exists, before any other event beyond the lifecycle state and suspended conversation.
-- The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written verbatim by `saveGoal` and by the revision agent, and the server reads it to answer `getGoal` and to report `goalRevisionStopped`. `runStopped` reports whether the active record is now resolved; a `records` event follows each `runStopped` before the next `runStarted`. Only one run, sequence, lifecycle run, or goal revision exists at a time, in server memory; stopping the server terminates its child process and the loop.
+- The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written verbatim by `saveGoal` and by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file. `runStopped` reports whether the active record is now resolved; a `records` event follows each `runStopped` before the next `runStarted`. Only one run, sequence, lifecycle run, goal revision, or goal creation exists at a time, in server memory; stopping the server terminates its child process and the loop.
 
 ## Tests
 
@@ -220,6 +266,12 @@ agent startup. `server/goal-revision.test.ts` covers guided goal revision: reque
 no-request starts, activity and question relay, the rewritten goal reported verbatim, refusal
 during lifecycle and record runs (including between records), refusals during a revision,
 reconnect replay, the unreadable-goal failure, and the absence of run events or ADR writes.
+`server/goal-creation.test.ts` covers guided goal creation: the `/goal-outcome` prompt, no
+spawn on connect, activity and question relay, the created goal reported verbatim from
+`<REPO_DIR>/GOAL.md`, the unreadable goal before and after the peer, every refusal, the
+single-agent refusals while creating, reconnect replay, acceptance and suspended-conversation
+replay while the lifecycle is paused, the absence of run events or ADR writes, and the custom
+`GOAL_FILE` split.
 `server/lifecycle.test.ts` covers the `lifecycleState` sequence, the running `epic` state
 reported before the first tracker lookup and to every client, the single `/epic-next`
 peer, ADR-order resolution, implementation of an already-open epic, return to epic generation

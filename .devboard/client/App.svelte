@@ -48,6 +48,8 @@
   let error = $state<string | null>(null);
   let goalText = $state("");
   let goalReady = $state(false);
+  let goalSeen = $state(false);
+  let creationActive = $state(false);
 
   let runFile = $state<string | null>(null);
   let runTitle = $state<string | null>(null);
@@ -70,10 +72,11 @@
         lifecycle.stage === "implementation" ||
         (lifecycle.stage === "epic" && lifecycle.work === null)),
   );
-  let controlsDisabled = $derived(running || lifecycleActive || revisionActive);
+  let controlsDisabled = $derived(running || lifecycleActive || revisionActive || creationActive);
   let revisionDisabled = $derived(
-    revisionActive || (lifecycleActive ? !lifecycle.paused : running),
+    creationActive || revisionActive || (lifecycleActive ? !lifecycle.paused : running),
   );
+  let createDisabled = $derived(revisionDisabled || creationActive);
   let goalEditingDisabled = $derived(lifecycleActive && !lifecycle.paused);
   let lifecycleStageLabel = $derived(STAGE_LABELS[lifecycle.stage]);
   let lifecycleWorkTitle = $derived(
@@ -159,6 +162,31 @@
       value !== null &&
       "type" in value &&
       value.type === "goalRevisionStopped" &&
+      "completed" in value &&
+      typeof value.completed === "boolean" &&
+      (!("text" in value) || typeof value.text === "string")
+    );
+  }
+
+  function isGoalCreationStartedEvent(
+    value: unknown,
+  ): value is { type: "goalCreationStarted" } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "goalCreationStarted"
+    );
+  }
+
+  function isGoalCreationStoppedEvent(
+    value: unknown,
+  ): value is { type: "goalCreationStopped"; completed: boolean; text?: string } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "goalCreationStopped" &&
       "completed" in value &&
       typeof value.completed === "boolean" &&
       (!("text" in value) || typeof value.text === "string")
@@ -301,6 +329,15 @@
     socket.send(JSON.stringify({ type: "saveGoal", text: goalText }));
   }
 
+  function createGoal() {
+    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
+      error = "Not connected to the server.";
+      return;
+    }
+    error = null;
+    socket.send(JSON.stringify({ type: "createGoal" }));
+  }
+
   function reviseGoal() {
     if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
       error = "Not connected to the server.";
@@ -360,11 +397,26 @@
         records = message.records;
         next = message.next;
       } else if (isGoalEvent(message)) {
-        if (!revisionActive) {
+        goalSeen = true;
+        if (!revisionActive && !creationActive) {
           goalText = message.text;
           goalReady = message.text.trim().length > 0;
         }
         error = null;
+      } else if (isGoalCreationStartedEvent(message)) {
+        creationActive = true;
+        activity = [];
+        question = null;
+        draft = "";
+        error = null;
+      } else if (isGoalCreationStoppedEvent(message)) {
+        creationActive = false;
+        question = null;
+        draft = "";
+        if (message.completed && typeof message.text === "string") {
+          goalText = message.text;
+          goalReady = message.text.trim().length > 0;
+        }
       } else if (isGoalRevisionStartedEvent(message)) {
         revisionActive = true;
         activity = [];
@@ -512,6 +564,17 @@
       <p class="goal-state" data-testid="goal-state" aria-live="polite">
         {goalReady ? "Goal ready" : "Goal not set"}
       </p>
+      {#if goalSeen && !goalReady}
+        <button
+          type="button"
+          class="start-button create-goal"
+          data-testid="create-goal"
+          disabled={createDisabled}
+          onclick={createGoal}
+        >
+          Create goal
+        </button>
+      {/if}
     </div>
     <textarea
       id="goal-text"
@@ -554,6 +617,12 @@
       </div>
     </div>
   </section>
+
+  {#if creationActive}
+    <section class="run active-run" data-testid="goal-creation-active">
+      <p class="run-heading">Creating <strong>the goal</strong></p>
+    </section>
+  {/if}
 
   {#if revisionActive}
     <section class="run active-run" data-testid="goal-revision-active">

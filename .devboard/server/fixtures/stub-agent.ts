@@ -18,9 +18,11 @@ const logPath = argument("log");
 const delayMs = Number(argument("delay-ms") ?? 0);
 const forcedQuestions = argument("questions");
 const reviseGoal = process.argv.includes("--revise-goal");
+const createGoal = process.argv.includes("--create-goal");
 const goalFile = argument("goal");
 const resolveRecord = !process.argv.includes("--no-resolve");
 const removeRecord = process.argv.includes("--remove-record");
+const CREATED_GOAL = "# Created goal\n\nThe agent wrote this.";
 const SETTLE_DELAY_MS = 400;
 
 function log(line: string) {
@@ -73,10 +75,23 @@ async function promptTurn(params: Record<string, unknown>) {
     .find((candidate): candidate is string => typeof candidate === "string");
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
   const firstLine = text?.split("\n")[0] ?? "";
+  const creating = createGoal && firstLine === "/goal-outcome";
   log(`prompt ${firstLine}`);
   if (reviseGoal) log(`request ${text ?? ""}`);
 
-  if (reviseGoal) {
+  if (creating) {
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Creating the goal" },
+        },
+      },
+    });
+  } else if (reviseGoal) {
     write({
       jsonrpc: "2.0",
       method: "session/update",
@@ -118,7 +133,7 @@ async function promptTurn(params: Record<string, unknown>) {
     });
   }
 
-  const questionCount = reviseGoal
+  const questionCount = creating || reviseGoal
     ? 1
     : forcedQuestions !== undefined
       ? Number(forcedQuestions)
@@ -163,6 +178,25 @@ async function promptTurn(params: Record<string, unknown>) {
         },
       },
     });
+  }
+
+  if (creating) {
+    if (goalFile !== undefined) {
+      writeFileSync(goalFile, CREATED_GOAL);
+      log(`created ${goalFile}`);
+      write({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "stub-session",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Created the goal" },
+          },
+        },
+      });
+    }
+    return;
   }
 
   if (reviseGoal) {

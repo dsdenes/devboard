@@ -37,6 +37,12 @@ interface GoalRevision {
   question: RunQuestion | null;
 }
 
+interface GoalCreation {
+  agent: AcpConnection | undefined;
+  activity: string[];
+  question: RunQuestion | null;
+}
+
 type LifecycleStage = "goal" | "epic" | "adr" | "implementation" | "finished";
 
 interface LifecycleWork {
@@ -53,6 +59,7 @@ interface LifecycleState {
 
 const EPIC_PROMPT = "/epic-next";
 const IMPLEMENT_PROMPT = "/implement-next-epic";
+const GOAL_CREATION_PROMPT = "/goal-outcome";
 
 function goalRevisionPrompt(goalFile: string, request: string | undefined): string {
   const guidance = request?.trim();
@@ -73,6 +80,7 @@ type ClientMessage =
   | { type: "pauseLifecycle" }
   | { type: "resumeLifecycle" }
   | { type: "reviseGoal"; request?: unknown }
+  | { type: "createGoal" }
   | { type: "answer"; id?: unknown; value?: unknown };
 
 function parseClientMessage(value: unknown): ClientMessage | undefined {
@@ -94,6 +102,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "resumeLifecycle" };
     case "reviseGoal":
       return { type: "reviseGoal", request: "request" in value ? value.request : undefined };
+    case "createGoal":
+      return { type: "createGoal" };
     case "answer":
       return {
         type: "answer",
@@ -110,6 +120,9 @@ export function createApp(options: AppOptions) {
   const adrDir = resolve(options.adrDir);
   const repoDir = options.repoDir ?? dirname(adrDir);
   const goalFile = options.goalFile ?? defaultGoalPath(repoDir);
+  // The creation skill always writes the repository's goal document, while
+  // getGoal and saveGoal keep using the configured goal file.
+  const creationGoalFile = defaultGoalPath(repoDir);
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
   const tracker = options.tracker ?? findOpenEpic;
 
@@ -117,6 +130,8 @@ export function createApp(options: AppOptions) {
   let activeRun: ActiveRun | undefined;
   let sequencing = false;
   let goalRevision: GoalRevision | undefined;
+  let goalCreation: GoalCreation | undefined;
+  let goalCreationPending = false;
   let lifecycle: LifecycleState = { stage: "goal", pass: 1, work: null, paused: false };
   let lastLifecycle: LifecycleState | undefined;
   let lifecycleRunning = false;
@@ -227,7 +242,128 @@ export function createApp(options: AppOptions) {
     }
   }
 
+  async function stopGoalCreation(creation: GoalCreation, succeeded: boolean) {
+    if (goalCreation !== creation) return;
+    goalCreation = undefined;
+    creation.question = null;
+    creation.agent?.close();
+
+    if (!succeeded) {
+      broadcast({ type: "goalCreationStopped", completed: false });
+      broadcastRunConversation();
+      return;
+    }
+
+    try {
+      const text = await readFile(creationGoalFile, "utf8");
+      broadcast({ type: "goalCreationStopped", completed: true, text });
+      broadcastRunConversation();
+    } catch (error) {
+      broadcast({
+        type: "error",
+        message: `Could not read the created goal: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      broadcast({ type: "goalCreationStopped", completed: false });
+      broadcastRunConversation();
+    }
+  }
+
+  async function startGoalCreation(ws: { send(data: string): unknown }) {
+    if (goalCreation !== undefined || goalCreationPending) {
+      send(ws, { type: "error", message: "A goal creation is already active." });
+      return;
+    }
+
+    if (goalRevision !== undefined) {
+      send(ws, { type: "error", message: "A goal revision is active." });
+      return;
+    }
+
+    if (lifecycleRunning && !lifecycle.paused) {
+      send(ws, { type: "error", message: "A lifecycle run is active." });
+      return;
+    }
+
+    // A paused lifecycle keeps its suspended peer in activeRun; only a run that
+    // the creation would contend with refuses the start.
+    if (!(lifecycleRunning && lifecycle.paused) && (activeRun !== undefined || sequencing)) {
+      send(ws, { type: "error", message: "A run is already active." });
+      return;
+    }
+
+    goalCreationPending = true;
+    let existing: string | undefined;
+    try {
+      existing = await readFile(creationGoalFile, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        goalCreationPending = false;
+        send(ws, {
+          type: "error",
+          message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        return;
+      }
+    }
+    goalCreationPending = false;
+
+    if (existing !== undefined && existing.trim().length > 0) {
+      send(ws, { type: "error", message: "The goal is already set." });
+      return;
+    }
+
+    const creation: GoalCreation = { agent: undefined, activity: [], question: null };
+    goalCreation = creation;
+    broadcast({ type: "goalCreationStarted" });
+
+    try {
+      const agent = new AcpConnection({
+        command: agentCommand,
+        cwd: repoDir,
+        onActivity(text) {
+          if (goalCreation !== creation) return;
+          creation.activity.push(text);
+          broadcast({ type: "activity", text });
+        },
+        onQuestion(question: AcpQuestion) {
+          if (goalCreation !== creation) return;
+          creation.question = {
+            id: question.id,
+            message: question.message,
+            choices: question.choices,
+          };
+          broadcast({
+            type: "question",
+            id: question.id,
+            message: question.message,
+            choices: question.choices,
+          });
+        },
+        onStderr(text) {
+          process.stderr.write(text);
+        },
+      });
+      creation.agent = agent;
+
+      await agent.run(GOAL_CREATION_PROMPT);
+      if (goalCreation !== creation) return;
+      await stopGoalCreation(creation, true);
+    } catch (error) {
+      if (goalCreation !== creation) return;
+      broadcast({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      await stopGoalCreation(creation, false);
+    }
+  }
+
   async function startGoalRevision(ws: { send(data: string): unknown }, request: unknown) {
+    if (goalCreation !== undefined) {
+      send(ws, { type: "error", message: "A goal creation is active." });
+      return;
+    }
+
     if (lifecycleRunning && !lifecycle.paused) {
       send(ws, { type: "error", message: "A lifecycle run is active." });
       return;
@@ -374,6 +510,11 @@ export function createApp(options: AppOptions) {
   }
 
   async function startRun(ws: { send(data: string): unknown }, file: unknown) {
+    if (goalCreation !== undefined) {
+      send(ws, { type: "error", message: "A goal creation is active." });
+      return;
+    }
+
     if (lifecycleRunning) {
       send(ws, { type: "error", message: "A lifecycle run is active." });
       return;
@@ -474,6 +615,11 @@ export function createApp(options: AppOptions) {
   }
 
   function resumeLifecycle(ws: { send(data: string): unknown }) {
+    if (goalCreation !== undefined) {
+      send(ws, { type: "error", message: "A goal creation is active." });
+      return;
+    }
+
     if (!lifecycleRunning) {
       send(ws, { type: "error", message: "No lifecycle run is active." });
       return;
@@ -595,6 +741,11 @@ export function createApp(options: AppOptions) {
   }
 
   async function startLifecycle(ws: { send(data: string): unknown }) {
+    if (goalCreation !== undefined) {
+      send(ws, { type: "error", message: "A goal creation is active." });
+      return;
+    }
+
     if (lifecycleRunning) {
       send(ws, { type: "error", message: "A lifecycle run is already active." });
       return;
@@ -658,7 +809,7 @@ export function createApp(options: AppOptions) {
     id: unknown,
     value: unknown,
   ) {
-    const active = goalRevision ?? activeRun;
+    const active = goalCreation ?? goalRevision ?? activeRun;
     if (active === undefined) {
       send(ws, { type: "error", message: "No run is active." });
       return;
@@ -744,6 +895,20 @@ export function createApp(options: AppOptions) {
         if (replayed !== undefined) send(ws, { type: "lifecycleState", ...replayed });
         if (activeRun !== undefined) sendRunConversation(ws, activeRun);
 
+        const creation = goalCreation;
+        if (creation !== undefined) {
+          send(ws, { type: "goalCreationStarted" });
+          for (const text of creation.activity) send(ws, { type: "activity", text });
+          if (creation.question !== null) {
+            send(ws, {
+              type: "question",
+              id: creation.question.id,
+              message: creation.question.message,
+              choices: creation.question.choices,
+            });
+          }
+        }
+
         const revision = goalRevision;
         if (revision === undefined) return;
 
@@ -793,6 +958,8 @@ export function createApp(options: AppOptions) {
             resumeLifecycle(ws);
           } else if (command.type === "reviseGoal") {
             await startGoalRevision(ws, command.request);
+          } else if (command.type === "createGoal") {
+            await startGoalCreation(ws);
           } else if (command.type === "answer") {
             answerQuestion(ws, command.id, command.value);
           }
@@ -814,6 +981,9 @@ export function createApp(options: AppOptions) {
     activeRun = undefined;
     goalRevision?.agent?.close();
     goalRevision = undefined;
+    goalCreation?.agent?.close();
+    goalCreation = undefined;
+    goalCreationPending = false;
     return stop(closeActiveConnections);
   };
 
