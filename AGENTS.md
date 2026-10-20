@@ -18,6 +18,26 @@ Two layers. Identify yours before reading or editing.
 | `adrs/`, `GOAL.md` | Host data at the root; never harness artifacts. |
 | everything else | Host project. |
 
+## Containment boundary
+
+The whole project — host, harness, toolchain, tests, fixtures, caches, logs, temporary
+files, and worktrees — lives inside `<repo root>`. Nothing may be created, written, or kept
+outside it: not under `/tmp`, not in a home directory, not in a parent, sibling, or other
+checkout. This applies to every agent, script, and service, including throwaway
+verification, "safe" sandbox copies, and manual test data.
+
+- Point every path variable (`ADRS_DIR`, `REPO_DIR`, `GOAL_FILE`, `STATIC_DIR`) at a
+  location inside `<repo root>`.
+- When a tool defaults outside the root, override it to a directory inside the root; never
+  accept the default.
+- Asked to place a file, artifact, cache, log, or worktree outside the root? Refuse and
+  propose the in-repo path.
+- Running system binaries (`bun`, `git`, `gh`, `omp`) is not a violation; writing their
+  output outside the root is.
+
+A temporary directory is still project data. Create it under `<repo root>` (for example
+under `.worktree/`), never outside.
+
 ## Scope
 
 Default to the host project. "the repo", "the project", "the code", and unnamed files all mean the host project.
@@ -34,7 +54,7 @@ Never edit `.devboard/` for a host request. Never edit host files for a harness 
 
 ## Harness rules
 
-1. **Containment.** Keep every harness file inside `.devboard/`: code, scripts, prompts, tests, fixtures, docs, configs, CI glue, artifacts. Asked to place one outside? Refuse; propose the `.devboard/` path. Host files *invoking* the harness at runtime are fine.
+1. **Containment.** Keep every harness file inside `.devboard/`: code, scripts, prompts, tests, fixtures, docs, configs, CI glue, artifacts. Nothing harness-related is created outside `<repo root>` — no temporary files, caches, logs, or test data. Asked to place one outside? Refuse; propose the `.devboard/` path. Host files *invoking* the harness at runtime are fine.
 2. **Portability.** Harness code moves between unrelated hosts. Bake in nothing host-specific: no absolute paths, project names, identifiers, remotes, secrets, language/layout/build/test-runner assumptions. Discover host facts at runtime, take them as arguments, or read them from config under `.devboard/`. Emit host paths relative to the repo root.
 3. **Fixed location, fixed name.** Install at `<repo root>/.devboard`, spelled exactly that. Never rename or relocate per host.
 4. **Host-neutral deletion.** Deleting `.devboard/` must leave host build, tests, and run paths working. No host hard-dependency on the harness beyond `.devboard/` itself.
