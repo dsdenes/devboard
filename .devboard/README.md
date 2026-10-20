@@ -48,12 +48,30 @@ so the goal becomes editable and another lifecycle run can start.
 - Client: Svelte built with Vite.
 - Records: read from `adrs/` on every `listRecords` command and after every run, so files added, removed, or resolved while the server runs appear without a restart.
 
-## Build and run
+## Install
+
+`install.sh` installs the agent wrappers under `omp/` into a host project:
 
 ```bash
+./install.sh /path/to/host
+./install.sh --force /path/to/host
+cd /path/to/host/.devboard && ./install.sh
+```
+
+The host must already contain a `.devboard/` directory. Every file under `omp/` is copied to the
+same relative path under `<host>/.omp/`; matching files are left alone, unrelated host files are
+never removed, and a differing file stops the run unless `--force` is given. Without a host path,
+the script uses `git rev-parse --show-toplevel` of the working directory.
+
+## Build and run
+
+Run the interface from this directory:
+
+```bash
+cd .devboard
 bun install
 bun run build
-ADRS_DIR="$PWD/adrs" bun run start
+ADRS_DIR="<host>/adrs" bun run start
 ```
 
 Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
@@ -70,8 +88,10 @@ Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
 
 ## Container
 
+Build the container from the `.devboard` context at the repository root:
+
 ```bash
-docker build -t devboard-adr-ui .
+docker build -t devboard-adr-ui .devboard
 docker run --rm -d --name devboard-adr-ui -p 127.0.0.1:8080:8080 \
   -v "$PWD:/repo" devboard-adr-ui
 ```
@@ -184,10 +204,14 @@ The server answers with events:
 ## Tests
 
 ```bash
+cd .devboard
 bun test
 ```
 
-`server/run.test.ts` drives the interface against the stub ACP agent, covering sequential
+`tests/install.test.ts` covers the install script: a fresh install, an idempotent rerun that
+keeps unrelated files, a host without `.devboard/`, a differing file refused without `--force`,
+`--force` replacing it, and the default host path. `server/run.test.ts` drives the interface
+against the stub ACP agent, covering sequential
 resolution in file-name order, selected first records, refusal of a second start during a run
 and between runs, activity and question/answer relay, the unresolved-record stop, the
 removed-record stop, disconnect continuation, and records refresh. `server/app.test.ts`

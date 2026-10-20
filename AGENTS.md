@@ -4,13 +4,18 @@ Two layers. Identify yours before reading or editing.
 
 ```
 <repo root>/
-  .devboard/   <- harness
+  .devboard/   <- harness: interface, prompts, wrappers, install.sh
+  adrs/        <- host data
+  GOAL.md      <- host data
+  .omp/        <- installed harness wrappers
   ...          <- host project
 ```
 
 | Path | Identity |
 | --- | --- |
-| `.devboard/` | Agentic development harness. Project-agnostic. Works *on* the host. Never the host product. |
+| `.devboard/` | Agentic development harness. Project-agnostic. Owns the browser interface and its toolchain. Works *on* the host. Never the host product. |
+| `.devboard/omp/` | Canonical agent wrappers; installed into the host's `.omp/`. |
+| `adrs/`, `GOAL.md` | Host data at the root; never harness artifacts. |
 | everything else | Host project. |
 
 ## Scope
@@ -34,6 +39,31 @@ Never edit `.devboard/` for a host request. Never edit host files for a harness 
 3. **Fixed location, fixed name.** Install at `<repo root>/.devboard`, spelled exactly that. Never rename or relocate per host.
 4. **Host-neutral deletion.** Deleting `.devboard/` must leave host build, tests, and run paths working. No host hard-dependency on the harness beyond `.devboard/` itself.
 5. **The one exception.** `AGENTS.md` sits at the repo root by design: agents must find it there. Host-agnostic, copied verbatim between hosts, not a harness artifact. Nothing else gets this treatment.
+
+## Interface
+
+`.devboard/` owns the browser interface and everything needed to build, test, and run it: the Bun
+server, the Svelte client, the tests and fixtures, `package.json`, `bun.lock`, the build
+configuration, `index.html`, the `Dockerfile`, and `README.md`. Run its commands from `.devboard`:
+`bun install`, `bun test`, `bun run build`, `bun run start`; build the container from the
+`.devboard` context. The interface is a harness tool, not the host product.
+
+The harness may define its own toolchain, but it must not assume host facts: no host language,
+package manager, test runner, build system, or layout. Host data lives at the root — the decision
+records in `adrs/` and the goal document `GOAL.md` — and reaches the interface only through paths
+the host supplies: `ADRS_DIR`, `REPO_DIR`, `GOAL_FILE`, `STATIC_DIR`, `AGENT_COMMAND`. The
+lifecycle prompts under `.devboard/prompts/` likewise treat the repository root as the host and
+exclude `.devboard/` and `.worktree/` from every survey and every write.
+
+## Wrappers
+
+`.devboard/omp/` is canonical: agent commands live in `omp/commands/` and extensions in
+`omp/extensions/`, never in the root `.omp/`. `.devboard/install.sh` copies every file under
+`.devboard/omp/` to the same relative path under `<host>/.omp/`. The host path is an argument or
+is discovered with `git rev-parse --show-toplevel`; the script refuses a host without a
+`.devboard/` directory, refuses to overwrite a differing file without `--force`, never touches
+unrelated files, and is safe to rerun. Edit `.devboard/omp/`, rerun `install.sh`, and never
+hand-edit the installed `.omp/`.
 
 ## Cross-boundary changes
 
@@ -66,7 +96,10 @@ never hand-edit them.
 
 ## Map
 
-- `.devboard/` — harness root.
+- `.devboard/` — harness root: interface, toolchain, prompts, extensions, goals, tests, `omp/`, `install.sh`.
+- `.devboard/omp/` — canonical agent commands and extensions.
+- `.omp/` — installed copy of `.devboard/omp/`; never edited by hand.
+- `adrs/`, `GOAL.md` — host data at the root; not harness artifacts.
 - `.devboard/AGENTS.md` — harness-internal instructions, when present.
 - `.worktree/` — per-task worktrees; ephemeral.
 - `AGENTS.md` — harness ⇄ host contract; at repo root by design.
