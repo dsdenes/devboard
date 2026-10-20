@@ -118,6 +118,7 @@ export function createApp(options: AppOptions) {
   let sequencing = false;
   let goalRevision: GoalRevision | undefined;
   let lifecycle: LifecycleState = { stage: "goal", pass: 1, work: null, paused: false };
+  let lastLifecycle: LifecycleState | undefined;
   let lifecycleRunning = false;
   const resumeWaiters: (() => void)[] = [];
 
@@ -438,9 +439,15 @@ export function createApp(options: AppOptions) {
     }
   }
 
+  /** Broadcasts the current state and retains it for clients that connect later. */
+  function publishLifecycle() {
+    lastLifecycle = lifecycle;
+    broadcast({ type: "lifecycleState", ...lifecycle });
+  }
+
   function setLifecycle(stage: LifecycleStage, work: LifecycleWork | null) {
     lifecycle = { stage, pass: lifecycle.pass, work, paused: false };
-    broadcast({ type: "lifecycleState", ...lifecycle });
+    publishLifecycle();
   }
 
   /** Holds the lifecycle loop at the current stage until an explicit resume. */
@@ -463,7 +470,7 @@ export function createApp(options: AppOptions) {
 
     activeRun?.agent?.pause();
     lifecycle = { ...lifecycle, paused: true };
-    broadcast({ type: "lifecycleState", ...lifecycle });
+    publishLifecycle();
   }
 
   function resumeLifecycle(ws: { send(data: string): unknown }) {
@@ -483,7 +490,7 @@ export function createApp(options: AppOptions) {
     }
 
     lifecycle = { ...lifecycle, paused: false };
-    broadcast({ type: "lifecycleState", ...lifecycle });
+    publishLifecycle();
     activeRun?.agent?.resume();
     for (const resolve of resumeWaiters.splice(0)) resolve();
   }
@@ -530,7 +537,7 @@ export function createApp(options: AppOptions) {
         }
 
         lifecycle = { stage: "epic", pass: lifecycle.pass + 1, work: null, paused: false };
-        broadcast({ type: "lifecycleState", ...lifecycle });
+        publishLifecycle();
         continue;
       }
 
@@ -613,7 +620,7 @@ export function createApp(options: AppOptions) {
       lifecycleRunning = false;
       lifecycle = { ...lifecycle, paused: false };
       for (const resolve of resumeWaiters.splice(0)) resolve();
-      if (wasPaused) broadcast({ type: "lifecycleState", ...lifecycle });
+      if (wasPaused) publishLifecycle();
     }
   }
 
@@ -704,7 +711,8 @@ export function createApp(options: AppOptions) {
     websocket: {
       open(ws) {
         clients.add(ws);
-        if (lifecycleRunning) send(ws, { type: "lifecycleState", ...lifecycle });
+        const replayed = lifecycleRunning ? lifecycle : lastLifecycle;
+        if (replayed !== undefined) send(ws, { type: "lifecycleState", ...replayed });
         if (activeRun !== undefined) sendRunConversation(ws, activeRun);
 
         const revision = goalRevision;

@@ -787,4 +787,117 @@ describe("lifecycle runs", () => {
     },
     20000,
   );
+
+  test(
+    "replays the finished state first to a client that connects after the run ends",
+    async () => {
+      const { server, url } = await startServer({});
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        const finished = await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
+        expect(finished).toEqual({
+          type: "lifecycleState",
+          stage: "finished",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+
+        const late = await connect(url);
+        try {
+          late.send({ type: "listRecords" });
+          late.send({ type: "getGoal" });
+          await late.waitFor((message) => message.type === "records");
+          await late.waitFor((message) => message.type === "goal");
+
+          expect(late.events[0]).toEqual({
+            type: "lifecycleState",
+            stage: "finished",
+            pass: 1,
+            work: null,
+            paused: false,
+          });
+          expect(lifecycleStates(late)).toHaveLength(1);
+        } finally {
+          late.close();
+        }
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "sends no lifecycle state to a client when no lifecycle run has ever started",
+    async () => {
+      const { server, url } = await startServer({});
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "listRecords" });
+        client.send({ type: "getGoal" });
+        await client.waitFor((message) => message.type === "records");
+        await client.waitFor((message) => message.type === "goal");
+
+        await Bun.sleep(200);
+        expect(lifecycleStates(client)).toEqual([]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "replays the new run's stage, not the finished one, to a client that connects later",
+    async () => {
+      const { server, url } = await startServer({}, { agentArguments: "--delay-ms=1200" });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
+
+        client.send({ type: "startLifecycle" });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.stage === "epic",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+
+        const late = await connect(url);
+        try {
+          expect(await late.waitFor(() => true)).toEqual({
+            type: "lifecycleState",
+            stage: "epic",
+            pass: 1,
+            work: null,
+            paused: false,
+          });
+          expect(late.events[0]).not.toMatchObject({ stage: "finished" });
+        } finally {
+          late.close();
+        }
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
 });

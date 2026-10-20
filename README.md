@@ -27,7 +27,10 @@ implementation, the lifecycle stops with an `error` instead of implementing it a
 is an open issue carrying the label `epic` (ignoring case) or the `<!-- devboard-epic -->`
 marker in its body; the server reads it with read-only `gh` or `glab` queries. While a
 lifecycle run works, the goal editor and every start control are disabled, and a client that
-connects or reloads receives the current stage, pass, and work in progress first.
+connects or reloads receives the current stage, pass, and work in progress first. Once a run
+reports `finished`, the server keeps that state for its lifetime and replays it to every
+client that connects or reloads, so the interface still shows `Finished` and the final pass
+until a new run starts or the backend restarts.
 
 ## Stack
 
@@ -132,7 +135,16 @@ The server answers with events:
 - A record's title is its first level-one heading.
 - A record is pending exactly when its status is `Proposed`; every other status is resolved.
 - Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).
-- `lifecycleState` reports `stage` (`goal`, `epic`, `adr`, `implementation`, or `finished`), the `pass` number, `work` (`null`, an ADR filename, or an epic issue number), and `paused`. It is sent on every transition and pause change, and, while the lifecycle is active, to each client that connects or reconnects before any other event. A client that connects while paused receives `paused: true`, followed by the in-progress `runStarted`, recorded activity, and pending `question`. Stage `goal` is the state before any lifecycle run.
+- `lifecycleState` reports `stage` (`goal`, `epic`, `adr`, `implementation`, or `finished`),
+  the `pass` number, `work` (`null`, an ADR filename, or an epic issue number), and `paused`.
+  It is sent on every transition and pause change, and to each client that connects or
+  reconnects before any other event, ahead of that client's own command replies: while a
+  lifecycle run is active, the current state; when no run is active and a state has been
+  reported, the last reported state, including `finished` with its final pass. A client that
+  connects while paused receives `paused: true`, followed by the in-progress `runStarted`,
+  recorded activity, and pending `question`. Stage `goal` is the state before any lifecycle
+  run; a backend on which no lifecycle run has ever started sends no `lifecycleState` on
+  connection. Retained state lives in server memory, so a restart forgets it.
 - `goalRevisionStarted` marks the beginning of a revision. `goalRevisionStopped` marks its end: `completed` is `true` only when the peer ended without error and the goal file could be read, in which case `text` carries the complete file contents. A failed revision has `completed: false`, omits `text`, and is accompanied by an `error` event.
 - A revision emits no `runStarted` or `runStopped` events of its own and does not read or write `adrs/`. When it ends while a lifecycle run is paused, the server follows `goalRevisionStopped` with the suspended lifecycle `runStarted`, every recorded `activity` line, and the pending `question` if one exists, so every connected client restores the interrupted conversation.
 - A client that connects or reconnects during a revision receives `goalRevisionStarted`, every `activity` line recorded so far, and the pending `question` if one exists, before any other event beyond the lifecycle state and suspended conversation.
@@ -157,7 +169,9 @@ reconnect replay, the unreadable-goal failure, and the absence of run events or 
 peer, ADR-order resolution, implementation of an already-open epic, return to epic generation
 on the next pass, the same-epic stop, the finished transition when a pass yields no epic and
 no pending ADR, restart after that transition, the three lifecycle refusals during
-implementation, and replay of the implementation state and activity to a reconnecting client.
+implementation, replay of the implementation state and activity to a reconnecting client and
+of the finished state to a client that connects after the run ends, the absence of a
+`lifecycleState` before any run, and the new run's stage after restarting from `finished`.
 `server/lifecycle-pause.test.ts` covers pausing during an implementation and resuming the same
 peer, pausing with a pending question and carrying its answer across the pause, pausing between
 stages while a tracker query is outstanding, paused replay with recorded activity and question,
