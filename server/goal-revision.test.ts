@@ -291,7 +291,11 @@ describe("guided goal revision", () => {
       };
       const { server, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
-        { agentArguments: "--delay-ms=1200", tracker: async () => epic },
+        {
+          agentArguments: "--delay-ms=1200",
+          goalText: "# Active goal\n\nImplement the active epic.\n",
+          tracker: async () => epic,
+        },
       );
       const client = await connect(url);
 

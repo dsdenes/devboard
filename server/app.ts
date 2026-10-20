@@ -607,6 +607,20 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    let goalSettled = false;
+    try {
+      goalSettled = (await readGoal(goalFile)).trim().length > 0;
+    } catch {
+      // A missing or unreadable goal document is not settled.
+    }
+    if (!goalSettled) {
+      send(ws, {
+        type: "error",
+        message: "The goal is not set. Save a non-empty goal before starting the lifecycle.",
+      });
+      return;
+    }
+
     lifecycleRunning = true;
     try {
       await runLifecycle();

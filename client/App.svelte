@@ -47,6 +47,7 @@
   let connection = $state<"connecting" | "open" | "closed">("connecting");
   let error = $state<string | null>(null);
   let goalText = $state("");
+  let goalReady = $state(false);
 
   let runFile = $state<string | null>(null);
   let runTitle = $state<string | null>(null);
@@ -359,7 +360,10 @@
         records = message.records;
         next = message.next;
       } else if (isGoalEvent(message)) {
-        if (!revisionActive) goalText = message.text;
+        if (!revisionActive) {
+          goalText = message.text;
+          goalReady = message.text.trim().length > 0;
+        }
         error = null;
       } else if (isGoalRevisionStartedEvent(message)) {
         revisionActive = true;
@@ -373,6 +377,7 @@
         draft = "";
         if (message.completed && typeof message.text === "string") {
           goalText = message.text;
+          goalReady = message.text.trim().length > 0;
         }
       } else if (isRunStartedEvent(message)) {
         runFile = message.file;
@@ -435,7 +440,7 @@
           type="button"
           class="start-button"
           data-testid="start-lifecycle"
-          disabled={controlsDisabled}
+          disabled={controlsDisabled || !goalReady}
           onclick={startLifecycle}
         >
           Start lifecycle
@@ -502,7 +507,12 @@
   {/if}
 
   <section class="goal" data-testid="goal-editor">
-    <label class="goal-label" for="goal-text">Current goal</label>
+    <div class="goal-heading">
+      <label class="goal-label" for="goal-text">Current goal</label>
+      <p class="goal-state" data-testid="goal-state" aria-live="polite">
+        {goalReady ? "Goal ready" : "Goal not set"}
+      </p>
+    </div>
     <textarea
       id="goal-text"
       class="goal-text"

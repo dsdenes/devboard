@@ -15,7 +15,10 @@ progress.
 
 While a run is active the interface names the record being resolved, appends the agent's ACP session updates to a live activity log, and presents each interview question with its choices plus a free-form answer field. One start resolves every pending record in ascending file-name order: after each run the server re-reads `adrs/`, and the sequence ends when no pending record remains or when the finished record is still `Proposed` (or has been removed). The chain runs in the server, so it continues if the browser disconnects.
 
-The page also shows a lifecycle stage and pass number. Selecting `Start lifecycle` gives the
+The page also shows a lifecycle stage and pass number. The lifecycle starts only from a settled
+goal: the goal section reports `Goal ready` when the document contains at least one
+non-whitespace character and `Goal not set` otherwise, and `Start lifecycle` stays disabled
+until it does. The server enforces the same rule. Selecting `Start lifecycle` gives the
 server the loop: when the origin tracker already has an open epic, it implements that epic
 with `/implement-next-epic`; otherwise it runs the `/epic-next` agent, resolves any pending
 ADRs the run leaves behind with `/adr-resolve` in file-name order, and repeats. After an
@@ -95,7 +98,7 @@ The client sends:
 - `answer` supplies one value for the pending elicitation; the question is cleared after the first answer.
 - `reviseGoal` starts a guided goal revision with one ACP peer. `request` is optional free-form guidance passed to the agent; without it, the agent establishes the direction through its interview questions. The agent writes the goal document itself. Activity and questions use the existing `activity` and `question` events, and `answer` replies to a revision question exactly as it does to a run question. It is accepted while the lifecycle is paused, where the suspended peer keeps its stage and conversation.
 - A revision is refused with an `error` event while the lifecycle is advancing, a run or run sequence is active, or another revision is active. While a revision is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and another `reviseGoal` are each refused with an `error`, and no agent is spawned.
-- `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run, a run sequence, a goal revision, or another lifecycle run is active. While the lifecycle run is active, `startLifecycle` and `startRun` are also refused, because the lifecycle owns the tracker. `reviseGoal` and `saveGoal` are refused only while the lifecycle is advancing.
+- `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run, a run sequence, a goal revision, or another lifecycle run is active, and when the goal document is absent, unreadable, or contains only whitespace; a refused start spawns no agent and reports no `lifecycleState`. While the lifecycle run is active, `startLifecycle` and `startRun` are also refused, because the lifecycle owns the tracker. `reviseGoal` and `saveGoal` are refused only while the lifecycle is advancing.
 - `pauseLifecycle` suspends an active lifecycle run with `SIGSTOP` on the current ACP child, or holds the loop before its next agent start when the run is between stages. It reports `lifecycleState` with the interrupted `stage`, `pass`, and `work` and `paused: true`. No stage transition, tracker result use, or new ACP peer happens until a resume. A pending question stays visible, and `answer` is accepted and buffered for the suspended child.
 - `resumeLifecycle` reports the same `stage`, `pass`, and `work` with `paused: false` and continues the same ACP child with `SIGCONT` or releases the held loop. It is refused while a goal revision is active, which keeps the single-agent rule and leaves the lifecycle paused until the revision ends. Pause and resume are each refused with an `error` when no lifecycle run is active, when pausing an already-paused run, and when resuming a run that is not paused. The paused flag lives in server memory and is discarded when the run ends.
 - The lifecycle checks the origin tracker on every pass. When an epic is open, it reports
@@ -171,7 +174,9 @@ on the next pass, the same-epic stop, the finished transition when a pass yields
 no pending ADR, restart after that transition, the three lifecycle refusals during
 implementation, replay of the implementation state and activity to a reconnecting client and
 of the finished state to a client that connects after the run ends, the absence of a
-`lifecycleState` before any run, and the new run's stage after restarting from `finished`.
+`lifecycleState` before any run, the new run's stage after restarting from `finished`, and the
+goal precondition: an absent, whitespace-only, or just-cleared goal refuses the start with one
+`error` and no agent, while a non-blank goal starts the loop.
 `server/lifecycle-pause.test.ts` covers pausing during an implementation and resuming the same
 peer, pausing with a pending question and carrying its answer across the pause, pausing between
 stages while a tracker query is outstanding, paused replay with recorded activity and question,

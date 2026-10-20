@@ -26,7 +26,7 @@ async function temporaryDirectory() {
 
 async function startServer(
   files: Record<string, string>,
-  options: { agentArguments?: string; tracker?: EpicLookup } = {},
+  options: { agentArguments?: string; tracker?: EpicLookup; goalText?: string | null } = {},
 ): Promise<TestServer> {
   const root = await temporaryDirectory();
   const adrDir = join(root, "adrs");
@@ -35,7 +35,11 @@ async function startServer(
   await mkdir(adrDir, { recursive: true });
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>ADR overview</title>");
-  await writeFile(goalFile, "# Goal\n\nShip the lifecycle.\n");
+  if (options.goalText === undefined) {
+    await writeFile(goalFile, "# Goal\n\nShip the lifecycle.\n");
+  } else if (options.goalText !== null) {
+    await writeFile(goalFile, options.goalText);
+  }
   for (const [file, source] of Object.entries(files)) {
     await writeFile(join(adrDir, file), source);
   }
@@ -867,12 +871,13 @@ describe("lifecycle runs", () => {
           (message) => message.type === "lifecycleState" && message.stage === "finished",
         );
 
+        const reported = lifecycleStates(client).length;
         client.send({ type: "startLifecycle" });
-        expect(
-          await client.waitFor(
-            (message) => message.type === "lifecycleState" && message.stage === "epic",
-          ),
-        ).toEqual({
+        for (let attempt = 0; lifecycleStates(client).length === reported; attempt += 1) {
+          if (attempt > 500) throw new Error("The second lifecycle run reported no state.");
+          await Bun.sleep(10);
+        }
+        expect(lifecycleStates(client)[reported]).toEqual({
           type: "lifecycleState",
           stage: "epic",
           pass: 1,
@@ -893,6 +898,107 @@ describe("lifecycle runs", () => {
         } finally {
           late.close();
         }
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+});
+
+describe("lifecycle goal precondition", () => {
+  test(
+    "refuses startLifecycle when the goal document is absent",
+    async () => {
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        {},
+        {
+          goalText: null,
+          tracker: async () => {
+            lookups += 1;
+            return undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(String(error.message)).toMatch(/goal/i);
+
+        await Bun.sleep(300);
+        expect(client.events.filter((message) => message.type === "error")).toHaveLength(1);
+        expect(lifecycleStates(client)).toEqual([]);
+        expect(spawnCount(logPath)).toBe(0);
+        expect(lookups).toBe(0);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "refuses startLifecycle when the goal document is only whitespace",
+    async () => {
+      const { server, logPath, url } = await startServer({}, { goalText: " \n\t\n" });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(String(error.message)).toMatch(/goal/i);
+
+        await Bun.sleep(300);
+        expect(client.events.filter((message) => message.type === "error")).toHaveLength(1);
+        expect(lifecycleStates(client)).toEqual([]);
+        expect(spawnCount(logPath)).toBe(0);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "refuses a start after a blank goal is saved and accepts a non-blank replacement",
+    async () => {
+      const { server, logPath, url } = await startServer({});
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "saveGoal", text: "" });
+        await client.waitFor((message) => message.type === "goal" && message.text === "");
+
+        client.send({ type: "startLifecycle" });
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(String(error.message)).toMatch(/goal/i);
+        await Bun.sleep(300);
+        expect(lifecycleStates(client)).toEqual([]);
+        expect(spawnCount(logPath)).toBe(0);
+
+        client.send({ type: "saveGoal", text: "# Goal\n\nShip the interface.\n" });
+        await client.waitFor(
+          (message) =>
+            message.type === "goal" && String(message.text).includes("Ship the interface."),
+        );
+        client.send({ type: "startLifecycle" });
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
+        expect(spawnCount(logPath)).toBe(1);
       } finally {
         client.close();
         server.stop(true);
