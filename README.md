@@ -19,25 +19,28 @@ The page also shows a lifecycle stage and pass number. The lifecycle starts only
 goal: the goal section reports `Goal ready` when the document contains at least one
 non-whitespace character and `Goal not set` otherwise, and `Start lifecycle` stays disabled
 until it does. The server enforces the same rule. Selecting `Start lifecycle` gives the
-server the loop: when the origin tracker already has an open epic, it implements that epic
-with `/implement-next-epic`; otherwise it runs the `/epic-next` agent, resolves any pending
-ADRs the run leaves behind with `/adr-resolve` in file-name order, and repeats. After an
-implementation peer exits, the pass increments and the lifecycle returns to epic generation;
-the epic the generation peer creates is implemented in turn. When the generation peer opens
-no epic and no record in `adrs/` is still `Proposed`, the lifecycle reports the `finished`
-stage and stops; a later start begins a new run. If the same epic is still open after its
-implementation, or epic generation leaves the same pending records without opening an epic,
-or a tracker or record read fails, the lifecycle stops with an `error` and returns to the
-idle goal stage instead of staying at the interrupted stage. An epic is an open issue
-carrying the label `epic` (ignoring case) or the `<!-- devboard-epic -->` marker in its body;
-the server reads it with read-only `gh` or `glab` queries. While a lifecycle run works, the
-goal editor and every start control are disabled, and a client that connects or reloads
-receives the current stage, pass, and work in progress first. Once a run reports `finished`,
-the server keeps that state for its lifetime and replays it to every client that connects or
-reloads, so the interface still shows `Finished` and the final pass until a new run starts or
-the backend restarts. An aborted run likewise replays the idle goal stage, with no work, not
-paused, and the pass it had reached, so the goal becomes editable and another lifecycle run
-can start.
+server the loop, and the server reports the run as active at the `epic` stage with no work as
+soon as it accepts the command, before it queries the origin tracker; every client therefore
+shows `Epic generation` with the pause control available and its start controls disabled
+while that query runs. When the origin tracker already has an open epic, the lifecycle then
+reports `implementation` and implements that epic with `/implement-next-epic`; otherwise it
+runs the `/epic-next` agent, resolves any pending ADRs the run leaves behind with
+`/adr-resolve` in file-name order, and repeats. After an implementation peer exits, the pass
+increments and the lifecycle returns to epic generation; the epic the generation peer creates
+is implemented in turn. When the generation peer opens no epic and no record in `adrs/` is
+still `Proposed`, the lifecycle reports the `finished` stage and stops; a later start begins
+a new run. If the same epic is still open after its implementation, or epic generation leaves
+the same pending records without opening an epic, or a tracker or record read fails, the
+lifecycle stops with an `error` and returns to the idle goal stage instead of staying at the
+interrupted stage. An epic is an open issue carrying the label `epic` (ignoring case) or the
+`<!-- devboard-epic -->` marker in its body; the server reads it with read-only `gh` or
+`glab` queries. While a lifecycle run works, the goal editor and every start control are
+disabled, and a client that connects or reloads receives the current stage, pass, and work in
+progress first. Once a run reports `finished`, the server keeps that state for its lifetime
+and replays it to every client that connects or reloads, so the interface still shows
+`Finished` and the final pass until a new run starts or the backend restarts. An aborted run
+likewise replays the idle goal stage, with no work, not paused, and the pass it had reached,
+so the goal becomes editable and another lifecycle run can start.
 
 ## Stack
 
@@ -105,16 +108,19 @@ The client sends:
 - `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run,
   a run sequence, a goal revision, or another lifecycle run is active, and when the goal
   document is absent, unreadable, or contains only whitespace; a refused start spawns no
-  agent and reports no `lifecycleState`. While the lifecycle run is active, `startLifecycle`
+  agent and reports no `lifecycleState`. An accepted start reports `lifecycleState` at
+  `epic` with `work: null`, the pass already held, and `paused: false` before its first
+  tracker query and before any agent starts. While the lifecycle run is active, `startLifecycle`
   and `startRun` are also refused, because the lifecycle owns the tracker. `reviseGoal` and
   `saveGoal` are refused only while the lifecycle is advancing. A run that stops before
   `finished` — because the same epic stayed open, the same pending records remained without
   an epic, or a tracker or record read failed — sends its `error`, then reports the idle
   `goal` stage with `work: null`, `paused: false`, and the pass it reached; `saveGoal`,
   `reviseGoal`, and a new `startLifecycle` are accepted again.
-- `pauseLifecycle` suspends an active lifecycle run with `SIGSTOP` on the current ACP child, or holds the loop before its next agent start when the run is between stages. It reports `lifecycleState` with the interrupted `stage`, `pass`, and `work` and `paused: true`. No stage transition, tracker result use, or new ACP peer happens until a resume. A pending question stays visible, and `answer` is accepted and buffered for the suspended child.
+- `pauseLifecycle` suspends an active lifecycle run with `SIGSTOP` on the current ACP child, or holds the loop before its next agent start when the run is between stages or its first tracker query is outstanding. It reports `lifecycleState` with the interrupted `stage`, `pass`, and `work` and `paused: true`; a pause during the first lookup therefore reports `epic` with `work: null`. No stage transition, tracker result use, or new ACP peer happens until a resume. A pending question stays visible, and `answer` is accepted and buffered for the suspended child.
 - `resumeLifecycle` reports the same `stage`, `pass`, and `work` with `paused: false` and continues the same ACP child with `SIGCONT` or releases the held loop. It is refused while a goal revision is active, which keeps the single-agent rule and leaves the lifecycle paused until the revision ends. Pause and resume are each refused with an `error` when no lifecycle run is active, when pausing an already-paused run, and when resuming a run that is not paused. The paused flag lives in server memory and is discarded when the run ends.
-- The lifecycle checks the origin tracker on every pass. When an epic is open, it reports
+- The lifecycle checks the origin tracker on every pass. The accepted run is already reported
+  at `epic` with `work: null`; when the first query finds an epic open, the lifecycle reports
   `implementation` with that epic as `work`, sends `/implement-next-epic` to one ACP peer,
   and, after the peer exits, increments `pass` and returns to epic generation. If the same
   epic is still open after its implementation, the lifecycle sends an `error` and stops,
@@ -159,15 +165,17 @@ The server answers with events:
 - Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).
 - `lifecycleState` reports `stage` (`goal`, `epic`, `adr`, `implementation`, or `finished`),
   the `pass` number, `work` (`null`, an ADR filename, or an epic issue number), and `paused`.
-  It is sent on every transition and pause change, and to each client that connects or
-  reconnects before any other event, ahead of that client's own command replies: while a
-  lifecycle run is active, the current state; when no run is active and a state has been
-  reported, the last reported state, including `finished` with its final pass or the idle
-  `goal` state of an aborted run with the pass it reached. A client that
-  connects while paused receives `paused: true`, followed by the in-progress `runStarted`,
-  recorded activity, and pending `question`. Stage `goal` is the idle state before a lifecycle
-  run starts and after one stops before `finished`; a backend on which no lifecycle run has
-  ever started sends no `lifecycleState` on connection. Retained state lives in server memory, so a restart forgets it.
+  It is sent when a lifecycle run is accepted, on every transition and pause change, and to
+  each client that connects or reconnects before any other event, ahead of that client's own
+  command replies: while a lifecycle run is active, the current state; when no run is active
+  and a state has been reported, the last reported state, including `finished` with its final
+  pass or the idle `goal` state of an aborted run with the pass it reached. An accepted run
+  is reported at `epic` with `work: null` before the origin-tracker query, and an open epic
+  follows as a transition to `implementation`. A client that connects while paused receives
+  `paused: true`, followed by the in-progress `runStarted`, recorded activity, and pending
+  `question`. Stage `goal` is the idle state before a lifecycle run starts and after one
+  stops before `finished`; a backend on which no lifecycle run has ever started sends no
+  `lifecycleState` on connection. Retained state lives in server memory, so a restart forgets it.
 - `goalRevisionStarted` marks the beginning of a revision. `goalRevisionStopped` marks its end: `completed` is `true` only when the peer ended without error and the goal file could be read, in which case `text` carries the complete file contents. A failed revision has `completed: false`, omits `text`, and is accompanied by an `error` event.
 - A revision emits no `runStarted` or `runStopped` events of its own and does not read or write `adrs/`. When it ends while a lifecycle run is paused, the server follows `goalRevisionStopped` with the suspended lifecycle `runStarted`, every recorded `activity` line, and the pending `question` if one exists, so every connected client restores the interrupted conversation.
 - A client that connects or reconnects during a revision receives `goalRevisionStarted`, every `activity` line recorded so far, and the pending `question` if one exists, before any other event beyond the lifecycle state and suspended conversation.
@@ -188,7 +196,8 @@ agent startup. `server/goal-revision.test.ts` covers guided goal revision: reque
 no-request starts, activity and question relay, the rewritten goal reported verbatim, refusal
 during lifecycle and record runs (including between records), refusals during a revision,
 reconnect replay, the unreadable-goal failure, and the absence of run events or ADR writes.
-`server/lifecycle.test.ts` covers the `lifecycleState` sequence, the single `/epic-next`
+`server/lifecycle.test.ts` covers the `lifecycleState` sequence, the running `epic` state
+reported before the first tracker lookup and to every client, the single `/epic-next`
 peer, ADR-order resolution, implementation of an already-open epic, return to epic generation
 on the next pass, the same-epic stop, the finished transition when a pass yields no epic and
 no pending ADR, restart after that transition, the three lifecycle refusals during
@@ -203,6 +212,7 @@ pass; a later client receives that state first, goal saving answers with the sav
 a new lifecycle start is accepted and runs without a stale refusal.
 `server/lifecycle-pause.test.ts` covers pausing during an implementation and resuming the same
 peer, pausing with a pending question and carrying its answer across the pause, pausing between
-stages while a tracker query is outstanding, paused replay with recorded activity and question,
-goal saving while paused, guided goal revision while paused including replay of the suspended
-conversation and every refusal path with unchanged state.
+stages while a tracker query is outstanding, pausing the initial tracker lookup and resuming
+into its result, paused replay with recorded activity and question, goal saving while paused,
+guided goal revision while paused including replay of the suspended conversation and every
+refusal path with unchanged state.

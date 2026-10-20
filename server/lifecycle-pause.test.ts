@@ -217,6 +217,17 @@ async function exercisePausedRevision(request: string | undefined) {
       await client.waitFor((message) => message.type === "lifecycleState"),
     ).toEqual({
       type: "lifecycleState",
+      stage: "epic",
+      pass: 1,
+      work: null,
+      paused: false,
+    });
+    expect(
+      await client.waitFor(
+        (message) => message.type === "lifecycleState" && message.stage === "implementation",
+      ),
+    ).toEqual({
+      type: "lifecycleState",
       stage: "implementation",
       pass: 1,
       work: { kind: "epic", id: "21" },
@@ -403,6 +414,17 @@ describe("lifecycle pause and resume", () => {
       try {
         client.send({ type: "startLifecycle" });
         expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.stage === "implementation",
+          ),
+        ).toEqual({
           type: "lifecycleState",
           stage: "implementation",
           pass: 1,
@@ -611,6 +633,17 @@ describe("lifecycle pause and resume", () => {
         client.send({ type: "startLifecycle" });
         expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
           type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.stage === "implementation",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
           stage: "implementation",
           pass: 1,
           work: { kind: "epic", id: "8" },
@@ -642,7 +675,7 @@ describe("lifecycle pause and resume", () => {
         // gate must hold the stage transition until the explicit resume.
         await Bun.sleep(300);
         expect(
-          lifecycleStates(client).filter((message) => message.stage === "epic"),
+          lifecycleStates(client).filter((message) => message.stage === "epic" && message.pass === 2),
         ).toEqual([]);
 
         client.send({ type: "resumeLifecycle" });
@@ -660,6 +693,102 @@ describe("lifecycle pause and resume", () => {
           work: null,
           paused: false,
         });
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "pauses the initial tracker lookup and resumes into its result",
+    async () => {
+      const lookup = Promise.withResolvers<void>();
+      let lookups = 0;
+      const epic: OpenEpic = {
+        number: 15,
+        title: "Lookup epic",
+        url: "https://example.test/issues/15",
+      };
+      const { server, logPath, url } = await startServer(
+        {},
+        {
+          tracker: async () => {
+            lookups += 1;
+            if (lookups === 1) {
+              await lookup.promise;
+              return epic;
+            }
+            return undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        const initial = {
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+          paused: false,
+        };
+        client.send({ type: "startLifecycle" });
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual(
+          initial,
+        );
+
+        client.send({ type: "pauseLifecycle" });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.paused === true,
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+          paused: true,
+        });
+
+        await Bun.sleep(200);
+        expect(spawnCount(logPath)).toBe(0);
+
+        lookup.resolve();
+        await Bun.sleep(400);
+        expect(spawnCount(logPath)).toBe(0);
+        expect(lifecycleStates(client)).toEqual([
+          initial,
+          {
+            type: "lifecycleState",
+            stage: "epic",
+            pass: 1,
+            work: null,
+            paused: true,
+          },
+        ]);
+        expect(client.events.filter((message) => message.type === "runStarted")).toEqual([]);
+
+        client.send({ type: "resumeLifecycle" });
+        expect(
+          await client.waitFor(
+            (message) =>
+              message.type === "lifecycleState" && message.stage === "implementation",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "implementation",
+          pass: 1,
+          work: { kind: "epic", id: "15" },
+          paused: false,
+        });
+
+        await waitUntil(
+          () => prompts(logPath).includes("/implement-next-epic"),
+          "the lifecycle peer did not spawn",
+        );
+        expect(prompts(logPath)[0]).toBe("/implement-next-epic");
       } finally {
         client.close();
         server.stop(true);
@@ -931,7 +1060,10 @@ describe("lifecycle pause and resume", () => {
 
         activeClient.send({ type: "resumeLifecycle" });
         await activeClient.waitFor(
-          (message) => message.type === "lifecycleState" && message.paused === false,
+          (message) =>
+            message.type === "lifecycleState" &&
+            message.paused === false &&
+            message.stage === "implementation",
         );
         const statesResumed = lifecycleStates(activeClient).length;
 

@@ -625,6 +625,10 @@ export function createApp(options: AppOptions) {
     }
 
     lifecycleRunning = true;
+    // Report the run as active before the first tracker lookup: clients need the
+    // stage to disable their start controls and offer pause while the lookup runs.
+    lifecycle = { stage: "epic", pass: lifecycle.pass, work: null, paused: false };
+    publishLifecycle();
     let finished = false;
     try {
       finished = await runLifecycle();
