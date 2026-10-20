@@ -70,6 +70,9 @@
         (lifecycle.stage === "epic" && lifecycle.work === null)),
   );
   let controlsDisabled = $derived(running || lifecycleActive || revisionActive);
+  let revisionDisabled = $derived(
+    revisionActive || (lifecycleActive ? !lifecycle.paused : running),
+  );
   let goalEditingDisabled = $derived(lifecycleActive && !lifecycle.paused);
   let lifecycleStageLabel = $derived(STAGE_LABELS[lifecycle.stage]);
   let lifecycleWorkTitle = $derived(
@@ -469,6 +472,7 @@
             type="button"
             class="start-button"
             data-testid="resume-lifecycle"
+            disabled={revisionActive}
             onclick={resumeLifecycle}
           >
             Resume lifecycle
@@ -526,13 +530,13 @@
           bind:value={revisionRequest}
           placeholder="Optional guidance for the agent"
           data-testid="revision-request"
-          disabled={controlsDisabled}
+          disabled={revisionDisabled}
         />
         <button
           type="button"
           class="start-button"
           data-testid="revise-goal"
-          disabled={controlsDisabled}
+          disabled={revisionDisabled}
           onclick={reviseGoal}
         >
           Revise goal

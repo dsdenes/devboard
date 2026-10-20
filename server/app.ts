@@ -140,6 +140,25 @@ export function createApp(options: AppOptions) {
     }
   }
 
+  function sendRunConversation(target: { send(data: string): unknown }, run: ActiveRun) {
+    send(target, { type: "runStarted", file: run.file, title: run.title });
+    for (const text of run.activity) send(target, { type: "activity", text });
+    if (run.question !== null) {
+      send(target, {
+        type: "question",
+        id: run.question.id,
+        message: run.question.message,
+        choices: run.question.choices,
+      });
+    }
+  }
+
+  /** Restores the suspended lifecycle conversation after a revision ends. */
+  function broadcastRunConversation() {
+    if (activeRun === undefined) return;
+    for (const client of clients) sendRunConversation(client, activeRun);
+  }
+
   async function readRecord(file: string): Promise<AdrRecord | undefined> {
     try {
       return parseRecord(file, await readFile(join(adrDir, file), "utf8"));
@@ -189,23 +208,26 @@ export function createApp(options: AppOptions) {
 
     if (!succeeded) {
       broadcast({ type: "goalRevisionStopped", completed: false });
+      broadcastRunConversation();
       return;
     }
 
     try {
       const text = await readGoal(goalFile);
       broadcast({ type: "goalRevisionStopped", completed: true, text });
+      broadcastRunConversation();
     } catch (error) {
       broadcast({
         type: "error",
         message: `Could not read the revised goal: ${error instanceof Error ? error.message : String(error)}`,
       });
       broadcast({ type: "goalRevisionStopped", completed: false });
+      broadcastRunConversation();
     }
   }
 
   async function startGoalRevision(ws: { send(data: string): unknown }, request: unknown) {
-    if (lifecycleRunning) {
+    if (lifecycleRunning && !lifecycle.paused) {
       send(ws, { type: "error", message: "A lifecycle run is active." });
       return;
     }
@@ -215,7 +237,9 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    if (activeRun !== undefined || sequencing) {
+    // A paused lifecycle keeps its suspended peer in activeRun; only a run that
+    // the revision would contend with refuses the start.
+    if (!(lifecycleRunning && lifecycle.paused) && (activeRun !== undefined || sequencing)) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
     }
@@ -448,6 +472,11 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    if (goalRevision !== undefined) {
+      send(ws, { type: "error", message: "A goal revision is active." });
+      return;
+    }
+
     if (!lifecycle.paused) {
       send(ws, { type: "error", message: "The lifecycle run is not paused." });
       return;
@@ -593,7 +622,7 @@ export function createApp(options: AppOptions) {
     id: unknown,
     value: unknown,
   ) {
-    const active = activeRun ?? goalRevision;
+    const active = goalRevision ?? activeRun;
     if (active === undefined) {
       send(ws, { type: "error", message: "No run is active." });
       return;
@@ -676,20 +705,7 @@ export function createApp(options: AppOptions) {
       open(ws) {
         clients.add(ws);
         if (lifecycleRunning) send(ws, { type: "lifecycleState", ...lifecycle });
-        if (activeRun !== undefined) {
-          const run = activeRun;
-          send(ws, { type: "runStarted", file: run.file, title: run.title });
-          for (const text of run.activity) send(ws, { type: "activity", text });
-          if (run.question !== null) {
-            send(ws, {
-              type: "question",
-              id: run.question.id,
-              message: run.question.message,
-              choices: run.question.choices,
-            });
-          }
-          return;
-        }
+        if (activeRun !== undefined) sendRunConversation(ws, activeRun);
 
         const revision = goalRevision;
         if (revision === undefined) return;

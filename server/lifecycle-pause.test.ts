@@ -26,7 +26,7 @@ async function temporaryDirectory() {
 
 async function startServer(
   files: Record<string, string>,
-  options: { agentArguments?: string; tracker?: EpicLookup } = {},
+  options: { agentArguments?: string; tracker?: EpicLookup; reviseGoal?: boolean } = {},
 ): Promise<TestServer> {
   const root = await temporaryDirectory();
   const adrDir = join(root, "adrs");
@@ -41,6 +41,14 @@ async function startServer(
   }
 
   const logPath = join(root, "agent.log");
+  const command = [
+    `bun ${STUB_AGENT}`,
+    `--log=${logPath}`,
+    options.reviseGoal === true ? `--revise-goal --goal=${goalFile}` : "",
+    options.agentArguments ?? "",
+  ]
+    .filter((part) => part.length > 0)
+    .join(" ");
   const server = createApp({
     adrDir,
     staticDir,
@@ -48,7 +56,7 @@ async function startServer(
     port: 0,
     repoDir: root,
     goalFile,
-    agentCommand: `bun ${STUB_AGENT} --log=${logPath} ${options.agentArguments ?? ""}`.trim(),
+    agentCommand: command,
     tracker: options.tracker ?? (async () => undefined),
   });
 
@@ -148,7 +156,221 @@ async function waitUntil(
   if (!predicate()) throw new Error(message);
 }
 
+function indexAfter(
+  events: Record<string, unknown>[],
+  start: number,
+  predicate: (message: Record<string, unknown>) => boolean,
+): number {
+  const offset = events.slice(start).findIndex(predicate);
+  return offset < 0 ? -1 : start + offset;
+}
+
+async function waitForIndex(
+  client: TestClient,
+  start: number,
+  predicate: (message: Record<string, unknown>) => boolean,
+  message: string,
+  timeout = 5000,
+): Promise<number> {
+  let index = -1;
+  await waitUntil(() => (index = indexAfter(client.events, start, predicate)) >= 0, message, timeout);
+  return index;
+}
+
+async function waitForAt(
+  client: TestClient,
+  start: number,
+  predicate: (message: Record<string, unknown>) => boolean,
+  message: string,
+  timeout = 5000,
+): Promise<Record<string, unknown>> {
+  const index = await waitForIndex(client, start, predicate, message, timeout);
+  return client.events[index] as Record<string, unknown>;
+}
+
 const PENDING_ONE = "# First decision\n\n- Status: Proposed\n\n## Context\n\nFirst.\n\n## Decision\n\n";
+
+/** Covers the revision start/stop and replay, then resumes the suspended peer. */
+async function exercisePausedRevision(request: string | undefined) {
+  const epic: OpenEpic = {
+    number: 21,
+    title: "Revision while paused",
+    url: "https://example.test/issues/21",
+  };
+  let lookups = 0;
+  const { server, goalFile, logPath, url } = await startServer(
+    {},
+    {
+      agentArguments: "--delay-ms=1000",
+      reviseGoal: true,
+      tracker: async () => {
+        lookups += 1;
+        return lookups === 1 ? epic : undefined;
+      },
+    },
+  );
+  const client = await connect(url);
+
+  try {
+    client.send({ type: "startLifecycle" });
+    expect(
+      await client.waitFor((message) => message.type === "lifecycleState"),
+    ).toEqual({
+      type: "lifecycleState",
+      stage: "implementation",
+      pass: 1,
+      work: { kind: "epic", id: "21" },
+      paused: false,
+    });
+    await waitUntil(() => spawnCount(logPath) === 1, "the lifecycle peer did not spawn");
+    expect(prompts(logPath)).toEqual(["/implement-next-epic"]);
+
+    client.send({ type: "pauseLifecycle" });
+    await client.waitFor(
+      (message) => message.type === "lifecycleState" && message.paused === true,
+    );
+    const pauseIndex = client.events.length;
+    const lifecycleActivity = client.events
+      .filter((message) => message.type === "activity")
+      .map((message) => message.text);
+    expect(lifecycleActivity).toEqual(["Revising the goal"]);
+
+    client.send(
+      request === undefined
+        ? { type: "reviseGoal" }
+        : { type: "reviseGoal", request },
+    );
+    const startedIndex = await waitForIndex(
+      client,
+      pauseIndex,
+      (message) => message.type === "goalRevisionStarted",
+      "the revision did not start while paused",
+    );
+    await waitForIndex(
+      client,
+      startedIndex,
+      (message) => message.type === "activity" && message.text === "Revising the goal",
+      "the revision activity was not relayed",
+    );
+    const revisionQuestion = await waitForAt(
+      client,
+      startedIndex,
+      (message) => message.type === "question",
+      "the revision question was not relayed",
+    );
+    expect(revisionQuestion).toMatchObject({
+      id: 1,
+      message: "Choose an answer",
+      choices: ["Alpha", "Beta"],
+    });
+
+    expect(spawnCount(logPath)).toBe(2);
+    expect(prompts(logPath)[1]?.startsWith("Revise the goal in ")).toBe(true);
+    const agentLog = logLines(logPath).join("\n");
+    if (request === undefined) {
+      expect(agentLog).not.toContain("Guidance:");
+    } else {
+      expect(agentLog).toContain(`Guidance: ${request}`);
+    }
+
+    const resumeAttempt = client.events.length;
+    client.send({ type: "resumeLifecycle" });
+    expect(
+      await waitForAt(
+        client,
+        resumeAttempt,
+        (message) => message.type === "error",
+        "resuming during the revision was not refused",
+      ),
+    ).toEqual({ type: "error", message: "A goal revision is active." });
+
+    client.send({ type: "answer", id: revisionQuestion.id, value: "Alpha" });
+    const stopped = await client.waitFor(
+      (message) => message.type === "goalRevisionStopped",
+    );
+    expect(stopped).toEqual({
+      type: "goalRevisionStopped",
+      completed: true,
+      text: "# Revised goal\n\nThe agent rewrote this.",
+    });
+    const stoppedIndex = client.events.lastIndexOf(stopped);
+    expect(await readFile(goalFile, "utf8")).toBe(stopped.text);
+
+    expect(
+      client.events
+        .slice(pauseIndex, stoppedIndex)
+        .filter((message) => message.type === "lifecycleState" && message.paused === false),
+    ).toEqual([]);
+    expect(spawnCount(logPath)).toBe(2);
+    expect(logLines(logPath).filter((line) => line.startsWith("revised "))).toHaveLength(1);
+
+    const replayIndex = await waitForIndex(
+      client,
+      stoppedIndex + 1,
+      (message) => message.type === "runStarted",
+      "the lifecycle conversation was not replayed",
+    );
+    const replayed = client.events.slice(replayIndex);
+    expect(replayed.filter((message) => message.type === "activity").map(
+      (message) => message.text,
+    )).toEqual(lifecycleActivity);
+    expect(replayed.filter((message) => message.type === "question")).toEqual([]);
+
+    const resumeIndex = client.events.length;
+    client.send({ type: "resumeLifecycle" });
+    expect(
+      await waitForAt(
+        client,
+        resumeIndex,
+        (message) => message.type === "lifecycleState" && message.paused === false,
+        "the paused lifecycle did not resume",
+      ),
+    ).toEqual({
+      type: "lifecycleState",
+      stage: "implementation",
+      pass: 1,
+      work: { kind: "epic", id: "21" },
+      paused: false,
+    });
+
+    const resumedQuestion = await waitForAt(
+      client,
+      resumeIndex,
+      (message) => message.type === "question",
+      "the original lifecycle peer did not continue",
+      10000,
+    );
+    expect(resumedQuestion).toMatchObject({
+      id: 1,
+      message: "Choose an answer",
+      choices: ["Alpha", "Beta"],
+    });
+    client.send({ type: "answer", id: resumedQuestion.id, value: "Beta" });
+
+    expect(
+      await waitForAt(
+        client,
+        resumeIndex,
+        (message) =>
+          message.type === "lifecycleState" && message.stage === "epic" && message.pass === 2,
+        "the lifecycle did not advance after the resumed stage",
+        10000,
+      ),
+    ).toEqual({
+      type: "lifecycleState",
+      stage: "epic",
+      pass: 2,
+      work: null,
+      paused: false,
+    });
+    expect(prompts(logPath).filter((prompt) => prompt === "/implement-next-epic")).toHaveLength(1);
+    expect(logLines(logPath).filter((line) => line.startsWith("revised "))).toHaveLength(2);
+    expect(logLines(logPath).filter((line) => line === "answer Beta")).toHaveLength(1);
+  } finally {
+    client.close();
+    server.stop(true);
+  }
+}
 
 afterAll(async () => {
   await Promise.all(
@@ -553,11 +775,9 @@ describe("lifecycle pause and resume", () => {
 
         client.send({ type: "startLifecycle" });
         client.send({ type: "startRun" });
-        client.send({ type: "reviseGoal", request: "Try again" });
 
         for (const expected of [
           "A lifecycle run is already active.",
-          "A lifecycle run is active.",
           "A lifecycle run is active.",
         ]) {
           expect(
@@ -724,6 +944,209 @@ describe("lifecycle pause and resume", () => {
       } finally {
         activeClient.close();
         active.server.stop(true);
+      }
+    },
+    40000,
+  );
+
+  test(
+    "revises the goal with guidance while paused and resumes the interrupted peer",
+    async () => {
+      await exercisePausedRevision("Tighten the goal");
+    },
+    40000,
+  );
+
+  test(
+    "revises the goal without guidance while paused and resumes the interrupted peer",
+    async () => {
+      await exercisePausedRevision(undefined);
+    },
+    40000,
+  );
+
+  test(
+    "replays the pending lifecycle question to every client after a paused revision",
+    async () => {
+      const epic: OpenEpic = {
+        number: 31,
+        title: "Question across a revision",
+        url: "https://example.test/issues/31",
+      };
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        {},
+        {
+          reviseGoal: true,
+          tracker: async () => {
+            lookups += 1;
+            return lookups === 1 ? epic : undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+      const late = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "implementation",
+        );
+        const lifecycleQuestion = await client.waitFor(
+          (message) => message.type === "question",
+        );
+        expect(lifecycleQuestion).toMatchObject({
+          id: 1,
+          message: "Choose an answer",
+          choices: ["Alpha", "Beta"],
+        });
+        const lifecycleActivity = client.events
+          .filter((message) => message.type === "activity")
+          .map((message) => message.text);
+        expect(lifecycleActivity).toEqual(["Revising the goal"]);
+
+        client.send({ type: "pauseLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.paused === true,
+        );
+        await waitUntil(
+          () => late.events.some((message) => message.type === "question"),
+          "the late client did not receive the paused conversation",
+        );
+
+        const pauseIndex = client.events.length;
+        client.send({ type: "reviseGoal", request: "Clarify the goal" });
+        const started = await waitForIndex(
+          client,
+          pauseIndex,
+          (message) => message.type === "goalRevisionStarted",
+          "the revision did not start",
+        );
+        const startedLate = await waitForIndex(
+          late,
+          0,
+          (message) => message.type === "goalRevisionStarted",
+          "the late client did not see the revision start",
+        );
+        const revisionQuestion = await waitForAt(
+          client,
+          started,
+          (message) => message.type === "question",
+          "the revision question was not relayed",
+        );
+        await waitForAt(
+          late,
+          startedLate,
+          (message) => message.type === "question",
+          "the late client did not see the revision question",
+        );
+
+        client.send({ type: "answer", id: revisionQuestion.id, value: "Alpha" });
+        const stopped = await waitForIndex(
+          client,
+          started,
+          (message) => message.type === "goalRevisionStopped",
+          "the revision did not stop",
+        );
+        const stoppedLate = await waitForIndex(
+          late,
+          startedLate,
+          (message) => message.type === "goalRevisionStopped",
+          "the late client did not see the revision stop",
+        );
+
+        const replay = await waitForIndex(
+          client,
+          stopped + 1,
+          (message) => message.type === "runStarted",
+          "the pending lifecycle conversation was not replayed",
+        );
+        const replayLate = await waitForIndex(
+          late,
+          stoppedLate + 1,
+          (message) => message.type === "runStarted",
+          "the late client did not receive the pending lifecycle conversation",
+        );
+
+        for (const [target, index] of [
+          [client, replay],
+          [late, replayLate],
+        ] as const) {
+          await waitUntil(
+            () =>
+              target.events
+                .slice(index)
+                .some((message) => message.type === "question"),
+            "the pending lifecycle question was not replayed",
+          );
+          const replayed = target.events.slice(index);
+          const positions = replayed.map((message) => message.type);
+          expect(positions.indexOf("runStarted")).toBeLessThan(positions.indexOf("activity"));
+          expect(positions.indexOf("activity")).toBeLessThan(positions.indexOf("question"));
+          expect(
+            replayed.filter((message) => message.type === "activity").map(
+              (message) => message.text,
+            ),
+          ).toEqual(lifecycleActivity);
+          expect(
+            replayed.find((message) => message.type === "question"),
+          ).toMatchObject({
+            id: lifecycleQuestion.id,
+            message: lifecycleQuestion.message,
+            choices: lifecycleQuestion.choices,
+          });
+        }
+
+        const replayedQuestion = client.events
+          .slice(replay)
+          .find((message) => message.type === "question") as Record<string, unknown>;
+        client.send({ type: "answer", id: replayedQuestion.id, value: "Beta" });
+
+        const resumeIndex = client.events.length;
+        client.send({ type: "resumeLifecycle" });
+        expect(
+          await waitForAt(
+            client,
+            resumeIndex,
+            (message) => message.type === "lifecycleState" && message.paused === false,
+            "the lifecycle did not resume after the revision",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "implementation",
+          pass: 1,
+          work: { kind: "epic", id: "31" },
+          paused: false,
+        });
+
+        await waitUntil(
+          () => logLines(logPath).filter((line) => line === "answer Beta").length === 1,
+          "the replayed question did not reach the suspended peer",
+          10000,
+        );
+        expect(client.events.filter((message) => message.type === "error")).toEqual([]);
+        expect(
+          await waitForAt(
+            client,
+            resumeIndex,
+            (message) =>
+              message.type === "lifecycleState" &&
+              message.stage === "epic" &&
+              message.pass === 2,
+            "the lifecycle did not advance after the resumed stage",
+            10000,
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 2,
+          work: null,
+          paused: false,
+        });
+      } finally {
+        client.close();
+        late.close();
+        server.stop(true);
       }
     },
     40000,

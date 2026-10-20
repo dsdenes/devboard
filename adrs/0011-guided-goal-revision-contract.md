@@ -1,6 +1,6 @@
 # Guided goal revision contract
 
-- Status: Accepted
+- Status: Superseded by `GOAL.md`: “The goal cannot be edited or rewritten while the lifecycle is running; both remain available whenever the lifecycle is not running or is paused.”
 
 ## Context
 
