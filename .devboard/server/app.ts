@@ -187,6 +187,12 @@ export function createApp(options: AppOptions) {
     try {
       send(ws, { type: "goal", text: await readGoal(goalFile) });
     } catch (error) {
+      // An absent goal document is an unset goal, so the section reports
+      // `Goal not set` and offers the creation control instead of an error.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        send(ws, { type: "goal", text: "" });
+        return;
+      }
       send(ws, {
         type: "error",
         message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
@@ -254,10 +260,9 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    let text: string;
     try {
-      const text = await readFile(creationGoalFile, "utf8");
-      broadcast({ type: "goalCreationStopped", completed: true, text });
-      broadcastRunConversation();
+      text = await readFile(creationGoalFile, "utf8");
     } catch (error) {
       broadcast({
         type: "error",
@@ -265,7 +270,21 @@ export function createApp(options: AppOptions) {
       });
       broadcast({ type: "goalCreationStopped", completed: false });
       broadcastRunConversation();
+      return;
     }
+
+    if (text.trim().length === 0) {
+      broadcast({
+        type: "error",
+        message: "The goal creation ended without a non-empty goal.",
+      });
+      broadcast({ type: "goalCreationStopped", completed: false });
+      broadcastRunConversation();
+      return;
+    }
+
+    broadcast({ type: "goalCreationStopped", completed: true, text });
+    broadcastRunConversation();
   }
 
   async function startGoalCreation(ws: { send(data: string): unknown }) {

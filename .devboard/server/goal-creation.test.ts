@@ -560,7 +560,11 @@ describe("guided goal creation", () => {
 
         const late = await connect(url);
         try {
-          await eventually(() => late.events.length >= 3);
+          // The replay must precede the reply to the late client's own command.
+          late.send({ type: "getGoal" });
+          await eventually(() =>
+            late.events.some((message) => message.type === "goal"),
+          );
           expect(late.events[0]).toEqual({ type: "goalCreationStarted" });
           expect(late.events[1]).toEqual({ type: "activity", text: "Creating the goal" });
           expect(late.events[2]).toMatchObject({
@@ -568,6 +572,7 @@ describe("guided goal creation", () => {
             message: "Choose an answer",
             choices: ["Alpha", "Beta"],
           });
+          expect(late.events.findIndex((message) => message.type === "goal")).toBeGreaterThan(2);
 
           const question = late.events[2];
           late.send({ type: "answer", id: question.id, value: "Alpha" });
@@ -614,6 +619,98 @@ describe("guided goal creation", () => {
           file: "0001-first.md",
         });
         await eventually(() => spawnCount(logPath) === 2);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "reports an absent goal document as an empty goal",
+    async () => {
+      const { server, url } = await startServer({ "0001-first.md": PENDING_ONE });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "getGoal" });
+        expect(await client.waitFor((message) => message.type === "goal")).toEqual({
+          type: "goal",
+          text: "",
+        });
+        expect(errors(client)).toEqual([]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test.each([
+    ["empty", ""],
+    ["whitespace-only", " \n\t\n"],
+  ])(
+    "reports a %s goal left by the peer as a failed creation",
+    async (_kind, goalText) => {
+      const { server, goalFile, logPath, url } = await startServer(
+        { "0001-first.md": PENDING_ONE },
+        { goalText, agentArguments: "--no-create-goal-write" },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "createGoal" });
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        const question = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(error.message).toBe("The goal creation ended without a non-empty goal.");
+        const stopped = await client.waitFor((message) => message.type === "goalCreationStopped");
+        expect(stopped).toEqual({ type: "goalCreationStopped", completed: false });
+        expect("text" in stopped).toBe(false);
+        expect(await readFile(goalFile, "utf8")).toBe(goalText);
+
+        // The control stays available: another creation starts a new peer.
+        client.send({ type: "createGoal" });
+        expect(await client.waitFor((message) => message.type === "goalCreationStarted")).toEqual({
+          type: "goalCreationStarted",
+        });
+        await eventually(() => spawnCount(logPath) === 2);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "creates the goal without reading or writing adrs/",
+    async () => {
+      const { server, adrDir, goalFile, url } = await startServer({
+        "0001-first.md": PENDING_ONE,
+      });
+      await rm(adrDir, { recursive: true, force: true });
+      await writeFile(adrDir, "not a directory");
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "createGoal" });
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        const question = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+
+        expect(await client.waitFor((message) => message.type === "goalCreationStopped")).toEqual({
+          type: "goalCreationStopped",
+          completed: true,
+          text: CREATED_GOAL,
+        });
+        expect(await readFile(goalFile, "utf8")).toBe(CREATED_GOAL);
+        expect(await readFile(adrDir, "utf8")).toBe("not a directory");
+        expect(runEvents(client)).toEqual([]);
       } finally {
         client.close();
         server.stop(true);

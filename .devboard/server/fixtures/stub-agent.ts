@@ -19,6 +19,7 @@ const delayMs = Number(argument("delay-ms") ?? 0);
 const forcedQuestions = argument("questions");
 const reviseGoal = process.argv.includes("--revise-goal");
 const createGoal = process.argv.includes("--create-goal");
+const createGoalWrite = !process.argv.includes("--no-create-goal-write");
 const goalFile = argument("goal");
 const resolveRecord = !process.argv.includes("--no-resolve");
 const removeRecord = process.argv.includes("--remove-record");
@@ -181,7 +182,7 @@ async function promptTurn(params: Record<string, unknown>) {
   }
 
   if (creating) {
-    if (goalFile !== undefined) {
+    if (goalFile !== undefined && createGoalWrite) {
       writeFileSync(goalFile, CREATED_GOAL);
       log(`created ${goalFile}`);
       write({

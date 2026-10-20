@@ -13,15 +13,19 @@ is unavailable while a run is active or the lifecycle is advancing, but remains 
 while the lifecycle is paused; starting another run or revision is blocked while one is in
 progress.
 
-When the goal document is empty, the goal section also offers a `Create goal` control. Selecting
+When the goal document is empty, whitespace-only, or absent, the goal section reports
+`Goal not set` and offers a `Create goal` control. Selecting
 it asks the server to start the installed `/goal-outcome` skill in one ACP peer, in the
 background; its activity and interview questions stream into the same live log and question UI,
 and the goal section shows `Creating the goal` while it runs. The developer answers the skill's
 questions; the skill interviews them and writes the goal document. The flow never starts on page
 load or reconnect, and the control is absent once the goal document contains non-whitespace text.
 When the peer ends, the server reads `<REPO_DIR>/GOAL.md` and the textarea shows those bytes, so
-`Goal ready` and `Start lifecycle` become available. The server owns the creation run, so closing
-the browser does not stop it, and a client that connects during it receives the start, every
+`Goal ready` and `Start lifecycle` become available. A creation that ends with no non-empty
+`GOAL.md` is reported as an error: the server sends an `error` and a failed
+`goalCreationStopped`, the textarea and goal state stay unchanged, and `Create goal` remains
+available. The server owns the creation run, so closing the
+browser does not stop it, and a client that connects during it receives the start, every
 recorded activity line, and the pending question. While a creation runs, starting a run or the
 lifecycle, resuming a paused lifecycle, and revising the goal are each refused; while a run, the
 advancing lifecycle, or a revision is active, creation is refused in turn. A creation is
@@ -132,7 +136,8 @@ The client sends:
 { "type": "answer", "id": 1, "value": "Gamma" }
 ```
 
-- `getGoal` reads the goal document from disk and answers with its complete contents.
+- `getGoal` reads the goal document from disk and answers with its complete contents; an
+  absent document answers with empty text, so the goal section reports `Goal not set`.
 - `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`. It is accepted while the lifecycle is paused and refused while the lifecycle is advancing.
 - `startRun` without `file` starts the sequence with the lowest-numbered pending record.
 - `startRun` with `file` starts that record first only when it is pending; the sequence then continues with the lowest-numbered remaining pending records.
@@ -149,7 +154,10 @@ The client sends:
   suspended peer keeps its stage and conversation. Activity and questions use the existing
   `activity` and `question` events, and `answer` replies to a creation question exactly as it
   does to a revision question; a second answer for the same question id is refused with an
-  `error`.
+  `error`. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` again: text that contains
+  at least one non-whitespace character completes the creation, while an absent, empty, or
+  whitespace-only document is a failure that sends an `error` followed by a failed
+  `goalCreationStopped`.
 - A creation is refused with an `error` event, without spawning a peer, while the lifecycle is
   advancing, an ADR run or run sequence is active, a goal revision is active, another creation
   is active, `<REPO_DIR>/GOAL.md` contains non-whitespace text, or that file exists but cannot
@@ -236,14 +244,15 @@ The server answers with events:
 - A revision emits no `runStarted` or `runStopped` events of its own and does not read or write `adrs/`. When it ends while a lifecycle run is paused, the server follows `goalRevisionStopped` with the suspended lifecycle `runStarted`, every recorded `activity` line, and the pending `question` if one exists, so every connected client restores the interrupted conversation.
 - `goalCreationStarted` marks the beginning of a guided goal creation. `goalCreationStopped`
   marks its end: `completed` is `true` only when the peer ended without error and
-  `<REPO_DIR>/GOAL.md` could be read, in which case `text` carries the complete file contents.
-  A failed creation has `completed: false`, omits `text`, and is accompanied by an `error`
-  event. A creation emits no `runStarted` or `runStopped` events and does not read or write
-  `adrs/`. When it ends while a lifecycle run is paused, the server likewise replays the
-  suspended lifecycle `runStarted`, recorded activity, and pending question. A client that
-  connects or reconnects during a creation receives `goalCreationStarted`, every recorded
-  `activity` line, and the pending `question` if one exists, before any other event beyond the
-  lifecycle state and suspended conversation.
+  `<REPO_DIR>/GOAL.md` could be read with at least one non-whitespace character, in which case
+  `text` carries the complete file contents. A failed creation has `completed: false`, omits
+  `text`, and is accompanied by an `error` event; that includes a peer that ends with an absent,
+  empty, or whitespace-only goal document. A creation emits no `runStarted` or `runStopped`
+  events and does not read or write `adrs/`. When it ends while a lifecycle run is paused, the
+  server likewise replays the suspended lifecycle `runStarted`, recorded activity, and pending
+  question. A client that connects or reconnects during a creation receives
+  `goalCreationStarted`, every recorded `activity` line, and the pending `question` if one
+  exists, before any other event beyond the lifecycle state and suspended conversation.
 - A client that connects or reconnects during a revision receives `goalRevisionStarted`, every `activity` line recorded so far, and the pending `question` if one exists, before any other event beyond the lifecycle state and suspended conversation.
 - The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written verbatim by `saveGoal` and by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file. `runStopped` reports whether the active record is now resolved; a `records` event follows each `runStopped` before the next `runStarted`. Only one run, sequence, lifecycle run, goal revision, or goal creation exists at a time, in server memory; stopping the server terminates its child process and the loop.
 
@@ -268,10 +277,12 @@ during lifecycle and record runs (including between records), refusals during a 
 reconnect replay, the unreadable-goal failure, and the absence of run events or ADR writes.
 `server/goal-creation.test.ts` covers guided goal creation: the `/goal-outcome` prompt, no
 spawn on connect, activity and question relay, the created goal reported verbatim from
-`<REPO_DIR>/GOAL.md`, the unreadable goal before and after the peer, every refusal, the
-single-agent refusals while creating, reconnect replay, acceptance and suspended-conversation
-replay while the lifecycle is paused, the absence of run events or ADR writes, and the custom
-`GOAL_FILE` split.
+`<REPO_DIR>/GOAL.md`, the unreadable goal before and after the peer, an absent goal answered as
+empty, an empty or whitespace-only result reported as a failed creation that leaves the
+document unchanged and creation available, every refusal, the
+single-agent refusals while creating, reconnect replay before the late client's own replies,
+acceptance and suspended-conversation replay while the lifecycle is paused, completion without
+reading or writing `adrs/`, and the custom `GOAL_FILE` split.
 `server/lifecycle.test.ts` covers the `lifecycleState` sequence, the running `epic` state
 reported before the first tracker lookup and to every client, the single `/epic-next`
 peer, ADR-order resolution, implementation of an already-open epic, return to epic generation
