@@ -542,7 +542,7 @@ After the goal tool succeeds, implement the epic end to end:
 - Work only inside the worktree path above. Never edit, write, or run mutating commands in ${repo}; that checkout is for the final merge only.
 - Use absolute paths under the worktree for every tool, and pass the worktree as \`cwd\` to \`bash\`.
 - Read the epic URL for the full body, including any detail omitted from the objective.
-- Follow every success criterion and verification step. Run the verification commands in the worktree and observe their actual output.
+- Follow every success criterion and verification scenario. Perform each check through the product's user-visible surface in the worktree, observe the actual result, and use the repository's documented build and test commands only as supporting evidence.
 - Keep the goal active until every criterion is verified. Call the \`goal\` tool with {"op":"complete"} only then.
 - When complete, merge ${branch} into main from ${repo}, delete the branch, and remove the worktree with \`git worktree remove\`, per AGENTS.md.
 - When complete, close the epic issue ${epic.ref} in ${repo}: ${forge === "github" ? `\`gh issue close ${epic.ref}\`` : `\`glab issue close ${epic.ref}\``}. Close it only after the merge succeeded and the worktree was removed. If closing fails, report that failure once as the run's blocker.
