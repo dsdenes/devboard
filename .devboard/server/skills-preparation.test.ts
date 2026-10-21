@@ -417,7 +417,6 @@ describe("skills preparation", () => {
           { type: "resumeLifecycle" },
           { type: "reviseGoal" },
           { type: "saveGoal", text: "A different goal" },
-          { type: "createGoal" },
           { type: "prepareSkills" },
         ];
         for (const command of commands) client.send(command);
@@ -437,6 +436,43 @@ describe("skills preparation", () => {
           (message) => message.type === "skillsPreparationStopped",
         );
         expect(stopped.completed).toBe(true);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
+  test(
+    "starts creation by stopping an active skills preparation",
+    async () => {
+      const root = await temporaryDirectory();
+      const goalFile = join(root, "GOAL.md");
+      const { server, logPath, url } = await startServer({
+        root,
+        agentArguments: `--prepare-skills --create-goal --goal=${goalFile} --questions=1`,
+      });
+      const client = await connect(url);
+      try {
+        client.send({ type: "prepareSkills" });
+        await client.waitFor((message) => message.type === "skillsPreparationStarted");
+        await client.waitFor((message) => message.type === "question");
+
+        client.send({ type: "createGoal" });
+        expect(
+          await client.waitFor((message) => message.type === "skillsPreparationStopped"),
+        ).toEqual({ type: "skillsPreparationStopped", completed: false });
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        await waitUntil(() => spawnCount(logPath) === 2, "creation peer spawned");
+
+        const question = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+        const stopped = await client.waitFor(
+          (message) => message.type === "goalCreationStopped",
+        );
+        expect(stopped.completed).toBe(true);
+        expect(await readFile(goalFile, "utf8")).toBe("# Created goal\n\nThe agent wrote this.");
       } finally {
         client.close();
         server.stop(true);

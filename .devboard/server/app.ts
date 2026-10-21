@@ -901,6 +901,13 @@ export function createApp(options: AppOptions) {
     }
     skillsPreparationPending = false;
 
+    // A creation requested during setup wins; undo the managed-directory reset.
+    if (goalCreation !== undefined) {
+      await restoreDirectory(skillsDir, snapshot);
+      send(ws, { type: "error", message: "A goal creation is active." });
+      return;
+    }
+
     const preparation: SkillsPreparation = {
       agent: undefined,
       activity: [],
@@ -1012,12 +1019,8 @@ export function createApp(options: AppOptions) {
   }
 
   async function startGoalCreation(ws: { send(data: string): unknown }) {
-    if (skillsPreparation !== undefined) {
-      send(ws, { type: "error", message: "A skills preparation is active." });
-      return;
-    }
-
     const request = ++goalCreationRequest;
+    const preparation = skillsPreparation;
 
     try {
       await readFile(creationGoalFile, "utf8");
@@ -1037,10 +1040,13 @@ export function createApp(options: AppOptions) {
     if (request !== goalCreationRequest) return;
 
     // A creation request always wins: it replaces an existing goal and any
-    // creation, revision, or run that would contend with the new peer.
+    // creation, revision, preparation, or run that would contend with the new peer.
     abortGoalCreation();
     abortGoalRevision();
     const stoppedRun = abortActiveRun();
+
+    if (preparation !== undefined) await stopSkillsPreparation(preparation, false);
+    if (request !== goalCreationRequest) return;
 
     if (stoppedRun) {
       try {
