@@ -3,10 +3,17 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   decode as referenceDecode,
+  decodeMulti as referenceDecodeMulti,
+  decodeMultiStream as referenceDecodeMultiStream,
   encode as referenceEncode,
   ExtensionCodec as ReferenceExtensionCodec,
 } from "msgpack-javascript-original";
-import { fixtures, GeoPoint, installExtensionCodec } from "../examples/server/fixtures.ts";
+import {
+  fixtures,
+  GeoPoint,
+  installExtensionCodec,
+  malformedCases,
+} from "../examples/server/fixtures.ts";
 
 const referenceCodec = new ReferenceExtensionCodec();
 installExtensionCodec(referenceCodec);
@@ -141,13 +148,72 @@ async function postBytes(url: string, body: Uint8Array<ArrayBuffer>): Promise<Ui
   return new Uint8Array(await response.arrayBuffer());
 }
 
-async function postStream(url: string, body: Uint8Array<ArrayBuffer>): Promise<unknown[]> {
+interface StreamPayload {
+  values: unknown[];
+  error?: { name: string; message: string };
+}
+
+async function postStream(url: string, body: Uint8Array<ArrayBuffer>): Promise<StreamPayload> {
   const response = await fetch(`${url}/stream`, { method: "POST", body });
   if (!response.ok) {
     throw new Error(`${url}/stream returned ${response.status}`);
   }
-  const payload: { values: unknown[] } = await response.json();
-  return payload.values;
+  return response.json() as Promise<StreamPayload>;
+}
+
+function describeError(error: unknown): { name: string; message: string } {
+  const typed = error as Error;
+  return { name: typed.name, message: String(typed.message) };
+}
+
+function kindOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  if (value instanceof Date) return "date";
+  if (value instanceof GeoPoint) return "point";
+  if (typeof value === "object") return "map";
+  return typeof value;
+}
+
+function expectedDecode(bytes: Uint8Array): unknown {
+  try {
+    const value = referenceDecode(bytes, { extensionCodec: referenceCodec });
+    return { ok: true, kind: kindOf(value), value: describeValue(value) };
+  } catch (error) {
+    return { ok: false, error: describeError(error) };
+  }
+}
+
+function expectedMulti(bytes: Uint8Array): unknown {
+  const values: unknown[] = [];
+  try {
+    for (const value of referenceDecodeMulti(bytes, { extensionCodec: referenceCodec })) {
+      values.push(describeValue(value));
+    }
+    return { values };
+  } catch (error) {
+    return { values, error: describeError(error) };
+  }
+}
+
+async function* threeByteChunks(bytes: Uint8Array): AsyncIterable<Uint8Array> {
+  for (let offset = 0; offset < bytes.length; offset += 3) {
+    yield bytes.subarray(offset, Math.min(offset + 3, bytes.length));
+  }
+}
+
+async function expectedStream(bytes: Uint8Array): Promise<unknown> {
+  const values: unknown[] = [];
+  try {
+    for await (const value of referenceDecodeMultiStream(threeByteChunks(bytes), {
+      extensionCodec: referenceCodec,
+    })) {
+      values.push(describeValue(value));
+    }
+    return { values };
+  } catch (error) {
+    return { values, error: describeError(error) };
+  }
 }
 
 function concatBytes(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
@@ -257,7 +323,7 @@ async function verify(url: string): Promise<{ steps: Step[]; encodedFixtures: st
   const streamedValues = await postStream(url, concatBytes(fixtureMessages));
   steps.push({
     name: "POST /stream decodes every consecutive message",
-    ok: JSON.stringify(streamedValues) === JSON.stringify(fixtures.map(describeValue)),
+    ok: JSON.stringify(streamedValues.values) === JSON.stringify(fixtures.map(describeValue)),
   });
 
   const truncatedTail = fixtureMessages[fixtureMessages.length - 1];
@@ -268,14 +334,66 @@ async function verify(url: string): Promise<{ steps: Step[]; encodedFixtures: st
   const truncatedValues = await postStream(url, truncatedBody);
   steps.push({
     name: "POST /stream delivers complete messages before a truncated tail",
-    ok: JSON.stringify(truncatedValues) ===
+    ok: JSON.stringify(truncatedValues.values) ===
       JSON.stringify(fixtures.slice(0, -1).map(describeValue)),
   });
 
   const emptyValues = await postStream(url, new Uint8Array(0));
   steps.push({
     name: "POST /stream empty body yields no messages",
-    ok: emptyValues.length === 0,
+    ok: emptyValues.values.length === 0 && emptyValues.error === undefined,
+  });
+
+  for (const [name, bytes] of malformedCases) {
+    const body = bytes as Uint8Array<ArrayBuffer>;
+
+    const decoded = await fetch(`${url}/decode`, { method: "POST", body }).then(
+      (response) => response.json() as Promise<unknown>,
+    );
+    const expectedDecoded = expectedDecode(body);
+    steps.push({
+      name: `malformed /decode: ${name}`,
+      ok: JSON.stringify(decoded) === JSON.stringify(expectedDecoded),
+      detail: JSON.stringify(decoded) === JSON.stringify(expectedDecoded)
+        ? undefined
+        : `${JSON.stringify(decoded)} != ${JSON.stringify(expectedDecoded)}`,
+    });
+
+    const multi = await fetch(`${url}/multi`, { method: "POST", body }).then(
+      (response) => response.json() as Promise<unknown>,
+    );
+    const expectedMultiOutcome = expectedMulti(body);
+    steps.push({
+      name: `malformed /multi: ${name}`,
+      ok: JSON.stringify(multi) === JSON.stringify(expectedMultiOutcome),
+      detail: JSON.stringify(multi) === JSON.stringify(expectedMultiOutcome)
+        ? undefined
+        : `${JSON.stringify(multi)} != ${JSON.stringify(expectedMultiOutcome)}`,
+    });
+
+    const streamed = await postStream(url, body);
+    const expectedStreamOutcome = await expectedStream(body);
+    steps.push({
+      name: `malformed /stream: ${name}`,
+      ok: JSON.stringify(streamed) === JSON.stringify(expectedStreamOutcome),
+      detail: JSON.stringify(streamed) === JSON.stringify(expectedStreamOutcome)
+        ? undefined
+        : `${JSON.stringify(streamed)} != ${JSON.stringify(expectedStreamOutcome)}`,
+    });
+  }
+
+  const corruptedTail = concatBytes([
+    fixtureMessages[0],
+    fixtureMessages[1].subarray(0, fixtureMessages[1].length - 2),
+  ]);
+  const corruptedValues = await postStream(url, corruptedTail);
+  const expectedCorrupted = await expectedStream(corruptedTail);
+  steps.push({
+    name: "POST /stream reports the failure after complete messages",
+    ok: JSON.stringify(corruptedValues) === JSON.stringify(expectedCorrupted),
+    detail: JSON.stringify(corruptedValues) === JSON.stringify(expectedCorrupted)
+      ? undefined
+      : `${JSON.stringify(corruptedValues)} != ${JSON.stringify(expectedCorrupted)}`,
   });
 
   return { steps, encodedFixtures };

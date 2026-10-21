@@ -8,7 +8,7 @@ import {
   decodeMultiStream,
   encode,
 } from "@msgpack/msgpack";
-import { fixtures, GeoPoint, installExtensionCodec } from "./fixtures.ts";
+import { fixtures, GeoPoint, installExtensionCodec, malformedCases } from "./fixtures.ts";
 
 declare global {
   interface Window {
@@ -162,12 +162,92 @@ async function runStreaming() {
   };
 }
 
+function describeError(error: unknown): { name: string; message: string } {
+  const typed = error as Error;
+  return { name: typed.name, message: String(typed.message) };
+}
+
+function decodeOutcome(bytes: Uint8Array) {
+  try {
+    return { ok: true, value: canonical(decode(bytes, { extensionCodec })) };
+  } catch (error) {
+    return { ok: false, error: describeError(error) };
+  }
+}
+
+async function streamOutcome(
+  bytes: Uint8Array,
+  size: number,
+  collect: (source: ReadableStream<Uint8Array>) => AsyncIterable<unknown>,
+) {
+  const values: unknown[] = [];
+  try {
+    for await (const value of collect(chunkStream(bytes, size))) {
+      values.push(canonical(value));
+    }
+    return { values };
+  } catch (error) {
+    return { values, error: describeError(error) };
+  }
+}
+
+async function singleOutcome(bytes: Uint8Array) {
+  try {
+    return { ok: true, value: canonical(await decodeAsync(chunkStream(bytes, 2), { extensionCodec })) };
+  } catch (error) {
+    return { ok: false, error: describeError(error) };
+  }
+}
+
+// Corrupted and externally produced bytes alongside the application's own
+// payloads: the application reports the value it decoded or the failure it
+// observed, so both outcomes are comparable after a dependency swap.
+async function runMalformed() {
+  const cases = [];
+  for (const [name, bytes] of malformedCases) {
+    cases.push({
+      name,
+      decode: decodeOutcome(bytes),
+      multi: await streamOutcome(bytes, 2, (source) => decodeMultiStream(source, { extensionCodec })),
+      array: await streamOutcome(bytes, 3, (source) => decodeArrayStream(source, { extensionCodec })),
+      single: await singleOutcome(bytes),
+    });
+  }
+
+  const valid = ["small map", "binary"].map((name) => {
+    const entry = fixtures.find(([fixtureName]) => fixtureName === name);
+    if (entry === undefined) {
+      throw new Error(`missing fixture: ${name}`);
+    }
+    return encode(entry[1], { extensionCodec });
+  });
+  const validTail = valid[0].subarray(0, valid[0].length - 2);
+  cases.push({
+    name: "valid messages then a truncated tail",
+    decode: decodeOutcome(concatBytes([...valid, validTail])),
+    multi: await streamOutcome(
+      concatBytes([...valid, validTail]),
+      2,
+      (source) => decodeMultiStream(source, { extensionCodec }),
+    ),
+    array: await streamOutcome(
+      concatBytes([...valid, validTail]),
+      3,
+      (source) => decodeArrayStream(source, { extensionCodec }),
+    ),
+    single: await singleOutcome(concatBytes([...valid, validTail])),
+  });
+
+  return cases;
+}
+
 const result = {
   moduleEncodeHex: hex(encoderBytes),
   sharedRefSame: hex(encoderSharedBytes) === hex(encoderBytes),
   classDecodeSame: JSON.stringify(canonical(decoderValue)) === JSON.stringify(canonical(smallMap)),
   cases,
   streaming: await runStreaming(),
+  malformed: await runMalformed(),
 };
 window.__result = result;
 document.getElementById("result")!.textContent = JSON.stringify(result, null, 2);

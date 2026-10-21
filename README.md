@@ -174,12 +174,21 @@ cache.
 In scope: the value types listed above, the built-in timestamp extension,
 application-registered extension types, `context`, every documented encoding
 and decoding option, nested combinations, synchronous multi-message decoding
-of a buffer, and incremental, stream-fed decoding from async iterables and
-WHATWG `ReadableStream`s in browser and server runtimes.
+of a buffer, incremental, stream-fed decoding from async iterables and WHATWG
+`ReadableStream`s in browser and server runtimes, and malformed or externally
+produced input through every decoding entry point.
 
-Out of scope by design, matching the epic's non-goals: malformed-input error
-parity beyond an incomplete final message, type-declaration parity, and
-publishing.
+Malformed and unusual input matches the reference exactly: the same value when
+it decodes, and the same failure type and message when it rejects the bytes.
+This includes every single-byte header, every truncation of a supported payload,
+alternative encodings the encoders never emit, invalid UTF-8, reserved and
+unknown extension bytes, extra bytes after a message, and input that ends
+partway through a message. Decoding is iterative, so nesting is bounded by
+memory rather than the call stack, and streamed decoding keeps its state across
+chunk boundaries, so outcomes do not depend on where chunks split.
+
+Out of scope by design, matching the epic's non-goals: type-declaration parity
+and publishing.
 
 Out-of-scope inputs may be unsupported, but they cannot change the result for an
 in-scope payload.
@@ -194,6 +203,7 @@ bun run bench         # side-by-side encoding and decoding
 bun run verify:options
 bun run verify:multi
 bun run verify:stream
+bun run verify:malformed
 bun run verify:adoption
 ```
 
@@ -225,6 +235,17 @@ messages, decoding options, WHATWG `ReadableStream` input, and the CommonJS
 entry point. It fails if delivered values, order, error category, or message
 differ.
 
+`bun run verify:malformed` imports the built package under the original
+`@msgpack/msgpack` name and compares over a million outcomes with the reference:
+every single-byte header with payload bytes of several shapes, every truncation
+of every supported payload and of alternative encodings, generated and mutated
+byte sequences, buffers with no message, one message, and several concatenated
+messages with the final message truncated at every position, decoding options
+and key converters, every input form, and streamed input split at every position
+through async iterables and WHATWG `ReadableStream`s. It fails if a value
+differs, if one library accepts bytes the other rejects, or if an error type or
+message differs.
+
 `bun run bench` builds the shipped package, then measures both libraries on the
 same machine, payloads, and process, with warmup, alternating order, and the
 median of nine rounds. It exits non-zero if any measured payload is slower for
@@ -234,10 +255,11 @@ either operation.
 applications in `examples/`. Each script hashes the application source before and
 after swapping `@msgpack/msgpack` from the original to the replacement, installs
 both variants, starts the application, and compares the results. Both
-applications encode and decode timestamps and a registered `GeoPoint` type, and
-consume consecutive messages incrementally from chunked byte streams. The
-browser script loads the built application in headless Chrome and reads the
-rendered result.
+applications encode and decode timestamps and a registered `GeoPoint` type,
+consume consecutive messages incrementally from chunked byte streams, and
+report the value or failure for corrupted and externally produced byte
+sequences. The browser script loads the built application in headless Chrome and
+reads the rendered result.
 
 ## Measured performance
 
@@ -280,6 +302,7 @@ No measured payload was slower for either operation; all 23 were faster for both
 - `packages/msgpack/lib/` — built ESM, CommonJS, and declarations.
 - `test/` — byte and value parity tests and the fixture corpus.
 - `bench/` — side-by-side performance harness.
-- `verification/` — option, multi-message, stream, and adoption checks.
+- `verification/` — option, multi-message, stream, malformed-input, and adoption
+  checks.
 - `examples/server`, `examples/browser` — applications that adopt the package
   without source changes.

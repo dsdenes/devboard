@@ -16,6 +16,7 @@
     "verify:options": "bun run build && bun run verification/options-compat.ts",
     "verify:multi": "bun run build && bun run verification/multi-decode.ts",
     "verify:stream": "bun run build && bun run verification/stream-decode.ts",
+    "verify:malformed": "bun run build && bun run verification/malformed-input.ts",
     "verify:adoption": "bun run build && bun run verification/server-adoption.ts && bun run verification/browser-adoption.ts"
   },
   "devDependencies": {

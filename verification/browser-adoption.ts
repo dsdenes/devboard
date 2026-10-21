@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { encode as referenceEncode, ExtensionCodec as ReferenceExtensionCodec } from "msgpack-javascript-original";
-import { fixtures, GeoPoint, installExtensionCodec } from "../examples/browser/src/fixtures.ts";
+import {
+  fixtures,
+  GeoPoint,
+  installExtensionCodec,
+  malformedCases,
+} from "../examples/browser/src/fixtures.ts";
 
 const referenceCodec = new ReferenceExtensionCodec();
 installExtensionCodec(referenceCodec);
@@ -134,12 +139,26 @@ interface BrowserStreaming {
   classStream: unknown[];
 }
 
+interface BrowserFailure {
+  name: string;
+  message: string;
+}
+
+interface BrowserMalformedCase {
+  name: string;
+  decode: { ok: boolean; value?: unknown; error?: BrowserFailure };
+  multi: { values: unknown[]; error?: BrowserFailure };
+  array: { values: unknown[]; error?: BrowserFailure };
+  single: { ok: boolean; value?: unknown; error?: BrowserFailure };
+}
+
 interface BrowserResult {
   moduleEncodeHex: string;
   sharedRefSame: boolean;
   classDecodeSame: boolean;
   cases: BrowserCase[];
   streaming: BrowserStreaming;
+  malformed: BrowserMalformedCase[];
 }
 
 async function run(spec: string, outDir: string): Promise<BrowserResult> {
@@ -221,14 +240,44 @@ const streamingOk =
   JSON.stringify(streaming.array) === JSON.stringify(expectedStream[1]) &&
   JSON.stringify(streaming.classStream) === JSON.stringify(expectedStream);
 
+const malformed = replacement.malformed;
+const expectedMalformedNames = [
+  ...malformedCases.map(([name]) => name),
+  "valid messages then a truncated tail",
+];
+const malformedShapeOk =
+  malformed.length === expectedMalformedNames.length &&
+  expectedMalformedNames.every((name, index) => malformed[index]?.name === name) &&
+  malformed.every((item) =>
+    typeof item.decode.ok === "boolean" &&
+    (item.decode.ok
+      ? item.decode.value !== undefined && item.decode.error === undefined
+      : typeof item.decode.error?.name === "string" && item.decode.error.message.length > 0) &&
+    Array.isArray(item.multi.values) &&
+    (item.multi.error === undefined ||
+      (typeof item.multi.error.name === "string" && item.multi.error.message.length > 0)) &&
+    Array.isArray(item.array.values) &&
+    (item.array.error === undefined ||
+      (typeof item.array.error.name === "string" && item.array.error.message.length > 0)) &&
+    typeof item.single.ok === "boolean" &&
+    (item.single.ok ||
+      (typeof item.single.error?.name === "string" && item.single.error.message.length > 0))
+  );
+const malformedOk =
+  malformedShapeOk &&
+  malformed.some((item) => !item.decode.ok) &&
+  malformed.some((item) => item.decode.ok);
+
 const report = {
   sourcesUnchanged,
   sourceHashes: hashesAfter,
   identical,
+  malformedOk,
   hexMatchesReference,
   allRoundTrip,
   classApi,
   streamingOk,
+  malformedCases: malformed.length,
   streamedMessages: streaming.values.length,
   cases: replacement.cases.map((item) => item.name),
   baselineModuleEncodeHex: baseline.moduleEncodeHex,
@@ -237,6 +286,14 @@ const report = {
 
 console.log(JSON.stringify(report, null, 2));
 
-if (!sourcesUnchanged || !identical || !hexMatchesReference || !allRoundTrip || !classApi || !streamingOk) {
+if (
+  !sourcesUnchanged ||
+  !identical ||
+  !hexMatchesReference ||
+  !allRoundTrip ||
+  !classApi ||
+  !streamingOk ||
+  !malformedOk
+) {
   process.exitCode = 1;
 }

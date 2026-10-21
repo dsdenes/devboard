@@ -70,3 +70,26 @@ export const fixtures: Array<[string, unknown]> = [
     },
   ],
 ];
+
+/**
+ * Byte sequences an application may receive from an untrusted or foreign
+ * producer: truncated messages, reserved bytes, bad extension sizes, invalid
+ * UTF-8, and keys the decoder refuses. The application displays the outcome
+ * for each, so the same dependency swap can be compared on failures too.
+ */
+export const malformedCases: Array<[string, Uint8Array]> = [
+  ["empty input", new Uint8Array(0)],
+  ["truncated string", Uint8Array.from([0xd9, 0x05, 0x61])],
+  ["truncated int", Uint8Array.from([0xcc])],
+  ["reserved type byte", Uint8Array.from([0xc1])],
+  ["extra bytes", Uint8Array.from([0x01, 0x02])],
+  ["truncated array", Uint8Array.from([0x92, 0x01])],
+  [
+    "__proto__ key",
+    Uint8Array.from([0x81, 0xa9, ...new TextEncoder().encode("__proto__"), 0x01]),
+  ],
+  ["bad timestamp size", Uint8Array.from([0xd4, 0xff, 0x00])],
+  ["invalid UTF-8", Uint8Array.from([0xa2, 0xc3, 0x28])],
+  ["unknown extension", Uint8Array.from([0xd4, 0x7f, 0x2a])],
+  ["non-scalar map key", Uint8Array.from([0x81, 0x91, 0x01, 0x02])],
+];

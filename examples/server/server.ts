@@ -27,8 +27,25 @@ const server = Bun.serve({
 
     if (url.pathname === "/decode" && request.method === "POST") {
       const body = new Uint8Array(await request.arrayBuffer());
-      const value = decoder.decode(body);
-      return Response.json({ ok: true, kind: typeOf(value) });
+      try {
+        const value = decoder.decode(body);
+        return Response.json({ ok: true, kind: typeOf(value), value: describeValue(value) });
+      } catch (error) {
+        return Response.json({ ok: false, error: describeError(error) });
+      }
+    }
+
+    if (url.pathname === "/multi" && request.method === "POST") {
+      const body = new Uint8Array(await request.arrayBuffer());
+      const values: unknown[] = [];
+      try {
+        for (const value of decoder.decodeMulti(body)) {
+          values.push(describeValue(value));
+        }
+        return Response.json({ values });
+      } catch (error) {
+        return Response.json({ values, error: describeError(error) });
+      }
     }
 
     if (url.pathname === "/encode" && request.method === "POST") {
@@ -44,10 +61,14 @@ const server = Bun.serve({
       // application consumes it incrementally, with boundaries inside messages.
       const body = new Uint8Array(await request.arrayBuffer());
       const values: unknown[] = [];
-      for await (const value of decodeMultiStream(chunked(body, 3), { extensionCodec })) {
-        values.push(describeValue(value));
+      try {
+        for await (const value of decodeMultiStream(chunked(body, 3), { extensionCodec })) {
+          values.push(describeValue(value));
+        }
+        return Response.json({ values });
+      } catch (error) {
+        return Response.json({ values, error: describeError(error) });
       }
-      return Response.json({ values });
     }
 
     if (url.pathname === "/roundtrip" && request.method === "POST") {
@@ -61,6 +82,11 @@ const server = Bun.serve({
     return new Response("not found", { status: 404 });
   },
 });
+
+function describeError(error: unknown): { name: string; message: string } {
+  const typed = error as Error;
+  return { name: typed.name, message: String(typed.message) };
+}
 
 function typeOf(value: unknown): string {
   if (value === null) return "null";

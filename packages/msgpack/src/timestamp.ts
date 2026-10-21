@@ -1,5 +1,7 @@
 // https://github.com/msgpack/msgpack/blob/master/spec.md#timestamp-extension-type
 
+import { DecodeError } from "./decode-error.ts";
+
 export const EXT_TIMESTAMP = -1;
 
 const TIMESTAMP32_MAX_SEC = 0x100000000 - 1; // 32-bit unsigned int
@@ -92,7 +94,7 @@ export function decodeTimestampToTimeSpec(data: Uint8Array): TimeSpec {
       return { sec: getInt64(view, 4), nsec: view.getUint32(0) };
     }
     default:
-      throw new Error(`Unrecognized data size for timestamp (expected 4, 8, or 12): ${data.length}`);
+      throw new DecodeError(`Unrecognized data size for timestamp (expected 4, 8, or 12): ${data.length}`);
   }
 }
 
