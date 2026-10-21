@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0
+
+- Add the incremental, stream-fed decoding surface: `decodeMultiStream`,
+  `decodeAsync`, `decodeArrayStream`, and `Decoder.prototype.decodeStream`,
+  `decodeAsync`, and `decodeArrayStream`, matching msgpack-javascript 3.1.3 for
+  async iterables and WHATWG `ReadableStream` input.
+- Deliver each message as soon as its last byte arrives, with chunk boundaries
+  anywhere inside a message. An empty stream yields no messages and no failure.
+- Deliver every complete message before a stream ends partway through a message
+  and then end like the reference; `decodeAsync` raises the reference's
+  `RangeError` for empty and incomplete streams, including its message text.
+- Apply every decoding option to streamed messages.
+- Keep single-message and whole-buffer decoding, encoding output, option and
+  extension behavior unchanged.
+- Add stream parity tests and `bun run verify:stream`; extend the server and
+  browser adoption applications to consume chunked message streams.
+
 ## 0.3.0
 
 - Add `decodeMulti(buffer, options?)` and `Decoder.prototype.decodeMulti`,

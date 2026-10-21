@@ -1,6 +1,8 @@
 import { readUtf8 } from "./utf8.ts";
 import { ExtensionCodec } from "./extension.ts";
 import { DecodeError } from "./decode-error.ts";
+import { ensureAsyncIterable } from "./stream.ts";
+import type { ReadableStreamLike } from "./stream.ts";
 
 export type MapKeyConverter = (key: unknown) => string | number;
 
@@ -27,6 +29,8 @@ export interface DecoderOptions {
 type Input = ArrayLike<number> | ArrayBufferView | ArrayBuffer | SharedArrayBuffer;
 
 const UINT32_MAX = 0xffff_ffff;
+const HEAD_BYTE_REQUIRED = -1;
+const EMPTY_BYTES = new Uint8Array(0);
 
 const KEY_MAX_LENGTH = 16;
 
@@ -139,6 +143,8 @@ class Reader {
   bytes: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
   view: DataView<ArrayBufferLike> = new DataView(new ArrayBuffer(0));
   pos = 0;
+  head = HEAD_BYTE_REQUIRED;
+  trackHead = false;
   settings: DecoderSettings = DEFAULT_DECODER_SETTINGS;
 
   set(input: Input): void {
@@ -150,6 +156,7 @@ class Reader {
       this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     }
     this.pos = 0;
+    this.head = HEAD_BYTE_REQUIRED;
   }
 }
 
@@ -188,6 +195,7 @@ export class Decoder {
     try {
       const reader = this.reader;
       reader.settings = this.settings;
+      reader.trackHead = false;
       reader.set(buffer);
       const value = decodeValue(reader, false);
       if (reader.pos !== reader.bytes.length) {
@@ -208,9 +216,155 @@ export class Decoder {
     try {
       const reader = this.reader;
       reader.settings = this.settings;
+      reader.trackHead = false;
       reader.set(buffer);
       while (reader.pos < reader.bytes.length) {
         yield decodeValue(reader, false);
+      }
+    } finally {
+      this.entered = false;
+    }
+  }
+
+  async decodeAsync(stream: AsyncIterable<Input>): Promise<unknown> {
+    if (this.entered) {
+      return new Decoder(this.options).decodeAsync(stream);
+    }
+    this.entered = true;
+    try {
+      let message: Uint8Array = EMPTY_BYTES;
+      let bufferStart = 0;
+      let bufferLength = 0;
+      let pos = 0;
+      let totalPos = 0;
+      let decoded = false;
+      let object: unknown;
+      let head = HEAD_BYTE_REQUIRED;
+
+      for await (const chunk of stream) {
+        if (decoded) {
+          throw createExtraByteError(bufferLength, pos, totalPos);
+        }
+
+        const chunkBytes = toBytes(chunk);
+        bufferStart = totalPos;
+        bufferLength = bufferLength - pos + chunkBytes.length;
+        pos = 0;
+        message = concatBytes(message, chunkBytes);
+
+        const reader = this.reader;
+        reader.settings = this.settings;
+        reader.trackHead = true;
+        reader.set(message);
+        try {
+          object = decodeValue(reader, false);
+          decoded = true;
+          totalPos = reader.pos;
+          pos = totalPos - bufferStart;
+        } catch (error) {
+          if (!(error instanceof RangeError)) {
+            throw error;
+          }
+          head = reader.head;
+          totalPos = reader.pos;
+          pos = totalPos - bufferStart;
+        }
+      }
+
+      if (decoded) {
+        if (bufferLength - pos >= 1) {
+          throw createExtraByteError(bufferLength, pos, totalPos);
+        }
+        return object;
+      }
+
+      throw new RangeError(
+        `Insufficient data in parsing ${prettyByte(head)} at ${totalPos} (${pos} in the current buffer)`,
+      );
+    } finally {
+      this.entered = false;
+    }
+  }
+
+  decodeArrayStream(stream: AsyncIterable<Input>): AsyncGenerator<unknown, void, unknown> {
+    return this.decodeMultiAsync(stream, true);
+  }
+
+  decodeStream(stream: AsyncIterable<Input>): AsyncGenerator<unknown, void, unknown> {
+    return this.decodeMultiAsync(stream, false);
+  }
+
+  private async *decodeMultiAsync(
+    stream: AsyncIterable<Input>,
+    isArray: boolean,
+  ): AsyncGenerator<unknown, void, unknown> {
+    if (this.entered) {
+      yield* new Decoder(this.options).decodeMultiAsync(stream, isArray);
+      return;
+    }
+    this.entered = true;
+    try {
+      let isArrayHeaderRequired = isArray;
+      let arrayItemsLeft = -1;
+
+      let pending: Uint8Array = EMPTY_BYTES;
+      let pendingStart = 0;
+      let bufferStart = 0;
+      let bufferLength = 0;
+      let pos = 0;
+      let totalPos = 0;
+
+      for await (const chunk of stream) {
+        if (isArray && arrayItemsLeft === 0) {
+          throw createExtraByteError(bufferLength, pos, totalPos);
+        }
+
+        const chunkBytes = toBytes(chunk);
+        bufferStart = totalPos;
+        bufferLength = bufferLength - pos + chunkBytes.length;
+        pos = 0;
+        pending = concatBytes(pending, chunkBytes);
+
+        const reader = this.reader;
+        let offset = 0;
+
+        if (isArrayHeaderRequired) {
+          reader.settings = this.settings;
+          reader.trackHead = true;
+          reader.set(pending);
+          arrayItemsLeft = readArraySize(reader);
+          isArrayHeaderRequired = false;
+          offset = reader.pos;
+        }
+
+        let consumed = pendingStart + offset;
+        try {
+          while (offset < pending.length) {
+            reader.settings = this.settings;
+            reader.trackHead = true;
+            reader.set(pending);
+            reader.pos = offset;
+            const value = decodeValue(reader, false);
+            offset = reader.pos;
+            consumed = pendingStart + offset;
+            yield value;
+            if (--arrayItemsLeft === 0) {
+              break;
+            }
+          }
+        } catch (error) {
+          if (!(error instanceof RangeError)) {
+            throw error;
+          }
+          consumed = pendingStart + reader.pos;
+        }
+
+        if (offset > 0) {
+          pending = pending.slice(offset);
+          pendingStart += offset;
+        }
+        totalPos = consumed;
+        pos = totalPos - bufferStart;
       }
     } finally {
       this.entered = false;
@@ -224,6 +378,7 @@ export function decode(buffer: Input, options?: DecoderOptions): unknown {
     sharedReaderEntered = true;
     try {
       sharedReader.settings = settings;
+      sharedReader.trackHead = false;
       sharedReader.set(buffer);
       const value = decodeValue(sharedReader, false);
       if (sharedReader.pos !== sharedReader.bytes.length) {
@@ -243,8 +398,84 @@ export function decodeMulti(buffer: Input, options?: DecoderOptions): Generator<
   return new Decoder(options).decodeMulti(buffer);
 }
 
+export function decodeAsync(
+  streamLike: ReadableStreamLike<Input>,
+  options?: DecoderOptions,
+): Promise<unknown> {
+  return new Decoder(options).decodeAsync(ensureAsyncIterable(streamLike));
+}
+
+export function decodeArrayStream(
+  streamLike: ReadableStreamLike<Input>,
+  options?: DecoderOptions,
+): AsyncGenerator<unknown, void, unknown> {
+  return new Decoder(options).decodeArrayStream(ensureAsyncIterable(streamLike));
+}
+
+export function decodeMultiStream(
+  streamLike: ReadableStreamLike<Input>,
+  options?: DecoderOptions,
+): AsyncGenerator<unknown, void, unknown> {
+  return new Decoder(options).decodeStream(ensureAsyncIterable(streamLike));
+}
+
+function prettyByte(byte: number): string {
+  return `${byte < 0 ? "-" : ""}0x${Math.abs(byte).toString(16).padStart(2, "0")}`;
+}
+
+function createExtraByteError(viewLength: number, pos: number, posToShow: number): RangeError {
+  return new RangeError(`Extra ${viewLength - pos} of ${viewLength} byte(s) found at buffer[${posToShow}]`);
+}
+
+function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
+  if (left.length === 0) {
+    return right;
+  }
+  if (right.length === 0) {
+    return left;
+  }
+  const merged = new Uint8Array(left.length + right.length);
+  merged.set(left);
+  merged.set(right, left.length);
+  return merged;
+}
+
+function readArraySize(reader: Reader): number {
+  const head = reader.view.getUint8(reader.pos);
+  reader.pos++;
+  reader.head = head;
+
+  switch (head) {
+    case 0xdc:
+      return readU16(reader);
+    case 0xdd:
+      return readU32(reader);
+    default:
+      if (head < 0xa0) {
+        return head - 0x90;
+      }
+      throw new DecodeError(`Unrecognized array type byte: ${prettyByte(head)}`);
+  }
+}
+
+function readU16(reader: Reader): number {
+  const value = reader.view.getUint16(reader.pos);
+  reader.pos += 2;
+  return value;
+}
+
+function readU32(reader: Reader): number {
+  const value = reader.view.getUint32(reader.pos);
+  reader.pos += 4;
+  return value;
+}
+
 function decodeValue(reader: Reader, isMapKey: boolean): unknown {
-  const head = reader.view.getUint8(reader.pos++);
+  const head = reader.view.getUint8(reader.pos);
+  reader.pos++;
+  if (reader.trackHead) {
+    reader.head = head;
+  }
 
   if (head < 0x80) {
     return head;
@@ -279,8 +510,11 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
       reader.pos += 8;
       return value;
     }
-    case 0xcc:
-      return reader.view.getUint8(reader.pos++);
+    case 0xcc: {
+      const value = reader.view.getUint8(reader.pos);
+      reader.pos++;
+      return value;
+    }
     case 0xcd: {
       const value = reader.view.getUint16(reader.pos);
       reader.pos += 2;
@@ -329,18 +563,22 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
       return high * 0x100000000 + low;
     }
     case 0xd9: {
-      const length = reader.view.getUint8(reader.pos++);
-      return decodeString(reader, length, false);
+      const headerStart = reader.pos;
+      const length = reader.view.getUint8(reader.pos);
+      reader.pos++;
+      return decodeString(reader, length, false, headerStart);
     }
     case 0xda: {
+      const headerStart = reader.pos;
       const length = reader.view.getUint16(reader.pos);
       reader.pos += 2;
-      return decodeString(reader, length, false);
+      return decodeString(reader, length, false, headerStart);
     }
     case 0xdb: {
+      const headerStart = reader.pos;
       const length = reader.view.getUint32(reader.pos);
       reader.pos += 4;
-      return decodeString(reader, length, false);
+      return decodeString(reader, length, false, headerStart);
     }
     case 0xdc: {
       const size = reader.view.getUint16(reader.pos);
@@ -362,17 +600,23 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
       reader.pos += 4;
       return decodeMap(reader, size);
     }
-    case 0xc4:
-      return decodeBinary(reader, reader.view.getUint8(reader.pos++));
+    case 0xc4: {
+      const headerStart = reader.pos;
+      const size = reader.view.getUint8(reader.pos);
+      reader.pos++;
+      return decodeBinary(reader, size, headerStart);
+    }
     case 0xc5: {
+      const headerStart = reader.pos;
       const size = reader.view.getUint16(reader.pos);
       reader.pos += 2;
-      return decodeBinary(reader, size);
+      return decodeBinary(reader, size, headerStart);
     }
     case 0xc6: {
+      const headerStart = reader.pos;
       const size = reader.view.getUint32(reader.pos);
       reader.pos += 4;
-      return decodeBinary(reader, size);
+      return decodeBinary(reader, size, headerStart);
     }
     case 0xd4:
       return decodeExtension(reader, 1);
@@ -385,32 +629,45 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
     case 0xd8:
       return decodeExtension(reader, 16);
     case 0xc7: {
-      const size = reader.view.getUint8(reader.pos++);
-      return decodeExtension(reader, size);
+      const headerStart = reader.pos;
+      const size = reader.view.getUint8(reader.pos);
+      reader.pos++;
+      return decodeExtension(reader, size, headerStart);
     }
     case 0xc8: {
+      const headerStart = reader.pos;
       const size = reader.view.getUint16(reader.pos);
       reader.pos += 2;
-      return decodeExtension(reader, size);
+      return decodeExtension(reader, size, headerStart);
     }
     case 0xc9: {
+      const headerStart = reader.pos;
       const size = reader.view.getUint32(reader.pos);
       reader.pos += 4;
-      return decodeExtension(reader, size);
+      return decodeExtension(reader, size, headerStart);
     }
     default:
       throw new Error(`Unrecognized type byte: 0x${head.toString(16)}`);
   }
 }
 
-function decodeExtension(reader: Reader, size: number): unknown {
+function decodeExtension(reader: Reader, size: number, headerStart = reader.pos): unknown {
   const settings = reader.settings;
   if (size > settings.maxExtLength) {
     throw new DecodeError(
       `Max length exceeded: ext length (${size}) > maxExtLength (${settings.maxExtLength})`,
     );
   }
-  const type = reader.view.getInt8(reader.pos);
+  let type: number;
+  try {
+    type = reader.view.getInt8(reader.pos);
+  } catch (error) {
+    // The reference leaves pos at the header when the type byte is missing.
+    if (error instanceof RangeError) {
+      reader.pos = headerStart;
+    }
+    throw error;
+  }
   const start = reader.pos + 1;
   // Extension payloads go through the same binary length limit as bin
   // values and raw strings in the reference implementation.
@@ -420,19 +677,25 @@ function decodeExtension(reader: Reader, size: number): unknown {
     );
   }
   if (size > reader.bytes.length - start) {
+    reader.pos = headerStart;
     throw new RangeError("Insufficient data");
   }
   reader.pos = start + size;
   return settings.extensionCodec.decode(reader.bytes.subarray(start, start + size), type, settings.context);
 }
 
-function decodeString(reader: Reader, length: number, isMapKey: boolean): string | Uint8Array {
+function decodeString(
+  reader: Reader,
+  length: number,
+  isMapKey: boolean,
+  headerStart = reader.pos,
+): string | Uint8Array {
   const settings = reader.settings;
 
   // Raw strings apply to values only; map keys remain JavaScript strings and
   // use maxStrLength rather than maxBinLength.
   if (settings.rawStrings && !isMapKey) {
-    return decodeBinary(reader, length);
+    return decodeBinary(reader, length, headerStart);
   }
 
   if (length > settings.maxStrLength) {
@@ -441,6 +704,7 @@ function decodeString(reader: Reader, length: number, isMapKey: boolean): string
     );
   }
   if (length > reader.bytes.length - reader.pos) {
+    reader.pos = headerStart;
     throw new RangeError("Insufficient data");
   }
 
@@ -454,13 +718,14 @@ function decodeString(reader: Reader, length: number, isMapKey: boolean): string
   return readUtf8(reader.bytes, start, length);
 }
 
-function decodeBinary(reader: Reader, size: number): Uint8Array {
+function decodeBinary(reader: Reader, size: number, headerStart = reader.pos): Uint8Array {
   if (size > reader.settings.maxBinLength) {
     throw new DecodeError(
       `Max length exceeded: bin length (${size}) > maxBinLength (${reader.settings.maxBinLength})`,
     );
   }
   if (size > reader.bytes.length - reader.pos) {
+    reader.pos = headerStart;
     throw new RangeError("Insufficient data");
   }
   const start = reader.pos;
@@ -470,6 +735,9 @@ function decodeBinary(reader: Reader, size: number): Uint8Array {
 
 function decodeArray(reader: Reader, size: number): unknown[] {
   if (size === 0) {
+    if (reader.trackHead) {
+      reader.head = HEAD_BYTE_REQUIRED;
+    }
     return [];
   }
   if (size > reader.settings.maxArrayLength) {
@@ -477,15 +745,24 @@ function decodeArray(reader: Reader, size: number): unknown[] {
       `Max length exceeded: array length (${size}) > maxArrayLength (${reader.settings.maxArrayLength})`,
     );
   }
+  if (reader.trackHead) {
+    reader.head = HEAD_BYTE_REQUIRED;
+  }
   const array = new Array(size);
   for (let i = 0; i < size; i++) {
     array[i] = decodeValue(reader, false);
+    if (reader.trackHead) {
+      reader.head = HEAD_BYTE_REQUIRED;
+    }
   }
   return array;
 }
 
 function decodeMap(reader: Reader, size: number): Record<string, unknown> {
   if (size === 0) {
+    if (reader.trackHead) {
+      reader.head = HEAD_BYTE_REQUIRED;
+    }
     return {};
   }
   if (size > reader.settings.maxMapLength) {
@@ -494,13 +771,22 @@ function decodeMap(reader: Reader, size: number): Record<string, unknown> {
       `Max length exceeded: map length (${size}) > maxMapLengthLength (${reader.settings.maxMapLength})`,
     );
   }
+  if (reader.trackHead) {
+    reader.head = HEAD_BYTE_REQUIRED;
+  }
   const map: Record<string, unknown> = {};
   for (let i = 0; i < size; i++) {
     const key = decodeValue(reader, true);
+    if (reader.trackHead) {
+      reader.head = HEAD_BYTE_REQUIRED;
+    }
     if (key === "__proto__") {
       throw new Error("The key __proto__ is not allowed");
     }
     map[reader.settings.mapKeyConverter(key)] = decodeValue(reader, false);
+    if (reader.trackHead) {
+      reader.head = HEAD_BYTE_REQUIRED;
+    }
   }
   return map;
 }

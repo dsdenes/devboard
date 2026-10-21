@@ -1,4 +1,13 @@
-import { Decoder, Encoder, ExtensionCodec, decode, encode } from "@msgpack/msgpack";
+import {
+  Decoder,
+  Encoder,
+  ExtensionCodec,
+  decode,
+  decodeArrayStream,
+  decodeAsync,
+  decodeMultiStream,
+  encode,
+} from "@msgpack/msgpack";
 import { fixtures, GeoPoint, installExtensionCodec } from "./fixtures.ts";
 
 declare global {
@@ -78,11 +87,87 @@ const encoderBytes = encoder.encode(smallMap);
 const encoderSharedBytes = encoder.encodeSharedRef(smallMap);
 const decoderValue = decoder.decode(encoderSharedBytes);
 
+function chunkStream(bytes: Uint8Array, size: number): ReadableStream<Uint8Array> {
+  let offset = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(bytes.subarray(offset, Math.min(offset + size, bytes.length)));
+      offset += size;
+    },
+  });
+}
+
+async function* chunkIterable(bytes: Uint8Array, size: number): AsyncIterable<Uint8Array> {
+  for (let offset = 0; offset < bytes.length; offset += size) {
+    yield bytes.subarray(offset, Math.min(offset + size, bytes.length));
+  }
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const bytes = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    bytes.set(part, offset);
+    offset += part.length;
+  }
+  return bytes;
+}
+
+async function collect(iterable: AsyncIterable<unknown>): Promise<unknown[]> {
+  const values: unknown[] = [];
+  for await (const value of iterable) {
+    values.push(canonical(value));
+  }
+  return values;
+}
+
+// The browser application already kept a small map, and now also consumes
+// consecutive messages incrementally from a byte stream whose chunk boundaries
+// fall inside messages. Its source is not edited when the dependency changes.
+async function runStreaming() {
+  const names = ["small map", "small array", "binary", "timestamp epoch", "custom point", "extensions nested"];
+  const selected = names.map((name) => {
+    const entry = fixtures.find(([fixtureName]) => fixtureName === name);
+    if (entry === undefined) {
+      throw new Error(`missing fixture: ${name}`);
+    }
+    return entry[1];
+  });
+  const streamedMessages = selected.map((value) => encode(value, { extensionCodec }));
+  const streamedBytes = concatBytes(streamedMessages);
+  const truncatedBytes = concatBytes([
+    ...streamedMessages,
+    streamedMessages[0].subarray(0, 1),
+  ]);
+
+  return {
+    values: await collect(decodeMultiStream(chunkStream(streamedBytes, 3), { extensionCodec })),
+    empty: await collect(
+      decodeMultiStream(chunkStream(new Uint8Array(0), 3), { extensionCodec }),
+    ),
+    truncated: await collect(
+      decodeMultiStream(chunkStream(truncatedBytes, 3), { extensionCodec }),
+    ),
+    single: canonical(await decodeAsync(chunkStream(streamedMessages[0], 2), { extensionCodec })),
+    array: await collect(
+      decodeArrayStream(chunkStream(encode(selected[1], { extensionCodec }), 2), { extensionCodec }),
+    ),
+    classStream: await collect(
+      new Decoder({ extensionCodec }).decodeStream(chunkIterable(streamedBytes, 5)),
+    ),
+  };
+}
+
 const result = {
   moduleEncodeHex: hex(encoderBytes),
   sharedRefSame: hex(encoderSharedBytes) === hex(encoderBytes),
   classDecodeSame: JSON.stringify(canonical(decoderValue)) === JSON.stringify(canonical(smallMap)),
   cases,
+  streaming: await runStreaming(),
 };
 window.__result = result;
 document.getElementById("result")!.textContent = JSON.stringify(result, null, 2);

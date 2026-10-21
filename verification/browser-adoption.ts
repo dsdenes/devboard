@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { encode as referenceEncode, ExtensionCodec as ReferenceExtensionCodec } from "msgpack-javascript-original";
-import { fixtures, installExtensionCodec } from "../examples/browser/src/fixtures.ts";
+import { fixtures, GeoPoint, installExtensionCodec } from "../examples/browser/src/fixtures.ts";
 
 const referenceCodec = new ReferenceExtensionCodec();
 installExtensionCodec(referenceCodec);
@@ -125,11 +125,21 @@ interface BrowserCase {
   matchesInput: boolean;
 }
 
+interface BrowserStreaming {
+  values: unknown[];
+  empty: unknown[];
+  truncated: unknown[];
+  single: unknown;
+  array: unknown[];
+  classStream: unknown[];
+}
+
 interface BrowserResult {
   moduleEncodeHex: string;
   sharedRefSame: boolean;
   classDecodeSame: boolean;
   cases: BrowserCase[];
+  streaming: BrowserStreaming;
 }
 
 async function run(spec: string, outDir: string): Promise<BrowserResult> {
@@ -163,6 +173,54 @@ const classApi =
   replacement.moduleEncodeHex === expected["small map"] &&
   baseline.moduleEncodeHex === replacement.moduleEncodeHex;
 
+function canonical(value: unknown): unknown {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (value instanceof Date) {
+    return { __date: value.getTime() };
+  }
+  if (value instanceof GeoPoint) {
+    return { __point: [value.lat, value.lon] };
+  }
+  if (value instanceof Uint8Array) {
+    return { __binary: Buffer.from(value).toString("hex") };
+  }
+  if (Array.isArray(value)) {
+    return value.map(canonical);
+  }
+  const record: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    record[key] = canonical(item);
+  }
+  return record;
+}
+
+const streamedNames = [
+  "small map",
+  "small array",
+  "binary",
+  "timestamp epoch",
+  "custom point",
+  "extensions nested",
+];
+const streamedValues = streamedNames.map((name) => {
+  const entry = fixtures.find(([fixtureName]) => fixtureName === name);
+  if (entry === undefined) {
+    throw new Error(`missing fixture: ${name}`);
+  }
+  return entry[1];
+});
+const expectedStream = canonical(streamedValues) as unknown[];
+const streaming = replacement.streaming;
+const streamingOk =
+  JSON.stringify(streaming.values) === JSON.stringify(expectedStream) &&
+  streaming.empty.length === 0 &&
+  JSON.stringify(streaming.truncated) === JSON.stringify(expectedStream) &&
+  JSON.stringify(streaming.single) === JSON.stringify(expectedStream[0]) &&
+  JSON.stringify(streaming.array) === JSON.stringify(expectedStream[1]) &&
+  JSON.stringify(streaming.classStream) === JSON.stringify(expectedStream);
+
 const report = {
   sourcesUnchanged,
   sourceHashes: hashesAfter,
@@ -170,6 +228,8 @@ const report = {
   hexMatchesReference,
   allRoundTrip,
   classApi,
+  streamingOk,
+  streamedMessages: streaming.values.length,
   cases: replacement.cases.map((item) => item.name),
   baselineModuleEncodeHex: baseline.moduleEncodeHex,
   replacementModuleEncodeHex: replacement.moduleEncodeHex,
@@ -177,6 +237,6 @@ const report = {
 
 console.log(JSON.stringify(report, null, 2));
 
-if (!sourcesUnchanged || !identical || !hexMatchesReference || !allRoundTrip || !classApi) {
+if (!sourcesUnchanged || !identical || !hexMatchesReference || !allRoundTrip || !classApi || !streamingOk) {
   process.exitCode = 1;
 }

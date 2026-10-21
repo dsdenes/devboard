@@ -3,8 +3,9 @@
 A byte-compatible, drop-in replacement for `@msgpack/msgpack` (msgpack-javascript)
 covering everyday payloads: nulls, booleans, numbers, strings, binary data, arrays,
 maps, timestamps, application-registered extension types, and nested combinations
-of them. Applications keep importing `encode`, `decode`, and `decodeMulti` from
-`@msgpack/msgpack`; only the dependency that provides that package changes.
+of them. Applications keep importing `encode`, `decode`, `decodeMulti`, and the
+stream decoders from `@msgpack/msgpack`; only the dependency that provides that
+package changes.
 
 ## Adoption
 
@@ -31,8 +32,13 @@ The package exposes conditional ESM and CommonJS entry points, so both
   an `ArrayBuffer`, or an array-like of bytes, and decodes exactly one message.
 - `decodeMulti(buffer, options?)` accepts the same input forms and returns a
   generator that yields every consecutive message in the buffer, in order.
+- `decodeMultiStream(streamLike, options?)` and `decodeArrayStream(streamLike,
+  options?)` return async generators that decode messages, or the items of one
+  array, from an async iterable of chunks or a WHATWG `ReadableStream`;
+  `decodeAsync(streamLike, options?)` decodes exactly one message from a stream.
 - `new Encoder(options?)` with `encode` and `encodeSharedRef`.
-- `new Decoder(options?)` with `decode` and `decodeMulti`.
+- `new Decoder(options?)` with `decode`, `decodeMulti`, `decodeStream`,
+  `decodeArrayStream`, and `decodeAsync`.
 - `new ExtensionCodec()` with `register`, `tryToEncode`, and `decode`, plus
   `ExtensionCodec.defaultCodec` and `ExtData`.
 - `DecodeError`, the error class raised by decoder length limits and the
@@ -41,7 +47,7 @@ The package exposes conditional ESM and CommonJS entry points, so both
   `encodeTimeSpecToTimestamp`, `decodeTimestampToTimeSpec`,
   `encodeTimestampExtension`, and `decodeTimestampExtension`.
 - `Encoder` and `Decoder` accept every option listed below; the module-level
-  `encode`, `decode`, and `decodeMulti` accept the same options.
+  `encode`, `decode`, `decodeMulti`, and stream decoders accept the same options.
 
 Default behaviour matches msgpack-javascript 3.1.3: smallest integer widths,
 float64 for non-integers, UTF-8 strings with the same fixstr/str8/str16/str32
@@ -68,6 +74,40 @@ buffer yields no messages. If the final message is incomplete, every complete
 message before it is yielded and the iteration then throws `RangeError`, as in
 the reference. `decode` keeps decoding exactly one message and rejects a buffer
 that holds more.
+
+## Streams
+
+The incremental, stream-fed decoding surface matches msgpack-javascript:
+`decodeMultiStream(streamLike, options?)` and
+`new Decoder(options).decodeStream(stream)` consume an async iterable of byte
+chunks or a WHATWG `ReadableStream` and yield each complete message as soon as
+its last byte arrives, in order. Chunk boundaries may fall anywhere inside a
+message.
+
+```ts
+import { decodeMultiStream, encode } from "@msgpack/msgpack";
+
+const stream = new ReadableStream<Uint8Array>({
+  start(controller) {
+    controller.enqueue(new Uint8Array([...encode("first"), ...encode({ second: 2 })]));
+    controller.close();
+  },
+});
+
+for await (const message of decodeMultiStream(stream)) {
+  console.log(message);
+}
+```
+
+An empty stream yields no messages and does not fail. A stream that ends
+partway through a message delivers every complete message before it and then
+ends, exactly as the reference does; `decodeAsync(streamLike, options?)` is the
+single-message form and throws the reference's `RangeError` for an empty or
+incomplete stream. `decodeArrayStream(streamLike, options?)` and
+`Decoder.decodeArrayStream` yield the items of one streaming array. All stream
+functions accept the same decoding options as `decode`, and the module functions
+also accept a WHATWG `ReadableStream` in runtimes where it is not an async
+iterable.
 
 ## Extensions
 
@@ -133,12 +173,13 @@ cache.
 
 In scope: the value types listed above, the built-in timestamp extension,
 application-registered extension types, `context`, every documented encoding
-and decoding option, nested combinations, and synchronous multi-message
-decoding of a buffer.
+and decoding option, nested combinations, synchronous multi-message decoding
+of a buffer, and incremental, stream-fed decoding from async iterables and
+WHATWG `ReadableStream`s in browser and server runtimes.
 
-Out of scope by design, matching the epic's non-goals: streaming or
-asynchronous multi-message decoding, malformed-input error parity beyond an
-incomplete final message, type-declaration parity, and publishing.
+Out of scope by design, matching the epic's non-goals: malformed-input error
+parity beyond an incomplete final message, type-declaration parity, and
+publishing.
 
 Out-of-scope inputs may be unsupported, but they cannot change the result for an
 in-scope payload.
@@ -152,6 +193,7 @@ bun run typecheck
 bun run bench         # side-by-side encoding and decoding
 bun run verify:options
 bun run verify:multi
+bun run verify:stream
 bun run verify:adoption
 ```
 
@@ -173,6 +215,16 @@ reference for every payload type, every decoding option and limit, an empty
 buffer, and every truncation point of a final message. It fails if the delivered
 values, order, error category, or error message differ.
 
+`bun run verify:stream` imports the built package under the original
+`@msgpack/msgpack` name, encodes every in-scope payload with the reference, and
+feeds the concatenated bytes as chunks whose boundaries fall at every position
+of a compact stream and inside every message of a larger stream. It compares
+`decodeMultiStream`, `Decoder.decodeStream`, `decodeAsync`, and
+`decodeArrayStream` with the reference, including empty streams, truncated final
+messages, decoding options, WHATWG `ReadableStream` input, and the CommonJS
+entry point. It fails if delivered values, order, error category, or message
+differ.
+
 `bun run bench` builds the shipped package, then measures both libraries on the
 same machine, payloads, and process, with warmup, alternating order, and the
 median of nine rounds. It exits non-zero if any measured payload is slower for
@@ -182,7 +234,8 @@ either operation.
 applications in `examples/`. Each script hashes the application source before and
 after swapping `@msgpack/msgpack` from the original to the replacement, installs
 both variants, starts the application, and compares the results. Both
-applications encode and decode timestamps and a registered `GeoPoint` type. The
+applications encode and decode timestamps and a registered `GeoPoint` type, and
+consume consecutive messages incrementally from chunked byte streams. The
 browser script loads the built application in headless Chrome and reads the
 rendered result.
 
@@ -195,30 +248,29 @@ replacement divided by original, so lower is faster.
 
 | Case | Bytes | Encode ref | Encode new | Ratio | Decode ref | Decode new | Ratio |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| null | 1 | 524 | 36 | 0.068 | 96 | 33 | 0.342 |
-| boolean | 1 | 588 | 45 | 0.076 | 101 | 27 | 0.262 |
-| small int | 1 | 604 | 52 | 0.086 | 111 | 26 | 0.238 |
-| large int | 9 | 681 | 119 | 0.175 | 106 | 27 | 0.258 |
-| float | 9 | 591 | 51 | 0.086 | 105 | 25 | 0.236 |
-| short string | 15 | 688 | 75 | 0.110 | 285 | 101 | 0.354 |
-| medium string | 222 | 988 | 428 | 0.433 | 251 | 137 | 0.547 |
-| long string | 5003 | 6415 | 4492 | 0.700 | 708 | 545 | 0.770 |
-| unicode string | 187 | 1063 | 404 | 0.380 | 1231 | 920 | 0.747 |
-| binary 256 | 259 | 705 | 105 | 0.149 | 183 | 66 | 0.363 |
-| binary 4096 | 4099 | 2060 | 677 | 0.329 | 166 | 66 | 0.396 |
-| small array | 7 | 700 | 140 | 0.200 | 296 | 78 | 0.265 |
-| integer array | 174 | 2061 | 1328 | 0.644 | 974 | 749 | 0.769 |
-| small map | 21 | 818 | 164 | 0.200 | 500 | 156 | 0.313 |
-| large map | 693 | 4663 | 3315 | 0.711 | 39424 | 28709 | 0.728 |
-| typical response | 590 | 4780 | 3203 | 0.670 | 7298 | 3617 | 0.496 |
-| nested combinations | 1120 | 13653 | 10396 | 0.761 | 27130 | 13962 | 0.515 |
-| timestamp | 10 | 1339 | 436 | 0.326 | 379 | 179 | 0.472 |
-| timestamp before epoch | 15 | 1361 | 468 | 0.344 | 437 | 188 | 0.429 |
-| timestamp nested | 125 | 7136 | 5508 | 0.772 | 3811 | 2748 | 0.721 |
-| custom point | 18 | 1562 | 612 | 0.392 | 365 | 168 | 0.460 |
-| custom nested | 228 | 8751 | 7759 | 0.887 | 4213 | 1758 | 0.417 |
-| custom array | 363 | 14102 | 12650 | 0.897 | 2926 | 2394 | 0.818 |
-
+| null | 1 | 560 | 40 | 0.072 | 99 | 26 | 0.264 |
+| boolean | 1 | 550 | 56 | 0.101 | 107 | 27 | 0.257 |
+| small int | 1 | 589 | 44 | 0.075 | 110 | 24 | 0.221 |
+| large int | 9 | 696 | 116 | 0.166 | 136 | 28 | 0.209 |
+| float | 9 | 611 | 52 | 0.085 | 101 | 28 | 0.275 |
+| short string | 15 | 711 | 78 | 0.110 | 268 | 114 | 0.425 |
+| medium string | 222 | 899 | 445 | 0.495 | 222 | 143 | 0.646 |
+| long string | 5003 | 8251 | 4387 | 0.532 | 664 | 505 | 0.761 |
+| unicode string | 187 | 1035 | 383 | 0.370 | 1233 | 876 | 0.710 |
+| binary 256 | 259 | 637 | 152 | 0.239 | 165 | 61 | 0.372 |
+| binary 4096 | 4099 | 2059 | 601 | 0.292 | 147 | 66 | 0.445 |
+| small array | 7 | 651 | 127 | 0.196 | 292 | 68 | 0.232 |
+| integer array | 174 | 1907 | 1226 | 0.643 | 958 | 743 | 0.776 |
+| small map | 21 | 800 | 151 | 0.189 | 460 | 151 | 0.329 |
+| large map | 693 | 4399 | 3203 | 0.728 | 39031 | 27422 | 0.703 |
+| typical response | 590 | 4955 | 3317 | 0.670 | 7556 | 3684 | 0.488 |
+| nested combinations | 1120 | 14085 | 10930 | 0.776 | 25699 | 13955 | 0.543 |
+| timestamp | 10 | 1262 | 420 | 0.333 | 364 | 159 | 0.437 |
+| timestamp before epoch | 15 | 1245 | 436 | 0.350 | 390 | 214 | 0.548 |
+| timestamp nested | 125 | 6481 | 5363 | 0.827 | 3602 | 2501 | 0.694 |
+| custom point | 18 | 1375 | 506 | 0.368 | 322 | 174 | 0.541 |
+| custom nested | 228 | 7980 | 7240 | 0.907 | 4021 | 1828 | 0.455 |
+| custom array | 363 | 12422 | 11326 | 0.912 | 2778 | 2196 | 0.790 |
 
 No measured payload was slower for either operation; all 23 were faster for both.
 
@@ -228,6 +280,6 @@ No measured payload was slower for either operation; all 23 were faster for both
 - `packages/msgpack/lib/` — built ESM, CommonJS, and declarations.
 - `test/` — byte and value parity tests and the fixture corpus.
 - `bench/` — side-by-side performance harness.
-- `verification/` — option, multi-message, and adoption checks.
+- `verification/` — option, multi-message, stream, and adoption checks.
 - `examples/server`, `examples/browser` — applications that adopt the package
   without source changes.

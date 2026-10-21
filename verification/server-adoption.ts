@@ -141,6 +141,48 @@ async function postBytes(url: string, body: Uint8Array<ArrayBuffer>): Promise<Ui
   return new Uint8Array(await response.arrayBuffer());
 }
 
+async function postStream(url: string, body: Uint8Array<ArrayBuffer>): Promise<unknown[]> {
+  const response = await fetch(`${url}/stream`, { method: "POST", body });
+  if (!response.ok) {
+    throw new Error(`${url}/stream returned ${response.status}`);
+  }
+  const payload: { values: unknown[] } = await response.json();
+  return payload.values;
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    bytes.set(part, offset);
+    offset += part.length;
+  }
+  return bytes;
+}
+
+function describeValue(value: unknown): unknown {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (value instanceof Date) {
+    return { date: value.getTime() };
+  }
+  if (value instanceof GeoPoint) {
+    return { point: [value.lat, value.lon] };
+  }
+  if (value instanceof Uint8Array) {
+    return { binary: hex(value) };
+  }
+  if (Array.isArray(value)) {
+    return value.map(describeValue);
+  }
+  const record: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    record[key] = describeValue(item);
+  }
+  return record;
+}
+
 async function verify(url: string): Promise<{ steps: Step[]; encodedFixtures: string[] }> {
   const steps: Step[] = [];
 
@@ -207,6 +249,33 @@ async function verify(url: string): Promise<{ steps: Step[]; encodedFixtures: st
   steps.push({
     name: "POST /encode",
     ok: hex(encodedBody) === hex(referenceEncode(jsonPayload)),
+  });
+
+  const fixtureMessages = fixtures.map((value) =>
+    referenceEncode(value, { extensionCodec: referenceCodec })
+  );
+  const streamedValues = await postStream(url, concatBytes(fixtureMessages));
+  steps.push({
+    name: "POST /stream decodes every consecutive message",
+    ok: JSON.stringify(streamedValues) === JSON.stringify(fixtures.map(describeValue)),
+  });
+
+  const truncatedTail = fixtureMessages[fixtureMessages.length - 1];
+  const truncatedBody = concatBytes([
+    ...fixtureMessages.slice(0, -1),
+    truncatedTail.subarray(0, truncatedTail.length - 1),
+  ]);
+  const truncatedValues = await postStream(url, truncatedBody);
+  steps.push({
+    name: "POST /stream delivers complete messages before a truncated tail",
+    ok: JSON.stringify(truncatedValues) ===
+      JSON.stringify(fixtures.slice(0, -1).map(describeValue)),
+  });
+
+  const emptyValues = await postStream(url, new Uint8Array(0));
+  steps.push({
+    name: "POST /stream empty body yields no messages",
+    ok: emptyValues.length === 0,
   });
 
   return { steps, encodedFixtures };

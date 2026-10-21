@@ -1,4 +1,4 @@
-import { Decoder, Encoder, ExtensionCodec, decode, encode } from "@msgpack/msgpack";
+import { Decoder, Encoder, ExtensionCodec, decode, decodeMultiStream, encode } from "@msgpack/msgpack";
 import { fixtures, GeoPoint, installExtensionCodec } from "./fixtures.ts";
 
 // A small application that already depended on msgpack-javascript. Its source
@@ -39,6 +39,17 @@ const server = Bun.serve({
       });
     }
 
+    if (url.pathname === "/stream" && request.method === "POST") {
+      // The request body is a byte stream holding consecutive messages. The
+      // application consumes it incrementally, with boundaries inside messages.
+      const body = new Uint8Array(await request.arrayBuffer());
+      const values: unknown[] = [];
+      for await (const value of decodeMultiStream(chunked(body, 3), { extensionCodec })) {
+        values.push(describeValue(value));
+      }
+      return Response.json({ values });
+    }
+
     if (url.pathname === "/roundtrip" && request.method === "POST") {
       const body = new Uint8Array(await request.arrayBuffer());
       const value = decode(body, { extensionCodec });
@@ -58,6 +69,39 @@ function typeOf(value: unknown): string {
   if (value instanceof GeoPoint) return "point";
   if (typeof value === "object") return "map";
   return typeof value;
+}
+
+async function* chunked(bytes: Uint8Array, size: number): AsyncIterable<Uint8Array> {
+  for (let offset = 0; offset < bytes.length; offset += size) {
+    yield bytes.subarray(offset, Math.min(offset + size, bytes.length));
+  }
+}
+
+function describeValue(value: unknown): unknown {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (value instanceof Date) {
+    return { date: value.getTime() };
+  }
+  if (value instanceof GeoPoint) {
+    return { point: [value.lat, value.lon] };
+  }
+  if (value instanceof Uint8Array) {
+    let encoded = "";
+    for (const byte of value) {
+      encoded += byte.toString(16).padStart(2, "0");
+    }
+    return { binary: encoded };
+  }
+  if (Array.isArray(value)) {
+    return value.map(describeValue);
+  }
+  const record: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    record[key] = describeValue(item);
+  }
+  return record;
 }
 
 console.log(`PORT=${server.port}`);

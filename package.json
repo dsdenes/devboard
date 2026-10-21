@@ -15,6 +15,7 @@
     "verify:browser": "bun run build && bun run verification/browser-adoption.ts",
     "verify:options": "bun run build && bun run verification/options-compat.ts",
     "verify:multi": "bun run build && bun run verification/multi-decode.ts",
+    "verify:stream": "bun run build && bun run verification/stream-decode.ts",
     "verify:adoption": "bun run build && bun run verification/server-adoption.ts && bun run verification/browser-adoption.ts"
   },
   "devDependencies": {

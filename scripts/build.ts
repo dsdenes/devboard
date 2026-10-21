@@ -62,6 +62,10 @@ export interface DecoderOptions {
   [option: string]: unknown;
 }
 
+type ReadableStreamLike<T> = AsyncIterable<T> | ReadableStream<T>;
+
+type StreamInput = ArrayLike<number> | ArrayBufferView | ArrayBuffer;
+
 export declare class DecodeError extends Error {
   constructor(message: string);
 }
@@ -122,6 +126,15 @@ export declare class Decoder {
   decodeMulti(
     buffer: ArrayLike<number> | ArrayBufferView | ArrayBuffer,
   ): Generator<unknown, void, unknown>;
+  decodeAsync(
+    stream: AsyncIterable<ArrayLike<number> | ArrayBufferView | ArrayBuffer>,
+  ): Promise<unknown>;
+  decodeArrayStream(
+    stream: AsyncIterable<ArrayLike<number> | ArrayBufferView | ArrayBuffer>,
+  ): AsyncGenerator<unknown, void, unknown>;
+  decodeStream(
+    stream: AsyncIterable<ArrayLike<number> | ArrayBufferView | ArrayBuffer>,
+  ): AsyncGenerator<unknown, void, unknown>;
 }
 
 export declare const DEFAULT_INITIAL_BUFFER_SIZE: number;
@@ -135,6 +148,18 @@ export declare function decodeMulti(
   buffer: ArrayLike<number> | ArrayBufferView | ArrayBuffer,
   options?: DecoderOptions,
 ): Generator<unknown, void, unknown>;
+export declare function decodeAsync(
+  streamLike: ReadableStreamLike<StreamInput>,
+  options?: DecoderOptions,
+): Promise<unknown>;
+export declare function decodeArrayStream(
+  streamLike: ReadableStreamLike<StreamInput>,
+  options?: DecoderOptions,
+): AsyncGenerator<unknown, void, unknown>;
+export declare function decodeMultiStream(
+  streamLike: ReadableStreamLike<StreamInput>,
+  options?: DecoderOptions,
+): AsyncGenerator<unknown, void, unknown>;
 `;
 
 await writeFile(join(outDir, "index.d.ts"), declarations);
