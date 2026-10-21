@@ -25,11 +25,10 @@ or absent, the section reports `Goal not set`; otherwise it reports `Goal ready`
 
 Selecting `Create goal` always starts a fresh creation. The server replaces an existing goal when
 the new creation writes non-empty text, and it stops whatever would contend with the new peer: an
-in-flight creation, revision, or skills preparation is cancelled with a failed
-`goalCreationStopped`, `goalRevisionStopped`, or `skillsPreparationStopped`, and an advancing ADR
-run or lifecycle is stopped and reported idle before creation begins. A paused lifecycle keeps
-its suspended conversation, which is replayed when the creation ends. When the peer ends, the
-server reads `<REPO_DIR>/GOAL.md` and the textarea shows
+in-flight creation or revision is cancelled with a failed `goalCreationStopped` or
+`goalRevisionStopped`, and an advancing ADR run or lifecycle is stopped and reported idle before
+creation begins. A paused lifecycle keeps its suspended conversation, which is replayed when the
+creation ends. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` and the textarea shows
 those bytes, so `Goal ready` and `Start lifecycle` become available. A creation that ends with no
 non-empty `GOAL.md` is reported as an error: the server sends an `error` and a failed
 `goalCreationStopped`, and the textarea and goal state keep their previous content. The server
@@ -185,26 +184,25 @@ The client sends:
 - `createGoal` starts the guided goal creation with one ACP peer whose prompt is exactly
   `/goal-outcome`, the installed skill command that reads the harness prompt and interviews the
   developer. The server accepts it in every state: it replaces a goal document that already has
-  content, and it preempts an in-flight creation, revision, or skills preparation and stops an
-  advancing ADR run or lifecycle before the new peer starts. It reads `<REPO_DIR>/GOAL.md` before
-  and after the peer, while `getGoal` and `saveGoal` keep using `GOAL_FILE`. It is accepted while
-  a lifecycle run is paused, where the suspended peer keeps its stage and conversation. Activity
-  and questions use the existing `activity` and `question` events, and `answer` replies to a
-  creation question exactly as it does to a revision question; a second answer for the same
-  question id is refused with an `error`. When the peer ends, the server reads
-  `<REPO_DIR>/GOAL.md` again: text that contains at least one non-whitespace character completes
-  the creation, while an absent, empty, or whitespace-only document is a failure that sends an
-  `error` followed by a failed `goalCreationStopped`.
+  content, and it preempts an in-flight creation or revision and stops an advancing ADR run or
+  lifecycle before the new peer starts. It reads `<REPO_DIR>/GOAL.md` before and after the peer,
+  while `getGoal` and `saveGoal` keep using `GOAL_FILE`. It is accepted while a lifecycle run is
+  paused, where the suspended peer keeps its stage and conversation. Activity and questions use
+  the existing `activity` and `question` events, and `answer` replies to a creation question
+  exactly as it does to a revision question; a second answer for the same question id is refused
+  with an `error`. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` again: text that
+  contains at least one non-whitespace character completes the creation, while an absent, empty,
+  or whitespace-only document is a failure that sends an `error` followed by a failed
+  `goalCreationStopped`.
 - A creation is refused with an `error` event, without spawning a peer, only when
   `<REPO_DIR>/GOAL.md` exists but cannot be read. Otherwise a `createGoal` request always wins:
-  the server cancels the active creation, revision, or skills preparation, reports it stopped with
-  `completed: false`, stops an advancing run or lifecycle and reports the idle `goal` stage, then
-  starts the new peer. While a creation is active, `startRun`, `startLifecycle`,
-  `resumeLifecycle`, `reviseGoal`, and `prepareSkills` are each refused with an `error`, and no
-  agent is spawned; a second `createGoal` restarts the creation instead. The creation runs in the
-  server, so closing the browser does not stop it, and a client that connects during it receives
-  `goalCreationStarted`, the recorded activity, and the pending question before its own command
-  replies.
+  the server cancels the active creation or revision, reports it stopped with `completed: false`,
+  stops an advancing run or lifecycle and reports the idle `goal` stage, then starts the new peer.
+  While a creation is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and `reviseGoal`
+  are each refused with an `error`, and no agent is spawned; a second `createGoal` restarts the
+  creation instead. The creation runs in the server, so closing the browser does not stop it, and
+  a client that connects during it receives `goalCreationStarted`, the recorded activity, and the
+  pending question before its own command replies.
 - `prepareSkills` starts one ACP peer whose prompt is exactly `/prepare-skills`, the installed
   command that reads `.devboard/prompts/prepare-skills.md`. The server accepts it only while
   `<REPO_DIR>/GOAL.md` contains at least one non-whitespace character and no run, run sequence,
@@ -220,9 +218,8 @@ The client sends:
   event with `completed: false`. `getSkills` answers with the current managed set read from disk
   and sends `skillsState`; the client issues it on every connection, so the panel is rebuilt after
   a reload or restart instead of starting a run. While preparation is active, `startRun`,
-  `startLifecycle`, `resumeLifecycle`, `reviseGoal`, `saveGoal`, and a second `prepareSkills` are
-  each refused with an `error` and spawn no peer; `createGoal` stops the preparation and starts
-  a fresh creation instead.
+  `startLifecycle`, `resumeLifecycle`, `reviseGoal`, `saveGoal`, `createGoal`, and a second
+  `prepareSkills` are each refused with an `error` and spawn no peer.
 - `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run,
   a run sequence, a goal revision, a goal creation, or another lifecycle run is active, and
   when the goal document is absent, unreadable, or contains only whitespace; a refused start
