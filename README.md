@@ -54,6 +54,47 @@ float64 for non-integers, UTF-8 strings with the same fixstr/str8/str16/str32
 thresholds, the same bin/array/map widths, plain-object maps with string or
 number keys, `Uint8Array` binary values, and the built-in timestamp extension.
 
+## TypeScript
+
+The published declarations reproduce the types msgpack-javascript 3.1.3
+publishes, including its generics and type names. A typed consumer swaps the
+dependency without touching its source:
+
+```ts
+import {
+  Encoder,
+  ExtensionCodec,
+  encode,
+  type DecoderOptions,
+  type EncoderOptions,
+  type ExtensionCodecType,
+  type ExtensionDecoderType,
+  type ExtensionEncoderType,
+} from "@msgpack/msgpack";
+
+interface AppContext {
+  requestId: string;
+}
+
+const codec = new ExtensionCodec<AppContext>();
+codec.register({ type: 42, encode, decode });
+
+const encoderOptions: EncoderOptions<AppContext> = {
+  extensionCodec: codec,
+  context: { requestId: "req-1" },
+};
+const encoder = new Encoder<AppContext>(encoderOptions);
+const bytes = encode<AppContext>(value, encoderOptions);
+```
+
+`EncoderOptions<ContextType>`, `DecoderOptions<ContextType>`,
+`Encoder<ContextType>`, `Decoder<ContextType>`, and
+`ExtensionCodec<ContextType>` carry the same context generic as the original.
+`ExtensionCodecType`, `ExtensionEncoderType`, and `ExtensionDecoderType` name
+the codec contract, and `ContextOf`/`SplitUndefined` describe how a context
+became required. Defaults and inference match the original, so untyped
+consumers and consumers that never mention a context compile unchanged too.
+
 ## Multiple messages
 
 `decodeMulti` reads a buffer that holds several consecutive MessagePack values,
@@ -251,6 +292,15 @@ same machine, payloads, and process, with warmup, alternating order, and the
 median of nine rounds. It exits non-zero if any measured payload is slower for
 either operation.
 
+`bun run verify:typed` installs `npm:@msgpack/msgpack@3.1.3` for the TypeScript
+application in `examples/typed`, builds it with `tsc` under `strict`, installs
+the replacement in its place, and builds again. The application's source refers
+to the original's published types for its options, extension codec, and values,
+including a context generic and annotations that adapt those types to the
+application. The script fails if either build reports a diagnostic, if either
+run fails, if the two runs encode or decode any value differently, or if the
+application source changes between the runs.
+
 `bun run verify:server` and `bun run verify:browser` exercise the two adopting
 applications in `examples/`. Each script hashes the application source before and
 after swapping `@msgpack/msgpack` from the original to the replacement, installs
@@ -306,3 +356,5 @@ No measured payload was slower for either operation; all 23 were faster for both
   checks.
 - `examples/server`, `examples/browser` — applications that adopt the package
   without source changes.
+- `examples/typed` — a strict TypeScript application written against the
+  original's published types, used by `verify:typed`.

@@ -27,17 +27,53 @@ for (const target of targets) {
   }
 }
 
-const declarations = `export interface EncoderOptions {
-  initialBufferSize?: number;
-  extensionCodec?: ExtensionCodec;
-  context?: unknown;
-  useBigInt64?: boolean;
-  maxDepth?: number;
-  sortKeys?: boolean;
-  forceFloat32?: boolean;
-  forceIntegerToFloat?: boolean;
-  ignoreUndefined?: boolean;
-  [option: string]: unknown;
+const declarations = `/**
+ * The published types mirror the declarations msgpack-javascript 3.1.3
+ * publishes, including the context generics on its options, codecs, encoder
+ * and decoder, so a TypeScript application written against the original
+ * library continues to build when the dependency is swapped.
+ */
+
+type SplitTypes<T, U> = U extends T ? (Exclude<T, U> extends never ? T : Exclude<T, U>) : T;
+export type SplitUndefined<T> = SplitTypes<T, undefined>;
+export type ContextOf<ContextType> = ContextType extends undefined
+  ? object
+  : {
+      context: ContextType;
+    };
+
+export type ExtensionDecoderType<ContextType> = (
+  data: Uint8Array,
+  extensionType: number,
+  context: ContextType,
+) => unknown;
+
+export type ExtensionEncoderType<ContextType> = (
+  input: unknown,
+  context: ContextType,
+) => Uint8Array | ((dataPos: number) => Uint8Array) | null;
+
+export type ExtensionCodecType<ContextType> = {
+  __brand?: ContextType;
+  tryToEncode(object: unknown, context: ContextType): ExtData | null;
+  decode(data: Uint8Array, extType: number, context: ContextType): unknown;
+};
+
+export type ExtensionEncoder = (
+  object: unknown,
+  context?: unknown,
+) => Uint8Array | ((dataPos: number) => Uint8Array) | null | undefined;
+
+export type ExtensionDecoder = (
+  data: Uint8Array,
+  extensionType: number,
+  context?: unknown,
+) => unknown;
+
+export interface ExtensionCodecEntry {
+  type: number;
+  encode?: ExtensionEncoder;
+  decode?: ExtensionDecoder;
 }
 
 export interface KeyDecoder {
@@ -47,54 +83,111 @@ export interface KeyDecoder {
 
 export type MapKeyConverter = (key: unknown) => string | number;
 
-export interface DecoderOptions {
-  extensionCodec?: ExtensionCodec;
-  context?: unknown;
-  useBigInt64?: boolean;
-  rawStrings?: boolean;
-  maxStrLength?: number;
-  maxBinLength?: number;
-  maxArrayLength?: number;
-  maxMapLength?: number;
-  maxExtLength?: number;
-  keyDecoder?: KeyDecoder | null;
-  mapKeyConverter?: MapKeyConverter;
-  [option: string]: unknown;
-}
+export type EncoderOptions<ContextType = undefined> = Partial<
+  Readonly<{
+    extensionCodec: ExtensionCodecType<ContextType>;
+    /**
+     * Encodes bigint as Int64 or Uint64 if it's set to true.
+     * Defaults to false.
+     */
+    useBigInt64: boolean;
+    /**
+     * The maximum depth in nested objects and arrays.
+     * Defaults to 100.
+     */
+    maxDepth: number;
+    /**
+     * The initial size of the internal buffer.
+     * Defaults to 2048.
+     */
+    initialBufferSize: number;
+    /**
+     * If true, the keys of an object are sorted.
+     * Defaults to false.
+     */
+    sortKeys: boolean;
+    /**
+     * If true, non-integer numbers are encoded in float32.
+     * Defaults to false.
+     */
+    forceFloat32: boolean;
+    /**
+     * If true, an object property with an undefined value is ignored.
+     * Defaults to false.
+     */
+    ignoreUndefined: boolean;
+    /**
+     * If true, integer numbers are encoded as floating point numbers.
+     * Defaults to false.
+     */
+    forceIntegerToFloat: boolean;
+  }>
+> &
+  ContextOf<ContextType>;
+
+type MapKeyType = string | number;
+
+export type DecoderOptions<ContextType = undefined> = Readonly<
+  Partial<{
+    extensionCodec: ExtensionCodecType<ContextType>;
+    /**
+     * Decodes Int64 and Uint64 as bigint if it's set to true.
+     * Defaults to false.
+     */
+    useBigInt64: boolean;
+    /**
+     * If true, string values are returned as Uint8Arrays.
+     * Defaults to false.
+     */
+    rawStrings: boolean;
+    maxStrLength: number;
+    maxBinLength: number;
+    maxArrayLength: number;
+    maxMapLength: number;
+    maxExtLength: number;
+    /**
+     * An object key decoder. null disables key decoding.
+     */
+    keyDecoder: KeyDecoder | null;
+    /**
+     * Converts a decoded map key to a valid JS key type.
+     */
+    mapKeyConverter: MapKeyConverter;
+  }>
+> &
+  ContextOf<ContextType>;
 
 type ReadableStreamLike<T> = AsyncIterable<T> | ReadableStream<T>;
 
-type StreamInput = ArrayLike<number> | ArrayBufferView | ArrayBuffer;
+type StreamInput = ArrayLike<number> | BufferSource;
 
 export declare class DecodeError extends Error {
   constructor(message: string);
 }
 
-export type ExtensionEncoder = (
-  object: unknown,
-  context?: unknown,
-) => Uint8Array | ((dataPos: number) => Uint8Array) | null | undefined;
-
-export type ExtensionDecoder = (data: Uint8Array, extensionType: number, context?: unknown) => unknown;
-
-export interface ExtensionCodecEntry {
-  type: number;
-  encode?: ExtensionEncoder;
-  decode?: ExtensionDecoder;
-}
-
+/**
+ * ExtData is used to handle Extension Types that are not registered to
+ * ExtensionCodec.
+ */
 export declare class ExtData {
-  constructor(type: number, data: Uint8Array | ((pos: number) => Uint8Array));
   readonly type: number;
   readonly data: Uint8Array | ((pos: number) => Uint8Array);
+  constructor(type: number, data: Uint8Array | ((pos: number) => Uint8Array));
 }
 
-export declare class ExtensionCodec {
-  static readonly defaultCodec: ExtensionCodec;
+export declare class ExtensionCodec<ContextType = undefined>
+  implements ExtensionCodecType<ContextType>
+{
+  static readonly defaultCodec: ExtensionCodecType<undefined>;
+  __brand?: ContextType;
   constructor();
-  register(entry: ExtensionCodecEntry): void;
-  tryToEncode(object: unknown, context?: unknown): ExtData | null;
-  decode(data: Uint8Array, type: number, context?: unknown): unknown;
+  register(entry: {
+    type: number;
+    encode: ExtensionEncoderType<ContextType>;
+    decode: ExtensionDecoderType<ContextType>;
+  }): void;
+  tryToEncode(object: unknown, context: ContextType): ExtData | null;
+  decode(data: Uint8Array, type: number, context: ContextType): unknown;
 }
 
 export interface TimeSpec {
@@ -102,7 +195,7 @@ export interface TimeSpec {
   nsec: number;
 }
 
-export declare const EXT_TIMESTAMP: number;
+export declare const EXT_TIMESTAMP: -1;
 export declare const timestampExtension: {
   type: number;
   encode: (object: unknown) => Uint8Array | null;
@@ -114,51 +207,50 @@ export declare function encodeTimestampExtension(object: unknown): Uint8Array | 
 export declare function decodeTimestampToTimeSpec(data: Uint8Array): TimeSpec;
 export declare function decodeTimestampExtension(data: Uint8Array): Date;
 
-export declare class Encoder {
-  constructor(options?: EncoderOptions);
-  encode(value: unknown): Uint8Array<ArrayBuffer>;
+export declare class Encoder<ContextType = undefined> {
+  constructor(options?: EncoderOptions<ContextType>);
   encodeSharedRef(value: unknown): Uint8Array<ArrayBuffer>;
+  encode(value: unknown): Uint8Array<ArrayBuffer>;
 }
 
-export declare class Decoder {
-  constructor(options?: DecoderOptions);
-  decode(buffer: ArrayLike<number> | ArrayBufferView | ArrayBuffer): unknown;
-  decodeMulti(
-    buffer: ArrayLike<number> | ArrayBufferView | ArrayBuffer,
-  ): Generator<unknown, void, unknown>;
-  decodeAsync(
-    stream: AsyncIterable<ArrayLike<number> | ArrayBufferView | ArrayBuffer>,
-  ): Promise<unknown>;
+export declare class Decoder<ContextType = undefined> {
+  constructor(options?: DecoderOptions<ContextType>);
+  decode(buffer: ArrayLike<number> | ArrayBufferView | ArrayBufferLike): unknown;
+  decodeMulti(buffer: ArrayLike<number> | BufferSource): Generator<unknown, void, unknown>;
+  decodeAsync(stream: AsyncIterable<ArrayLike<number> | BufferSource>): Promise<unknown>;
   decodeArrayStream(
-    stream: AsyncIterable<ArrayLike<number> | ArrayBufferView | ArrayBuffer>,
+    stream: AsyncIterable<ArrayLike<number> | BufferSource>,
   ): AsyncGenerator<unknown, void, unknown>;
   decodeStream(
-    stream: AsyncIterable<ArrayLike<number> | ArrayBufferView | ArrayBuffer>,
+    stream: AsyncIterable<ArrayLike<number> | BufferSource>,
   ): AsyncGenerator<unknown, void, unknown>;
 }
 
 export declare const DEFAULT_INITIAL_BUFFER_SIZE: number;
 
-export declare function encode(value: unknown, options?: EncoderOptions): Uint8Array<ArrayBuffer>;
-export declare function decode(
-  buffer: ArrayLike<number> | ArrayBufferView | ArrayBuffer,
-  options?: DecoderOptions,
+export declare function encode<ContextType = undefined>(
+  value: unknown,
+  options?: EncoderOptions<SplitUndefined<ContextType>>,
+): Uint8Array<ArrayBuffer>;
+export declare function decode<ContextType = undefined>(
+  buffer: ArrayLike<number> | ArrayBufferView | ArrayBufferLike,
+  options?: DecoderOptions<SplitUndefined<ContextType>>,
 ): unknown;
-export declare function decodeMulti(
-  buffer: ArrayLike<number> | ArrayBufferView | ArrayBuffer,
-  options?: DecoderOptions,
+export declare function decodeMulti<ContextType = undefined>(
+  buffer: ArrayLike<number> | BufferSource,
+  options?: DecoderOptions<SplitUndefined<ContextType>>,
 ): Generator<unknown, void, unknown>;
-export declare function decodeAsync(
+export declare function decodeAsync<ContextType = undefined>(
   streamLike: ReadableStreamLike<StreamInput>,
-  options?: DecoderOptions,
+  options?: DecoderOptions<SplitUndefined<ContextType>>,
 ): Promise<unknown>;
-export declare function decodeArrayStream(
+export declare function decodeArrayStream<ContextType>(
   streamLike: ReadableStreamLike<StreamInput>,
-  options?: DecoderOptions,
+  options?: DecoderOptions<SplitUndefined<ContextType>>,
 ): AsyncGenerator<unknown, void, unknown>;
-export declare function decodeMultiStream(
+export declare function decodeMultiStream<ContextType>(
   streamLike: ReadableStreamLike<StreamInput>,
-  options?: DecoderOptions,
+  options?: DecoderOptions<SplitUndefined<ContextType>>,
 ): AsyncGenerator<unknown, void, unknown>;
 `;
 

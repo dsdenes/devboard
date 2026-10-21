@@ -22,6 +22,16 @@
 - Feed corrupted and foreign byte sequences to the server and browser adoption
   applications and compare the reported values and failure descriptions before
   and after the dependency swap.
+- Publish the type surface msgpack-javascript 3.1.3 publishes: the context
+  generics on `EncoderOptions`, `DecoderOptions`, `Encoder`, `Decoder`, and
+  `ExtensionCodec`; the `ExtensionCodecType`, `ExtensionEncoderType`, and
+  `ExtensionDecoderType` contracts; `ContextOf`/`SplitUndefined`; and the
+  original input, return, and option types. TypeScript applications written
+  against the original library build unchanged after the dependency swap.
+- Add the strict TypeScript application in `examples/typed`, which refers to
+  the original's published types for its options, codec, and values, and
+  `bun run verify:typed`, which builds and runs it before and after the swap
+  and compares every encoded and decoded result.
 
 ## 0.4.0
 

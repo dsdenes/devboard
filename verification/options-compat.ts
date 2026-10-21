@@ -138,21 +138,24 @@ class Marker {
 
 const referenceCodec = new ReferenceExtensionCodec();
 const replacementCodec = new ExtensionCodec();
+const markerExtension = {
+  type: 42,
+  encode(object: unknown, context?: unknown): Uint8Array | null {
+    if (!(object instanceof Marker)) {
+      return null;
+    }
+    return new TextEncoder().encode(`${object.payload}:${(context as { tag?: string } | undefined)?.tag ?? ""}`);
+  },
+  decode(data: Uint8Array, _type: number, context?: unknown): Marker {
+    const payload = new TextDecoder().decode(data);
+    return new Marker(`${payload}:${(context as { tag?: string } | undefined)?.tag ?? ""}`);
+  },
+};
 for (const codec of [referenceCodec, replacementCodec]) {
-  codec.register({
-    type: 42,
-    encode(object: unknown, context?: unknown): Uint8Array | null {
-      if (!(object instanceof Marker)) {
-        return null;
-      }
-      return new TextEncoder().encode(`${object.payload}:${(context as { tag?: string } | undefined)?.tag ?? ""}`);
-    },
-    decode(data: Uint8Array, _type: number, context?: unknown): Marker {
-      const payload = new TextDecoder().decode(data);
-      return new Marker(`${payload}:${(context as { tag?: string } | undefined)?.tag ?? ""}`);
-    },
-  });
+  codec.register(markerExtension);
 }
+const combinedCodec = new ExtensionCodec<{ tag: string }>();
+combinedCodec.register(markerExtension);
 
 function compareEncode(name: string, value: unknown, options: Record<string, unknown>, referenceOptions = options): void {
   check(name, () => {
@@ -234,7 +237,7 @@ const combinedValue = {
 };
 
 const combinedEncodeOptions = {
-  extensionCodec: replacementCodec,
+  extensionCodec: combinedCodec,
   context: { tag: "ctx" },
   useBigInt64: true,
   sortKeys: true,

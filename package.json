@@ -17,7 +17,8 @@
     "verify:multi": "bun run build && bun run verification/multi-decode.ts",
     "verify:stream": "bun run build && bun run verification/stream-decode.ts",
     "verify:malformed": "bun run build && bun run verification/malformed-input.ts",
-    "verify:adoption": "bun run build && bun run verification/server-adoption.ts && bun run verification/browser-adoption.ts"
+    "verify:typed": "bun run build && bun run verification/typed-adoption.ts",
+    "verify:adoption": "bun run build && bun run verification/server-adoption.ts && bun run verification/browser-adoption.ts && bun run verification/typed-adoption.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",
