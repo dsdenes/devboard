@@ -164,6 +164,23 @@ same relative path under `<host>/.omp/`; matching files are left alone, unrelate
 never removed, and a differing file stops the run unless `--force` is given. Without a host path,
 the script uses `git rev-parse --show-toplevel` of the working directory.
 
+### Model selection
+
+`omp/config.yml` is installed as `<host>/.omp/config.yml`, the host's omp project settings.
+Every harness peer starts its ACP process with `<REPO_DIR>` as the working directory, so each
+one, and the interactive agent started in that repository, uses the same policy:
+
+|Setting|Value|Meaning|
+|---|---|---|
+|`modelRoles`|`opencode-zen/deepseek-v4.1-flash-free` for `default`, `plan`, `smol`, `slow`, and `task`|Primary model for every chat role the harness uses.|
+|`retry.fallbackChains`|`opencode-go/deepseek-v4.1-flash` for the same roles|Fallback when the primary is unavailable or a request fails.|
+|`retry.modelFallback`|`true`|Enables switching to the configured chains.|
+
+The primary model is an OpenCode Zen model; the fallback is the OpenCode Go model with the same
+name. Both providers read `OPENCODE_API_KEY`, so the host must supply a key with access to each
+provider the policy names. Editing `omp/config.yml` here and rerunning `install.sh` changes the
+installed copy.
+
 ## Build and run
 
 Run the interface from this directory:
