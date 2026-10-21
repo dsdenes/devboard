@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { encode as referenceEncode } from "msgpack-javascript-original";
-import { fixtures } from "../examples/browser/src/fixtures.ts";
+import { encode as referenceEncode, ExtensionCodec as ReferenceExtensionCodec } from "msgpack-javascript-original";
+import { fixtures, installExtensionCodec } from "../examples/browser/src/fixtures.ts";
+
+const referenceCodec = new ReferenceExtensionCodec();
+installExtensionCodec(referenceCodec);
 
 const root = dirname(import.meta.dir);
 const appDir = join(root, "examples/browser");
@@ -66,6 +69,9 @@ function serve(directory: string): { url: string; stop: () => void } {
 }
 
 async function loadInBrowser(url: string): Promise<unknown> {
+  // Relative paths keep Chrome's Unix socket below the kernel's length limit.
+  await mkdir(join(root, ".tmp", "chrome"), { recursive: true });
+  await mkdir(join(root, ".tmp", "tmp"), { recursive: true });
   const chrome = Bun.spawn(
     [
       CHROME,
@@ -73,11 +79,17 @@ async function loadInBrowser(url: string): Promise<unknown> {
       "--no-sandbox",
       "--disable-gpu",
       "--disable-dev-shm-usage",
+      "--user-data-dir=.tmp/chrome",
       "--virtual-time-budget=5000",
       "--dump-dom",
       url,
     ],
-    { stdout: "pipe", stderr: "pipe" },
+    {
+      cwd: root,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...Bun.env, TMPDIR: ".tmp/tmp" },
+    },
   );
   const timer = setTimeout(() => chrome.kill(), 30_000);
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -141,7 +153,7 @@ const identical = JSON.stringify(baseline) === JSON.stringify(replacement);
 
 const expected: Record<string, string> = {};
 for (const [name, value] of fixtures) {
-  expected[name] = Buffer.from(referenceEncode(value)).toString("hex");
+  expected[name] = Buffer.from(referenceEncode(value, { extensionCodec: referenceCodec })).toString("hex");
 }
 const hexMatchesReference = replacement.cases.every((item) => expected[item.name] === item.hex);
 const allRoundTrip = replacement.cases.every((item) => item.matchesInput);

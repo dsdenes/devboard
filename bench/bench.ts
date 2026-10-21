@@ -1,9 +1,54 @@
-import { decode as referenceDecode, encode as referenceEncode } from "msgpack-javascript-original";
-import { decode, encode } from "@devboard/msgpack";
+import {
+  decode as referenceDecode,
+  encode as referenceEncode,
+  ExtensionCodec as ReferenceExtensionCodec,
+} from "msgpack-javascript-original";
+import { decode, encode, ExtensionCodec } from "@devboard/msgpack";
+
+class BenchPoint {
+  constructor(
+    public lat: number,
+    public lon: number,
+  ) {}
+}
+
+interface Registerable {
+  register(entry: {
+    type: number;
+    encode: (object: unknown) => Uint8Array | null;
+    decode: (data: Uint8Array) => unknown;
+  }): void;
+}
+
+function installPointCodec(codec: Registerable): void {
+  codec.register({
+    type: 0x42,
+    encode(object: unknown): Uint8Array | null {
+      if (!(object instanceof BenchPoint)) {
+        return null;
+      }
+      const data = new Uint8Array(16);
+      const view = new DataView(data.buffer);
+      view.setFloat64(0, object.lat);
+      view.setFloat64(8, object.lon);
+      return data;
+    },
+    decode(data: Uint8Array): BenchPoint {
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      return new BenchPoint(view.getFloat64(0), view.getFloat64(8));
+    },
+  });
+}
+
+const referenceCodec = new ReferenceExtensionCodec();
+installPointCodec(referenceCodec);
+const replacementCodec = new ExtensionCodec();
+installPointCodec(replacementCodec);
 
 interface Case {
   name: string;
   value: unknown;
+  custom?: boolean;
 }
 
 const cases: Case[] = [
@@ -49,6 +94,30 @@ const cases: Case[] = [
       })),
     },
   },
+  { name: "timestamp", value: new Date(1700000000123) },
+  { name: "timestamp before epoch", value: new Date(-1) },
+  {
+    name: "timestamp nested",
+    value: {
+      createdAt: new Date(1700000000000),
+      events: Array.from({ length: 10 }, (_, i) => ({ at: new Date(1700000000000 + i * 1000) })),
+    },
+  },
+  { name: "custom point", value: new BenchPoint(12.5, -7.25), custom: true },
+  {
+    name: "custom nested",
+    value: {
+      location: new BenchPoint(-33.8688, 151.2093),
+      trail: Array.from({ length: 10 }, (_, i) => new BenchPoint(i * 0.5, i * -0.25)),
+      at: new Date(1700000000123),
+    },
+    custom: true,
+  },
+  {
+    name: "custom array",
+    value: Array.from({ length: 20 }, (_, i) => new BenchPoint(i, i + 1)),
+    custom: true,
+  },
 ];
 
 const ROUNDS = Number(process.env.BENCH_ROUNDS ?? 9);
@@ -90,8 +159,15 @@ interface Result {
 const results: Result[] = [];
 
 for (const item of cases.filter((entry) => !FILTER || entry.name.includes(FILTER))) {
-  const refBytes = referenceEncode(item.value);
-  const newBytes = encode(item.value);
+  const refOptions = item.custom ? { extensionCodec: referenceCodec } : undefined;
+  const newOptions = item.custom ? { extensionCodec: replacementCodec } : undefined;
+  const runReferenceEncode = () => referenceEncode(item.value, refOptions);
+  const runReplacementEncode = () => encode(item.value, newOptions);
+  const runReferenceDecode = () => referenceDecode(refBytes, refOptions);
+  const runReplacementDecode = () => decode(refBytes, newOptions);
+
+  const refBytes = runReferenceEncode();
+  const newBytes = runReplacementEncode();
   if (refBytes.length !== newBytes.length) {
     throw new Error(`${item.name}: encoded length mismatch`);
   }
@@ -101,17 +177,17 @@ for (const item of cases.filter((entry) => !FILTER || entry.name.includes(FILTER
     }
   }
 
-  referenceDecode(refBytes);
-  decode(refBytes);
+  runReferenceDecode();
+  runReplacementDecode();
 
   const iterations = iterationsFor(refBytes.length);
 
   // Warm both paths so the comparison measures steady-state work.
   for (let i = 0; i < 2; i++) {
-    measure(() => referenceEncode(item.value), Math.max(1, iterations >> 2));
-    measure(() => encode(item.value), Math.max(1, iterations >> 2));
-    measure(() => referenceDecode(refBytes), Math.max(1, iterations >> 2));
-    measure(() => decode(refBytes), Math.max(1, iterations >> 2));
+    measure(runReferenceEncode, Math.max(1, iterations >> 2));
+    measure(runReplacementEncode, Math.max(1, iterations >> 2));
+    measure(runReferenceDecode, Math.max(1, iterations >> 2));
+    measure(runReplacementDecode, Math.max(1, iterations >> 2));
   }
 
   const encodeRef: number[] = [];
@@ -121,15 +197,15 @@ for (const item of cases.filter((entry) => !FILTER || entry.name.includes(FILTER
 
   for (let round = 0; round < ROUNDS; round++) {
     if (round % 2 === 0) {
-      encodeRef.push(measure(() => referenceEncode(item.value), iterations));
-      encodeNew.push(measure(() => encode(item.value), iterations));
-      decodeRef.push(measure(() => referenceDecode(refBytes), iterations));
-      decodeNew.push(measure(() => decode(refBytes), iterations));
+      encodeRef.push(measure(runReferenceEncode, iterations));
+      encodeNew.push(measure(runReplacementEncode, iterations));
+      decodeRef.push(measure(runReferenceDecode, iterations));
+      decodeNew.push(measure(runReplacementDecode, iterations));
     } else {
-      decodeNew.push(measure(() => decode(refBytes), iterations));
-      decodeRef.push(measure(() => referenceDecode(refBytes), iterations));
-      encodeNew.push(measure(() => encode(item.value), iterations));
-      encodeRef.push(measure(() => referenceEncode(item.value), iterations));
+      decodeNew.push(measure(runReplacementDecode, iterations));
+      decodeRef.push(measure(runReferenceDecode, iterations));
+      encodeNew.push(measure(runReplacementEncode, iterations));
+      encodeRef.push(measure(runReferenceEncode, iterations));
     }
   }
 

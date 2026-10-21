@@ -1,8 +1,15 @@
 import { createHash } from "node:crypto";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { decode as referenceDecode, encode as referenceEncode } from "msgpack-javascript-original";
-import { fixtures } from "../examples/server/fixtures.ts";
+import {
+  decode as referenceDecode,
+  encode as referenceEncode,
+  ExtensionCodec as ReferenceExtensionCodec,
+} from "msgpack-javascript-original";
+import { fixtures, GeoPoint, installExtensionCodec } from "../examples/server/fixtures.ts";
+
+const referenceCodec = new ReferenceExtensionCodec();
+installExtensionCodec(referenceCodec);
 
 const root = dirname(import.meta.dir);
 const appDir = join(root, "examples/server");
@@ -57,6 +64,12 @@ function canonical(value: unknown): unknown {
     if (value === Number.NEGATIVE_INFINITY) return { __number: "-Infinity" };
     if (Object.is(value, -0)) return { __number: "-0" };
     return value;
+  }
+  if (value instanceof Date) {
+    return { __date: value.getTime() };
+  }
+  if (value instanceof GeoPoint) {
+    return { __point: [value.lat, value.lon] };
   }
   if (value instanceof Uint8Array) {
     return { __binary: hex(value) };
@@ -136,13 +149,13 @@ async function verify(url: string): Promise<{ steps: Step[]; encodedFixtures: st
 
   const encodedFixtures: string[] = [];
   for (let i = 0; i < fixtures.length; i++) {
-    const expectedBytes = referenceEncode(fixtures[i]);
+    const expectedBytes = referenceEncode(fixtures[i], { extensionCodec: referenceCodec });
     const responseBytes = await postBytes(`${url}/roundtrip`, expectedBytes);
     const expectedHex = hex(expectedBytes);
     const actualHex = hex(responseBytes);
     encodedFixtures.push(actualHex);
-    const decodedReference = referenceDecode(expectedBytes);
-    const decodedResponse = referenceDecode(responseBytes);
+    const decodedReference = referenceDecode(expectedBytes, { extensionCodec: referenceCodec });
+    const decodedResponse = referenceDecode(responseBytes, { extensionCodec: referenceCodec });
     steps.push({
       name: `roundtrip fixture ${i}`,
       ok: actualHex === expectedHex && sameValue(decodedResponse, decodedReference),
@@ -151,7 +164,7 @@ async function verify(url: string): Promise<{ steps: Step[]; encodedFixtures: st
   }
 
   const fixtureBytes = new Uint8Array(await (await fetch(`${url}/fixtures`)).arrayBuffer());
-  const servedFixtures = referenceDecode(fixtureBytes);
+  const servedFixtures = referenceDecode(fixtureBytes, { extensionCodec: referenceCodec });
   steps.push({
     name: "GET /fixtures encodes every fixture",
     ok: sameValue(servedFixtures, fixtures),
@@ -160,15 +173,19 @@ async function verify(url: string): Promise<{ steps: Step[]; encodedFixtures: st
   for (let i = 0; i < fixtures.length; i++) {
     const decoded = await fetch(`${url}/decode`, {
       method: "POST",
-      body: referenceEncode(fixtures[i]),
+      body: referenceEncode(fixtures[i], { extensionCodec: referenceCodec }),
     }).then((response) => response.json() as Promise<{ ok: boolean; kind: string }>);
     const expectedKind = Array.isArray(fixtures[i])
       ? "array"
       : fixtures[i] === null
         ? "null"
-        : typeof fixtures[i] === "object"
-          ? "map"
-          : typeof fixtures[i];
+        : fixtures[i] instanceof Date
+          ? "date"
+          : fixtures[i] instanceof GeoPoint
+            ? "point"
+            : typeof fixtures[i] === "object"
+              ? "map"
+              : typeof fixtures[i];
     steps.push({
       name: `POST /decode fixture ${i}`,
       ok: decoded.ok && decoded.kind === expectedKind,

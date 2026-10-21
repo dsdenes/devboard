@@ -1,3 +1,39 @@
+export class GeoPoint {
+  constructor(
+    public lat: number,
+    public lon: number,
+  ) {}
+}
+
+interface Registerable {
+  register(entry: {
+    type: number;
+    encode: (object: unknown) => Uint8Array | null;
+    decode: (data: Uint8Array) => unknown;
+  }): void;
+}
+
+/** Registers the application's custom value type in its extension codec. */
+export function installExtensionCodec(codec: Registerable): void {
+  codec.register({
+    type: 0x42,
+    encode(object: unknown): Uint8Array | null {
+      if (!(object instanceof GeoPoint)) {
+        return null;
+      }
+      const data = new Uint8Array(16);
+      const view = new DataView(data.buffer);
+      view.setFloat64(0, object.lat);
+      view.setFloat64(8, object.lon);
+      return data;
+    },
+    decode(data: Uint8Array): GeoPoint {
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      return new GeoPoint(view.getFloat64(0), view.getFloat64(8));
+    },
+  });
+}
+
 export const fixtures: unknown[] = [
   null,
   true,
@@ -19,5 +55,15 @@ export const fixtures: unknown[] = [
     ],
     cursor: null,
     blob: new Uint8Array(300).map((_, index) => index & 0xff),
+  },
+  new Date(0),
+  new Date(1700000000123),
+  new Date(-1),
+  new GeoPoint(12.5, -7.25),
+  [new Date(1000), new GeoPoint(1, 2)],
+  {
+    createdAt: new Date(1700000000000),
+    location: new GeoPoint(-33.8688, 151.2093),
+    trail: [new Date(0), new GeoPoint(0, 0), new Date(-1000)],
   },
 ];

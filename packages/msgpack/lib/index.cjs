@@ -41,9 +41,18 @@ var exports_src = {};
 __export(exports_src, {
   DEFAULT_INITIAL_BUFFER_SIZE: () => DEFAULT_INITIAL_BUFFER_SIZE,
   Decoder: () => Decoder,
+  EXT_TIMESTAMP: () => EXT_TIMESTAMP,
   Encoder: () => Encoder,
+  ExtData: () => ExtData,
+  ExtensionCodec: () => ExtensionCodec,
   decode: () => decode,
-  encode: () => encode
+  decodeTimestampExtension: () => decodeTimestampExtension,
+  decodeTimestampToTimeSpec: () => decodeTimestampToTimeSpec,
+  encode: () => encode,
+  encodeDateToTimeSpec: () => encodeDateToTimeSpec,
+  encodeTimeSpecToTimestamp: () => encodeTimeSpecToTimestamp,
+  encodeTimestampExtension: () => encodeTimestampExtension,
+  timestampExtension: () => timestampExtension
 });
 module.exports = __toCommonJS(exports_src);
 
@@ -229,15 +238,164 @@ function readUtf8(bytes, start, length) {
   return readUtf8Js(bytes, start, end);
 }
 
+// packages/msgpack/src/timestamp.ts
+var EXT_TIMESTAMP = -1;
+var TIMESTAMP32_MAX_SEC = 4294967296 - 1;
+var TIMESTAMP64_MAX_SEC = 17179869184 - 1;
+function setInt64(view, offset, value) {
+  view.setUint32(offset, Math.floor(value / 4294967296));
+  view.setUint32(offset + 4, value);
+}
+function getInt64(view, offset) {
+  const high = view.getInt32(offset);
+  const low = view.getUint32(offset + 4);
+  return high * 4294967296 + low;
+}
+function encodeTimeSpecToTimestamp({ sec, nsec }) {
+  if (sec >= 0 && nsec >= 0 && sec <= TIMESTAMP64_MAX_SEC) {
+    if (nsec === 0 && sec <= TIMESTAMP32_MAX_SEC) {
+      const rv = new Uint8Array(4);
+      const view = new DataView(rv.buffer);
+      view.setUint32(0, sec);
+      return rv;
+    }
+    const secHigh = sec / 4294967296;
+    const secLow = sec & 4294967295;
+    const rv = new Uint8Array(8);
+    const view = new DataView(rv.buffer);
+    view.setUint32(0, nsec << 2 | secHigh & 3);
+    view.setUint32(4, secLow);
+    return rv;
+  }
+  const rv = new Uint8Array(12);
+  const view = new DataView(rv.buffer);
+  view.setUint32(0, nsec);
+  setInt64(view, 4, sec);
+  return rv;
+}
+function encodeDateToTimeSpec(date) {
+  const msec = date.getTime();
+  const sec = Math.floor(msec / 1000);
+  const nsec = (msec - sec * 1000) * 1e6;
+  const nsecInSec = Math.floor(nsec / 1e9);
+  return {
+    sec: sec + nsecInSec,
+    nsec: nsec - nsecInSec * 1e9
+  };
+}
+function encodeTimestampExtension(object) {
+  if (object instanceof Date) {
+    const timeSpec = encodeDateToTimeSpec(object);
+    return encodeTimeSpecToTimestamp(timeSpec);
+  }
+  return null;
+}
+function decodeTimestampToTimeSpec(data) {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  switch (data.byteLength) {
+    case 4: {
+      const sec = view.getUint32(0);
+      return { sec, nsec: 0 };
+    }
+    case 8: {
+      const nsec30AndSecHigh2 = view.getUint32(0);
+      const secLow32 = view.getUint32(4);
+      const sec = (nsec30AndSecHigh2 & 3) * 4294967296 + secLow32;
+      const nsec = nsec30AndSecHigh2 >>> 2;
+      return { sec, nsec };
+    }
+    case 12: {
+      return { sec: getInt64(view, 4), nsec: view.getUint32(0) };
+    }
+    default:
+      throw new Error(`Unrecognized data size for timestamp (expected 4, 8, or 12): ${data.length}`);
+  }
+}
+function decodeTimestampExtension(data) {
+  const timeSpec = decodeTimestampToTimeSpec(data);
+  return new Date(timeSpec.sec * 1000 + timeSpec.nsec / 1e6);
+}
+var timestampExtension = {
+  type: EXT_TIMESTAMP,
+  encode: encodeTimestampExtension,
+  decode: decodeTimestampExtension
+};
+
+// packages/msgpack/src/extension.ts
+class ExtData {
+  type;
+  data;
+  constructor(type, data) {
+    this.type = type;
+    this.data = data;
+  }
+}
+
+class ExtensionCodec {
+  static defaultCodec = new ExtensionCodec;
+  builtInEncoders = [];
+  builtInDecoders = [];
+  encoders = [];
+  decoders = [];
+  constructor() {
+    this.register(timestampExtension);
+  }
+  register({ type, encode, decode }) {
+    if (type >= 0) {
+      this.encoders[type] = encode;
+      this.decoders[type] = decode;
+    } else {
+      const index = -1 - type;
+      this.builtInEncoders[index] = encode;
+      this.builtInDecoders[index] = decode;
+    }
+  }
+  tryToEncode(object, context) {
+    for (let i = 0;i < this.builtInEncoders.length; i++) {
+      const encodeExt = this.builtInEncoders[i];
+      if (encodeExt != null) {
+        const data = encodeExt(object, context);
+        if (data != null) {
+          return new ExtData(-1 - i, data);
+        }
+      }
+    }
+    for (let i = 0;i < this.encoders.length; i++) {
+      const encodeExt = this.encoders[i];
+      if (encodeExt != null) {
+        const data = encodeExt(object, context);
+        if (data != null) {
+          return new ExtData(i, data);
+        }
+      }
+    }
+    if (object instanceof ExtData) {
+      return object;
+    }
+    return null;
+  }
+  decode(data, type, context) {
+    const decodeExt = type < 0 ? this.builtInDecoders[-1 - type] : this.decoders[type];
+    if (decodeExt) {
+      return decodeExt(data, type, context);
+    }
+    return new ExtData(type, data);
+  }
+}
+
 // packages/msgpack/src/encoder.ts
 var TEXT_ENCODER_THRESHOLD = 50;
 
 class Encoder {
   writer;
   options;
+  extensionCodec;
+  context;
   entered = false;
   constructor(options) {
     this.options = options;
+    this.extensionCodec = options?.extensionCodec ?? ExtensionCodec.defaultCodec;
+    this.context = options?.context;
     this.writer = new Writer(options?.initialBufferSize ?? DEFAULT_INITIAL_BUFFER_SIZE);
   }
   encode(value) {
@@ -247,7 +405,7 @@ class Encoder {
     this.entered = true;
     try {
       this.writer.reset();
-      encodeValue(this.writer, value);
+      encodeValue(this.writer, value, this.extensionCodec, this.context);
       return this.writer.copy();
     } finally {
       this.entered = false;
@@ -260,7 +418,7 @@ class Encoder {
     this.entered = true;
     try {
       this.writer.reset();
-      encodeValue(this.writer, value);
+      encodeValue(this.writer, value, this.extensionCodec, this.context);
       return this.writer.ref();
     } finally {
       this.entered = false;
@@ -277,7 +435,7 @@ function encode(value, options) {
       if (options?.initialBufferSize !== undefined) {
         sharedWriter.ensure(options.initialBufferSize);
       }
-      encodeValue(sharedWriter, value);
+      encodeValue(sharedWriter, value, options?.extensionCodec ?? ExtensionCodec.defaultCodec, options?.context);
       return sharedWriter.copy();
     } finally {
       sharedWriterEntered = false;
@@ -285,7 +443,7 @@ function encode(value, options) {
   }
   return new Encoder(options).encode(value);
 }
-function encodeValue(writer, value) {
+function encodeValue(writer, value, codec, context) {
   if (value === null || value === undefined) {
     writer.ensure(1);
     writer.bytes[writer.pos++] = 192;
@@ -303,10 +461,16 @@ function encodeValue(writer, value) {
       encodeString(writer, value);
       return;
     case "object":
-      encodeObject(writer, value);
+      encodeObject(writer, value, codec, context);
       return;
-    default:
+    default: {
+      const ext = codec.tryToEncode(value, context);
+      if (ext !== null) {
+        encodeExtension(writer, ext);
+        return;
+      }
       throw new Error(`Unrecognized object: ${Object.prototype.toString.apply(value)}`);
+    }
   }
 }
 function encodeNumber(writer, value) {
@@ -438,7 +602,7 @@ function encodeBinary(writer, value) {
   }
   writer.pos += size;
 }
-function encodeArray(writer, value) {
+function encodeArray(writer, value, codec, context) {
   const size = value.length;
   if (size < 16) {
     writer.ensure(1);
@@ -455,10 +619,10 @@ function encodeArray(writer, value) {
     writer.pos += 5;
   }
   for (let i = 0;i < size; i++) {
-    encodeValue(writer, value[i]);
+    encodeValue(writer, value[i], codec, context);
   }
 }
-function encodeMap(writer, value) {
+function encodeMap(writer, value, codec, context) {
   const keys = Object.keys(value);
   const size = keys.length;
   if (size < 16) {
@@ -478,17 +642,83 @@ function encodeMap(writer, value) {
   for (let i = 0;i < size; i++) {
     const key = keys[i];
     encodeString(writer, key);
-    encodeValue(writer, value[key]);
+    encodeValue(writer, value[key], codec, context);
   }
 }
-function encodeObject(writer, value) {
+function encodeObject(writer, value, codec, context) {
+  const ext = codec.tryToEncode(value, context);
+  if (ext !== null) {
+    encodeExtension(writer, ext);
+    return;
+  }
   if (Array.isArray(value)) {
-    encodeArray(writer, value);
+    encodeArray(writer, value, codec, context);
   } else if (ArrayBuffer.isView(value)) {
     encodeBinary(writer, value);
   } else {
-    encodeMap(writer, value);
+    encodeMap(writer, value, codec, context);
   }
+}
+function encodeExtension(writer, ext) {
+  if (typeof ext.data === "function") {
+    const data = ext.data(writer.pos + 6);
+    const size = data.length;
+    if (size >= 4294967296) {
+      throw new Error(`Too large extension object: ${size}`);
+    }
+    writer.ensure(6 + size);
+    const pos = writer.pos;
+    writer.bytes[pos] = 201;
+    writer.view.setUint32(pos + 1, size);
+    writer.view.setInt8(pos + 5, ext.type);
+    writer.bytes.set(data, pos + 6);
+    writer.pos = pos + 6 + size;
+    return;
+  }
+  const size = ext.data.length;
+  let head;
+  let headerSize;
+  if (size === 1) {
+    head = 212;
+    headerSize = 1;
+  } else if (size === 2) {
+    head = 213;
+    headerSize = 1;
+  } else if (size === 4) {
+    head = 214;
+    headerSize = 1;
+  } else if (size === 8) {
+    head = 215;
+    headerSize = 1;
+  } else if (size === 16) {
+    head = 216;
+    headerSize = 1;
+  } else if (size < 256) {
+    head = 199;
+    headerSize = 2;
+  } else if (size < 65536) {
+    head = 200;
+    headerSize = 3;
+  } else if (size < 4294967296) {
+    head = 201;
+    headerSize = 5;
+  } else {
+    throw new Error(`Too large extension object: ${size}`);
+  }
+  writer.ensure(headerSize + 1 + size);
+  const pos = writer.pos;
+  const bytes = writer.bytes;
+  bytes[pos] = head;
+  if (headerSize === 2) {
+    bytes[pos + 1] = size;
+  } else if (headerSize === 3) {
+    writer.view.setUint16(pos + 1, size);
+  } else if (headerSize === 5) {
+    writer.view.setUint32(pos + 1, size);
+  }
+  writer.view.setInt8(pos + headerSize, ext.type);
+  bytes.set(ext.data, pos + headerSize + 1);
+  writer.pos = pos + headerSize + 1 + size;
 }
 // packages/msgpack/src/decoder.ts
 var KEY_MAX_LENGTH = 16;
@@ -524,6 +754,8 @@ class Reader {
   bytes = new Uint8Array(0);
   view = new DataView(new ArrayBuffer(0));
   pos = 0;
+  extensionCodec = ExtensionCodec.defaultCodec;
+  context = undefined;
   set(input) {
     const bytes = toBytes(input);
     this.bytes = bytes;
@@ -550,15 +782,20 @@ var sharedReaderEntered = false;
 
 class Decoder {
   reader = new Reader;
+  options;
   entered = false;
-  constructor(_options) {}
+  constructor(options) {
+    this.options = options;
+  }
   decode(buffer) {
     if (this.entered) {
-      return new Decoder().decode(buffer);
+      return new Decoder(this.options).decode(buffer);
     }
     this.entered = true;
     try {
       const reader = this.reader;
+      reader.extensionCodec = this.options?.extensionCodec ?? ExtensionCodec.defaultCodec;
+      reader.context = this.options?.context;
       reader.set(buffer);
       const value = decodeValue(reader, false);
       if (reader.pos !== reader.bytes.length) {
@@ -570,10 +807,12 @@ class Decoder {
     }
   }
 }
-function decode(buffer, _options) {
+function decode(buffer, options) {
   if (!sharedReaderEntered) {
     sharedReaderEntered = true;
     try {
+      sharedReader.extensionCodec = options?.extensionCodec ?? ExtensionCodec.defaultCodec;
+      sharedReader.context = options?.context;
       sharedReader.set(buffer);
       const value = decodeValue(sharedReader, false);
       if (sharedReader.pos !== sharedReader.bytes.length) {
@@ -584,7 +823,7 @@ function decode(buffer, _options) {
       sharedReaderEntered = false;
     }
   }
-  return new Decoder().decode(buffer);
+  return new Decoder(options).decode(buffer);
 }
 function decodeValue(reader, isMapKey) {
   const bytes = reader.bytes;
@@ -705,9 +944,39 @@ function decodeValue(reader, isMapKey) {
       reader.pos += 4;
       return decodeBinary(reader, size);
     }
+    case 212:
+      return decodeExtension(reader, 1);
+    case 213:
+      return decodeExtension(reader, 2);
+    case 214:
+      return decodeExtension(reader, 4);
+    case 215:
+      return decodeExtension(reader, 8);
+    case 216:
+      return decodeExtension(reader, 16);
+    case 199: {
+      const size = bytes[reader.pos++];
+      return decodeExtension(reader, size);
+    }
+    case 200: {
+      const size = bytes[reader.pos] << 8 | bytes[reader.pos + 1];
+      reader.pos += 2;
+      return decodeExtension(reader, size);
+    }
+    case 201: {
+      const size = readU32(bytes, reader.pos);
+      reader.pos += 4;
+      return decodeExtension(reader, size);
+    }
     default:
       throw new Error(`Unrecognized type byte: 0x${head.toString(16)}`);
   }
+}
+function decodeExtension(reader, size) {
+  const type = reader.view.getInt8(reader.pos);
+  const start = reader.pos + 1;
+  reader.pos = start + size;
+  return reader.extensionCodec.decode(reader.bytes.subarray(start, start + size), type, reader.context);
 }
 function readU32(bytes, pos) {
   return (bytes[pos] << 24 | bytes[pos + 1] << 16 | bytes[pos + 2] << 8 | bytes[pos + 3]) >>> 0;
