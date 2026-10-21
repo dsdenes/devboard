@@ -984,10 +984,12 @@ describe("skills preparation", () => {
     expect(prompt).toMatch(/covers every skill in `<host>\/\.omp\/skills\/`/);
     expect(prompt).toMatch(/unresolvable contradiction with unmanaged skill/);
     expect(prompt).not.toContain(categoryMarker);
+    expect(prompt).not.toMatch(/category/i);
     expect(prompt).not.toContain("code-organization");
     expect(prompt).toMatch(/carries no provenance line, source list, or citation field/i);
 
     expect(stub).not.toContain(categoryMarker);
+    expect(stub).not.toMatch(/category/i);
     expect(command.trim().split("\n").at(-1)).toContain(
       "Read `.devboard/prompts/prepare-skills.md`",
     );
