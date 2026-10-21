@@ -1,0 +1,17 @@
+{
+  "name": "@devboard/msgpack",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Byte-compatible, drop-in replacement for @msgpack/msgpack everyday payloads",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.mjs",
+      "require": "./lib/index.cjs"
+    }
+  },
+  "files": [
+    "lib"
+  ]
+}

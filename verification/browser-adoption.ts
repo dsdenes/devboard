@@ -9,7 +9,7 @@ const appDir = join(root, "examples/browser");
 const packageFile = join(appDir, "package.json");
 const sourceFiles = ["index.html", "src/main.ts", "src/fixtures.ts"];
 const ORIGINAL_SPEC = "npm:@msgpack/msgpack@3.1.3";
-const REPLACEMENT_SPEC = "file:../..";
+const REPLACEMENT_SPEC = "file:../../packages/msgpack";
 const CHROME = process.env.CHROME_PATH ?? "google-chrome";
 
 async function sourceHashes(): Promise<Record<string, string>> {

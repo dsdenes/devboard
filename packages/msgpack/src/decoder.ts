@@ -9,7 +9,6 @@ type Input = ArrayLike<number> | ArrayBufferView | ArrayBuffer | SharedArrayBuff
 const KEY_MAX_LENGTH = 16;
 
 interface KeyCacheEntry {
-  hash: number;
   bytes: Uint8Array;
   value: string;
 }
@@ -19,49 +18,29 @@ for (let i = 0; i < KEY_MAX_LENGTH; i++) {
   keyCaches.push([]);
 }
 
-function keyHash(bytes: Uint8Array, start: number, length: number): number {
-  let hash = 0x811c9dc5;
-  const end = start + length;
-  for (let i = start; i < end; i++) {
-    hash = Math.imul(hash ^ bytes[i], 0x01000193);
-  }
-  return hash;
-}
-
-function lookupKey(bytes: Uint8Array, start: number, length: number, hash: number): string | null {
+function lookupKey(bytes: Uint8Array, start: number, length: number): string | null {
   const entries = keyCaches[length - 1];
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    if (entry.hash !== hash) {
-      continue;
-    }
-    const cached = entry.bytes;
-    let same = true;
+  SCAN: for (let i = 0; i < entries.length; i++) {
+    const cached = entries[i].bytes;
     for (let j = 0; j < length; j++) {
       if (cached[j] !== bytes[start + j]) {
-        same = false;
-        break;
+        continue SCAN;
       }
     }
-    if (same) {
-      return entry.value;
-    }
+    return entries[i].value;
   }
   return null;
 }
 
-function storeKey(bytes: Uint8Array, start: number, length: number, hash: number, value: string): void {
+function storeKey(bytes: Uint8Array, start: number, length: number, value: string): void {
   const entries = keyCaches[length - 1];
+  const entry = { bytes: bytes.slice(start, start + length), value };
   if (entries.length >= KEY_MAX_LENGTH) {
     // Same bounded-cache policy as the original: replace an arbitrary entry.
-    entries[(Math.random() * entries.length) | 0] = {
-      hash,
-      bytes: bytes.slice(start, start + length),
-      value,
-    };
+    entries[(Math.random() * entries.length) | 0] = entry;
     return;
   }
-  entries.push({ hash, bytes: bytes.slice(start, start + length), value });
+  entries.push(entry);
 }
 
 class Reader {
@@ -282,13 +261,12 @@ function decodeString(reader: Reader, length: number, isMapKey: boolean): string
   reader.pos += length;
 
   if (isMapKey && length > 0 && length <= KEY_MAX_LENGTH) {
-    const hash = keyHash(reader.bytes, start, length);
-    const cached = lookupKey(reader.bytes, start, length, hash);
+    const cached = lookupKey(reader.bytes, start, length);
     if (cached !== null) {
       return cached;
     }
     const value = readUtf8(reader.bytes, start, length);
-    storeKey(reader.bytes, start, length, hash, value);
+    storeKey(reader.bytes, start, length, value);
     return value;
   }
 

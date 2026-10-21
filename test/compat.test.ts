@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { decode as referenceDecode, encode as referenceEncode } from "msgpack-javascript-original";
-import { decode, Decoder, encode, Encoder } from "../src/index.ts";
+import { decode, Decoder, encode, Encoder } from "../packages/msgpack/src/index.ts";
 import { allPayloads, binaryPayloads } from "./payloads.ts";
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {

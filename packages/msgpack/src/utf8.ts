@@ -163,15 +163,14 @@ export function readUtf8(bytes: Uint8Array, start: number, length: number): stri
   }
 
   if (ascii) {
-    if (length <= ASCII_CHUNK) {
-      return String.fromCharCode.apply(null, bytes.subarray(start, end) as unknown as number[]);
+    if (length <= 8) {
+      let result = "";
+      for (let i = start; i < end; i++) {
+        result += String.fromCharCode(bytes[i]);
+      }
+      return result;
     }
-    let result = "";
-    for (let i = start; i < end; i += ASCII_CHUNK) {
-      const chunkEnd = Math.min(i + ASCII_CHUNK, end);
-      result += String.fromCharCode.apply(null, bytes.subarray(i, chunkEnd) as unknown as number[]);
-    }
-    return result;
+    return sharedDecoder.decode(bytes.subarray(start, end));
   }
 
   return readUtf8Js(bytes, start, end);

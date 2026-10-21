@@ -9,7 +9,7 @@ const appDir = join(root, "examples/server");
 const packageFile = join(appDir, "package.json");
 const sourceFiles = ["server.ts", "fixtures.ts"];
 const ORIGINAL_SPEC = "npm:@msgpack/msgpack@3.1.3";
-const REPLACEMENT_SPEC = "file:../..";
+const REPLACEMENT_SPEC = "file:../../packages/msgpack";
 
 async function sha256(file: string): Promise<string> {
   return createHash("sha256").update(await readFile(file)).digest("hex");

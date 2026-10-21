@@ -6,6 +6,6 @@
     "start": "bun run server.ts"
   },
   "dependencies": {
-    "@msgpack/msgpack": "file:../.."
+    "@msgpack/msgpack": "file:../../packages/msgpack"
   }
 }

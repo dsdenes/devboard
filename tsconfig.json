@@ -7,7 +7,18 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": {
+      "@msgpack/msgpack": ["packages/msgpack/lib/index.d.ts"]
+    }
   },
-  "include": ["src", "test", "bench", "scripts", "verification", "examples"]
+  "include": [
+    "packages/msgpack/src",
+    "test",
+    "bench",
+    "scripts",
+    "verification",
+    "examples"
+  ]
 }

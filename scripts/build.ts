@@ -2,19 +2,19 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const root = dirname(import.meta.dir);
-const outDir = join(root, "lib");
+const outDir = join(root, "packages/msgpack/lib");
 await mkdir(outDir, { recursive: true });
 
 const targets = [
-  { format: "esm", outfile: "lib/index.mjs" },
-  { format: "cjs", outfile: "lib/index.cjs" },
+  { format: "esm", outfile: "packages/msgpack/lib/index.mjs" },
+  { format: "cjs", outfile: "packages/msgpack/lib/index.cjs" },
 ] as const;
 
 for (const target of targets) {
   const result = await Bun.build({
-    entrypoints: [join(root, "src/index.ts")],
+    entrypoints: [join(root, "packages/msgpack/src/index.ts")],
     outdir: outDir,
-    naming: target.outfile.slice("lib/".length),
+    naming: target.outfile.slice("packages/msgpack/lib/".length),
     format: target.format,
     target: "browser",
     minify: false,
@@ -57,4 +57,4 @@ export declare function decode(
 `;
 
 await writeFile(join(outDir, "index.d.ts"), declarations);
-console.log("built lib/index.mjs, lib/index.cjs, lib/index.d.ts");
+console.log("built packages/msgpack/lib/index.mjs, index.cjs, index.d.ts");

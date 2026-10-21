@@ -1,4 +1,4 @@
-// src/writer.ts
+// packages/msgpack/src/writer.ts
 var DEFAULT_INITIAL_BUFFER_SIZE = 2048;
 
 class Writer {
@@ -36,7 +36,7 @@ class Writer {
   }
 }
 
-// src/utf8.ts
+// packages/msgpack/src/utf8.ts
 var sharedEncoder = new TextEncoder;
 var sharedDecoder = new TextDecoder;
 function utf8Count(str) {
@@ -168,20 +168,19 @@ function readUtf8(bytes, start, length) {
     }
   }
   if (ascii) {
-    if (length <= ASCII_CHUNK) {
-      return String.fromCharCode.apply(null, bytes.subarray(start, end));
+    if (length <= 8) {
+      let result = "";
+      for (let i = start;i < end; i++) {
+        result += String.fromCharCode(bytes[i]);
+      }
+      return result;
     }
-    let result = "";
-    for (let i = start;i < end; i += ASCII_CHUNK) {
-      const chunkEnd = Math.min(i + ASCII_CHUNK, end);
-      result += String.fromCharCode.apply(null, bytes.subarray(i, chunkEnd));
-    }
-    return result;
+    return sharedDecoder.decode(bytes.subarray(start, end));
   }
   return readUtf8Js(bytes, start, end);
 }
 
-// src/encoder.ts
+// packages/msgpack/src/encoder.ts
 var TEXT_ENCODER_THRESHOLD = 50;
 
 class Encoder {
@@ -442,52 +441,34 @@ function encodeObject(writer, value) {
     encodeMap(writer, value);
   }
 }
-// src/decoder.ts
+// packages/msgpack/src/decoder.ts
 var KEY_MAX_LENGTH = 16;
 var keyCaches = [];
 for (let i = 0;i < KEY_MAX_LENGTH; i++) {
   keyCaches.push([]);
 }
-function keyHash(bytes, start, length) {
-  let hash = 2166136261;
-  const end = start + length;
-  for (let i = start;i < end; i++) {
-    hash = Math.imul(hash ^ bytes[i], 16777619);
-  }
-  return hash;
-}
-function lookupKey(bytes, start, length, hash) {
+function lookupKey(bytes, start, length) {
   const entries = keyCaches[length - 1];
-  for (let i = 0;i < entries.length; i++) {
-    const entry = entries[i];
-    if (entry.hash !== hash) {
-      continue;
-    }
-    const cached = entry.bytes;
-    let same = true;
-    for (let j = 0;j < length; j++) {
-      if (cached[j] !== bytes[start + j]) {
-        same = false;
-        break;
+  SCAN:
+    for (let i = 0;i < entries.length; i++) {
+      const cached = entries[i].bytes;
+      for (let j = 0;j < length; j++) {
+        if (cached[j] !== bytes[start + j]) {
+          continue SCAN;
+        }
       }
+      return entries[i].value;
     }
-    if (same) {
-      return entry.value;
-    }
-  }
   return null;
 }
-function storeKey(bytes, start, length, hash, value) {
+function storeKey(bytes, start, length, value) {
   const entries = keyCaches[length - 1];
+  const entry = { bytes: bytes.slice(start, start + length), value };
   if (entries.length >= KEY_MAX_LENGTH) {
-    entries[Math.random() * entries.length | 0] = {
-      hash,
-      bytes: bytes.slice(start, start + length),
-      value
-    };
+    entries[Math.random() * entries.length | 0] = entry;
     return;
   }
-  entries.push({ hash, bytes: bytes.slice(start, start + length), value });
+  entries.push(entry);
 }
 
 class Reader {
@@ -686,13 +667,12 @@ function decodeString(reader, length, isMapKey) {
   const start = reader.pos;
   reader.pos += length;
   if (isMapKey && length > 0 && length <= KEY_MAX_LENGTH) {
-    const hash = keyHash(reader.bytes, start, length);
-    const cached = lookupKey(reader.bytes, start, length, hash);
+    const cached = lookupKey(reader.bytes, start, length);
     if (cached !== null) {
       return cached;
     }
     const value = readUtf8(reader.bytes, start, length);
-    storeKey(reader.bytes, start, length, hash, value);
+    storeKey(reader.bytes, start, length, value);
     return value;
   }
   return readUtf8(reader.bytes, start, length);

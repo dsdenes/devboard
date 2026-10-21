@@ -13,7 +13,7 @@ An adopting project changes its dependency resolution, never its source:
 ```json
 {
   "dependencies": {
-    "@msgpack/msgpack": "file:../devboard"
+    "@msgpack/msgpack": "file:../devboard/packages/msgpack"
   }
 }
 ```
@@ -84,29 +84,31 @@ replacement divided by original, so lower is faster.
 
 | Case | Bytes | Encode ref | Encode new | Ratio | Decode ref | Decode new | Ratio |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| null | 1 | 588 | 43 | 0.073 | 111 | 30 | 0.273 |
-| boolean | 1 | 607 | 41 | 0.068 | 108 | 25 | 0.236 |
-| small int | 1 | 642 | 48 | 0.075 | 105 | 22 | 0.213 |
-| large int | 9 | 775 | 129 | 0.167 | 111 | 29 | 0.263 |
-| float | 9 | 655 | 51 | 0.078 | 122 | 30 | 0.245 |
-| short string | 15 | 698 | 74 | 0.106 | 279 | 237 | 0.850 |
-| medium string | 222 | 1099 | 465 | 0.423 | 252 | 122 | 0.483 |
-| long string | 5003 | 8569 | 5115 | 0.597 | 832 | 497 | 0.598 |
-| unicode string | 187 | 1083 | 406 | 0.375 | 1267 | 1008 | 0.796 |
-| binary 256 | 259 | 678 | 109 | 0.161 | 171 | 67 | 0.392 |
-| binary 4096 | 4099 | 2047 | 622 | 0.304 | 139 | 58 | 0.421 |
-| small array | 7 | 791 | 119 | 0.150 | 290 | 191 | 0.660 |
-| integer array | 174 | 2127 | 1396 | 0.656 | 1023 | 704 | 0.688 |
-| small map | 21 | 818 | 160 | 0.195 | 500 | 298 | 0.596 |
-| large map | 693 | 5206 | 4030 | 0.774 | 43719 | 39039 | 0.893 |
-| typical response | 590 | 5501 | 3362 | 0.611 | 7990 | 6447 | 0.807 |
-| nested combinations | 1120 | 14348 | 9311 | 0.649 | 26524 | 20065 | 0.756 |
+| null | 1 | 555 | 41 | 0.074 | 115 | 27 | 0.239 |
+| boolean | 1 | 547 | 46 | 0.084 | 103 | 27 | 0.262 |
+| small int | 1 | 567 | 43 | 0.076 | 102 | 23 | 0.226 |
+| large int | 9 | 672 | 115 | 0.171 | 105 | 33 | 0.309 |
+| float | 9 | 586 | 51 | 0.086 | 101 | 29 | 0.283 |
+| short string | 15 | 649 | 66 | 0.102 | 273 | 113 | 0.413 |
+| medium string | 222 | 1090 | 438 | 0.402 | 247 | 137 | 0.557 |
+| long string | 5003 | 7763 | 4836 | 0.623 | 798 | 539 | 0.675 |
+| unicode string | 187 | 1026 | 428 | 0.417 | 1380 | 992 | 0.719 |
+| binary 256 | 259 | 939 | 109 | 0.116 | 225 | 79 | 0.351 |
+| binary 4096 | 4099 | 2641 | 791 | 0.299 | 162 | 68 | 0.420 |
+| small array | 7 | 935 | 143 | 0.153 | 388 | 83 | 0.215 |
+| integer array | 174 | 2651 | 1641 | 0.619 | 1214 | 827 | 0.682 |
+| small map | 21 | 1055 | 183 | 0.173 | 604 | 172 | 0.285 |
+| large map | 693 | 5439 | 4061 | 0.747 | 47024 | 32312 | 0.687 |
+| typical response | 590 | 5088 | 3256 | 0.640 | 7668 | 3449 | 0.450 |
+| nested combinations | 1120 | 12411 | 7820 | 0.630 | 23738 | 11234 | 0.473 |
+
 
 No measured payload was slower for either operation; all 17 were faster for both.
 
 ## Layout
 
-- `src/` — implementation; `lib/` — built ESM, CommonJS, and declarations.
+- `packages/msgpack/src/` — implementation.
+- `packages/msgpack/lib/` — built ESM, CommonJS, and declarations.
 - `test/` — byte and value parity tests and the fixture corpus.
 - `bench/` — side-by-side performance harness.
 - `verification/` — server and browser adoption checks.
