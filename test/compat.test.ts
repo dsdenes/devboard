@@ -1,7 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { decode as referenceDecode, encode as referenceEncode } from "msgpack-javascript-original";
-import { decode, Decoder, encode, Encoder } from "../packages/msgpack/src/index.ts";
+import {
+  decode as referenceDecode,
+  encode as referenceEncode,
+  ExtData as ReferenceExtData,
+  ExtensionCodec as ReferenceExtensionCodec,
+} from "msgpack-javascript-original";
+import {
+  decode,
+  Decoder,
+  encode,
+  Encoder,
+  ExtData,
+  ExtensionCodec,
+} from "../packages/msgpack/src/index.ts";
 import { allPayloads, binaryPayloads } from "./payloads.ts";
+import { customPayloads, extensionPayloads, installExtensionCodec, timestampPayloads } from "./extensions.ts";
+
+const referenceCodec = new ReferenceExtensionCodec();
+installExtensionCodec(referenceCodec);
+const replacementCodec = new ExtensionCodec();
+installExtensionCodec(replacementCodec);
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) {
@@ -38,6 +56,17 @@ function assertSameValue(actual: unknown, expected: unknown, path = "$"): void {
     }
     for (let i = 0; i < expected.length; i++) {
       assertSameValue(actual[i], expected[i], `${path}[${i}]`);
+    }
+    return;
+  }
+  if (expected instanceof Date || actual instanceof Date) {
+    if (!(actual instanceof Date) || !(expected instanceof Date)) {
+      throw new Error(`${path}: one side is not a Date`);
+    }
+    const actualTime = actual.getTime();
+    const expectedTime = expected.getTime();
+    if (!(actualTime === expectedTime || (Number.isNaN(actualTime) && Number.isNaN(expectedTime)))) {
+      throw new Error(`${path}: dates differ (${actualTime} vs ${expectedTime})`);
     }
     return;
   }
@@ -118,6 +147,80 @@ describe("decoding identity with msgpack-javascript", () => {
       assertSameValue(actual, expected);
     });
   }
+});
+
+describe("default timestamp extension", () => {
+  for (const payload of timestampPayloads) {
+    test(`${payload.name} encoding`, () => {
+      expect(hex(encode(payload.value))).toBe(hex(referenceEncode(payload.value)));
+    });
+
+    test(`${payload.name} decoding`, () => {
+      const bytes = referenceEncode(payload.value);
+      const expected = referenceDecode(bytes);
+      const actual = decode(bytes);
+      assertSameValue(actual, expected);
+      if (!payload.skipInputComparison) {
+        assertSameValue(actual, payload.value);
+      }
+    });
+  }
+});
+
+describe("registered extension encoding identity", () => {
+  for (const payload of extensionPayloads) {
+    test(payload.name, () => {
+      const expected = referenceEncode(payload.value, { extensionCodec: referenceCodec });
+      const actual = encode(payload.value, { extensionCodec: replacementCodec });
+      expect(hex(actual)).toBe(hex(expected));
+    });
+  }
+});
+
+describe("registered extension decoding identity", () => {
+  for (const payload of extensionPayloads) {
+    test(payload.name, () => {
+      const bytes = referenceEncode(payload.value, { extensionCodec: referenceCodec });
+      const expected = referenceDecode(bytes, { extensionCodec: referenceCodec });
+      const actual = decode(bytes, { extensionCodec: replacementCodec });
+      assertSameValue(actual, expected);
+      if (!payload.skipInputComparison) {
+        assertSameValue(actual, payload.value);
+      }
+    });
+  }
+});
+
+describe("unregistered extension values", () => {
+  test("unknown types decode as ExtData", () => {
+    const bytes = new Uint8Array([0xd4, 0x05, 0x2a]);
+    const expected = referenceDecode(bytes) as ReferenceExtData;
+    const actual = decode(bytes) as ExtData;
+    expect(actual).toBeInstanceOf(ExtData);
+    expect(actual.type).toBe(expected.type);
+    expect(hex(actual.data as Uint8Array)).toBe(hex(expected.data as Uint8Array));
+  });
+
+  test("ExtData re-encodes with the same bytes", () => {
+    const data = new Uint8Array([1, 2, 3]);
+    expect(hex(encode(new ExtData(9, data)))).toBe(hex(referenceEncode(new ReferenceExtData(9, data))));
+  });
+});
+
+describe("class API with extensions", () => {
+  const value = {
+    point: customPayloads[0].value,
+    when: new Date(1700000000123),
+    list: [new Date(0), customPayloads[1].value],
+  };
+
+  test("Encoder and Decoder accept an extension codec", () => {
+    const encoder = new Encoder({ extensionCodec: replacementCodec });
+    const decoder = new Decoder({ extensionCodec: replacementCodec });
+    const bytes = encoder.encode(value);
+    expect(hex(bytes)).toBe(hex(referenceEncode(value, { extensionCodec: referenceCodec })));
+    assertSameValue(decoder.decode(bytes), referenceDecode(bytes, { extensionCodec: referenceCodec }));
+  });
 });
 
 describe("class API and input forms", () => {

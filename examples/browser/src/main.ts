@@ -1,5 +1,5 @@
-import { Decoder, Encoder, decode, encode } from "@msgpack/msgpack";
-import { fixtures } from "./fixtures.ts";
+import { Decoder, Encoder, ExtensionCodec, decode, encode } from "@msgpack/msgpack";
+import { fixtures, GeoPoint, installExtensionCodec } from "./fixtures.ts";
 
 declare global {
   interface Window {
@@ -9,6 +9,9 @@ declare global {
 
 // A browser application that already depended on msgpack-javascript. Its
 // source is not edited when the dependency is swapped for the replacement.
+
+const extensionCodec = new ExtensionCodec();
+installExtensionCodec(extensionCodec);
 
 function hex(bytes: Uint8Array): string {
   let result = "";
@@ -33,6 +36,12 @@ function canonical(value: unknown): unknown {
     if (Object.is(value, -0)) return { __number: "-0" };
     return value;
   }
+  if (value instanceof Date) {
+    return { __date: value.getTime() };
+  }
+  if (value instanceof GeoPoint) {
+    return { __point: [value.lat, value.lon] };
+  }
   if (value instanceof Uint8Array) {
     return { __binary: hex(value) };
   }
@@ -52,8 +61,8 @@ function canonical(value: unknown): unknown {
 
 
 const cases = fixtures.map(([name, value]) => {
-  const bytes = encode(value);
-  const decoded = decode(bytes);
+  const bytes = encode(value, { extensionCodec });
+  const decoded = decode(bytes, { extensionCodec });
   return {
     name,
     hex: hex(bytes),
@@ -62,16 +71,17 @@ const cases = fixtures.map(([name, value]) => {
   };
 });
 
-const encoder = new Encoder();
-const decoder = new Decoder();
-const encoderBytes = encoder.encode(fixtures[9][1]);
-const encoderSharedBytes = encoder.encodeSharedRef(fixtures[9][1]);
+const encoder = new Encoder({ extensionCodec });
+const decoder = new Decoder({ extensionCodec });
+const smallMap = fixtures.find(([name]) => name === "small map")![1];
+const encoderBytes = encoder.encode(smallMap);
+const encoderSharedBytes = encoder.encodeSharedRef(smallMap);
 const decoderValue = decoder.decode(encoderSharedBytes);
 
 const result = {
   moduleEncodeHex: hex(encoderBytes),
   sharedRefSame: hex(encoderSharedBytes) === hex(encoderBytes),
-  classDecodeSame: JSON.stringify(canonical(decoderValue)) === JSON.stringify(canonical(fixtures[9][1])),
+  classDecodeSame: JSON.stringify(canonical(decoderValue)) === JSON.stringify(canonical(smallMap)),
   cases,
 };
 window.__result = result;

@@ -1,6 +1,9 @@
 import { readUtf8 } from "./utf8.ts";
+import { ExtensionCodec } from "./extension.ts";
 
 export interface DecoderOptions {
+  extensionCodec?: ExtensionCodec;
+  context?: unknown;
   [option: string]: unknown;
 }
 
@@ -47,6 +50,8 @@ class Reader {
   bytes: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
   view: DataView<ArrayBufferLike> = new DataView(new ArrayBuffer(0));
   pos = 0;
+  extensionCodec: ExtensionCodec = ExtensionCodec.defaultCodec;
+  context: unknown = undefined;
 
   set(input: Input): void {
     const bytes = toBytes(input);
@@ -78,17 +83,22 @@ let sharedReaderEntered = false;
 
 export class Decoder {
   private readonly reader = new Reader();
+  private readonly options: DecoderOptions | undefined;
   private entered = false;
 
-  constructor(_options?: DecoderOptions) {}
+  constructor(options?: DecoderOptions) {
+    this.options = options;
+  }
 
   decode(buffer: Input): unknown {
     if (this.entered) {
-      return new Decoder().decode(buffer);
+      return new Decoder(this.options).decode(buffer);
     }
     this.entered = true;
     try {
       const reader = this.reader;
+      reader.extensionCodec = this.options?.extensionCodec ?? ExtensionCodec.defaultCodec;
+      reader.context = this.options?.context;
       reader.set(buffer);
       const value = decodeValue(reader, false);
       if (reader.pos !== reader.bytes.length) {
@@ -101,10 +111,12 @@ export class Decoder {
   }
 }
 
-export function decode(buffer: Input, _options?: DecoderOptions): unknown {
+export function decode(buffer: Input, options?: DecoderOptions): unknown {
   if (!sharedReaderEntered) {
     sharedReaderEntered = true;
     try {
+      sharedReader.extensionCodec = options?.extensionCodec ?? ExtensionCodec.defaultCodec;
+      sharedReader.context = options?.context;
       sharedReader.set(buffer);
       const value = decodeValue(sharedReader, false);
       if (sharedReader.pos !== sharedReader.bytes.length) {
@@ -117,7 +129,7 @@ export function decode(buffer: Input, _options?: DecoderOptions): unknown {
       sharedReaderEntered = false;
     }
   }
-  return new Decoder().decode(buffer);
+  return new Decoder(options).decode(buffer);
 }
 
 function decodeValue(reader: Reader, isMapKey: boolean): unknown {
@@ -247,9 +259,40 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
       reader.pos += 4;
       return decodeBinary(reader, size);
     }
+    case 0xd4:
+      return decodeExtension(reader, 1);
+    case 0xd5:
+      return decodeExtension(reader, 2);
+    case 0xd6:
+      return decodeExtension(reader, 4);
+    case 0xd7:
+      return decodeExtension(reader, 8);
+    case 0xd8:
+      return decodeExtension(reader, 16);
+    case 0xc7: {
+      const size = bytes[reader.pos++];
+      return decodeExtension(reader, size);
+    }
+    case 0xc8: {
+      const size = (bytes[reader.pos] << 8) | bytes[reader.pos + 1];
+      reader.pos += 2;
+      return decodeExtension(reader, size);
+    }
+    case 0xc9: {
+      const size = readU32(bytes, reader.pos);
+      reader.pos += 4;
+      return decodeExtension(reader, size);
+    }
     default:
       throw new Error(`Unrecognized type byte: 0x${head.toString(16)}`);
   }
+}
+
+function decodeExtension(reader: Reader, size: number): unknown {
+  const type = reader.view.getInt8(reader.pos);
+  const start = reader.pos + 1;
+  reader.pos = start + size;
+  return reader.extensionCodec.decode(reader.bytes.subarray(start, start + size), type, reader.context);
 }
 
 function readU32(bytes: Uint8Array, pos: number): number {

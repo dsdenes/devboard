@@ -1,5 +1,6 @@
 import { Writer, DEFAULT_INITIAL_BUFFER_SIZE } from "./writer.ts";
 import { asciiByteLength, utf8Count, writeAscii, writeUtf8Js, writeUtf8TextEncoder } from "./utf8.ts";
+import { ExtData, ExtensionCodec } from "./extension.ts";
 
 // The reference implementation switches to TextEncoder above this many
 // JavaScript string units. The threshold is observable for lone surrogates.
@@ -7,16 +8,22 @@ const TEXT_ENCODER_THRESHOLD = 50;
 
 export interface EncoderOptions {
   initialBufferSize?: number;
+  extensionCodec?: ExtensionCodec;
+  context?: unknown;
   [option: string]: unknown;
 }
 
 export class Encoder {
   private readonly writer: Writer;
   private readonly options: EncoderOptions | undefined;
+  private readonly extensionCodec: ExtensionCodec;
+  private readonly context: unknown;
   private entered = false;
 
   constructor(options?: EncoderOptions) {
     this.options = options;
+    this.extensionCodec = options?.extensionCodec ?? ExtensionCodec.defaultCodec;
+    this.context = options?.context;
     this.writer = new Writer(options?.initialBufferSize ?? DEFAULT_INITIAL_BUFFER_SIZE);
   }
 
@@ -28,7 +35,7 @@ export class Encoder {
     this.entered = true;
     try {
       this.writer.reset();
-      encodeValue(this.writer, value);
+      encodeValue(this.writer, value, this.extensionCodec, this.context);
       return this.writer.copy();
     } finally {
       this.entered = false;
@@ -43,7 +50,7 @@ export class Encoder {
     this.entered = true;
     try {
       this.writer.reset();
-      encodeValue(this.writer, value);
+      encodeValue(this.writer, value, this.extensionCodec, this.context);
       return this.writer.ref();
     } finally {
       this.entered = false;
@@ -66,7 +73,12 @@ export function encode(value: unknown, options?: EncoderOptions): Uint8Array<Arr
       if (options?.initialBufferSize !== undefined) {
         sharedWriter.ensure(options.initialBufferSize);
       }
-      encodeValue(sharedWriter, value);
+      encodeValue(
+        sharedWriter,
+        value,
+        options?.extensionCodec ?? ExtensionCodec.defaultCodec,
+        options?.context,
+      );
       return sharedWriter.copy();
     } finally {
       sharedWriterEntered = false;
@@ -75,7 +87,7 @@ export function encode(value: unknown, options?: EncoderOptions): Uint8Array<Arr
   return new Encoder(options).encode(value);
 }
 
-function encodeValue(writer: Writer, value: unknown): void {
+function encodeValue(writer: Writer, value: unknown, codec: ExtensionCodec, context: unknown): void {
   if (value === null || value === undefined) {
     writer.ensure(1);
     writer.bytes[writer.pos++] = 0xc0;
@@ -94,12 +106,19 @@ function encodeValue(writer: Writer, value: unknown): void {
       encodeString(writer, value);
       return;
     case "object":
-      encodeObject(writer, value);
+      encodeObject(writer, value, codec, context);
       return;
-    default:
-      // Symbols, functions, and bigints are out of scope and rejected instead
-      // of being silently written as something else.
+    default: {
+      // A registered extension may still claim a bigint, function, or symbol.
+      const ext = codec.tryToEncode(value, context);
+      if (ext !== null) {
+        encodeExtension(writer, ext);
+        return;
+      }
+      // Without a codec these are out of scope and rejected instead of being
+      // silently written as something else.
       throw new Error(`Unrecognized object: ${Object.prototype.toString.apply(value)}`);
+    }
   }
 }
 
@@ -247,7 +266,7 @@ function encodeBinary(writer: Writer, value: ArrayBufferView): void {
   writer.pos += size;
 }
 
-function encodeArray(writer: Writer, value: readonly unknown[]): void {
+function encodeArray(writer: Writer, value: readonly unknown[], codec: ExtensionCodec, context: unknown): void {
   const size = value.length;
 
   if (size < 0x10) {
@@ -266,11 +285,16 @@ function encodeArray(writer: Writer, value: readonly unknown[]): void {
   }
 
   for (let i = 0; i < size; i++) {
-    encodeValue(writer, value[i]);
+    encodeValue(writer, value[i], codec, context);
   }
 }
 
-function encodeMap(writer: Writer, value: Record<string, unknown>): void {
+function encodeMap(
+  writer: Writer,
+  value: Record<string, unknown>,
+  codec: ExtensionCodec,
+  context: unknown,
+): void {
   const keys = Object.keys(value);
   const size = keys.length;
 
@@ -292,16 +316,87 @@ function encodeMap(writer: Writer, value: Record<string, unknown>): void {
   for (let i = 0; i < size; i++) {
     const key = keys[i];
     encodeString(writer, key);
-    encodeValue(writer, value[key]);
+    encodeValue(writer, value[key], codec, context);
   }
 }
 
-function encodeObject(writer: Writer, value: object): void {
+function encodeObject(writer: Writer, value: object, codec: ExtensionCodec, context: unknown): void {
+  // Extensions take precedence over the built-in object handling, exactly as
+  // in the reference implementation.
+  const ext = codec.tryToEncode(value, context);
+  if (ext !== null) {
+    encodeExtension(writer, ext);
+    return;
+  }
   if (Array.isArray(value)) {
-    encodeArray(writer, value);
+    encodeArray(writer, value, codec, context);
   } else if (ArrayBuffer.isView(value)) {
     encodeBinary(writer, value);
   } else {
-    encodeMap(writer, value as Record<string, unknown>);
+    encodeMap(writer, value as Record<string, unknown>, codec, context);
   }
+}
+
+function encodeExtension(writer: Writer, ext: ExtData): void {
+  if (typeof ext.data === "function") {
+    const data = ext.data(writer.pos + 6);
+    const size = data.length;
+    if (size >= 0x100000000) {
+      throw new Error(`Too large extension object: ${size}`);
+    }
+    writer.ensure(6 + size);
+    const pos = writer.pos;
+    writer.bytes[pos] = 0xc9;
+    writer.view.setUint32(pos + 1, size);
+    writer.view.setInt8(pos + 5, ext.type);
+    writer.bytes.set(data, pos + 6);
+    writer.pos = pos + 6 + size;
+    return;
+  }
+
+  const size = ext.data.length;
+  let head: number;
+  let headerSize: number;
+  if (size === 1) {
+    head = 0xd4; // fixext 1
+    headerSize = 1;
+  } else if (size === 2) {
+    head = 0xd5; // fixext 2
+    headerSize = 1;
+  } else if (size === 4) {
+    head = 0xd6; // fixext 4
+    headerSize = 1;
+  } else if (size === 8) {
+    head = 0xd7; // fixext 8
+    headerSize = 1;
+  } else if (size === 16) {
+    head = 0xd8; // fixext 16
+    headerSize = 1;
+  } else if (size < 0x100) {
+    head = 0xc7; // ext 8
+    headerSize = 2;
+  } else if (size < 0x10000) {
+    head = 0xc8; // ext 16
+    headerSize = 3;
+  } else if (size < 0x100000000) {
+    head = 0xc9; // ext 32
+    headerSize = 5;
+  } else {
+    throw new Error(`Too large extension object: ${size}`);
+  }
+
+  writer.ensure(headerSize + 1 + size);
+  const pos = writer.pos;
+  const bytes = writer.bytes;
+  bytes[pos] = head;
+  if (headerSize === 2) {
+    bytes[pos + 1] = size;
+  } else if (headerSize === 3) {
+    writer.view.setUint16(pos + 1, size);
+  } else if (headerSize === 5) {
+    writer.view.setUint32(pos + 1, size);
+  }
+  writer.view.setInt8(pos + headerSize, ext.type);
+  bytes.set(ext.data, pos + headerSize + 1);
+  writer.pos = pos + headerSize + 1 + size;
 }

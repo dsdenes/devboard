@@ -1,10 +1,13 @@
-import { Decoder, Encoder, decode, encode } from "@msgpack/msgpack";
-import { fixtures } from "./fixtures.ts";
+import { Decoder, Encoder, ExtensionCodec, decode, encode } from "@msgpack/msgpack";
+import { fixtures, GeoPoint, installExtensionCodec } from "./fixtures.ts";
 
 // A small application that already depended on msgpack-javascript. Its source
 // is not edited when the dependency is swapped for the replacement.
-const decoder = new Decoder();
-const encoder = new Encoder();
+const extensionCodec = new ExtensionCodec();
+installExtensionCodec(extensionCodec);
+
+const decoder = new Decoder({ extensionCodec });
+const encoder = new Encoder({ extensionCodec });
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? 0),
@@ -17,7 +20,7 @@ const server = Bun.serve({
     }
 
     if (url.pathname === "/fixtures") {
-      return new Response(encode(fixtures), {
+      return new Response(encode(fixtures, { extensionCodec }), {
         headers: { "content-type": "application/msgpack" },
       });
     }
@@ -38,8 +41,8 @@ const server = Bun.serve({
 
     if (url.pathname === "/roundtrip" && request.method === "POST") {
       const body = new Uint8Array(await request.arrayBuffer());
-      const value = decode(body);
-      return new Response(encode(value), {
+      const value = decode(body, { extensionCodec });
+      return new Response(encode(value, { extensionCodec }), {
         headers: { "content-type": "application/msgpack" },
       });
     }
@@ -51,6 +54,8 @@ const server = Bun.serve({
 function typeOf(value: unknown): string {
   if (value === null) return "null";
   if (Array.isArray(value)) return "array";
+  if (value instanceof Date) return "date";
+  if (value instanceof GeoPoint) return "point";
   if (typeof value === "object") return "map";
   return typeof value;
 }

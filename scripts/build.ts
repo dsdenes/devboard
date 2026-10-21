@@ -29,12 +29,60 @@ for (const target of targets) {
 
 const declarations = `export interface EncoderOptions {
   initialBufferSize?: number;
+  extensionCodec?: ExtensionCodec;
+  context?: unknown;
   [option: string]: unknown;
 }
 
 export interface DecoderOptions {
+  extensionCodec?: ExtensionCodec;
+  context?: unknown;
   [option: string]: unknown;
 }
+
+export type ExtensionEncoder = (
+  object: unknown,
+  context?: unknown,
+) => Uint8Array | ((dataPos: number) => Uint8Array) | null | undefined;
+
+export type ExtensionDecoder = (data: Uint8Array, extensionType: number, context?: unknown) => unknown;
+
+export interface ExtensionCodecEntry {
+  type: number;
+  encode?: ExtensionEncoder;
+  decode?: ExtensionDecoder;
+}
+
+export declare class ExtData {
+  constructor(type: number, data: Uint8Array | ((pos: number) => Uint8Array));
+  readonly type: number;
+  readonly data: Uint8Array | ((pos: number) => Uint8Array);
+}
+
+export declare class ExtensionCodec {
+  static readonly defaultCodec: ExtensionCodec;
+  constructor();
+  register(entry: ExtensionCodecEntry): void;
+  tryToEncode(object: unknown, context?: unknown): ExtData | null;
+  decode(data: Uint8Array, type: number, context?: unknown): unknown;
+}
+
+export interface TimeSpec {
+  sec: number;
+  nsec: number;
+}
+
+export declare const EXT_TIMESTAMP: number;
+export declare const timestampExtension: {
+  type: number;
+  encode: (object: unknown) => Uint8Array | null;
+  decode: (data: Uint8Array) => Date;
+};
+export declare function encodeTimeSpecToTimestamp(timeSpec: TimeSpec): Uint8Array;
+export declare function encodeDateToTimeSpec(date: Date): TimeSpec;
+export declare function encodeTimestampExtension(object: unknown): Uint8Array | null;
+export declare function decodeTimestampToTimeSpec(data: Uint8Array): TimeSpec;
+export declare function decodeTimestampExtension(data: Uint8Array): Date;
 
 export declare class Encoder {
   constructor(options?: EncoderOptions);
