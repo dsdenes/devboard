@@ -114,7 +114,7 @@
     (lifecycleActive && !lifecycle.paused) || skillsPrepActive,
   );
   let prepareDisabled = $derived(controlsDisabled || !goalReady);
-  let resetDisabled = $derived(connection !== "open" || controlsDisabled || resetting);
+  let resetDisabled = $derived(connection !== "open" || resetting);
   let skillsPrepared = $derived(skills.length > 0);
   let startLifecycleTitle = $derived(
     !goalReady
@@ -783,6 +783,8 @@
           <code>.devboard</code>, <code>.omp</code>, <code>AGENTS.md</code>,
           <code>.gitignore</code>, and <code>GOAL.md</code>. The internal
           <code>.git</code> and <code>.worktree</code> directories are preserved.
+          Any active run, lifecycle, goal creation, revision, or skills
+          preparation stops first.
         </p>
         <button
           type="button"

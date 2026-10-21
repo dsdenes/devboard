@@ -108,14 +108,14 @@ preparation runs, starting a run or the lifecycle, resuming a paused lifecycle, 
 saving the goal, creating a goal, and a second preparation are each refused. The control never
 starts on page load or reconnect.
 
-The page also offers a `Reset Implementation` control. It is disabled while the WebSocket is
-not open and while any run, run sequence, lifecycle run, goal creation, goal revision, skills
-preparation, or another reset is active. The first click only arms it: no frame is sent, and the
-page shows the exact keep set and a `Confirm reset` control. A reload, a reconnect, a disconnect,
-or any other command disarms it. The second click sends exactly `{ "type":
-"resetImplementation" }`. The server performs the reset, so a browser disconnect does not
-interrupt it; a client that connects during one receives `implementationResetStarted`, and a
-second reset is refused.
+The page also offers a `Reset Implementation` control. It is disabled only while the WebSocket
+is not open or another reset is active, so it can be used at any time, including while a run,
+lifecycle run, goal creation, goal revision, or skills preparation is active. The first click
+only arms it: no frame is sent, and the page shows the exact keep set, notes that active work
+stops first, and offers a `Confirm reset` control. A reload, a reconnect, a disconnect, or any
+other command disarms it. The second click sends exactly `{ "type": "resetImplementation" }`.
+The server performs the reset, so a browser disconnect does not interrupt it; a client that
+connects during one receives `implementationResetStarted`, and a second reset is refused.
 
 The keep set is exact: `.devboard`, `.omp`, `AGENTS.md`, `.gitignore`, `GOAL.md`, plus the direct
 child named by `GOAL_FILE` when that differs. `.git` and `.worktree` are internal: the server
@@ -123,9 +123,13 @@ never descends into or deletes them, and they never enter the commit. Every othe
 entry is removed, including tracked, untracked, and ignored entries; a symlink is removed as a
 link without following it. Before deleting anything the server requires that `REPO_DIR` is the
 repository top level, that `HEAD` names a commit, that the current branch is exactly `main`,
-and that `origin` exists; any failed check, or any active run, lifecycle, creation, revision,
-skills preparation, or reset, is refused with one `error` and leaves the filesystem and git
-state unchanged. The server stages with `git add -A`, removes `.worktree`,
+and that `origin` exists; any failed check is refused with one `error` and leaves the filesystem,
+git state, and active work unchanged. After those checks pass the reset takes over: an active
+run or lifecycle peer is closed and reports `runStopped`, a lifecycle also reports the idle
+`goal` stage, goal creation and revision report their stopped events, an in-flight skills
+preparation is cancelled and restores the previous skills directory, and an in-flight lifecycle
+or preparation start is invalidated so it spawns no peer after the reset accepted. Stopped work
+is not resumed. The server stages with `git add -A`, removes `.worktree`,
 `.devboard/node_modules`, and `.devboard/dist` from the index, and commits with `git commit
 --no-verify -m "chore: reset implementation"`. It never amends, rewrites history, force-pushes,
 or stages ignored files. With no staged change it reuses the current `HEAD`. Success pushes
@@ -136,8 +140,8 @@ git stderr in an `error` and the same event with `completed: false` and the loca
 the commit and the deleted tree in place; a commit failure reports its stderr and the failed
 event without a commit, leaving the staged deletion. `GOAL.md` may be absent, empty, or
 whitespace-only; reset preserves that state and never creates or edits the document. Reset never
-starts on load or reconnect, spawns no ACP peer, emits no run or activity events, and writes no
-`adrs/` file.
+starts on load or reconnect; the reset itself spawns no ACP peer, emits no activity events, and
+writes no `adrs/` file.
 
 ## Stack
 

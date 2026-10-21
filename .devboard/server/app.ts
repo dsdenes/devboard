@@ -604,9 +604,15 @@ export function createApp(options: AppOptions) {
   let goalCreationRequest = 0;
   let skillsPreparation: SkillsPreparation | undefined;
   let skillsPreparationPending = false;
+  /** Invalidates an in-flight preparation when a reset takes over. */
+  let skillsPreparationRequest = 0;
+  /** Resolves when the in-flight preparation has unwound and cleaned up. */
+  let skillsPreparationSettled: Promise<void> | undefined;
   let lifecycle: LifecycleState = { stage: "goal", pass: 1, work: null, paused: false };
   let lastLifecycle: LifecycleState | undefined;
   let lifecycleRunning = false;
+  /** Invalidates an in-flight lifecycle start when a reset takes over. */
+  let lifecycleStartRequest = 0;
   let implementationReset: { commit?: string } | undefined;
   const resumeWaiters: (() => void)[] = [];
 
@@ -821,12 +827,15 @@ export function createApp(options: AppOptions) {
   }
 
   async function finishSkillsPreparation(preparation: SkillsPreparation) {
+    if (skillsPreparation !== preparation) return;
+
     let inspection: SkillsInspection;
     let current: SkillsSnapshot;
     try {
       inspection = await inspectSkills(skillsDir);
       current = await snapshotDirectory(skillsDir);
     } catch (error) {
+      if (skillsPreparation !== preparation) return;
       broadcast({
         type: "error",
         message: `Could not read the prepared skills: ${error instanceof Error ? error.message : String(error)}`,
@@ -834,6 +843,9 @@ export function createApp(options: AppOptions) {
       await stopSkillsPreparation(preparation, false);
       return;
     }
+    // A reset cancels the preparation while the result is being read; the
+    // reset owns the skills directory from that point.
+    if (skillsPreparation !== preparation) return;
 
     const errors = [...inspection.errors];
     if (inspection.managed.size === 0) {
@@ -914,118 +926,145 @@ export function createApp(options: AppOptions) {
     }
 
     // Claim the start before the first await so two commands cannot both
-    // snapshot, spawn a peer, and race to own the same preparation.
-    skillsPreparationPending = true;
+    // snapshot, spawn a peer, and race to own the same preparation. A reset
+    // advances the request to cancel whatever point this preparation reached.
+    const request = ++skillsPreparationRequest;
+    const settled = Promise.withResolvers<void>();
+    skillsPreparationSettled = settled.promise;
+    const cancelled = () => request !== skillsPreparationRequest;
 
-    let goalText: string;
     try {
-      goalText = await readGoal(goalFile);
-    } catch (error) {
-      skillsPreparationPending = false;
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      skillsPreparationPending = true;
+
+      let goalText: string;
+      try {
+        goalText = await readGoal(goalFile);
+      } catch (error) {
+        if (cancelled()) return;
+        skillsPreparationPending = false;
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          send(ws, {
+            type: "error",
+            message: "The goal is not set. Save a non-empty goal before preparing skills.",
+          });
+          return;
+        }
+        send(ws, {
+          type: "error",
+          message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        send(ws, { type: "skillsPreparationStopped", completed: false });
+        return;
+      }
+      if (cancelled()) return;
+      if (goalText.trim().length === 0) {
+        skillsPreparationPending = false;
         send(ws, {
           type: "error",
           message: "The goal is not set. Save a non-empty goal before preparing skills.",
         });
         return;
       }
-      send(ws, {
-        type: "error",
-        message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
-      });
-      send(ws, { type: "skillsPreparationStopped", completed: false });
-      return;
-    }
-    if (goalText.trim().length === 0) {
-      skillsPreparationPending = false;
-      send(ws, {
-        type: "error",
-        message: "The goal is not set. Save a non-empty goal before preparing skills.",
-      });
-      return;
-    }
 
-    let snapshot: SkillsSnapshot;
-    let managedNames: Set<string>;
-    let unmanagedNames: Set<string>;
-    try {
-      snapshot = await snapshotDirectory(skillsDir);
-      managedNames = await managedSkillNames(skillsDir, snapshot);
-      unmanagedNames = new Set((await inspectSkills(skillsDir)).unmanaged.keys());
-    } catch (error) {
-      skillsPreparationPending = false;
-      send(ws, {
-        type: "error",
-        message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
-      });
-      return;
-    }
-
-    try {
-      // The feature owns every managed skill: a run replaces the whole set
-      // rather than merging with what an earlier run left behind.
-      for (const name of managedNames) {
-        await rm(join(skillsDir, name), { recursive: true, force: true });
+      let snapshot: SkillsSnapshot;
+      let managedNames: Set<string>;
+      let unmanagedNames: Set<string>;
+      try {
+        snapshot = await snapshotDirectory(skillsDir);
+        managedNames = await managedSkillNames(skillsDir, snapshot);
+        unmanagedNames = new Set((await inspectSkills(skillsDir)).unmanaged.keys());
+      } catch (error) {
+        if (cancelled()) return;
+        skillsPreparationPending = false;
+        send(ws, {
+          type: "error",
+          message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        return;
       }
-    } catch (error) {
+      if (cancelled()) return;
+
+      try {
+        // The feature owns every managed skill: a run replaces the whole set
+        // rather than merging with what an earlier run left behind.
+        for (const name of managedNames) {
+          await rm(join(skillsDir, name), { recursive: true, force: true });
+          if (cancelled()) {
+            await restoreDirectory(skillsDir, snapshot);
+            return;
+          }
+        }
+      } catch (error) {
+        if (cancelled()) {
+          await restoreDirectory(skillsDir, snapshot);
+          return;
+        }
+        skillsPreparationPending = false;
+        await restoreDirectory(skillsDir, snapshot);
+        send(ws, {
+          type: "error",
+          message: `Could not replace the managed skills: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        return;
+      }
+      if (cancelled()) {
+        await restoreDirectory(skillsDir, snapshot);
+        return;
+      }
       skillsPreparationPending = false;
-      await restoreDirectory(skillsDir, snapshot);
-      send(ws, {
-        type: "error",
-        message: `Could not replace the managed skills: ${error instanceof Error ? error.message : String(error)}`,
-      });
-      return;
-    }
-    skillsPreparationPending = false;
 
-    const preparation: SkillsPreparation = {
-      agent: undefined,
-      activity: [],
-      question: null,
-      snapshot,
-      unmanagedNames,
-    };
-    skillsPreparation = preparation;
-    broadcast({ type: "skillsPreparationStarted" });
+      const preparation: SkillsPreparation = {
+        agent: undefined,
+        activity: [],
+        question: null,
+        snapshot,
+        unmanagedNames,
+      };
+      skillsPreparation = preparation;
+      broadcast({ type: "skillsPreparationStarted" });
 
-    try {
-      const agent = new AcpConnection({
-        command: agentCommand,
-        cwd: repoDir,
-        onActivity(activity) {
-          if (skillsPreparation !== preparation) return;
-          recordActivity(preparation.activity, activity);
-        },
-        onQuestion(question: AcpQuestion) {
-          if (skillsPreparation !== preparation) return;
-          preparation.question = {
-            id: question.id,
-            message: question.message,
-            options: question.options,
-          };
-          broadcast({
-            type: "question",
-            id: question.id,
-            message: question.message,
-            options: question.options,
-          });
-        },
-        onStderr(text) {
-          process.stderr.write(text);
-        },
-      });
-      preparation.agent = agent;
+      try {
+        const agent = new AcpConnection({
+          command: agentCommand,
+          cwd: repoDir,
+          onActivity(activity) {
+            if (skillsPreparation !== preparation) return;
+            recordActivity(preparation.activity, activity);
+          },
+          onQuestion(question: AcpQuestion) {
+            if (skillsPreparation !== preparation) return;
+            preparation.question = {
+              id: question.id,
+              message: question.message,
+              options: question.options,
+            };
+            broadcast({
+              type: "question",
+              id: question.id,
+              message: question.message,
+              options: question.options,
+            });
+          },
+          onStderr(text) {
+            process.stderr.write(text);
+          },
+        });
+        preparation.agent = agent;
 
-      await agent.run(SKILLS_PROMPT);
-      if (skillsPreparation !== preparation) return;
-      await finishSkillsPreparation(preparation);
-    } catch (error) {
-      if (skillsPreparation !== preparation) return;
-      broadcast({
-        type: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
-      await stopSkillsPreparation(preparation, false);
+        await agent.run(SKILLS_PROMPT);
+        if (skillsPreparation !== preparation) return;
+        await finishSkillsPreparation(preparation);
+      } catch (error) {
+        if (skillsPreparation !== preparation) return;
+        broadcast({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        await stopSkillsPreparation(preparation, false);
+      }
+    } finally {
+      settled.resolve();
+      if (skillsPreparationSettled === settled.promise) skillsPreparationSettled = undefined;
     }
   }
 
@@ -1618,12 +1657,17 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    // A reset advances the request and takes over before this start reaches
+    // the loop, so no peer spawns after the reset accepted.
+    const request = ++lifecycleStartRequest;
+
     let goalSettled = false;
     try {
       goalSettled = (await readGoal(goalFile)).trim().length > 0;
     } catch {
       // A missing or unreadable goal document is not settled.
     }
+    if (request !== lifecycleStartRequest) return;
     if (!goalSettled) {
       send(ws, {
         type: "error",
@@ -1636,6 +1680,7 @@ export function createApp(options: AppOptions) {
     try {
       preparedSkills = (await inspectSkills(skillsDir)).managed.size;
     } catch (error) {
+      if (request !== lifecycleStartRequest) return;
       send(ws, {
         type: "error",
         message: `Could not read the installed skills: ${
@@ -1644,6 +1689,7 @@ export function createApp(options: AppOptions) {
       });
       return;
     }
+    if (request !== lifecycleStartRequest) return;
     if (preparedSkills === 0) {
       send(ws, {
         type: "error",
@@ -1723,6 +1769,61 @@ export function createApp(options: AppOptions) {
     return detail.length === 0 ? `git exited with code ${result.code}` : detail;
   }
 
+  /**
+   * Stops every operation that can still touch the checkout, so the reset
+   * owns the working tree. In-flight starts are invalidated through their
+   * request counters; an in-flight skills preparation settles before the
+   * caller deletes anything.
+   */
+  function stopActiveWorkForReset() {
+    goalCreationRequest += 1;
+    abortGoalCreation();
+    abortGoalRevision();
+
+    lifecycleStartRequest += 1;
+    if (lifecycleRunning) {
+      lifecycleRunning = false;
+      lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
+      publishLifecycle();
+      for (const resolve of resumeWaiters.splice(0)) resolve();
+    }
+
+    sequencing = false;
+    const run = activeRun;
+    if (run !== undefined) {
+      activeRun = undefined;
+      run.question = null;
+      run.agent?.close();
+      broadcast({
+        type: "runStopped",
+        file: run.file,
+        title: run.title,
+        resolved: false,
+        status: "",
+      });
+    }
+
+    skillsPreparationRequest += 1;
+    skillsPreparationPending = false;
+    const preparation = skillsPreparation;
+    if (preparation !== undefined) {
+      skillsPreparation = undefined;
+      preparation.question = null;
+      preparation.agent?.close();
+      try {
+        restoreDirectorySync(skillsDir, preparation.snapshot);
+      } catch (error) {
+        broadcast({
+          type: "error",
+          message: `Could not restore the previous skills: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        });
+      }
+      broadcast({ type: "skillsPreparationStopped", completed: false });
+    }
+  }
+
   /** Ends a reset unsuccessfully, leaving whatever it already changed in place. */
   function failImplementationReset(message: string, commit?: string) {
     implementationReset = undefined;
@@ -1769,6 +1870,12 @@ export function createApp(options: AppOptions) {
         );
         return;
       }
+
+      // The checkout is confirmed resettable: take it over before deleting so
+      // an active peer cannot race the deletion, staging, or commit.
+      stopActiveWorkForReset();
+      const settling = skillsPreparationSettled;
+      if (settling !== undefined) await settling;
 
       const keep = resetKeepSet(repoDir, goalFile);
       for (const entry of await readdir(repoDir, { withFileTypes: true })) {
@@ -1864,23 +1971,8 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    if (
-      activeRun !== undefined ||
-      sequencing ||
-      lifecycleRunning ||
-      goalRevision !== undefined ||
-      goalCreation !== undefined ||
-      skillsPreparation !== undefined ||
-      skillsPreparationPending
-    ) {
-      send(ws, {
-        type: "error",
-        message:
-          "A run, lifecycle, goal creation, goal revision, or skills preparation is active.",
-      });
-      return;
-    }
-
+    // Reset is available in every state: once the git preconditions pass it
+    // stops any active run, lifecycle, creation, revision, or preparation.
     implementationReset = {};
     broadcast({ type: "implementationResetStarted" });
     void performImplementationReset();

@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { createApp } from "./app";
+import type { EpicLookup, OpenEpic } from "./tracker";
 
 // Every temporary checkout, remote, and hook lives inside the repository so a
 // failed run leaves nothing outside the project.
@@ -77,6 +78,7 @@ interface HostOptions {
   goalName?: string;
   origin?: boolean;
   baseCommit?: boolean;
+  skills?: boolean;
 }
 
 interface Host {
@@ -117,6 +119,25 @@ async function createHost(options: HostOptions = {}): Promise<Host> {
   }
   await writeFile(join(host, ".devboard", "sentinel.txt"), "harness\n");
   await writeFile(join(host, ".omp", "sentinel.txt"), "wrappers\n");
+  if (options.skills === true) {
+    await mkdir(join(host, ".omp", "skills", "prepared-skill"), { recursive: true });
+    await writeFile(
+      join(host, ".omp", "skills", "prepared-skill", "SKILL.md"),
+      [
+        "---",
+        "name: prepared-skill",
+        "description: A prepared skill for the reset lifecycle case.",
+        "metadata:",
+        '  devboard-managed: "true"',
+        "---",
+        "",
+        "# Prepared skill",
+        "",
+        "- Keep the lifecycle startable.",
+        "",
+      ].join("\n"),
+    );
+  }
   await writeFile(join(host, "packages", "code.ts"), "implementation\n");
   await writeFile(join(host, "untracked.ts"), "untracked\n");
   await writeFile(join(host, "ignored", "cache.bin"), "ignored\n");
@@ -151,6 +172,8 @@ async function startServer(
     adrDir?: string;
     goalFile?: string;
     agentCommand?: string;
+    tracker?: EpicLookup;
+    trackerSettle?: { attempts: number; delayMs: number };
   } = {},
 ): Promise<ServerHandle> {
   const staticDir = join(host.root, "static");
@@ -165,6 +188,8 @@ async function startServer(
     repoDir: options.repoDir ?? host.host,
     goalFile: options.goalFile ?? join(host.host, "GOAL.md"),
     agentCommand: options.agentCommand,
+    ...(options.tracker === undefined ? {} : { tracker: options.tracker }),
+    ...(options.trackerSettle === undefined ? {} : { trackerSettle: options.trackerSettle }),
   });
   return { server, url: `127.0.0.1:${server.port}` };
 }
@@ -569,7 +594,7 @@ describe("resetImplementation", () => {
   });
 
   test(
-    "refuses while a run is active and spawns no reset work",
+    "stops an active run and resets",
     async () => {
       const host = await createHost();
       await pushBase(host);
@@ -578,7 +603,7 @@ describe("resetImplementation", () => {
         "# Pending\n\n- Status: Proposed\n",
       );
       const { server, url } = await startServer(host, {
-        agentCommand: `bun ${STUB_AGENT} --delay-ms=3000`,
+        agentCommand: `bun ${STUB_AGENT} --delay-ms=5000`,
       });
 
       try {
@@ -587,14 +612,151 @@ describe("resetImplementation", () => {
         await client.waitFor("runStarted");
 
         client.send({ type: "resetImplementation" });
-        const error = await client.waitFor("error");
-        expect(String(error.message)).toContain("active");
-        expect(
-          client.events.filter((event) => event.type === "implementationResetStarted"),
-        ).toHaveLength(0);
-        expect(await exists(join(host.host, "packages", "code.ts"))).toBe(true);
-        expect(await exists(join(host.host, "untracked.ts"))).toBe(true);
-        expect(await exists(join(host.host, "adrs", "0001-old.md"))).toBe(true);
+        await client.waitFor("implementationResetStarted");
+        expect(await client.waitFor("runStopped")).toMatchObject({
+          type: "runStopped",
+          file: "0002-pending.md",
+          resolved: false,
+        });
+        const stopped = await client.waitFor("implementationResetStopped");
+        expect(stopped).toMatchObject({
+          type: "implementationResetStopped",
+          completed: true,
+        });
+        expect(stopped.commit).toMatch(FULL_SHA);
+        expect(client.events.filter((event) => event.type === "error")).toHaveLength(0);
+        expect(await exists(join(host.host, "packages", "code.ts"))).toBe(false);
+        expect(await exists(join(host.host, "untracked.ts"))).toBe(false);
+        expect(await exists(join(host.host, "adrs", "0001-old.md"))).toBe(false);
+        client.close();
+      } finally {
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "cancels a skills preparation, restores the skills, and resets",
+    async () => {
+      const host = await createHost({ skills: true });
+      await pushBase(host);
+      const skill = join(host.host, ".omp", "skills", "prepared-skill", "SKILL.md");
+      const skillBefore = await readFile(skill, "utf8");
+      const { server, url } = await startServer(host, {
+        agentCommand: `bun ${STUB_AGENT} --prepare-skills --delay-ms=10000`,
+      });
+
+      try {
+        const client = await connect(url);
+        client.send({ type: "prepareSkills" });
+        await client.waitFor("skillsPreparationStarted");
+
+        client.send({ type: "resetImplementation" });
+        await client.waitFor("implementationResetStarted");
+        expect(await client.waitFor("skillsPreparationStopped")).toEqual({
+          type: "skillsPreparationStopped",
+          completed: false,
+        });
+        const stopped = await client.waitFor("implementationResetStopped");
+        expect(stopped).toMatchObject({
+          type: "implementationResetStopped",
+          completed: true,
+        });
+        expect(await readFile(skill, "utf8")).toBe(skillBefore);
+        expect(await exists(join(host.host, "packages"))).toBe(false);
+        expect(await exists(join(host.host, "adrs"))).toBe(false);
+        client.close();
+      } finally {
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "stops a running lifecycle and resets",
+    async () => {
+      const host = await createHost({ skills: true });
+      await pushBase(host);
+      const epic: OpenEpic = {
+        number: 7,
+        title: "Reset the running lifecycle",
+        url: "https://example.test/issues/7",
+      };
+      const { server, url } = await startServer(host, {
+        agentCommand: `bun ${STUB_AGENT} --delay-ms=5000`,
+        tracker: async () => epic,
+        trackerSettle: { attempts: 1, delayMs: 0 },
+      });
+
+      try {
+        const client = await connect(url);
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          "lifecycleState",
+          (event) => event.stage === "implementation",
+        );
+        await client.waitFor("runStarted");
+
+        client.send({ type: "resetImplementation" });
+        await client.waitFor("implementationResetStarted");
+        await client.waitFor("runStopped");
+        const stopped = await client.waitFor("implementationResetStopped");
+        expect(stopped).toMatchObject({
+          type: "implementationResetStopped",
+          completed: true,
+        });
+        expect(client.events.filter((event) => event.type === "error")).toHaveLength(0);
+        expect(await exists(join(host.host, "packages"))).toBe(false);
+        expect(await exists(join(host.host, "adrs"))).toBe(false);
+        expect(await exists(join(host.host, ".omp", "skills", "prepared-skill"))).toBe(true);
+        client.close();
+      } finally {
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "stops a paused lifecycle and resets",
+    async () => {
+      const host = await createHost({ skills: true });
+      await pushBase(host);
+      const epic: OpenEpic = {
+        number: 8,
+        title: "Reset the paused lifecycle",
+        url: "https://example.test/issues/8",
+      };
+      const { server, url } = await startServer(host, {
+        agentCommand: `bun ${STUB_AGENT} --delay-ms=5000`,
+        tracker: async () => epic,
+        trackerSettle: { attempts: 1, delayMs: 0 },
+      });
+
+      try {
+        const client = await connect(url);
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          "lifecycleState",
+          (event) => event.stage === "implementation",
+        );
+        await client.waitFor("runStarted");
+        client.send({ type: "pauseLifecycle" });
+        await client.waitFor("lifecycleState", (event) => event.paused === true);
+
+        client.send({ type: "resetImplementation" });
+        await client.waitFor("implementationResetStarted");
+        await client.waitFor("runStopped");
+        const stopped = await client.waitFor("implementationResetStopped");
+        expect(stopped).toMatchObject({
+          type: "implementationResetStopped",
+          completed: true,
+        });
+        expect(client.events.filter((event) => event.type === "error")).toHaveLength(0);
+        expect(await exists(join(host.host, "packages"))).toBe(false);
+        expect(await exists(join(host.host, "adrs"))).toBe(false);
         client.close();
       } finally {
         server.stop(true);
