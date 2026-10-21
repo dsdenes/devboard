@@ -104,6 +104,37 @@ preparation runs, starting a run or the lifecycle, resuming a paused lifecycle, 
 saving the goal, creating a goal, and a second preparation are each refused. The control never
 starts on page load or reconnect.
 
+The page also offers a `Reset Implementation` control. It is disabled while the WebSocket is
+not open and while any run, run sequence, lifecycle run, goal creation, goal revision, skills
+preparation, or another reset is active. The first click only arms it: no frame is sent, and the
+page shows the exact keep set and a `Confirm reset` control. A reload, a reconnect, a disconnect,
+or any other command disarms it. The second click sends exactly `{ "type":
+"resetImplementation" }`. The server performs the reset, so a browser disconnect does not
+interrupt it; a client that connects during one receives `implementationResetStarted`, and a
+second reset is refused.
+
+The keep set is exact: `.devboard`, `.omp`, `AGENTS.md`, `.gitignore`, `GOAL.md`, plus the direct
+child named by `GOAL_FILE` when that differs. `.git` and `.worktree` are internal: the server
+never descends into or deletes them, and they never enter the commit. Every other top-level
+entry is removed, including tracked, untracked, and ignored entries; a symlink is removed as a
+link without following it. Before deleting anything the server requires that `REPO_DIR` is the
+repository top level, that `HEAD` names a commit, that the current branch is exactly `main`,
+and that `origin` exists; any failed check, or any active run, lifecycle, creation, revision,
+skills preparation, or reset, is refused with one `error` and leaves the filesystem and git
+state unchanged. The server stages with `git add -A`, removes `.worktree`,
+`.devboard/node_modules`, and `.devboard/dist` from the index, and commits with `git commit
+--no-verify -m "chore: reset implementation"`. It never amends, rewrites history, force-pushes,
+or stages ignored files. With no staged change it reuses the current `HEAD`. Success pushes
+`origin main` with terminal prompts disabled and broadcasts `implementationResetStopped` with
+the commit, then the idle `goal` lifecycle state, an empty `records` list, and the unchanged
+goal text; the local and remote `main` then name the same commit. A push failure broadcasts the
+git stderr in an `error` and the same event with `completed: false` and the local commit, leaving
+the commit and the deleted tree in place; a commit failure reports its stderr and the failed
+event without a commit, leaving the staged deletion. `GOAL.md` may be absent, empty, or
+whitespace-only; reset preserves that state and never creates or edits the document. Reset never
+starts on load or reconnect, spawns no ACP peer, emits no run or activity events, and writes no
+`adrs/` file.
+
 ## Stack
 
 - Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`. Each run spawns one `omp acp` subprocess over stdio.
@@ -178,6 +209,7 @@ The client sends:
 { "type": "createGoal" }
 { "type": "prepareSkills" }
 { "type": "getSkills" }
+{ "type": "resetImplementation" }
 { "type": "answer", "id": 1, "value": "Gamma" }
 ```
 
@@ -230,6 +262,20 @@ The client sends:
   a reload or restart instead of starting a run. While preparation is active, `startRun`,
   `startLifecycle`, `resumeLifecycle`, `reviseGoal`, `saveGoal`, `createGoal`, and a second
   `prepareSkills` are each refused with an `error` and spawn no peer.
+- `resetImplementation` deletes and commits the implementation as described above. The server
+  broadcasts `implementationResetStarted` when it accepts the command, performs the reset
+  itself, and broadcasts `implementationResetStopped` with `completed: true` and the 40-hex
+  `commit` only after `git push origin main` succeeds; a failed push includes the local commit
+  with `completed: false`, and a failure before or during the commit omits `commit`. Every
+  failure is preceded by one `error` carrying git's stderr where git failed. While a reset
+  runs, `saveGoal`, `startRun`, `startLifecycle`, `pauseLifecycle`, `resumeLifecycle`,
+  `reviseGoal`, `createGoal`, `prepareSkills`, `answer`, and a second `resetImplementation`
+  are each refused with an `error`; `listRecords`, `getGoal`, and `getSkills` still answer. A
+  client that connects during a reset receives `implementationResetStarted` before its own
+  command replies. On success the server follows the stopped event, in order, with
+  `lifecycleState` at `goal` with pass `1`, `work: null`, and `paused: false`, `records` with
+  an empty list and `next: null`, and `goal` with the unchanged text (empty when the document
+  is absent).
 - `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run,
   a run sequence, a goal revision, a goal creation, or another lifecycle run is active, and
   when the goal document is absent, unreadable, or contains only whitespace; a refused start
@@ -290,6 +336,10 @@ The server answers with events:
 { "type": "skillsPreparationStopped", "completed": true, "skills": [ { "name": "dependency-direction", "description": "Choose dependency direction." } ], "contradictions": [] }
 { "type": "skillsPreparationStopped", "completed": false }
 { "type": "skillsState", "skills": [], "contradictions": [] }
+{ "type": "implementationResetStarted" }
+{ "type": "implementationResetStopped", "completed": true, "commit": "0123456789abcdef0123456789abcdef01234567" }
+{ "type": "implementationResetStopped", "completed": false, "commit": "0123456789abcdef0123456789abcdef01234567" }
+{ "type": "implementationResetStopped", "completed": false }
 { "type": "runStarted", "file": "0001-example.md", "title": "Example" }
 { "type": "activity", "text": "Inspecting 0001-example.md" }
 { "type": "activity", "text": " and its status line", "append": true }
@@ -421,3 +471,12 @@ stages while a tracker query is outstanding, pausing the initial tracker lookup 
 into its result, paused replay with recorded activity and question, goal saving while paused,
 guided goal revision while paused including replay of the suspended conversation and every
 refusal path with unchanged state.
+`server/reset-implementation.test.ts` drives the reset against temporary hosts with local bare
+remotes: the command and started/stopped events, tracked/untracked/ignored deletion, keep-set
+bytes, the `.worktree` sentinel, symlink removal without following, the exact commit subject and
+remote tree, staging exclusions without a `.gitignore`, empty-change idempotence, an absent,
+empty, or whitespace-only goal, a differently named `GOAL_FILE`, a bypassed failing pre-commit
+hook, refusal off `main`, without `origin`, outside the top level, with an unborn `HEAD`, and
+during an active run, a rejecting pre-receive hook retaining the local commit, a commit failure
+retaining the staged deletion, mutating-command refusal during a reset, replay to a late client,
+and the post-reset empty records, goal text, `getGoal`, and `saveGoal` behavior.

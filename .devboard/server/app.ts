@@ -1,6 +1,14 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import {
   AcpConnection,
@@ -119,6 +127,23 @@ const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKILL_NAME_MAX = 64;
 const SKILL_DESCRIPTION_MAX = 1024;
 const MANAGED_MARKER = "devboard-managed";
+/** Top-level entries an implementation reset keeps, besides the goal file. */
+const RESET_KEEP_NAMES = [".devboard", ".omp", "AGENTS.md", ".gitignore", "GOAL.md"] as const;
+/** Repository internals a reset preserves without committing them. */
+const RESET_INTERNAL_NAMES = new Set([".git", ".worktree"]);
+/** Paths a reset never stages, even without a .gitignore. */
+const RESET_STAGE_EXCLUSIONS = [
+  ".git",
+  ".worktree",
+  ".devboard/node_modules",
+  ".devboard/dist",
+];
+const RESET_COMMIT_MESSAGE = "chore: reset implementation";
+const RESET_PUSH_ENV = {
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_ASKPASS: "true",
+  NO_COLOR: "1",
+};
 
 /** One directive statement extracted from a skill body for contradiction review. */
 const DIRECTIVE_PATTERN =
@@ -154,6 +179,7 @@ type ClientMessage =
   | { type: "createGoal" }
   | { type: "prepareSkills" }
   | { type: "getSkills" }
+  | { type: "resetImplementation" }
   | { type: "answer"; id?: unknown; value?: unknown };
 
 function parseClientMessage(value: unknown): ClientMessage | undefined {
@@ -181,6 +207,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "prepareSkills" };
     case "getSkills":
       return { type: "getSkills" };
+    case "resetImplementation":
+      return { type: "resetImplementation" };
     case "answer":
       return {
         type: "answer",
@@ -510,6 +538,48 @@ function describeContradictions(
     .join(" ");
 }
 
+interface GitResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+async function runGit(
+  repoDir: string,
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<GitResult> {
+  try {
+    const child = Bun.spawn({
+      cmd: ["git", "-C", repoDir, ...args],
+      env: { ...process.env, ...env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { code: await child.exited, stdout, stderr };
+  } catch (error) {
+    return {
+      code: -1,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/** The exact top-level names a reset keeps, plus a differently named goal file. */
+function resetKeepSet(repoDir: string, goalFile: string): Set<string> {
+  const names = new Set<string>(RESET_KEEP_NAMES);
+  const goal = resolve(goalFile);
+  if (dirname(goal) === resolve(repoDir) && basename(goal) !== "GOAL.md") {
+    names.add(basename(goal));
+  }
+  return names;
+}
+
 export function createApp(options: AppOptions) {
   const staticRoot = resolve(options.staticDir);
   const adrDir = resolve(options.adrDir);
@@ -537,6 +607,7 @@ export function createApp(options: AppOptions) {
   let lifecycle: LifecycleState = { stage: "goal", pass: 1, work: null, paused: false };
   let lastLifecycle: LifecycleState | undefined;
   let lifecycleRunning = false;
+  let implementationReset: { commit?: string } | undefined;
   const resumeWaiters: (() => void)[] = [];
 
   function send(ws: { send(data: string): unknown }, event: unknown) {
@@ -1627,6 +1698,174 @@ export function createApp(options: AppOptions) {
     active.question = null;
   }
 
+  function gitDetail(result: GitResult): string {
+    const detail = result.stderr.trim() || result.stdout.trim();
+    return detail.length === 0 ? `git exited with code ${result.code}` : detail;
+  }
+
+  /** Ends a reset unsuccessfully, leaving whatever it already changed in place. */
+  function failImplementationReset(message: string, commit?: string) {
+    implementationReset = undefined;
+    broadcast({ type: "error", message });
+    broadcast({
+      type: "implementationResetStopped",
+      completed: false,
+      ...(commit === undefined ? {} : { commit }),
+    });
+  }
+
+  /**
+   * Deletes the implementation and publishes it. The server owns the whole
+   * operation, so a browser disconnect neither interrupts nor cancels it.
+   */
+  async function performImplementationReset() {
+    try {
+      const top = await runGit(repoDir, ["rev-parse", "--show-toplevel"]);
+      if (top.code !== 0 || resolve(top.stdout.trim()) !== resolve(repoDir)) {
+        failImplementationReset(
+          `Reset refused: REPO_DIR is not the repository top level. ${gitDetail(top)}`,
+        );
+        return;
+      }
+
+      const head = await runGit(repoDir, ["rev-parse", "--verify", "HEAD"]);
+      if (head.code !== 0) {
+        failImplementationReset(`Reset refused: HEAD does not name a commit. ${gitDetail(head)}`);
+        return;
+      }
+
+      const branch = await runGit(repoDir, ["symbolic-ref", "--short", "HEAD"]);
+      if (branch.code !== 0 || branch.stdout.trim() !== "main") {
+        failImplementationReset(
+          `Reset refused: the repository is not on main. ${gitDetail(branch)}`,
+        );
+        return;
+      }
+
+      const origin = await runGit(repoDir, ["remote", "get-url", "origin"]);
+      if (origin.code !== 0) {
+        failImplementationReset(
+          `Reset refused: the repository has no origin remote. ${gitDetail(origin)}`,
+        );
+        return;
+      }
+
+      const keep = resetKeepSet(repoDir, goalFile);
+      for (const entry of await readdir(repoDir, { withFileTypes: true })) {
+        if (keep.has(entry.name) || RESET_INTERNAL_NAMES.has(entry.name)) continue;
+        const target = join(repoDir, entry.name);
+        // A symlink is removed as a link; its target, inside or outside the
+        // repository, is never followed.
+        if (entry.isSymbolicLink()) await unlink(target);
+        else await rm(target, { recursive: true, force: true });
+      }
+
+      const staged = await runGit(repoDir, ["add", "-A"]);
+      if (staged.code !== 0) {
+        failImplementationReset(`Could not stage the reset: ${gitDetail(staged)}`);
+        return;
+      }
+      // git add -A honours .gitignore, but an absent .gitignore would stage the
+      // internal trees, and an earlier commit may already track them. Remove
+      // them from the index; the working tree is untouched.
+      const excluded = await runGit(repoDir, [
+        "rm",
+        "-r",
+        "--cached",
+        "--ignore-unmatch",
+        "-q",
+        "--",
+        ...RESET_STAGE_EXCLUSIONS.filter((name) => name !== ".git"),
+      ]);
+      if (excluded.code !== 0) {
+        failImplementationReset(`Could not stage the reset: ${gitDetail(excluded)}`);
+        return;
+      }
+
+      // With no staged change the current HEAD already describes the reset,
+      // so the operation stays idempotent.
+      const changed = await runGit(repoDir, ["diff", "--cached", "--quiet"]);
+      if (changed.code !== 0) {
+        const committed = await runGit(repoDir, [
+          "commit",
+          "--no-verify",
+          "-m",
+          RESET_COMMIT_MESSAGE,
+        ]);
+        if (committed.code !== 0) {
+          failImplementationReset(`Could not commit the reset: ${gitDetail(committed)}`);
+          return;
+        }
+      }
+
+      const committedHead = await runGit(repoDir, ["rev-parse", "HEAD"]);
+      if (committedHead.code !== 0) {
+        failImplementationReset(
+          `Could not read the reset commit: ${gitDetail(committedHead)}`,
+        );
+        return;
+      }
+      const commit = committedHead.stdout.trim();
+
+      const pushed = await runGit(repoDir, ["push", "origin", "main"], RESET_PUSH_ENV);
+      if (pushed.code !== 0) {
+        failImplementationReset(
+          `Could not push the reset commit: ${gitDetail(pushed)}`,
+          commit,
+        );
+        return;
+      }
+
+      let text = "";
+      try {
+        text = await readFile(goalFile, "utf8");
+      } catch {
+        // An absent goal document stays absent and is reported as empty.
+      }
+
+      implementationReset = undefined;
+      lifecycle = { stage: "goal", pass: 1, work: null, paused: false };
+      lastLifecycle = lifecycle;
+      broadcast({ type: "implementationResetStopped", completed: true, commit });
+      broadcast({ type: "lifecycleState", ...lifecycle });
+      broadcast({ type: "records", records: [], next: null });
+      broadcast({ type: "goal", text });
+    } catch (error) {
+      if (implementationReset === undefined) return;
+      failImplementationReset(
+        `Reset failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  function startImplementationReset(ws: { send(data: string): unknown }) {
+    if (implementationReset !== undefined) {
+      send(ws, { type: "error", message: "An implementation reset is active." });
+      return;
+    }
+
+    if (
+      activeRun !== undefined ||
+      sequencing ||
+      lifecycleRunning ||
+      goalRevision !== undefined ||
+      goalCreation !== undefined ||
+      skillsPreparation !== undefined ||
+      skillsPreparationPending
+    ) {
+      send(ws, {
+        type: "error",
+        message:
+          "A run, lifecycle, goal creation, goal revision, or skills preparation is active.",
+      });
+      return;
+    }
+
+    implementationReset = {};
+    broadcast({ type: "implementationResetStarted" });
+    void performImplementationReset();
+  }
+
   const server = Bun.serve({
     hostname: options.hostname,
     port: options.port,
@@ -1677,6 +1916,9 @@ export function createApp(options: AppOptions) {
     websocket: {
       open(ws) {
         clients.add(ws);
+        if (implementationReset !== undefined) {
+          send(ws, { type: "implementationResetStarted" });
+        }
         const replayed = lifecycleRunning ? lifecycle : lastLifecycle;
         if (replayed !== undefined) send(ws, { type: "lifecycleState", ...replayed });
         if (activeRun !== undefined) sendRunConversation(ws, activeRun);
@@ -1740,6 +1982,17 @@ export function createApp(options: AppOptions) {
           return;
         }
 
+        // A reset owns the checkout while it runs: only the read-only
+        // commands may answer, and a second reset is refused like any other.
+        const readOnly =
+          command.type === "listRecords" ||
+          command.type === "getGoal" ||
+          command.type === "getSkills";
+        if (implementationReset !== undefined && !readOnly) {
+          send(ws, { type: "error", message: "An implementation reset is active." });
+          return;
+        }
+
         try {
           if (command.type === "listRecords") {
             const list = await readRecords(adrDir);
@@ -1764,6 +2017,8 @@ export function createApp(options: AppOptions) {
             await startSkillsPreparation(ws);
           } else if (command.type === "getSkills") {
             await sendSkillsState(ws);
+          } else if (command.type === "resetImplementation") {
+            startImplementationReset(ws);
           } else if (command.type === "answer") {
             answerQuestion(ws, command.id, command.value);
           }

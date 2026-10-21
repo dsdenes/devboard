@@ -591,3 +591,54 @@ ul.skills-contradictions {
 code {
   font-size: 0.8rem;
 }
+
+.reset {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+}
+
+.reset-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+}
+
+.reset-heading h2 {
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.reset-button {
+  margin-left: auto;
+}
+
+.reset-confirmation {
+  border-top: 1px solid var(--border);
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+}
+
+.reset-keep-set {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0 0 0.75rem;
+}
+
+.reset-confirm {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.reset-running,
+.reset-status {
+  font-size: 0.85rem;
+  margin: 0.6rem 0 0;
+}
+
+.reset-running {
+  color: var(--muted);
+}

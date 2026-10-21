@@ -88,4 +88,10 @@ describe("readRecords", () => {
     await rm(join(directory, "0002-added.md"));
     expect((await readRecords(directory)).next).toBeNull();
   });
+
+  test("treats an absent record directory as an empty list", async () => {
+    const directory = join(await temporaryDirectory(), "removed");
+
+    expect(await readRecords(directory)).toEqual({ records: [], next: null });
+  });
 });

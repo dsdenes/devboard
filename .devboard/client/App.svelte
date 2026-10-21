@@ -79,6 +79,9 @@
   let skills = $state<SkillSummary[]>([]);
   let contradictions = $state<SkillContradiction[]>([]);
   let skillsPrepActive = $state(false);
+  let resetArmed = $state(false);
+  let resetting = $state(false);
+  let resetStatus = $state<string | null>(null);
 
   let pendingCount = $derived(records.filter((record) => record.pending).length);
   let resolvedCount = $derived(records.length - pendingCount);
@@ -111,6 +114,7 @@
     (lifecycleActive && !lifecycle.paused) || skillsPrepActive,
   );
   let prepareDisabled = $derived(controlsDisabled || !goalReady);
+  let resetDisabled = $derived(connection !== "open" || controlsDisabled || resetting);
   let activityActive = $derived(running || creationActive || revisionActive || skillsPrepActive);
   let currentAction = $derived(activity[activity.length - 1] ?? "");
   let previousActions = $derived(activity.slice(0, -1));
@@ -387,6 +391,31 @@
     );
   }
 
+  function isImplementationResetStartedEvent(
+    value: unknown,
+  ): value is { type: "implementationResetStarted" } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "implementationResetStarted"
+    );
+  }
+
+  function isImplementationResetStoppedEvent(
+    value: unknown,
+  ): value is { type: "implementationResetStopped"; completed: boolean; commit?: string } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "implementationResetStopped" &&
+      "completed" in value &&
+      typeof value.completed === "boolean" &&
+      (!("commit" in value) || typeof value.commit === "string")
+    );
+  }
+
   function isLifecycleStateEvent(
     value: unknown,
   ): value is { type: "lifecycleState" } & LifecycleState {
@@ -417,78 +446,62 @@
     );
   }
 
-  function start(target?: string) {
+  /** Sends one command. Every command other than arming disarms a pending reset. */
+  function sendCommand(command: unknown): boolean {
+    resetArmed = false;
     if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
       error = "Not connected to the server.";
-      return;
+      return false;
     }
     error = null;
-    socket.send(JSON.stringify(target === undefined ? { type: "startRun" } : { type: "startRun", file: target }));
+    socket.send(JSON.stringify(command));
+    return true;
+  }
+
+  function armReset() {
+    if (resetDisabled) return;
+    resetArmed = true;
+  }
+
+  function confirmReset() {
+    if (!resetArmed || resetDisabled) return;
+    sendCommand({ type: "resetImplementation" });
+  }
+
+  function start(target?: string) {
+    sendCommand(
+      target === undefined ? { type: "startRun" } : { type: "startRun", file: target },
+    );
   }
 
   function startLifecycle() {
-    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
-      error = "Not connected to the server.";
-      return;
-    }
-    error = null;
-    socket.send(JSON.stringify({ type: "startLifecycle" }));
+    sendCommand({ type: "startLifecycle" });
   }
 
   function pauseLifecycle() {
-    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
-      error = "Not connected to the server.";
-      return;
-    }
-    error = null;
-    socket.send(JSON.stringify({ type: "pauseLifecycle" }));
+    sendCommand({ type: "pauseLifecycle" });
   }
 
   function resumeLifecycle() {
-    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
-      error = "Not connected to the server.";
-      return;
-    }
-    error = null;
-    socket.send(JSON.stringify({ type: "resumeLifecycle" }));
+    sendCommand({ type: "resumeLifecycle" });
   }
 
   function saveGoal() {
-    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
-      error = "Not connected to the server.";
-      return;
-    }
-    error = null;
-    socket.send(JSON.stringify({ type: "saveGoal", text: goalText }));
+    sendCommand({ type: "saveGoal", text: goalText });
   }
 
   function createGoal() {
-    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
-      error = "Not connected to the server.";
-      return;
-    }
-    error = null;
-    socket.send(JSON.stringify({ type: "createGoal" }));
+    sendCommand({ type: "createGoal" });
   }
 
   function prepareSkills() {
-    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
-      error = "Not connected to the server.";
-      return;
-    }
-    error = null;
-    socket.send(JSON.stringify({ type: "prepareSkills" }));
+    sendCommand({ type: "prepareSkills" });
   }
 
   function reviseGoal() {
-    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
-      error = "Not connected to the server.";
-      return;
-    }
-    error = null;
     const request = revisionRequest.trim();
-    socket.send(
-      JSON.stringify(request.length === 0 ? { type: "reviseGoal" } : { type: "reviseGoal", request }),
+    sendCommand(
+      request.length === 0 ? { type: "reviseGoal" } : { type: "reviseGoal", request },
     );
   }
 
@@ -500,7 +513,7 @@
     const id = question.id;
     question = null;
     draft = "";
-    socket?.send(JSON.stringify({ type: "answer", id, value: trimmed }));
+    sendCommand({ type: "answer", id, value: trimmed });
   }
 
   function connect() {
@@ -512,6 +525,7 @@
     current.onopen = () => {
       connection = "open";
       error = null;
+      resetArmed = false;
       current.send(JSON.stringify({ type: "listRecords" }));
       current.send(JSON.stringify({ type: "getGoal" }));
       current.send(JSON.stringify({ type: "getSkills" }));
@@ -525,7 +539,19 @@
         return;
       }
 
-      if (isLifecycleStateEvent(message)) {
+      if (isImplementationResetStartedEvent(message)) {
+        resetting = true;
+        resetArmed = false;
+        resetStatus = null;
+        error = null;
+      } else if (isImplementationResetStoppedEvent(message)) {
+        resetting = false;
+        resetArmed = false;
+        resetStatus = message.completed
+          ? `Reset committed as ${message.commit ?? "an unknown commit"}.`
+          : "Reset did not complete.";
+        if (message.completed) error = null;
+      } else if (isLifecycleStateEvent(message)) {
         lifecycle = {
           stage: message.stage,
           pass: message.pass,
@@ -629,6 +655,7 @@
 
     current.onclose = () => {
       connection = "closed";
+      resetArmed = false;
       if (!disposed) retryTimer = window.setTimeout(connect, 1000);
     };
   }
@@ -725,6 +752,49 @@
   {#if error}
     <p class="error" role="alert">{error}</p>
   {/if}
+
+  <section class="reset" data-testid="reset-section">
+    <div class="reset-heading">
+      <h2>Implementation</h2>
+      <button
+        type="button"
+        class="start-button reset-button"
+        data-testid="reset-implementation"
+        disabled={resetDisabled}
+        onclick={armReset}
+      >
+        Reset Implementation
+      </button>
+    </div>
+
+    {#if resetArmed}
+      <div class="reset-confirmation" data-testid="reset-confirmation">
+        <p class="reset-keep-set" data-testid="reset-keep-set">
+          Reset deletes every top-level entry except
+          <code>.devboard</code>, <code>.omp</code>, <code>AGENTS.md</code>,
+          <code>.gitignore</code>, and <code>GOAL.md</code>. The internal
+          <code>.git</code> and <code>.worktree</code> directories are preserved.
+        </p>
+        <button
+          type="button"
+          class="start-button reset-confirm"
+          data-testid="confirm-reset"
+          disabled={resetDisabled}
+          onclick={confirmReset}
+        >
+          Confirm reset
+        </button>
+      </div>
+    {/if}
+
+    {#if resetting}
+      <p class="reset-running" data-testid="reset-running">Resetting implementation…</p>
+    {/if}
+
+    {#if resetStatus}
+      <p class="reset-status" data-testid="reset-status" role="status">{resetStatus}</p>
+    {/if}
+  </section>
 
   <section class="goal" data-testid="goal-editor">
     <div class="goal-heading">

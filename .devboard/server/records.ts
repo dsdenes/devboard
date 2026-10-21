@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -35,7 +36,17 @@ export function parseRecord(file: string, source: string): AdrRecord {
 }
 
 export async function readRecords(directory: string): Promise<AdrList> {
-  const entries = await readdir(directory, { withFileTypes: true });
+  let entries: Dirent[];
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    // An implementation reset removes the record directory. An absent
+    // directory is an empty record set, not a read failure.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { records: [], next: null };
+    }
+    throw error;
+  }
   const files = entries
     .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".md"))
     .map((entry) => entry.name)
