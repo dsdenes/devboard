@@ -11,7 +11,14 @@ import {
 } from "./acp";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
-import { findOpenEpic, type EpicLookup } from "./tracker";
+import { findOpenEpic, type EpicLookup, type OpenEpic } from "./tracker";
+
+export interface TrackerSettle {
+  /** Total tracker reads per settle, including the first. */
+  attempts: number;
+  /** Delay before each read after the first. */
+  delayMs: number;
+}
 
 export interface AppOptions {
   adrDir: string;
@@ -22,6 +29,7 @@ export interface AppOptions {
   goalFile?: string;
   agentCommand?: string;
   tracker?: EpicLookup;
+  trackerSettle?: Partial<TrackerSettle>;
 }
 
 interface RunQuestion {
@@ -98,6 +106,13 @@ interface LifecycleState {
 
 const EPIC_PROMPT = "/epic-next";
 const IMPLEMENT_PROMPT = "/implement-next-epic";
+/**
+ * A forge can take a moment to expose a tracker write made by the peer that
+ * just exited. After such a peer the lifecycle re-reads the tracker for this
+ * bounded window before trusting an answer that still shows the pre-peer state.
+ */
+const TRACKER_SETTLE_ATTEMPTS = 7;
+const TRACKER_SETTLE_DELAY_MS = 500;
 const GOAL_CREATION_PROMPT = "/goal-outcome";
 const SKILLS_PROMPT = "/prepare-skills";
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -506,6 +521,10 @@ export function createApp(options: AppOptions) {
   const skillsDir = join(repoDir, ".omp", "skills");
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
   const tracker = options.tracker ?? findOpenEpic;
+  const trackerSettle: TrackerSettle = {
+    attempts: Math.max(1, options.trackerSettle?.attempts ?? TRACKER_SETTLE_ATTEMPTS),
+    delayMs: Math.max(0, options.trackerSettle?.delayMs ?? TRACKER_SETTLE_DELAY_MS),
+  };
 
   const clients = new Set<ServerWebSocket<unknown>>();
   let activeRun: ActiveRun | undefined;
@@ -1394,6 +1413,26 @@ export function createApp(options: AppOptions) {
     await runAgent(run, prompt);
   }
 
+  /**
+   * Re-reads the tracker while its answer could still be the pre-peer state.
+   * The peer that just exited may have opened an epic or closed the one it
+   * implemented, and the forge's read path can expose that write a moment
+   * later. `stale` names the answer that write would replace. Pause holds the
+   * loop before the next read, and a stopped run returns without another read.
+   */
+  async function settleTracker(
+    stale: (epic: OpenEpic | undefined) => boolean,
+  ): Promise<OpenEpic | undefined> {
+    let epic = await tracker(repoDir);
+    for (let attempt = 1; attempt < trackerSettle.attempts && stale(epic); attempt += 1) {
+      await Bun.sleep(trackerSettle.delayMs);
+      await holdWhilePaused();
+      if (!lifecycleRunning) return epic;
+      epic = await tracker(repoDir);
+    }
+    return epic;
+  }
+
   /** Returns true only when the pass produced no epic and no pending ADR. */
   async function runLifecycle(): Promise<boolean> {
     let previousPending: string | undefined;
@@ -1412,7 +1451,9 @@ export function createApp(options: AppOptions) {
         await holdWhilePaused();
         if (!lifecycleRunning) return false;
 
-        const remaining = await tracker(repoDir);
+        const remaining = await settleTracker(
+          (epic) => epic !== undefined && String(epic.number) === id,
+        );
         await holdWhilePaused();
         if (!lifecycleRunning) return false;
         if (remaining !== undefined && String(remaining.number) === id) {
@@ -1435,7 +1476,7 @@ export function createApp(options: AppOptions) {
       await holdWhilePaused();
       if (!lifecycleRunning) return false;
 
-      const created = await tracker(repoDir);
+      const created = await settleTracker((epic) => epic === undefined);
       await holdWhilePaused();
       if (!lifecycleRunning) return false;
       if (created !== undefined) continue;

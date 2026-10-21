@@ -58,8 +58,11 @@ reports `implementation` and implements that epic with `/implement-next-epic`; o
 runs the `/epic-next` agent, resolves any pending ADRs the run leaves behind with
 `/adr-resolve` in file-name order, and repeats. After an implementation peer exits, the pass
 increments and the lifecycle returns to epic generation; the epic the generation peer creates
-is implemented in turn. When the generation peer opens no epic and no record in `adrs/` is
-still `Proposed`, the lifecycle reports the `finished` stage and stops; a later start begins
+is implemented in turn. A forge can expose a peer's tracker write a moment after the peer
+exits, so the server re-reads the tracker for a bounded settle window after epic generation
+and after implementation before it trusts an answer that still shows the pre-peer state. When the
+generation peer opens no epic and no record in `adrs/` is still `Proposed`, the lifecycle reports
+the `finished` stage and stops; a later start begins
 a new run. If the same epic is still open after its implementation, or epic generation leaves
 the same pending records without opening an epic, or a tracker or record read fails, the
 lifecycle stops with an `error` and returns to the idle goal stage instead of staying at the
@@ -250,12 +253,17 @@ The client sends:
   When no epic is open, it reports the `epic` stage, sends `/epic-next` to one ACP peer, and
   checks the tracker again: an epic the peer opened is implemented, while no epic and pending
   records in `adrs/` means each record is reported in `adr` and resolved with `/adr-resolve`
-  in ascending file-name order. It returns to `epic` after the last one, repeating until an
-  open epic exists. If a pass leaves the same pending record set as the previous one without
-  an epic, it sends an `error` and stops. When the peer opens no epic and no record in `adrs/`
-  is pending, it reports `finished` and stops without sending an `error`, making no further
-  tracker query, and starting no further ACP peer; the run is over, so a later
-  `startLifecycle` is accepted as a new run. An `error` raised by a tracker query or a record
+  in ascending file-name order. That post-peer check, and the post-implementation check
+  above, re-read the tracker for a bounded window when the answer still shows the pre-peer
+  state: no epic after a generation peer, or the implemented epic after an implementation
+  peer. The window keeps a just-written tracker change from being read as its old value; pause
+  holds the loop between reads, and an exhausted window accepts the last answer. It returns to
+  `epic` after the last one, repeating until an open epic exists. If a pass leaves the same
+  pending record set as the previous one without an epic, it sends an `error` and stops. When the
+  peer opens no epic and no record in `adrs/` is pending, it reports `finished` and stops
+  without sending an `error`, making no further tracker query, and starting no further ACP
+  peer; the run is over, so a later `startLifecycle` is accepted as a new run. An `error`
+  raised by a tracker query or a record
   read also stops the run. Every stop before `finished` reports the idle `goal` stage with
   `work: null`, `paused: false`, and the pass reached, making goal editing, goal saving, and a
   new start available again.
@@ -386,8 +394,10 @@ reading or writing `adrs/`, and the custom `GOAL_FILE` split.
 `server/lifecycle.test.ts` covers the `lifecycleState` sequence, the running `epic` state
 reported before the first tracker lookup and to every client, the single `/epic-next`
 peer, ADR-order resolution, implementation of an already-open epic, return to epic generation
-on the next pass, the same-epic stop, the finished transition when a pass yields no epic and
-no pending ADR, restart after that transition, the three lifecycle refusals during
+on the next pass, the settle window that waits out a lagging tracker after epic generation and
+after implementation and that finishes when the window is exhausted, the same-epic stop, the
+finished transition when a pass yields no epic and no pending ADR, restart after that
+transition, the three lifecycle refusals during
 implementation, replay of the implementation state and activity to a reconnecting client and
 of the finished state to a client that connects after the run ends, the absence of a
 `lifecycleState` before any run, the new run's stage after restarting from `finished`, and the
