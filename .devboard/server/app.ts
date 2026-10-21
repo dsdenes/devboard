@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { AcpConnection, agentPrompt, type AcpQuestion } from "./acp";
+import { AcpConnection, agentPrompt, type AcpActivity, type AcpQuestion } from "./acp";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
 import { findOpenEpic, type EpicLookup } from "./tracker";
@@ -154,6 +154,21 @@ export function createApp(options: AppOptions) {
         // A closing client must not interrupt delivery to the others.
       }
     }
+  }
+
+  /**
+   * Streamed deltas extend the last activity line; a new message, tool call, or
+   * plan starts one. The store keeps whole lines so a reconnect replays them as
+   * they were shown.
+   */
+  function recordActivity(store: string[], activity: AcpActivity) {
+    if (activity.append && store.length > 0) {
+      store[store.length - 1] += activity.text;
+      broadcast({ type: "activity", text: activity.text, append: true });
+      return;
+    }
+    store.push(activity.text);
+    broadcast({ type: "activity", text: activity.text });
   }
 
   function sendRunConversation(target: { send(data: string): unknown }, run: ActiveRun) {
@@ -339,10 +354,9 @@ export function createApp(options: AppOptions) {
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        onActivity(text) {
+        onActivity(activity) {
           if (goalCreation !== creation) return;
-          creation.activity.push(text);
-          broadcast({ type: "activity", text });
+          recordActivity(creation.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
           if (goalCreation !== creation) return;
@@ -413,10 +427,9 @@ export function createApp(options: AppOptions) {
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        onActivity(text) {
+        onActivity(activity) {
           if (goalRevision !== revision) return;
-          revision.activity.push(text);
-          broadcast({ type: "activity", text });
+          recordActivity(revision.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
           if (goalRevision !== revision) return;
@@ -461,10 +474,9 @@ export function createApp(options: AppOptions) {
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        onActivity(text) {
+        onActivity(activity) {
           if (activeRun !== run) return;
-          run.activity.push(text);
-          broadcast({ type: "activity", text });
+          recordActivity(run.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
           if (activeRun !== run) return;

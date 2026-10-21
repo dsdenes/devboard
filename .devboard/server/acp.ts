@@ -11,7 +11,7 @@ export interface AcpQuestion {
 export interface AcpConnectionOptions {
   command: string;
   cwd: string;
-  onActivity: (text: string) => void;
+  onActivity: (activity: AcpActivity) => void;
   onQuestion: (question: AcpQuestion) => void;
   onStderr?: (text: string) => void;
 }
@@ -106,7 +106,30 @@ function answerContent(question: PendingQuestion, value: string): Record<string,
   return { [key]: value };
 }
 
-function activityText(update: unknown): string | undefined {
+/** One entry in the developer-facing activity log. */
+export interface AcpActivity {
+  text: string;
+  /** True when `text` continues the previous activity line instead of starting one. */
+  append: boolean;
+}
+
+/** The message whose streamed chunks are currently being joined. */
+export interface ActivityStream {
+  kind: string;
+  messageId: string | undefined;
+}
+
+/**
+ * Maps one ACP session update to an activity entry. Text updates arrive as
+ * deltas of one assistant message, identified by `messageId`; a delta that
+ * continues the stream already in progress is marked for appending so the log
+ * shows the message, not its chunks. Without a message id a text update is
+ * taken as a complete line.
+ */
+export function nextActivity(
+  update: unknown,
+  stream: ActivityStream | undefined,
+): { activity: AcpActivity; stream: ActivityStream | undefined } | undefined {
   const notification = asRecord(update);
   if (notification === undefined) return undefined;
 
@@ -116,12 +139,22 @@ function activityText(update: unknown): string | undefined {
     case "user_message_chunk": {
       const content = asRecord(notification.content);
       const text = content?.text;
-      return typeof text === "string" && text.length > 0 ? text : undefined;
+      if (typeof text !== "string" || text.length === 0) return undefined;
+      const kind = notification.sessionUpdate;
+      const messageId =
+        typeof notification.messageId === "string" ? notification.messageId : undefined;
+      const append =
+        messageId !== undefined &&
+        stream !== undefined &&
+        stream.kind === kind &&
+        stream.messageId === messageId;
+      return { activity: { text, append }, stream: { kind, messageId } };
     }
     case "tool_call":
     case "tool_call_update": {
       const title = notification.title;
-      return typeof title === "string" && title.length > 0 ? title : undefined;
+      if (typeof title !== "string" || title.length === 0) return undefined;
+      return { activity: { text: title, append: false }, stream: undefined };
     }
     case "plan": {
       const entries = notification.entries;
@@ -129,7 +162,8 @@ function activityText(update: unknown): string | undefined {
       const lines = entries
         .map((entry) => asRecord(entry)?.content)
         .filter((line): line is string => typeof line === "string" && line.length > 0);
-      return lines.length > 0 ? lines.join("\n") : undefined;
+      if (lines.length === 0) return undefined;
+      return { activity: { text: lines.join("\n"), append: false }, stream: undefined };
     }
     default:
       return undefined;
@@ -149,6 +183,7 @@ export class AcpConnection {
   #nextRequestId = 1;
   #closed = false;
   #sessionId: string | undefined;
+  #activityStream: ActivityStream | undefined;
 
   constructor(options: AcpConnectionOptions) {
     this.#options = options;
@@ -353,8 +388,10 @@ export class AcpConnection {
   }
 
   #handleSessionUpdate(params: unknown): void {
-    const text = activityText(asRecord(params)?.update);
-    if (text !== undefined) this.#options.onActivity(text);
+    const next = nextActivity(asRecord(params)?.update, this.#activityStream);
+    if (next === undefined) return;
+    this.#activityStream = next.stream;
+    this.#options.onActivity(next.activity);
   }
 
   #handleElicitation(wireId: number | string, params: unknown): void {

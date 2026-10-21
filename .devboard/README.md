@@ -219,11 +219,20 @@ The server answers with events:
 { "type": "goalCreationStopped", "completed": false }
 { "type": "runStarted", "file": "0001-example.md", "title": "Example" }
 { "type": "activity", "text": "Inspecting 0001-example.md" }
+{ "type": "activity", "text": " and its status line", "append": true }
 { "type": "question", "id": 1, "message": "Choose an answer", "choices": ["Alpha", "Beta"] }
 { "type": "runStopped", "file": "0001-example.md", "title": "Example", "resolved": true, "status": "Accepted" }
 { "type": "error", "message": "No pending ADRs to start." }
 ```
 
+- `activity` events carry one line of the agent's output. An event with `"append": true`
+  continues the previous line: the client appends `text` to it instead of starting a new one.
+  Streamed ACP text updates are deltas of one assistant message (identified by its
+  `messageId`) and are joined this way, so the developer reads whole messages rather than
+  chunks; a different message id, a change from thought to reply, a tool call, or a plan
+  starts a new line. The server stores the joined lines, so a client that connects during a
+  run receives each line once, without the `append` flag. Text updates that carry no message
+  id are complete lines and always start a new one.
 - A record's title is its first level-one heading.
 - A record is pending exactly when its status is `Proposed`; every other status is resolved.
 - Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).

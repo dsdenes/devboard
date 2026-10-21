@@ -208,7 +208,9 @@
     );
   }
 
-  function isActivityEvent(value: unknown): value is { type: "activity"; text: string } {
+  function isActivityEvent(
+    value: unknown,
+  ): value is { type: "activity"; text: string; append?: boolean } {
     return (
       typeof value === "object" &&
       value !== null &&
@@ -440,7 +442,14 @@
         draft = "";
         error = null;
       } else if (isActivityEvent(message)) {
-        activity = [...activity, message.text];
+        if (message.append === true && activity.length > 0) {
+          activity = [
+            ...activity.slice(0, -1),
+            activity[activity.length - 1] + message.text,
+          ];
+        } else {
+          activity = [...activity, message.text];
+        }
       } else if (isQuestionEvent(message)) {
         question = { id: message.id, message: message.message, choices: message.choices };
         draft = "";
