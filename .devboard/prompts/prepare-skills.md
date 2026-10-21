@@ -1,21 +1,25 @@
 ---
-description: Prepare project-local Agent Skills for architecture, code organization, and testing from GOAL.md.
+description: Prepare project-agnostic Agent Skills grounded in relevant public standards, general best practices, software-architecture patterns, and testing patterns selected from GOAL.md.
 ---
 
-`/prepare-skills`: derive a focused set of project-local Agent Skills from the goal, grounded in
+`/prepare-skills`: derive a focused set of project-agnostic Agent Skills from the goal, grounded in
 current public practice, and leave no contradictions among the installed skills.
 
 ## Contract
 
 - `<host>` is the host project: `git rev-parse --show-toplevel`; when that fails, the working
   directory. `.devboard/` and `.worktree/` are the harness, not the host; never write into them.
-- `<host>/GOAL.md` is the only project-specific input. Read it once and treat its contents as the
-  subject matter for every skill. Do not survey, list, or read host source code, `adrs/`,
-  configuration, package manifests, build files, tests, README files, or directory trees.
-  Do not infer implementation facts the goal does not state.
+- `<host>/GOAL.md` is the only project-specific input. Read it once and use it only to select which
+  public standards and pattern families are relevant to the work it describes. Never copy, quote,
+  paraphrase, summarize, or allude to its implementation details in a skill.
+- Every skill is project-agnostic: it states policy that another project could adopt unchanged.
+  Implementation decisions stay with the implementation agent, never with a skill.
+- Do not survey, list, or read host source code, `adrs/`, configuration, package manifests, build
+  files, tests, README files, or directory trees. Do not infer implementation facts the goal does
+  not state, and do not ask the developer for them.
 - Deliverable: skills under `<host>/.omp/skills/<name>/SKILL.md`, each with a directory name that
-  matches its frontmatter `name`. Create nothing outside that skill root except the directories
-  and `SKILL.md` files themselves.
+  matches its frontmatter `name`. Create nothing outside that skill root except the directories and
+  `SKILL.md` files themselves.
 - NEVER write, rewrite, or delete `<host>/GOAL.md`, anything under `<host>/adrs/`, or any other
   host file.
 - Replace only the skills this feature owns. At the start, delete every skill directory whose
@@ -28,63 +32,76 @@ current public practice, and leave no contradictions among the installed skills.
 
 1. Read `<host>/GOAL.md`. If it is absent, empty, or whitespace-only, `halt: GOAL.md is not set`
    and nothing else.
-2. Research current public best practices on the web before writing anything. Search separately
-   for each of these domains and read enough sources to distinguish durable advice from fashion:
-   - software architecture (boundaries, dependency direction, cohesion, coupling, interfaces);
-   - code organization (modules, naming, file and layer structure, change locality);
-   - testing (test boundaries, observable behavior, test doubles, regression coverage).
-   Prefer primary sources, official guidance, and well-maintained references. Record what the
-   sources say well enough to explain, not copy.
-3. Do not fabricate research. If web access fails, `halt: web research is unavailable` and write
-   no skill.
+2. Treat the goal as a selection signal only: decide which standards and pattern families it makes
+   relevant. Never turn a statement from it into a skill directive.
+3. Research current public practice on the web before writing anything. Search separately in each
+   of these areas and read enough sources to distinguish durable guidance from fashion:
+   - public standards and specifications from authoritative bodies, such as RFCs, ISO or IEEE
+     standards, and standards-organization guidance;
+   - general engineering best practices that apply regardless of stack or organization;
+   - software-architecture patterns: boundaries, dependency direction, cohesion, coupling,
+     interfaces, layering;
+   - testing patterns: test boundaries, observable behavior, test doubles, regression coverage.
+   Prefer primary sources and official guidance. Record what the sources say well enough to explain
+   it, not to copy it.
+4. Do not fabricate research. If web access fails, `halt: web research is unavailable` and write no
+   skill.
 
-## Phase 2 — Interview when needed
+## Phase 2 — Choose the skills
 
-Ask at most one round of questions, and only when the goal leaves a load-bearing choice open for
-the skills (for example which observable surface the API serves). Use the `ask` tool with 2–5
-concrete options, then continue. Do not ask about technology, language, framework, file layout,
-or anything already visible in the goal. No question is required when the goal is specific enough.
+Decide how many skills to prepare and what each one covers. Base the choice on the standards and
+pattern families the goal makes relevant, not on a fixed taxonomy. At least one skill is required;
+there is no maximum and no required topic. Each skill covers one coherent family so another project
+can adopt it unchanged.
 
-## Phase 3 — Author the skills
+## Phase 3 — Interview when needed
 
-Write at least one skill in each category and exactly these values for the marker:
+Ask at most one round of questions, and only when the goal leaves open which standards or pattern
+families matter for the prepared skills. Use the `ask` tool with 2–5 concrete options, then
+continue. Do not ask about technology, language, framework, or file layout, and never ask for
+implementation detail the goal does not state. No question is required when the goal is specific
+enough.
 
-| Category | `metadata.devboard-category` |
-|---|---|
-| Software architecture | `architecture` |
-| Code organization | `code-organization` |
-| Testing | `testing` |
+## Phase 4 — Author the skills
 
-Aim for three to six skills total. Each is one directory under `<host>/.omp/skills/` containing
-one `SKILL.md`. Use this shape:
+Write at least one skill. Each is one directory under `<host>/.omp/skills/` containing one
+`SKILL.md`. Use this shape:
 
 ```markdown
 ---
 name: lower-case-hyphenated-name
-description: One sentence naming what the skill decides and when to use it.
+description: One sentence naming the policy the skill states and when to apply it.
 metadata:
   devboard-managed: "true"
-  devboard-category: architecture
 ---
 
 # Title
 
-- One actionable directive per bullet, phrased as an imperative.
-- Another directive, specific to the goal's domain.
+- One portable policy per bullet, phrased as an imperative.
+- Another policy drawn from a public standard or a named pattern.
 ```
 
 Rules for every skill:
 
+- It is project-agnostic: another project with a different stack can adopt every directive
+  unchanged.
+- It contains no project-specific implementation detail: no host or product name, no repository or
+  absolute path, no host directory or file name, no module, class, function, type, package,
+  dependency, framework, runtime, library, or programming language, no data format, API shape,
+  schema, or configuration key, and no concrete architecture, layout, or design decision.
+- Public domain names, formats, and standard identifiers are allowed when they are the subject of
+  the guidance, such as an RFC number, a named standard, or a protocol defined by a public body.
 - Directory name equals `name`, matches `^[a-z0-9]+(-[a-z0-9]+)*$`, and is at most 64 characters.
-- `description` is non-empty, at most 1024 characters, and states the behavior the skill governs
-  and when an agent should apply it.
-- Body guidance is specific to the goal's domain and decisions, not generic filler such as
-  "write clean code" or "test your code". A reader should be able to apply every bullet to this
-  project.
+- `description` is non-empty, at most 1024 characters, and states the policy the skill governs and
+  when an agent should apply it.
+- Body guidance states durable policy grounded in the researched standards and patterns, not
+  generic filler such as "write clean code" or "test your code".
 - Guidance is internally consistent and complements rather than repeats the other skills.
 - State directives explicitly, one policy per bullet, so a later review can compare them.
+- A skill carries no provenance line, source list, or citation field; the research informs the
+  policy and stays out of the delivered file.
 
-## Phase 4 — Review every installed skill
+## Phase 5 — Review every installed skill
 
 This pass is mandatory and covers every skill in `<host>/.omp/skills/`, managed or not.
 
@@ -100,18 +117,17 @@ This pass is mandatory and covers every skill in `<host>/.omp/skills/`, managed 
    unmanaged file exactly as it was and `halt: unresolvable contradiction with unmanaged skill
    <name>`. Do not claim success.
 
-## Phase 5 — Finish
+## Phase 6 — Finish
 
-- Every managed skill must carry the marker and one of the three categories, and the set must
-  cover all three categories.
+- Every managed skill must carry the marker, and the managed set must contain at least one skill.
 - The final review must have no remaining contradictions.
-- Reply with a short list of the prepared skill names and `No contradictions`; never paste
-  skill bodies into chat.
+- Reply with a short list of the prepared skill names and `No contradictions`; never paste skill
+  bodies into chat.
 
 ## Halting
 
 `halt: <reason>` on its own line and nothing else. Reasons: `GOAL.md` is absent, empty, or
-whitespace-only; web research is unavailable; the skill root cannot be written; a contradiction
-with an unmanaged skill cannot be resolved without editing that skill.
+whitespace-only; web research is unavailable; the skill root cannot be written; a contradiction with
+an unmanaged skill cannot be resolved without editing that skill.
 
 NEVER halt for effort, question count, model latency, or the number of research queries.

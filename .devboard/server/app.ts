@@ -50,12 +50,9 @@ interface GoalCreation {
   question: RunQuestion | null;
 }
 
-type SkillCategory = "architecture" | "code-organization" | "testing";
-
 interface SkillSummary {
   name: string;
   description: string;
-  category: SkillCategory;
 }
 
 /** Two skills whose directives state opposite policies for the same subject. */
@@ -68,7 +65,6 @@ interface SkillFile {
   directory: string;
   name: string;
   description: string;
-  category: string;
   managed: boolean;
   directives: { polarity: "positive" | "negative"; text: string; source: string }[];
 }
@@ -104,12 +100,10 @@ const EPIC_PROMPT = "/epic-next";
 const IMPLEMENT_PROMPT = "/implement-next-epic";
 const GOAL_CREATION_PROMPT = "/goal-outcome";
 const SKILLS_PROMPT = "/prepare-skills";
-const SKILL_CATEGORIES: readonly SkillCategory[] = ["architecture", "code-organization", "testing"];
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKILL_NAME_MAX = 64;
 const SKILL_DESCRIPTION_MAX = 1024;
 const MANAGED_MARKER = "devboard-managed";
-const CATEGORY_MARKER = "devboard-category";
 
 /** One directive statement extracted from a skill body for contradiction review. */
 const DIRECTIVE_PATTERN =
@@ -330,7 +324,6 @@ async function readSkillAt(root: string, directory: string): Promise<SkillFile |
     directory,
     name: fields.get("name") ?? "",
     description,
-    category: fields.get(`metadata.${CATEGORY_MARKER}`) ?? "",
     managed: fields.get(`metadata.${MANAGED_MARKER}`) === "true",
     directives: extractDirectives(source),
   };
@@ -476,25 +469,11 @@ async function inspectSkills(root: string): Promise<SkillsInspection> {
         `skill ${label} has a description longer than ${SKILL_DESCRIPTION_MAX} characters.`,
       );
     }
-    if (!SKILL_CATEGORIES.includes(skill.category as SkillCategory)) {
-      errors.push(
-        `skill ${label} has category "${skill.category}"; use one of ${SKILL_CATEGORIES.join(", ")}.`,
-      );
-    }
-  }
-
-  const categories = new Set([...managed.values()].map((skill) => skill.category));
-  for (const category of SKILL_CATEGORIES) {
-    if (!categories.has(category)) errors.push(`no managed skill covers the "${category}" category.`);
   }
 
   const skills = [...managed.values()]
     .sort((left, right) => left.name.localeCompare(right.name))
-    .map((skill) => ({
-      name: skill.name,
-      description: skill.description,
-      category: skill.category as SkillCategory,
-    }));
+    .map((skill) => ({ name: skill.name, description: skill.description }));
   const contradictions = findContradictions([...managed.values(), ...unmanaged.values()]);
   return { skills, managed, unmanaged, errors, contradictions };
 }
@@ -767,6 +746,9 @@ export function createApp(options: AppOptions) {
     }
 
     const errors = [...inspection.errors];
+    if (inspection.managed.size === 0) {
+      errors.push("no managed skill was prepared.");
+    }
 
     // Unmanaged skills are outside this feature's write scope. Any byte
     // change or deletion of one fails the run before success is reported.

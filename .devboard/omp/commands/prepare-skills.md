@@ -1,5 +1,5 @@
 ---
-description: Prepare project-local Agent Skills for architecture, code organization, and testing via the harness prompt at .devboard/prompts/prepare-skills.md
+description: Prepare project-agnostic Agent Skills grounded in public standards and patterns via the harness prompt at .devboard/prompts/prepare-skills.md
 argument-hint: ""
 ---
 

@@ -76,23 +76,30 @@ so the goal becomes editable and another lifecycle run can start.
 The goal section also offers `Prepare Skills` whenever the goal document contains non-whitespace
 text. Selecting it sends one `prepareSkills` command, which starts one ACP peer with the installed
 `/prepare-skills` command and no other prompt. The harness prompt reads only `<REPO_DIR>/GOAL.md`
-as project-specific input, researches current architecture, code organization, and testing
-practice on the web, and authors project-local Agent Skills under `<REPO_DIR>/.omp/skills/`.
+as project-specific input, uses it only to select which standards and pattern families are
+relevant, and never treats it as an implementation brief; it researches relevant public
+standards, general best practices, software-architecture patterns, and testing patterns on the
+web, and authors project-agnostic Agent Skills under `<REPO_DIR>/.omp/skills/`. A prepared skill
+states policy another project could adopt and carries none of this host's names, paths, files,
+modules, symbols, packages, dependencies, technology choices, data formats, API shapes, or
+concrete design decisions. The agent decides how many skills to prepare and what each covers;
+there is no category taxonomy, no required topic, and no fixed count, and no category metadata is
+required or validated.
 Activity and interview questions stream into the existing log and question UI, and the goal
 section shows `Preparing skills` while the peer runs. The server validates the result: every
 managed skill must be a directory containing `SKILL.md` with a matching name, a non-empty
-description, `metadata.devboard-managed: "true"`, and a `metadata.devboard-category` of
-`architecture`, `code-organization`, or `testing`, and the set must cover all three categories.
-The final pass compares every installed skill, including hand-authored ones, and succeeds only
-when no pair gives incompatible instructions. On success the Skills panel lists each prepared
-skill with its category and description and reports `No contradictions`; a later run, reload,
-reconnect, or server restart shows the set read from disk. A run replaces only the skills carrying
-the managed marker: an unmanaged skill is never overwritten or deleted, and a generated name that
-collides with one fails the run with an `error` naming it. Any failure sends an `error` and a
-failed `skillsPreparationStopped`, restores the previous skills directory byte for byte, and
-leaves the last Skills panel state visible. While preparation runs, starting a run or the
-lifecycle, resuming a paused lifecycle, revising or saving the goal, creating a goal, and a
-second preparation are each refused. The control never starts on page load or reconnect.
+description of at most 1024 characters, and `metadata.devboard-managed: "true"`, and the managed
+set must contain at least one skill. The final pass compares every installed skill, including
+hand-authored ones, and succeeds only when no pair gives incompatible instructions. On success
+the Skills panel lists each prepared skill with its name and description and reports
+`No contradictions`; a later run, reload, reconnect, or server restart shows the set read from
+disk. A run replaces only the skills carrying the managed marker: an unmanaged skill is never
+overwritten or deleted, and a generated name that collides with one fails the run with an `error`
+naming it. Any failure sends an `error` and a failed `skillsPreparationStopped`, restores the
+previous skills directory byte for byte, and leaves the last Skills panel state visible. While
+preparation runs, starting a run or the lifecycle, resuming a paused lifecycle, revising or
+saving the goal, creating a goal, and a second preparation are each refused. The control never
+starts on page load or reconnect.
 
 ## Stack
 
@@ -272,7 +279,7 @@ The server answers with events:
 { "type": "goalCreationStopped", "completed": true, "text": "# Created goal\n\nThe agent wrote this." }
 { "type": "goalCreationStopped", "completed": false }
 { "type": "skillsPreparationStarted" }
-{ "type": "skillsPreparationStopped", "completed": true, "skills": [ { "name": "architecture-boundaries", "description": "Choose dependency direction.", "category": "architecture" } ], "contradictions": [] }
+{ "type": "skillsPreparationStopped", "completed": true, "skills": [ { "name": "dependency-direction", "description": "Choose dependency direction." } ], "contradictions": [] }
 { "type": "skillsPreparationStopped", "completed": false }
 { "type": "skillsState", "skills": [], "contradictions": [] }
 { "type": "runStarted", "file": "0001-example.md", "title": "Example" }
@@ -335,8 +342,9 @@ The server answers with events:
 - A client that connects or reconnects during a revision receives `goalRevisionStarted`, every `activity` line recorded so far, and the pending `question` if one exists, before any other event beyond the lifecycle state and suspended conversation.
 - `skillsPreparationStarted` marks the beginning of a skills preparation, and
   `skillsPreparationStopped` marks its end. Success is `completed: true` with `skills` (each
-  entry carries `name`, `description`, and `category`) and `contradictions: []`; failure is
-  `completed: false` without either field, and follows an `error`. A failed run restores
+  entry carries `name` and `description`, and nothing else) and `contradictions: []`; failure is
+  `completed: false` without either field, and follows an `error`. A run that ends with no
+  managed skill is a failure, like every other validation failure. A failed run restores
   `<REPO_DIR>/.omp/skills/` to its pre-run bytes, so the panel and the disk still show the
   previous managed set. Preparation emits no `runStarted`, `runStopped`, or `records` events and
   does not read or write `adrs/`. `skillsState` reports the managed skills read from disk and
@@ -390,12 +398,13 @@ query each end with the idle `goal` state, `work: null`, `paused: false`, and th
 pass; a later client receives that state first, goal saving answers with the saved text, and
 a new lifecycle start is accepted and runs without a stale refusal.
 `server/skills-preparation.test.ts` covers skills preparation: the `prepareSkills` command and
-its `/prepare-skills` prompt, one peer, activity and question relay, the non-whitespace goal
-precondition, every refusal while preparation runs and while each other activity runs, reconnect
-replay and disk replay after a restart, skill layout/name/description validation and category
-coverage, managed-only replacement with an unmanaged skill preserved byte for byte, the all-skill
-contradiction pass, the unmanaged-conflict and name-collision errors, invalid output and peer
-failure restoring the previous managed set, and the absence of `GOAL.md` or `adrs/` writes.
+its `/prepare-skills` prompt, the project-agnostic prompt rules, one peer, activity and question
+relay, the non-whitespace goal precondition, every refusal while preparation runs and while each
+other activity runs, reconnect replay and disk replay after a restart, skill layout/name and
+description validation, the failure when no managed skill is prepared, managed-only replacement
+with an unmanaged skill preserved byte for byte, the all-skill contradiction pass, the
+unmanaged-conflict and name-collision errors, invalid output and peer failure restoring the
+previous managed set, and the absence of `GOAL.md` or `adrs/` writes.
 `server/lifecycle-pause.test.ts` covers pausing during an implementation and resuming the same
 peer, pausing with a pending question and carrying its answer across the pause, pausing between
 stages while a tracker query is outstanding, pausing the initial tracker lookup and resuming

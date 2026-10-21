@@ -184,14 +184,13 @@ async function waitUntil(predicate: () => boolean, label: string, timeout = 8000
   if (!predicate()) throw new Error(label);
 }
 
-function managedSkill(name: string, category: string, directive: string): string {
+function managedSkill(name: string, directive: string): string {
   return [
     "---",
     `name: ${name}`,
     `description: Guidance for ${name}.`,
     "metadata:",
     '  devboard-managed: "true"',
-    `  devboard-category: ${category}`,
     "---",
     "",
     `# ${name}`,
@@ -275,15 +274,8 @@ function skillNames(message: Record<string, unknown>): string[] {
     .sort();
 }
 
-function skillCategories(message: Record<string, unknown>): string[] {
-  const skills = Array.isArray(message.skills) ? message.skills : [];
-  return skills
-    .map((skill) =>
-      typeof skill === "object" && skill !== null && "category" in skill
-        ? String(skill.category)
-        : "",
-    )
-    .sort();
+function skillSummaries(message: Record<string, unknown>): Record<string, unknown>[] {
+  return Array.isArray(message.skills) ? (message.skills as Record<string, unknown>[]) : [];
 }
 
 describe("skills preparation", () => {
@@ -307,7 +299,7 @@ describe("skills preparation", () => {
           await client.waitFor(
             (message) =>
               message.type === "activity" &&
-              String(message.text).includes("Researching current architecture"),
+              String(message.text).includes("Researching public standards"),
           ),
         ).toBeDefined();
         const question = await client.waitFor((message) => message.type === "question");
@@ -326,11 +318,10 @@ describe("skills preparation", () => {
           (message) => message.type === "skillsPreparationStopped",
         );
         expect(stopped).toMatchObject({ completed: true, contradictions: [] });
-        expect(skillCategories(stopped).sort()).toEqual([
-          "architecture",
-          "code-organization",
-          "testing",
-        ]);
+        expect(skillSummaries(stopped).length).toBeGreaterThanOrEqual(1);
+        for (const summary of skillSummaries(stopped)) {
+          expect(Object.keys(summary).sort()).toEqual(["description", "name"]);
+        }
 
         expect(spawnCount(logPath)).toBe(1);
         expect(prompts(logPath)).toEqual(["/prepare-skills"]);
@@ -338,7 +329,7 @@ describe("skills preparation", () => {
         expect(client.events.some((message) => message.type === "runStopped")).toBe(false);
 
         const directories = skillDirectories(skillsDir);
-        expect(directories.length).toBeGreaterThanOrEqual(3);
+        expect(directories.length).toBeGreaterThanOrEqual(1);
         for (const name of directories) {
           const source = await readFile(join(skillsDir, name, "SKILL.md"), "utf8");
           const fields = frontmatter(source);
@@ -349,9 +340,9 @@ describe("skills preparation", () => {
           expect(fields.description?.trim().length ?? 0).toBeGreaterThan(0);
           expect((fields.description ?? "").length).toBeLessThanOrEqual(1024);
           expect(fields["metadata.devboard-managed"]).toBe("true");
-          expect(["architecture", "code-organization", "testing"]).toContain(
-            fields["metadata.devboard-category"],
-          );
+          expect(Object.keys(fields).filter((key) => key.startsWith("metadata."))).toEqual([
+            "metadata.devboard-managed",
+          ]);
         }
         expect(skillNames(stopped).sort()).toEqual(directories);
 
@@ -713,20 +704,17 @@ describe("skills preparation", () => {
     "fails on a contradiction with an unmanaged skill, names it, and preserves every file",
     async () => {
       const managedBefore = {
-        "architecture-boundaries": managedSkill(
-          "architecture-boundaries",
-          "architecture",
-          "Keep transport and domain separate.",
+        "dependency-direction": managedSkill(
+          "dependency-direction",
+          "Keep policy separate from delivery and storage concerns.",
         ),
-        "code-organization-modules": managedSkill(
-          "code-organization-modules",
-          "code-organization",
-          "Prefer one responsibility per module.",
+        "cohesive-units": managedSkill(
+          "cohesive-units",
+          "Prefer one responsibility per unit.",
         ),
-        "testing-strategy": managedSkill(
-          "testing-strategy",
-          "testing",
-          "Test the published API behavior.",
+        "behavior-first-testing": managedSkill(
+          "behavior-first-testing",
+          "Test the published behavior.",
         ),
       };
       const files: Record<string, string> = {};
@@ -792,15 +780,11 @@ describe("skills preparation", () => {
     "fails on a managed name colliding with an unmanaged skill and preserves the unmanaged file",
     async () => {
       const unmanagedSource = unmanagedSkill("custom-skill", "Keep the local convention.");
-      const managedBefore = managedSkill(
-        "testing-strategy",
-        "testing",
-        "Test observable behavior.",
-      );
+      const managedBefore = managedSkill("behavior-first-testing", "Test observable behavior.");
       const { server, skillsDir, url } = await startServer({
         files: {
           ".omp/skills/custom-skill/SKILL.md": unmanagedSource,
-          ".omp/skills/testing-strategy/SKILL.md": managedBefore,
+          ".omp/skills/behavior-first-testing/SKILL.md": managedBefore,
         },
         agentArguments: "--prepare-skills --prepare-skills-collision",
       });
@@ -820,7 +804,7 @@ describe("skills preparation", () => {
         expect(await readFile(join(skillsDir, "custom-skill", "SKILL.md"), "utf8")).toBe(
           unmanagedSource,
         );
-        expect(await readFile(join(skillsDir, "testing-strategy", "SKILL.md"), "utf8")).toBe(
+        expect(await readFile(join(skillsDir, "behavior-first-testing", "SKILL.md"), "utf8")).toBe(
           managedBefore,
         );
       } finally {
@@ -834,9 +818,9 @@ describe("skills preparation", () => {
   test(
     "fails on invalid skill output and leaves the previous managed set unchanged",
     async () => {
-      const managedBefore = managedSkill("testing-strategy", "testing", "Test behavior.");
+      const managedBefore = managedSkill("behavior-first-testing", "Test behavior.");
       const { server, skillsDir, url } = await startServer({
-        files: { ".omp/skills/testing-strategy/SKILL.md": managedBefore },
+        files: { ".omp/skills/behavior-first-testing/SKILL.md": managedBefore },
         agentArguments: "--prepare-skills --prepare-skills-invalid",
       });
       const client = await connect(url);
@@ -846,16 +830,16 @@ describe("skills preparation", () => {
         const failure = await client.waitFor(
           (message) => message.type === "error" && /invalid-skill/.test(String(message.message)),
         );
-        expect(String(failure.message)).toMatch(/description|name|category/i);
+        expect(String(failure.message)).toMatch(/description|name/i);
         const stopped = await client.waitFor(
           (message) => message.type === "skillsPreparationStopped",
         );
         expect(stopped.completed).toBe(false);
 
-        expect(await readFile(join(skillsDir, "testing-strategy", "SKILL.md"), "utf8")).toBe(
+        expect(await readFile(join(skillsDir, "behavior-first-testing", "SKILL.md"), "utf8")).toBe(
           managedBefore,
         );
-        expect(skillDirectories(skillsDir)).toEqual(["testing-strategy"]);
+        expect(skillDirectories(skillsDir)).toEqual(["behavior-first-testing"]);
       } finally {
         client.close();
         server.stop(true);
@@ -867,9 +851,9 @@ describe("skills preparation", () => {
   test(
     "fails when the peer exits without completing and restores the previous managed set",
     async () => {
-      const managedBefore = managedSkill("testing-strategy", "testing", "Test behavior.");
+      const managedBefore = managedSkill("behavior-first-testing", "Test behavior.");
       const { server, skillsDir, url } = await startServer({
-        files: { ".omp/skills/testing-strategy/SKILL.md": managedBefore },
+        files: { ".omp/skills/behavior-first-testing/SKILL.md": managedBefore },
         agentArguments: "--prepare-skills --prepare-skills-error",
       });
       const client = await connect(url);
@@ -882,10 +866,10 @@ describe("skills preparation", () => {
           (message) => message.type === "skillsPreparationStopped",
         );
         expect(stopped.completed).toBe(false);
-        expect(await readFile(join(skillsDir, "testing-strategy", "SKILL.md"), "utf8")).toBe(
+        expect(await readFile(join(skillsDir, "behavior-first-testing", "SKILL.md"), "utf8")).toBe(
           managedBefore,
         );
-        expect(skillDirectories(skillsDir)).toEqual(["testing-strategy"]);
+        expect(skillDirectories(skillsDir)).toEqual(["behavior-first-testing"]);
       } finally {
         client.close();
         server.stop(true);
@@ -924,16 +908,86 @@ describe("skills preparation", () => {
     15000,
   );
 
+  test(
+    "fails when the run leaves no managed skill and restores the previous set",
+    async () => {
+      const managedBefore = managedSkill("behavior-first-testing", "Test behavior.");
+      const unmanagedSource = unmanagedSkill("house-style", "Prefer one response shape.");
+      const { server, skillsDir, url } = await startServer({
+        files: {
+          ".omp/skills/behavior-first-testing/SKILL.md": managedBefore,
+          ".omp/skills/house-style/SKILL.md": unmanagedSource,
+        },
+        agentArguments: "--prepare-skills --prepare-skills-empty",
+      });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "prepareSkills" });
+        const failure = await client.waitFor(
+          (message) => message.type === "error" && /managed/i.test(String(message.message)),
+        );
+        expect(String(failure.message)).toMatch(/no managed skill/i);
+        const stopped = await client.waitFor(
+          (message) => message.type === "skillsPreparationStopped",
+        );
+        expect(stopped.completed).toBe(false);
+        expect(stopped.skills).toBeUndefined();
+
+        expect(await readFile(join(skillsDir, "behavior-first-testing", "SKILL.md"), "utf8")).toBe(
+          managedBefore,
+        );
+        expect(await readFile(join(skillsDir, "house-style", "SKILL.md"), "utf8")).toBe(
+          unmanagedSource,
+        );
+        expect(skillDirectories(skillsDir)).toEqual(["behavior-first-testing", "house-style"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
   test("the installed command reads the harness prompt", async () => {
     const prompt = await readFile(join(import.meta.dir, "..", "prompts", "prepare-skills.md"), "utf8");
     const command = await readFile(
       join(import.meta.dir, "..", "omp", "commands", "prepare-skills.md"),
       "utf8",
     );
+    const stub = await readFile(join(import.meta.dir, "fixtures", "stub-agent.ts"), "utf8");
+    const categoryMarker = ["devboard", "category"].join("-");
 
+    expect(prompt).toContain("project-agnostic");
     expect(prompt).toContain("GOAL.md` is the only project-specific input");
-    expect(prompt).toContain("Research");
-    expect(prompt).toContain(".omp/skills/");
+    expect(prompt).toMatch(/only to select which\s+public standards and pattern families/i);
+    expect(prompt).toContain("public standards and specifications");
+    expect(prompt).toContain("general engineering best practices");
+    expect(prompt).toContain("software-architecture patterns");
+    expect(prompt).toContain("testing patterns");
+    expect(prompt).toMatch(/halt: web research is unavailable/);
+    expect(prompt).toMatch(/no project-specific implementation detail/i);
+    expect(prompt).toMatch(/absolute path/);
+    expect(prompt).toMatch(/programming language/);
+    expect(prompt).toMatch(/Public domain names, formats, and standard identifiers are allowed/i);
+    expect(prompt).toMatch(/At least one skill is required/i);
+    expect(prompt).toMatch(/there is no maximum and no required topic/i);
+    expect(prompt).toContain("metadata:");
+    expect(prompt).toContain('devboard-managed: "true"');
+    expect(prompt).toContain("^[a-z0-9]+(-[a-z0-9]+)*$");
+    expect(prompt).toMatch(/at most 64 characters/);
+    expect(prompt).toMatch(/at most 1024 characters/);
+    expect(prompt).toMatch(/one policy per bullet/i);
+    expect(prompt).toMatch(/internally consistent/i);
+    expect(prompt).toMatch(/Replace only the skills this feature owns/);
+    expect(prompt).toMatch(/Install no third-party skill/);
+    expect(prompt).toMatch(/covers every skill in `<host>\/\.omp\/skills\/`/);
+    expect(prompt).toMatch(/unresolvable contradiction with unmanaged skill/);
+    expect(prompt).not.toContain(categoryMarker);
+    expect(prompt).not.toContain("code-organization");
+    expect(prompt).toMatch(/carries no provenance line, source list, or citation field/i);
+
+    expect(stub).not.toContain(categoryMarker);
     expect(command.trim().split("\n").at(-1)).toContain(
       "Read `.devboard/prompts/prepare-skills.md`",
     );
