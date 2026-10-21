@@ -450,6 +450,78 @@ h1 {
   padding: 0;
 }
 
+.skills {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+}
+
+.skills-heading {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin: 0 0 0.6rem;
+  text-transform: uppercase;
+}
+
+.skill-list {
+  display: grid;
+  gap: 0.6rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.skill {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+}
+
+.skill-heading {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.skill-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.skill-category {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.72rem;
+  padding: 0.05rem 0.5rem;
+}
+
+.skill-description {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.45;
+  margin: 0.35rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.skills-contradictions {
+  color: var(--resolved);
+  font-size: 0.82rem;
+  margin: 0.7rem 0 0;
+}
+
+ul.skills-contradictions {
+  color: var(--error);
+  padding-left: 1.2rem;
+}
+
 .record {
   background: var(--surface);
   border: 1px solid var(--border);

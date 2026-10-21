@@ -73,6 +73,27 @@ and replays it to every client that connects or reloads, so the interface still 
 likewise replays the idle goal stage, with no work, not paused, and the pass it had reached,
 so the goal becomes editable and another lifecycle run can start.
 
+The goal section also offers `Prepare Skills` whenever the goal document contains non-whitespace
+text. Selecting it sends one `prepareSkills` command, which starts one ACP peer with the installed
+`/prepare-skills` command and no other prompt. The harness prompt reads only `<REPO_DIR>/GOAL.md`
+as project-specific input, researches current architecture, code organization, and testing
+practice on the web, and authors project-local Agent Skills under `<REPO_DIR>/.omp/skills/`.
+Activity and interview questions stream into the existing log and question UI, and the goal
+section shows `Preparing skills` while the peer runs. The server validates the result: every
+managed skill must be a directory containing `SKILL.md` with a matching name, a non-empty
+description, `metadata.devboard-managed: "true"`, and a `metadata.devboard-category` of
+`architecture`, `code-organization`, or `testing`, and the set must cover all three categories.
+The final pass compares every installed skill, including hand-authored ones, and succeeds only
+when no pair gives incompatible instructions. On success the Skills panel lists each prepared
+skill with its category and description and reports `No contradictions`; a later run, reload,
+reconnect, or server restart shows the set read from disk. A run replaces only the skills carrying
+the managed marker: an unmanaged skill is never overwritten or deleted, and a generated name that
+collides with one fails the run with an `error` naming it. Any failure sends an `error` and a
+failed `skillsPreparationStopped`, restores the previous skills directory byte for byte, and
+leaves the last Skills panel state visible. While preparation runs, starting a run or the
+lifecycle, resuming a paused lifecycle, revising or saving the goal, creating a goal, and a
+second preparation are each refused. The control never starts on page load or reconnect.
+
 ## Stack
 
 - Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`. Each run spawns one `omp acp` subprocess over stdio.
@@ -145,6 +166,8 @@ The client sends:
 { "type": "reviseGoal", "request": "Tighten the goal" }
 { "type": "reviseGoal" }
 { "type": "createGoal" }
+{ "type": "prepareSkills" }
+{ "type": "getSkills" }
 { "type": "answer", "id": 1, "value": "Gamma" }
 ```
 
@@ -180,6 +203,23 @@ The client sends:
   creation instead. The creation runs in the server, so closing the browser does not stop it, and
   a client that connects during it receives `goalCreationStarted`, the recorded activity, and the
   pending question before its own command replies.
+- `prepareSkills` starts one ACP peer whose prompt is exactly `/prepare-skills`, the installed
+  command that reads `.devboard/prompts/prepare-skills.md`. The server accepts it only while
+  `<REPO_DIR>/GOAL.md` contains at least one non-whitespace character and no run, run sequence,
+  lifecycle run (paused or advancing), goal creation, goal revision, or other preparation is
+  active; otherwise it answers with an `error` and spawns no peer. The server snapshots
+  `<REPO_DIR>/.omp/skills/`, deletes every skill carrying `metadata.devboard-managed: "true"`,
+  and broadcasts `skillsPreparationStarted`. Activity and questions use the existing `activity`
+  and `question` events, and `answer` replies to a preparation question like any other. When the
+  peer exits, the server validates the managed set, compares every installed skill for
+  incompatible directives, and checks that no unmanaged skill changed; success broadcasts
+  `skillsPreparationStopped` with `completed: true`, the skill list, and an empty contradiction
+  list, while any failure broadcasts an `error`, restores the snapshot, and broadcasts the same
+  event with `completed: false`. `getSkills` answers with the current managed set read from disk
+  and sends `skillsState`; the client issues it on every connection, so the panel is rebuilt after
+  a reload or restart instead of starting a run. While preparation is active, `startRun`,
+  `startLifecycle`, `resumeLifecycle`, `reviseGoal`, `saveGoal`, `createGoal`, and a second
+  `prepareSkills` are each refused with an `error` and spawn no peer.
 - `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run,
   a run sequence, a goal revision, a goal creation, or another lifecycle run is active, and
   when the goal document is absent, unreadable, or contains only whitespace; a refused start
@@ -231,6 +271,10 @@ The server answers with events:
 { "type": "goalCreationStarted" }
 { "type": "goalCreationStopped", "completed": true, "text": "# Created goal\n\nThe agent wrote this." }
 { "type": "goalCreationStopped", "completed": false }
+{ "type": "skillsPreparationStarted" }
+{ "type": "skillsPreparationStopped", "completed": true, "skills": [ { "name": "architecture-boundaries", "description": "Choose dependency direction.", "category": "architecture" } ], "contradictions": [] }
+{ "type": "skillsPreparationStopped", "completed": false }
+{ "type": "skillsState", "skills": [], "contradictions": [] }
 { "type": "runStarted", "file": "0001-example.md", "title": "Example" }
 { "type": "activity", "text": "Inspecting 0001-example.md" }
 { "type": "activity", "text": " and its status line", "append": true }
@@ -289,7 +333,20 @@ The server answers with events:
   `goalCreationStarted`, every recorded `activity` line, and the pending `question` if one
   exists, before any other event beyond the lifecycle state and suspended conversation.
 - A client that connects or reconnects during a revision receives `goalRevisionStarted`, every `activity` line recorded so far, and the pending `question` if one exists, before any other event beyond the lifecycle state and suspended conversation.
-- The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written verbatim by `saveGoal` and by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file. `runStopped` reports whether the active record is now resolved; a `records` event follows each `runStopped` before the next `runStarted`. Only one run, sequence, lifecycle run, goal revision, or goal creation exists at a time, in server memory; stopping the server terminates its child process and the loop.
+- `skillsPreparationStarted` marks the beginning of a skills preparation, and
+  `skillsPreparationStopped` marks its end. Success is `completed: true` with `skills` (each
+  entry carries `name`, `description`, and `category`) and `contradictions: []`; failure is
+  `completed: false` without either field, and follows an `error`. A failed run restores
+  `<REPO_DIR>/.omp/skills/` to its pre-run bytes, so the panel and the disk still show the
+  previous managed set. Preparation emits no `runStarted`, `runStopped`, or `records` events and
+  does not read or write `adrs/`. `skillsState` reports the managed skills read from disk and
+  the current contradiction list; `getSkills` requests it, and a client that connects or
+  reconnects during preparation first receives `skillsPreparationStarted`, every recorded
+  `activity` line, and the pending `question` if one exists. The panel lists managed skills only
+  and shows `No contradictions` when the list is empty; the contradiction review itself covers
+  every skill directory, managed or not.
+- The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written verbatim by `saveGoal` and by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file.
+- Skills preparation writes only under `<REPO_DIR>/.omp/skills/` and only through its ACP peer; the server deletes managed skill directories before the run and restores the snapshot after a failure. `runStopped` reports whether the active record is now resolved; a `records` event follows each `runStopped` before the next `runStarted`. Only one run, sequence, lifecycle run, goal revision, goal creation, or skills preparation exists at a time, in server memory; stopping the server terminates its child process and the loop.
 
 ## Tests
 
@@ -332,6 +389,13 @@ same-open-epic stop, epic generation leaving the same pending records, and a thr
 query each end with the idle `goal` state, `work: null`, `paused: false`, and the aborting
 pass; a later client receives that state first, goal saving answers with the saved text, and
 a new lifecycle start is accepted and runs without a stale refusal.
+`server/skills-preparation.test.ts` covers skills preparation: the `prepareSkills` command and
+its `/prepare-skills` prompt, one peer, activity and question relay, the non-whitespace goal
+precondition, every refusal while preparation runs and while each other activity runs, reconnect
+replay and disk replay after a restart, skill layout/name/description validation and category
+coverage, managed-only replacement with an unmanaged skill preserved byte for byte, the all-skill
+contradiction pass, the unmanaged-conflict and name-collision errors, invalid output and peer
+failure restoring the previous managed set, and the absence of `GOAL.md` or `adrs/` writes.
 `server/lifecycle-pause.test.ts` covers pausing during an implementation and resuming the same
 peer, pausing with a pending question and carrying its answer across the pause, pausing between
 stages while a tracker query is outstanding, pausing the initial tracker lookup and resuming

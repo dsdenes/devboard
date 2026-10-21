@@ -26,6 +26,19 @@
     options: RunQuestionOption[];
   }
 
+  type SkillCategory = "architecture" | "code-organization" | "testing";
+
+  interface SkillSummary {
+    name: string;
+    description: string;
+    category: SkillCategory;
+  }
+
+  interface SkillContradiction {
+    skills: [string, string];
+    directives: [string, string];
+  }
+
   type LifecycleStage = "goal" | "epic" | "adr" | "implementation" | "finished";
 
   interface LifecycleWork {
@@ -66,6 +79,9 @@
   let revisionRequest = $state("");
   let lifecycle = $state<LifecycleState>({ stage: "goal", pass: 1, work: null, paused: false });
   let lifecycleSeen = $state(false);
+  let skills = $state<SkillSummary[]>([]);
+  let contradictions = $state<SkillContradiction[]>([]);
+  let skillsPrepActive = $state(false);
 
   let pendingCount = $derived(records.filter((record) => record.pending).length);
   let resolvedCount = $derived(records.length - pendingCount);
@@ -77,9 +93,13 @@
         lifecycle.stage === "implementation" ||
         (lifecycle.stage === "epic" && lifecycle.work === null)),
   );
-  let controlsDisabled = $derived(running || lifecycleActive || revisionActive || creationActive);
+  let controlsDisabled = $derived(
+    running || lifecycleActive || revisionActive || creationActive || skillsPrepActive,
+  );
   let revisionDisabled = $derived(
-    creationActive || revisionActive || (lifecycleActive ? !lifecycle.paused : running),
+    creationActive ||
+      skillsPrepActive ||
+      (lifecycleActive ? !lifecycle.paused : running),
   );
   let createGoalTitle = $derived(
     creationActive
@@ -90,8 +110,11 @@
           ? "Stop the active run and start goal creation."
           : "Start goal creation.",
   );
-  let goalEditingDisabled = $derived(lifecycleActive && !lifecycle.paused);
-  let activityActive = $derived(running || creationActive || revisionActive);
+  let goalEditingDisabled = $derived(
+    (lifecycleActive && !lifecycle.paused) || skillsPrepActive,
+  );
+  let prepareDisabled = $derived(controlsDisabled || !goalReady);
+  let activityActive = $derived(running || creationActive || revisionActive || skillsPrepActive);
   let currentAction = $derived(activity[activity.length - 1] ?? "");
   let previousActions = $derived(activity.slice(0, -1));
   let previousActionsLabel = $derived(
@@ -211,6 +234,86 @@
       "completed" in value &&
       typeof value.completed === "boolean" &&
       (!("text" in value) || typeof value.text === "string")
+    );
+  }
+
+  function isSkillSummary(value: unknown): value is SkillSummary {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "name" in value &&
+      typeof value.name === "string" &&
+      "description" in value &&
+      typeof value.description === "string" &&
+      "category" in value &&
+      (value.category === "architecture" ||
+        value.category === "code-organization" ||
+        value.category === "testing")
+    );
+  }
+
+  function isSkillContradiction(value: unknown): value is SkillContradiction {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "skills" in value &&
+      Array.isArray(value.skills) &&
+      value.skills.length === 2 &&
+      value.skills.every((name) => typeof name === "string") &&
+      "directives" in value &&
+      Array.isArray(value.directives) &&
+      value.directives.length === 2 &&
+      value.directives.every((directive) => typeof directive === "string")
+    );
+  }
+
+  function isSkillsStateEvent(
+    value: unknown,
+  ): value is { type: "skillsState"; skills: SkillSummary[]; contradictions: SkillContradiction[] } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "skillsState" &&
+      "skills" in value &&
+      Array.isArray(value.skills) &&
+      value.skills.every(isSkillSummary) &&
+      "contradictions" in value &&
+      Array.isArray(value.contradictions) &&
+      value.contradictions.every(isSkillContradiction)
+    );
+  }
+
+  function isSkillsPreparationStartedEvent(
+    value: unknown,
+  ): value is { type: "skillsPreparationStarted" } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "skillsPreparationStarted"
+    );
+  }
+
+  function isSkillsPreparationStoppedEvent(
+    value: unknown,
+  ): value is {
+    type: "skillsPreparationStopped";
+    completed: boolean;
+    skills?: SkillSummary[];
+    contradictions?: SkillContradiction[];
+  } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "skillsPreparationStopped" &&
+      "completed" in value &&
+      typeof value.completed === "boolean" &&
+      (!("skills" in value) ||
+        (Array.isArray(value.skills) && value.skills.every(isSkillSummary))) &&
+      (!("contradictions" in value) ||
+        (Array.isArray(value.contradictions) && value.contradictions.every(isSkillContradiction)))
     );
   }
 
@@ -375,6 +478,15 @@
     socket.send(JSON.stringify({ type: "createGoal" }));
   }
 
+  function prepareSkills() {
+    if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
+      error = "Not connected to the server.";
+      return;
+    }
+    error = null;
+    socket.send(JSON.stringify({ type: "prepareSkills" }));
+  }
+
   function reviseGoal() {
     if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
       error = "Not connected to the server.";
@@ -409,6 +521,7 @@
       error = null;
       current.send(JSON.stringify({ type: "listRecords" }));
       current.send(JSON.stringify({ type: "getGoal" }));
+      current.send(JSON.stringify({ type: "getSkills" }));
     };
 
     current.onmessage = (event) => {
@@ -466,6 +579,25 @@
         if (message.completed && typeof message.text === "string") {
           goalText = message.text;
           goalReady = message.text.trim().length > 0;
+        }
+      } else if (isSkillsPreparationStartedEvent(message)) {
+        skillsPrepActive = true;
+        activity = [];
+        question = null;
+        draft = "";
+        error = null;
+      } else if (isSkillsPreparationStoppedEvent(message)) {
+        skillsPrepActive = false;
+        question = null;
+        draft = "";
+        if (message.completed && message.skills !== undefined) {
+          skills = message.skills;
+          contradictions = message.contradictions ?? [];
+        }
+      } else if (isSkillsStateEvent(message)) {
+        if (!skillsPrepActive) {
+          skills = message.skills;
+          contradictions = message.contradictions;
         }
       } else if (isRunStartedEvent(message)) {
         runFile = message.file;
@@ -609,6 +741,15 @@
       </p>
       <button
         type="button"
+        class="start-button prepare-skills"
+        data-testid="prepare-skills"
+        disabled={prepareDisabled}
+        onclick={prepareSkills}
+      >
+        Prepare Skills
+      </button>
+      <button
+        type="button"
         class="start-button create-goal"
         data-testid="create-goal"
         title={createGoalTitle}
@@ -669,6 +810,12 @@
   {#if revisionActive}
     <section class="run active-run" data-testid="goal-revision-active">
       <p class="run-heading">Revising <strong>the goal</strong></p>
+    </section>
+  {/if}
+
+  {#if skillsPrepActive}
+    <section class="run active-run" data-testid="skills-preparation-active">
+      <p class="run-heading">Preparing <strong>skills</strong></p>
     </section>
   {/if}
 
@@ -747,6 +894,35 @@
           Submit answer
         </button>
       </form>
+    </section>
+  {/if}
+
+  {#if skills.length > 0}
+    <section class="skills" data-testid="skills-panel">
+      <h2 class="skills-heading">Skills</h2>
+      <ul class="skill-list">
+        {#each skills as skill (skill.name)}
+          <li class="skill" data-testid="skill" data-name={skill.name} data-category={skill.category}>
+            <div class="skill-heading">
+              <span class="skill-name">{skill.name}</span>
+              <span class="skill-category">{skill.category}</span>
+            </div>
+            <p class="skill-description">{skill.description}</p>
+          </li>
+        {/each}
+      </ul>
+      {#if contradictions.length === 0}
+        <p class="skills-contradictions" data-testid="skills-no-contradictions">No contradictions</p>
+      {:else}
+        <ul class="skills-contradictions" data-testid="skills-contradictions">
+          {#each contradictions as contradiction (`${contradiction.skills[0]}:${contradiction.skills[1]}`)}
+            <li>
+              {contradiction.skills[0]} and {contradiction.skills[1]}:
+              “{contradiction.directives[0]}” vs “{contradiction.directives[1]}”
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </section>
   {/if}
 

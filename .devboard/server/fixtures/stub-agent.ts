@@ -1,4 +1,4 @@
-import { appendFileSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 /**
@@ -21,6 +21,12 @@ const reviseGoal = process.argv.includes("--revise-goal");
 const createGoal = process.argv.includes("--create-goal");
 const createGoalWrite = !process.argv.includes("--no-create-goal-write");
 const goalFile = argument("goal");
+const prepareSkills = process.argv.includes("--prepare-skills");
+const prepareSkillsInvalid = process.argv.includes("--prepare-skills-invalid");
+const prepareSkillsConflict = process.argv.includes("--prepare-skills-conflict");
+const prepareSkillsCollision = process.argv.includes("--prepare-skills-collision");
+const prepareSkillsError = process.argv.includes("--prepare-skills-error");
+const collisionName = argument("collision-name") ?? "custom-skill";
 const resolveRecord = !process.argv.includes("--no-resolve");
 const removeRecord = process.argv.includes("--remove-record");
 const CREATED_GOAL = "# Created goal\n\nThe agent wrote this.";
@@ -65,6 +71,116 @@ function markAccepted(file: string) {
   writeFileSync(file, updated);
 }
 
+function writeSkill(
+  name: string,
+  description: string,
+  category: string,
+  body: string,
+  header = `name: ${name}\ndescription: ${description}`,
+) {
+  const directory = join(process.cwd(), ".omp", "skills", name);
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    join(directory, "SKILL.md"),
+    `---\n${header}\nmetadata:\n  devboard-managed: "true"\n  devboard-category: ${category}\n---\n\n${body}\n`,
+  );
+  log(`skill ${name}`);
+}
+
+function writePreparedSkills() {
+  writeSkill(
+    "architecture-boundaries",
+    "Choose dependency direction and module boundaries for the documented HTTP API.",
+    "architecture",
+    "# Architecture boundaries\n\n- Always declare dependencies in one direction.\n- Keep transport, domain, and storage concerns in separate layers.\n",
+  );
+  writeSkill(
+    "code-organization-modules",
+    "Organize HTTP request handling into small modules with one responsibility.",
+    "code-organization",
+    "# Code organization\n\n- Prefer small modules with one responsibility.\n- Keep request handling separate from response formatting.\n",
+  );
+  writeSkill(
+    "testing-strategy",
+    "Verify documented API behavior through focused automated tests.",
+    "testing",
+    "# Testing\n\n- Test observable behavior at the API boundary.\n- Prefer focused tests that fail for one reason.\n",
+  );
+
+  if (prepareSkillsConflict) {
+    writeSkill(
+      "architecture-boundaries",
+      "Choose dependency direction and module boundaries for the documented HTTP API.",
+      "architecture",
+      "# Architecture boundaries\n\n- Always use dependency injection.\n- Keep transport, domain, and storage concerns in separate layers.\n",
+    );
+  }
+
+  if (prepareSkillsCollision) {
+    writeSkill(
+      collisionName,
+      "A generated skill placed at an unmanaged skill's name.",
+      "architecture",
+      "# Generated skill\n\n- Keep one writer for every installed skill.\n",
+    );
+  }
+
+  if (prepareSkillsInvalid) {
+    writeSkill(
+      "invalid-skill",
+      "",
+      "miscellaneous",
+      "# Invalid skill\n\n- Missing a description and a supported category.\n",
+      "name: Invalid Name\ndescription:",
+    );
+  }
+}
+
+async function askQuestions(count: number) {
+  for (let index = 0; index < count; index += 1) {
+    const response = await request("elicitation/create", {
+      mode: "form",
+      sessionId: "stub-session",
+      message: index === 0 ? "Choose an answer" : `Choose an answer ${index + 1}`,
+      requestedSchema: {
+        type: "object",
+        properties: {
+          value: {
+            type: "string",
+            title: index === 0 ? "Choose an answer" : `Choose an answer ${index + 1}`,
+            oneOf: [
+              { const: "Alpha", title: "Alpha", description: "Alpha leads to the first outcome." },
+              { const: "Beta", title: "Beta", description: "Beta leads to the second outcome." },
+            ],
+            default: "Alpha",
+          },
+        },
+        required: ["value"],
+      },
+    });
+    const content =
+      typeof response === "object" && response !== null && "content" in response
+        ? response.content
+        : undefined;
+    const value =
+      typeof content === "object" && content !== null && "value" in content
+        ? content.value
+        : undefined;
+    log(`answer ${String(value ?? "")}`);
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `Answer received: ${String(value ?? "")}` },
+        },
+      },
+    });
+  }
+}
+
 async function promptTurn(params: Record<string, unknown>) {
   const blocks = Array.isArray(params.prompt) ? params.prompt : [];
   const text = blocks
@@ -80,6 +196,43 @@ async function promptTurn(params: Record<string, unknown>) {
   const revising = reviseGoal && firstLine.startsWith("Revise the goal");
   log(`prompt ${firstLine}`);
   if (revising) log(`request ${text ?? ""}`);
+
+  if (prepareSkills && firstLine === "/prepare-skills") {
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: "Researching current architecture, code organization, and testing practices",
+          },
+        },
+      },
+    });
+
+    if (delayMs > 0) await Bun.sleep(delayMs);
+    await askQuestions(forcedQuestions !== undefined ? Number(forcedQuestions) : 0);
+
+    if (prepareSkillsError) process.exit(1);
+
+    writePreparedSkills();
+    log("prepared");
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Reviewed every installed skill; no contradictions" },
+        },
+      },
+    });
+    return;
+  }
 
   if (creating) {
     write({
@@ -143,48 +296,7 @@ async function promptTurn(params: Record<string, unknown>) {
         ? 1
         : 0;
 
-  for (let index = 0; index < questionCount; index += 1) {
-    const response = await request("elicitation/create", {
-      mode: "form",
-      sessionId: "stub-session",
-      message: index === 0 ? "Choose an answer" : `Choose an answer ${index + 1}`,
-      requestedSchema: {
-        type: "object",
-        properties: {
-          value: {
-            type: "string",
-            title: index === 0 ? "Choose an answer" : `Choose an answer ${index + 1}`,
-            oneOf: [
-              { const: "Alpha", title: "Alpha", description: "Alpha leads to the first outcome." },
-              { const: "Beta", title: "Beta", description: "Beta leads to the second outcome." },
-            ],
-            default: "Alpha",
-          },
-        },
-        required: ["value"],
-      },
-    });
-    const content =
-      typeof response === "object" && response !== null && "content" in response
-        ? response.content
-        : undefined;
-    const value =
-      typeof content === "object" && content !== null && "value" in content
-        ? content.value
-        : undefined;
-    log(`answer ${String(value ?? "")}`);
-    write({
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: {
-        sessionId: "stub-session",
-        update: {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: `Answer received: ${String(value ?? "")}` },
-        },
-      },
-    });
-  }
+  await askQuestions(questionCount);
 
   if (creating) {
     if (goalFile !== undefined && createGoalWrite) {

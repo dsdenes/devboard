@@ -1,4 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import {
@@ -49,6 +50,42 @@ interface GoalCreation {
   question: RunQuestion | null;
 }
 
+type SkillCategory = "architecture" | "code-organization" | "testing";
+
+interface SkillSummary {
+  name: string;
+  description: string;
+  category: SkillCategory;
+}
+
+/** Two skills whose directives state opposite policies for the same subject. */
+interface SkillContradiction {
+  skills: [string, string];
+  directives: [string, string];
+}
+
+interface SkillFile {
+  directory: string;
+  name: string;
+  description: string;
+  category: string;
+  managed: boolean;
+  directives: { polarity: "positive" | "negative"; text: string; source: string }[];
+}
+
+interface SkillsSnapshot {
+  exists: boolean;
+  files: Map<string, Buffer>;
+}
+
+interface SkillsPreparation {
+  agent: AcpConnection | undefined;
+  activity: string[];
+  question: RunQuestion | null;
+  snapshot: SkillsSnapshot;
+  unmanagedNames: Set<string>;
+}
+
 type LifecycleStage = "goal" | "epic" | "adr" | "implementation" | "finished";
 
 interface LifecycleWork {
@@ -66,6 +103,25 @@ interface LifecycleState {
 const EPIC_PROMPT = "/epic-next";
 const IMPLEMENT_PROMPT = "/implement-next-epic";
 const GOAL_CREATION_PROMPT = "/goal-outcome";
+const SKILLS_PROMPT = "/prepare-skills";
+const SKILL_CATEGORIES: readonly SkillCategory[] = ["architecture", "code-organization", "testing"];
+const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const SKILL_NAME_MAX = 64;
+const SKILL_DESCRIPTION_MAX = 1024;
+const MANAGED_MARKER = "devboard-managed";
+const CATEGORY_MARKER = "devboard-category";
+
+/** One directive statement extracted from a skill body for contradiction review. */
+const DIRECTIVE_PATTERN =
+  /^(always|never|must not|must|should not|should|do not|don't|avoid|prefer|use)\s+(.+)$/i;
+const NEGATIVE_DIRECTIVES: Record<string, true> = {
+  never: true,
+  "must not": true,
+  "should not": true,
+  "do not": true,
+  "don't": true,
+  avoid: true,
+};
 
 function goalRevisionPrompt(goalFile: string, request: string | undefined): string {
   const guidance = request?.trim();
@@ -87,6 +143,8 @@ type ClientMessage =
   | { type: "resumeLifecycle" }
   | { type: "reviseGoal"; request?: unknown }
   | { type: "createGoal" }
+  | { type: "prepareSkills" }
+  | { type: "getSkills" }
   | { type: "answer"; id?: unknown; value?: unknown };
 
 function parseClientMessage(value: unknown): ClientMessage | undefined {
@@ -110,6 +168,10 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "reviseGoal", request: "request" in value ? value.request : undefined };
     case "createGoal":
       return { type: "createGoal" };
+    case "prepareSkills":
+      return { type: "prepareSkills" };
+    case "getSkills":
+      return { type: "getSkills" };
     case "answer":
       return {
         type: "answer",
@@ -121,6 +183,339 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
   }
 }
 
+function unquote(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+/**
+ * Reads the flat and one-level `metadata:` fields of a SKILL.md frontmatter
+ * block. Folded (`>`) and literal (`|`) scalars are joined so a wrapped
+ * description keeps its length and text.
+ */
+function parseFrontmatter(source: string): Map<string, string> | undefined {
+  const lines = source.split(/\r?\n/);
+  if (lines[0]?.trim() !== "---") return undefined;
+  const close = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
+  if (close < 0) return undefined;
+
+  const fields = new Map<string, string>();
+  let section: string | undefined;
+  let blockKey: string | undefined;
+  let blockStyle: "folded" | "literal" | undefined;
+  let blockLines: string[] = [];
+
+  const flush = () => {
+    if (blockKey !== undefined) {
+      fields.set(blockKey, blockStyle === "literal" ? blockLines.join("\n") : blockLines.join(" "));
+    }
+    blockKey = undefined;
+    blockStyle = undefined;
+    blockLines = [];
+  };
+
+  for (let index = 1; index < close; index += 1) {
+    const raw = lines[index] ?? "";
+    const trimmed = raw.trim();
+
+    if (blockKey !== undefined) {
+      if (raw.startsWith(" ") || raw.startsWith("\t")) {
+        blockLines.push(trimmed);
+        continue;
+      }
+      flush();
+    }
+
+    if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
+    const match = /^([^:]+):\s*(.*)$/.exec(trimmed);
+    if (match === null) continue;
+
+    const key = match[1]?.trim() ?? "";
+    const value = match[2] ?? "";
+    if (/^\s/.test(raw) && section !== undefined) {
+      fields.set(`${section}.${key}`, unquote(value));
+      continue;
+    }
+
+    const marker = value.trim();
+    if (marker.length === 0) {
+      section = key;
+      continue;
+    }
+    if (marker === ">" || marker === ">-" || marker === "|" || marker === "|-") {
+      section = undefined;
+      blockKey = key;
+      blockStyle = marker.startsWith(">") ? "folded" : "literal";
+      continue;
+    }
+
+    section = undefined;
+    fields.set(key, unquote(value));
+  }
+  flush();
+  return fields;
+}
+
+/** Turns a directive into the subject two skills must agree on to conflict. */
+function normalizeDirective(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[`*_~]/g, "")
+    .replace(/[.!?;:,]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^to\s+use\s+/, "")
+    .replace(/^to\s+/, "")
+    .replace(/^use\s+/, "");
+}
+
+function extractDirectives(source: string): SkillFile["directives"] {
+  const lines = source.split(/\r?\n/);
+  let start = 0;
+  if (lines[0]?.trim() === "---") {
+    const close = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
+    if (close >= 0) start = close + 1;
+  }
+
+  const directives: SkillFile["directives"] = [];
+  let fenced = false;
+  for (let index = start; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
+
+    const text = line
+      .trim()
+      .replace(/^#{1,6}\s+/, "")
+      .replace(/^>\s?/, "")
+      .replace(/^(?:[-*+]|\d+[.)])\s+/, "");
+    if (text.length === 0) continue;
+
+    const match = DIRECTIVE_PATTERN.exec(text);
+    if (match === null) continue;
+    const marker = (match[1] ?? "").toLowerCase();
+    const subject = normalizeDirective(match[2] ?? "");
+    if (subject.length === 0) continue;
+    directives.push({
+      polarity: NEGATIVE_DIRECTIVES[marker] === true ? "negative" : "positive",
+      text: subject,
+      source: text,
+    });
+  }
+  return directives;
+}
+
+async function readSkillAt(root: string, directory: string): Promise<SkillFile | undefined> {
+  let source: string;
+  try {
+    source = await readFile(join(root, directory, "SKILL.md"), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+
+  const fields = parseFrontmatter(source) ?? new Map<string, string>();
+  const description = fields.get("description") ?? "";
+  return {
+    directory,
+    name: fields.get("name") ?? "",
+    description,
+    category: fields.get(`metadata.${CATEGORY_MARKER}`) ?? "",
+    managed: fields.get(`metadata.${MANAGED_MARKER}`) === "true",
+    directives: extractDirectives(source),
+  };
+}
+
+function findContradictions(skills: SkillFile[]): SkillContradiction[] {
+  const all = skills.flatMap((skill) =>
+    skill.directives.map((directive) => ({ ...directive, skill })),
+  );
+  const seen = new Set<string>();
+  const contradictions: SkillContradiction[] = [];
+
+  for (const left of all) {
+    for (const right of all) {
+      if (left.skill.directory === right.skill.directory) continue;
+      if (left.polarity === right.polarity) continue;
+      if (left.text !== right.text) continue;
+
+      const [firstSkill, secondSkill] =
+        left.skill.directory <= right.skill.directory
+          ? [left.skill.directory, right.skill.directory]
+          : [right.skill.directory, left.skill.directory];
+      const key = `${firstSkill}\u0000${secondSkill}\u0000${left.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const first = left.skill.directory === firstSkill ? left : right;
+      const second = first === left ? right : left;
+      contradictions.push({
+        skills: [firstSkill, secondSkill],
+        directives: [first.source, second.source],
+      });
+    }
+  }
+
+  return contradictions;
+}
+
+async function snapshotDirectory(root: string): Promise<SkillsSnapshot> {
+  const files = new Map<string, Buffer>();
+  try {
+    const details = await stat(root);
+    if (!details.isDirectory()) return { exists: false, files };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false, files };
+    throw error;
+  }
+
+  const walk = async (relative: string) => {
+    const entries = await readdir(join(root, relative), { withFileTypes: true });
+    for (const entry of entries) {
+      const next = relative.length === 0 ? entry.name : `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await walk(next);
+      } else if (entry.isFile()) {
+        files.set(next, await readFile(join(root, next)));
+      }
+    }
+  };
+  await walk("");
+  return { exists: true, files };
+}
+
+async function restoreDirectory(root: string, snapshot: SkillsSnapshot): Promise<void> {
+  await rm(root, { recursive: true, force: true });
+  if (!snapshot.exists) return;
+  for (const [relative, bytes] of snapshot.files) {
+    const path = join(root, relative);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, bytes);
+  }
+}
+
+/** The server stop handler is synchronous, so it restores without awaiting. */
+function restoreDirectorySync(root: string, snapshot: SkillsSnapshot): void {
+  rmSync(root, { recursive: true, force: true });
+  if (!snapshot.exists) return;
+  for (const [relative, bytes] of snapshot.files) {
+    const path = join(root, relative);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, bytes);
+  }
+}
+
+async function managedSkillNames(root: string, snapshot: SkillsSnapshot): Promise<Set<string>> {
+  const names = new Set<string>();
+  for (const relative of snapshot.files.keys()) {
+    const [directory, ...rest] = relative.split("/");
+    if (directory === undefined || rest.length !== 1 || rest[0] !== "SKILL.md") continue;
+    const skill = await readSkillAt(root, directory);
+    if (skill?.managed === true) names.add(directory);
+  }
+  return names;
+}
+
+interface SkillsInspection {
+  skills: SkillSummary[];
+  managed: Map<string, SkillFile>;
+  unmanaged: Map<string, SkillFile>;
+  errors: string[];
+  contradictions: SkillContradiction[];
+}
+
+async function inspectSkills(root: string): Promise<SkillsInspection> {
+  const managed = new Map<string, SkillFile>();
+  const unmanaged = new Map<string, SkillFile>();
+
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { skills: [], managed, unmanaged, errors: [], contradictions: [] };
+    }
+    throw error;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skill = await readSkillAt(root, entry.name);
+    if (skill === undefined) continue;
+    if (skill.managed) {
+      managed.set(entry.name, skill);
+    } else {
+      unmanaged.set(entry.name, skill);
+    }
+  }
+
+  const errors: string[] = [];
+  for (const [directory, skill] of managed) {
+    const label = `"${directory}"`;
+    if (skill.name !== directory) {
+      errors.push(`skill ${label} has frontmatter name "${skill.name}", not the directory name.`);
+    } else if (!SKILL_NAME_PATTERN.test(skill.name) || skill.name.length > SKILL_NAME_MAX) {
+      errors.push(
+        `skill ${label} has an invalid name: use 1-${SKILL_NAME_MAX} lowercase letters, digits, or single hyphens.`,
+      );
+    }
+    if (skill.description.trim().length === 0) {
+      errors.push(`skill ${label} has an empty description.`);
+    } else if (skill.description.length > SKILL_DESCRIPTION_MAX) {
+      errors.push(
+        `skill ${label} has a description longer than ${SKILL_DESCRIPTION_MAX} characters.`,
+      );
+    }
+    if (!SKILL_CATEGORIES.includes(skill.category as SkillCategory)) {
+      errors.push(
+        `skill ${label} has category "${skill.category}"; use one of ${SKILL_CATEGORIES.join(", ")}.`,
+      );
+    }
+  }
+
+  const categories = new Set([...managed.values()].map((skill) => skill.category));
+  for (const category of SKILL_CATEGORIES) {
+    if (!categories.has(category)) errors.push(`no managed skill covers the "${category}" category.`);
+  }
+
+  const skills = [...managed.values()]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+      category: skill.category as SkillCategory,
+    }));
+  const contradictions = findContradictions([...managed.values(), ...unmanaged.values()]);
+  return { skills, managed, unmanaged, errors, contradictions };
+}
+
+function describeContradictions(
+  contradictions: SkillContradiction[],
+  managed: Map<string, SkillFile>,
+): string {
+  return contradictions
+    .map((contradiction) => {
+      const [first, second] = contradiction.skills;
+      const unmanaged = [first, second].filter((name) => !managed.has(name));
+      const owner =
+        unmanaged.length === 0
+          ? "two managed skills"
+          : `unmanaged skill ${unmanaged.map((name) => `"${name}"`).join(" and ")}`;
+      return `Contradiction between "${first}" and "${second}" (${owner}): "${contradiction.directives[0]}" vs "${contradiction.directives[1]}".`;
+    })
+    .join(" ");
+}
+
 export function createApp(options: AppOptions) {
   const staticRoot = resolve(options.staticDir);
   const adrDir = resolve(options.adrDir);
@@ -129,6 +524,7 @@ export function createApp(options: AppOptions) {
   // The creation skill always writes the repository's goal document, while
   // getGoal and saveGoal keep using the configured goal file.
   const creationGoalFile = defaultGoalPath(repoDir);
+  const skillsDir = join(repoDir, ".omp", "skills");
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
   const tracker = options.tracker ?? findOpenEpic;
 
@@ -138,6 +534,8 @@ export function createApp(options: AppOptions) {
   let goalRevision: GoalRevision | undefined;
   let goalCreation: GoalCreation | undefined;
   let goalCreationRequest = 0;
+  let skillsPreparation: SkillsPreparation | undefined;
+  let skillsPreparationPending = false;
   let lifecycle: LifecycleState = { stage: "goal", pass: 1, work: null, paused: false };
   let lastLifecycle: LifecycleState | undefined;
   let lifecycleRunning = false;
@@ -222,6 +620,11 @@ export function createApp(options: AppOptions) {
   }
 
   async function saveGoal(ws: { send(data: string): unknown }, text: unknown) {
+    if (skillsPreparation !== undefined) {
+      send(ws, { type: "error", message: "A skills preparation is active." });
+      return;
+    }
+
     if (lifecycleRunning && !lifecycle.paused) {
       send(ws, { type: "error", message: "A lifecycle run is active." });
       return;
@@ -308,6 +711,247 @@ export function createApp(options: AppOptions) {
     broadcastRunConversation();
   }
 
+  async function sendSkillsState(target: { send(data: string): unknown }) {
+    try {
+      const inspection = await inspectSkills(skillsDir);
+      send(target, {
+        type: "skillsState",
+        skills: inspection.skills,
+        contradictions: inspection.contradictions,
+      });
+    } catch (error) {
+      send(target, {
+        type: "error",
+        message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  /**
+   * Ends one preparation. A failure restores the pre-run skills directory
+   * byte for byte, so managed skills keep their previous contents and no
+   * generated skill survives.
+   */
+  async function stopSkillsPreparation(preparation: SkillsPreparation, succeeded: boolean) {
+    if (skillsPreparation !== preparation) return;
+    skillsPreparation = undefined;
+    preparation.question = null;
+    preparation.agent?.close();
+
+    if (!succeeded) {
+      try {
+        await restoreDirectory(skillsDir, preparation.snapshot);
+      } catch (error) {
+        broadcast({
+          type: "error",
+          message: `Could not restore the previous skills: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+      broadcast({ type: "skillsPreparationStopped", completed: false });
+    }
+  }
+
+  async function finishSkillsPreparation(preparation: SkillsPreparation) {
+    let inspection: SkillsInspection;
+    let current: SkillsSnapshot;
+    try {
+      inspection = await inspectSkills(skillsDir);
+      current = await snapshotDirectory(skillsDir);
+    } catch (error) {
+      broadcast({
+        type: "error",
+        message: `Could not read the prepared skills: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      await stopSkillsPreparation(preparation, false);
+      return;
+    }
+
+    const errors = [...inspection.errors];
+
+    // Unmanaged skills are outside this feature's write scope. Any byte
+    // change or deletion of one fails the run before success is reported.
+    const changed = new Set<string>();
+    for (const relative of preparation.snapshot.files.keys()) {
+      const directory = relative.split("/")[0];
+      if (directory === undefined || !preparation.unmanagedNames.has(directory)) continue;
+      const before = preparation.snapshot.files.get(relative);
+      const after = current.files.get(relative);
+      if (before === undefined || after === undefined || !before.equals(after)) {
+        changed.add(directory);
+      }
+    }
+    for (const name of [...changed].sort()) {
+      errors.push(`unmanaged skill "${name}" must not be changed by skills preparation.`);
+    }
+    for (const name of [...inspection.managed.keys()].sort()) {
+      if (preparation.unmanagedNames.has(name)) {
+        errors.push(`managed skill "${name}" collides with an unmanaged skill of the same name.`);
+      }
+    }
+
+    const contradictions = inspection.contradictions;
+    if (errors.length > 0) {
+      broadcast({ type: "error", message: `Skills preparation failed: ${errors.join(" ")}` });
+      await stopSkillsPreparation(preparation, false);
+      return;
+    }
+    if (contradictions.length > 0) {
+      broadcast({
+        type: "error",
+        message: `Skills preparation failed: ${describeContradictions(contradictions, inspection.managed)}`,
+      });
+      await stopSkillsPreparation(preparation, false);
+      return;
+    }
+
+    skillsPreparation = undefined;
+    preparation.question = null;
+    preparation.agent?.close();
+    broadcast({
+      type: "skillsPreparationStopped",
+      completed: true,
+      skills: inspection.skills,
+      contradictions: [],
+    });
+  }
+
+  async function startSkillsPreparation(ws: { send(data: string): unknown }) {
+    if (skillsPreparation !== undefined || skillsPreparationPending) {
+      send(ws, { type: "error", message: "A skills preparation is already active." });
+      return;
+    }
+
+    if (goalCreation !== undefined) {
+      send(ws, { type: "error", message: "A goal creation is active." });
+      return;
+    }
+
+    if (goalRevision !== undefined) {
+      send(ws, { type: "error", message: "A goal revision is active." });
+      return;
+    }
+
+    if (lifecycleRunning) {
+      send(ws, { type: "error", message: "A lifecycle run is active." });
+      return;
+    }
+
+    if (activeRun !== undefined || sequencing) {
+      send(ws, { type: "error", message: "A run is already active." });
+      return;
+    }
+
+    let goalText: string;
+    try {
+      goalText = await readGoal(goalFile);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        send(ws, {
+          type: "error",
+          message: "The goal is not set. Save a non-empty goal before preparing skills.",
+        });
+        return;
+      }
+      send(ws, {
+        type: "error",
+        message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      send(ws, { type: "skillsPreparationStopped", completed: false });
+      return;
+    }
+    if (goalText.trim().length === 0) {
+      send(ws, {
+        type: "error",
+        message: "The goal is not set. Save a non-empty goal before preparing skills.",
+      });
+      return;
+    }
+
+    skillsPreparationPending = true;
+    let snapshot: SkillsSnapshot;
+    let managedNames: Set<string>;
+    let unmanagedNames: Set<string>;
+    try {
+      snapshot = await snapshotDirectory(skillsDir);
+      managedNames = await managedSkillNames(skillsDir, snapshot);
+      unmanagedNames = new Set((await inspectSkills(skillsDir)).unmanaged.keys());
+    } catch (error) {
+      skillsPreparationPending = false;
+      send(ws, {
+        type: "error",
+        message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+
+    try {
+      // The feature owns every managed skill: a run replaces the whole set
+      // rather than merging with what an earlier run left behind.
+      for (const name of managedNames) {
+        await rm(join(skillsDir, name), { recursive: true, force: true });
+      }
+    } catch (error) {
+      skillsPreparationPending = false;
+      await restoreDirectory(skillsDir, snapshot);
+      send(ws, {
+        type: "error",
+        message: `Could not replace the managed skills: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+    skillsPreparationPending = false;
+
+    const preparation: SkillsPreparation = {
+      agent: undefined,
+      activity: [],
+      question: null,
+      snapshot,
+      unmanagedNames,
+    };
+    skillsPreparation = preparation;
+    broadcast({ type: "skillsPreparationStarted" });
+
+    try {
+      const agent = new AcpConnection({
+        command: agentCommand,
+        cwd: repoDir,
+        onActivity(activity) {
+          if (skillsPreparation !== preparation) return;
+          recordActivity(preparation.activity, activity);
+        },
+        onQuestion(question: AcpQuestion) {
+          if (skillsPreparation !== preparation) return;
+          preparation.question = {
+            id: question.id,
+            message: question.message,
+            options: question.options,
+          };
+          broadcast({
+            type: "question",
+            id: question.id,
+            message: question.message,
+            options: question.options,
+          });
+        },
+        onStderr(text) {
+          process.stderr.write(text);
+        },
+      });
+      preparation.agent = agent;
+
+      await agent.run(SKILLS_PROMPT);
+      if (skillsPreparation !== preparation) return;
+      await finishSkillsPreparation(preparation);
+    } catch (error) {
+      if (skillsPreparation !== preparation) return;
+      broadcast({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      await stopSkillsPreparation(preparation, false);
+    }
+  }
+
   /** Cancels an in-flight creation; the peer's later completion is ignored. */
   function abortGoalCreation() {
     const creation = goalCreation;
@@ -368,6 +1012,11 @@ export function createApp(options: AppOptions) {
   }
 
   async function startGoalCreation(ws: { send(data: string): unknown }) {
+    if (skillsPreparation !== undefined) {
+      send(ws, { type: "error", message: "A skills preparation is active." });
+      return;
+    }
+
     const request = ++goalCreationRequest;
 
     try {
@@ -448,6 +1097,11 @@ export function createApp(options: AppOptions) {
   }
 
   async function startGoalRevision(ws: { send(data: string): unknown }, request: unknown) {
+    if (skillsPreparation !== undefined) {
+      send(ws, { type: "error", message: "A skills preparation is active." });
+      return;
+    }
+
     if (goalCreation !== undefined) {
       send(ws, { type: "error", message: "A goal creation is active." });
       return;
@@ -597,6 +1251,11 @@ export function createApp(options: AppOptions) {
   }
 
   async function startRun(ws: { send(data: string): unknown }, file: unknown) {
+    if (skillsPreparation !== undefined) {
+      send(ws, { type: "error", message: "A skills preparation is active." });
+      return;
+    }
+
     if (goalCreation !== undefined) {
       send(ws, { type: "error", message: "A goal creation is active." });
       return;
@@ -704,6 +1363,11 @@ export function createApp(options: AppOptions) {
   }
 
   function resumeLifecycle(ws: { send(data: string): unknown }) {
+    if (skillsPreparation !== undefined) {
+      send(ws, { type: "error", message: "A skills preparation is active." });
+      return;
+    }
+
     if (goalCreation !== undefined) {
       send(ws, { type: "error", message: "A goal creation is active." });
       return;
@@ -830,6 +1494,11 @@ export function createApp(options: AppOptions) {
   }
 
   async function startLifecycle(ws: { send(data: string): unknown }) {
+    if (skillsPreparation !== undefined) {
+      send(ws, { type: "error", message: "A skills preparation is active." });
+      return;
+    }
+
     if (goalCreation !== undefined) {
       send(ws, { type: "error", message: "A goal creation is active." });
       return;
@@ -898,7 +1567,7 @@ export function createApp(options: AppOptions) {
     id: unknown,
     value: unknown,
   ) {
-    const active = goalCreation ?? goalRevision ?? activeRun;
+    const active = goalCreation ?? goalRevision ?? skillsPreparation ?? activeRun;
     if (active === undefined) {
       send(ws, { type: "error", message: "No run is active." });
       return;
@@ -999,17 +1668,31 @@ export function createApp(options: AppOptions) {
         }
 
         const revision = goalRevision;
-        if (revision === undefined) return;
+        if (revision !== undefined) {
+          send(ws, { type: "goalRevisionStarted" });
+          for (const text of revision.activity) send(ws, { type: "activity", text });
+          if (revision.question !== null) {
+            send(ws, {
+              type: "question",
+              id: revision.question.id,
+              message: revision.question.message,
+              options: revision.question.options,
+            });
+          }
+        }
 
-        send(ws, { type: "goalRevisionStarted" });
-        for (const text of revision.activity) send(ws, { type: "activity", text });
-        if (revision.question !== null) {
-          send(ws, {
-            type: "question",
-            id: revision.question.id,
-            message: revision.question.message,
-            options: revision.question.options,
-          });
+        const skills = skillsPreparation;
+        if (skills !== undefined) {
+          send(ws, { type: "skillsPreparationStarted" });
+          for (const text of skills.activity) send(ws, { type: "activity", text });
+          if (skills.question !== null) {
+            send(ws, {
+              type: "question",
+              id: skills.question.id,
+              message: skills.question.message,
+              options: skills.question.options,
+            });
+          }
         }
       },
 
@@ -1049,6 +1732,10 @@ export function createApp(options: AppOptions) {
             await startGoalRevision(ws, command.request);
           } else if (command.type === "createGoal") {
             await startGoalCreation(ws);
+          } else if (command.type === "prepareSkills") {
+            await startSkillsPreparation(ws);
+          } else if (command.type === "getSkills") {
+            await sendSkillsState(ws);
           } else if (command.type === "answer") {
             answerQuestion(ws, command.id, command.value);
           }
@@ -1072,6 +1759,12 @@ export function createApp(options: AppOptions) {
     goalRevision = undefined;
     goalCreation?.agent?.close();
     goalCreation = undefined;
+    if (skillsPreparation !== undefined) {
+      skillsPreparation.agent?.close();
+      restoreDirectorySync(skillsDir, skillsPreparation.snapshot);
+      skillsPreparation = undefined;
+    }
+    skillsPreparationPending = false;
     return stop(closeActiveConnections);
   };
 
