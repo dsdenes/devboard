@@ -1,13 +1,32 @@
 import { readUtf8 } from "./utf8.ts";
 import { ExtensionCodec } from "./extension.ts";
+import { DecodeError } from "./decode-error.ts";
+
+export type MapKeyConverter = (key: unknown) => string | number;
+
+export interface KeyDecoder {
+  canBeCached(byteLength: number): boolean;
+  decode(bytes: Uint8Array, inputOffset: number, byteLength: number): string;
+}
 
 export interface DecoderOptions {
   extensionCodec?: ExtensionCodec;
   context?: unknown;
+  useBigInt64?: boolean;
+  rawStrings?: boolean;
+  maxStrLength?: number;
+  maxBinLength?: number;
+  maxArrayLength?: number;
+  maxMapLength?: number;
+  maxExtLength?: number;
+  keyDecoder?: KeyDecoder | null;
+  mapKeyConverter?: MapKeyConverter;
   [option: string]: unknown;
 }
 
 type Input = ArrayLike<number> | ArrayBufferView | ArrayBuffer | SharedArrayBuffer;
+
+const UINT32_MAX = 0xffff_ffff;
 
 const KEY_MAX_LENGTH = 16;
 
@@ -46,12 +65,81 @@ function storeKey(bytes: Uint8Array, start: number, length: number, value: strin
   entries.push(entry);
 }
 
+const defaultKeyDecoder: KeyDecoder = {
+  canBeCached(byteLength: number): boolean {
+    return byteLength > 0 && byteLength <= KEY_MAX_LENGTH;
+  },
+
+  decode(bytes: Uint8Array, start: number, length: number): string {
+    const cached = lookupKey(bytes, start, length);
+    if (cached !== null) {
+      return cached;
+    }
+    const value = readUtf8(bytes, start, length);
+    storeKey(bytes, start, length, value);
+    return value;
+  },
+};
+
+function defaultMapKeyConverter(key: unknown): string | number {
+  if (typeof key === "string" || typeof key === "number") {
+    return key;
+  }
+  throw new DecodeError("The type of key must be string or number but " + typeof key);
+}
+
+interface DecoderSettings {
+  extensionCodec: ExtensionCodec;
+  context: unknown;
+  useBigInt64: boolean;
+  rawStrings: boolean;
+  maxStrLength: number;
+  maxBinLength: number;
+  maxArrayLength: number;
+  maxMapLength: number;
+  maxExtLength: number;
+  keyDecoder: KeyDecoder | null;
+  mapKeyConverter: MapKeyConverter;
+}
+
+const DEFAULT_DECODER_SETTINGS: DecoderSettings = {
+  extensionCodec: ExtensionCodec.defaultCodec,
+  context: undefined,
+  useBigInt64: false,
+  rawStrings: false,
+  maxStrLength: UINT32_MAX,
+  maxBinLength: UINT32_MAX,
+  maxArrayLength: UINT32_MAX,
+  maxMapLength: UINT32_MAX,
+  maxExtLength: UINT32_MAX,
+  keyDecoder: defaultKeyDecoder,
+  mapKeyConverter: defaultMapKeyConverter,
+};
+
+function resolveDecoderSettings(options?: DecoderOptions): DecoderSettings {
+  if (options === undefined) {
+    return DEFAULT_DECODER_SETTINGS;
+  }
+  return {
+    extensionCodec: options.extensionCodec ?? ExtensionCodec.defaultCodec,
+    context: options.context,
+    useBigInt64: options.useBigInt64 ?? false,
+    rawStrings: options.rawStrings ?? false,
+    maxStrLength: options.maxStrLength ?? UINT32_MAX,
+    maxBinLength: options.maxBinLength ?? UINT32_MAX,
+    maxArrayLength: options.maxArrayLength ?? UINT32_MAX,
+    maxMapLength: options.maxMapLength ?? UINT32_MAX,
+    maxExtLength: options.maxExtLength ?? UINT32_MAX,
+    keyDecoder: options.keyDecoder !== undefined ? options.keyDecoder : defaultKeyDecoder,
+    mapKeyConverter: options.mapKeyConverter ?? defaultMapKeyConverter,
+  };
+}
+
 class Reader {
   bytes: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
   view: DataView<ArrayBufferLike> = new DataView(new ArrayBuffer(0));
   pos = 0;
-  extensionCodec: ExtensionCodec = ExtensionCodec.defaultCodec;
-  context: unknown = undefined;
+  settings: DecoderSettings = DEFAULT_DECODER_SETTINGS;
 
   set(input: Input): void {
     const bytes = toBytes(input);
@@ -84,10 +172,12 @@ let sharedReaderEntered = false;
 export class Decoder {
   private readonly reader = new Reader();
   private readonly options: DecoderOptions | undefined;
+  private readonly settings: DecoderSettings;
   private entered = false;
 
   constructor(options?: DecoderOptions) {
     this.options = options;
+    this.settings = resolveDecoderSettings(options);
   }
 
   decode(buffer: Input): unknown {
@@ -97,8 +187,7 @@ export class Decoder {
     this.entered = true;
     try {
       const reader = this.reader;
-      reader.extensionCodec = this.options?.extensionCodec ?? ExtensionCodec.defaultCodec;
-      reader.context = this.options?.context;
+      reader.settings = this.settings;
       reader.set(buffer);
       const value = decodeValue(reader, false);
       if (reader.pos !== reader.bytes.length) {
@@ -112,11 +201,11 @@ export class Decoder {
 }
 
 export function decode(buffer: Input, options?: DecoderOptions): unknown {
+  const settings = resolveDecoderSettings(options);
   if (!sharedReaderEntered) {
     sharedReaderEntered = true;
     try {
-      sharedReader.extensionCodec = options?.extensionCodec ?? ExtensionCodec.defaultCodec;
-      sharedReader.context = options?.context;
+      sharedReader.settings = settings;
       sharedReader.set(buffer);
       const value = decodeValue(sharedReader, false);
       if (sharedReader.pos !== sharedReader.bytes.length) {
@@ -182,6 +271,11 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
       return value;
     }
     case 0xcf: {
+      if (reader.settings.useBigInt64) {
+        const value = reader.view.getBigUint64(reader.pos);
+        reader.pos += 8;
+        return value;
+      }
       const value = readU32(bytes, reader.pos) * 0x100000000 + readU32(bytes, reader.pos + 4);
       reader.pos += 8;
       return value;
@@ -205,6 +299,11 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
       return value;
     }
     case 0xd3: {
+      if (reader.settings.useBigInt64) {
+        const value = reader.view.getBigInt64(reader.pos);
+        reader.pos += 8;
+        return value;
+      }
       const high = (bytes[reader.pos] << 24) |
         (bytes[reader.pos + 1] << 16) |
         (bytes[reader.pos + 2] << 8) |
@@ -289,34 +388,60 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
 }
 
 function decodeExtension(reader: Reader, size: number): unknown {
+  const settings = reader.settings;
+  if (size > settings.maxExtLength) {
+    throw new DecodeError(
+      `Max length exceeded: ext length (${size}) > maxExtLength (${settings.maxExtLength})`,
+    );
+  }
   const type = reader.view.getInt8(reader.pos);
   const start = reader.pos + 1;
+  // Extension payloads go through the same binary length limit as bin
+  // values and raw strings in the reference implementation.
+  if (size > settings.maxBinLength) {
+    throw new DecodeError(
+      `Max length exceeded: bin length (${size}) > maxBinLength (${settings.maxBinLength})`,
+    );
+  }
   reader.pos = start + size;
-  return reader.extensionCodec.decode(reader.bytes.subarray(start, start + size), type, reader.context);
+  return settings.extensionCodec.decode(reader.bytes.subarray(start, start + size), type, settings.context);
 }
 
 function readU32(bytes: Uint8Array, pos: number): number {
   return ((bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3]) >>> 0;
 }
 
-function decodeString(reader: Reader, length: number, isMapKey: boolean): string {
+function decodeString(reader: Reader, length: number, isMapKey: boolean): string | Uint8Array {
+  const settings = reader.settings;
+
+  // Raw strings apply to values only; map keys remain JavaScript strings and
+  // use maxStrLength rather than maxBinLength.
+  if (settings.rawStrings && !isMapKey) {
+    return decodeBinary(reader, length);
+  }
+
+  if (length > settings.maxStrLength) {
+    throw new DecodeError(
+      `Max length exceeded: UTF-8 byte length (${length}) > maxStrLength (${settings.maxStrLength})`,
+    );
+  }
+
   const start = reader.pos;
   reader.pos += length;
 
-  if (isMapKey && length > 0 && length <= KEY_MAX_LENGTH) {
-    const cached = lookupKey(reader.bytes, start, length);
-    if (cached !== null) {
-      return cached;
-    }
-    const value = readUtf8(reader.bytes, start, length);
-    storeKey(reader.bytes, start, length, value);
-    return value;
+  if (isMapKey && settings.keyDecoder !== null && settings.keyDecoder.canBeCached(length)) {
+    return settings.keyDecoder.decode(reader.bytes, start, length);
   }
 
   return readUtf8(reader.bytes, start, length);
 }
 
 function decodeBinary(reader: Reader, size: number): Uint8Array {
+  if (size > reader.settings.maxBinLength) {
+    throw new DecodeError(
+      `Max length exceeded: bin length (${size}) > maxBinLength (${reader.settings.maxBinLength})`,
+    );
+  }
   const start = reader.pos;
   reader.pos += size;
   return reader.bytes.subarray(start, start + size);
@@ -325,6 +450,11 @@ function decodeBinary(reader: Reader, size: number): Uint8Array {
 function decodeArray(reader: Reader, size: number): unknown[] {
   if (size === 0) {
     return [];
+  }
+  if (size > reader.settings.maxArrayLength) {
+    throw new DecodeError(
+      `Max length exceeded: array length (${size}) > maxArrayLength (${reader.settings.maxArrayLength})`,
+    );
   }
   const array = new Array(size);
   for (let i = 0; i < size; i++) {
@@ -337,16 +467,19 @@ function decodeMap(reader: Reader, size: number): Record<string, unknown> {
   if (size === 0) {
     return {};
   }
+  if (size > reader.settings.maxMapLength) {
+    // The reference message contains this spelling; keep it for parity.
+    throw new DecodeError(
+      `Max length exceeded: map length (${size}) > maxMapLengthLength (${reader.settings.maxMapLength})`,
+    );
+  }
   const map: Record<string, unknown> = {};
   for (let i = 0; i < size; i++) {
     const key = decodeValue(reader, true);
-    if (typeof key !== "string" && typeof key !== "number") {
-      throw new Error(`The type of key must be string or number but ${typeof key}`);
-    }
     if (key === "__proto__") {
       throw new Error("The key __proto__ is not allowed");
     }
-    map[key] = decodeValue(reader, false);
+    map[reader.settings.mapKeyConverter(key)] = decodeValue(reader, false);
   }
   return map;
 }
