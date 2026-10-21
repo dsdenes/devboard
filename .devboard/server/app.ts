@@ -620,7 +620,7 @@ export function createApp(options: AppOptions) {
   }
 
   async function saveGoal(ws: { send(data: string): unknown }, text: unknown) {
-    if (skillsPreparation !== undefined) {
+    if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
     }
@@ -841,10 +841,15 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    // Claim the start before the first await so two commands cannot both
+    // snapshot, spawn a peer, and race to own the same preparation.
+    skillsPreparationPending = true;
+
     let goalText: string;
     try {
       goalText = await readGoal(goalFile);
     } catch (error) {
+      skillsPreparationPending = false;
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         send(ws, {
           type: "error",
@@ -860,6 +865,7 @@ export function createApp(options: AppOptions) {
       return;
     }
     if (goalText.trim().length === 0) {
+      skillsPreparationPending = false;
       send(ws, {
         type: "error",
         message: "The goal is not set. Save a non-empty goal before preparing skills.",
@@ -867,7 +873,6 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    skillsPreparationPending = true;
     let snapshot: SkillsSnapshot;
     let managedNames: Set<string>;
     let unmanagedNames: Set<string>;
@@ -1012,7 +1017,7 @@ export function createApp(options: AppOptions) {
   }
 
   async function startGoalCreation(ws: { send(data: string): unknown }) {
-    if (skillsPreparation !== undefined) {
+    if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
     }
@@ -1097,7 +1102,7 @@ export function createApp(options: AppOptions) {
   }
 
   async function startGoalRevision(ws: { send(data: string): unknown }, request: unknown) {
-    if (skillsPreparation !== undefined) {
+    if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
     }
@@ -1251,7 +1256,7 @@ export function createApp(options: AppOptions) {
   }
 
   async function startRun(ws: { send(data: string): unknown }, file: unknown) {
-    if (skillsPreparation !== undefined) {
+    if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
     }
@@ -1363,7 +1368,7 @@ export function createApp(options: AppOptions) {
   }
 
   function resumeLifecycle(ws: { send(data: string): unknown }) {
-    if (skillsPreparation !== undefined) {
+    if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
     }
@@ -1494,7 +1499,7 @@ export function createApp(options: AppOptions) {
   }
 
   async function startLifecycle(ws: { send(data: string): unknown }) {
-    if (skillsPreparation !== undefined) {
+    if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
     }

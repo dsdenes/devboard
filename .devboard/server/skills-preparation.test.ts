@@ -446,6 +446,36 @@ describe("skills preparation", () => {
   );
 
   test(
+    "accepts only one of two commands sent back to back",
+    async () => {
+      const { server, logPath, url } = await startServer({
+        agentArguments: "--prepare-skills",
+      });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "prepareSkills" });
+        client.send({ type: "prepareSkills" });
+
+        const stopped = await client.waitFor(
+          (message) => message.type === "skillsPreparationStopped",
+        );
+        expect(stopped.completed).toBe(true);
+        expect(
+          client.events.filter((message) => message.type === "skillsPreparationStarted").length,
+        ).toBe(1);
+        expect(errors(client)).toHaveLength(1);
+        expect(String(errors(client)[0]?.message)).toMatch(/skills preparation/i);
+        expect(spawnCount(logPath)).toBe(1);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    15000,
+  );
+
+  test(
     "refuses preparation during a run",
     async () => {
       const { server, logPath, url } = await startServer({
