@@ -61,7 +61,8 @@ async function startServer(
   const mode = options.mode ?? "create";
   const command = [
     `bun ${STUB_AGENT}`,
-    mode === "revision" ? "--revise-goal" : "--create-goal",
+    "--create-goal",
+    mode === "revision" ? "--revise-goal" : "",
     options.writeStubGoal === false ? "" : `--goal=${join(root, "GOAL.md")}`,
     `--log=${logPath}`,
     options.agentArguments ?? "",
@@ -193,6 +194,8 @@ afterAll(async () => {
 
 const PENDING_ONE = "# First decision\n\n- Status: Proposed\n\n## Context\n\nFirst.\n\n## Decision\n\n";
 const PENDING_TWO = "# Second decision\n\n- Status: Proposed\n\n## Context\n\nSecond.\n\n## Decision\n\n";
+const PENDING_THREE =
+  "# Third decision\n\n- Status: Proposed\n\n## Context\n\nThird.\n\n## Decision\n\n";
 
 describe("guided goal creation", () => {
   test(
@@ -296,9 +299,9 @@ describe("guided goal creation", () => {
   );
 
   test(
-    "refuses creation while the goal document is non-empty without spawning a peer",
+    "replaces a non-empty goal with a new creation",
     async () => {
-      const { server, logPath, url } = await startServer(
+      const { server, goalFile, logPath, url } = await startServer(
         { "0001-first.md": PENDING_ONE },
         { goalText: "# Existing goal\n" },
       );
@@ -306,13 +309,18 @@ describe("guided goal creation", () => {
 
       try {
         client.send({ type: "createGoal" });
-        expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
-          message: "The goal is already set.",
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        const question = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+
+        expect(await client.waitFor((message) => message.type === "goalCreationStopped")).toEqual({
+          type: "goalCreationStopped",
+          completed: true,
+          text: CREATED_GOAL,
         });
-        expect(spawnCount(logPath)).toBe(0);
-        expect(
-          client.events.filter((message) => message.type === "goalCreationStarted"),
-        ).toEqual([]);
+        expect(await readFile(goalFile, "utf8")).toBe(CREATED_GOAL);
+        expect(spawnCount(logPath)).toBe(1);
+        expect(errors(client)).toEqual([]);
       } finally {
         client.close();
         server.stop(true);
@@ -347,14 +355,14 @@ describe("guided goal creation", () => {
   );
 
   test(
-    "refuses creation while a lifecycle run is advancing without spawning a second peer",
+    "stops an advancing lifecycle and starts creation",
     async () => {
       const epic: OpenEpic = {
         number: 42,
         title: "Active epic",
         url: "https://example.test/issues/42",
       };
-      const { server, logPath, url } = await startServer(
+      const { server, goalFile, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
         {
           agentArguments: "--delay-ms=1200",
@@ -373,14 +381,23 @@ describe("guided goal creation", () => {
         await eventually(() => spawnCount(logPath) === 1);
 
         client.send({ type: "createGoal" });
-        expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
-          message: "A lifecycle run is active.",
+        expect(await client.waitFor((message) => message.type === "runStopped")).toMatchObject({
+          resolved: false,
         });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "goal",
+        );
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        await eventually(() => spawnCount(logPath) === 2);
 
-        expect(spawnCount(logPath)).toBe(1);
-        expect(
-          client.events.filter((message) => message.type === "goalCreationStarted"),
-        ).toEqual([]);
+        const question = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+        expect(await client.waitFor((message) => message.type === "goalCreationStopped")).toEqual({
+          type: "goalCreationStopped",
+          completed: true,
+          text: CREATED_GOAL,
+        });
+        expect(await readFile(goalFile, "utf8")).toBe(CREATED_GOAL);
       } finally {
         client.close();
         server.stop(true);
@@ -390,9 +407,9 @@ describe("guided goal creation", () => {
   );
 
   test(
-    "refuses creation while an ADR run is active without spawning a second peer",
+    "stops an active ADR run and starts creation",
     async () => {
-      const { server, logPath, url } = await startServer(
+      const { server, goalFile, logPath, url } = await startServer(
         { "0001-first.md": PENDING_ONE, "0002-second.md": PENDING_TWO },
         { agentArguments: "--delay-ms=1200 --questions=0" },
       );
@@ -406,14 +423,21 @@ describe("guided goal creation", () => {
         await eventually(() => spawnCount(logPath) === 1);
 
         client.send({ type: "createGoal" });
-        expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
-          message: "A run is already active.",
+        expect(await client.waitFor((message) => message.type === "runStopped")).toMatchObject({
+          file: "0001-first.md",
+          resolved: false,
         });
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        await eventually(() => spawnCount(logPath) === 2);
 
-        expect(spawnCount(logPath)).toBe(1);
-        expect(
-          client.events.filter((message) => message.type === "goalCreationStarted"),
-        ).toEqual([]);
+        const question = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+        expect(await client.waitFor((message) => message.type === "goalCreationStopped")).toEqual({
+          type: "goalCreationStopped",
+          completed: true,
+          text: CREATED_GOAL,
+        });
+        expect(await readFile(goalFile, "utf8")).toBe(CREATED_GOAL);
       } finally {
         client.close();
         server.stop(true);
@@ -423,34 +447,48 @@ describe("guided goal creation", () => {
   );
 
   test(
-    "refuses creation between records of one ADR sequence without spawning a second peer",
+    "ends the ADR sequence when creation preempts it",
     async () => {
-      const { server, logPath, url } = await startServer(
+      const { server, goalFile, logPath, url } = await startServer(
         {
           "0001-first.md": PENDING_ONE,
           "0002-second.md": PENDING_TWO,
+          "0003-third.md": PENDING_THREE,
         },
-        { agentArguments: "--questions=0" },
+        { agentArguments: "--questions=0 --delay-ms=500" },
       );
       const client = await connect(url);
 
       try {
         client.send({ type: "startRun" });
-        expect(await client.waitFor((message) => message.type === "runStopped")).toMatchObject({
-          file: "0001-first.md",
-          resolved: true,
-        });
+        await client.waitFor(
+          (message) => message.type === "runStarted" && message.file === "0002-second.md",
+        );
 
         client.send({ type: "createGoal" });
-        expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
-          message: "A run is already active.",
-        });
-
-        await client.waitFor(
-          (message) => message.type === "runStopped" && message.file === "0002-second.md",
-        );
         expect(
-          client.events.filter((message) => message.type === "goalCreationStarted"),
+          await client.waitFor(
+            (message) => message.type === "runStopped" && message.file === "0002-second.md",
+          ),
+        ).toMatchObject({
+          file: "0002-second.md",
+          resolved: false,
+        });
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        await eventually(() => prompts(logPath).includes("/goal-outcome"));
+
+        const question = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+        expect(await client.waitFor((message) => message.type === "goalCreationStopped")).toEqual({
+          type: "goalCreationStopped",
+          completed: true,
+          text: CREATED_GOAL,
+        });
+        expect(await readFile(goalFile, "utf8")).toBe(CREATED_GOAL);
+        expect(
+          client.events.filter(
+            (message) => message.type === "runStarted" && message.file === "0003-third.md",
+          ),
         ).toEqual([]);
       } finally {
         client.close();
@@ -461,9 +499,9 @@ describe("guided goal creation", () => {
   );
 
   test(
-    "refuses creation while a goal revision is active without spawning a second peer",
+    "stops an active revision and starts creation",
     async () => {
-      const { server, logPath, url } = await startServer(
+      const { server, goalFile, logPath, url } = await startServer(
         { "0001-first.md": PENDING_ONE },
         { mode: "revision", agentArguments: "--delay-ms=1200" },
       );
@@ -475,14 +513,20 @@ describe("guided goal creation", () => {
         await eventually(() => spawnCount(logPath) === 1);
 
         client.send({ type: "createGoal" });
-        expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
-          message: "A goal revision is active.",
-        });
-
-        expect(spawnCount(logPath)).toBe(1);
         expect(
-          client.events.filter((message) => message.type === "goalCreationStarted"),
-        ).toEqual([]);
+          await client.waitFor((message) => message.type === "goalRevisionStopped"),
+        ).toEqual({ type: "goalRevisionStopped", completed: false });
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        await eventually(() => spawnCount(logPath) === 2);
+
+        const question = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+        expect(await client.waitFor((message) => message.type === "goalCreationStopped")).toEqual({
+          type: "goalCreationStopped",
+          completed: true,
+          text: CREATED_GOAL,
+        });
+        expect(await readFile(goalFile, "utf8")).toBe(CREATED_GOAL);
       } finally {
         client.close();
         server.stop(true);
@@ -492,7 +536,7 @@ describe("guided goal creation", () => {
   );
 
   test(
-    "refuses startRun, startLifecycle, resumeLifecycle, reviseGoal, and a second creation while creating",
+    "refuses other starts while creating and restarts the creation",
     async () => {
       const { server, goalFile, logPath, url } = await startServer(
         { "0001-first.md": PENDING_ONE },
@@ -503,23 +547,17 @@ describe("guided goal creation", () => {
       try {
         client.send({ type: "createGoal" });
         await client.waitFor((message) => message.type === "goalCreationStarted");
-        const question = await client.waitFor((message) => message.type === "question");
+        await client.waitFor((message) => message.type === "question");
 
         client.send({ type: "startRun" });
         client.send({ type: "startLifecycle" });
         client.send({ type: "resumeLifecycle" });
         client.send({ type: "reviseGoal" });
-        client.send({ type: "createGoal" });
 
-        for (const expected of [
-          "A goal creation is active.",
-          "A goal creation is active.",
-          "A goal creation is active.",
-          "A goal creation is active.",
-          "A goal creation is already active.",
-        ]) {
+        for (let index = 0; index < 4; index += 1) {
           await client.waitFor(
-            (message) => message.type === "error" && message.message === expected,
+            (message) =>
+              message.type === "error" && message.message === "A goal creation is active.",
           );
         }
 
@@ -529,14 +567,21 @@ describe("guided goal creation", () => {
           client.events.filter((message) => message.type === "lifecycleState"),
         ).toEqual([]);
 
-        client.send({ type: "answer", id: question.id, value: "Alpha" });
+        client.send({ type: "createGoal" });
+        expect(
+          await client.waitFor((message) => message.type === "goalCreationStopped"),
+        ).toEqual({ type: "goalCreationStopped", completed: false });
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        await eventually(() => spawnCount(logPath) === 2);
+
+        const restarted = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: restarted.id, value: "Alpha" });
         expect(await client.waitFor((message) => message.type === "goalCreationStopped")).toEqual({
           type: "goalCreationStopped",
           completed: true,
           text: CREATED_GOAL,
         });
         expect(await readFile(goalFile, "utf8")).toBe(CREATED_GOAL);
-        expect(spawnCount(logPath)).toBe(1);
       } finally {
         client.close();
         server.stop(true);

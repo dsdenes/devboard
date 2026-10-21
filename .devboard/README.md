@@ -14,26 +14,28 @@ is unavailable while a run is active or the lifecycle is advancing, but remains 
 while the lifecycle is paused; starting another run or revision is blocked while one is in
 progress.
 
-When the goal document is empty, whitespace-only, or absent, the goal section reports
-`Goal not set` and offers an enabled `Create goal` control. Selecting
-it asks the server to start the installed `/goal-outcome` skill in one ACP peer, in the
-background; its activity and interview questions stream into the same live log and question UI,
-and the goal section shows `Creating the goal` while it runs. The developer answers the skill's
-questions; the skill interviews them and writes the goal document. The flow never starts on page
-load or reconnect. The `Create goal` control always stays visible, but is disabled once the goal
-document contains non-whitespace text, while a creation or revision runs, and while a run or the
-advancing lifecycle holds the agent; `Revise goal` is the way to change an existing goal.
-When the peer ends, the server reads `<REPO_DIR>/GOAL.md` and the textarea shows those bytes, so
-`Goal ready` and `Start lifecycle` become available. A creation that ends with no non-empty
-`GOAL.md` is reported as an error: the server sends an `error` and a failed
-`goalCreationStopped`, the textarea and goal state stay unchanged, and `Create goal` becomes
-available again. The server owns the creation run, so closing the
-browser does not stop it, and a client that connects during it receives the start, every
-recorded activity line, and the pending question. While a creation runs, starting a run or the
-lifecycle, resuming a paused lifecycle, and revising the goal are each refused; while a run, the
-advancing lifecycle, or a revision is active, creation is refused in turn. A creation is
-accepted while the lifecycle is paused, and when it ends the server replays the suspended
-lifecycle conversation.
+The goal section always shows a `Create goal` control, and it stays selectable whenever the
+connection is open, including while the goal document already has content and while a creation,
+revision, or run is active. Selecting it asks the server to start the installed `/goal-outcome`
+skill in one ACP peer, in the background; its activity and interview questions stream into the
+same live log and question UI, and the goal section shows `Creating the goal` while it runs. The
+developer answers the skill's questions; the skill interviews them and writes the goal document.
+The flow never starts on page load or reconnect. When the goal document is empty, whitespace-only,
+or absent, the section reports `Goal not set`; otherwise it reports `Goal ready`.
+
+Selecting `Create goal` always starts a fresh creation. The server replaces an existing goal when
+the new creation writes non-empty text, and it stops whatever would contend with the new peer: an
+in-flight creation or revision is cancelled with a failed `goalCreationStopped` or
+`goalRevisionStopped`, and an advancing ADR run or lifecycle is stopped and reported idle before
+creation begins. A paused lifecycle keeps its suspended conversation, which is replayed when the
+creation ends. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` and the textarea shows
+those bytes, so `Goal ready` and `Start lifecycle` become available. A creation that ends with no
+non-empty `GOAL.md` is reported as an error: the server sends an `error` and a failed
+`goalCreationStopped`, and the textarea and goal state keep their previous content. The server
+owns the creation run, so closing the browser does not stop it, and a client that connects during
+it receives the start, every recorded activity line, and the pending question. While a creation
+runs, starting a run or the lifecycle, resuming a paused lifecycle, and revising the goal are
+each refused; creation itself always restarts.
 
 While a run is active the interface names the record being resolved, shows the agent's latest
 ACP session update as the current action, folds earlier updates into a collapsed history, and
@@ -158,23 +160,25 @@ The client sends:
 - A revision is refused with an `error` event while the lifecycle is advancing, a run or run sequence is active, or another revision is active. While a revision is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and another `reviseGoal` are each refused with an `error`, and no agent is spawned.
 - `createGoal` starts the guided goal creation with one ACP peer whose prompt is exactly
   `/goal-outcome`, the installed skill command that reads the harness prompt and interviews the
-  developer. The server accepts it only while `<REPO_DIR>/GOAL.md` is absent or contains only
-  whitespace; it reads that file for the check and for the completion, while `getGoal` and
-  `saveGoal` keep using `GOAL_FILE`. It is accepted while a lifecycle run is paused, where the
-  suspended peer keeps its stage and conversation. Activity and questions use the existing
-  `activity` and `question` events, and `answer` replies to a creation question exactly as it
-  does to a revision question; a second answer for the same question id is refused with an
-  `error`. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` again: text that contains
-  at least one non-whitespace character completes the creation, while an absent, empty, or
-  whitespace-only document is a failure that sends an `error` followed by a failed
+  developer. The server accepts it in every state: it replaces a goal document that already has
+  content, and it preempts an in-flight creation or revision and stops an advancing ADR run or
+  lifecycle before the new peer starts. It reads `<REPO_DIR>/GOAL.md` before and after the peer,
+  while `getGoal` and `saveGoal` keep using `GOAL_FILE`. It is accepted while a lifecycle run is
+  paused, where the suspended peer keeps its stage and conversation. Activity and questions use
+  the existing `activity` and `question` events, and `answer` replies to a creation question
+  exactly as it does to a revision question; a second answer for the same question id is refused
+  with an `error`. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` again: text that
+  contains at least one non-whitespace character completes the creation, while an absent, empty,
+  or whitespace-only document is a failure that sends an `error` followed by a failed
   `goalCreationStopped`.
-- A creation is refused with an `error` event, without spawning a peer, while the lifecycle is
-  advancing, an ADR run or run sequence is active, a goal revision is active, another creation
-  is active, `<REPO_DIR>/GOAL.md` contains non-whitespace text, or that file exists but cannot
-  be read. While a creation is active, `startRun`, `startLifecycle`, `resumeLifecycle`,
-  `reviseGoal`, and a second `createGoal` are each refused with an `error`, and no agent is
-  spawned. The creation runs in the server, so closing the browser does not stop it, and a
-  client that connects during it receives `goalCreationStarted`, the recorded activity, and the
+- A creation is refused with an `error` event, without spawning a peer, only when
+  `<REPO_DIR>/GOAL.md` exists but cannot be read. Otherwise a `createGoal` request always wins:
+  the server cancels the active creation or revision, reports it stopped with `completed: false`,
+  stops an advancing run or lifecycle and reports the idle `goal` stage, then starts the new peer.
+  While a creation is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and `reviseGoal`
+  are each refused with an `error`, and no agent is spawned; a second `createGoal` restarts the
+  creation instead. The creation runs in the server, so closing the browser does not stop it, and
+  a client that connects during it receives `goalCreationStarted`, the recorded activity, and the
   pending question before its own command replies.
 - `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run,
   a run sequence, a goal revision, a goal creation, or another lifecycle run is active, and

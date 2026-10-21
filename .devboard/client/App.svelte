@@ -81,7 +81,15 @@
   let revisionDisabled = $derived(
     creationActive || revisionActive || (lifecycleActive ? !lifecycle.paused : running),
   );
-  let createDisabled = $derived(revisionDisabled || creationActive || goalReady);
+  let createGoalTitle = $derived(
+    creationActive
+      ? "Restart goal creation."
+      : goalReady
+        ? "Start a new goal creation and replace the current goal."
+        : running || lifecycleActive || revisionActive
+          ? "Stop the active run and start goal creation."
+          : "Start goal creation.",
+  );
   let goalEditingDisabled = $derived(lifecycleActive && !lifecycle.paused);
   let activityActive = $derived(running || creationActive || revisionActive);
   let currentAction = $derived(activity[activity.length - 1] ?? "");
@@ -603,8 +611,8 @@
         type="button"
         class="start-button create-goal"
         data-testid="create-goal"
-        title={goalReady ? "The goal is already set. Use Revise goal to change it." : undefined}
-        disabled={createDisabled}
+        title={createGoalTitle}
+        disabled={connection !== "open"}
         onclick={createGoal}
       >
         Create goal

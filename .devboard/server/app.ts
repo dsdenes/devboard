@@ -137,7 +137,7 @@ export function createApp(options: AppOptions) {
   let sequencing = false;
   let goalRevision: GoalRevision | undefined;
   let goalCreation: GoalCreation | undefined;
-  let goalCreationPending = false;
+  let goalCreationRequest = 0;
   let lifecycle: LifecycleState = { stage: "goal", pass: 1, work: null, paused: false };
   let lastLifecycle: LifecycleState | undefined;
   let lifecycleRunning = false;
@@ -308,48 +308,98 @@ export function createApp(options: AppOptions) {
     broadcastRunConversation();
   }
 
+  /** Cancels an in-flight creation; the peer's later completion is ignored. */
+  function abortGoalCreation() {
+    const creation = goalCreation;
+    if (creation === undefined) return;
+    goalCreation = undefined;
+    creation.question = null;
+    creation.agent?.close();
+    broadcast({ type: "goalCreationStopped", completed: false });
+  }
+
+  /** Cancels an in-flight revision; the peer's later completion is ignored. */
+  function abortGoalRevision() {
+    const revision = goalRevision;
+    if (revision === undefined) return;
+    goalRevision = undefined;
+    revision.question = null;
+    revision.agent?.close();
+    broadcast({ type: "goalRevisionStopped", completed: false });
+  }
+
+  /**
+   * Stops the run or lifecycle the creation would contend with. A paused
+   * lifecycle keeps its suspended peer, which creation already coexists with.
+   */
+  function abortActiveRun(): boolean {
+    if (lifecycleRunning && lifecycle.paused) return false;
+
+    let stopped = false;
+    if (lifecycleRunning) {
+      lifecycleRunning = false;
+      lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
+      publishLifecycle();
+      for (const resolve of resumeWaiters.splice(0)) resolve();
+      stopped = true;
+    }
+
+    if (sequencing) {
+      sequencing = false;
+      stopped = true;
+    }
+
+    const run = activeRun;
+    if (run !== undefined) {
+      activeRun = undefined;
+      run.question = null;
+      run.agent?.close();
+      broadcast({
+        type: "runStopped",
+        file: run.file,
+        title: run.title,
+        resolved: false,
+        status: "",
+      });
+      stopped = true;
+    }
+
+    return stopped;
+  }
+
   async function startGoalCreation(ws: { send(data: string): unknown }) {
-    if (goalCreation !== undefined || goalCreationPending) {
-      send(ws, { type: "error", message: "A goal creation is already active." });
-      return;
-    }
+    const request = ++goalCreationRequest;
 
-    if (goalRevision !== undefined) {
-      send(ws, { type: "error", message: "A goal revision is active." });
-      return;
-    }
-
-    if (lifecycleRunning && !lifecycle.paused) {
-      send(ws, { type: "error", message: "A lifecycle run is active." });
-      return;
-    }
-
-    // A paused lifecycle keeps its suspended peer in activeRun; only a run that
-    // the creation would contend with refuses the start.
-    if (!(lifecycleRunning && lifecycle.paused) && (activeRun !== undefined || sequencing)) {
-      send(ws, { type: "error", message: "A run is already active." });
-      return;
-    }
-
-    goalCreationPending = true;
-    let existing: string | undefined;
     try {
-      existing = await readFile(creationGoalFile, "utf8");
+      await readFile(creationGoalFile, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        goalCreationPending = false;
-        send(ws, {
-          type: "error",
-          message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
-        });
+        if (request === goalCreationRequest) {
+          send(ws, {
+            type: "error",
+            message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
         return;
       }
     }
-    goalCreationPending = false;
 
-    if (existing !== undefined && existing.trim().length > 0) {
-      send(ws, { type: "error", message: "The goal is already set." });
-      return;
+    // A newer request issued during the read owns the creation.
+    if (request !== goalCreationRequest) return;
+
+    // A creation request always wins: it replaces an existing goal and any
+    // creation, revision, or run that would contend with the new peer.
+    abortGoalCreation();
+    abortGoalRevision();
+    const stoppedRun = abortActiveRun();
+
+    if (stoppedRun) {
+      try {
+        broadcast({ type: "records", ...(await readRecords(adrDir)) });
+      } catch {
+        // The run is already stopped; a record read failure does not block creation.
+      }
+      if (request !== goalCreationRequest) return;
     }
 
     const creation: GoalCreation = { agent: undefined, activity: [], question: null };
@@ -594,6 +644,8 @@ export function createApp(options: AppOptions) {
         }
 
         first = false;
+        // A creation request clears the sequence; never start another record.
+        if (!sequencing) return;
         const run: ActiveRun = {
           file: record.file,
           title: record.title,
@@ -1020,7 +1072,6 @@ export function createApp(options: AppOptions) {
     goalRevision = undefined;
     goalCreation?.agent?.close();
     goalCreation = undefined;
-    goalCreationPending = false;
     return stop(closeActiveConnections);
   };
 

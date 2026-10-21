@@ -205,7 +205,7 @@ async function exercisePausedRevision(request: string | undefined) {
   const { server, goalFile, logPath, url } = await startServer(
     {},
     {
-      agentArguments: "--delay-ms=1000",
+      agentArguments: "--delay-ms=1000 --questions=1",
       reviseGoal: true,
       tracker: async () => {
         lookups += 1;
@@ -248,7 +248,7 @@ async function exercisePausedRevision(request: string | undefined) {
     const lifecycleActivity = client.events
       .filter((message) => message.type === "activity")
       .map((message) => message.text);
-    expect(lifecycleActivity).toEqual(["Revising the goal"]);
+    expect(lifecycleActivity).toEqual(["Working on /implement-next-epic"]);
 
     client.send(
       request === undefined
@@ -379,7 +379,7 @@ async function exercisePausedRevision(request: string | undefined) {
       paused: false,
     });
     expect(prompts(logPath).filter((prompt) => prompt === "/implement-next-epic")).toHaveLength(1);
-    expect(logLines(logPath).filter((line) => line.startsWith("revised "))).toHaveLength(2);
+    expect(logLines(logPath).filter((line) => line.startsWith("revised "))).toHaveLength(1);
     expect(logLines(logPath).filter((line) => line === "answer Beta")).toHaveLength(1);
   } finally {
     client.close();
@@ -1117,6 +1117,7 @@ describe("lifecycle pause and resume", () => {
         {},
         {
           reviseGoal: true,
+          agentArguments: "--questions=1",
           tracker: async () => {
             lookups += 1;
             return lookups === 1 ? epic : undefined;
@@ -1142,7 +1143,7 @@ describe("lifecycle pause and resume", () => {
         const lifecycleActivity = client.events
           .filter((message) => message.type === "activity")
           .map((message) => message.text);
-        expect(lifecycleActivity).toEqual(["Revising the goal"]);
+        expect(lifecycleActivity).toEqual(["Working on /implement-next-epic"]);
 
         client.send({ type: "pauseLifecycle" });
         await client.waitFor(

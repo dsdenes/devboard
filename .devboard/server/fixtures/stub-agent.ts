@@ -77,8 +77,9 @@ async function promptTurn(params: Record<string, unknown>) {
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
   const firstLine = text?.split("\n")[0] ?? "";
   const creating = createGoal && firstLine === "/goal-outcome";
+  const revising = reviseGoal && firstLine.startsWith("Revise the goal");
   log(`prompt ${firstLine}`);
-  if (reviseGoal) log(`request ${text ?? ""}`);
+  if (revising) log(`request ${text ?? ""}`);
 
   if (creating) {
     write({
@@ -92,7 +93,7 @@ async function promptTurn(params: Record<string, unknown>) {
         },
       },
     });
-  } else if (reviseGoal) {
+  } else if (revising) {
     write({
       jsonrpc: "2.0",
       method: "session/update",
@@ -120,7 +121,7 @@ async function promptTurn(params: Record<string, unknown>) {
 
   if (delayMs > 0) await Bun.sleep(delayMs);
 
-  if (file !== undefined && !reviseGoal) {
+  if (file !== undefined && !revising) {
     write({
       jsonrpc: "2.0",
       method: "session/update",
@@ -134,7 +135,7 @@ async function promptTurn(params: Record<string, unknown>) {
     });
   }
 
-  const questionCount = creating || reviseGoal
+  const questionCount = creating || revising
     ? 1
     : forcedQuestions !== undefined
       ? Number(forcedQuestions)
@@ -204,7 +205,7 @@ async function promptTurn(params: Record<string, unknown>) {
     return;
   }
 
-  if (reviseGoal) {
+  if (revising) {
     if (goalFile !== undefined) {
       writeFileSync(goalFile, "# Revised goal\n\nThe agent rewrote this.");
       log(`revised ${goalFile}`);
