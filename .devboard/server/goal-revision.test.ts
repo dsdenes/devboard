@@ -74,6 +74,7 @@ async function startServer(
     goalFile,
     agentCommand: command,
     tracker: options.tracker ?? (async () => undefined),
+    trackerSettle: { attempts: 1 },
   });
 
   return { server, adrDir, goalFile, logPath, url: `127.0.0.1:${server.port}` };

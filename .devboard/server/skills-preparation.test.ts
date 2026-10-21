@@ -84,6 +84,7 @@ async function startServer(options: ServerOptions = {}): Promise<TestServer> {
     goalFile,
     agentCommand: command,
     tracker: options.tracker ?? (async () => undefined),
+    trackerSettle: { attempts: 1 },
   });
 
   return { server, root, adrDir, goalFile, skillsDir, logPath, url: `127.0.0.1:${server.port}` };

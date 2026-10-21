@@ -26,7 +26,12 @@ async function temporaryDirectory() {
 
 async function startServer(
   files: Record<string, string>,
-  options: { agentArguments?: string; tracker?: EpicLookup; goalText?: string | null } = {},
+  options: {
+    agentArguments?: string;
+    tracker?: EpicLookup;
+    goalText?: string | null;
+    trackerSettle?: { attempts: number; delayMs: number };
+  } = {},
 ): Promise<TestServer> {
   const root = await temporaryDirectory();
   const adrDir = join(root, "adrs");
@@ -54,6 +59,7 @@ async function startServer(
     goalFile,
     agentCommand: `bun ${STUB_AGENT} --log=${logPath} ${options.agentArguments ?? ""}`.trim(),
     tracker: options.tracker ?? (async () => undefined),
+    trackerSettle: options.trackerSettle ?? { attempts: 1 },
   });
 
   return { server, adrDir, goalFile, logPath, url: `127.0.0.1:${server.port}` };
@@ -635,6 +641,153 @@ describe("lifecycle runs", () => {
           { type: "lifecycleState", stage: "epic", pass: 2, work: null, paused: false },
           { type: "lifecycleState", stage: "finished", pass: 2, work: null, paused: false },
         ]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "waits for a just-created epic the tracker reports only after a delay",
+    async () => {
+      const epic: OpenEpic = {
+        number: 31,
+        title: "Just created",
+        url: "https://example.test/issues/31",
+      };
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        {
+          trackerSettle: { attempts: 4, delayMs: 10 },
+          tracker: async () => {
+            lookups += 1;
+            return lookups === 3 || lookups === 4 ? epic : undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.stage === "implementation",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "implementation",
+          pass: 1,
+          work: { kind: "epic", id: "31" },
+          paused: false,
+        });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "runStarted" && message.title === "Just created",
+          ),
+        ).toMatchObject({ file: "", title: "Just created" });
+
+        const started = Date.now() + 5000;
+        while (prompts(logPath).length < 2 && Date.now() < started) await Bun.sleep(25);
+        expect(prompts(logPath)).toEqual(["/epic-next", "/implement-next-epic"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "waits out a just-closed epic instead of aborting the pass",
+    async () => {
+      const epic: OpenEpic = {
+        number: 32,
+        title: "Just closed",
+        url: "https://example.test/issues/32",
+      };
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        {
+          trackerSettle: { attempts: 4, delayMs: 10 },
+          tracker: async () => {
+            lookups += 1;
+            return lookups <= 2 ? epic : undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "implementation",
+        );
+        expect(
+          await client.waitFor(
+            (message) =>
+              message.type === "lifecycleState" &&
+              message.stage === "epic" &&
+              message.pass === 2,
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 2,
+          work: null,
+          paused: false,
+        });
+        expect(
+          client.events.filter(
+            (message) =>
+              message.type === "error" &&
+              message.message === "Implementation ended but epic #32 is still open.",
+          ),
+        ).toEqual([]);
+
+        const started = Date.now() + 5000;
+        while (prompts(logPath).length < 2 && Date.now() < started) await Bun.sleep(25);
+        expect(prompts(logPath)).toEqual(["/implement-next-epic", "/epic-next"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "gives up waiting for a lagging tracker and finishes",
+    async () => {
+      let lookups = 0;
+      const { server, url } = await startServer(
+        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        {
+          trackerSettle: { attempts: 3, delayMs: 10 },
+          tracker: async () => {
+            lookups += 1;
+            return undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
+        expect(lookups).toBe(4);
       } finally {
         client.close();
         server.stop(true);
