@@ -26,12 +26,9 @@
     options: RunQuestionOption[];
   }
 
-  type SkillCategory = "architecture" | "code-organization" | "testing";
-
   interface SkillSummary {
     name: string;
     description: string;
-    category: SkillCategory;
   }
 
   interface SkillContradiction {
@@ -244,11 +241,7 @@
       "name" in value &&
       typeof value.name === "string" &&
       "description" in value &&
-      typeof value.description === "string" &&
-      "category" in value &&
-      (value.category === "architecture" ||
-        value.category === "code-organization" ||
-        value.category === "testing")
+      typeof value.description === "string"
     );
   }
 
@@ -902,11 +895,8 @@
       <h2 class="skills-heading">Skills</h2>
       <ul class="skill-list">
         {#each skills as skill (skill.name)}
-          <li class="skill" data-testid="skill" data-name={skill.name} data-category={skill.category}>
-            <div class="skill-heading">
-              <span class="skill-name">{skill.name}</span>
-              <span class="skill-category">{skill.category}</span>
-            </div>
+          <li class="skill" data-testid="skill" data-name={skill.name}>
+            <span class="skill-name">{skill.name}</span>
             <p class="skill-description">{skill.description}</p>
           </li>
         {/each}

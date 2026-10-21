@@ -23,6 +23,7 @@ const createGoalWrite = !process.argv.includes("--no-create-goal-write");
 const goalFile = argument("goal");
 const prepareSkills = process.argv.includes("--prepare-skills");
 const prepareSkillsInvalid = process.argv.includes("--prepare-skills-invalid");
+const prepareSkillsEmpty = process.argv.includes("--prepare-skills-empty");
 const prepareSkillsConflict = process.argv.includes("--prepare-skills-conflict");
 const prepareSkillsCollision = process.argv.includes("--prepare-skills-collision");
 const prepareSkillsError = process.argv.includes("--prepare-skills-error");
@@ -74,7 +75,6 @@ function markAccepted(file: string) {
 function writeSkill(
   name: string,
   description: string,
-  category: string,
   body: string,
   header = `name: ${name}\ndescription: ${description}`,
 ) {
@@ -82,37 +82,35 @@ function writeSkill(
   mkdirSync(directory, { recursive: true });
   writeFileSync(
     join(directory, "SKILL.md"),
-    `---\n${header}\nmetadata:\n  devboard-managed: "true"\n  devboard-category: ${category}\n---\n\n${body}\n`,
+    `---\n${header}\nmetadata:\n  devboard-managed: "true"\n---\n\n${body}\n`,
   );
   log(`skill ${name}`);
 }
 
 function writePreparedSkills() {
+  if (prepareSkillsEmpty) return;
+
   writeSkill(
-    "architecture-boundaries",
-    "Choose dependency direction and module boundaries for the documented HTTP API.",
-    "architecture",
-    "# Architecture boundaries\n\n- Always declare dependencies in one direction.\n- Keep transport, domain, and storage concerns in separate layers.\n",
+    "dependency-direction",
+    "Choose dependency direction and boundary ownership for any layered design.",
+    "# Dependency direction\n\n- Always declare dependencies in one direction.\n- Keep policy separate from delivery and storage concerns.\n",
   );
   writeSkill(
-    "code-organization-modules",
-    "Organize HTTP request handling into small modules with one responsibility.",
-    "code-organization",
-    "# Code organization\n\n- Prefer small modules with one responsibility.\n- Keep request handling separate from response formatting.\n",
+    "cohesive-units",
+    "Organize units of code so each owns one cohesive responsibility.",
+    "# Cohesive units\n\n- Prefer small units with one responsibility.\n- Keep each public interface narrow and explicit.\n",
   );
   writeSkill(
-    "testing-strategy",
-    "Verify documented API behavior through focused automated tests.",
-    "testing",
-    "# Testing\n\n- Test observable behavior at the API boundary.\n- Prefer focused tests that fail for one reason.\n",
+    "behavior-first-testing",
+    "Verify observable behavior with focused automated tests.",
+    "# Behavior-first testing\n\n- Test observable behavior at the public boundary.\n- Prefer focused tests that fail for one reason.\n",
   );
 
   if (prepareSkillsConflict) {
     writeSkill(
-      "architecture-boundaries",
-      "Choose dependency direction and module boundaries for the documented HTTP API.",
-      "architecture",
-      "# Architecture boundaries\n\n- Always use dependency injection.\n- Keep transport, domain, and storage concerns in separate layers.\n",
+      "dependency-direction",
+      "Choose dependency direction and boundary ownership for any layered design.",
+      "# Dependency direction\n\n- Always use dependency injection.\n- Keep policy separate from delivery and storage concerns.\n",
     );
   }
 
@@ -120,7 +118,6 @@ function writePreparedSkills() {
     writeSkill(
       collisionName,
       "A generated skill placed at an unmanaged skill's name.",
-      "architecture",
       "# Generated skill\n\n- Keep one writer for every installed skill.\n",
     );
   }
@@ -129,8 +126,7 @@ function writePreparedSkills() {
     writeSkill(
       "invalid-skill",
       "",
-      "miscellaneous",
-      "# Invalid skill\n\n- Missing a description and a supported category.\n",
+      "# Invalid skill\n\n- Missing a description.\n",
       "name: Invalid Name\ndescription:",
     );
   }
@@ -207,7 +203,7 @@ async function promptTurn(params: Record<string, unknown>) {
           sessionUpdate: "agent_message_chunk",
           content: {
             type: "text",
-            text: "Researching current architecture, code organization, and testing practices",
+            text: "Researching public standards, architecture patterns, and testing practice",
           },
         },
       },
