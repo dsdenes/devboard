@@ -3,7 +3,7 @@
 A byte-compatible, drop-in replacement for `@msgpack/msgpack` (msgpack-javascript)
 covering everyday payloads: nulls, booleans, numbers, strings, binary data, arrays,
 maps, timestamps, application-registered extension types, and nested combinations
-of them. Applications keep importing `encode` and `decode` from
+of them. Applications keep importing `encode`, `decode`, and `decodeMulti` from
 `@msgpack/msgpack`; only the dependency that provides that package changes.
 
 ## Adoption
@@ -28,9 +28,11 @@ The package exposes conditional ESM and CommonJS entry points, so both
 
 - `encode(value, options?)` returns the MessagePack encoding as a `Uint8Array`.
 - `decode(buffer, options?)` accepts a `Uint8Array`, another `ArrayBufferView`,
-  an `ArrayBuffer`, or an array-like of bytes.
+  an `ArrayBuffer`, or an array-like of bytes, and decodes exactly one message.
+- `decodeMulti(buffer, options?)` accepts the same input forms and returns a
+  generator that yields every consecutive message in the buffer, in order.
 - `new Encoder(options?)` with `encode` and `encodeSharedRef`.
-- `new Decoder(options?)` with `decode`.
+- `new Decoder(options?)` with `decode` and `decodeMulti`.
 - `new ExtensionCodec()` with `register`, `tryToEncode`, and `decode`, plus
   `ExtensionCodec.defaultCodec` and `ExtData`.
 - `DecodeError`, the error class raised by decoder length limits and the
@@ -39,12 +41,33 @@ The package exposes conditional ESM and CommonJS entry points, so both
   `encodeTimeSpecToTimestamp`, `decodeTimestampToTimeSpec`,
   `encodeTimestampExtension`, and `decodeTimestampExtension`.
 - `Encoder` and `Decoder` accept every option listed below; the module-level
-  `encode` and `decode` accept the same options.
+  `encode`, `decode`, and `decodeMulti` accept the same options.
 
 Default behaviour matches msgpack-javascript 3.1.3: smallest integer widths,
 float64 for non-integers, UTF-8 strings with the same fixstr/str8/str16/str32
 thresholds, the same bin/array/map widths, plain-object maps with string or
 number keys, `Uint8Array` binary values, and the built-in timestamp extension.
+
+## Multiple messages
+
+`decodeMulti` reads a buffer that holds several consecutive MessagePack values,
+the same way msgpack-javascript does:
+
+```ts
+import { decodeMulti, encode } from "@msgpack/msgpack";
+
+const buffer = new Uint8Array([...encode("first"), ...encode({ second: 2 })]);
+for (const message of decodeMulti(buffer)) {
+  console.log(message);
+}
+```
+
+The module function and `new Decoder(options).decodeMulti(buffer)` yield the
+same values in the same order and accept the same decoding options. An empty
+buffer yields no messages. If the final message is incomplete, every complete
+message before it is yielded and the iteration then throws `RangeError`, as in
+the reference. `decode` keeps decoding exactly one message and rejects a buffer
+that holds more.
 
 ## Extensions
 
@@ -110,11 +133,12 @@ cache.
 
 In scope: the value types listed above, the built-in timestamp extension,
 application-registered extension types, `context`, every documented encoding
-and decoding option, and nested combinations.
+and decoding option, nested combinations, and synchronous multi-message
+decoding of a buffer.
 
-Out of scope by design, matching the epic's non-goals: streaming and multi-value
-decoding, malformed-input error parity, type-declaration parity, and
-publishing.
+Out of scope by design, matching the epic's non-goals: streaming or
+asynchronous multi-message decoding, malformed-input error parity beyond an
+incomplete final message, type-declaration parity, and publishing.
 
 Out-of-scope inputs may be unsupported, but they cannot change the result for an
 in-scope payload.
@@ -127,6 +151,7 @@ bun test              # byte identity and decode identity against msgpack-javasc
 bun run typecheck
 bun run bench         # side-by-side encoding and decoding
 bun run verify:options
+bun run verify:multi
 bun run verify:adoption
 ```
 
@@ -140,6 +165,13 @@ at and beyond their boundary.
 adopting application does, and compares each documented option, several
 combined options, limit boundaries and their `DecodeError` category, the
 CommonJS entry point, and no-option encoding and decoding with the reference.
+
+`bun run verify:multi` imports the built package under the original
+`@msgpack/msgpack` name, encodes varied values with the reference, concatenates
+the bytes, and compares `decodeMulti` and `Decoder.decodeMulti` against the
+reference for every payload type, every decoding option and limit, an empty
+buffer, and every truncation point of a final message. It fails if the delivered
+values, order, error category, or error message differ.
 
 `bun run bench` builds the shipped package, then measures both libraries on the
 same machine, payloads, and process, with warmup, alternating order, and the
@@ -196,6 +228,6 @@ No measured payload was slower for either operation; all 23 were faster for both
 - `packages/msgpack/lib/` — built ESM, CommonJS, and declarations.
 - `test/` — byte and value parity tests and the fixture corpus.
 - `bench/` — side-by-side performance harness.
-- `verification/` — server and browser adoption checks.
+- `verification/` — option, multi-message, and adoption checks.
 - `examples/server`, `examples/browser` — applications that adopt the package
   without source changes.

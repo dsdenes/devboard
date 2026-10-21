@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   decode as referenceDecode,
+  decodeMulti as referenceDecodeMulti,
   encode as referenceEncode,
   ExtData as ReferenceExtData,
   ExtensionCodec as ReferenceExtensionCodec,
 } from "msgpack-javascript-original";
 import {
   decode,
+  decodeMulti,
   Decoder,
   encode,
   Encoder,
@@ -275,5 +277,113 @@ describe("class API and input forms", () => {
   test("number map keys decode as object properties", () => {
     const bytes = referenceEncode({ 1: "one", 2: "two" });
     assertSameValue(decode(bytes), { 1: "one", 2: "two" });
+  });
+});
+
+interface MultiOutcome {
+  values: unknown[];
+  error: { constructor: string; message: string } | null;
+}
+
+function collectMulti(run: () => Iterable<unknown>): MultiOutcome {
+  const values: unknown[] = [];
+  try {
+    for (const value of run()) {
+      values.push(value);
+    }
+    return { values, error: null };
+  } catch (error) {
+    const typed = error as Error;
+    return { values, error: { constructor: typed.constructor.name, message: typed.message } };
+  }
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  let length = 0;
+  for (const chunk of chunks) {
+    length += chunk.length;
+  }
+  const result = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
+describe("multi-message decoding", () => {
+  const values = [
+    ...allPayloads.map((payload) => payload.value),
+    ...timestampPayloads.map((payload) => payload.value),
+    ...customPayloads.map((payload) => payload.value),
+    ...binaryPayloads.map((payload) => payload.value),
+  ];
+  const referenceOptions = { extensionCodec: referenceCodec };
+  const replacementOptions = { extensionCodec: replacementCodec };
+  const bytes = concatBytes(values.map((value) => referenceEncode(value, referenceOptions)));
+
+  test("delivers every consecutive message in order", () => {
+    const expected = collectMulti(() => referenceDecodeMulti(bytes, referenceOptions));
+    const actual = collectMulti(() => decodeMulti(bytes, replacementOptions));
+    expect(expected.error).toBeNull();
+    expect(actual.error).toBeNull();
+    expect(actual.values.length).toBe(values.length);
+    for (let i = 0; i < expected.values.length; i++) {
+      assertSameValue(actual.values[i], expected.values[i], `$[${i}]`);
+    }
+  });
+
+  test("Decoder.decodeMulti matches the module function", () => {
+    const expected = collectMulti(() => new Decoder(replacementOptions).decodeMulti(bytes));
+    const actual = collectMulti(() => decodeMulti(bytes, replacementOptions));
+    expect(expected.error).toBeNull();
+    expect(actual.error).toBeNull();
+    expect(actual.values.length).toBe(expected.values.length);
+    for (let i = 0; i < expected.values.length; i++) {
+      assertSameValue(actual.values[i], expected.values[i], `$[${i}]`);
+    }
+  });
+
+  test("empty buffer yields zero messages", () => {
+    const empty = new Uint8Array(0);
+    expect(collectMulti(() => decodeMulti(empty))).toEqual({ values: [], error: null });
+    expect(collectMulti(() => new Decoder().decodeMulti(empty))).toEqual({ values: [], error: null });
+  });
+
+  test("truncated final message delivers complete messages then fails like the reference", () => {
+    const prefix = [referenceEncode(null), referenceEncode("prefix")];
+    const tail = referenceEncode(
+      {
+        text: "x".repeat(40),
+        binary: new Uint8Array(40).fill(7),
+        at: new Date(0),
+        custom: customPayloads[0].value,
+      },
+      referenceOptions,
+    );
+    for (let cut = 1; cut < tail.length; cut++) {
+      const truncated = concatBytes([...prefix, tail.subarray(0, cut)]);
+      const expected = collectMulti(() => referenceDecodeMulti(truncated, referenceOptions));
+      const actual = collectMulti(() => decodeMulti(truncated, replacementOptions));
+      const classActual = collectMulti(() => new Decoder(replacementOptions).decodeMulti(truncated));
+
+      expect(actual.values.length).toBe(2);
+      expect(actual.error?.constructor).toBe("RangeError");
+      expect(actual).toEqual(expected);
+      expect(classActual).toEqual(expected);
+      assertSameValue(actual.values[0], null);
+      assertSameValue(actual.values[1], "prefix");
+    }
+  });
+
+  test("single-message decode still rejects a buffer with multiple messages", () => {
+    const two = concatBytes([referenceEncode("first"), referenceEncode("second")]);
+    expect(() => decode(two)).toThrow(RangeError);
+    expect(() => new Decoder().decode(two)).toThrow(RangeError);
+    expect(collectMulti(() => decodeMulti(two))).toEqual({
+      values: ["first", "second"],
+      error: null,
+    });
   });
 });

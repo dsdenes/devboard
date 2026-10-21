@@ -47,6 +47,7 @@ __export(exports_src, {
   ExtData: () => ExtData,
   ExtensionCodec: () => ExtensionCodec,
   decode: () => decode,
+  decodeMulti: () => decodeMulti,
   decodeTimestampExtension: () => decodeTimestampExtension,
   decodeTimestampToTimeSpec: () => decodeTimestampToTimeSpec,
   encode: () => encode,
@@ -946,6 +947,23 @@ class Decoder {
       this.entered = false;
     }
   }
+  *decodeMulti(buffer) {
+    if (this.entered) {
+      yield* new Decoder(this.options).decodeMulti(buffer);
+      return;
+    }
+    this.entered = true;
+    try {
+      const reader = this.reader;
+      reader.settings = this.settings;
+      reader.set(buffer);
+      while (reader.pos < reader.bytes.length) {
+        yield decodeValue(reader, false);
+      }
+    } finally {
+      this.entered = false;
+    }
+  }
 }
 function decode(buffer, options) {
   const settings = resolveDecoderSettings(options);
@@ -965,9 +983,11 @@ function decode(buffer, options) {
   }
   return new Decoder(options).decode(buffer);
 }
+function decodeMulti(buffer, options) {
+  return new Decoder(options).decodeMulti(buffer);
+}
 function decodeValue(reader, isMapKey) {
-  const bytes = reader.bytes;
-  const head = bytes[reader.pos++];
+  const head = reader.view.getUint8(reader.pos++);
   if (head < 128) {
     return head;
   }
@@ -1001,14 +1021,14 @@ function decodeValue(reader, isMapKey) {
       return value;
     }
     case 204:
-      return bytes[reader.pos++];
+      return reader.view.getUint8(reader.pos++);
     case 205: {
-      const value = bytes[reader.pos] << 8 | bytes[reader.pos + 1];
+      const value = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return value;
     }
     case 206: {
-      const value = readU32(bytes, reader.pos);
+      const value = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return value;
     }
@@ -1018,22 +1038,23 @@ function decodeValue(reader, isMapKey) {
         reader.pos += 8;
         return value;
       }
-      const value = readU32(bytes, reader.pos) * 4294967296 + readU32(bytes, reader.pos + 4);
+      const high = reader.view.getUint32(reader.pos);
+      const low = reader.view.getUint32(reader.pos + 4);
       reader.pos += 8;
-      return value;
+      return high * 4294967296 + low;
     }
     case 208: {
-      const value = bytes[reader.pos] << 24 >> 24;
+      const value = reader.view.getInt8(reader.pos);
       reader.pos += 1;
       return value;
     }
     case 209: {
-      const value = (bytes[reader.pos] << 8 | bytes[reader.pos + 1]) << 16 >> 16;
+      const value = reader.view.getInt16(reader.pos);
       reader.pos += 2;
       return value;
     }
     case 210: {
-      const value = bytes[reader.pos] << 24 | bytes[reader.pos + 1] << 16 | bytes[reader.pos + 2] << 8 | bytes[reader.pos + 3];
+      const value = reader.view.getInt32(reader.pos);
       reader.pos += 4;
       return value;
     }
@@ -1043,54 +1064,54 @@ function decodeValue(reader, isMapKey) {
         reader.pos += 8;
         return value;
       }
-      const high = bytes[reader.pos] << 24 | bytes[reader.pos + 1] << 16 | bytes[reader.pos + 2] << 8 | bytes[reader.pos + 3];
-      const low = readU32(bytes, reader.pos + 4);
+      const high = reader.view.getInt32(reader.pos);
+      const low = reader.view.getUint32(reader.pos + 4);
       reader.pos += 8;
       return high * 4294967296 + low;
     }
     case 217: {
-      const length = bytes[reader.pos++];
+      const length = reader.view.getUint8(reader.pos++);
       return decodeString(reader, length, false);
     }
     case 218: {
-      const length = bytes[reader.pos] << 8 | bytes[reader.pos + 1];
+      const length = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return decodeString(reader, length, false);
     }
     case 219: {
-      const length = readU32(bytes, reader.pos);
+      const length = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return decodeString(reader, length, false);
     }
     case 220: {
-      const size = bytes[reader.pos] << 8 | bytes[reader.pos + 1];
+      const size = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return decodeArray(reader, size);
     }
     case 221: {
-      const size = readU32(bytes, reader.pos);
+      const size = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return decodeArray(reader, size);
     }
     case 222: {
-      const size = bytes[reader.pos] << 8 | bytes[reader.pos + 1];
+      const size = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return decodeMap(reader, size);
     }
     case 223: {
-      const size = readU32(bytes, reader.pos);
+      const size = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return decodeMap(reader, size);
     }
     case 196:
-      return decodeBinary(reader, bytes[reader.pos++]);
+      return decodeBinary(reader, reader.view.getUint8(reader.pos++));
     case 197: {
-      const size = bytes[reader.pos] << 8 | bytes[reader.pos + 1];
+      const size = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return decodeBinary(reader, size);
     }
     case 198: {
-      const size = readU32(bytes, reader.pos);
+      const size = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return decodeBinary(reader, size);
     }
@@ -1105,16 +1126,16 @@ function decodeValue(reader, isMapKey) {
     case 216:
       return decodeExtension(reader, 16);
     case 199: {
-      const size = bytes[reader.pos++];
+      const size = reader.view.getUint8(reader.pos++);
       return decodeExtension(reader, size);
     }
     case 200: {
-      const size = bytes[reader.pos] << 8 | bytes[reader.pos + 1];
+      const size = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return decodeExtension(reader, size);
     }
     case 201: {
-      const size = readU32(bytes, reader.pos);
+      const size = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return decodeExtension(reader, size);
     }
@@ -1132,11 +1153,11 @@ function decodeExtension(reader, size) {
   if (size > settings.maxBinLength) {
     throw new DecodeError(`Max length exceeded: bin length (${size}) > maxBinLength (${settings.maxBinLength})`);
   }
+  if (size > reader.bytes.length - start) {
+    throw new RangeError("Insufficient data");
+  }
   reader.pos = start + size;
   return settings.extensionCodec.decode(reader.bytes.subarray(start, start + size), type, settings.context);
-}
-function readU32(bytes, pos) {
-  return (bytes[pos] << 24 | bytes[pos + 1] << 16 | bytes[pos + 2] << 8 | bytes[pos + 3]) >>> 0;
 }
 function decodeString(reader, length, isMapKey) {
   const settings = reader.settings;
@@ -1145,6 +1166,9 @@ function decodeString(reader, length, isMapKey) {
   }
   if (length > settings.maxStrLength) {
     throw new DecodeError(`Max length exceeded: UTF-8 byte length (${length}) > maxStrLength (${settings.maxStrLength})`);
+  }
+  if (length > reader.bytes.length - reader.pos) {
+    throw new RangeError("Insufficient data");
   }
   const start = reader.pos;
   reader.pos += length;
@@ -1156,6 +1180,9 @@ function decodeString(reader, length, isMapKey) {
 function decodeBinary(reader, size) {
   if (size > reader.settings.maxBinLength) {
     throw new DecodeError(`Max length exceeded: bin length (${size}) > maxBinLength (${reader.settings.maxBinLength})`);
+  }
+  if (size > reader.bytes.length - reader.pos) {
+    throw new RangeError("Insufficient data");
   }
   const start = reader.pos;
   reader.pos += size;

@@ -198,6 +198,24 @@ export class Decoder {
       this.entered = false;
     }
   }
+
+  *decodeMulti(buffer: Input): Generator<unknown, void, unknown> {
+    if (this.entered) {
+      yield* new Decoder(this.options).decodeMulti(buffer);
+      return;
+    }
+    this.entered = true;
+    try {
+      const reader = this.reader;
+      reader.settings = this.settings;
+      reader.set(buffer);
+      while (reader.pos < reader.bytes.length) {
+        yield decodeValue(reader, false);
+      }
+    } finally {
+      this.entered = false;
+    }
+  }
 }
 
 export function decode(buffer: Input, options?: DecoderOptions): unknown {
@@ -221,9 +239,12 @@ export function decode(buffer: Input, options?: DecoderOptions): unknown {
   return new Decoder(options).decode(buffer);
 }
 
+export function decodeMulti(buffer: Input, options?: DecoderOptions): Generator<unknown, void, unknown> {
+  return new Decoder(options).decodeMulti(buffer);
+}
+
 function decodeValue(reader: Reader, isMapKey: boolean): unknown {
-  const bytes = reader.bytes;
-  const head = bytes[reader.pos++];
+  const head = reader.view.getUint8(reader.pos++);
 
   if (head < 0x80) {
     return head;
@@ -259,14 +280,14 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
       return value;
     }
     case 0xcc:
-      return bytes[reader.pos++];
+      return reader.view.getUint8(reader.pos++);
     case 0xcd: {
-      const value = (bytes[reader.pos] << 8) | bytes[reader.pos + 1];
+      const value = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return value;
     }
     case 0xce: {
-      const value = readU32(bytes, reader.pos);
+      const value = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return value;
     }
@@ -276,25 +297,23 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
         reader.pos += 8;
         return value;
       }
-      const value = readU32(bytes, reader.pos) * 0x100000000 + readU32(bytes, reader.pos + 4);
+      const high = reader.view.getUint32(reader.pos);
+      const low = reader.view.getUint32(reader.pos + 4);
       reader.pos += 8;
-      return value;
+      return high * 0x100000000 + low;
     }
     case 0xd0: {
-      const value = (bytes[reader.pos] << 24) >> 24;
+      const value = reader.view.getInt8(reader.pos);
       reader.pos += 1;
       return value;
     }
     case 0xd1: {
-      const value = ((bytes[reader.pos] << 8) | bytes[reader.pos + 1]) << 16 >> 16;
+      const value = reader.view.getInt16(reader.pos);
       reader.pos += 2;
       return value;
     }
     case 0xd2: {
-      const value = (bytes[reader.pos] << 24) |
-        (bytes[reader.pos + 1] << 16) |
-        (bytes[reader.pos + 2] << 8) |
-        bytes[reader.pos + 3];
+      const value = reader.view.getInt32(reader.pos);
       reader.pos += 4;
       return value;
     }
@@ -304,57 +323,54 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
         reader.pos += 8;
         return value;
       }
-      const high = (bytes[reader.pos] << 24) |
-        (bytes[reader.pos + 1] << 16) |
-        (bytes[reader.pos + 2] << 8) |
-        bytes[reader.pos + 3];
-      const low = readU32(bytes, reader.pos + 4);
+      const high = reader.view.getInt32(reader.pos);
+      const low = reader.view.getUint32(reader.pos + 4);
       reader.pos += 8;
       return high * 0x100000000 + low;
     }
     case 0xd9: {
-      const length = bytes[reader.pos++];
+      const length = reader.view.getUint8(reader.pos++);
       return decodeString(reader, length, false);
     }
     case 0xda: {
-      const length = (bytes[reader.pos] << 8) | bytes[reader.pos + 1];
+      const length = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return decodeString(reader, length, false);
     }
     case 0xdb: {
-      const length = readU32(bytes, reader.pos);
+      const length = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return decodeString(reader, length, false);
     }
     case 0xdc: {
-      const size = (bytes[reader.pos] << 8) | bytes[reader.pos + 1];
+      const size = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return decodeArray(reader, size);
     }
     case 0xdd: {
-      const size = readU32(bytes, reader.pos);
+      const size = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return decodeArray(reader, size);
     }
     case 0xde: {
-      const size = (bytes[reader.pos] << 8) | bytes[reader.pos + 1];
+      const size = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return decodeMap(reader, size);
     }
     case 0xdf: {
-      const size = readU32(bytes, reader.pos);
+      const size = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return decodeMap(reader, size);
     }
     case 0xc4:
-      return decodeBinary(reader, bytes[reader.pos++]);
+      return decodeBinary(reader, reader.view.getUint8(reader.pos++));
     case 0xc5: {
-      const size = (bytes[reader.pos] << 8) | bytes[reader.pos + 1];
+      const size = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return decodeBinary(reader, size);
     }
     case 0xc6: {
-      const size = readU32(bytes, reader.pos);
+      const size = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return decodeBinary(reader, size);
     }
@@ -369,16 +385,16 @@ function decodeValue(reader: Reader, isMapKey: boolean): unknown {
     case 0xd8:
       return decodeExtension(reader, 16);
     case 0xc7: {
-      const size = bytes[reader.pos++];
+      const size = reader.view.getUint8(reader.pos++);
       return decodeExtension(reader, size);
     }
     case 0xc8: {
-      const size = (bytes[reader.pos] << 8) | bytes[reader.pos + 1];
+      const size = reader.view.getUint16(reader.pos);
       reader.pos += 2;
       return decodeExtension(reader, size);
     }
     case 0xc9: {
-      const size = readU32(bytes, reader.pos);
+      const size = reader.view.getUint32(reader.pos);
       reader.pos += 4;
       return decodeExtension(reader, size);
     }
@@ -403,12 +419,11 @@ function decodeExtension(reader: Reader, size: number): unknown {
       `Max length exceeded: bin length (${size}) > maxBinLength (${settings.maxBinLength})`,
     );
   }
+  if (size > reader.bytes.length - start) {
+    throw new RangeError("Insufficient data");
+  }
   reader.pos = start + size;
   return settings.extensionCodec.decode(reader.bytes.subarray(start, start + size), type, settings.context);
-}
-
-function readU32(bytes: Uint8Array, pos: number): number {
-  return ((bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3]) >>> 0;
 }
 
 function decodeString(reader: Reader, length: number, isMapKey: boolean): string | Uint8Array {
@@ -424,6 +439,9 @@ function decodeString(reader: Reader, length: number, isMapKey: boolean): string
     throw new DecodeError(
       `Max length exceeded: UTF-8 byte length (${length}) > maxStrLength (${settings.maxStrLength})`,
     );
+  }
+  if (length > reader.bytes.length - reader.pos) {
+    throw new RangeError("Insufficient data");
   }
 
   const start = reader.pos;
@@ -441,6 +459,9 @@ function decodeBinary(reader: Reader, size: number): Uint8Array {
     throw new DecodeError(
       `Max length exceeded: bin length (${size}) > maxBinLength (${reader.settings.maxBinLength})`,
     );
+  }
+  if (size > reader.bytes.length - reader.pos) {
+    throw new RangeError("Insufficient data");
   }
   const start = reader.pos;
   reader.pos += size;

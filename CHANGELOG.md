@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0
+
+- Add `decodeMulti(buffer, options?)` and `Decoder.prototype.decodeMulti`,
+  matching msgpack-javascript 3.1.3 for a buffer holding consecutive messages:
+  values are delivered in order, an empty buffer yields no messages, and a
+  truncated final message delivers the complete messages before it and then
+  throws `RangeError`.
+- Apply every documented decoding option to multi-message decoding, including
+  extension codecs, context, `useBigInt64`, `rawStrings`, the `max*Length`
+  limits, `keyDecoder`, and `mapKeyConverter`.
+- Match the reference's out-of-bounds and insufficient-data errors while
+  decoding fixed-width values, strings, binaries, and extension payloads.
+- Keep single-message decoding unchanged, including rejection of extra bytes.
+- Add multi-message parity tests and `bun run verify:multi`, which exercises the
+  built package under the original package name against the reference.
+
 ## 0.2.0
 
 - Support every documented msgpack-javascript 3.1.3 encoding option:

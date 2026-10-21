@@ -90,6 +90,9 @@ export declare class Encoder {
 export declare class Decoder {
   constructor(options?: DecoderOptions);
   decode(buffer: ArrayLike<number> | ArrayBufferView | ArrayBuffer): unknown;
+  decodeMulti(
+    buffer: ArrayLike<number> | ArrayBufferView | ArrayBuffer,
+  ): Generator<unknown, void, unknown>;
 }
 
 export declare const DEFAULT_INITIAL_BUFFER_SIZE: number;
@@ -99,3 +102,7 @@ export declare function decode(
   buffer: ArrayLike<number> | ArrayBufferView | ArrayBuffer,
   options?: DecoderOptions,
 ): unknown;
+export declare function decodeMulti(
+  buffer: ArrayLike<number> | ArrayBufferView | ArrayBuffer,
+  options?: DecoderOptions,
+): Generator<unknown, void, unknown>;

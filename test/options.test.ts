@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   decode as referenceDecode,
+  decodeMulti as referenceDecodeMulti,
   encode as referenceEncode,
   ExtensionCodec as ReferenceExtensionCodec,
 } from "msgpack-javascript-original";
 import {
   DecodeError,
   decode,
+  decodeMulti,
   Decoder,
   encode,
   Encoder,
@@ -578,4 +580,204 @@ describe("no-option behavior is unchanged", () => {
     assertSameValue(decode(bytes), referenceDecode(bytes));
     assertSameValue(new Decoder().decode(bytes), referenceDecode(bytes));
   });
+});
+
+interface MultiOutcome {
+  values: unknown[];
+  error: CapturedError | null;
+}
+
+function captureMulti(run: () => Iterable<unknown>): MultiOutcome {
+  const values: unknown[] = [];
+  try {
+    for (const value of run()) {
+      values.push(value);
+    }
+    return { values, error: null };
+  } catch (error) {
+    return { values, error: captureError(() => { throw error; }) };
+  }
+}
+
+function concatMessages(chunks: Uint8Array[]): Uint8Array {
+  let length = 0;
+  for (const chunk of chunks) {
+    length += chunk.length;
+  }
+  const result = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
+function assertSameMultiOutcome(actual: MultiOutcome, expected: MultiOutcome, label: string): void {
+  expect(actual.error).toEqual(expected.error);
+  if (actual.error !== null) {
+    return;
+  }
+  expect(actual.values.length).toBe(expected.values.length);
+  for (let i = 0; i < expected.values.length; i++) {
+    assertSameValue(actual.values[i], expected.values[i], `${label} $[${i}]`);
+  }
+}
+
+describe("decoding options apply to multi-message decoding", () => {
+  function check(
+    name: string,
+    values: unknown[],
+    options: Options,
+    encodeOptions: Options = {},
+    referenceOptions: Options = options,
+  ): void {
+    test(name, () => {
+      const bytes = concatMessages(values.map((value) => referenceEncode(value, encodeOptions as never)));
+      const expected = captureMulti(() => referenceDecodeMulti(bytes, referenceOptions as never));
+      const actual = captureMulti(() => decodeMulti(bytes, options));
+      assertSameMultiOutcome(actual, expected, name);
+      assertSameMultiOutcome(
+        captureMulti(() => new Decoder(options).decodeMulti(bytes)),
+        expected,
+        `${name} (Decoder)`,
+      );
+    });
+  }
+
+  test("useBigInt64", () => {
+    const values = [0n, 1n, -1n, 0xffffffffn, 0x100000000n, 1.5];
+    const bytes = concatMessages(values.map((value) => referenceEncode(value, { useBigInt64: true })));
+    const expected = captureMulti(() => referenceDecodeMulti(bytes, { useBigInt64: true }));
+    assertSameMultiOutcome(
+      captureMulti(() => decodeMulti(bytes, { useBigInt64: true })),
+      expected,
+      "useBigInt64",
+    );
+  });
+
+  check(
+    "extensionCodec and context",
+    [customPayloads[0].value, { point: customPayloads[0].value, at: new Date(0) }],
+    { extensionCodec: replacementCodec, context: { tag: "decode" } },
+    { extensionCodec: referenceCodec },
+    { extensionCodec: referenceCodec, context: { tag: "decode" } },
+  );
+
+  check(
+    "rawStrings leaves map keys as strings",
+    ["abc", { nested: ["value", ""] }, ["日本語", 1]],
+    { rawStrings: true },
+  );
+
+  check(
+    "mapKeyConverter and keyDecoder null",
+    [{ 1: "one", 2: "two" }, { alpha: { beta: 1 } }],
+    { mapKeyConverter: (key: unknown) => `k${String(key)}`, keyDecoder: null },
+  );
+
+  check(
+    "custom keyDecoder",
+    [{ alpha: 1, "日本語": 2 }, { nested: { key: "value" } }],
+    {
+      keyDecoder: {
+        canBeCached: (byteLength: number) => byteLength > 0 && byteLength <= 16,
+        decode: (bytes: Uint8Array, offset: number, length: number) =>
+          "k:" + new TextDecoder().decode(bytes.subarray(offset, offset + length)),
+      },
+    },
+  );
+
+  test("length limits match the reference at and beyond each boundary", () => {
+    const scenarios: Array<{ option: string; values: unknown[]; limits: number[]; encodeOptions?: Options }> = [
+      {
+        option: "maxStrLength",
+        values: ["", "a", "aaa", "a".repeat(32), "é", "日本語"],
+        limits: [0, 1, 2, 3, 8, 9, 32],
+      },
+      {
+        option: "maxBinLength",
+        values: [new Uint8Array(0), new Uint8Array(1), new Uint8Array(3), new Uint8Array(256)],
+        limits: [0, 1, 3, 255, 256],
+      },
+      {
+        option: "maxArrayLength",
+        values: [[], [1], [1, 2, 3], Array.from({ length: 16 }, (_, index) => index)],
+        limits: [0, 1, 2, 3, 16],
+      },
+      {
+        option: "maxMapLength",
+        values: [{}, { a: 1 }, { a: 1, b: 2 }],
+        limits: [0, 1, 2],
+      },
+      {
+        option: "maxExtLength",
+        values: [new Date(0), new Date(0x100000000 * 1000), customPayloads[0].value],
+        limits: [0, 1, 3, 4, 8, 11, 12, 16],
+        encodeOptions: { extensionCodec: referenceCodec },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const bytes = concatMessages(
+        [referenceEncode(null), ...scenario.values.map((value) =>
+          referenceEncode(value, { ...scenario.encodeOptions, extensionCodec: referenceCodec } as never)
+        )],
+      );
+      for (const limit of scenario.limits) {
+        const options = {
+          extensionCodec: replacementCodec,
+          [scenario.option]: limit,
+        };
+        const referenceOptions = {
+          extensionCodec: referenceCodec,
+          [scenario.option]: limit,
+        };
+        const expected = captureMulti(() => referenceDecodeMulti(bytes, referenceOptions as never));
+        assertSameMultiOutcome(
+          captureMulti(() => decodeMulti(bytes, options)),
+          expected,
+          `${scenario.option} ${limit}`,
+        );
+        assertSameMultiOutcome(
+          captureMulti(() => new Decoder(options).decodeMulti(bytes)),
+          expected,
+          `${scenario.option} ${limit} (Decoder)`,
+        );
+      }
+    }
+  });
+
+  check(
+    "combined options",
+    [
+      { key: "abc", big: 2n, when: new Date(0) },
+      { list: [1, 2], raw: "xyz" },
+    ],
+    {
+      extensionCodec: replacementCodec,
+      useBigInt64: true,
+      rawStrings: true,
+      maxStrLength: 5,
+      maxBinLength: 5,
+      maxArrayLength: 5,
+      maxMapLength: 5,
+      maxExtLength: 5,
+      mapKeyConverter: (key: unknown) => `m${String(key)}`,
+      keyDecoder: null,
+    },
+    { useBigInt64: true },
+    {
+      extensionCodec: referenceCodec,
+      useBigInt64: true,
+      rawStrings: true,
+      maxStrLength: 5,
+      maxBinLength: 5,
+      maxArrayLength: 5,
+      maxMapLength: 5,
+      maxExtLength: 5,
+      mapKeyConverter: (key: unknown) => `m${String(key)}`,
+      keyDecoder: null,
+    },
+  );
 });

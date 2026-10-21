@@ -14,12 +14,14 @@
     "verify:server": "bun run build && bun run verification/server-adoption.ts",
     "verify:browser": "bun run build && bun run verification/browser-adoption.ts",
     "verify:options": "bun run build && bun run verification/options-compat.ts",
+    "verify:multi": "bun run build && bun run verification/multi-decode.ts",
     "verify:adoption": "bun run build && bun run verification/server-adoption.ts && bun run verification/browser-adoption.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",
     "msgpack-javascript-original": "npm:@msgpack/msgpack@3.1.3",
     "typescript": "^5.7.2",
-    "@devboard/msgpack": "workspace:*"
+    "@devboard/msgpack": "workspace:*",
+    "@msgpack/msgpack": "file:packages/msgpack"
   }
 }
