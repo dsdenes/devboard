@@ -13,12 +13,13 @@
     "bench": "bun run build && bun run bench/bench.ts",
     "verify:server": "bun run build && bun run verification/server-adoption.ts",
     "verify:browser": "bun run build && bun run verification/browser-adoption.ts",
+    "verify:browser-script": "bun run build && bun run verification/browser-script-adoption.ts",
     "verify:options": "bun run build && bun run verification/options-compat.ts",
     "verify:multi": "bun run build && bun run verification/multi-decode.ts",
     "verify:stream": "bun run build && bun run verification/stream-decode.ts",
     "verify:malformed": "bun run build && bun run verification/malformed-input.ts",
     "verify:typed": "bun run build && bun run verification/typed-adoption.ts",
-    "verify:adoption": "bun run build && bun run verification/server-adoption.ts && bun run verification/browser-adoption.ts && bun run verification/typed-adoption.ts"
+    "verify:adoption": "bun run build && bun run verification/server-adoption.ts && bun run verification/browser-adoption.ts && bun run verification/typed-adoption.ts && bun run verification/browser-script-adoption.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

@@ -25,6 +25,21 @@ The package exposes conditional ESM and CommonJS entry points, so both
 `import { encode, decode } from "@msgpack/msgpack"` and
 `require("@msgpack/msgpack")` resolve to this implementation.
 
+A page that loads msgpack-javascript with one plain script reference, without a
+bundler or a build step, points that reference at the package's UMD bundle and
+keeps its markup and inline script unchanged:
+
+```html
+<script src="https://unpkg.com/@devboard/msgpack/lib/msgpack.js"></script>
+```
+
+The bundle defines the same `MessagePack` global as msgpack-javascript's UMD
+build, including `encode`, `decode`, the `Encoder`/`Decoder` classes, the
+timestamp helpers, and the extension codec. `packages/msgpack/lib/msgpack.js`
+is built from the same source as the module entry points and is what the
+package's `unpkg` and `cdn` fields resolve to; adopting a plain-script page
+changes only the one `src`.
+
 ## API
 
 - `encode(value, options?)` returns the MessagePack encoding as a `Uint8Array`.
@@ -246,6 +261,7 @@ bun run verify:multi
 bun run verify:stream
 bun run verify:malformed
 bun run verify:adoption
+bun run verify:browser-script
 ```
 
 `bun test` compares every in-scope fixture and nested combination against the
@@ -311,6 +327,20 @@ report the value or failure for corrupted and externally produced byte
 sequences. The browser script loads the built application in headless Chrome and
 reads the rendered result.
 
+`bun run verify:browser-script` covers the page that uses no bundler and no build
+step. It takes `examples/browser-script/page.html`, whose markup and inline
+script are fixed, and produces two variants that differ only in the page's one
+`<script src>` reference: one points at msgpack-javascript's UMD bundle, the
+other at `packages/msgpack/lib/msgpack.js`. It opens both pages in headless
+Chrome and fails unless the pages load their own script, expose the same
+`MessagePack` entry points, and render identical results for primitives,
+non-ASCII strings, binary data, arrays, maps, nested values, timestamps at each
+representation width, a registered extension type, every documented encoding
+and decoding option, the class and multi-message APIs, and rejected input and
+options with the same failure types and messages. It also checks that the
+page's bytes are unchanged and that the replacement bundle is a plain script
+with no imports, exports, or `require` calls.
+
 ## Measured performance
 
 Bun 1.4.2 on Linux x64, built package entry, same process and payloads for both
@@ -349,12 +379,14 @@ No measured payload was slower for either operation; all 23 were faster for both
 ## Layout
 
 - `packages/msgpack/src/` — implementation.
-- `packages/msgpack/lib/` — built ESM, CommonJS, and declarations.
+- `packages/msgpack/lib/` — built ESM, CommonJS, plain-script UMD, and declarations.
 - `test/` — byte and value parity tests and the fixture corpus.
 - `bench/` — side-by-side performance harness.
 - `verification/` — option, multi-message, stream, malformed-input, and adoption
   checks.
 - `examples/server`, `examples/browser` — applications that adopt the package
   without source changes.
+- `examples/browser-script` — a page that loads the library with one plain
+  script reference, used by `verify:browser-script`.
 - `examples/typed` — a strict TypeScript application written against the
   original's published types, used by `verify:typed`.

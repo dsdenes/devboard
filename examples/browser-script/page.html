@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>msgpack plain-script adoption</title>
+  </head>
+  <body>
+    <h1>msgpack plain-script adoption</h1>
+    <p>
+      This page loads msgpack-javascript with one plain script reference and
+      reports every encoding, decoding, option, timestamp, extension, and
+      failure it observes. There is no bundler and no build step.
+    </p>
+    <pre id="result">running</pre>
+    <script src="__MSGPACK_SCRIPT__"></script>
+    <script>
+      (() => {
+        "use strict";
+
+        const MessagePack = globalThis.MessagePack;
+
+        class GeoPoint {
+          constructor(lat, lon) {
+            this.lat = lat;
+            this.lon = lon;
+          }
+        }
+
+        const codec = new MessagePack.ExtensionCodec();
+        codec.register({
+          type: 0x42,
+          encode(object) {
+            if (!(object instanceof GeoPoint)) {
+              return null;
+            }
+            const data = new Uint8Array(16);
+            const view = new DataView(data.buffer);
+            view.setFloat64(0, object.lat);
+            view.setFloat64(8, object.lon);
+            return data;
+          },
+          decode(data) {
+            const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+            return new GeoPoint(view.getFloat64(0), view.getFloat64(8));
+          },
+        });
+
+        function hex(bytes) {
+          let out = "";
+          for (const byte of bytes) {
+            out += byte.toString(16).padStart(2, "0");
+          }
+          return out;
+        }
+
+        function canonical(value) {
+          if (typeof value === "bigint") {
+            return { __bigint: value.toString() };
+          }
+          if (value === null || typeof value !== "object") {
+            return value;
+          }
+          if (value instanceof Date) {
+            return { __date: value.getTime() };
+          }
+          if (value instanceof Uint8Array) {
+            return { __binary: hex(value) };
+          }
+          if (value instanceof GeoPoint) {
+            return { __point: [value.lat, value.lon] };
+          }
+          if (value instanceof MessagePack.ExtData) {
+            return { __ext: value.type, data: hex(value.data) };
+          }
+          if (Array.isArray(value)) {
+            return value.map(canonical);
+          }
+          const record = {};
+          for (const key of Object.keys(value)) {
+            record[key] = canonical(value[key]);
+          }
+          return record;
+        }
+
+        function same(left, right) {
+          return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+        }
+
+        function describe(error) {
+          // A minified build renames the class, so `constructor.name` and
+          // `error.name` are not portable type signals. The published class
+          // identity is.
+          let type = "Error";
+          if (error instanceof MessagePack.DecodeError) {
+            type = "DecodeError";
+          } else if (error instanceof RangeError) {
+            type = "RangeError";
+          } else if (error instanceof TypeError) {
+            type = "TypeError";
+          }
+          return { type, message: String(error && error.message) };
+        }
+
+        const entryPoints = [
+          "encode",
+          "decode",
+          "decodeMulti",
+          "decodeAsync",
+          "decodeArrayStream",
+          "decodeMultiStream",
+          "Decoder",
+          "Encoder",
+          "DecodeError",
+          "ExtensionCodec",
+          "ExtData",
+          "EXT_TIMESTAMP",
+          "encodeDateToTimeSpec",
+          "encodeTimeSpecToTimestamp",
+          "decodeTimestampToTimeSpec",
+          "encodeTimestampExtension",
+          "decodeTimestampExtension",
+        ].map((name) => ({ name, type: typeof MessagePack[name] }));
+
+        const values = [
+          ["null", null],
+          ["boolean true", true],
+          ["boolean false", false],
+          ["zero", 0],
+          ["negative fixint", -32],
+          ["positive fixint", 127],
+          ["int8", -100],
+          ["uint8", 200],
+          ["uint16", 60000],
+          ["int32", -70000],
+          ["float", -3.25],
+          ["max safe integer", Number.MAX_SAFE_INTEGER],
+          ["short string", "hello, msgpack"],
+          ["unicode string", "héllo wörld — 日本語 ✓ 😀"],
+          ["empty string", ""],
+          ["binary", new Uint8Array([0, 1, 2, 3, 254, 255])],
+          ["empty binary", new Uint8Array(0)],
+          ["array", [1, "two", true, null, [3, 4], new Uint8Array([5])]],
+          ["map", { id: 1, name: "widget", ok: true, tags: ["a", "b"] }],
+          [
+            "nested",
+            {
+              users: [
+                { id: 1, name: "Ada", active: true, score: 99.5 },
+                { id: 2, name: "Grace", active: false, score: 87.25 },
+              ],
+              cursor: null,
+              blob: new Uint8Array([0, 17, 34, 51, 68, 85]),
+            },
+          ],
+          ["timestamp epoch", new Date(0)],
+          ["timestamp recent", new Date(1700000000123)],
+          ["timestamp before epoch", new Date(-1)],
+          ["custom point", new GeoPoint(12.5, -7.25)],
+          ["extensions nested", [new Date(1000), new GeoPoint(1, 2)]],
+        ];
+
+        const cases = values.map(([name, value]) => {
+          const bytes = MessagePack.encode(value, { extensionCodec: codec });
+          const decoded = MessagePack.decode(bytes, { extensionCodec: codec });
+          return {
+            name,
+            hex: hex(bytes),
+            decoded: canonical(decoded),
+            matchesInput: same(decoded, value),
+          };
+        });
+
+        const encodeOptions = [
+          ["sortKeys", { b: 2, a: 1, c: { z: 26, y: 25 } }, { sortKeys: true }],
+          ["ignoreUndefined", { a: 1, b: undefined, c: 3 }, { ignoreUndefined: true }],
+          ["forceFloat32", 3.25, { forceFloat32: true }],
+          ["useBigInt64", 1152921504606846976n, { useBigInt64: true }],
+          ["useBigInt64 negative", -9223372036854775808n, { useBigInt64: true }],
+          ["forceIntegerToFloat", 42, { forceIntegerToFloat: true }],
+          ["maxDepth", { a: { b: { c: 1 } } }, { maxDepth: 4 }],
+          ["initialBufferSize", { id: 1, name: "widget" }, { initialBufferSize: 8 }],
+          ["useTimestamp32", new Date(0), { useTimestamp32: true }],
+          ["useTimestamp32 recent", new Date(1700000000000), { useTimestamp32: true }],
+          [
+            "mapKeyConverter",
+            new Map([
+              [1, "one"],
+              [2, "two"],
+            ]),
+            { mapKeyConverter: (key) => `k${key}` },
+          ],
+        ];
+
+        const encodedOptions = encodeOptions.map(([name, value, options]) => {
+          const bytes = MessagePack.encode(value, { extensionCodec: codec, ...options });
+          return {
+            name,
+            hex: hex(bytes),
+            decoded: canonical(MessagePack.decode(bytes, { extensionCodec: codec })),
+          };
+        });
+
+        const decodeOptions = [
+          [
+            "useBigInt64",
+            MessagePack.encode(1152921504606846976n, { useBigInt64: true }),
+            { useBigInt64: true },
+          ],
+          ["maxStrLength", MessagePack.encode("héllo"), { maxStrLength: 6 }],
+          ["maxBinLength", MessagePack.encode(new Uint8Array(8)), { maxBinLength: 8 }],
+          ["maxArrayLength", MessagePack.encode([1, 2, 3]), { maxArrayLength: 3 }],
+          ["maxMapLength", MessagePack.encode({ a: 1, b: 2 }), { maxMapLength: 2 }],
+          ["maxExtLength", MessagePack.encode(new Date(1700000000123)), { maxExtLength: 8 }],
+          [
+            "mapKeyConverter",
+            MessagePack.encode(
+              new Map([
+                [1, "one"],
+                [2, "two"],
+              ]),
+            ),
+            { mapKeyConverter: (key) => `key-${key}` },
+          ],
+          [
+            "extensionCodec",
+            MessagePack.encode(new GeoPoint(1, 2), { extensionCodec: codec }),
+            { extensionCodec: codec },
+          ],
+        ];
+
+        const decodedOptions = decodeOptions.map(([name, bytes, options]) => ({
+          name,
+          hex: hex(bytes),
+          decoded: canonical(MessagePack.decode(bytes, options)),
+        }));
+
+        const timestamps = [0, 1700000000123, -1].map((ms) => {
+          const date = new Date(ms);
+          const payload = MessagePack.encodeTimestampExtension(date);
+          return {
+            ms,
+            spec: MessagePack.encodeDateToTimeSpec(date),
+            payload: hex(payload),
+            decoded: canonical(MessagePack.decodeTimestampExtension(payload)),
+            specRoundTrip: MessagePack.decodeTimestampToTimeSpec(payload),
+            encodedThroughSpec: hex(
+              MessagePack.encodeTimeSpecToTimestamp(MessagePack.encodeDateToTimeSpec(date)),
+            ),
+            isTimestampType: MessagePack.EXT_TIMESTAMP,
+          };
+        });
+
+        const failureCases = [
+          ["empty input", () => MessagePack.decode(new Uint8Array(0))],
+          ["truncated string", () => MessagePack.decode(Uint8Array.from([0xd9, 0x05, 0x61]))],
+          ["truncated array", () => MessagePack.decode(Uint8Array.from([0x92, 0x01]))],
+          ["reserved type byte", () => MessagePack.decode(Uint8Array.from([0xc1]))],
+          ["extra bytes", () => MessagePack.decode(Uint8Array.from([0x01, 0x02]))],
+          ["symbol input", () => MessagePack.encode(Symbol("x"))],
+          ["bigint without useBigInt64", () => MessagePack.encode(1n)],
+          [
+            "cyclic object",
+            () => {
+              const record = {};
+              record.self = record;
+              return MessagePack.encode(record);
+            },
+          ],
+          ["maxStrLength: 0", () => MessagePack.decode(MessagePack.encode("abc"), { maxStrLength: 0 })],
+          [
+            "maxBinLength: 0",
+            () => MessagePack.decode(MessagePack.encode(new Uint8Array(3)), { maxBinLength: 0 }),
+          ],
+          [
+            "maxArrayLength: 0",
+            () => MessagePack.decode(MessagePack.encode([1, 2, 3]), { maxArrayLength: 0 }),
+          ],
+          [
+            "maxMapLength: 0",
+            () => MessagePack.decode(MessagePack.encode({ a: 1, b: 2 }), { maxMapLength: 0 }),
+          ],
+          [
+            "maxExtLength: 0",
+            () => MessagePack.decode(MessagePack.encode(new Date(1700000000123)), { maxExtLength: 0 }),
+          ],
+        ];
+
+        const failures = failureCases.map(([name, run]) => {
+          try {
+            return { name, ok: true, value: canonical(run()) };
+          } catch (error) {
+            return { name, ok: false, error: describe(error) };
+          }
+        });
+
+        const encoder = new MessagePack.Encoder({ extensionCodec: codec });
+        const decoder = new MessagePack.Decoder({ extensionCodec: codec });
+        const payload = {
+          when: new Date(1700000000123),
+          where: new GeoPoint(1.5, -2.5),
+          tags: ["a", 2],
+        };
+        const classBytes = encoder.encode(payload);
+        const classApi = {
+          hex: hex(classBytes),
+          decoded: canonical(decoder.decode(classBytes)),
+          matchesInput: same(decoder.decode(classBytes), payload),
+          moduleHexSame: hex(classBytes) === hex(MessagePack.encode(payload, { extensionCodec: codec })),
+        };
+
+        const multiBytes = new Uint8Array([
+          ...MessagePack.encode(1),
+          ...MessagePack.encode("two"),
+          ...MessagePack.encode(new GeoPoint(0, 0), { extensionCodec: codec }),
+        ]);
+        const multi = {
+          hex: hex(multiBytes),
+          values: [...MessagePack.decodeMulti(multiBytes, { extensionCodec: codec })].map(canonical),
+        };
+
+        const unknownExtension = MessagePack.decode(Uint8Array.from([0xd4, 0x7f, 0x2a]));
+        const extData = canonical(unknownExtension);
+
+        document.getElementById("result").textContent = JSON.stringify(
+          {
+            global: {
+              name: typeof MessagePack === "object" ? "MessagePack" : typeof MessagePack,
+              entryPoints,
+            },
+            cases,
+            options: { encode: encodedOptions, decode: decodedOptions },
+            timestamps,
+            classApi,
+            multi,
+            extData,
+            failures,
+          },
+          null,
+          2,
+        );
+      })();
+    </script>
+  </body>
+</html>

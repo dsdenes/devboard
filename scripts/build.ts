@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const root = dirname(import.meta.dir);
@@ -26,6 +26,43 @@ for (const target of targets) {
     process.exit(1);
   }
 }
+
+// A browser page that loads msgpack-javascript with one plain script reference
+// receives the UMD bundle, whose global name is `MessagePack`. Wrapping the
+// CommonJS bundle keeps the plain-script surface identical to the module entry
+// points without introducing a second implementation to keep in sync.
+const cjs = await readFile(join(outDir, "index.cjs"), "utf8");
+const umd = `/**
+ * @devboard/msgpack plain-script build.
+ *
+ * Loaded with one \`<script src>\` reference, it defines \`MessagePack\` on the
+ * global object, mirroring msgpack-javascript's UMD bundle. It also assigns
+ * \`module.exports\` under CommonJS and calls \`define\` under AMD.
+ */
+(function (root, factory) {
+  if (typeof module === "object" && typeof module.exports === "object") {
+    module.exports = factory();
+  } else if (typeof define === "function" && define.amd) {
+    define([], factory);
+  } else {
+    root.MessagePack = factory();
+  }
+})(
+  typeof globalThis !== "undefined" ? globalThis : this,
+  function () {
+    var module = { exports: {} };
+    var exports = module.exports;
+
+${cjs
+  .split("\n")
+  .map((line) => (line.length === 0 ? line : `    ${line}`))
+  .join("\n")}
+
+    return module.exports;
+  },
+);
+`;
+await writeFile(join(outDir, "msgpack.js"), umd);
 
 const declarations = `/**
  * The published types mirror the declarations msgpack-javascript 3.1.3
@@ -255,4 +292,4 @@ export declare function decodeMultiStream<ContextType>(
 `;
 
 await writeFile(join(outDir, "index.d.ts"), declarations);
-console.log("built packages/msgpack/lib/index.mjs, index.cjs, index.d.ts");
+console.log("built packages/msgpack/lib/index.mjs, index.cjs, index.d.ts, msgpack.js");

@@ -32,6 +32,16 @@
   the original's published types for its options, codec, and values, and
   `bun run verify:typed`, which builds and runs it before and after the swap
   and compares every encoded and decoded result.
+- Ship `packages/msgpack/lib/msgpack.js`, a plain-script UMD bundle that
+  defines the same `MessagePack` global as msgpack-javascript's UMD build, and
+  resolve the package's `unpkg` and `cdn` fields to it. A browser page that
+  loads the library through one script reference adopts the replacement by
+  changing only that reference, with no bundler and no build step.
+- Add `examples/browser-script`, a page whose markup and inline script stay
+  fixed, and `bun run verify:browser-script`, which opens the page against the
+  original and the replacement in headless Chrome and requires identical entry
+  points, encoded bytes, decoded values, options, timestamps, extension types,
+  and failure types and messages.
 
 ## 0.4.0
 
