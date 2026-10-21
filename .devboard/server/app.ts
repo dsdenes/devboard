@@ -1632,6 +1632,26 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    let preparedSkills = 0;
+    try {
+      preparedSkills = (await inspectSkills(skillsDir)).managed.size;
+    } catch (error) {
+      send(ws, {
+        type: "error",
+        message: `Could not read the installed skills: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      });
+      return;
+    }
+    if (preparedSkills === 0) {
+      send(ws, {
+        type: "error",
+        message: "No skills are prepared. Prepare skills before starting the lifecycle.",
+      });
+      return;
+    }
+
     lifecycleRunning = true;
     // Report the run as active before the first tracker lookup: clients need the
     // stage to disable their start controls and offer pause while the lookup runs.

@@ -9,9 +9,34 @@ import type { EpicLookup, OpenEpic } from "./tracker";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
+const MANAGED_SKILL = [
+  "---",
+  "name: behavior-first-testing",
+  "description: Choose tests by observable behavior.",
+  "metadata:",
+  '  devboard-managed: "true"',
+  "---",
+  "",
+  "# Behavior-first testing",
+  "",
+  "- Prefer observable behavior over implementation details.",
+  "",
+].join("\n");
+const UNMANAGED_SKILL = [
+  "---",
+  "name: house-style",
+  "description: Follow the house style.",
+  "---",
+  "",
+  "# House style",
+  "",
+  "- Prefer short functions.",
+  "",
+].join("\n");
 
 interface TestServer {
   server: Server<unknown>;
+  root: string;
   adrDir: string;
   goalFile: string;
   logPath: string;
@@ -31,6 +56,7 @@ async function startServer(
     tracker?: EpicLookup;
     goalText?: string | null;
     trackerSettle?: { attempts: number; delayMs: number };
+    installedSkills?: "managed" | "unmanaged" | "none";
   } = {},
 ): Promise<TestServer> {
   const root = await temporaryDirectory();
@@ -44,6 +70,13 @@ async function startServer(
     await writeFile(goalFile, "# Goal\n\nShip the lifecycle.\n");
   } else if (options.goalText !== null) {
     await writeFile(goalFile, options.goalText);
+  }
+  const installedSkills = options.installedSkills ?? "managed";
+  if (installedSkills !== "none") {
+    const name = installedSkills === "managed" ? "behavior-first-testing" : "house-style";
+    const source = installedSkills === "managed" ? MANAGED_SKILL : UNMANAGED_SKILL;
+    await mkdir(join(root, ".omp", "skills", name), { recursive: true });
+    await writeFile(join(root, ".omp", "skills", name, "SKILL.md"), source);
   }
   for (const [file, source] of Object.entries(files)) {
     await writeFile(join(adrDir, file), source);
@@ -62,7 +95,7 @@ async function startServer(
     trackerSettle: options.trackerSettle ?? { attempts: 1 },
   });
 
-  return { server, adrDir, goalFile, logPath, url: `127.0.0.1:${server.port}` };
+  return { server, root, adrDir, goalFile, logPath, url: `127.0.0.1:${server.port}` };
 }
 
 interface TestClient {
@@ -1454,6 +1487,112 @@ describe("lifecycle goal precondition", () => {
           (message) => message.type === "lifecycleState" && message.stage === "finished",
         );
         expect(spawnCount(logPath)).toBe(1);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+});
+
+describe("lifecycle skills precondition", () => {
+  test(
+    "refuses startLifecycle when no skills are installed",
+    async () => {
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        {},
+        {
+          installedSkills: "none",
+          tracker: async () => {
+            lookups += 1;
+            return undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(String(error.message)).toMatch(/skills/i);
+
+        await Bun.sleep(300);
+        expect(client.events.filter((message) => message.type === "error")).toHaveLength(1);
+        expect(lifecycleStates(client)).toEqual([]);
+        expect(spawnCount(logPath)).toBe(0);
+        expect(lookups).toBe(0);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "refuses startLifecycle when only an unmanaged skill is installed",
+    async () => {
+      const { server, logPath, url } = await startServer(
+        {},
+        { installedSkills: "unmanaged" },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(String(error.message)).toMatch(/skills/i);
+
+        await Bun.sleep(300);
+        expect(client.events.filter((message) => message.type === "error")).toHaveLength(1);
+        expect(lifecycleStates(client)).toEqual([]);
+        expect(spawnCount(logPath)).toBe(0);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "accepts startLifecycle once a managed skill is installed",
+    async () => {
+      const { server, root, logPath, url } = await startServer(
+        {},
+        { installedSkills: "none" },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(String(error.message)).toMatch(/skills/i);
+        expect(spawnCount(logPath)).toBe(0);
+
+        await mkdir(join(root, ".omp", "skills", "behavior-first-testing"), {
+          recursive: true,
+        });
+        await writeFile(
+          join(root, ".omp", "skills", "behavior-first-testing", "SKILL.md"),
+          MANAGED_SKILL,
+        );
+
+        client.send({ type: "startLifecycle" });
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
+        expect(spawnCount(logPath)).toBe(1);
+        expect(prompts(logPath)).toEqual(["/epic-next"]);
       } finally {
         client.close();
         server.stop(true);

@@ -29,7 +29,8 @@ in-flight creation or revision is cancelled with a failed `goalCreationStopped` 
 `goalRevisionStopped`, and an advancing ADR run or lifecycle is stopped and reported idle before
 creation begins. A paused lifecycle keeps its suspended conversation, which is replayed when the
 creation ends. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` and the textarea shows
-those bytes, so `Goal ready` and `Start lifecycle` become available. A creation that ends with no
+those bytes, so `Goal ready` becomes available; `Start lifecycle` becomes available once the
+goal is ready and at least one managed skill is installed. A creation that ends with no
 non-empty `GOAL.md` is reported as an error: the server sends an `error` and a failed
 `goalCreationStopped`, and the textarea and goal state keep their previous content. The server
 owns the creation run, so closing the browser does not stop it, and a client that connects during
@@ -47,14 +48,17 @@ still `Proposed` (or has been removed). The chain runs in the server, so it cont
 browser disconnects.
 
 The page also shows a lifecycle stage and pass number. The lifecycle starts only from a settled
-goal: the goal section reports `Goal ready` when the document contains at least one
-non-whitespace character and `Goal not set` otherwise, and `Start lifecycle` stays disabled
-until it does. The server enforces the same rule. Selecting `Start lifecycle` gives the
-server the loop, and the server reports the run as active at the `epic` stage with no work as
-soon as it accepts the command, before it queries the origin tracker; every client therefore
-shows `Epic generation` with the pause control available and its start controls disabled
-while that query runs. When the origin tracker already has an open epic, the lifecycle then
-reports `implementation` and implements that epic with `/implement-next-epic`; otherwise it
+goal and a prepared skill set: the goal section reports `Goal ready` when the document contains
+at least one non-whitespace character and `Goal not set` otherwise, the Skills panel lists the
+managed skills read from `<REPO_DIR>/.omp/skills/`, and `Start lifecycle` stays disabled until
+the goal is ready and at least one managed skill is installed. The server enforces the same
+rules: a start is refused with an `error` when the goal is not settled, when the skills
+directory cannot be read, or when no managed skill is installed. Selecting `Start lifecycle`
+gives the server the loop, and the server reports the run as active at the `epic` stage with no
+work as soon as it accepts the command, before it queries the origin tracker; every client
+therefore shows `Epic generation` with the pause control available and its start controls
+disabled while that query runs. When the origin tracker already has an open epic, the lifecycle
+then reports `implementation` and implements that epic with `/implement-next-epic`; otherwise it
 runs the `/epic-next` agent, resolves any pending ADRs the run leaves behind with
 `/adr-resolve` in file-name order, and repeats. After an implementation peer exits, the pass
 increments and the lifecycle returns to epic generation; the epic the generation peer creates
@@ -277,9 +281,10 @@ The client sends:
   an empty list and `next: null`, and `goal` with the unchanged text (empty when the document
   is absent).
 - `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run,
-  a run sequence, a goal revision, a goal creation, or another lifecycle run is active, and
-  when the goal document is absent, unreadable, or contains only whitespace; a refused start
-  spawns no agent and reports no `lifecycleState`. An accepted start reports `lifecycleState` at
+  a run sequence, a goal revision, a goal creation, or another lifecycle run is active; when the
+  goal document is absent, unreadable, or contains only whitespace; when `<REPO_DIR>/.omp/skills/`
+  cannot be read; and when no managed skill is installed there. A refused start spawns no agent
+  and reports no `lifecycleState`. An accepted start reports `lifecycleState` at
   `epic` with `work: null`, the pass already held, and `paused: false` before its first
   tracker query and before any agent starts. While the lifecycle run is active, `startLifecycle`
   and `startRun` are also refused, because the lifecycle owns the tracker. `reviseGoal` and

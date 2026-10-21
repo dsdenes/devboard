@@ -9,6 +9,19 @@ import type { EpicLookup, OpenEpic } from "./tracker";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
+const MANAGED_SKILL = [
+  "---",
+  "name: behavior-first-testing",
+  "description: Choose tests by observable behavior.",
+  "metadata:",
+  '  devboard-managed: "true"',
+  "---",
+  "",
+  "# Behavior-first testing",
+  "",
+  "- Prefer observable behavior over implementation details.",
+  "",
+].join("\n");
 const QUESTION_OPTIONS = [
   { label: "Alpha", description: "Alpha leads to the first outcome.", recommended: true },
   { label: "Beta", description: "Beta leads to the second outcome.", recommended: false },
@@ -40,6 +53,11 @@ async function startServer(
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>ADR overview</title>");
   await writeFile(goalFile, "# Goal\n\nShip the lifecycle.\n");
+  await mkdir(join(root, ".omp", "skills", "behavior-first-testing"), { recursive: true });
+  await writeFile(
+    join(root, ".omp", "skills", "behavior-first-testing", "SKILL.md"),
+    MANAGED_SKILL,
+  );
   for (const [file, source] of Object.entries(files)) {
     await writeFile(join(adrDir, file), source);
   }

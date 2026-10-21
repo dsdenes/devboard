@@ -115,6 +115,14 @@
   );
   let prepareDisabled = $derived(controlsDisabled || !goalReady);
   let resetDisabled = $derived(connection !== "open" || controlsDisabled || resetting);
+  let skillsPrepared = $derived(skills.length > 0);
+  let startLifecycleTitle = $derived(
+    !goalReady
+      ? "Save a non-empty goal before starting the lifecycle."
+      : !skillsPrepared
+        ? "Prepare skills before starting the lifecycle."
+        : undefined,
+  );
   let activityActive = $derived(running || creationActive || revisionActive || skillsPrepActive);
   let currentAction = $derived(activity[activity.length - 1] ?? "");
   let previousActions = $derived(activity.slice(0, -1));
@@ -687,7 +695,8 @@
           type="button"
           class="start-button"
           data-testid="start-lifecycle"
-          disabled={controlsDisabled || !goalReady}
+          title={startLifecycleTitle}
+          disabled={controlsDisabled || !goalReady || !skillsPrepared}
           onclick={startLifecycle}
         >
           Start lifecycle

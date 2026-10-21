@@ -496,6 +496,12 @@ describe("skills preparation", () => {
     "refuses preparation during a paused lifecycle",
     async () => {
       const { server, logPath, url } = await startServer({
+        files: {
+          ".omp/skills/behavior-first-testing/SKILL.md": managedSkill(
+            "behavior-first-testing",
+            "Prefer observable behavior.",
+          ),
+        },
         agentArguments: "--prepare-skills --delay-ms=500",
       });
       const client = await connect(url);
