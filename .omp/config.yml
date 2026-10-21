@@ -2,26 +2,11 @@
 #
 # Every omp process the harness starts works from the host repository, so this
 # project-local settings file applies to the interactive agent and to each ACP
-# peer (`omp acp`) it spawns. The free DeepSeek V4.1 Flash model is served by
-# OpenCode Zen; the paid DeepSeek V4.1 Flash model on OpenCode Go is the retry
-# fallback when the primary model is unavailable or rate-limited.
+# peer (`omp acp`) it spawns. All chat roles use DeepSeek V4.1 Flash through
+# OpenCode Go; the free OpenCode Zen variant is not used.
 modelRoles:
-  default: opencode-zen/deepseek-v4.1-flash-free
-  plan: opencode-zen/deepseek-v4.1-flash-free
-  smol: opencode-zen/deepseek-v4.1-flash-free
-  slow: opencode-zen/deepseek-v4.1-flash-free
-  task: opencode-zen/deepseek-v4.1-flash-free
-
-retry:
-  modelFallback: true
-  fallbackChains:
-    default:
-      - opencode-go/deepseek-v4.1-flash
-    plan:
-      - opencode-go/deepseek-v4.1-flash
-    smol:
-      - opencode-go/deepseek-v4.1-flash
-    slow:
-      - opencode-go/deepseek-v4.1-flash
-    task:
-      - opencode-go/deepseek-v4.1-flash
+  default: opencode-go/deepseek-v4.1-flash
+  plan: opencode-go/deepseek-v4.1-flash
+  smol: opencode-go/deepseek-v4.1-flash
+  slow: opencode-go/deepseek-v4.1-flash
+  task: opencode-go/deepseek-v4.1-flash

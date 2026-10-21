@@ -172,14 +172,10 @@ one, and the interactive agent started in that repository, uses the same policy:
 
 |Setting|Value|Meaning|
 |---|---|---|
-|`modelRoles`|`opencode-zen/deepseek-v4.1-flash-free` for `default`, `plan`, `smol`, `slow`, and `task`|Primary model for every chat role the harness uses.|
-|`retry.fallbackChains`|`opencode-go/deepseek-v4.1-flash` for the same roles|Fallback when the primary is unavailable or a request fails.|
-|`retry.modelFallback`|`true`|Enables switching to the configured chains.|
+|`modelRoles`|`opencode-go/deepseek-v4.1-flash` for `default`, `plan`, `smol`, `slow`, and `task`|Model for every chat role the harness uses.|
 
-The primary model is an OpenCode Zen model; the fallback is the OpenCode Go model with the same
-name. Both providers read `OPENCODE_API_KEY`, so the host must supply a key with access to each
-provider the policy names. Editing `omp/config.yml` here and rerunning `install.sh` changes the
-installed copy.
+The model is served by OpenCode Go and reads `OPENCODE_API_KEY`. No fallback chain is
+configured. Editing `omp/config.yml` here and rerunning `install.sh` changes the installed copy.
 
 ## Build and run
 
