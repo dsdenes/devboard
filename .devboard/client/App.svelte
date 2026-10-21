@@ -515,7 +515,7 @@
   <header class="page-header">
     <div class="heading-row">
       <div>
-        <h1>Architecture Decision Records</h1>
+        <h1>Devboard</h1>
         <p class="summary">
           {resolvedCount} resolved
           <span class="dot" aria-hidden="true">·</span>
