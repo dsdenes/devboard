@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0
+
+- Support every documented msgpack-javascript 3.1.3 encoding option:
+  `useBigInt64`, `maxDepth`, `initialBufferSize`, `sortKeys`, `forceFloat32`,
+  `forceIntegerToFloat`, and `ignoreUndefined`, alongside `extensionCodec` and
+  `context`.
+- Support every documented decoding option: `useBigInt64`, `rawStrings`,
+  `maxStrLength`, `maxBinLength`, `maxArrayLength`, `maxMapLength`,
+  `maxExtLength`, `keyDecoder`, and `mapKeyConverter`.
+- Export `DecodeError` and raise it for length limits and the default map key
+  converter, matching the reference error category.
+- Match the reference at and beyond each length and nesting boundary, for
+  individual options and for combinations.
+- Keep no-option encoding and decoding byte- and value-identical to 0.1.0.
+- Add option parity tests and `bun run verify:options`, which exercises the
+  built package through its public ESM and CommonJS entry points.
+
 ## 0.1.0
 
 - Add `@devboard/msgpack`, a byte-compatible drop-in replacement for

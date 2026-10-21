@@ -6,24 +6,68 @@ import { ExtData, ExtensionCodec } from "./extension.ts";
 // JavaScript string units. The threshold is observable for lone surrogates.
 const TEXT_ENCODER_THRESHOLD = 50;
 
+const DEFAULT_MAX_DEPTH = 100;
+
 export interface EncoderOptions {
   initialBufferSize?: number;
   extensionCodec?: ExtensionCodec;
   context?: unknown;
+  useBigInt64?: boolean;
+  maxDepth?: number;
+  sortKeys?: boolean;
+  forceFloat32?: boolean;
+  forceIntegerToFloat?: boolean;
+  ignoreUndefined?: boolean;
   [option: string]: unknown;
+}
+
+interface EncoderSettings {
+  extensionCodec: ExtensionCodec;
+  context: unknown;
+  useBigInt64: boolean;
+  maxDepth: number;
+  sortKeys: boolean;
+  forceFloat32: boolean;
+  forceIntegerToFloat: boolean;
+  ignoreUndefined: boolean;
+}
+
+const DEFAULT_ENCODER_SETTINGS: EncoderSettings = {
+  extensionCodec: ExtensionCodec.defaultCodec,
+  context: undefined,
+  useBigInt64: false,
+  maxDepth: DEFAULT_MAX_DEPTH,
+  sortKeys: false,
+  forceFloat32: false,
+  forceIntegerToFloat: false,
+  ignoreUndefined: false,
+};
+
+function resolveEncoderSettings(options?: EncoderOptions): EncoderSettings {
+  if (options === undefined) {
+    return DEFAULT_ENCODER_SETTINGS;
+  }
+  return {
+    extensionCodec: options.extensionCodec ?? ExtensionCodec.defaultCodec,
+    context: options.context,
+    useBigInt64: options.useBigInt64 ?? false,
+    maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
+    sortKeys: options.sortKeys ?? false,
+    forceFloat32: options.forceFloat32 ?? false,
+    forceIntegerToFloat: options.forceIntegerToFloat ?? false,
+    ignoreUndefined: options.ignoreUndefined ?? false,
+  };
 }
 
 export class Encoder {
   private readonly writer: Writer;
   private readonly options: EncoderOptions | undefined;
-  private readonly extensionCodec: ExtensionCodec;
-  private readonly context: unknown;
+  private readonly settings: EncoderSettings;
   private entered = false;
 
   constructor(options?: EncoderOptions) {
     this.options = options;
-    this.extensionCodec = options?.extensionCodec ?? ExtensionCodec.defaultCodec;
-    this.context = options?.context;
+    this.settings = resolveEncoderSettings(options);
     this.writer = new Writer(options?.initialBufferSize ?? DEFAULT_INITIAL_BUFFER_SIZE);
   }
 
@@ -35,7 +79,7 @@ export class Encoder {
     this.entered = true;
     try {
       this.writer.reset();
-      encodeValue(this.writer, value, this.extensionCodec, this.context);
+      encodeValue(this.writer, value, this.settings, 1);
       return this.writer.copy();
     } finally {
       this.entered = false;
@@ -50,7 +94,7 @@ export class Encoder {
     this.entered = true;
     try {
       this.writer.reset();
-      encodeValue(this.writer, value, this.extensionCodec, this.context);
+      encodeValue(this.writer, value, this.settings, 1);
       return this.writer.ref();
     } finally {
       this.entered = false;
@@ -66,6 +110,7 @@ let sharedWriterEntered = false;
  * does not alias the replacement's reusable internal buffer.
  */
 export function encode(value: unknown, options?: EncoderOptions): Uint8Array<ArrayBuffer> {
+  const settings = resolveEncoderSettings(options);
   if (!sharedWriterEntered) {
     sharedWriterEntered = true;
     try {
@@ -73,12 +118,7 @@ export function encode(value: unknown, options?: EncoderOptions): Uint8Array<Arr
       if (options?.initialBufferSize !== undefined) {
         sharedWriter.ensure(options.initialBufferSize);
       }
-      encodeValue(
-        sharedWriter,
-        value,
-        options?.extensionCodec ?? ExtensionCodec.defaultCodec,
-        options?.context,
-      );
+      encodeValue(sharedWriter, value, settings, 1);
       return sharedWriter.copy();
     } finally {
       sharedWriterEntered = false;
@@ -87,7 +127,11 @@ export function encode(value: unknown, options?: EncoderOptions): Uint8Array<Arr
   return new Encoder(options).encode(value);
 }
 
-function encodeValue(writer: Writer, value: unknown, codec: ExtensionCodec, context: unknown): void {
+function encodeValue(writer: Writer, value: unknown, settings: EncoderSettings, depth: number): void {
+  if (depth > settings.maxDepth) {
+    throw new Error(`Too deep objects in depth ${depth}`);
+  }
+
   if (value === null || value === undefined) {
     writer.ensure(1);
     writer.bytes[writer.pos++] = 0xc0;
@@ -100,29 +144,38 @@ function encodeValue(writer: Writer, value: unknown, codec: ExtensionCodec, cont
       writer.bytes[writer.pos++] = value ? 0xc3 : 0xc2;
       return;
     case "number":
-      encodeNumber(writer, value);
+      if (settings.forceIntegerToFloat) {
+        encodeNumberAsFloat(writer, value, settings.forceFloat32);
+      } else {
+        encodeNumber(writer, value, settings);
+      }
       return;
     case "string":
       encodeString(writer, value);
       return;
-    case "object":
-      encodeObject(writer, value, codec, context);
-      return;
-    default: {
-      // A registered extension may still claim a bigint, function, or symbol.
-      const ext = codec.tryToEncode(value, context);
-      if (ext !== null) {
-        encodeExtension(writer, ext);
+    case "bigint":
+      if (settings.useBigInt64) {
+        encodeBigInt64(writer, value);
         return;
       }
-      // Without a codec these are out of scope and rejected instead of being
-      // silently written as something else.
-      throw new Error(`Unrecognized object: ${Object.prototype.toString.apply(value)}`);
-    }
+      break;
+    case "object":
+      encodeObject(writer, value, settings, depth);
+      return;
   }
+
+  // A registered extension may still claim a bigint, function, or symbol.
+  const ext = settings.extensionCodec.tryToEncode(value, settings.context);
+  if (ext !== null) {
+    encodeExtension(writer, ext);
+    return;
+  }
+  // Without a codec these are out of scope and rejected instead of being
+  // silently written as something else.
+  throw new Error(`Unrecognized object: ${Object.prototype.toString.apply(value)}`);
 }
 
-function encodeNumber(writer: Writer, value: number): void {
+function encodeNumber(writer: Writer, value: number, settings: EncoderSettings): void {
   if (Number.isSafeInteger(value)) {
     if (value >= 0) {
       if (value < 0x80) {
@@ -143,12 +196,14 @@ function encodeNumber(writer: Writer, value: number): void {
         writer.bytes[writer.pos] = 0xce;
         writer.view.setUint32(writer.pos + 1, value);
         writer.pos += 5;
-      } else {
+      } else if (!settings.useBigInt64) {
         writer.ensure(9);
         writer.bytes[writer.pos] = 0xcf;
         writer.view.setUint32(writer.pos + 1, value / 0x100000000);
         writer.view.setUint32(writer.pos + 5, value);
         writer.pos += 9;
+      } else {
+        encodeNumberAsFloat(writer, value, settings.forceFloat32);
       }
     } else if (value >= -0x20) {
       writer.ensure(1);
@@ -168,19 +223,43 @@ function encodeNumber(writer: Writer, value: number): void {
       writer.bytes[writer.pos] = 0xd2;
       writer.view.setInt32(writer.pos + 1, value);
       writer.pos += 5;
-    } else {
+    } else if (!settings.useBigInt64) {
       writer.ensure(9);
       writer.bytes[writer.pos] = 0xd3;
       writer.view.setUint32(writer.pos + 1, Math.floor(value / 0x100000000));
       writer.view.setUint32(writer.pos + 5, value);
       writer.pos += 9;
+    } else {
+      encodeNumberAsFloat(writer, value, settings.forceFloat32);
     }
     return;
   }
 
+  encodeNumberAsFloat(writer, value, settings.forceFloat32);
+}
+
+function encodeNumberAsFloat(writer: Writer, value: number, forceFloat32: boolean): void {
   writer.ensure(9);
+  if (forceFloat32) {
+    writer.bytes[writer.pos] = 0xca;
+    writer.view.setFloat32(writer.pos + 1, value);
+    writer.pos += 5;
+    return;
+  }
   writer.bytes[writer.pos] = 0xcb;
   writer.view.setFloat64(writer.pos + 1, value);
+  writer.pos += 9;
+}
+
+function encodeBigInt64(writer: Writer, value: bigint): void {
+  writer.ensure(9);
+  if (value >= 0n) {
+    writer.bytes[writer.pos] = 0xcf;
+    writer.view.setBigUint64(writer.pos + 1, value);
+  } else {
+    writer.bytes[writer.pos] = 0xd3;
+    writer.view.setBigInt64(writer.pos + 1, value);
+  }
   writer.pos += 9;
 }
 
@@ -266,7 +345,12 @@ function encodeBinary(writer: Writer, value: ArrayBufferView): void {
   writer.pos += size;
 }
 
-function encodeArray(writer: Writer, value: readonly unknown[], codec: ExtensionCodec, context: unknown): void {
+function encodeArray(
+  writer: Writer,
+  value: readonly unknown[],
+  settings: EncoderSettings,
+  depth: number,
+): void {
   const size = value.length;
 
   if (size < 0x10) {
@@ -285,18 +369,25 @@ function encodeArray(writer: Writer, value: readonly unknown[], codec: Extension
   }
 
   for (let i = 0; i < size; i++) {
-    encodeValue(writer, value[i], codec, context);
+    encodeValue(writer, value[i], settings, depth + 1);
   }
 }
 
-function encodeMap(
-  writer: Writer,
-  value: Record<string, unknown>,
-  codec: ExtensionCodec,
-  context: unknown,
-): void {
+function encodeMap(writer: Writer, value: Record<string, unknown>, settings: EncoderSettings, depth: number): void {
   const keys = Object.keys(value);
-  const size = keys.length;
+  if (settings.sortKeys) {
+    keys.sort();
+  }
+
+  let size = keys.length;
+  if (settings.ignoreUndefined) {
+    size = 0;
+    for (let i = 0; i < keys.length; i++) {
+      if (value[keys[i]] !== undefined) {
+        size++;
+      }
+    }
+  }
 
   if (size < 0x10) {
     writer.ensure(1);
@@ -313,27 +404,31 @@ function encodeMap(
     writer.pos += 5;
   }
 
-  for (let i = 0; i < size; i++) {
+  for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
-    encodeString(writer, key);
-    encodeValue(writer, value[key], codec, context);
+    const entry = value[key];
+
+    if (!(settings.ignoreUndefined && entry === undefined)) {
+      encodeString(writer, key);
+      encodeValue(writer, entry, settings, depth + 1);
+    }
   }
 }
 
-function encodeObject(writer: Writer, value: object, codec: ExtensionCodec, context: unknown): void {
+function encodeObject(writer: Writer, value: object, settings: EncoderSettings, depth: number): void {
   // Extensions take precedence over the built-in object handling, exactly as
   // in the reference implementation.
-  const ext = codec.tryToEncode(value, context);
+  const ext = settings.extensionCodec.tryToEncode(value, settings.context);
   if (ext !== null) {
     encodeExtension(writer, ext);
     return;
   }
   if (Array.isArray(value)) {
-    encodeArray(writer, value, codec, context);
+    encodeArray(writer, value, settings, depth);
   } else if (ArrayBuffer.isView(value)) {
     encodeBinary(writer, value);
   } else {
-    encodeMap(writer, value as Record<string, unknown>, codec, context);
+    encodeMap(writer, value as Record<string, unknown>, settings, depth);
   }
 }
 

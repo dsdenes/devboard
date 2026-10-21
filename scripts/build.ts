@@ -31,13 +31,39 @@ const declarations = `export interface EncoderOptions {
   initialBufferSize?: number;
   extensionCodec?: ExtensionCodec;
   context?: unknown;
+  useBigInt64?: boolean;
+  maxDepth?: number;
+  sortKeys?: boolean;
+  forceFloat32?: boolean;
+  forceIntegerToFloat?: boolean;
+  ignoreUndefined?: boolean;
   [option: string]: unknown;
 }
+
+export interface KeyDecoder {
+  canBeCached(byteLength: number): boolean;
+  decode(bytes: Uint8Array, inputOffset: number, byteLength: number): string;
+}
+
+export type MapKeyConverter = (key: unknown) => string | number;
 
 export interface DecoderOptions {
   extensionCodec?: ExtensionCodec;
   context?: unknown;
+  useBigInt64?: boolean;
+  rawStrings?: boolean;
+  maxStrLength?: number;
+  maxBinLength?: number;
+  maxArrayLength?: number;
+  maxMapLength?: number;
+  maxExtLength?: number;
+  keyDecoder?: KeyDecoder | null;
+  mapKeyConverter?: MapKeyConverter;
   [option: string]: unknown;
+}
+
+export declare class DecodeError extends Error {
+  constructor(message: string);
 }
 
 export type ExtensionEncoder = (
