@@ -13,6 +13,7 @@
     "bench": "bun run build && bun run bench/bench.ts",
     "verify:server": "bun run build && bun run verification/server-adoption.ts",
     "verify:browser": "bun run build && bun run verification/browser-adoption.ts",
+    "verify:options": "bun run build && bun run verification/options-compat.ts",
     "verify:adoption": "bun run build && bun run verification/server-adoption.ts && bun run verification/browser-adoption.ts"
   },
   "devDependencies": {

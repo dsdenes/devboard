@@ -33,11 +33,13 @@ The package exposes conditional ESM and CommonJS entry points, so both
 - `new Decoder(options?)` with `decode`.
 - `new ExtensionCodec()` with `register`, `tryToEncode`, and `decode`, plus
   `ExtensionCodec.defaultCodec` and `ExtData`.
+- `DecodeError`, the error class raised by decoder length limits and the
+  default map key converter.
 - Timestamp helpers: `EXT_TIMESTAMP`, `encodeDateToTimeSpec`,
   `encodeTimeSpecToTimestamp`, `decodeTimestampToTimeSpec`,
   `encodeTimestampExtension`, and `decodeTimestampExtension`.
-- `Encoder` and `Decoder` accept `extensionCodec` and `context` options; the
-  module-level `encode` and `decode` accept the same options.
+- `Encoder` and `Decoder` accept every option listed below; the module-level
+  `encode` and `decode` accept the same options.
 
 Default behaviour matches msgpack-javascript 3.1.3: smallest integer widths,
 float64 for non-integers, UTF-8 strings with the same fixstr/str8/str16/str32
@@ -61,16 +63,58 @@ const decoded = decode(bytes, { extensionCodec: codec });
 Custom types nested in arrays and maps use the same codec, unknown extension
 types decode to `ExtData`, and `ExtData` values re-encode unchanged.
 
+## Options
+
+Options match msgpack-javascript 3.1.3. Every documented option can be passed
+to the module functions and to `Encoder`/`Decoder`.
+
+Encoding options:
+
+| Name                  | Type             | Default                       |
+| --------------------- | ---------------- | ----------------------------- |
+| `extensionCodec`      | `ExtensionCodec` | `ExtensionCodec.defaultCodec` |
+| `context`             | user-defined     | -                             |
+| `useBigInt64`         | `boolean`        | `false`                       |
+| `maxDepth`            | `number`         | `100`                         |
+| `initialBufferSize`   | `number`         | `2048`                        |
+| `sortKeys`            | `boolean`        | `false`                       |
+| `forceFloat32`        | `boolean`        | `false`                       |
+| `forceIntegerToFloat` | `boolean`        | `false`                       |
+| `ignoreUndefined`     | `boolean`        | `false`                       |
+
+Decoding options:
+
+| Name              | Type                 | Default                                      |
+| ----------------- | -------------------- | -------------------------------------------- |
+| `extensionCodec`  | `ExtensionCodec`     | `ExtensionCodec.defaultCodec`                |
+| `context`         | user-defined         | -                                            |
+| `useBigInt64`     | `boolean`            | `false`                                      |
+| `rawStrings`      | `boolean`            | `false`                                      |
+| `maxStrLength`    | `number`             | `4_294_967_295` (`UINT32_MAX`)               |
+| `maxBinLength`    | `number`             | `4_294_967_295` (`UINT32_MAX`)               |
+| `maxArrayLength`  | `number`             | `4_294_967_295` (`UINT32_MAX`)               |
+| `maxMapLength`    | `number`             | `4_294_967_295` (`UINT32_MAX`)               |
+| `maxExtLength`    | `number`             | `4_294_967_295` (`UINT32_MAX`)               |
+| `keyDecoder`      | `KeyDecoder \| null` | shared bounded cache                         |
+| `mapKeyConverter` | `(key) => string \| number` | throws `DecodeError` for other key types |
+
+`useBigInt64` encodes `bigint` values as int64/uint64 and decodes those formats
+as `bigint`; numbers that do not fit a 32-bit integer width become floats in
+this mode, as in the reference. `rawStrings` returns `Uint8Array` for string
+values while map keys stay strings, and its values are limited by
+`maxBinLength`. The `max*Length` options reject input with `DecodeError` at the
+same boundary as the reference. `keyDecoder: null` disables the shared key
+cache.
+
 ## Scope
 
 In scope: the value types listed above, the built-in timestamp extension,
-application-registered extension types, `context`, and nested combinations.
+application-registered extension types, `context`, every documented encoding
+and decoding option, and nested combinations.
 
-Out of scope by design, matching the epic's non-goals: non-default
-encoder/decoder options other than `extensionCodec` and `context`, streaming and
-multi-value decoding, malformed-input error parity, resource limits and
-nesting-depth policy, large integers beyond the default, type-declaration
-parity, and publishing.
+Out of scope by design, matching the epic's non-goals: streaming and multi-value
+decoding, malformed-input error parity, type-declaration parity, and
+publishing.
 
 Out-of-scope inputs may be unsupported, but they cannot change the result for an
 in-scope payload.
@@ -82,13 +126,20 @@ bun install
 bun test              # byte identity and decode identity against msgpack-javascript
 bun run typecheck
 bun run bench         # side-by-side encoding and decoding
+bun run verify:options
 bun run verify:adoption
 ```
 
 `bun test` compares every in-scope fixture and nested combination against the
 reference package installed as `msgpack-javascript-original`, including
-timestamps at every representation boundary and custom extension types of every
-payload width.
+timestamps at every representation boundary, custom extension types of every
+payload width, every documented option, option combinations, and decoder limits
+at and beyond their boundary.
+
+`bun run verify:options` imports the built package by its public name, as an
+adopting application does, and compares each documented option, several
+combined options, limit boundaries and their `DecodeError` category, the
+CommonJS entry point, and no-option encoding and decoding with the reference.
 
 `bun run bench` builds the shipped package, then measures both libraries on the
 same machine, payloads, and process, with warmup, alternating order, and the
@@ -112,29 +163,29 @@ replacement divided by original, so lower is faster.
 
 | Case | Bytes | Encode ref | Encode new | Ratio | Decode ref | Decode new | Ratio |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| null | 1 | 529 | 33 | 0.062 | 128 | 21 | 0.163 |
-| boolean | 1 | 580 | 52 | 0.090 | 110 | 26 | 0.233 |
-| small int | 1 | 537 | 44 | 0.082 | 112 | 25 | 0.227 |
-| large int | 9 | 669 | 116 | 0.173 | 120 | 26 | 0.220 |
-| float | 9 | 567 | 53 | 0.093 | 109 | 25 | 0.227 |
-| short string | 15 | 628 | 75 | 0.119 | 290 | 105 | 0.361 |
-| medium string | 222 | 1025 | 394 | 0.385 | 245 | 127 | 0.518 |
-| long string | 5003 | 7413 | 4539 | 0.612 | 707 | 531 | 0.751 |
-| unicode string | 187 | 1177 | 423 | 0.359 | 1340 | 1060 | 0.791 |
-| binary 256 | 259 | 692 | 113 | 0.163 | 179 | 96 | 0.535 |
-| binary 4096 | 4099 | 1815 | 702 | 0.387 | 159 | 59 | 0.369 |
-| small array | 7 | 741 | 116 | 0.157 | 305 | 61 | 0.200 |
-| integer array | 174 | 1963 | 1472 | 0.750 | 1031 | 640 | 0.621 |
-| small map | 21 | 749 | 150 | 0.200 | 477 | 131 | 0.275 |
-| large map | 693 | 4555 | 3048 | 0.669 | 36859 | 25752 | 0.699 |
-| typical response | 590 | 4499 | 3058 | 0.680 | 6794 | 3102 | 0.457 |
-| nested combinations | 1120 | 11526 | 9158 | 0.795 | 21612 | 10374 | 0.480 |
-| timestamp | 10 | 988 | 355 | 0.360 | 311 | 142 | 0.458 |
-| timestamp before epoch | 15 | 952 | 353 | 0.371 | 346 | 150 | 0.432 |
-| timestamp nested | 125 | 5455 | 4129 | 0.757 | 2990 | 2030 | 0.679 |
-| custom point | 18 | 1151 | 448 | 0.389 | 295 | 132 | 0.449 |
-| custom nested | 228 | 6675 | 6232 | 0.934 | 3345 | 1422 | 0.425 |
-| custom array | 363 | 10690 | 9630 | 0.901 | 2369 | 1864 | 0.787 |
+| null | 1 | 524 | 36 | 0.068 | 96 | 33 | 0.342 |
+| boolean | 1 | 588 | 45 | 0.076 | 101 | 27 | 0.262 |
+| small int | 1 | 604 | 52 | 0.086 | 111 | 26 | 0.238 |
+| large int | 9 | 681 | 119 | 0.175 | 106 | 27 | 0.258 |
+| float | 9 | 591 | 51 | 0.086 | 105 | 25 | 0.236 |
+| short string | 15 | 688 | 75 | 0.110 | 285 | 101 | 0.354 |
+| medium string | 222 | 988 | 428 | 0.433 | 251 | 137 | 0.547 |
+| long string | 5003 | 6415 | 4492 | 0.700 | 708 | 545 | 0.770 |
+| unicode string | 187 | 1063 | 404 | 0.380 | 1231 | 920 | 0.747 |
+| binary 256 | 259 | 705 | 105 | 0.149 | 183 | 66 | 0.363 |
+| binary 4096 | 4099 | 2060 | 677 | 0.329 | 166 | 66 | 0.396 |
+| small array | 7 | 700 | 140 | 0.200 | 296 | 78 | 0.265 |
+| integer array | 174 | 2061 | 1328 | 0.644 | 974 | 749 | 0.769 |
+| small map | 21 | 818 | 164 | 0.200 | 500 | 156 | 0.313 |
+| large map | 693 | 4663 | 3315 | 0.711 | 39424 | 28709 | 0.728 |
+| typical response | 590 | 4780 | 3203 | 0.670 | 7298 | 3617 | 0.496 |
+| nested combinations | 1120 | 13653 | 10396 | 0.761 | 27130 | 13962 | 0.515 |
+| timestamp | 10 | 1339 | 436 | 0.326 | 379 | 179 | 0.472 |
+| timestamp before epoch | 15 | 1361 | 468 | 0.344 | 437 | 188 | 0.429 |
+| timestamp nested | 125 | 7136 | 5508 | 0.772 | 3811 | 2748 | 0.721 |
+| custom point | 18 | 1562 | 612 | 0.392 | 365 | 168 | 0.460 |
+| custom nested | 228 | 8751 | 7759 | 0.887 | 4213 | 1758 | 0.417 |
+| custom array | 363 | 14102 | 12650 | 0.897 | 2926 | 2394 | 0.818 |
 
 
 No measured payload was slower for either operation; all 23 were faster for both.
