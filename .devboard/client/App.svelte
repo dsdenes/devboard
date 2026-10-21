@@ -78,6 +78,14 @@
   );
   let createDisabled = $derived(revisionDisabled || creationActive);
   let goalEditingDisabled = $derived(lifecycleActive && !lifecycle.paused);
+  let activityActive = $derived(running || creationActive || revisionActive);
+  let currentAction = $derived(activity[activity.length - 1] ?? "");
+  let previousActions = $derived(activity.slice(0, -1));
+  let previousActionsLabel = $derived(
+    previousActions.length === 1
+      ? "1 previous action"
+      : `${previousActions.length} previous actions`,
+  );
   let lifecycleStageLabel = $derived(STAGE_LABELS[lifecycle.stage]);
   let lifecycleWorkTitle = $derived(
     lifecycle.work === null
@@ -650,13 +658,22 @@
   {/if}
 
   {#if activity.length > 0}
-    <section class="activity">
-      <h2>Activity</h2>
-      <ol class="activity-log" data-testid="activity-log">
-        {#each activity as line, index (index)}
-          <li>{line}</li>
-        {/each}
-      </ol>
+    <section class="activity" class:live={activityActive} data-testid="activity">
+      <div class="activity-heading">
+        <span class="activity-dot" class:live={activityActive} aria-hidden="true"></span>
+        <h2>{activityActive ? "Current action" : "Last action"}</h2>
+      </div>
+      <p class="activity-current" data-testid="activity-current">{currentAction}</p>
+      {#if previousActions.length > 0}
+        <details class="activity-history">
+          <summary data-testid="activity-history">{previousActionsLabel}</summary>
+          <ol class="activity-log" data-testid="activity-log">
+            {#each [...previousActions].reverse() as line, index (index)}
+              <li>{line}</li>
+            {/each}
+          </ol>
+        </details>
+      {/if}
     </section>
   {/if}
 

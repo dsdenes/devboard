@@ -195,30 +195,105 @@ main {
 .activity {
   background: var(--surface);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
   border-radius: 8px;
   margin: 0 0 1rem;
-  padding: 0.75rem 1rem;
+  padding: 0.8rem 1rem 0.85rem;
 }
 
-.activity h2 {
-  font-size: 0.82rem;
-  letter-spacing: 0.05em;
-  margin: 0 0 0.5rem;
+.activity.live {
+  border-left-color: var(--accent);
+}
+
+.activity-heading {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+  margin-bottom: 0.4rem;
+}
+
+.activity-heading h2 {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin: 0;
   text-transform: uppercase;
 }
 
-.activity-log {
+.activity-dot {
+  background: var(--muted);
+  border-radius: 50%;
+  flex: none;
+  height: 0.5rem;
+  width: 0.5rem;
+}
+
+.activity-dot.live {
+  animation: activity-pulse 1.6s ease-out infinite;
+  background: var(--accent);
+}
+
+@keyframes activity-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+
+  70%,
+  100% {
+    box-shadow: 0 0 0 0.4rem transparent;
+  }
+}
+
+.activity-current {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.82rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
   margin: 0;
-  max-height: 16rem;
+  max-height: 10rem;
+  overflow-wrap: anywhere;
   overflow-y: auto;
-  padding-left: 1.4rem;
+  white-space: pre-wrap;
+}
+
+.activity-history {
+  border-top: 1px solid var(--border);
+  margin-top: 0.7rem;
+  padding-top: 0.55rem;
+}
+
+.activity-history summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  width: fit-content;
+}
+
+.activity-history summary:hover {
+  color: var(--text);
+}
+
+.activity-log {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  margin: 0.45rem 0 0;
+  max-height: 12rem;
+  overflow-y: auto;
+  padding-left: 1.3rem;
 }
 
 .activity-log li {
   margin: 0.15rem 0;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-dot.live {
+    animation: none;
+  }
 }
 
 .question {

@@ -32,7 +32,13 @@ advancing lifecycle, or a revision is active, creation is refused in turn. A cre
 accepted while the lifecycle is paused, and when it ends the server replays the suspended
 lifecycle conversation.
 
-While a run is active the interface names the record being resolved, appends the agent's ACP session updates to a live activity log, and presents each interview question with its choices plus a free-form answer field. One start resolves every pending record in ascending file-name order: after each run the server re-reads `adrs/`, and the sequence ends when no pending record remains or when the finished record is still `Proposed` (or has been removed). The chain runs in the server, so it continues if the browser disconnects.
+While a run is active the interface names the record being resolved, shows the agent's latest
+ACP session update as the current action, folds earlier updates into a collapsed history, and
+presents each interview question with its choices plus a free-form answer field. One start
+resolves every pending record in ascending file-name order: after each run the server re-reads
+`adrs/`, and the sequence ends when no pending record remains or when the finished record is
+still `Proposed` (or has been removed). The chain runs in the server, so it continues if the
+browser disconnects.
 
 The page also shows a lifecycle stage and pass number. The lifecycle starts only from a settled
 goal: the goal section reports `Goal ready` when the document contains at least one
@@ -232,7 +238,8 @@ The server answers with events:
   chunks; a different message id, a change from thought to reply, a tool call, or a plan
   starts a new line. The server stores the joined lines, so a client that connects during a
   run receives each line once, without the `append` flag. Text updates that carry no message
-  id are complete lines and always start a new one.
+  id are complete lines and always start a new one. The interface renders the last line as the
+  current action and lists earlier lines under a collapsed history.
 - A record's title is its first level-one heading.
 - A record is pending exactly when its status is `Proposed`; every other status is resolved.
 - Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).
