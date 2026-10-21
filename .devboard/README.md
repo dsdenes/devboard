@@ -7,8 +7,9 @@ It also shows the repository's current goal in a `Current goal` textarea. The de
 Below the editor, a `Revision guidance` field and `Revise goal` control ask an agent to modify,
 rewrite, or recreate the goal. The guidance is optional; the agent may instead establish the
 direction through interview questions. Its ACP session updates stream into the same live
-activity log, questions use the same choices and free-form answer field, and when the revision
-ends the textarea is replaced with the text the agent wrote to the goal document. A revision
+activity log, questions use the same options, consequence explanations, recommended marker, and
+free-form answer field, and when the revision ends the textarea is replaced with the text the
+agent wrote to the goal document. A revision
 is unavailable while a run is active or the lifecycle is advancing, but remains available
 while the lifecycle is paused; starting another run or revision is blocked while one is in
 progress.
@@ -34,7 +35,8 @@ lifecycle conversation.
 
 While a run is active the interface names the record being resolved, shows the agent's latest
 ACP session update as the current action, folds earlier updates into a collapsed history, and
-presents each interview question with its choices plus a free-form answer field. One start
+presents each interview question with its options, each labeled with the consequence of choosing
+it and with the recommended one marked, plus a free-form answer field. One start
 resolves every pending record in ascending file-name order: after each run the server re-reads
 `adrs/`, and the sequence ends when no pending record remains or when the finished record is
 still `Proposed` (or has been removed). The chain runs in the server, so it continues if the
@@ -226,7 +228,15 @@ The server answers with events:
 { "type": "runStarted", "file": "0001-example.md", "title": "Example" }
 { "type": "activity", "text": "Inspecting 0001-example.md" }
 { "type": "activity", "text": " and its status line", "append": true }
-{ "type": "question", "id": 1, "message": "Choose an answer", "choices": ["Alpha", "Beta"] }
+{
+  "type": "question",
+  "id": 1,
+  "message": "Choose an answer",
+  "options": [
+    { "label": "Alpha", "description": "Alpha leads to the first outcome.", "recommended": true },
+    { "label": "Beta", "description": "Beta leads to the second outcome.", "recommended": false }
+  ]
+}
 { "type": "runStopped", "file": "0001-example.md", "title": "Example", "resolved": true, "status": "Accepted" }
 { "type": "error", "message": "No pending ADRs to start." }
 ```
@@ -240,6 +250,9 @@ The server answers with events:
   run receives each line once, without the `append` flag. Text updates that carry no message
   id are complete lines and always start a new one. The interface renders the last line as the
   current action and lists earlier lines under a collapsed history.
+- A `question` event carries one option per choice. Each option has a `label`, an optional
+  `description` stating the consequence of choosing it, and `recommended`, true for the answer
+  the agent suggests. `answer` names the selected label as `value`.
 - A record's title is its first level-one heading.
 - A record is pending exactly when its status is `Proposed`; every other status is resolved.
 - Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).

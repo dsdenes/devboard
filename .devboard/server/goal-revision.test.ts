@@ -9,6 +9,10 @@ import type { EpicLookup, OpenEpic } from "./tracker";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
+const QUESTION_OPTIONS = [
+  { label: "Alpha", description: "Alpha leads to the first outcome.", recommended: true },
+  { label: "Beta", description: "Beta leads to the second outcome.", recommended: false },
+];
 const REVISED_GOAL = "# Revised goal\n\nThe agent rewrote this.";
 
 interface TestServer {
@@ -208,7 +212,7 @@ describe("guided goal revision", () => {
         const question = await client.waitFor((message) => message.type === "question");
         expect(question).toMatchObject({
           message: "Choose an answer",
-          choices: ["Alpha", "Beta"],
+          options: QUESTION_OPTIONS,
         });
         expect(prompts(logPath)).toHaveLength(1);
         expect(readFileSync(logPath, "utf8")).toContain("Guidance: Tighten the goal");
@@ -259,7 +263,7 @@ describe("guided goal revision", () => {
         const question = await client.waitFor((message) => message.type === "question");
         expect(question).toMatchObject({
           message: "Choose an answer",
-          choices: ["Alpha", "Beta"],
+          options: QUESTION_OPTIONS,
         });
         expect(prompts(logPath)[0]).not.toContain("Guidance:");
         expect(readFileSync(logPath, "utf8")).not.toContain("Guidance:");
@@ -487,7 +491,7 @@ describe("guided goal revision", () => {
           expect(late.events[2]).toMatchObject({
             type: "question",
             message: "Choose an answer",
-            choices: ["Alpha", "Beta"],
+            options: QUESTION_OPTIONS,
           });
 
           const question = late.events[2];

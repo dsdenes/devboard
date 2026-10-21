@@ -1,7 +1,13 @@
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { AcpConnection, agentPrompt, type AcpActivity, type AcpQuestion } from "./acp";
+import {
+  AcpConnection,
+  agentPrompt,
+  type AcpActivity,
+  type AcpQuestion,
+  type AcpQuestionOption,
+} from "./acp";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
 import { findOpenEpic, type EpicLookup } from "./tracker";
@@ -20,7 +26,7 @@ export interface AppOptions {
 interface RunQuestion {
   id: number | string;
   message: string;
-  choices: string[];
+  options: AcpQuestionOption[];
 }
 
 interface ActiveRun {
@@ -179,7 +185,7 @@ export function createApp(options: AppOptions) {
         type: "question",
         id: run.question.id,
         message: run.question.message,
-        choices: run.question.choices,
+        options: run.question.options,
       });
     }
   }
@@ -363,13 +369,13 @@ export function createApp(options: AppOptions) {
           creation.question = {
             id: question.id,
             message: question.message,
-            choices: question.choices,
+            options: question.options,
           };
           broadcast({
             type: "question",
             id: question.id,
             message: question.message,
-            choices: question.choices,
+            options: question.options,
           });
         },
         onStderr(text) {
@@ -436,13 +442,13 @@ export function createApp(options: AppOptions) {
           revision.question = {
             id: question.id,
             message: question.message,
-            choices: question.choices,
+            options: question.options,
           };
           broadcast({
             type: "question",
             id: question.id,
             message: question.message,
-            choices: question.choices,
+            options: question.options,
           });
         },
         onStderr(text) {
@@ -483,13 +489,13 @@ export function createApp(options: AppOptions) {
           run.question = {
             id: question.id,
             message: question.message,
-            choices: question.choices,
+            options: question.options,
           };
           broadcast({
             type: "question",
             id: question.id,
             message: question.message,
-            choices: question.choices,
+            options: question.options,
           });
         },
         onStderr(text) {
@@ -935,7 +941,7 @@ export function createApp(options: AppOptions) {
               type: "question",
               id: creation.question.id,
               message: creation.question.message,
-              choices: creation.question.choices,
+              options: creation.question.options,
             });
           }
         }
@@ -950,7 +956,7 @@ export function createApp(options: AppOptions) {
             type: "question",
             id: revision.question.id,
             message: revision.question.message,
-            choices: revision.question.choices,
+            options: revision.question.options,
           });
         }
       },

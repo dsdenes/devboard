@@ -153,7 +153,11 @@ async function promptTurn(params: Record<string, unknown>) {
           value: {
             type: "string",
             title: index === 0 ? "Choose an answer" : `Choose an answer ${index + 1}`,
-            enum: ["Alpha", "Beta"],
+            oneOf: [
+              { const: "Alpha", title: "Alpha", description: "Alpha leads to the first outcome." },
+              { const: "Beta", title: "Beta", description: "Beta leads to the second outcome." },
+            ],
+            default: "Alpha",
           },
         },
         required: ["value"],

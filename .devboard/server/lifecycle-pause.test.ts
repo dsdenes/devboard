@@ -9,6 +9,10 @@ import type { EpicLookup, OpenEpic } from "./tracker";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
+const QUESTION_OPTIONS = [
+  { label: "Alpha", description: "Alpha leads to the first outcome.", recommended: true },
+  { label: "Beta", description: "Beta leads to the second outcome.", recommended: false },
+];
 
 interface TestServer {
   server: Server<unknown>;
@@ -272,7 +276,7 @@ async function exercisePausedRevision(request: string | undefined) {
     expect(revisionQuestion).toMatchObject({
       id: 1,
       message: "Choose an answer",
-      choices: ["Alpha", "Beta"],
+      options: QUESTION_OPTIONS,
     });
 
     expect(spawnCount(logPath)).toBe(2);
@@ -354,7 +358,7 @@ async function exercisePausedRevision(request: string | undefined) {
     expect(resumedQuestion).toMatchObject({
       id: 1,
       message: "Choose an answer",
-      choices: ["Alpha", "Beta"],
+      options: QUESTION_OPTIONS,
     });
     client.send({ type: "answer", id: resumedQuestion.id, value: "Beta" });
 
@@ -842,7 +846,7 @@ describe("lifecycle pause and resume", () => {
             type: "question",
             id: 1,
             message: "Choose an answer",
-            choices: ["Alpha", "Beta"],
+            options: QUESTION_OPTIONS,
           });
         } finally {
           late.close();
@@ -1133,7 +1137,7 @@ describe("lifecycle pause and resume", () => {
         expect(lifecycleQuestion).toMatchObject({
           id: 1,
           message: "Choose an answer",
-          choices: ["Alpha", "Beta"],
+          options: QUESTION_OPTIONS,
         });
         const lifecycleActivity = client.events
           .filter((message) => message.type === "activity")
@@ -1228,7 +1232,7 @@ describe("lifecycle pause and resume", () => {
           ).toMatchObject({
             id: lifecycleQuestion.id,
             message: lifecycleQuestion.message,
-            choices: lifecycleQuestion.choices,
+            options: lifecycleQuestion.options,
           });
         }
 

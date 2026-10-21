@@ -14,10 +14,16 @@
     next: string | null;
   }
 
+  interface RunQuestionOption {
+    label: string;
+    description?: string;
+    recommended: boolean;
+  }
+
   interface RunQuestion {
     id: number | string;
     message: string;
-    choices: string[];
+    options: RunQuestionOption[];
   }
 
   type LifecycleStage = "goal" | "epic" | "adr" | "implementation" | "finished";
@@ -229,6 +235,20 @@
     );
   }
 
+  function isQuestionOption(value: unknown): value is RunQuestionOption {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "label" in value &&
+      typeof value.label === "string" &&
+      (!("description" in value) ||
+        value.description === undefined ||
+        typeof value.description === "string") &&
+      "recommended" in value &&
+      typeof value.recommended === "boolean"
+    );
+  }
+
   function isQuestionEvent(value: unknown): value is { type: "question" } & RunQuestion {
     return (
       typeof value === "object" &&
@@ -239,9 +259,9 @@
       (typeof value.id === "string" || typeof value.id === "number") &&
       "message" in value &&
       typeof value.message === "string" &&
-      "choices" in value &&
-      Array.isArray(value.choices) &&
-      value.choices.every((choice) => typeof choice === "string")
+      "options" in value &&
+      Array.isArray(value.options) &&
+      value.options.every(isQuestionOption)
     );
   }
 
@@ -459,7 +479,7 @@
           activity = [...activity, message.text];
         }
       } else if (isQuestionEvent(message)) {
-        question = { id: message.id, message: message.message, choices: message.choices };
+        question = { id: message.id, message: message.message, options: message.options };
         draft = "";
       } else if (isRunStoppedEvent(message)) {
         runFile = null;
@@ -681,11 +701,24 @@
     <section class="question" data-testid="question">
       <p class="question-message">{question.message}</p>
 
-      {#if question.choices.length > 0}
+      {#if question.options.length > 0}
         <div class="choices">
-          {#each question.choices as choice (choice)}
-            <button type="button" data-testid="choice" onclick={() => submitAnswer(choice)}>
-              {choice}
+          {#each question.options as option (option.label)}
+            <button
+              type="button"
+              class="choice"
+              data-testid="choice"
+              onclick={() => submitAnswer(option.label)}
+            >
+              <span class="choice-label">
+                {option.label}
+                {#if option.recommended}
+                  <span class="choice-recommended" data-testid="recommended">Recommended</span>
+                {/if}
+              </span>
+              {#if option.description}
+                <span class="choice-description">{option.description}</span>
+              {/if}
             </button>
           {/each}
         </div>

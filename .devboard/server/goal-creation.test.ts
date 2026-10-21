@@ -9,6 +9,10 @@ import type { EpicLookup, OpenEpic } from "./tracker";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
+const QUESTION_OPTIONS = [
+  { label: "Alpha", description: "Alpha leads to the first outcome.", recommended: true },
+  { label: "Beta", description: "Beta leads to the second outcome.", recommended: false },
+];
 const CREATED_GOAL = "# Created goal\n\nThe agent wrote this.";
 
 interface TestServer {
@@ -215,7 +219,7 @@ describe("guided goal creation", () => {
         const question = await client.waitFor((message) => message.type === "question");
         expect(question).toMatchObject({
           message: "Choose an answer",
-          choices: ["Alpha", "Beta"],
+          options: QUESTION_OPTIONS,
         });
         expect(prompts(logPath)).toEqual(["/goal-outcome"]);
         expect(spawnCount(logPath)).toBe(1);
@@ -570,7 +574,7 @@ describe("guided goal creation", () => {
           expect(late.events[2]).toMatchObject({
             type: "question",
             message: "Choose an answer",
-            choices: ["Alpha", "Beta"],
+            options: QUESTION_OPTIONS,
           });
           expect(late.events.findIndex((message) => message.type === "goal")).toBeGreaterThan(2);
 

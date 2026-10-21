@@ -1,9 +1,15 @@
 import type { Subprocess } from "bun";
 
+export interface AcpQuestionOption {
+  label: string;
+  description?: string;
+  recommended: boolean;
+}
+
 export interface AcpQuestion {
   id: number | string;
   message: string;
-  choices: string[];
+  options: AcpQuestionOption[];
   properties: Record<string, unknown>;
   required: string[] | undefined;
 }
@@ -42,7 +48,27 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
 
-function propertyChoices(property: unknown): string[] {
+interface ParsedOption {
+  label: string;
+  description?: string;
+}
+
+function parsedOption(entry: unknown): ParsedOption | undefined {
+  if (typeof entry === "string") return { label: entry };
+  const record = asRecord(entry);
+  if (record === undefined) return undefined;
+  const label = [record.title, record.const, record.label, record.value].find(
+    (candidate): candidate is string => typeof candidate === "string",
+  );
+  if (label === undefined) return undefined;
+  const description =
+    typeof record.description === "string" && record.description.trim().length > 0
+      ? record.description
+      : undefined;
+  return description === undefined ? { label } : { label, description };
+}
+
+function propertyOptions(property: unknown): ParsedOption[] {
   const record = asRecord(property);
   if (record === undefined) return [];
   const containers = [record.enum, record.oneOf, record.anyOf];
@@ -52,40 +78,44 @@ function propertyChoices(property: unknown): string[] {
   }
   containers.push(record.const);
 
-  const choices: string[] = [];
+  const options: ParsedOption[] = [];
+  const labels = new Set<string>();
   for (const container of containers) {
     const entries = Array.isArray(container) ? container : container === undefined ? [] : [container];
     for (const entry of entries) {
-      const entryRecord = asRecord(entry);
-      const label =
-        typeof entry === "string"
-          ? entry
-          : entryRecord !== undefined
-            ? [entryRecord.title, entryRecord.const, entryRecord.label, entryRecord.value].find(
-                (candidate): candidate is string => typeof candidate === "string",
-              )
-            : undefined;
-      if (label !== undefined && !choices.includes(label)) choices.push(label);
+      const option = parsedOption(entry);
+      if (option === undefined || labels.has(option.label)) continue;
+      labels.add(option.label);
+      options.push(option);
     }
   }
-  return choices;
+  return options;
 }
 
-function questionChoices(properties: Record<string, unknown>): string[] {
-  const choices: string[] = [];
+function propertyLabels(property: unknown): string[] {
+  return propertyOptions(property).map((option) => option.label);
+}
+
+function questionOptions(properties: Record<string, unknown>): AcpQuestionOption[] {
+  const options: AcpQuestionOption[] = [];
+  const labels = new Set<string>();
   for (const [key, property] of Object.entries(properties)) {
     if (key.endsWith("__other")) continue;
-    for (const choice of propertyChoices(property)) {
-      if (!choices.includes(choice)) choices.push(choice);
+    const record = asRecord(property);
+    const recommended = typeof record?.default === "string" ? record.default : undefined;
+    for (const option of propertyOptions(property)) {
+      if (labels.has(option.label)) continue;
+      labels.add(option.label);
+      options.push({ ...option, recommended: option.label === recommended });
     }
   }
-  return choices;
+  return options;
 }
 
 function answerContent(question: PendingQuestion, value: string): Record<string, unknown> {
   const keys = Object.keys(question.properties);
-  const choiceKeys = keys.filter((key) => propertyChoices(question.properties[key]).length > 0);
-  const matchingKey = choiceKeys.find((key) => propertyChoices(question.properties[key]).includes(value));
+  const choiceKeys = keys.filter((key) => propertyLabels(question.properties[key]).length > 0);
+  const matchingKey = choiceKeys.find((key) => propertyLabels(question.properties[key]).includes(value));
 
   if (matchingKey !== undefined) {
     const property = asRecord(question.properties[matchingKey]);
@@ -412,7 +442,7 @@ export class AcpConnection {
       id: wireId,
       wireId,
       message,
-      choices: questionChoices(properties),
+      options: questionOptions(properties),
       properties,
       required,
     };

@@ -8,6 +8,10 @@ import { createApp } from "./app";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
+const QUESTION_OPTIONS = [
+  { label: "Alpha", description: "Alpha leads to the first outcome.", recommended: true },
+  { label: "Beta", description: "Beta leads to the second outcome.", recommended: false },
+];
 
 interface TestServer {
   server: Server<unknown>;
@@ -343,7 +347,7 @@ describe("agent runs", () => {
         const first = await client.waitFor((message) => message.type === "question");
         expect(first).toMatchObject({
           message: "Choose an answer",
-          choices: ["Alpha", "Beta"],
+          options: QUESTION_OPTIONS,
         });
 
         client.send({ type: "answer", id: first.id, value: "Gamma" });
@@ -359,7 +363,7 @@ describe("agent runs", () => {
         const second = await client.waitFor((message) => message.type === "question");
         expect(second).toMatchObject({
           message: "Choose an answer 2",
-          choices: ["Alpha", "Beta"],
+          options: QUESTION_OPTIONS,
         });
 
         client.send({ type: "answer", id: second.id, value: "Beta" });

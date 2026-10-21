@@ -34,9 +34,16 @@ An existing `GOAL.md` joins the brief as context and is replaced wholesale after
 
 ## Phase 2 — Interview (`ask`)
 
-- One `ask` call per round, carrying every significant open question of that round.
-- Per question: 2–5 mutually exclusive `options`, a concrete `label`, and a `description` stating what the user would observe differently under that choice. Set `recommended` to the zero-based index you would choose from the brief and context. Use `multi: true` only when choices genuinely combine; `preview` only when two outcomes need comparing.
-- With no brief, the first round asks what the user wants to observe; never invent a goal from the repository.
+- One `ask` call carries exactly one question. Never bundle several questions into one call.
+- Per question: exactly three mutually exclusive `options`, each a real alternative at the same
+  level of significance. Never pad the list with a filler, an "other", or a combination of the
+  other two. When fewer than three genuine alternatives exist, the question is already settled:
+  infer the outcome instead of asking.
+- Each option has a concrete `label` and a `description` stating the consequence of choosing it:
+  what the user would observe, get, or give up under that choice, in the user's terms.
+- Set `recommended` to the zero-based index of the option you would choose from the brief and
+  context. Exactly one option is recommended; never leave it unset.
+- With no brief, the first question asks what the user wants to observe; never invent a goal from the repository.
 - Ask only what changes the observable end result or whether the goal is unambiguous. If the brief, the context, or an earlier answer settles it, infer it and do not ask. Style, naming, tooling, sequencing, and anything deferrable are never questions.
 - Ask about exclusions only when load-bearing — when an unstated boundary would make the goal ambiguous. Record only exclusions the user states.
 - Treat a described solution ("add a cache", "use an event log") as evidence of an observation, not as goal content. Ask what the user wants to see happen; write only that observation.
