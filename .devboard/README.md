@@ -15,17 +15,19 @@ while the lifecycle is paused; starting another run or revision is blocked while
 progress.
 
 When the goal document is empty, whitespace-only, or absent, the goal section reports
-`Goal not set` and offers a `Create goal` control. Selecting
+`Goal not set` and offers an enabled `Create goal` control. Selecting
 it asks the server to start the installed `/goal-outcome` skill in one ACP peer, in the
 background; its activity and interview questions stream into the same live log and question UI,
 and the goal section shows `Creating the goal` while it runs. The developer answers the skill's
 questions; the skill interviews them and writes the goal document. The flow never starts on page
-load or reconnect, and the control is absent once the goal document contains non-whitespace text.
+load or reconnect. The `Create goal` control always stays visible, but is disabled once the goal
+document contains non-whitespace text, while a creation or revision runs, and while a run or the
+advancing lifecycle holds the agent; `Revise goal` is the way to change an existing goal.
 When the peer ends, the server reads `<REPO_DIR>/GOAL.md` and the textarea shows those bytes, so
 `Goal ready` and `Start lifecycle` become available. A creation that ends with no non-empty
 `GOAL.md` is reported as an error: the server sends an `error` and a failed
-`goalCreationStopped`, the textarea and goal state stay unchanged, and `Create goal` remains
-available. The server owns the creation run, so closing the
+`goalCreationStopped`, the textarea and goal state stay unchanged, and `Create goal` becomes
+available again. The server owns the creation run, so closing the
 browser does not stop it, and a client that connects during it receives the start, every
 recorded activity line, and the pending question. While a creation runs, starting a run or the
 lifecycle, resuming a paused lifecycle, and revising the goal are each refused; while a run, the

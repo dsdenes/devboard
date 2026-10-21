@@ -54,7 +54,6 @@
   let error = $state<string | null>(null);
   let goalText = $state("");
   let goalReady = $state(false);
-  let goalSeen = $state(false);
   let creationActive = $state(false);
 
   let runFile = $state<string | null>(null);
@@ -82,7 +81,7 @@
   let revisionDisabled = $derived(
     creationActive || revisionActive || (lifecycleActive ? !lifecycle.paused : running),
   );
-  let createDisabled = $derived(revisionDisabled || creationActive);
+  let createDisabled = $derived(revisionDisabled || creationActive || goalReady);
   let goalEditingDisabled = $derived(lifecycleActive && !lifecycle.paused);
   let activityActive = $derived(running || creationActive || revisionActive);
   let currentAction = $derived(activity[activity.length - 1] ?? "");
@@ -427,7 +426,6 @@
         records = message.records;
         next = message.next;
       } else if (isGoalEvent(message)) {
-        goalSeen = true;
         if (!revisionActive && !creationActive) {
           goalText = message.text;
           goalReady = message.text.trim().length > 0;
@@ -601,17 +599,16 @@
       <p class="goal-state" data-testid="goal-state" aria-live="polite">
         {goalReady ? "Goal ready" : "Goal not set"}
       </p>
-      {#if goalSeen && !goalReady}
-        <button
-          type="button"
-          class="start-button create-goal"
-          data-testid="create-goal"
-          disabled={createDisabled}
-          onclick={createGoal}
-        >
-          Create goal
-        </button>
-      {/if}
+      <button
+        type="button"
+        class="start-button create-goal"
+        data-testid="create-goal"
+        title={goalReady ? "The goal is already set. Use Revise goal to change it." : undefined}
+        disabled={createDisabled}
+        onclick={createGoal}
+      >
+        Create goal
+      </button>
     </div>
     <textarea
       id="goal-text"

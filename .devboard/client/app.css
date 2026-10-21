@@ -139,11 +139,31 @@ main {
   padding: 0.9rem 1rem;
 }
 
+.goal-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.goal-heading .goal-label {
+  margin-bottom: 0;
+}
+
 .goal-label {
   display: block;
   font-size: 0.9rem;
   font-weight: 700;
   margin-bottom: 0.5rem;
+}
+
+.goal-state {
+  margin: 0;
+}
+
+.create-goal {
+  margin-left: auto;
 }
 
 .goal-text {
