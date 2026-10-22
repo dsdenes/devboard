@@ -13,6 +13,7 @@
   --accent: #0969da;
   --accent-surface: #eef4ff;
   --error: #b42318;
+  --error-surface: #fdf2f1;
   font-family:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
@@ -32,6 +33,7 @@
     --accent: #58a6ff;
     --accent-surface: #16233a;
     --error: #ff7b72;
+    --error-surface: #2b1513;
   }
 }
 
@@ -162,6 +164,28 @@ main {
   margin: 0;
 }
 
+.goal-details {
+  border-top: 1px solid var(--border);
+  margin-top: 0.2rem;
+  padding-top: 0.7rem;
+}
+
+.goal-summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  width: fit-content;
+}
+
+.goal-summary:hover {
+  color: var(--text);
+}
+
+.goal-details[open] .goal-summary {
+  margin-bottom: 0.7rem;
+}
+
 .create-goal {
   margin-left: auto;
 }
@@ -249,20 +273,9 @@ main {
   width: 0.5rem;
 }
 
+/* Static: an animated live dot repainted the whole panel every frame. */
 .activity-dot.live {
-  animation: activity-pulse 1.6s ease-out infinite;
   background: var(--accent);
-}
-
-@keyframes activity-pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-
-  70%,
-  100% {
-    box-shadow: 0 0 0 0.4rem transparent;
-  }
 }
 
 .activity-current {
@@ -308,12 +321,6 @@ main {
   margin: 0.15rem 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .activity-dot.live {
-    animation: none;
-  }
 }
 
 .question {
@@ -413,16 +420,20 @@ main {
 h1 {
   font-size: 1.9rem;
   line-height: 1.2;
-  margin: 0 0 0.5rem;
-}
-
-.summary {
-  color: var(--muted);
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
-.dot {
-  margin: 0 0.35rem;
+.pending-summary {
+  background: var(--pending-surface);
+  border: 1px solid var(--pending-border);
+  border-radius: 999px;
+  color: var(--pending);
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin: 0.5rem 0 0;
+  padding: 0.15rem 0.6rem;
 }
 
 .connection,
@@ -459,12 +470,45 @@ h1 {
 }
 
 .skills-heading {
+  align-items: center;
   color: var(--muted);
+  cursor: pointer;
+  display: flex;
   font-size: 0.72rem;
   font-weight: 600;
+  gap: 0.45rem;
   letter-spacing: 0.08em;
-  margin: 0 0 0.6rem;
+  margin: 0;
   text-transform: uppercase;
+  width: fit-content;
+}
+
+.skills-heading::before {
+  content: "▸";
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+.skills[open] .skills-heading::before {
+  content: "▾";
+}
+
+.skills-heading:hover {
+  color: var(--text);
+}
+
+.skills[open] .skills-heading {
+  margin-bottom: 0.6rem;
+}
+
+.skills-count {
+  background: var(--accent-surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.68rem;
+  letter-spacing: 0;
+  padding: 0 0.4rem;
 }
 
 .skill-list {
@@ -593,10 +637,11 @@ code {
 }
 
 .reset {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--error-surface);
+  border: 1px solid var(--error);
+  border-left-width: 4px;
   border-radius: 8px;
-  margin: 0 0 1rem;
+  margin: 2rem 0 0;
   padding: 0.9rem 1rem;
 }
 
@@ -608,16 +653,27 @@ code {
 }
 
 .reset-heading h2 {
-  font-size: 0.9rem;
+  color: var(--error);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   margin: 0;
+  text-transform: uppercase;
 }
 
 .reset-button {
+  border-color: var(--error);
+  color: var(--error);
   margin-left: auto;
 }
 
+.reset-button:hover:not(:disabled) {
+  border-color: var(--error);
+  color: var(--error);
+}
+
 .reset-confirmation {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid color-mix(in srgb, var(--error) 35%, var(--border));
   margin-top: 0.75rem;
   padding-top: 0.75rem;
 }

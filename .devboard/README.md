@@ -1,8 +1,19 @@
 # Devboard ADR interface
 
-Local browser interface for the records in `adrs/`. It lists every record, distinguishes records awaiting a decision (`Status: Proposed`) from resolved records, marks the pending record an agent run would take up first, and starts an agent on that record or on one the developer selects.
+Local browser interface for the records in `adrs/`. It lists every record, distinguishes records
+awaiting a decision (`Status: Proposed`) from resolved records, marks the pending record an agent
+run would take up first, and starts an agent on that record or on one the developer selects. The
+page heading names the project by its directory path relative to the user's home directory,
+falling back to the absolute path when the repository lies outside it. A pending badge appears in
+the header only while at least one record is `Proposed`, and the header `Start` control appears
+only then; it resolves the pending sequence.
 
-It also shows the repository's current goal in a `Current goal` textarea. The developer can edit the text and select `Save goal`; the server writes the submitted text verbatim to the goal document, and every page load reads that file rather than browser state.
+It also shows the repository's current goal in a `Current goal` section. Until a goal is set the
+editor is expanded. Once the goal document contains non-whitespace text, the editor, `Save goal`
+control, and revision controls collapse into a `Goal document` dropdown, while the heading keeps
+`Goal ready`, `Prepare Skills`, and `Create goal` visible. The developer can edit the text and
+select `Save goal`; the server writes the submitted text verbatim to the goal document, and every
+page load reads that file rather than browser state.
 
 Below the editor, a `Revision guidance` field and `Revise goal` control ask an agent to modify,
 rewrite, or recreate the goal. The guidance is optional; the agent may instead establish the
@@ -98,9 +109,10 @@ managed skill must be a directory containing `SKILL.md` with a matching name, a 
 description of at most 1024 characters, and `metadata.devboard-managed: "true"`, and the managed
 set must contain at least one skill. The final pass compares every installed skill, including
 hand-authored ones, and succeeds only when no pair gives incompatible instructions. On success
-the Skills panel lists each prepared skill with its name and description and reports
-`No contradictions`; a later run, reload, reconnect, or server restart shows the set read from
-disk. A run replaces only the skills carrying the managed marker: an unmanaged skill is never
+the collapsed Skills dropdown shows its skill count and, when expanded, lists each prepared skill
+with its name and description and reports `No contradictions`; a later run, reload, reconnect, or
+server restart shows the set read from disk. A run replaces only the skills carrying the managed
+marker: an unmanaged skill is never
 overwritten or deleted, and a generated name that collides with one fails the run with an `error`
 naming it. Any failure sends an `error` and a failed `skillsPreparationStopped`, restores the
 previous skills directory byte for byte, and leaves the last Skills panel state visible. While
@@ -108,9 +120,10 @@ preparation runs, starting a run or the lifecycle, resuming a paused lifecycle, 
 saving the goal, creating a goal, and a second preparation are each refused. The control never
 starts on page load or reconnect.
 
-The page also offers a `Reset Implementation` control. It is disabled only while the WebSocket
-is not open or another reset is active, so it can be used at any time, including while a run,
-lifecycle run, goal creation, goal revision, or skills preparation is active. The first click
+The bottom of the page holds a red danger zone offering a `Reset Implementation` control. It is
+disabled only while the WebSocket is not open or another reset is active, so it can be used at
+any time, including while a run, lifecycle run, goal creation, goal revision, or skills
+preparation is active. The first click
 only arms it: no frame is sent, and the page shows the exact keep set, notes that active work
 stops first, and offers a `Confirm reset` control. A reload, a reconnect, a disconnect, or any
 other command disarms it. The second click sends exactly `{ "type": "resetImplementation" }`.
@@ -237,6 +250,7 @@ The client sends:
 ```json
 { "type": "listRecords" }
 { "type": "getGoal" }
+{ "type": "getProject" }
 { "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
 { "type": "startRun" }
 { "type": "startRun", "file": "0002-example.md" }
@@ -254,6 +268,8 @@ The client sends:
 
 - `getGoal` reads the goal document from disk and answers with its complete contents; an
   absent document answers with empty text, so the goal section reports `Goal not set`.
+- `getProject` answers with the page heading label. `path` is `REPO_DIR` relative to the user's
+  home directory when the repository lies inside it, and the absolute path otherwise.
 - `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`. It is accepted while the lifecycle is paused and refused while the lifecycle is advancing.
 - `startRun` without `file` starts the sequence with the lowest-numbered pending record.
 - `startRun` with `file` starts that record first only when it is pending; the sequence then continues with the lowest-numbered remaining pending records.
@@ -309,8 +325,8 @@ The client sends:
   failure is preceded by one `error` carrying git's stderr where git failed. While a reset
   runs, `saveGoal`, `startRun`, `startLifecycle`, `pauseLifecycle`, `resumeLifecycle`,
   `reviseGoal`, `createGoal`, `prepareSkills`, `answer`, and a second `resetImplementation`
-  are each refused with an `error`; `listRecords`, `getGoal`, and `getSkills` still answer. A
-  client that connects during a reset receives `implementationResetStarted` before its own
+  are each refused with an `error`; `listRecords`, `getGoal`, `getProject`, and `getSkills` still
+  answer. A client that connects during a reset receives `implementationResetStarted` before its own
   command replies. On success the server follows the stopped event, in order, with
   `lifecycleState` at `goal` with pass `1`, `work: null`, and `paused: false`, `records` with
   an empty list and `next: null`, and `goal` with the unchanged text (empty when the document
@@ -365,6 +381,7 @@ The server answers with events:
 { "type": "lifecycleState", "stage": "epic", "pass": 2, "work": null, "paused": false }
 { "type": "lifecycleState", "stage": "goal", "pass": 2, "work": null, "paused": false }
 { "type": "records", "records": [ { "file": "0001-example.md", "title": "Example", "status": "Accepted", "pending": false } ], "next": null }
+{ "type": "project", "path": "projects/devboard" }
 { "type": "goal", "text": "# Goal\n\nThe complete goal text." }
 { "type": "goalRevisionStarted" }
 { "type": "goalRevisionStopped", "completed": true, "text": "# Revised goal\n\nThe agent rewrote this." }

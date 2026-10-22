@@ -61,6 +61,7 @@
 
   let records = $state<AdrRecord[]>([]);
   let next = $state<string | null>(null);
+  let projectPath = $state("");
   let connection = $state<"connecting" | "open" | "closed">("connecting");
   let error = $state<string | null>(null);
   let goalText = $state("");
@@ -85,7 +86,6 @@
   let resetStatus = $state<string | null>(null);
 
   let pendingCount = $derived(records.filter((record) => record.pending).length);
-  let resolvedCount = $derived(records.length - pendingCount);
   let running = $derived(runState === "active");
   let lifecycleActive = $derived(
     lifecycleSeen &&
@@ -183,6 +183,17 @@
       value.type === "error" &&
       "message" in value &&
       typeof value.message === "string"
+    );
+  }
+
+  function isProjectEvent(value: unknown): value is { type: "project"; path: string } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "project" &&
+      "path" in value &&
+      typeof value.path === "string"
     );
   }
 
@@ -538,6 +549,7 @@
       current.send(JSON.stringify({ type: "listRecords" }));
       current.send(JSON.stringify({ type: "getGoal" }));
       current.send(JSON.stringify({ type: "getSkills" }));
+      current.send(JSON.stringify({ type: "getProject" }));
     };
 
     current.onmessage = (event) => {
@@ -574,6 +586,8 @@
       } else if (isRecordsEvent(message)) {
         records = message.records;
         next = message.next;
+      } else if (isProjectEvent(message)) {
+        projectPath = message.path;
       } else if (isGoalEvent(message)) {
         if (!revisionActive && !creationActive) {
           goalText = message.text;
@@ -680,16 +694,61 @@
   });
 </script>
 
+{#snippet goalEditor()}
+  <textarea
+    id="goal-text"
+    class="goal-text"
+    bind:value={goalText}
+    disabled={goalEditingDisabled}
+    aria-label="Current goal"
+    data-testid="goal-text"
+  ></textarea>
+  <button
+    type="button"
+    class="start-button save-goal"
+    data-testid="save-goal"
+    disabled={goalEditingDisabled}
+    onclick={saveGoal}
+  >
+    Save goal
+  </button>
+
+  <div class="goal-revision">
+    <label class="goal-label" for="revision-request">Revision guidance</label>
+    <div class="revision-controls">
+      <input
+        id="revision-request"
+        class="revision-request"
+        type="text"
+        bind:value={revisionRequest}
+        placeholder="Optional guidance for the agent"
+        data-testid="revision-request"
+        disabled={revisionDisabled}
+      />
+      <button
+        type="button"
+        class="start-button"
+        data-testid="revise-goal"
+        disabled={revisionDisabled}
+        onclick={reviseGoal}
+      >
+        Revise goal
+      </button>
+    </div>
+  </div>
+{/snippet}
+
 <main>
   <header class="page-header">
     <div class="heading-row">
       <div>
-        <h1>Devboard</h1>
-        <p class="summary">
-          {resolvedCount} resolved
-          <span class="dot" aria-hidden="true">·</span>
-          {pendingCount} pending
-        </p>
+        <h1>{projectPath}</h1>
+        {#if pendingCount > 0}
+          <p class="pending-summary" data-testid="pending-summary" aria-live="polite">
+            {pendingCount}
+            {pendingCount === 1 ? "ADR pending" : "ADRs pending"}
+          </p>
+        {/if}
       </div>
       <div class="header-actions">
         <button
@@ -702,14 +761,16 @@
         >
           Start lifecycle
         </button>
-        <button
-          class="start-button"
-          data-testid="start-next"
-          disabled={controlsDisabled}
-          onclick={() => start()}
-        >
-          Start
-        </button>
+        {#if pendingCount > 0}
+          <button
+            class="start-button"
+            data-testid="start-next"
+            disabled={controlsDisabled}
+            onclick={() => start()}
+          >
+            Start
+          </button>
+        {/if}
       </div>
     </div>
   </header>
@@ -763,54 +824,9 @@
     <p class="error" role="alert">{error}</p>
   {/if}
 
-  <section class="reset" data-testid="reset-section">
-    <div class="reset-heading">
-      <h2>Implementation</h2>
-      <button
-        type="button"
-        class="start-button reset-button"
-        data-testid="reset-implementation"
-        disabled={resetDisabled}
-        onclick={armReset}
-      >
-        Reset Implementation
-      </button>
-    </div>
-
-    {#if resetArmed}
-      <div class="reset-confirmation" data-testid="reset-confirmation">
-        <p class="reset-keep-set" data-testid="reset-keep-set">
-          Reset deletes every top-level entry except
-          <code>.devboard</code>, <code>.omp</code>, <code>AGENTS.md</code>,
-          <code>.gitignore</code>, and <code>GOAL.md</code>. The internal
-          <code>.git</code> and <code>.worktree</code> directories are preserved.
-          Any active run, lifecycle, goal creation, revision, or skills
-          preparation stops first.
-        </p>
-        <button
-          type="button"
-          class="start-button reset-confirm"
-          data-testid="confirm-reset"
-          disabled={resetDisabled}
-          onclick={confirmReset}
-        >
-          Confirm reset
-        </button>
-      </div>
-    {/if}
-
-    {#if resetting}
-      <p class="reset-running" data-testid="reset-running">Resetting implementation…</p>
-    {/if}
-
-    {#if resetStatus}
-      <p class="reset-status" data-testid="reset-status" role="status">{resetStatus}</p>
-    {/if}
-  </section>
-
   <section class="goal" data-testid="goal-editor">
     <div class="goal-heading">
-      <label class="goal-label" for="goal-text">Current goal</label>
+      <span class="goal-label">Current goal</span>
       <p class="goal-state" data-testid="goal-state" aria-live="polite">
         {goalReady ? "Goal ready" : "Goal not set"}
       </p>
@@ -834,46 +850,14 @@
         Create goal
       </button>
     </div>
-    <textarea
-      id="goal-text"
-      class="goal-text"
-      bind:value={goalText}
-      disabled={goalEditingDisabled}
-      data-testid="goal-text"
-    ></textarea>
-    <button
-      type="button"
-      class="start-button save-goal"
-      data-testid="save-goal"
-      disabled={goalEditingDisabled}
-      onclick={saveGoal}
-    >
-      Save goal
-    </button>
-
-    <div class="goal-revision">
-      <label class="goal-label" for="revision-request">Revision guidance</label>
-      <div class="revision-controls">
-        <input
-          id="revision-request"
-          class="revision-request"
-          type="text"
-          bind:value={revisionRequest}
-          placeholder="Optional guidance for the agent"
-          data-testid="revision-request"
-          disabled={revisionDisabled}
-        />
-        <button
-          type="button"
-          class="start-button"
-          data-testid="revise-goal"
-          disabled={revisionDisabled}
-          onclick={reviseGoal}
-        >
-          Revise goal
-        </button>
-      </div>
-    </div>
+    {#if goalReady}
+      <details class="goal-details" data-testid="goal-details">
+        <summary class="goal-summary">Goal document</summary>
+        {@render goalEditor()}
+      </details>
+    {:else}
+      {@render goalEditor()}
+    {/if}
   </section>
 
   {#if creationActive}
@@ -973,8 +957,11 @@
   {/if}
 
   {#if skills.length > 0}
-    <section class="skills" data-testid="skills-panel">
-      <h2 class="skills-heading">Skills</h2>
+    <details class="skills" data-testid="skills-panel">
+      <summary class="skills-heading">
+        Skills
+        <span class="skills-count" data-testid="skills-count">{skills.length}</span>
+      </summary>
       <ul class="skill-list">
         {#each skills as skill (skill.name)}
           <li class="skill" data-testid="skill" data-name={skill.name}>
@@ -995,7 +982,7 @@
           {/each}
         </ul>
       {/if}
-    </section>
+    </details>
   {/if}
 
   {#if records.length === 0}
@@ -1046,6 +1033,51 @@
       {/each}
     </ul>
   {/if}
+
+  <section class="reset" data-testid="reset-section">
+    <div class="reset-heading">
+      <h2>Danger zone</h2>
+      <button
+        type="button"
+        class="start-button reset-button"
+        data-testid="reset-implementation"
+        disabled={resetDisabled}
+        onclick={armReset}
+      >
+        Reset Implementation
+      </button>
+    </div>
+
+    {#if resetArmed}
+      <div class="reset-confirmation" data-testid="reset-confirmation">
+        <p class="reset-keep-set" data-testid="reset-keep-set">
+          Reset deletes every top-level entry except
+          <code>.devboard</code>, <code>.omp</code>, <code>AGENTS.md</code>,
+          <code>.gitignore</code>, and <code>GOAL.md</code>. The internal
+          <code>.git</code> and <code>.worktree</code> directories are preserved.
+          Any active run, lifecycle, goal creation, revision, or skills
+          preparation stops first.
+        </p>
+        <button
+          type="button"
+          class="start-button reset-confirm"
+          data-testid="confirm-reset"
+          disabled={resetDisabled}
+          onclick={confirmReset}
+        >
+          Confirm reset
+        </button>
+      </div>
+    {/if}
+
+    {#if resetting}
+      <p class="reset-running" data-testid="reset-running">Resetting implementation…</p>
+    {/if}
+
+    {#if resetStatus}
+      <p class="reset-status" data-testid="reset-status" role="status">{resetStatus}</p>
+    {/if}
+  </section>
 </main>
 
 <FeedbackOverlay />

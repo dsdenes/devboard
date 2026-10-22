@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createApp } from "./app";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { createApp, projectLabel } from "./app";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -68,6 +68,30 @@ function listRecords(url: string): Promise<unknown> {
   return exchange(url, { type: "listRecords" });
 }
 
+describe("projectLabel", () => {
+  test("names a project inside the home directory by its relative path", () => {
+    const home = join(homedir(), "projects");
+
+    expect(projectLabel(join(home, "devboard"), home)).toBe("devboard");
+    expect(projectLabel(join(home, "nested", "dashboard"), home)).toBe(
+      join("nested", "dashboard"),
+    );
+  });
+
+  test("keeps the absolute path for a project outside the home directory", () => {
+    const home = join(homedir(), "projects");
+    const outside = resolve(home, "..", "elsewhere");
+
+    expect(projectLabel(outside, home)).toBe(outside);
+  });
+
+  test("keeps the absolute path for the home directory itself", () => {
+    const home = join(homedir(), "projects");
+
+    expect(projectLabel(home, home)).toBe(home);
+  });
+});
+
 describe("createApp", () => {
   test("serves the built client at the root", async () => {
     const { server, url } = await startServer();
@@ -100,6 +124,19 @@ describe("createApp", () => {
           },
         ],
         next: null,
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers getProject with the project directory label", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      expect(await exchange(url, { type: "getProject" })).toEqual({
+        type: "project",
+        path: projectLabel(root),
       });
     } finally {
       server.stop(true);
