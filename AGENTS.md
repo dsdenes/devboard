@@ -91,7 +91,17 @@ Split, never mix: host-specific detail in host files; generic mechanism in `.dev
 
 ## Worktree
 
-Do all work — host and harness — in an isolated git worktree: `<repo root>/.worktree/<name>`. Never outside the repo root. Never edit the opened checkout. One worktree per task; edit, build, and test inside it. Done means merged directly into main. Then delete the worktree and its branch.
+Do all work — host and harness — in an isolated git worktree: `<repo root>/.worktree/<name>`.
+Never outside the repo root. Never edit the opened checkout. One worktree per task; edit, build,
+and test inside it.
+
+Done means merged into main **and pushed to the upstream that tracks it**. A local commit, a local
+merge, or a deleted worktree branch is not done. Before deleting the worktree, verify the push:
+`git ls-remote <remote> refs/heads/main` must name the integration commit, and
+`git status --short --branch` must report no commits ahead of the upstream. A local merge that is
+never pushed is a failed task, even when every test passes. If a push is rejected, fetch the new
+tip, integrate it, resolve every conflict yourself, rerun the checks it invalidates, and push
+again. Never finish, hand off, or delete the worktree with local-only changes.
 
 ## Line length
 
@@ -107,10 +117,14 @@ never hand-edit them.
 - Run harness work from the repo root with the host path passed in or discovered at runtime.
 - In harness mode, never "temporarily" write outside `.devboard/`; fix the layering.
 - Host mode leaves `.devboard/` byte-identical. Harness mode leaves host behavior unchanged except where asked.
+- Pushing is part of the task, not a follow-up. Never stop with a commit or merge that exists only
+  locally, even when every test passes and the worktree is clean.
 
 ## Done
 
-- Both modes: done in `.worktree/<name>`, merged to main, worktree and branch removed.
+- Both modes: done in `.worktree/<name>`, merged to main, pushed to the canonical upstream, and
+  verified that the upstream tip is the integrated commit. Only then are the worktree and branch
+  removed. Local-only main is never done.
 - Host mode: host build/tests run; `.devboard/` unchanged.
 - Harness mode: the changed entry point runs from the repo root against a supplied host path; no absolute paths or host specifics under `.devboard/`; nothing created outside `.devboard/`.
 
