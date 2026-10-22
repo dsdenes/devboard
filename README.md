@@ -8,7 +8,7 @@ directly and import the same API names.
 
 ## Benchmark
 
-`@devboard/msgpack` is a drop-in replacement for `@msgpack/msgpack` 3.1.3:
+`@dsdenes/msgpack` is a drop-in replacement for msgpack-javascript 3.1.3:
 same API, same bytes on the wire, and same decoded values. It is also faster.
 
 All 33 measured payloads encode and decode faster than the original, and none is
