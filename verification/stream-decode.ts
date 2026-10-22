@@ -14,7 +14,7 @@ import {
   decodeMultiStream,
   Decoder as ReplacementDecoder,
   ExtensionCodec as ReplacementExtensionCodec,
-} from "@msgpack/msgpack";
+} from "@dsdenes/msgpack";
 import {
   decodeArrayStream as referenceDecodeArrayStream,
   decodeAsync as referenceDecodeAsync,
@@ -503,7 +503,7 @@ for (const scenario of optionScenarios) {
 
 await check("CommonJS entry point exposes streamed decoding", async () => {
   const require = createRequire(import.meta.url);
-  const commonJs = require("@devboard/msgpack") as {
+  const commonJs = require("@dsdenes/msgpack") as {
     decodeMultiStream: typeof decodeMultiStream;
     decodeAsync: typeof decodeAsync;
     decodeArrayStream: typeof decodeArrayStream;

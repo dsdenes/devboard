@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { encode as referenceEncode, ExtensionCodec as ReferenceExtensionCodec } from "msgpack-javascript-original";
 import {
   fixtures,
@@ -14,10 +14,14 @@ installExtensionCodec(referenceCodec);
 
 const root = dirname(import.meta.dir);
 const appDir = join(root, "examples/browser");
-const packageFile = join(appDir, "package.json");
+const packageDir = join(root, "packages/msgpack");
+const appName = appDir.slice(appDir.lastIndexOf("/") + 1);
+const copyDir = (variant: "baseline" | "replacement") =>
+  join(root, ".tmp/adoption", `${appName}-${variant}`);
 const sourceFiles = ["index.html", "src/main.ts", "src/fixtures.ts"];
+const ORIGINAL_NAME = "@msgpack/msgpack";
 const ORIGINAL_SPEC = "npm:@msgpack/msgpack@3.1.3";
-const REPLACEMENT_SPEC = "file:../../packages/msgpack";
+const REPLACEMENT_NAME = "@dsdenes/msgpack";
 const CHROME = process.env.CHROME_PATH ?? "google-chrome";
 
 async function sourceHashes(): Promise<Record<string, string>> {
@@ -28,22 +32,63 @@ async function sourceHashes(): Promise<Record<string, string>> {
   return hashes;
 }
 
-async function useDependency(spec: string): Promise<void> {
-  await rm(join(appDir, "node_modules"), { recursive: true, force: true });
-  await rm(join(appDir, "bun.lock"), { force: true });
-  const manifest = JSON.parse(await readFile(packageFile, "utf8"));
-  manifest.dependencies["@msgpack/msgpack"] = spec;
-  await writeFile(packageFile, JSON.stringify(manifest, null, 2) + "\n");
-  const install = Bun.spawnSync(["bun", "install", "--silent"], { cwd: appDir, stdout: "pipe", stderr: "pipe" });
-  if (install.exitCode !== 0) {
-    throw new Error(`bun install failed: ${install.stderr.toString()}`);
+/**
+ * Copies the application into a generated directory, rewrites the package
+ * specifier in the baseline copy only, and installs the dependency for that
+ * variant. The checked-in application is never modified.
+ */
+async function makeApp(variant: "baseline" | "replacement"): Promise<string> {
+  const dir = copyDir(variant);
+  await rm(dir, { recursive: true, force: true });
+  await cp(appDir, dir, {
+    recursive: true,
+    filter: (source) => {
+      const rel = relative(appDir, source);
+      return (
+        rel === "" ||
+        (!rel.startsWith("node_modules") && !rel.startsWith("dist") && rel !== "bun.lock")
+      );
+    },
+  });
+
+  const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+  delete manifest.dependencies[ORIGINAL_NAME];
+  delete manifest.dependencies[REPLACEMENT_NAME];
+  if (variant === "baseline") {
+    manifest.dependencies[ORIGINAL_NAME] = ORIGINAL_SPEC;
+    let rewrites = 0;
+    for (const file of sourceFiles) {
+      const path = join(dir, file);
+      const text = await readFile(path, "utf8");
+      if (!text.includes(REPLACEMENT_NAME)) {
+        continue;
+      }
+      rewrites += text.split(REPLACEMENT_NAME).length - 1;
+      await writeFile(path, text.split(REPLACEMENT_NAME).join(ORIGINAL_NAME));
+    }
+    if (rewrites === 0) {
+      throw new Error(`no source file imports ${REPLACEMENT_NAME}`);
+    }
+  } else {
+    manifest.dependencies[REPLACEMENT_NAME] = `file:${relative(dir, packageDir)}`;
   }
+  await writeFile(join(dir, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
+
+  const install = Bun.spawnSync(["bun", "install", "--silent"], {
+    cwd: dir,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (install.exitCode !== 0) {
+    throw new Error(`bun install failed for ${variant}: ${install.stderr.toString()}`);
+  }
+  return dir;
 }
 
-async function build(outDir: string): Promise<void> {
-  await rm(join(appDir, outDir), { recursive: true, force: true });
-  const result = Bun.spawnSync(["bunx", "vite", "build", "--outDir", outDir, "--emptyOutDir"], {
-    cwd: appDir,
+async function build(dir: string): Promise<void> {
+  await rm(join(dir, "dist"), { recursive: true, force: true });
+  const result = Bun.spawnSync(["bunx", "vite", "build", "--outDir", "dist", "--emptyOutDir"], {
+    cwd: dir,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -53,7 +98,7 @@ async function build(outDir: string): Promise<void> {
 }
 
 function serve(directory: string): { url: string; stop: () => void } {
-  const base = join(appDir, directory);
+  const base = directory;
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -161,10 +206,10 @@ interface BrowserResult {
   malformed: BrowserMalformedCase[];
 }
 
-async function run(spec: string, outDir: string): Promise<BrowserResult> {
-  await useDependency(spec);
-  await build(outDir);
-  const server = serve(outDir);
+async function run(variant: "baseline" | "replacement"): Promise<BrowserResult> {
+  const dir = await makeApp(variant);
+  await build(dir);
+  const server = serve(join(dir, "dist"));
   try {
     return (await loadInBrowser(server.url)) as BrowserResult;
   } finally {
@@ -173,9 +218,11 @@ async function run(spec: string, outDir: string): Promise<BrowserResult> {
 }
 
 const hashesBefore = await sourceHashes();
-const baseline = await run(ORIGINAL_SPEC, "dist-baseline");
-const replacement = await run(REPLACEMENT_SPEC, "dist-replacement");
+const baseline = await run("baseline");
+const replacement = await run("replacement");
 const hashesAfter = await sourceHashes();
+await rm(copyDir("baseline"), { recursive: true, force: true });
+await rm(copyDir("replacement"), { recursive: true, force: true });
 
 const sourcesUnchanged = JSON.stringify(hashesBefore) === JSON.stringify(hashesAfter);
 const identical = JSON.stringify(baseline) === JSON.stringify(replacement);

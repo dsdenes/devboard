@@ -8,7 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@msgpack/msgpack": "file:../../packages/msgpack"
+    "@dsdenes/msgpack": "file:../../packages/msgpack"
   },
   "devDependencies": {
     "vite": "^8.3.4"

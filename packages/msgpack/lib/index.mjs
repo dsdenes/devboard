@@ -746,6 +746,7 @@ function encodeExtension(writer, ext) {
   bytes.set(ext.data, pos + headerSize + 1);
   writer.pos = pos + headerSize + 1 + size;
 }
+
 // packages/msgpack/src/stream.ts
 function isAsyncIterable(object) {
   if (!(Symbol.asyncIterator in object)) {
@@ -1465,6 +1466,29 @@ function decodeBinary(reader, size, headerOffset) {
   reader.pos = start + size;
   return reader.bytes.subarray(start, start + size);
 }
+
+// packages/msgpack/src/index.ts
+var src_default = {
+  encode,
+  Encoder,
+  decode,
+  decodeMulti,
+  decodeAsync,
+  decodeArrayStream,
+  decodeMultiStream,
+  Decoder,
+  DecodeError,
+  DEFAULT_INITIAL_BUFFER_SIZE,
+  ExtData,
+  ExtensionCodec,
+  EXT_TIMESTAMP,
+  decodeTimestampExtension,
+  decodeTimestampToTimeSpec,
+  encodeDateToTimeSpec,
+  encodeTimeSpecToTimestamp,
+  encodeTimestampExtension,
+  timestampExtension
+};
 export {
   DEFAULT_INITIAL_BUFFER_SIZE,
   DecodeError,
@@ -1480,6 +1504,7 @@ export {
   decodeMultiStream,
   decodeTimestampExtension,
   decodeTimestampToTimeSpec,
+  src_default as default,
   encode,
   encodeDateToTimeSpec,
   encodeTimeSpecToTimestamp,

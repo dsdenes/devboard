@@ -7,7 +7,7 @@
     "start": "bun run src/app.ts"
   },
   "dependencies": {
-    "@msgpack/msgpack": "npm:@msgpack/msgpack@3.1.3"
+    "@dsdenes/msgpack": "file:../../packages/msgpack"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

@@ -3,24 +3,21 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@devboard/msgpack",
+      "name": "devboard-msgpack-workspace",
       "devDependencies": {
-        "@devboard/msgpack": "workspace:*",
-        "@msgpack/msgpack": "file:packages/msgpack",
+        "@dsdenes/msgpack": "workspace:*",
         "@types/bun": "^1.2.0",
         "msgpack-javascript-original": "npm:@msgpack/msgpack@3.1.3",
         "typescript": "^5.7.2",
       },
     },
     "packages/msgpack": {
-      "name": "@devboard/msgpack",
-      "version": "0.7.0",
+      "name": "@dsdenes/msgpack",
+      "version": "1.0.0",
     },
   },
   "packages": {
-    "@devboard/msgpack": ["@devboard/msgpack@workspace:packages/msgpack"],
-
-    "@msgpack/msgpack": ["@devboard/msgpack@file:packages/msgpack", {}],
+    "@dsdenes/msgpack": ["@dsdenes/msgpack@workspace:packages/msgpack"],
 
     "@types/bun": ["@types/bun@1.4.3", "", { "dependencies": { "bun-types": "1.4.3" } }, "sha512-N67Pqy8JXbAY/j0tNraS3V5mubGvc6rrrNDmDCtZLlFzccbUJPDb0tvgUBC5q4m8ybkP93Jcn1QB+RYQ6PvBhw=="],
 

@@ -18,7 +18,7 @@ import {
   decodeMulti as replacementDecodeMultiModule,
   Decoder as ReplacementDecoder,
   ExtensionCodec as ReplacementExtensionCodec,
-} from "@msgpack/msgpack";
+} from "@dsdenes/msgpack";
 import {
   decode as referenceDecode,
   decodeMulti as referenceDecodeMulti,

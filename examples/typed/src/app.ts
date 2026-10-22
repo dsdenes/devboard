@@ -12,14 +12,14 @@ import {
   type ExtensionCodecType,
   type ExtensionDecoderType,
   type ExtensionEncoderType,
-} from "@msgpack/msgpack";
+} from "@dsdenes/msgpack";
 
 /**
  * A TypeScript application that already uses msgpack-javascript. Its own
  * source is written against the library's published types: the option
  * generics, the context generic on the encoder and decoder, the extension
  * codec contract, and the value classes it registers. Switching which
- * dependency provides `@msgpack/msgpack` must not require editing this file.
+ * dependency provides `@dsdenes/msgpack` must not require editing this file.
  */
 
 interface AppContext {

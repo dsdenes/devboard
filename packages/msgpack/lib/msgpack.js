@@ -1,5 +1,5 @@
 /**
- * @devboard/msgpack plain-script build.
+ * @dsdenes/msgpack plain-script build.
  *
  * Loaded with one `<script src>` reference, it defines `MessagePack` on the
  * global object, mirroring msgpack-javascript's UMD bundle. It also assigns
@@ -74,6 +74,7 @@
       decodeMultiStream: () => decodeMultiStream,
       decodeTimestampExtension: () => decodeTimestampExtension,
       decodeTimestampToTimeSpec: () => decodeTimestampToTimeSpec,
+      default: () => src_default,
       encode: () => encode,
       encodeDateToTimeSpec: () => encodeDateToTimeSpec,
       encodeTimeSpecToTimestamp: () => encodeTimeSpecToTimestamp,
@@ -830,6 +831,7 @@
       bytes.set(ext.data, pos + headerSize + 1);
       writer.pos = pos + headerSize + 1 + size;
     }
+
     // packages/msgpack/src/stream.ts
     function isAsyncIterable(object) {
       if (!(Symbol.asyncIterator in object)) {
@@ -1549,6 +1551,29 @@
       reader.pos = start + size;
       return reader.bytes.subarray(start, start + size);
     }
+
+    // packages/msgpack/src/index.ts
+    var src_default = {
+      encode,
+      Encoder,
+      decode,
+      decodeMulti,
+      decodeAsync,
+      decodeArrayStream,
+      decodeMultiStream,
+      Decoder,
+      DecodeError,
+      DEFAULT_INITIAL_BUFFER_SIZE,
+      ExtData,
+      ExtensionCodec,
+      EXT_TIMESTAMP,
+      decodeTimestampExtension,
+      decodeTimestampToTimeSpec,
+      encodeDateToTimeSpec,
+      encodeTimeSpecToTimestamp,
+      encodeTimestampExtension,
+      timestampExtension
+    };
 
 
     return module.exports;

@@ -4,7 +4,7 @@
  * An application bundled by traditional build tooling: Browserify resolves
  * dependencies through `main` and ignores the package's `exports` map, exactly
  * as it resolved msgpack-javascript. Its source and build command are not
- * edited when the dependency that provides `@msgpack/msgpack` changes.
+ * edited when the dependency that provides `@dsdenes/msgpack` changes.
  *
  * It reports every payload's encoded bytes and decoded value, plus the
  * failures it observes for malformed input, an unsupported option value, and
@@ -21,7 +21,7 @@ const {
   decode,
   encode,
   encodeDateToTimeSpec,
-} = require("@msgpack/msgpack");
+} = require("@dsdenes/msgpack");
 
 class GeoPoint {
   constructor(lat, lon) {

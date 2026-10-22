@@ -1,43 +1,59 @@
-# @devboard/msgpack
+# @dsdenes/msgpack
 
-A byte-compatible, drop-in replacement for `@msgpack/msgpack` (msgpack-javascript)
-covering everyday payloads: nulls, booleans, numbers, strings, binary data, arrays,
-maps, timestamps, application-registered extension types, and nested combinations
-of them. Applications keep importing `encode`, `decode`, `decodeMulti`, and the
-stream decoders from `@msgpack/msgpack`; only the dependency that provides that
-package changes.
+A byte-compatible, drop-in replacement for msgpack-javascript 3.1.3 covering
+everyday payloads: nulls, booleans, numbers, strings, binary data, arrays, maps,
+timestamps, application-registered extension types, and nested combinations of
+them. It is published as `@dsdenes/msgpack@1.0.0`; applications install it
+directly and import the same API names.
 
 ## Adoption
 
-An adopting project changes its dependency resolution, never its source:
+Install the package and replace the import specifier:
 
-```json
-{
-  "dependencies": {
-    "@msgpack/msgpack": "file:../devboard/packages/msgpack"
-  }
-}
+```sh
+npm install @dsdenes/msgpack
 ```
 
-A registry alias to `@devboard/msgpack` would work the same way if the package is
-published; this repository installs it from the local path.
-The package exposes conditional ESM and CommonJS entry points, so both
-`import { encode, decode } from "@msgpack/msgpack"` and
-`require("@msgpack/msgpack")` resolve to this implementation.
+```ts
+import { decode, encode } from "@dsdenes/msgpack";
+
+const bytes = encode({ id: 1, name: "widget" });
+const value = decode(bytes);
+```
+
+The package root also has a default export that holds the same API, so code
+that used a single namespace object can keep that shape:
+
+```ts
+import msgpack from "@dsdenes/msgpack";
+
+const bytes = msgpack.encode({ id: 1, name: "widget" });
+```
+
+No dependency alias and no `file:` dependency is needed. The package exposes
+conditional ESM and CommonJS entry points, so `import ... from
+"@dsdenes/msgpack"`, `require("@dsdenes/msgpack")`, and the CommonJS `.default`
+property all resolve to this implementation.
 
 Build tooling that resolves dependencies the traditional way — classic Node
 module resolution, or a bundler that reads `main`/`module` and never looks at
 conditional `exports` — finds the same implementation through the package's
 top-level `main`, `module`, and `types` fields. A strict TypeScript application
 using `moduleResolution: "node"` and a Browserify bundle both build from an
-unchanged source and configuration after the dependency swap.
+unchanged source and configuration after the import replacement.
+
+The package ships its declarations, README, and ISC LICENSE, and exposes these
+subpaths: `@dsdenes/msgpack/package.json`, `@dsdenes/msgpack/lib/index.mjs`,
+`@dsdenes/msgpack/lib/index.cjs`, `@dsdenes/msgpack/lib/index.d.ts`, and
+`@dsdenes/msgpack/lib/msgpack.js`. Reference-internal paths (`dist.esm/*`,
+`dist.cjs/*`, `src/*`) are out of scope and have no shims.
 
 A page that loads msgpack-javascript with one plain script reference, without a
 bundler or a build step, points that reference at the package's UMD bundle and
 keeps its markup and inline script unchanged:
 
 ```html
-<script src="https://unpkg.com/@devboard/msgpack/lib/msgpack.js"></script>
+<script src="https://unpkg.com/@dsdenes/msgpack/lib/msgpack.js"></script>
 ```
 
 The bundle defines the same `MessagePack` global as msgpack-javascript's UMD
@@ -92,7 +108,7 @@ import {
   type ExtensionCodecType,
   type ExtensionDecoderType,
   type ExtensionEncoderType,
-} from "@msgpack/msgpack";
+} from "@dsdenes/msgpack";
 
 interface AppContext {
   requestId: string;
@@ -123,7 +139,7 @@ consumers and consumers that never mention a context compile unchanged too.
 the same way msgpack-javascript does:
 
 ```ts
-import { decodeMulti, encode } from "@msgpack/msgpack";
+import { decodeMulti, encode } from "@dsdenes/msgpack";
 
 const buffer = new Uint8Array([...encode("first"), ...encode({ second: 2 })]);
 for (const message of decodeMulti(buffer)) {
@@ -148,7 +164,7 @@ its last byte arrives, in order. Chunk boundaries may fall anywhere inside a
 message.
 
 ```ts
-import { decodeMultiStream, encode } from "@msgpack/msgpack";
+import { decodeMultiStream, encode } from "@dsdenes/msgpack";
 
 const stream = new ReadableStream<Uint8Array>({
   start(controller) {
@@ -250,8 +266,8 @@ partway through a message. Decoding is iterative, so nesting is bounded by
 memory rather than the call stack, and streamed decoding keeps its state across
 chunk boundaries, so outcomes do not depend on where chunks split.
 
-Out of scope by design, matching the epic's non-goals: type-declaration parity
-and publishing.
+Type-declaration parity is shipped in `lib/index.d.ts`, and the package is
+published as `@dsdenes/msgpack@1.0.0`; neither is out of scope.
 
 Out-of-scope inputs may be unsupported, but they cannot change the result for an
 in-scope payload.
@@ -267,6 +283,7 @@ bun run verify:options
 bun run verify:multi
 bun run verify:stream
 bun run verify:malformed
+bun run verify:surface
 bun run verify:typed
 bun run verify:classic-typed
 bun run verify:classic-bundler
@@ -285,15 +302,15 @@ adopting application does, and compares each documented option, several
 combined options, limit boundaries and their `DecodeError` category, the
 CommonJS entry point, and no-option encoding and decoding with the reference.
 
-`bun run verify:multi` imports the built package under the original
-`@msgpack/msgpack` name, encodes varied values with the reference, concatenates
+`bun run verify:multi` imports the built package by its public
+`@dsdenes/msgpack` name, encodes varied values with the reference, concatenates
 the bytes, and compares `decodeMulti` and `Decoder.decodeMulti` against the
 reference for every payload type, every decoding option and limit, an empty
 buffer, and every truncation point of a final message. It fails if the delivered
 values, order, error category, or error message differ.
 
-`bun run verify:stream` imports the built package under the original
-`@msgpack/msgpack` name, encodes every in-scope payload with the reference, and
+`bun run verify:stream` imports the built package by its public
+`@dsdenes/msgpack` name, encodes every in-scope payload with the reference, and
 feeds the concatenated bytes as chunks whose boundaries fall at every position
 of a compact stream and inside every message of a larger stream. It compares
 `decodeMultiStream`, `Decoder.decodeStream`, `decodeAsync`, and
@@ -302,8 +319,8 @@ messages, decoding options, WHATWG `ReadableStream` input, and the CommonJS
 entry point. It fails if delivered values, order, error category, or message
 differ.
 
-`bun run verify:malformed` imports the built package under the original
-`@msgpack/msgpack` name and compares over a million outcomes with the reference:
+`bun run verify:malformed` imports the built package by its public
+`@dsdenes/msgpack` name and compares over a million outcomes with the reference:
 every single-byte header with payload bytes of several shapes, every truncation
 of every supported payload and of alternative encodings, generated and mutated
 byte sequences, buffers with no message, one message, and several concatenated
@@ -312,6 +329,18 @@ and key converters, every input form, and streamed input split at every position
 through async iterables and WHATWG `ReadableStream`s. It fails if a value
 differs, if one library accepts bytes the other rejects, or if an error type or
 message differs.
+
+`bun run verify:surface` checks the published package surface. It asserts that
+the default export's enumerable properties are exactly the named runtime
+exports, each holding the same reference; that CommonJS `require`, including
+its `.default`, exposes the same API; that the package root and each documented
+subpath resolve under Node; that a strict TypeScript consumer compiles both
+import forms; that `npm pack` ships exactly the package manifest, README,
+LICENSE, and four `lib/` files; and that a parity corpus covering primitives,
+numbers, strings, binary, arrays, maps, timestamps, and a registered extension
+type encodes and decodes identically to the reference. Set `SURFACE_TARGET` to
+an application directory to run the resolution and parity checks against a
+published install.
 
 `bun run bench` builds the shipped package and compares both libraries on the
 same machine and payloads. Every case and every operation runs in its own
@@ -323,22 +352,23 @@ for the case. It covers messages from one-byte primitives to 256 KB binary
 values and 220 KB nested responses, and exits non-zero if any measured payload
 is slower for either operation.
 
-`bun run verify:typed` installs `npm:@msgpack/msgpack@3.1.3` for the TypeScript
-application in `examples/typed`, builds it with `tsc` under `strict`, installs
-the replacement in its place, and builds again. The application's source refers
-to the original's published types for its options, extension codec, and values,
-including a context generic and annotations that adapt those types to the
-application. The script fails if either build reports a diagnostic, if either
-run fails, if the two runs encode or decode any value differently, or if the
-application source changes between the runs.
+`bun run verify:typed` copies the TypeScript application in `examples/typed`
+into a baseline directory, rewrites only the package specifier there, installs
+msgpack-javascript 3.1.3 for that baseline and the replacement for the
+checked-in application, and builds both with `tsc` under `strict`. The
+application's source refers to the published types for its options, extension
+codec, and values, including a context generic and annotations that adapt those
+types to the application. The script fails if either build reports a diagnostic,
+if either run fails, if the two runs encode or decode any value differently, or
+if the application source changes between the runs.
 
-`bun run verify:classic-typed` installs the original library for the strict
-TypeScript application in `examples/typed-classic`, whose tsconfig uses classic
-`moduleResolution: "node"` and CommonJS output, builds it with `tsc`, runs the
-built JavaScript with Node, then installs the replacement and repeats both
-steps. The script fails if either build reports a diagnostic, if either run
-fails, if the two runs differ in encoded bytes, decoded values, or failure
-types and messages, or if the source or tsconfig changes between the builds.
+`bun run verify:classic-typed` does the same for the strict TypeScript
+application in `examples/typed-classic`, whose tsconfig uses classic
+`moduleResolution: "node"` and CommonJS output: it builds the baseline copy with
+`tsc`, runs the built JavaScript with Node, then builds and runs the
+checked-in application. The script fails if either build reports a diagnostic,
+if either run fails, if the two runs differ in encoded bytes, decoded values, or
+failure types and messages, or if the source or tsconfig changes between builds.
 
 `bun run verify:classic-bundler` does the same for the application in
 `examples/classic-bundler`, which Browserify bundles from a CommonJS source
@@ -347,14 +377,14 @@ build and run, their output must match, and the application source must stay
 byte-for-byte identical across the swap.
 
 `bun run verify:server` and `bun run verify:browser` exercise the two adopting
-applications in `examples/`. Each script hashes the application source before and
-after swapping `@msgpack/msgpack` from the original to the replacement, installs
-both variants, starts the application, and compares the results. Both
-applications encode and decode timestamps and a registered `GeoPoint` type,
-consume consecutive messages incrementally from chunked byte streams, and
-report the value or failure for corrupted and externally produced byte
-sequences. The browser script loads the built application in headless Chrome and
-reads the rendered result.
+applications in `examples/`. Each script hashes the application source before
+and after, runs a baseline copy whose only source change is the package
+specifier, runs the checked-in application against the replacement, and
+compares the results. Both applications encode and decode timestamps and a
+registered `GeoPoint` type, consume consecutive messages incrementally from
+chunked byte streams, and report the value or failure for corrupted and
+externally produced byte sequences. The browser script loads the built
+application in headless Chrome and reads the rendered result.
 
 `bun run verify:browser-script` covers the page that uses no bundler and no build
 step. It takes `examples/browser-script/page.html`, whose markup and inline

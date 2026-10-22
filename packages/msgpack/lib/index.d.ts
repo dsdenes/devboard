@@ -223,3 +223,31 @@ export declare function decodeMultiStream<ContextType>(
   streamLike: ReadableStreamLike<StreamInput>,
   options?: DecoderOptions<SplitUndefined<ContextType>>,
 ): AsyncGenerator<unknown, void, unknown>;
+
+/**
+ * The default export carries the named runtime API. Every property has the
+ * same type as the named export it references, so msgpack.encode and encode
+ * are interchangeable for a typed consumer.
+ */
+declare const msgpack: {
+  encode: typeof encode;
+  Encoder: typeof Encoder;
+  decode: typeof decode;
+  decodeMulti: typeof decodeMulti;
+  decodeAsync: typeof decodeAsync;
+  decodeArrayStream: typeof decodeArrayStream;
+  decodeMultiStream: typeof decodeMultiStream;
+  Decoder: typeof Decoder;
+  DecodeError: typeof DecodeError;
+  DEFAULT_INITIAL_BUFFER_SIZE: typeof DEFAULT_INITIAL_BUFFER_SIZE;
+  ExtData: typeof ExtData;
+  ExtensionCodec: typeof ExtensionCodec;
+  EXT_TIMESTAMP: typeof EXT_TIMESTAMP;
+  decodeTimestampExtension: typeof decodeTimestampExtension;
+  decodeTimestampToTimeSpec: typeof decodeTimestampToTimeSpec;
+  encodeDateToTimeSpec: typeof encodeDateToTimeSpec;
+  encodeTimeSpecToTimestamp: typeof encodeTimeSpecToTimestamp;
+  encodeTimestampExtension: typeof encodeTimestampExtension;
+  timestampExtension: typeof timestampExtension;
+};
+export default msgpack;

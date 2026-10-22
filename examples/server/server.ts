@@ -1,4 +1,4 @@
-import { Decoder, Encoder, ExtensionCodec, decode, decodeMultiStream, encode } from "@msgpack/msgpack";
+import { Decoder, Encoder, ExtensionCodec, decode, decodeMultiStream, encode } from "@dsdenes/msgpack";
 import { fixtures, GeoPoint, installExtensionCodec } from "./fixtures.ts";
 
 // A small application that already depended on msgpack-javascript. Its source

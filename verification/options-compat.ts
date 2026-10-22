@@ -18,10 +18,10 @@ import {
   encode,
   Encoder,
   ExtensionCodec,
-} from "@devboard/msgpack";
+} from "@dsdenes/msgpack";
 
 const require = createRequire(import.meta.url);
-const commonJs = require("@devboard/msgpack") as {
+const commonJs = require("@dsdenes/msgpack") as {
   encode: typeof encode;
   decode: typeof decode;
   DecodeError: typeof DecodeError;

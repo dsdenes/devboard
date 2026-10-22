@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.0
+
+- Rename the package from `@devboard/msgpack` to `@dsdenes/msgpack` and publish
+  version `1.0.0` publicly to the npm registry. Consumers install
+  `@dsdenes/msgpack` directly and replace the import specifier; no dependency
+  alias and no `file:` dependency is needed.
+- Add a default export whose own enumerable properties are exactly the named
+  runtime exports, each holding the same reference, so
+  `import msgpack from "@dsdenes/msgpack"` and
+  `require("@dsdenes/msgpack").default` expose the same API as named imports.
+  The shipped declarations describe that default export with the same property
+  types.
+- Expose `./package.json` and `./lib/*` subpaths alongside the conditional root
+  entry point, so `@dsdenes/msgpack/package.json`,
+  `@dsdenes/msgpack/lib/index.mjs`, `@dsdenes/msgpack/lib/index.cjs`, and
+  `@dsdenes/msgpack/lib/msgpack.js` resolve. Reference-internal `dist.esm/*`,
+  `dist.cjs/*`, and `src/*` paths remain out of scope with no shims.
+- Ship a package README and an ISC LICENSE, and keep the published tarball to
+  `package.json`, `README.md`, `LICENSE`, and the four files under `lib/`
+  (`index.mjs`, `index.cjs`, `index.d.ts`, `msgpack.js`). The package manifest
+  declares the repository, homepage, bugs, keywords, `sideEffects: false`, and
+  ISC license.
+- Migrate this repository to the new name: the root workspace depends on
+  `@dsdenes/msgpack`, the bench and verification scripts import it, every
+  example depends on and imports it, and the differential reference remains
+  `msgpack-javascript-original@3.1.3`. Adoption verification now generates a
+  baseline copy that differs only in the package specifier and proves identical
+  output, instead of swapping dependency resolutions in place.
+- Add `bun run verify:surface`, which checks the default export, CommonJS
+  interop, subpath resolution, the strict TypeScript declaration shape, the
+  `npm pack` file list, and encode/decode parity with msgpack-javascript 3.1.3.
+- Encoding bytes, decoded values, error types, error messages, options, and
+  performance are unchanged from 0.7.0.
+
 ## 0.7.0
 
 - Let build tooling that resolves dependencies the traditional way adopt the

@@ -10,13 +10,13 @@ import {
   type DecoderOptions,
   type EncoderOptions,
   type ExtensionCodecType,
-} from "@msgpack/msgpack";
+} from "@dsdenes/msgpack";
 
 /**
  * A strict TypeScript application that already uses msgpack-javascript and
  * resolves packages with classic Node module resolution. Its source and
  * tsconfig are written against the original library's published API and types.
- * Switching which dependency provides `@msgpack/msgpack` must not require
+ * Switching which dependency provides `@dsdenes/msgpack` must not require
  * editing either file.
  *
  * It reports every payload's encoded bytes and decoded value, plus the

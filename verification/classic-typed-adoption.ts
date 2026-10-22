@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 
 /**
@@ -18,9 +18,13 @@ import { dirname, join, relative } from "node:path";
 
 const root = dirname(import.meta.dir);
 const appDir = join(root, "examples/typed-classic");
-const packageFile = join(appDir, "package.json");
+const packageDir = join(root, "packages/msgpack");
+const appName = appDir.slice(appDir.lastIndexOf("/") + 1);
+const copyDir = (variant: "baseline" | "replacement") =>
+  join(root, ".tmp/adoption", `${appName}-${variant}`);
+const ORIGINAL_NAME = "@msgpack/msgpack";
 const ORIGINAL_SPEC = "npm:@msgpack/msgpack@3.1.3";
-const REPLACEMENT_SPEC = "file:../../packages/msgpack";
+const REPLACEMENT_NAME = "@dsdenes/msgpack";
 const PAYLOAD_NAMES = [
   "null",
   "boolean true",
@@ -53,26 +57,56 @@ async function sourceHashes(): Promise<Record<string, string>> {
   return hashes;
 }
 
-async function install(spec: string): Promise<void> {
-  await rm(join(appDir, "node_modules"), { recursive: true, force: true });
-  await rm(join(appDir, "bun.lock"), { force: true });
-  const manifest = JSON.parse(await readFile(packageFile, "utf8"));
-  manifest.dependencies["@msgpack/msgpack"] = spec;
-  await writeFile(packageFile, JSON.stringify(manifest, null, 2) + "\n");
+/**
+ * Copies the application into a generated directory, rewrites the package
+ * specifier in the baseline copy only, and installs the dependency for that
+ * variant. The checked-in application is never modified.
+ */
+async function makeApp(variant: "baseline" | "replacement"): Promise<string> {
+  const dir = copyDir(variant);
+  await rm(dir, { recursive: true, force: true });
+  await cp(appDir, dir, {
+    recursive: true,
+    filter: (source) => {
+      const rel = relative(appDir, source);
+      return (
+        rel === "" ||
+        (!rel.startsWith("node_modules") && !rel.startsWith("dist") && rel !== "bun.lock")
+      );
+    },
+  });
+
+  const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+  delete manifest.dependencies[ORIGINAL_NAME];
+  delete manifest.dependencies[REPLACEMENT_NAME];
+  if (variant === "baseline") {
+    manifest.dependencies[ORIGINAL_NAME] = ORIGINAL_SPEC;
+    const path = join(dir, "src/app.ts");
+    const text = await readFile(path, "utf8");
+    if (!text.includes(REPLACEMENT_NAME)) {
+      throw new Error(`src/app.ts does not import ${REPLACEMENT_NAME}`);
+    }
+    await writeFile(path, text.split(REPLACEMENT_NAME).join(ORIGINAL_NAME));
+  } else {
+    manifest.dependencies[REPLACEMENT_NAME] = `file:${relative(dir, packageDir)}`;
+  }
+  await writeFile(join(dir, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
+
   const result = Bun.spawnSync(["bun", "install", "--silent"], {
-    cwd: appDir,
+    cwd: dir,
     stdout: "pipe",
     stderr: "pipe",
   });
   if (result.exitCode !== 0) {
-    throw new Error(`bun install failed for ${spec}: ${result.stderr.toString()}`);
+    throw new Error(`bun install failed for ${variant}: ${result.stderr.toString()}`);
   }
+  return dir;
 }
 
-function build(): { exitCode: number; output: string } {
+function build(dir: string): { exitCode: number; output: string } {
   const result = Bun.spawnSync(
-    [join(appDir, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.json"],
-    { cwd: appDir, stdout: "pipe", stderr: "pipe" },
+    [join(dir, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.json"],
+    { cwd: dir, stdout: "pipe", stderr: "pipe" },
   );
   return {
     exitCode: result.exitCode ?? -1,
@@ -80,9 +114,9 @@ function build(): { exitCode: number; output: string } {
   };
 }
 
-function execute(): { exitCode: number; output: string } {
+function execute(dir: string): { exitCode: number; output: string } {
   const result = Bun.spawnSync(["node", "dist/app.js"], {
-    cwd: appDir,
+    cwd: dir,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -93,16 +127,16 @@ function execute(): { exitCode: number; output: string } {
 }
 
 interface AdoptedRun {
-  spec: string;
+  variant: "baseline" | "replacement";
   build: { exitCode: number; output: string };
   run: { exitCode: number; output: string };
 }
 
-async function runWith(spec: string): Promise<AdoptedRun> {
-  await install(spec);
-  const buildResult = build();
-  const runResult = buildResult.exitCode === 0 ? execute() : { exitCode: -1, output: "" };
-  return { spec, build: buildResult, run: runResult };
+async function runWith(variant: "baseline" | "replacement"): Promise<AdoptedRun> {
+  const dir = await makeApp(variant);
+  const buildResult = build(dir);
+  const runResult = buildResult.exitCode === 0 ? execute(dir) : { exitCode: -1, output: "" };
+  return { variant, build: buildResult, run: runResult };
 }
 
 interface Report {
@@ -128,22 +162,12 @@ function inspect(report: Report): string[] {
   return problems;
 }
 
-const originalManifest = await readFile(packageFile);
 const hashesBefore = await sourceHashes();
-
-let baseline: AdoptedRun;
-let replacement: AdoptedRun;
-try {
-  baseline = await runWith(ORIGINAL_SPEC);
-  replacement = await runWith(REPLACEMENT_SPEC);
-} finally {
-  await writeFile(packageFile, originalManifest);
-  await rm(join(appDir, "node_modules"), { recursive: true, force: true });
-  await rm(join(appDir, "bun.lock"), { force: true });
-  await rm(join(appDir, "dist"), { recursive: true, force: true });
-}
-
+const baseline = await runWith("baseline");
+const replacement = await runWith("replacement");
 const hashesAfter = await sourceHashes();
+await rm(copyDir("baseline"), { recursive: true, force: true });
+await rm(copyDir("replacement"), { recursive: true, force: true });
 const sourcesUnchanged = JSON.stringify(hashesBefore) === JSON.stringify(hashesAfter);
 const baselineBuildOk = baseline.build.exitCode === 0 && baseline.build.output === "";
 const replacementBuildOk = replacement.build.exitCode === 0 && replacement.build.output === "";
@@ -164,14 +188,14 @@ const report = {
   sourcesUnchanged,
   sourceHashes: hashesAfter,
   baseline: {
-    spec: baseline.spec,
+    variant: baseline.variant,
     buildOk: baselineBuildOk,
     buildOutput: baseline.build.output,
     runOk: baselineRunOk,
     runOutput: baseline.run.output,
   },
   replacement: {
-    spec: replacement.spec,
+    variant: replacement.variant,
     buildOk: replacementBuildOk,
     buildOutput: replacement.build.output,
     runOk: replacementRunOk,

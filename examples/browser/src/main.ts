@@ -7,7 +7,7 @@ import {
   decodeAsync,
   decodeMultiStream,
   encode,
-} from "@msgpack/msgpack";
+} from "@dsdenes/msgpack";
 import { fixtures, GeoPoint, installExtensionCodec, malformedCases } from "./fixtures.ts";
 
 declare global {

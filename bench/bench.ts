@@ -4,7 +4,7 @@ import {
   encode as referenceEncode,
   ExtensionCodec as ReferenceExtensionCodec,
 } from "msgpack-javascript-original";
-import { decode, encode, ExtensionCodec } from "@devboard/msgpack";
+import { decode, encode, ExtensionCodec } from "@dsdenes/msgpack";
 import { cases, installPointCodec } from "./cases.ts";
 import type { Case } from "./cases.ts";
 

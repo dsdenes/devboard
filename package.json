@@ -18,16 +18,16 @@
     "verify:multi": "bun run build && bun run verification/multi-decode.ts",
     "verify:stream": "bun run build && bun run verification/stream-decode.ts",
     "verify:malformed": "bun run build && bun run verification/malformed-input.ts",
+    "verify:surface": "bun run build && bun run verification/surface.ts",
     "verify:typed": "bun run build && bun run verification/typed-adoption.ts",
     "verify:classic-typed": "bun run build && bun run verification/classic-typed-adoption.ts",
     "verify:classic-bundler": "bun run build && bun run verification/classic-bundler-adoption.ts",
     "verify:adoption": "bun run build && bun run verification/server-adoption.ts && bun run verification/browser-adoption.ts && bun run verification/typed-adoption.ts && bun run verification/classic-typed-adoption.ts && bun run verification/classic-bundler-adoption.ts && bun run verification/browser-script-adoption.ts"
   },
   "devDependencies": {
+    "@dsdenes/msgpack": "workspace:*",
     "@types/bun": "^1.2.0",
     "msgpack-javascript-original": "npm:@msgpack/msgpack@3.1.3",
-    "typescript": "^5.7.2",
-    "@devboard/msgpack": "workspace:*",
-    "@msgpack/msgpack": "file:packages/msgpack"
+    "typescript": "^5.7.2"
   }
 }
