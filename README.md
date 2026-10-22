@@ -6,6 +6,21 @@ timestamps, application-registered extension types, and nested combinations of
 them. It is published as `@dsdenes/msgpack@1.0.0`; applications install it
 directly and import the same API names.
 
+## Benchmark
+
+`@devboard/msgpack` is a drop-in replacement for `@msgpack/msgpack` 3.1.3:
+same API, same bytes on the wire, and same decoded values. It is also faster.
+
+All 33 measured payloads encode and decode faster than the original, and none is
+slower. Median ratios (replacement ÷ original, lower is faster) are 0.44 for
+encoding — about 2.3× faster — and 0.73 for decoding — about 1.4× faster. Long
+ASCII text encodes about 10× faster, while a typical application response
+encodes about 2× and decodes about 1.5× faster. Measured on Bun 1.4.2, Linux
+x64, on the same machine and payloads. The cases cover one-byte primitives
+through 256 KB binary values, 20,000-element arrays, 4,000-key maps, and 220 KB
+nested responses; the full table and methodology are under
+[Measured performance](#measured-performance).
+
 ## Adoption
 
 Install the package and replace the import specifier:
