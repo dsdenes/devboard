@@ -3,5 +3,3 @@ dist/
 .worktree/
 .tmp/
 .env
-examples/*/dist-*/
-examples/*/bun.lock
