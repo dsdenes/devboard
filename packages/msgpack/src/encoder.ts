@@ -1,5 +1,5 @@
 import { Writer, DEFAULT_INITIAL_BUFFER_SIZE } from "./writer.ts";
-import { asciiByteLength, utf8Count, writeAscii, writeUtf8Js, writeUtf8TextEncoder } from "./utf8.ts";
+import { asciiByteLength, sharedEncoder, utf8Count, writeAscii, writeUtf8Js } from "./utf8.ts";
 import { ExtData, ExtensionCodec } from "./extension.ts";
 
 // The reference implementation switches to TextEncoder above this many
@@ -71,7 +71,7 @@ export class Encoder {
     this.writer = new Writer(options?.initialBufferSize ?? DEFAULT_INITIAL_BUFFER_SIZE);
   }
 
-  /** Returns a copy of the encoded bytes. */
+  /** Returns encoded bytes that are safe to keep across later encode calls. */
   encode(value: unknown): Uint8Array<ArrayBuffer> {
     if (this.entered) {
       return new Encoder(this.options).encode(value);
@@ -106,8 +106,8 @@ const sharedWriter = new Writer();
 let sharedWriterEntered = false;
 
 /**
- * Encodes a value into MessagePack bytes. The return value is a copy, so it
- * does not alias the replacement's reusable internal buffer.
+ * Encodes a value into MessagePack bytes. The return value does not alias the
+ * replacement's reusable internal buffer, so later calls cannot change it.
  */
 export function encode(value: unknown, options?: EncoderOptions): Uint8Array<ArrayBuffer> {
   const settings = resolveEncoderSettings(options);
@@ -286,27 +286,35 @@ function writeStringHeader(writer: Writer, byteLength: number): void {
 }
 
 function encodeString(writer: Writer, value: string): void {
-  const asciiLength = asciiByteLength(value);
-  if (asciiLength >= 0) {
-    writer.ensure(5 + asciiLength);
-    writeStringHeader(writer, asciiLength);
-    if (asciiLength > 256) {
-      writeUtf8TextEncoder(value, writer.bytes, writer.pos);
-    } else {
+  // Short strings stay on the direct ASCII/JS paths. Longer strings are
+  // encoded by TextEncoder in one pass; counting the length in JavaScript and
+  // then writing separately would scan every code unit twice.
+  if (value.length <= TEXT_ENCODER_THRESHOLD) {
+    const asciiLength = asciiByteLength(value);
+    if (asciiLength >= 0) {
+      writer.ensure(5 + asciiLength);
+      writeStringHeader(writer, asciiLength);
       writeAscii(value, writer.bytes, writer.pos);
+      writer.pos += asciiLength;
+      return;
     }
-    writer.pos += asciiLength;
+
+    const byteLength = utf8Count(value);
+    writer.ensure(5 + byteLength);
+    writeStringHeader(writer, byteLength);
+    writeUtf8Js(value, writer.bytes, writer.pos);
+    writer.pos += byteLength;
     return;
   }
 
-  const byteLength = utf8Count(value);
+  // One native encode pass beats counting UTF-8 length in JavaScript and
+  // then making a second pass to write it. The encoded bytes are copied once
+  // into the output buffer.
+  const encoded = sharedEncoder.encode(value);
+  const byteLength = encoded.length;
   writer.ensure(5 + byteLength);
   writeStringHeader(writer, byteLength);
-  if (value.length > TEXT_ENCODER_THRESHOLD) {
-    writeUtf8TextEncoder(value, writer.bytes, writer.pos);
-  } else {
-    writeUtf8Js(value, writer.bytes, writer.pos);
-  }
+  writer.bytes.set(encoded, writer.pos);
   writer.pos += byteLength;
 }
 

@@ -1,4 +1,4 @@
-const sharedEncoder = new TextEncoder();
+export const sharedEncoder = new TextEncoder();
 const sharedDecoder = new TextDecoder();
 
 /** Byte length of the UTF-8 encoding produced by the original JS encoder. */
@@ -83,11 +83,6 @@ export function writeUtf8Js(str: string, output: Uint8Array, offset: number): vo
     }
     output[offset++] = (value & 0x3f) | 0x80;
   }
-}
-
-/** TextEncoder path, used by the original for strings longer than 50 units. */
-export function writeUtf8TextEncoder(str: string, output: Uint8Array, offset: number): void {
-  sharedEncoder.encodeInto(str, output.subarray(offset));
 }
 
 const ASCII_CHUNK = 0x1000;

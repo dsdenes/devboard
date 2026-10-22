@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.0
+
+- Keep encoding and decoding faster than msgpack-javascript for moderately
+  large messages: long ASCII and non-ASCII text, large binary values, large
+  numeric arrays, large maps, and nested responses combining them, spanning
+  tens to hundreds of kilobytes.
+- Encode long strings with one native `TextEncoder` pass instead of counting
+  the UTF-8 length in JavaScript and then encoding it, so long text no longer
+  pays for two scans. Bytes remain identical to msgpack-javascript for ASCII,
+  non-ASCII, surrogate pairs, and lone surrogates.
+- Hand off large encoded buffers instead of copying them, and allocate a grown
+  buffer in one step, so large binary values, arrays, maps, and nested
+  messages avoid extra passes over the payload.
+- Extend the side-by-side benchmark with cases from tens to hundreds of
+  kilobytes: 99 KB and 130 KB text, 100 KB mostly-ASCII text, 64 KB and 256 KB
+  binary values, a 20,000-element integer array, an 8,000-element float array,
+  a 4,000-key map, and two nested responses at 121 KB and 220 KB.
+- Measure every case and operation in its own process, time large operations
+  call by call with the libraries alternating, and verify encoded bytes and
+  decoded values before measuring, so results do not depend on process history
+  or a noisy machine. Every measured case is faster for both operations.
+- Keep every previously measured small and medium case faster than the
+  original for both encoding and decoding.
+
 ## 0.5.0
 
 - Match msgpack-javascript 3.1.3 on malformed and externally produced input

@@ -303,10 +303,15 @@ through async iterables and WHATWG `ReadableStream`s. It fails if a value
 differs, if one library accepts bytes the other rejects, or if an error type or
 message differs.
 
-`bun run bench` builds the shipped package, then measures both libraries on the
-same machine, payloads, and process, with warmup, alternating order, and the
-median of nine rounds. It exits non-zero if any measured payload is slower for
-either operation.
+`bun run bench` builds the shipped package and compares both libraries on the
+same machine and payloads. Every case and every operation runs in its own
+process; the libraries are timed one call at a time in alternating order, and
+the reported ratio is the median of adjacent pairs after warmup, so CPU
+frequency drift or a busy neighbor cannot favor either side. Before timing, it
+verifies that both libraries produce identical bytes and equal decoded values
+for the case. It covers messages from one-byte primitives to 256 KB binary
+values and 220 KB nested responses, and exits non-zero if any measured payload
+is slower for either operation.
 
 `bun run verify:typed` installs `npm:@msgpack/msgpack@3.1.3` for the TypeScript
 application in `examples/typed`, builds it with `tsc` under `strict`, installs
@@ -343,38 +348,54 @@ with no imports, exports, or `require` calls.
 
 ## Measured performance
 
-Bun 1.4.2 on Linux x64, built package entry, same process and payloads for both
-libraries. Each number is nanoseconds per operation, median of nine rounds after
-warmup, with the measurement order alternating between libraries. `ratio` is
-replacement divided by original, so lower is faster.
+Bun 1.4.2 on Linux x64, built package entry. Each case and operation runs in a
+fresh process. The libraries are timed one call at a time, alternating which
+one goes first; each number is the median of hundreds to thousands of adjacent
+pairs after warmup. Timer overhead of a few tens of nanoseconds is included in
+both libraries, so the small-case ratios are conservative. `ratio` is
+replacement divided by original, so lower is faster. Before timing, every case
+checks that both libraries produce identical bytes and equal decoded values.
 
 | Case | Bytes | Encode ref | Encode new | Ratio | Decode ref | Decode new | Ratio |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| null | 1 | 560 | 40 | 0.072 | 99 | 26 | 0.264 |
-| boolean | 1 | 550 | 56 | 0.101 | 107 | 27 | 0.257 |
-| small int | 1 | 589 | 44 | 0.075 | 110 | 24 | 0.221 |
-| large int | 9 | 696 | 116 | 0.166 | 136 | 28 | 0.209 |
-| float | 9 | 611 | 52 | 0.085 | 101 | 28 | 0.275 |
-| short string | 15 | 711 | 78 | 0.110 | 268 | 114 | 0.425 |
-| medium string | 222 | 899 | 445 | 0.495 | 222 | 143 | 0.646 |
-| long string | 5003 | 8251 | 4387 | 0.532 | 664 | 505 | 0.761 |
-| unicode string | 187 | 1035 | 383 | 0.370 | 1233 | 876 | 0.710 |
-| binary 256 | 259 | 637 | 152 | 0.239 | 165 | 61 | 0.372 |
-| binary 4096 | 4099 | 2059 | 601 | 0.292 | 147 | 66 | 0.445 |
-| small array | 7 | 651 | 127 | 0.196 | 292 | 68 | 0.232 |
-| integer array | 174 | 1907 | 1226 | 0.643 | 958 | 743 | 0.776 |
-| small map | 21 | 800 | 151 | 0.189 | 460 | 151 | 0.329 |
-| large map | 693 | 4399 | 3203 | 0.728 | 39031 | 27422 | 0.703 |
-| typical response | 590 | 4955 | 3317 | 0.670 | 7556 | 3684 | 0.488 |
-| nested combinations | 1120 | 14085 | 10930 | 0.776 | 25699 | 13955 | 0.543 |
-| timestamp | 10 | 1262 | 420 | 0.333 | 364 | 159 | 0.437 |
-| timestamp before epoch | 15 | 1245 | 436 | 0.350 | 390 | 214 | 0.548 |
-| timestamp nested | 125 | 6481 | 5363 | 0.827 | 3602 | 2501 | 0.694 |
-| custom point | 18 | 1375 | 506 | 0.368 | 322 | 174 | 0.541 |
-| custom nested | 228 | 7980 | 7240 | 0.907 | 4021 | 1828 | 0.455 |
-| custom array | 363 | 12422 | 11326 | 0.912 | 2778 | 2196 | 0.790 |
+| null | 1 | 350 | 80 | 0.235 | 150 | 90 | 0.600 |
+| boolean | 1 | 400 | 90 | 0.225 | 140 | 90 | 0.615 |
+| small int | 1 | 390 | 100 | 0.290 | 180 | 100 | 0.588 |
+| large int | 9 | 680 | 250 | 0.391 | 140 | 90 | 0.615 |
+| float | 9 | 330 | 110 | 0.313 | 140 | 90 | 0.615 |
+| short string | 15 | 540 | 180 | 0.333 | 520 | 340 | 0.649 |
+| medium string | 222 | 730 | 170 | 0.230 | 270 | 190 | 0.730 |
+| long string | 5003 | 6760 | 650 | 0.114 | 610 | 540 | 0.889 |
+| unicode string | 187 | 1230 | 420 | 0.347 | 1000 | 840 | 0.867 |
+| binary 256 | 259 | 640 | 290 | 0.444 | 210 | 140 | 0.667 |
+| binary 4096 | 4099 | 1320 | 530 | 0.398 | 190 | 120 | 0.650 |
+| small array | 7 | 940 | 300 | 0.339 | 330 | 220 | 0.656 |
+| integer array | 174 | 740 | 300 | 0.406 | 790 | 630 | 0.800 |
+| small map | 21 | 980 | 440 | 0.438 | 430 | 280 | 0.651 |
+| large map | 693 | 2650 | 1950 | 0.736 | 30110 | 24560 | 0.821 |
+| typical response | 590 | 4570 | 2350 | 0.506 | 3580 | 2430 | 0.686 |
+| nested combinations | 1120 | 5860 | 5450 | 0.944 | 11310 | 7470 | 0.664 |
+| timestamp | 10 | 790 | 360 | 0.500 | 340 | 230 | 0.692 |
+| timestamp before epoch | 15 | 710 | 360 | 0.519 | 530 | 400 | 0.750 |
+| timestamp nested | 125 | 3480 | 3120 | 0.911 | 1630 | 1490 | 0.914 |
+| custom point | 18 | 950 | 480 | 0.554 | 230 | 170 | 0.760 |
+| custom nested | 228 | 4380 | 4040 | 0.929 | 1660 | 1400 | 0.852 |
+| custom array | 363 | 6710 | 6370 | 0.957 | 2710 | 2620 | 0.943 |
+| long ascii text | 99005 | 99590 | 10490 | 0.100 | 3970 | 3650 | 0.963 |
+| long unicode text | 130005 | 133269 | 48790 | 0.368 | 48750 | 48349 | 0.997 |
+| mostly ascii text | 100008 | 107039 | 17900 | 0.169 | 7090 | 6860 | 0.977 |
+| binary 64KB | 65541 | 4480 | 2840 | 0.612 | 210 | 140 | 0.658 |
+| binary 256KB | 262149 | 15500 | 11580 | 0.744 | 200 | 130 | 0.632 |
+| integer array 20K | 99835 | 180619 | 151360 | 0.841 | 134750 | 111079 | 0.828 |
+| float array 8K | 72003 | 81189 | 45850 | 0.573 | 58120 | 45800 | 0.790 |
+| large map 4K | 50857 | 236969 | 199629 | 0.849 | 1541466 | 1337486 | 0.873 |
+| nested response | 120884 | 294779 | 239730 | 0.804 | 317239 | 230080 | 0.730 |
+| nested mixed | 219930 | 223729 | 137100 | 0.605 | 139729 | 108779 | 0.781 |
 
-No measured payload was slower for either operation; all 23 were faster for both.
+No measured payload was slower for either operation; all 33 were faster for both.
+The large cases cover 99 KB and 130 KB text, 100 KB mostly-ASCII text, 64 KB and
+256 KB binary values, 20,000- and 8,000-element numeric arrays, a 4,000-key map,
+and nested responses of 121 KB and 220 KB.
 
 ## Layout
 

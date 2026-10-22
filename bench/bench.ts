@@ -1,150 +1,24 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   decode as referenceDecode,
   encode as referenceEncode,
   ExtensionCodec as ReferenceExtensionCodec,
 } from "msgpack-javascript-original";
 import { decode, encode, ExtensionCodec } from "@devboard/msgpack";
+import { cases, installPointCodec } from "./cases.ts";
+import type { Case } from "./cases.ts";
 
-class BenchPoint {
-  constructor(
-    public lat: number,
-    public lon: number,
-  ) {}
-}
-
-interface Registerable {
-  register(entry: {
-    type: number;
-    encode: (object: unknown) => Uint8Array | null;
-    decode: (data: Uint8Array) => unknown;
-  }): void;
-}
-
-function installPointCodec(codec: Registerable): void {
-  codec.register({
-    type: 0x42,
-    encode(object: unknown): Uint8Array | null {
-      if (!(object instanceof BenchPoint)) {
-        return null;
-      }
-      const data = new Uint8Array(16);
-      const view = new DataView(data.buffer);
-      view.setFloat64(0, object.lat);
-      view.setFloat64(8, object.lon);
-      return data;
-    },
-    decode(data: Uint8Array): BenchPoint {
-      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-      return new BenchPoint(view.getFloat64(0), view.getFloat64(8));
-    },
-  });
-}
-
-const referenceCodec = new ReferenceExtensionCodec();
-installPointCodec(referenceCodec);
-const replacementCodec = new ExtensionCodec();
-installPointCodec(replacementCodec);
-
-interface Case {
-  name: string;
-  value: unknown;
-  custom?: boolean;
-}
-
-const cases: Case[] = [
-  { name: "null", value: null },
-  { name: "boolean", value: true },
-  { name: "small int", value: 42 },
-  { name: "large int", value: 1234567890123 },
-  { name: "float", value: 1234.5678 },
-  { name: "short string", value: "hello, msgpack" },
-  { name: "medium string", value: "the quick brown fox jumps over the lazy dog ".repeat(5) },
-  { name: "long string", value: "x".repeat(5000) },
-  { name: "unicode string", value: "héllo wörld — 日本語 ✓ 😀 ".repeat(5) },
-  { name: "binary 256", value: new Uint8Array(256).map((_, i) => i & 0xff) },
-  { name: "binary 4096", value: new Uint8Array(4096).map((_, i) => i & 0xff) },
-  { name: "small array", value: [1, 2, 3, "x", true] },
-  { name: "integer array", value: Array.from({ length: 100 }, (_, i) => i * 3) },
-  { name: "small map", value: { id: 7, name: "widget", ok: true } },
-  { name: "large map", value: Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`key${i}`, i])) },
-  {
-    name: "typical response",
-    value: {
-      users: Array.from({ length: 5 }, (_, i) => ({
-        id: i + 1,
-        name: `user-${i}`,
-        active: i % 2 === 0,
-        balance: i * 12.5,
-        roles: ["reader", "writer"],
-        metadata: { created: 1700000000000 + i, flags: { beta: i === 2 } },
-      })),
-      cursor: null,
-      hasMore: false,
-      payload: new Uint8Array(64).map((_, i) => i),
-    },
-  },
-  {
-    name: "nested combinations",
-    value: {
-      items: Array.from({ length: 20 }, (_, i) => ({
-        id: i,
-        label: `item ${i}`,
-        nested: { a: [i, i + 1, i + 2], b: { c: "value", d: i % 2 === 0 } },
-        blob: new Uint8Array([i, i + 1]),
-      })),
-    },
-  },
-  { name: "timestamp", value: new Date(1700000000123) },
-  { name: "timestamp before epoch", value: new Date(-1) },
-  {
-    name: "timestamp nested",
-    value: {
-      createdAt: new Date(1700000000000),
-      events: Array.from({ length: 10 }, (_, i) => ({ at: new Date(1700000000000 + i * 1000) })),
-    },
-  },
-  { name: "custom point", value: new BenchPoint(12.5, -7.25), custom: true },
-  {
-    name: "custom nested",
-    value: {
-      location: new BenchPoint(-33.8688, 151.2093),
-      trail: Array.from({ length: 10 }, (_, i) => new BenchPoint(i * 0.5, i * -0.25)),
-      at: new Date(1700000000123),
-    },
-    custom: true,
-  },
-  {
-    name: "custom array",
-    value: Array.from({ length: 20 }, (_, i) => new BenchPoint(i, i + 1)),
-    custom: true,
-  },
-];
-
-const ROUNDS = Number(process.env.BENCH_ROUNDS ?? 9);
 const FILTER = process.env.BENCH_FILTER;
+const SINGLE_CASE = process.env.BENCH_CASE;
+const MODE = process.env.BENCH_MODE;
 
-function median(values: number[]): number {
-  const sorted = values.slice().sort((a, b) => a - b);
-  return sorted[sorted.length >> 1];
-}
-
-function now(): number {
-  return Bun.nanoseconds();
-}
-
-function iterationsFor(bytes: number): number {
-  if (bytes <= 64) return 200_000;
-  if (bytes <= 1024) return 100_000;
-  if (bytes <= 16 * 1024) return 20_000;
-  return 5_000;
-}
-
-function measure(fn: () => void, iterations: number): number {
-  const start = now();
-  for (let i = 0; i < iterations; i++) {
-    fn();
-  }
-  return (now() - start) / iterations;
+interface Sample {
+  name: string;
+  bytes: number;
+  mode: "encode" | "decode";
+  ref: number;
+  next: number;
+  ratio: number;
 }
 
 interface Result {
@@ -152,19 +26,43 @@ interface Result {
   bytes: number;
   encodeRef: number;
   encodeNew: number;
+  encodeRatio: number;
   decodeRef: number;
   decodeNew: number;
+  decodeRatio: number;
 }
 
-const results: Result[] = [];
+function median(values: number[]): number {
+  const sorted = values.slice().sort((a, b) => a - b);
+  return sorted[sorted.length >> 1];
+}
 
-for (const item of cases.filter((entry) => !FILTER || entry.name.includes(FILTER))) {
+function measure(fn: () => void, iterations: number): number {
+  const start = Bun.nanoseconds();
+  for (let i = 0; i < iterations; i++) {
+    fn();
+  }
+  return (Bun.nanoseconds() - start) / iterations;
+}
+
+/** Distinguishable call cost for one operation, timer overhead included. */
+function timeOne(fn: () => void): number {
+  const start = Bun.nanoseconds();
+  fn();
+  return Bun.nanoseconds() - start;
+}
+
+function sample(item: Case, mode: "encode" | "decode"): Sample {
+  const referenceCodec = new ReferenceExtensionCodec();
+  installPointCodec(referenceCodec);
+  const replacementCodec = new ExtensionCodec();
+  installPointCodec(replacementCodec);
+
+  const value = item.make();
   const refOptions = item.custom ? { extensionCodec: referenceCodec } : undefined;
   const newOptions = item.custom ? { extensionCodec: replacementCodec } : undefined;
-  const runReferenceEncode = () => referenceEncode(item.value, refOptions);
-  const runReplacementEncode = () => encode(item.value, newOptions);
-  const runReferenceDecode = () => referenceDecode(refBytes, refOptions);
-  const runReplacementDecode = () => decode(refBytes, newOptions);
+  const runReferenceEncode = () => referenceEncode(value, refOptions);
+  const runReplacementEncode = () => encode(value, newOptions);
 
   const refBytes = runReferenceEncode();
   const newBytes = runReplacementEncode();
@@ -177,93 +75,168 @@ for (const item of cases.filter((entry) => !FILTER || entry.name.includes(FILTER
     }
   }
 
-  runReferenceDecode();
-  runReplacementDecode();
+  const runReferenceDecode = () => referenceDecode(refBytes, refOptions);
+  const runReplacementDecode = () => decode(refBytes, newOptions);
+  if (!isDeepStrictEqual(runReferenceDecode(), runReplacementDecode())) {
+    throw new Error(`${item.name}: decoded values differ`);
+  }
 
-  const iterations = iterationsFor(refBytes.length);
-
-  // Warm both paths so the comparison measures steady-state work.
+  const runReference = mode === "encode" ? runReferenceEncode : runReferenceDecode;
+  const runReplacement = mode === "encode" ? runReplacementEncode : runReplacementDecode;
   for (let i = 0; i < 2; i++) {
-    measure(runReferenceEncode, Math.max(1, iterations >> 2));
-    measure(runReplacementEncode, Math.max(1, iterations >> 2));
-    measure(runReferenceDecode, Math.max(1, iterations >> 2));
-    measure(runReplacementDecode, Math.max(1, iterations >> 2));
+    measure(runReference, 500);
+    measure(runReplacement, 500);
   }
+  const pilot = measure(runReference, 500);
+  const pairCount = Math.min(5000, Math.max(500, Math.round(800_000_000 / pilot)));
 
-  const encodeRef: number[] = [];
-  const encodeNew: number[] = [];
-  const decodeRef: number[] = [];
-  const decodeNew: number[] = [];
+  for (let i = 0; i < 2; i++) {
+    const warmup = Math.max(100, Math.min(pairCount, 2000));
+    measure(runReference, warmup);
+    measure(runReplacement, warmup);
+  }
+  Bun.gc(true);
 
-  for (let round = 0; round < ROUNDS; round++) {
-    if (round % 2 === 0) {
-      encodeRef.push(measure(runReferenceEncode, iterations));
-      encodeNew.push(measure(runReplacementEncode, iterations));
-      decodeRef.push(measure(runReferenceDecode, iterations));
-      decodeNew.push(measure(runReplacementDecode, iterations));
+  // Time one call at a time, alternating libraries so both see the same CPU
+  // state. The median of adjacent pairs does not depend on which library got
+  // a quiet millisecond, and slow operations get fewer pairs so one case
+  // cannot dominate the run.
+  const refTimes: number[] = [];
+  const newTimes: number[] = [];
+  const ratios: number[] = [];
+  for (let i = 0; i < pairCount; i++) {
+    let refTime: number;
+    let newTime: number;
+    if (i % 2 === 0) {
+      refTime = timeOne(runReference);
+      newTime = timeOne(runReplacement);
     } else {
-      decodeNew.push(measure(runReplacementDecode, iterations));
-      decodeRef.push(measure(runReferenceDecode, iterations));
-      encodeNew.push(measure(runReplacementEncode, iterations));
-      encodeRef.push(measure(runReferenceEncode, iterations));
+      newTime = timeOne(runReplacement);
+      refTime = timeOne(runReference);
     }
+    refTimes.push(refTime);
+    newTimes.push(newTime);
+    ratios.push(newTime / refTime);
   }
 
-  results.push({
+  return {
     name: item.name,
     bytes: refBytes.length,
-    encodeRef: median(encodeRef),
-    encodeNew: median(encodeNew),
-    decodeRef: median(decodeRef),
-    decodeNew: median(decodeNew),
-  });
+    mode,
+    ref: median(refTimes),
+    next: median(newTimes),
+    ratio: median(ratios),
+  };
 }
 
 function row(result: Result): string {
-  const encRatio = result.encodeNew / result.encodeRef;
-  const decRatio = result.decodeNew / result.decodeRef;
   return [
     result.name.padEnd(24),
     String(result.bytes).padStart(7),
     result.encodeRef.toFixed(0).padStart(10),
     result.encodeNew.toFixed(0).padStart(10),
-    encRatio.toFixed(3).padStart(7),
+    result.encodeRatio.toFixed(3).padStart(7),
     result.decodeRef.toFixed(0).padStart(10),
     result.decodeNew.toFixed(0).padStart(10),
-    decRatio.toFixed(3).padStart(7),
+    result.decodeRatio.toFixed(3).padStart(7),
   ].join("");
 }
 
-console.log(
-  "case".padEnd(24) +
-    "bytes".padStart(7) +
-    "enc ref".padStart(10) +
-    "enc new".padStart(10) +
-    "ratio".padStart(7) +
-    "dec ref".padStart(10) +
-    "dec new".padStart(10) +
-    "ratio".padStart(7),
-);
-for (const result of results) {
-  console.log(row(result));
+function decodeJson(stdout: Uint8Array): string {
+  const output = new TextDecoder().decode(stdout).trim().split("\n");
+  const line = output.filter((entry) => entry.startsWith("{")).at(-1);
+  if (line === undefined) {
+    throw new Error("benchmark child produced no result");
+  }
+  return line;
 }
 
-const slowEncode = results.filter((r) => r.encodeNew > r.encodeRef);
-const slowDecode = results.filter((r) => r.decodeNew > r.decodeRef);
-const fasterEncode = results.filter((r) => r.encodeNew < r.encodeRef);
-const fasterDecode = results.filter((r) => r.decodeNew < r.decodeRef);
+function runChild(item: Case, mode: "encode" | "decode"): Sample {
+  const child = Bun.spawnSync({
+    cmd: [process.execPath, import.meta.path],
+    env: { ...process.env, BENCH_CASE: item.name, BENCH_MODE: mode, BENCH_FILTER: "" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (child.exitCode !== 0) {
+    const stderr = new TextDecoder().decode(child.stderr).trim();
+    const stdout = new TextDecoder().decode(child.stdout).trim();
+    throw new Error(`${item.name} (${mode}) failed:\n${stderr || stdout}`);
+  }
+  return JSON.parse(decodeJson(child.stdout)) as Sample;
+}
 
-console.log("");
-console.log(
-  `encode: ${fasterEncode.length}/${results.length} faster, ` +
-    `decode: ${fasterDecode.length}/${results.length} faster`,
-);
-if (slowEncode.length > 0) {
-  console.log(`encode slower: ${slowEncode.map((r) => `${r.name} ${(r.encodeNew / r.encodeRef).toFixed(3)}x`).join(", ")}`);
+function runAll(): void {
+  const selected = cases.filter((entry) => !FILTER || entry.name.includes(FILTER));
+  const results: Result[] = [];
+
+  for (const item of selected) {
+    // Encoding and decoding run in separate processes so one operation's
+    // allocations and JIT state cannot slow the other's measurement.
+    const encoded = runChild(item, "encode");
+    const decoded = runChild(item, "decode");
+    results.push({
+      name: item.name,
+      bytes: encoded.bytes,
+      encodeRef: encoded.ref,
+      encodeNew: encoded.next,
+      encodeRatio: encoded.ratio,
+      decodeRef: decoded.ref,
+      decodeNew: decoded.next,
+      decodeRatio: decoded.ratio,
+    });
+  }
+
+  console.log(
+    "case".padEnd(24) +
+      "bytes".padStart(7) +
+      "enc ref".padStart(10) +
+      "enc new".padStart(10) +
+      "ratio".padStart(7) +
+      "dec ref".padStart(10) +
+      "dec new".padStart(10) +
+      "ratio".padStart(7),
+  );
+  for (const result of results) {
+    console.log(row(result));
+  }
+
+  const slowEncode = results.filter((r) => r.encodeRatio >= 1);
+  const slowDecode = results.filter((r) => r.decodeRatio >= 1);
+  const fasterEncode = results.filter((r) => r.encodeRatio < 1);
+  const fasterDecode = results.filter((r) => r.decodeRatio < 1);
+
+  console.log("");
+  console.log(
+    `encode: ${fasterEncode.length}/${results.length} faster, ` +
+      `decode: ${fasterDecode.length}/${results.length} faster`,
+  );
+  if (slowEncode.length > 0) {
+    const list = slowEncode.map((r) => `${r.name} ${r.encodeRatio.toFixed(3)}x`).join(", ");
+    console.log(`encode slower: ${list}`);
+  }
+  if (slowDecode.length > 0) {
+    const list = slowDecode.map((r) => `${r.name} ${r.decodeRatio.toFixed(3)}x`).join(", ");
+    console.log(`decode slower: ${list}`);
+  }
+  if (slowEncode.length > 0 || slowDecode.length > 0) {
+    process.exitCode = 1;
+  }
 }
-if (slowDecode.length > 0) {
-  console.log(`decode slower: ${slowDecode.map((r) => `${r.name} ${(r.decodeNew / r.decodeRef).toFixed(3)}x`).join(", ")}`);
-}
-if (slowEncode.length > 0 || slowDecode.length > 0) {
-  process.exitCode = 1;
+
+if (SINGLE_CASE) {
+  const item = cases.find((entry) => entry.name === SINGLE_CASE);
+  if (item === undefined) {
+    throw new Error(`Unknown benchmark case: ${SINGLE_CASE}`);
+  }
+  const mode = MODE === "encode" || MODE === "decode" ? MODE : undefined;
+  if (mode === undefined) {
+    throw new Error("BENCH_MODE must be encode or decode");
+  }
+  // One process per case and operation: no JIT state, heap shape, or CPU
+  // history leaks between unrelated payloads.
+  Bun.gc(true);
+  console.log(JSON.stringify(sample(item, mode)));
+} else {
+  runAll();
 }

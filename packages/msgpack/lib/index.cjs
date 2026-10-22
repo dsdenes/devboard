@@ -83,9 +83,8 @@ class Writer {
   }
   grow(required) {
     let capacity = this.bytes.length || DEFAULT_INITIAL_BUFFER_SIZE;
-    while (capacity < required) {
-      capacity *= 2;
-    }
+    const doubled = capacity * 2;
+    capacity = doubled >= required ? doubled : required * 2;
     const next = new Uint8Array(capacity);
     next.set(this.bytes.subarray(0, this.pos));
     this.bytes = next;
@@ -170,9 +169,6 @@ function writeUtf8Js(str, output, offset) {
     }
     output[offset++] = value & 63 | 128;
   }
-}
-function writeUtf8TextEncoder(str, output, offset) {
-  sharedEncoder.encodeInto(str, output.subarray(offset));
 }
 var ASCII_CHUNK = 4096;
 var TEXT_DECODER_THRESHOLD = 200;
@@ -633,26 +629,27 @@ function writeStringHeader(writer, byteLength) {
   }
 }
 function encodeString(writer, value) {
-  const asciiLength = asciiByteLength(value);
-  if (asciiLength >= 0) {
-    writer.ensure(5 + asciiLength);
-    writeStringHeader(writer, asciiLength);
-    if (asciiLength > 256) {
-      writeUtf8TextEncoder(value, writer.bytes, writer.pos);
-    } else {
+  if (value.length <= TEXT_ENCODER_THRESHOLD) {
+    const asciiLength = asciiByteLength(value);
+    if (asciiLength >= 0) {
+      writer.ensure(5 + asciiLength);
+      writeStringHeader(writer, asciiLength);
       writeAscii(value, writer.bytes, writer.pos);
+      writer.pos += asciiLength;
+      return;
     }
-    writer.pos += asciiLength;
+    const byteLength = utf8Count(value);
+    writer.ensure(5 + byteLength);
+    writeStringHeader(writer, byteLength);
+    writeUtf8Js(value, writer.bytes, writer.pos);
+    writer.pos += byteLength;
     return;
   }
-  const byteLength = utf8Count(value);
+  const encoded = sharedEncoder.encode(value);
+  const byteLength = encoded.length;
   writer.ensure(5 + byteLength);
   writeStringHeader(writer, byteLength);
-  if (value.length > TEXT_ENCODER_THRESHOLD) {
-    writeUtf8TextEncoder(value, writer.bytes, writer.pos);
-  } else {
-    writeUtf8Js(value, writer.bytes, writer.pos);
-  }
+  writer.bytes.set(encoded, writer.pos);
   writer.pos += byteLength;
 }
 function encodeBinary(writer, value) {

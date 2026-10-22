@@ -28,9 +28,10 @@ export class Writer {
 
   private grow(required: number): void {
     let capacity = this.bytes.length || DEFAULT_INITIAL_BUFFER_SIZE;
-    while (capacity < required) {
-      capacity *= 2;
-    }
+    const doubled = capacity * 2;
+    // A single large value should cost one allocation, like the reference,
+    // not one allocation per doubling step.
+    capacity = doubled >= required ? doubled : required * 2;
     const next = new Uint8Array(capacity);
     next.set(this.bytes.subarray(0, this.pos));
     this.bytes = next;
