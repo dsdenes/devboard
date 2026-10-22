@@ -14,7 +14,7 @@
     },
     "packages/msgpack": {
       "name": "@devboard/msgpack",
-      "version": "0.5.0",
+      "version": "0.7.0",
     },
   },
   "packages": {

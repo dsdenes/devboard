@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0
+
+- Let build tooling that resolves dependencies the traditional way adopt the
+  replacement unchanged. The package publishes top-level `main`, `module`, and
+  `types` entry points alongside its conditional `exports` map, so classic Node
+  module resolution and bundlers that read `main`/`module` instead of `exports`
+  find the same CommonJS, ESM, and declaration files they resolved from
+  msgpack-javascript. `sideEffects` is marked `false` for tree-shaking bundlers.
+- Add `examples/typed-classic`, a strict TypeScript application that uses
+  `moduleResolution: "node"` and CommonJS output and is written against the
+  original's public API and types, and `bun run verify:classic-typed`, which
+  builds and runs it before and after the swap with no diagnostics, no source or
+  tsconfig changes, and identical output.
+- Add `examples/classic-bundler`, a Browserify application whose bundle resolves
+  the package through `main` without reading `exports`, and
+  `bun run verify:classic-bundler`, which bundles and runs it before and after
+  the swap with identical output and unchanged source.
+- Both new adoption checks cover primitives, non-ASCII text, binary data,
+  arrays, maps, nested values, timestamps, and a registered extension type, and
+  report the same failure type and message for malformed input, an unsupported
+  option value, and a decoder length limit.
+
 ## 0.6.0
 
 - Keep encoding and decoding faster than msgpack-javascript for moderately

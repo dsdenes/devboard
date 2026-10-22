@@ -25,6 +25,13 @@ The package exposes conditional ESM and CommonJS entry points, so both
 `import { encode, decode } from "@msgpack/msgpack"` and
 `require("@msgpack/msgpack")` resolve to this implementation.
 
+Build tooling that resolves dependencies the traditional way — classic Node
+module resolution, or a bundler that reads `main`/`module` and never looks at
+conditional `exports` — finds the same implementation through the package's
+top-level `main`, `module`, and `types` fields. A strict TypeScript application
+using `moduleResolution: "node"` and a Browserify bundle both build from an
+unchanged source and configuration after the dependency swap.
+
 A page that loads msgpack-javascript with one plain script reference, without a
 bundler or a build step, points that reference at the package's UMD bundle and
 keeps its markup and inline script unchanged:
@@ -260,6 +267,9 @@ bun run verify:options
 bun run verify:multi
 bun run verify:stream
 bun run verify:malformed
+bun run verify:typed
+bun run verify:classic-typed
+bun run verify:classic-bundler
 bun run verify:adoption
 bun run verify:browser-script
 ```
@@ -321,6 +331,20 @@ including a context generic and annotations that adapt those types to the
 application. The script fails if either build reports a diagnostic, if either
 run fails, if the two runs encode or decode any value differently, or if the
 application source changes between the runs.
+
+`bun run verify:classic-typed` installs the original library for the strict
+TypeScript application in `examples/typed-classic`, whose tsconfig uses classic
+`moduleResolution: "node"` and CommonJS output, builds it with `tsc`, runs the
+built JavaScript with Node, then installs the replacement and repeats both
+steps. The script fails if either build reports a diagnostic, if either run
+fails, if the two runs differ in encoded bytes, decoded values, or failure
+types and messages, or if the source or tsconfig changes between the builds.
+
+`bun run verify:classic-bundler` does the same for the application in
+`examples/classic-bundler`, which Browserify bundles from a CommonJS source
+using the package's `main` field and no `exports` support. Both bundles must
+build and run, their output must match, and the application source must stay
+byte-for-byte identical across the swap.
 
 `bun run verify:server` and `bun run verify:browser` exercise the two adopting
 applications in `examples/`. Each script hashes the application source before and
@@ -411,3 +435,7 @@ and nested responses of 121 KB and 220 KB.
   script reference, used by `verify:browser-script`.
 - `examples/typed` — a strict TypeScript application written against the
   original's published types, used by `verify:typed`.
+- `examples/typed-classic` — a strict TypeScript application using classic Node
+  module resolution, used by `verify:classic-typed`.
+- `examples/classic-bundler` — a Browserify application resolved through the
+  package's traditional entry fields, used by `verify:classic-bundler`.
