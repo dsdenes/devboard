@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import FeedbackOverlay from "./FeedbackOverlay.svelte";
 
   interface AdrRecord {
     file: string;
@@ -1046,3 +1047,5 @@
     </ul>
   {/if}
 </main>
+
+<FeedbackOverlay />

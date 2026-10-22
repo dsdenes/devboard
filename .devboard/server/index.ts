@@ -10,7 +10,17 @@ const goalFile = process.env.GOAL_FILE
   : join(repoDir, "GOAL.md");
 const staticDir = process.env.STATIC_DIR ?? join(import.meta.dir, "..", "dist");
 const agentCommand = process.env.AGENT_COMMAND ?? "omp acp";
+const feedbackRepository = process.env.FEEDBACK_REPO?.trim() || undefined;
 
-const server = createApp({ adrDir, repoDir, goalFile, agentCommand, staticDir, hostname, port });
+const server = createApp({
+  adrDir,
+  repoDir,
+  goalFile,
+  agentCommand,
+  staticDir,
+  hostname,
+  port,
+  feedback: { repository: feedbackRepository },
+});
 
 console.log(`ADR interface listening on http://${hostname}:${server.port}`);

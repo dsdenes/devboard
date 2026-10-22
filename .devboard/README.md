@@ -199,6 +199,24 @@ Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
 |`STATIC_DIR`|`dist`|Built client directory.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
+|`FEEDBACK_REPO`|unset|`owner/name` that receives reported UI issues. Unset means `gh` resolves the remote from `REPO_DIR`.|
+
+## Report a UI issue
+
+Every page carries a `Report UI issue` button in the lower-right corner. Selecting it enters
+element-selection mode: the element under the pointer is outlined, and a click opens a report
+panel anchored beside it. `Esc` or `Cancel` leaves the mode, and a click in selection mode never
+activates the element. The panel shows the selected element's selector path; the report text is
+free-form. `File issue` posts the report with the route, URL, selector, visible text, DOM excerpt,
+viewport and capture time to `POST /api/feedback`, and the server files a GitHub issue through
+the host's authenticated `gh` CLI, then returns its URL.
+
+The issue title is `[ui] ` plus the first line of the report, at most 200 characters. The body is
+the verbatim report followed by the captured context, so the ticket stays authoritative without a
+model in the loop. `gh` runs in `REPO_DIR`, which must be a GitHub checkout with issue creation
+permission; `FEEDBACK_REPO=owner/name` overrides remote resolution. A missing, unauthenticated, or
+failing `gh` is reported in the panel and still creates nothing. The endpoint accepts only
+same-origin `POST` requests, bounds the body to 64 KB, and gives `gh` 60 seconds.
 
 ## Container
 

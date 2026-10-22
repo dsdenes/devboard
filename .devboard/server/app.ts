@@ -17,6 +17,12 @@ import {
   type AcpQuestion,
   type AcpQuestionOption,
 } from "./acp";
+import {
+  FeedbackDeliveryError,
+  FeedbackRequestError,
+  fileFeedbackIssue,
+  parseFeedbackSubmission,
+} from "./feedback";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
 import { findOpenEpic, type EpicLookup, type OpenEpic } from "./tracker";
@@ -26,6 +32,16 @@ export interface TrackerSettle {
   attempts: number;
   /** Delay before each read after the first. */
   delayMs: number;
+}
+
+export interface FeedbackOptions {
+  /** Executable plus leading arguments that can create GitHub issues. */
+  ghCommand?: string[];
+  /** `owner/name`; when absent `gh` resolves the remote from `repoDir`. */
+  repository?: string;
+  timeoutMs?: number;
+  /** Extra environment for the `gh` child. */
+  env?: Record<string, string>;
 }
 
 export interface AppOptions {
@@ -38,6 +54,7 @@ export interface AppOptions {
   agentCommand?: string;
   tracker?: EpicLookup;
   trackerSettle?: Partial<TrackerSettle>;
+  feedback?: FeedbackOptions;
 }
 
 interface RunQuestion {
@@ -144,6 +161,10 @@ const RESET_PUSH_ENV = {
   GIT_ASKPASS: "true",
   NO_COLOR: "1",
 };
+/** Largest accepted feedback body, before JSON parsing. */
+const MAX_FEEDBACK_BYTES = 64_000;
+/** Default wall-clock bound for one issue creation. */
+const FEEDBACK_TIMEOUT_MS = 60_000;
 
 /** One directive statement extracted from a skill body for contradiction review. */
 const DIRECTIVE_PATTERN =
@@ -595,6 +616,10 @@ export function createApp(options: AppOptions) {
     attempts: Math.max(1, options.trackerSettle?.attempts ?? TRACKER_SETTLE_ATTEMPTS),
     delayMs: Math.max(0, options.trackerSettle?.delayMs ?? TRACKER_SETTLE_DELAY_MS),
   };
+  const feedbackCommand = options.feedback?.ghCommand ?? ["gh"];
+  const feedbackRepository = options.feedback?.repository;
+  const feedbackTimeoutMs = Math.max(1, options.feedback?.timeoutMs ?? FEEDBACK_TIMEOUT_MS);
+  const feedbackEnv = options.feedback?.env;
 
   const clients = new Set<ServerWebSocket<unknown>>();
   let activeRun: ActiveRun | undefined;
@@ -1978,12 +2003,94 @@ export function createApp(options: AppOptions) {
     void performImplementationReset();
   }
 
+  /**
+   * Files one browser report as a GitHub issue. The request is bounded before
+   * parsing, and a cross-origin browser request is refused: this endpoint has
+   * the side effect of creating issues, so another page must not reach it.
+   */
+  async function handleFeedbackRequest(request: Request, url: URL): Promise<Response> {
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", {
+        status: 405,
+        headers: { Allow: "POST" },
+      });
+    }
+
+    const origin = request.headers.get("origin");
+    if (origin !== null) {
+      let originHost: string | null = null;
+      try {
+        originHost = new URL(origin).host;
+      } catch {
+        originHost = null;
+      }
+      if (originHost !== url.host) {
+        return Response.json({ error: "Cross-origin feedback is refused." }, { status: 403 });
+      }
+    }
+
+    const declared = Number(request.headers.get("content-length") ?? "0");
+    if (Number.isFinite(declared) && declared > MAX_FEEDBACK_BYTES) {
+      return Response.json(
+        { error: `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.` },
+        { status: 413 },
+      );
+    }
+
+    let raw: string;
+    try {
+      raw = await request.text();
+    } catch (error) {
+      return Response.json(
+        { error: error instanceof Error ? error.message : "The report could not be read." },
+        { status: 400 },
+      );
+    }
+    if (raw.length > MAX_FEEDBACK_BYTES) {
+      return Response.json(
+        { error: `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.` },
+        { status: 413 },
+      );
+    }
+
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return Response.json({ error: "The report is not valid JSON." }, { status: 400 });
+    }
+
+    try {
+      const submission = parseFeedbackSubmission(value);
+      const filed = await fileFeedbackIssue(submission, {
+        command: feedbackCommand,
+        repoDir,
+        repository: feedbackRepository,
+        timeoutMs: feedbackTimeoutMs,
+        env: feedbackEnv,
+      });
+      return Response.json(filed, { status: 201 });
+    } catch (error) {
+      if (error instanceof FeedbackRequestError || error instanceof FeedbackDeliveryError) {
+        return Response.json({ error: error.message }, { status: error.status });
+      }
+      return Response.json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
+
   const server = Bun.serve({
     hostname: options.hostname,
     port: options.port,
 
     async fetch(request, server) {
       const url = new URL(request.url);
+
+      if (url.pathname === "/api/feedback") {
+        return handleFeedbackRequest(request, url);
+      }
 
       if (url.pathname === "/ws") {
         if (server.upgrade(request)) return;
