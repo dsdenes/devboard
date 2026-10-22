@@ -273,20 +273,9 @@ main {
   width: 0.5rem;
 }
 
+/* Static: an animated live dot repainted the whole panel every frame. */
 .activity-dot.live {
-  animation: activity-pulse 1.6s ease-out infinite;
   background: var(--accent);
-}
-
-@keyframes activity-pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-
-  70%,
-  100% {
-    box-shadow: 0 0 0 0.4rem transparent;
-  }
 }
 
 .activity-current {
@@ -332,12 +321,6 @@ main {
   margin: 0.15rem 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .activity-dot.live {
-    animation: none;
-  }
 }
 
 .question {
