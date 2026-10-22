@@ -8,7 +8,8 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import {
   AcpConnection,
@@ -170,6 +171,7 @@ function goalRevisionPrompt(goalFile: string, request: string | undefined): stri
 type ClientMessage =
   | { type: "listRecords" }
   | { type: "getGoal" }
+  | { type: "getProject" }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
   | { type: "startLifecycle" }
@@ -189,6 +191,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "listRecords" };
     case "getGoal":
       return { type: "getGoal" };
+    case "getProject":
+      return { type: "getProject" };
     case "saveGoal":
       return { type: "saveGoal", text: "text" in value ? value.text : undefined };
     case "startRun":
@@ -580,10 +584,26 @@ function resetKeepSet(repoDir: string, goalFile: string): Set<string> {
   return names;
 }
 
+/**
+ * Names the project in the page heading. A project inside the user's home
+ * directory is shown by its path relative to it, so the heading identifies
+ * which checkout this interface serves; anything else keeps its absolute
+ * path so two projects sharing a directory name stay distinct.
+ */
+export function projectLabel(repoDir: string, home: string = homedir()): string {
+  const root = resolve(repoDir);
+  const relativePath = relative(resolve(home), root);
+  if (relativePath.length === 0) return root;
+  const [first] = relativePath.split(sep);
+  if (first === ".." || isAbsolute(relativePath)) return root;
+  return relativePath;
+}
+
 export function createApp(options: AppOptions) {
   const staticRoot = resolve(options.staticDir);
   const adrDir = resolve(options.adrDir);
   const repoDir = options.repoDir ?? dirname(adrDir);
+  const project = projectLabel(repoDir);
   const goalFile = options.goalFile ?? defaultGoalPath(repoDir);
   // The creation skill always writes the repository's goal document, while
   // getGoal and saveGoal keep using the configured goal file.
@@ -2099,6 +2119,7 @@ export function createApp(options: AppOptions) {
         const readOnly =
           command.type === "listRecords" ||
           command.type === "getGoal" ||
+          command.type === "getProject" ||
           command.type === "getSkills";
         if (implementationReset !== undefined && !readOnly) {
           send(ws, { type: "error", message: "An implementation reset is active." });
@@ -2111,6 +2132,8 @@ export function createApp(options: AppOptions) {
             send(ws, { type: "records", ...list });
           } else if (command.type === "getGoal") {
             await getGoal(ws);
+          } else if (command.type === "getProject") {
+            send(ws, { type: "project", path: project });
           } else if (command.type === "saveGoal") {
             await saveGoal(ws, command.text);
           } else if (command.type === "startRun") {
