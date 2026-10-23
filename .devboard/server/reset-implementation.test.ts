@@ -702,7 +702,10 @@ describe("resetImplementation", () => {
 
         client.send({ type: "resetImplementation" });
         await client.waitFor("implementationResetStarted");
-        await client.waitFor("runStopped");
+        await client.waitFor(
+          "laneState",
+          (event) => Array.isArray(event.lanes) && event.lanes.length === 0,
+        );
         const stopped = await client.waitFor("implementationResetStopped");
         expect(stopped).toMatchObject({
           type: "implementationResetStopped",
@@ -749,7 +752,10 @@ describe("resetImplementation", () => {
 
         client.send({ type: "resetImplementation" });
         await client.waitFor("implementationResetStarted");
-        await client.waitFor("runStopped");
+        await client.waitFor(
+          "laneState",
+          (event) => Array.isArray(event.lanes) && event.lanes.length === 0,
+        );
         const stopped = await client.waitFor("implementationResetStopped");
         expect(stopped).toMatchObject({
           type: "implementationResetStopped",

@@ -1,13 +1,23 @@
 ---
-description: Derive exactly one next user-visible epic from the host project's end goal, its ADRs and its current code, then open it as a single tracker issue (GitHub or GitLab).
+description: Derive zero or more mutually independent next epics from the host project's end goal, its ADRs and its current code, then open each as its own tracker issue (GitHub or GitLab).
 ---
 
-`/epic-next`: file the next move, once.
+`/epic-next`: file the next moves, once.
 
-Deliverable: exactly one epic, created as an issue in the host project's own tracker — GitHub or
-GitLab, whichever `origin` points at. Supporting writes, only when a significant architectural
-choice is unresolved: one new ADR file per such choice under `<host>/adrs/`, holding a question,
-the consequences of each realistic answer, and no decision.
+Deliverable: zero or more epics, each created as its own issue in the host project's own tracker —
+GitHub or GitLab, whichever `origin` points at. One run decides from the goal's current state how
+many epics the goal now admits: file exactly that many, and none when nothing independent remains.
+Zero is a valid result. Supporting writes, only when a significant architectural choice is
+unresolved: one new ADR file per such choice under `<host>/adrs/`, holding a question, the
+consequences of each realistic answer, and no decision.
+
+Every epic filed in one run MUST be pairwise independent: no filed epic may depend on another
+filed epic's outcome, and every one must be independently implementable in parallel by a separate
+agent in its own worktree. An epic that needs another selected epic to land first is the same
+epic, not a second one. Never file a second epic that duplicates, overlaps, or re-cuts work an
+already-open epic covers; skip that candidate instead and file the remaining independent ones.
+The count is never fixed: a goal that admits five independent slices may file five, and a goal
+whose only remaining work is already open files none.
 
 Fully unattended. NEVER ask the user anything, never stop for confirmation, never offer to
 continue, never offer to implement, never create a branch, commit, or pull request. Every decision
@@ -58,7 +68,7 @@ qualifies only when it is an external compatibility promise that meets all three
 Otherwise it is an implementation choice.
 
 Architectural choices are never inferred: an unresolved one becomes a Proposed question record in
-Phase G. A question record never blocks the epic. The selected slice must be able to ship without
+Phase G. A question record never blocks an epic. Each selected slice must be able to ship without
 its answer; if it cannot, choose another slice or route, and halt only when no goal-preserving
 slice exists.
 
@@ -72,9 +82,9 @@ An explicit goal requirement (a Success criterion or an Objective statement) out
 record it conflicts with; Phase H carries the required supersession rather than silently
 overriding it. Never answer an open architectural question, and never invent an end goal.
 
-Reply: the created issue URL on its own line, then one line per ADR file written this run — and no
-line at all when there were none. On a halt: `halt: <reason>` on its own line, after one line per
-ADR file the halt itself wrote. Never paste the issue body into chat.
+Reply: one line per created issue with its URL, then one line per ADR file written this run — and
+no line at all for either when there were none. On a halt: `halt: <reason>` on its own line, after
+one line per ADR file the halt itself wrote. Never paste an issue body into chat.
 
 Input: the invoking command passes one optional argument string. If its first whitespace-delimited
 token is `balanced`, `granular`, or `milestone` (case-insensitive), that token is the granularity
@@ -110,7 +120,7 @@ pull request, and the remainder goes to Non-goals.
 - Report paths repository-root-relative; pass absolute paths only to tools that need them.
 - A halt in Phases A–F writes nothing at all. Phase G writes only into `<host>/adrs/`; a halt there
   stops before the issue. Phase H writes only the tracker.
-- The only durable artifacts are those ADR files and that one issue. Temp files under the system
+- The only durable artifacts are those ADR files and those issues. Temp files under the system
   temp directory are permitted for handing a long issue body to the CLI; delete them before the
   run ends.
 
@@ -232,7 +242,9 @@ the first failure disqualifies the candidate.
      capability exceeds the single-pass ceiling, cut at capability boundaries and keep the largest
      coherent capability that fits; never combine unrelated capabilities and never target the whole
      application.
-   There is no second epic to carry the remainder — the remainder goes to Non-goals.
+   There is no second epic inside one epic's ceiling: the remainder goes to Non-goals. A distinct
+   remainder may become its own epic only when it passes every gate and is independent of every
+   other selected epic.
 4. **ADR-conformant.** The proposed outcome contradicts no binding architectural record, except
    where an explicit goal requirement — a Success criterion or an Objective statement — requires
    the behavior the record forbids. Such a conflict leaves the candidate eligible; Phase H must
@@ -245,8 +257,25 @@ the first failure disqualifies the candidate.
 
 No candidate passes all six → halt.
 
-Then classify only the architectural decisions the selected outcome depends on. Do not classify,
-enumerate, or decide implementation choices.
+Then choose the set of epics this run files, from the candidates that pass every gate. The set may
+be empty, one, or many; the goal's current state decides the count.
+
+- Exclude every candidate that duplicates, overlaps, or re-cuts an already-open epic (Phase F
+  lists them). Skipping is the required outcome, not a halt.
+- Exclude every candidate that depends on another candidate's outcome or cannot be implemented
+  independently in parallel. If two candidates need each other, merge them into the smallest epic
+  carrying both outcomes, or keep the one that stands alone.
+- Keep every remaining candidate whose outcome is a distinct, independently observable result.
+  Five independent candidates produce five epics; a goal whose remaining work is already open
+  produces zero.
+
+Zero selected epics is a complete run: reply with no issue URL and continue to Phase G only if
+Phase E also classified an architectural decision that must be recorded. Otherwise stop without
+writing anything.
+
+Then classify only the architectural decisions each selected epic's outcome depends on. Classify
+per epic: where this section says the candidate or the selected slice, apply it independently to
+each selected epic, and never let one epic's classification justify another's.
 
 - **recorded** — settled by a binding architectural record, an explicit goal requirement, or
   already fixed architecture; cite the record identifier, the goal statement, or the product
@@ -292,18 +321,21 @@ contains the marker `<!-- devboard-epic -->` in its body.
    number,title,url --limit 100`, or `glab issue list --search devboard-epic --in description
    --output json`. If the CLI cannot search issue bodies at all → halt: the predicate is
    unverifiable.
-4. Any open epic — whatever its subject → halt, naming the existing issue URL in the reason. Never
-   comment on it, relabel it, reassign it, close it, or reuse it.
-5. Duplicate goal → search first, then compare: fetch open issues matching the goal document's
-   first heading and its filename stem (`gh issue list --search "<term>" --state open --json
-   number,title,url,body --limit 100`, or `glab issue list --search <term> --in title --output
-   json`, once per term), and halt naming the issue if one of them names the same result — its
-   title equal to that heading or stem after normalising case, punctuation, and the words `epic`
-   and `goal`, or its body citing the goal document's path. The search is only a candidate fetch;
-   that comparison is the predicate, and an unrelated open issue is not a duplicate.
+4. Record every open epic URL. Open epics are exclusions, not a halt: skip any selected candidate
+   whose outcome duplicates, overlaps, or re-cuts one of them, and file the remaining candidates.
+   Filing zero epics after these exclusions is a valid result. Never comment on an open issue,
+   relabel it, reassign it, close it, or reuse it.
+5. Duplicate goal → search first, then compare, for each selected candidate: fetch open issues
+   matching the goal document's first heading and its filename stem (`gh issue list --search
+   "<term>" --state open --json number,title,url,body --limit 100`, or `glab issue list --search
+   <term> --in title --output json`, once per term), and skip that candidate when one of them
+   names the same result — its title equal to that heading or stem after normalising case,
+   punctuation, and the words `epic` and `goal`, or its body citing the goal document's path. The
+   search is only a candidate fetch; that comparison is the predicate, and an unrelated open
+   issue is not a duplicate. Skipping every candidate leaves zero epics and is not a halt.
 
-A forge search index can lag recent writes; a match counts regardless of age. Zero matches is the
-only condition that permits creation.
+A forge search index can lag recent writes; a match counts regardless of age. Only candidates with
+no open-epic overlap and no duplicate goal are filed.
 
 ## Phase G — Architectural question records (`<host>/adrs/`)
 
@@ -360,12 +392,17 @@ records are never modified, renamed, reordered, or deleted; this phase only adds
 supersession required by Phase H is performed by the epic's implementation, not by this run.
 
 Having written the records, continue to Phase H. A question record never stops the run before the
-epic: the epic is filed without deciding it, and the record is named under Open questions.
+epics: each selected epic is filed without deciding it, and the record is named under Open
+questions.
 
-## Phase H — Create the epic
+## Phase H — Create the epics
 
-Reached when Phase E selected a goal and Phase F passed. Open and pending architectural records do
-not prevent the epic from being filed; the work must not decide them.
+Reached when Phase E selected at least one epic and Phase F still leaves at least one candidate.
+When Phase F leaves none, reply with no issue URL and stop; that is a complete run, not a halt.
+Open and pending architectural records do not prevent an epic from being filed; the work must not
+decide them.
+
+Apply this section to each filed epic, one issue at a time.
 
 Title: imperative, at most 72 characters, naming the user-visible result; no type prefix, no issue
 number, no `epic` prefix.
@@ -427,7 +464,7 @@ every section against "What an epic never contains": any file, symbol, command, 
 field, event, log, process, test, or internal mechanism means the section is not finished. The
 epic must let the implementer choose every technical detail.
 
-Write the body to a temp file outside the repository and pass it by file, so shell quoting cannot
+Write each body to a temp file outside the repository and pass it by file, so shell quoting cannot
 damage it; delete it afterwards.
 
 Labels: `epic` — the exact case variant chosen in Phase F, or `epic` when the repository has none.
@@ -439,7 +476,8 @@ No other label, tracker milestone, assignee, project, type, or template may be s
 forge issue templates are not used, because the body contract above is fixed. On GitLab, never use
 the native epic object and never pass `--epic`: the deliverable is a plain issue.
 
-Create it non-interactively from the repository root, so the CLI infers the project from `origin`:
+Create each epic non-interactively from the repository root, so the CLI infers the project from
+`origin`:
 
 - `gh issue create --title <title> --body-file <file> --label <label>`
 - `glab issue create --title <title> --description-file <file> --label <label> --yes`
@@ -449,15 +487,17 @@ CLI's error.
 
 ## Halting
 
-`halt: <reason>` and nothing else — no epic, no writes from Phases G and H that had not already
-completed, existing state untouched. Reasons: not a git repository or no `origin`; unrecognised or
-unconfigured forge; CLI absent or unauthenticated; no goal document or one without an end state;
-two binding records contradicting; an architectural choice whose every realistic answer forecloses
-a goal capability, with no goal-preserving slice; a pending record the selected slice cannot route
-around, with no other goal-preserving slice; no candidate passing the Phase E gates; an open epic or
-a duplicate goal already on the tracker; the tracker rejecting the write.
+`halt: <reason>` and nothing else — no epic created by this run, no writes from Phases G and H that
+had not already completed, existing state untouched. Reasons: not a git repository or no `origin`;
+unrecognised or unconfigured forge; CLI absent or unauthenticated; no goal document or one without
+an end state; two binding records contradicting; an architectural choice whose every realistic
+answer forecloses a goal capability, with no goal-preserving slice; a pending record the selected
+slice cannot route around, with no other goal-preserving slice; no candidate passing the Phase E
+gates; the tracker rejecting the write.
 
-NEVER halt for an open question a question record can carry, for a conflict an explicit goal
-requirement settles, for effort, size, cost, duration, uncertainty about implementation detail, or
-a local obstacle you can route around — infer, record, and proceed. Never halt because an
-implementation choice is undecided: leave it to the implementer and proceed.
+NEVER halt because an epic is already open or because a candidate duplicates one: skip that
+candidate and file the remaining independent epics. NEVER halt for an open question a question
+record can carry, for a conflict an explicit goal requirement settles, for effort, size, cost,
+duration, uncertainty about implementation detail, or a local obstacle you can route around —
+infer, record, and proceed. Never halt because an implementation choice is undecided: leave it to
+the implementer and proceed.

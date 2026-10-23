@@ -401,9 +401,14 @@ describe("guided goal creation", () => {
         await eventually(() => spawnCount(logPath) === 1);
 
         client.send({ type: "createGoal" });
-        expect(await client.waitFor((message) => message.type === "runStopped")).toMatchObject({
-          resolved: false,
-        });
+        expect(
+          await client.waitFor(
+            (message) =>
+              message.type === "laneState" &&
+              Array.isArray(message.lanes) &&
+              message.lanes.length === 0,
+          ),
+        ).toMatchObject({ runningLanes: 0 });
         await client.waitFor(
           (message) => message.type === "lifecycleState" && message.stage === "goal",
         );
@@ -838,15 +843,19 @@ describe("guided goal creation", () => {
         expect(await readFile(goalFile, "utf8")).toBe(CREATED_GOAL);
 
         const after = client.events.slice(client.events.indexOf(stopped) + 1);
-        expect(after[0]).toMatchObject({
-          type: "runStarted",
-          file: "",
-          title: "Active epic",
-        });
+        expect(after.filter((message) => message.type === "runStarted")).toEqual([]);
         expect(
-          after.filter((message) => message.type === "activity").map((message) => message.text),
-        ).toContain("Working on /implement-next-epic");
-        expect(after.filter((message) => message.type === "question").length).toBeGreaterThan(0);
+          [...client.events].reverse().find((message) => message.type === "laneState"),
+        ).toMatchObject({
+          lanes: [
+            {
+              kind: "implementation",
+              status: "paused",
+              activity: ["Working on epic 42"],
+              question: { message: "Choose an answer" },
+            },
+          ],
+        });
       } finally {
         client.close();
         server.stop(true);

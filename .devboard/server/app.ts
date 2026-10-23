@@ -15,7 +15,6 @@ import type { ServerWebSocket } from "bun";
 import {
   AcpConnection,
   agentPrompt,
-  isSessionBusy,
   type AcpActivity,
   type AcpQuestion,
   type AcpQuestionOption,
@@ -28,7 +27,12 @@ import {
 } from "./feedback";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
-import { findOpenEpic, type EpicLookup, type OpenEpic } from "./tracker";
+import {
+  findOpenEpics,
+  normalizeEpics,
+  type EpicLookup,
+  type OpenEpic,
+} from "./tracker";
 import {
   gitRevision,
   runningHarnessDir,
@@ -61,6 +65,10 @@ export interface AppOptions {
   agentCommand?: string;
   tracker?: EpicLookup;
   trackerSettle?: Partial<TrackerSettle>;
+  /** Delay before an implementation lane whose epic stayed open runs again. */
+  laneBackoffMs?: number;
+  /** Interval at which `main` is checked for a parked or retrying lane. */
+  mainPollMs?: number;
   feedback?: FeedbackOptions;
   /** Directory that retains the lifecycle pass between process lifetimes. */
   stateDir?: string;
@@ -88,12 +96,37 @@ interface ActiveRun {
 }
 
 /**
- * Asks a peer to keep going after a turn that ended before the work did. `open`
- * reports whether the run's tracker condition is still unmet.
+ * One agent peer in a lifecycle run. Every lane owns exactly one unit of work:
+ * an epic generation pass, one open epic, or one ADR record. `id` is unique per
+ * attempt so a retried epic keeps its earlier tab beside the new one.
  */
-interface Continuation {
+type LaneKind = "generation" | "implementation" | "adr";
+type LaneStatus = "running" | "paused" | "closed" | "failed" | "retrying" | "parked";
+
+interface Lane {
   id: string;
-  open: () => Promise<boolean>;
+  kind: LaneKind;
+  epic: OpenEpic | null;
+  record: { file: string; title: string } | null;
+  attempt: number;
+  status: LaneStatus;
+  agent: AcpConnection | undefined;
+  activity: string[];
+  question: RunQuestion | null;
+  /** True when the peer reported an explicit hard blocker. */
+  blocked: boolean;
+  /** The peer's error message, when its turn ended with one. */
+  failure: string | null;
+}
+
+/** The lifecycle's memory of one open epic across its attempts. */
+interface EpicState {
+  epic: OpenEpic;
+  attempts: number;
+  status: "running" | "retrying" | "parked" | "closed";
+  timer: Timer | undefined;
+  /** The `main` revision when the last lane stopped; a change retries it. */
+  mainAtFailure: string | undefined;
 }
 
 interface GoalRevision {
@@ -159,16 +192,10 @@ interface LifecycleState {
 const EPIC_PROMPT = "/epic-next";
 const IMPLEMENT_PROMPT = "/implement-next-epic";
 
-/** Wakes a peer whose turn ended while the epic is still open. */
-function continuationPrompt(id: string): string {
-  return [
-    `The implementation turn ended before the run was complete: epic #${id} is still open.`,
-    "Continue from where the turn stopped.",
-    "Do not end a turn while a background job you started is still running:",
-    "if the wait tool returns a still-running snapshot, call wait again.",
-    "Finish the merge and close the epic before ending the turn, or report the exact blocker once.",
-  ].join(" ");
-}
+/** Wakes a lane's peer once the lifecycle reaches this turn. */
+const EPIC_GENERATION_TITLE = "Epic generation";
+/** Marker a peer prints on its own line when it cannot finish its work. */
+const BLOCKER_MARKER = "DEVBOARD-BLOCKED:";
 
 /**
  * A forge can take a moment to expose a tracker write made by the peer that
@@ -177,14 +204,10 @@ function continuationPrompt(id: string): string {
  */
 const TRACKER_SETTLE_ATTEMPTS = 7;
 const TRACKER_SETTLE_DELAY_MS = 500;
-/**
- * Turns the implementation peer may be asked for after a yield that leaves the
- * epic open. The peer keeps its session and its background work alive across
- * turns; this bound only stops a runaway peer from looping forever.
- */
-const IMPLEMENT_CONTINUATIONS = 8;
-/** Delay before retrying a continuation while the peer is still in its own turn. */
-const CONTINUATION_RETRY_MS = 1_000;
+/** Delay before a lane whose epic stayed open runs again. */
+const LANE_BACKOFF_MS = 5_000;
+/** Interval at which `main` is checked while a retry or a parked epic waits. */
+const MAIN_POLL_MS = 2_000;
 const GOAL_CREATION_PROMPT = "/goal-outcome";
 const SKILLS_PROMPT = "/prepare-skills";
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -252,7 +275,7 @@ type ClientMessage =
   | { type: "prepareSkills" }
   | { type: "getSkills" }
   | { type: "resetImplementation" }
-  | { type: "answer"; id?: unknown; value?: unknown };
+  | { type: "answer"; id?: unknown; value?: unknown; lane?: unknown };
 
 function parseClientMessage(value: unknown): ClientMessage | undefined {
   if (typeof value !== "object" || value === null || !("type" in value)) return undefined;
@@ -294,6 +317,7 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
         type: "answer",
         id: "id" in value ? value.id : undefined,
         value: "value" in value ? value.value : undefined,
+        lane: "lane" in value ? value.lane : undefined,
       };
     default:
       return undefined;
@@ -686,11 +710,13 @@ export function createApp(options: AppOptions) {
   const creationGoalFile = defaultGoalPath(repoDir);
   const skillsDir = join(repoDir, ".omp", "skills");
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
-  const tracker = options.tracker ?? findOpenEpic;
+  const tracker = options.tracker ?? findOpenEpics;
   const trackerSettle: TrackerSettle = {
     attempts: Math.max(1, options.trackerSettle?.attempts ?? TRACKER_SETTLE_ATTEMPTS),
     delayMs: Math.max(0, options.trackerSettle?.delayMs ?? TRACKER_SETTLE_DELAY_MS),
   };
+  const laneBackoffMs = Math.max(0, options.laneBackoffMs ?? LANE_BACKOFF_MS);
+  const mainPollMs = Math.max(10, options.mainPollMs ?? MAIN_POLL_MS);
   const feedbackCommand = options.feedback?.ghCommand ?? ["gh"];
   const feedbackTimeoutMs = Math.max(1, options.feedback?.timeoutMs ?? FEEDBACK_TIMEOUT_MS);
   const feedbackEnv = options.feedback?.env;
@@ -727,13 +753,11 @@ export function createApp(options: AppOptions) {
   }
 
   const clients = new Set<ServerWebSocket<unknown>>();
-  let activeRun: ActiveRun | undefined;
   let sequencing = false;
   /**
    * A manual ADR sequence started from the interface. When the lifecycle is
-   * paused, its suspended peer stays in `activeRun` and keeps its stage and
-   * conversation while this sequence resolves records; the lifecycle never
-   * advances until it is resumed.
+   * paused, its lanes stay suspended and keep their tabs while this sequence
+   * resolves records; the lifecycle never advances until it is resumed.
    */
   let manualRun: ActiveRun | undefined;
   let manualSequencing = false;
@@ -766,6 +790,22 @@ export function createApp(options: AppOptions) {
   let lifecycleStartRequest = 0;
   let implementationReset: { commit?: string } | undefined;
   const resumeWaiters: (() => void)[] = [];
+
+  // A lifecycle run owns these. Every lane keeps its tab for the whole run;
+  // stopped lanes stay in `lanes` beside the attempt that replaces them.
+  let lanes: Lane[] = [];
+  const liveLanes = new Set<Lane>();
+  const epicStates = new Map<string, EpicState>();
+  const parkedEpics = new Set<string>();
+  let knownEpics = new Map<string, OpenEpic>();
+  let laneSequence = 0;
+  let generationActive = false;
+  let generationQueued = false;
+  /** True once a generation pass has run since the last work or refill trigger. */
+  let generationAttempted = false;
+  const lifecycleWaiters: (() => void)[] = [];
+  let mainTimer: Timer | undefined;
+  let mainPolling = false;
 
   function send(ws: { send(data: string): unknown }, event: unknown) {
     try {
@@ -833,6 +873,23 @@ export function createApp(options: AppOptions) {
     broadcast({ type: "activity", text: activity.text });
   }
 
+  /**
+   * Records one lane's streamed output. Every event names its lane, so two
+   * peers streaming at once never share a line; a line beginning with the
+   * blocker marker parks the lane when its turn ends.
+   */
+  function recordLaneActivity(lane: Lane, activity: AcpActivity) {
+    if (!liveLanes.has(lane)) return;
+    if (activity.append && lane.activity.length > 0) {
+      lane.activity[lane.activity.length - 1] += activity.text;
+      broadcast({ type: "activity", lane: lane.id, text: activity.text, append: true });
+    } else {
+      lane.activity.push(activity.text);
+      broadcast({ type: "activity", lane: lane.id, text: activity.text });
+    }
+    if (lane.activity.some((line) => line.startsWith(BLOCKER_MARKER))) lane.blocked = true;
+  }
+
   function sendRunConversation(
     target: { send(data: string): unknown },
     run: ActiveRun,
@@ -857,13 +914,7 @@ export function createApp(options: AppOptions) {
   }
 
   function isLiveRun(run: ActiveRun): boolean {
-    return activeRun === run || manualRun === run;
-  }
-
-  /** Restores the suspended lifecycle conversation after a foreground peer ends. */
-  function broadcastRunConversation() {
-    if (activeRun === undefined) return;
-    for (const client of clients) sendRunConversation(client, activeRun);
+    return manualRun === run;
   }
 
   /** Ends a manual sequence and closes its peer without touching the lifecycle. */
@@ -945,21 +996,18 @@ export function createApp(options: AppOptions) {
 
     if (!succeeded) {
       broadcast({ type: "goalRevisionStopped", completed: false });
-      broadcastRunConversation();
       return;
     }
 
     try {
       const text = await readGoal(goalFile);
       broadcast({ type: "goalRevisionStopped", completed: true, text });
-      broadcastRunConversation();
     } catch (error) {
       broadcast({
         type: "error",
         message: `Could not read the revised goal: ${error instanceof Error ? error.message : String(error)}`,
       });
       broadcast({ type: "goalRevisionStopped", completed: false });
-      broadcastRunConversation();
     }
   }
 
@@ -971,7 +1019,6 @@ export function createApp(options: AppOptions) {
 
     if (!succeeded) {
       broadcast({ type: "goalCreationStopped", completed: false });
-      broadcastRunConversation();
       return;
     }
 
@@ -984,7 +1031,6 @@ export function createApp(options: AppOptions) {
         message: `Could not read the created goal: ${error instanceof Error ? error.message : String(error)}`,
       });
       broadcast({ type: "goalCreationStopped", completed: false });
-      broadcastRunConversation();
       return;
     }
 
@@ -994,12 +1040,10 @@ export function createApp(options: AppOptions) {
         message: "The goal creation ended without a non-empty goal.",
       });
       broadcast({ type: "goalCreationStopped", completed: false });
-      broadcastRunConversation();
       return;
     }
 
     broadcast({ type: "goalCreationStopped", completed: true, text });
-    broadcastRunConversation();
   }
 
   async function sendSkillsState(target: { send(data: string): unknown }) {
@@ -1136,7 +1180,7 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    if (activeRun !== undefined || manualRun !== undefined || sequencing || manualSequencing) {
+    if (manualRun !== undefined || sequencing || manualSequencing) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
     }
@@ -1324,6 +1368,7 @@ export function createApp(options: AppOptions) {
       lifecyclePausedForManualRun = false;
       lifecycleRunning = false;
       lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
+      clearLaneState();
       publishLifecycle();
       for (const resolve of resumeWaiters.splice(0)) resolve();
       stopped = true;
@@ -1331,21 +1376,6 @@ export function createApp(options: AppOptions) {
 
     if (sequencing) {
       sequencing = false;
-      stopped = true;
-    }
-
-    const run = activeRun;
-    if (run !== undefined) {
-      activeRun = undefined;
-      run.question = null;
-      run.agent?.close();
-      broadcast({
-        type: "runStopped",
-        file: run.file,
-        title: run.title,
-        resolved: false,
-        status: "",
-      });
       stopped = true;
     }
 
@@ -1458,14 +1488,14 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    // A paused lifecycle keeps its suspended peer in activeRun; only a manual
-    // run or sequence that the revision would contend with refuses the start.
+    // A paused lifecycle keeps its lanes suspended; only a manual run or
+    // sequence that the revision would contend with refuses the start.
     if (manualRun !== undefined || manualSequencing) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
     }
 
-    if (!(lifecycleRunning && lifecycle.paused) && (activeRun !== undefined || sequencing)) {
+    if (!(lifecycleRunning && lifecycle.paused) && sequencing) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
     }
@@ -1522,30 +1552,7 @@ export function createApp(options: AppOptions) {
     }
   }
 
-  /**
-   * Sends a continuation while the peer is still finishing its own turn. The
-   * peer rejects a prompt during a live turn, so a rejection means its
-   * background work is running and the session is still worth keeping.
-   */
-  async function continueWhenIdle(agent: AcpConnection, text: string): Promise<void> {
-    for (;;) {
-      try {
-        await agent.prompt(text);
-        return;
-      } catch (error) {
-        if (!isSessionBusy(error)) throw error;
-        await holdWhilePaused();
-        if (!lifecycleRunning) return;
-        await Bun.sleep(CONTINUATION_RETRY_MS);
-      }
-    }
-  }
-
-  async function runAgent(
-    run: ActiveRun,
-    prompt = agentPrompt(adrDir, run.file),
-    continuation?: Continuation,
-  ): Promise<boolean> {
+  async function runAgent(run: ActiveRun, prompt = agentPrompt(adrDir, run.file)): Promise<boolean> {
     try {
       const agent = new AcpConnection({
         command: agentCommand,
@@ -1575,14 +1582,6 @@ export function createApp(options: AppOptions) {
       run.agent = agent;
 
       await agent.run(prompt);
-      if (continuation !== undefined) {
-        for (let attempt = 0; attempt < IMPLEMENT_CONTINUATIONS; attempt += 1) {
-          if (!(await continuation.open())) break;
-          if (!lifecycleRunning) break;
-          await holdWhilePaused();
-          await continueWhenIdle(agent, continuationPrompt(continuation.id));
-        }
-      }
       const record = await readRecord(run.file);
       return await stopRun(run, record !== undefined && !record.pending, record?.status ?? "");
     } catch (error) {
@@ -1597,10 +1596,8 @@ export function createApp(options: AppOptions) {
   }
 
   async function stopRun(run: ActiveRun, resolved: boolean, status: string): Promise<boolean> {
-    const manual = manualRun === run;
-    if (!manual && activeRun !== run) return false;
-    if (manual) manualRun = undefined;
-    else activeRun = undefined;
+    if (manualRun !== run) return false;
+    manualRun = undefined;
     run.question = null;
     run.agent?.close();
 
@@ -1643,12 +1640,6 @@ export function createApp(options: AppOptions) {
     }
 
     if (manualRun !== undefined || manualSequencing || sequencing) {
-      send(ws, { type: "error", message: "A run is already active." });
-      return;
-    }
-
-    // Only the lifecycle's own peer may already hold the agent slot.
-    if (activeRun !== undefined && !lifecycleRunning) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
     }
@@ -1769,42 +1760,618 @@ export function createApp(options: AppOptions) {
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      // A creation or reset clears the sequence to take the checkout over; it
-      // restores or replaces the foreground conversation itself.
+      // A creation or reset clears the sequence to take the checkout over.
       const interrupted = !manualSequencing;
       manualSequencing = false;
       if (interrupted) {
         lifecyclePausedForManualRun = false;
-      } else {
-        broadcastRunConversation();
+      } else if (lifecyclePausedForManualRun) {
         // The interface controls the lifecycle with one start/stop button, so
         // the suspension this manual sequence needed ends with the sequence
         // instead of waiting for a resume the interface no longer offers.
-        if (lifecyclePausedForManualRun) {
-          lifecyclePausedForManualRun = false;
-          if (lifecycleRunning && lifecycle.paused) resumeLifecycle(ws);
-        }
+        lifecyclePausedForManualRun = false;
+        if (lifecycleRunning && lifecycle.paused) resumeLifecycle(ws);
       }
     }
   }
 
   /** Broadcasts the current state, retains it for later clients, and records the pass. */
-  function publishLifecycle() {
+  function publishLifecycle(force = false) {
     persistPass();
+    if (
+      !force &&
+      lastLifecycle !== undefined &&
+      lastLifecycle.stage === lifecycle.stage &&
+      lastLifecycle.pass === lifecycle.pass &&
+      lastLifecycle.paused === lifecycle.paused &&
+      lastLifecycle.work?.kind === lifecycle.work?.kind &&
+      lastLifecycle.work?.id === lifecycle.work?.id &&
+      lastLifecycle.work?.url === lifecycle.work?.url
+    ) {
+      return;
+    }
     lastLifecycle = lifecycle;
     broadcast({ type: "lifecycleState", ...lifecycle });
   }
 
   function setLifecycle(stage: LifecycleStage, work: LifecycleWork | null) {
-    lifecycle = { stage, pass: lifecycle.pass, work, paused: false };
+    lifecycle = { stage, pass: lifecycle.pass, work, paused: lifecycle.paused };
     publishLifecycle();
   }
 
   /** Holds the lifecycle loop at the current stage until an explicit resume. */
   async function holdWhilePaused() {
     while (lifecycleRunning && lifecycle.paused) {
-      await new Promise<void>((resolve) => resumeWaiters.push(resolve));
+      const { promise, resolve } = Promise.withResolvers<void>();
+      resumeWaiters.push(resolve);
+      await promise;
     }
+  }
+
+  /** Wakes the scheduler after a lane, retry, or refill changes the state. */
+  function wakeLifecycle() {
+    for (const resolve of lifecycleWaiters.splice(0)) resolve();
+  }
+
+  /**
+   * Waits for a lane event, a retry timer, or a short tick. The tick is a
+   * safety net: every other wake has an owner, so a lost wake cannot hang the
+   * run while a peer needs attention.
+   */
+  async function waitForLifecycleChange(): Promise<void> {
+    if (!lifecycleRunning) return;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    lifecycleWaiters.push(resolve);
+    const timer = setTimeout(resolve, 250);
+    await promise;
+    clearTimeout(timer);
+    const index = lifecycleWaiters.indexOf(resolve);
+    if (index >= 0) lifecycleWaiters.splice(index, 1);
+  }
+
+  function laneTitle(lane: Lane): string {
+    if (lane.kind === "generation") return EPIC_GENERATION_TITLE;
+    if (lane.kind === "adr") return lane.record?.title ?? "";
+    return lane.epic?.title ?? "";
+  }
+
+  function laneAction(lane: Lane): RunAction {
+    if (lane.kind === "generation") return "generating";
+    if (lane.kind === "adr") return "resolving";
+    return "implementing";
+  }
+
+  function laneSnapshot() {
+    const runningLanes = lanes.filter(
+      (lane) => lane.kind === "implementation" && lane.status === "running",
+    ).length;
+    return {
+      type: "laneState",
+      lanes: lanes.map((lane) => ({
+        id: lane.id,
+        kind: lane.kind,
+        epic: lane.epic,
+        record: lane.record,
+        attempt: lane.attempt,
+        status: lane.status,
+        activity: [...lane.activity],
+        question: lane.question,
+      })),
+      openEpics: knownEpics.size,
+      runningLanes,
+    };
+  }
+
+  function publishLanes() {
+    broadcast(laneSnapshot());
+  }
+
+  function publishLaneSnapshot(target: { send(data: string): unknown }) {
+    send(target, laneSnapshot());
+  }
+
+  function applyEpicList(list: OpenEpic[]) {
+    knownEpics = new Map(list.map((epic) => [String(epic.number), epic]));
+    publishLanes();
+  }
+
+  async function readEpicList(): Promise<OpenEpic[]> {
+    return normalizeEpics(await tracker(repoDir));
+  }
+
+  /**
+   * Re-reads the tracker while its answer could still be the pre-peer state.
+   * `stale` names an answer that a tracker write has not replaced yet. Pause
+   * holds the loop before the next read, and a stopped run returns without
+   * another read.
+   */
+  async function settleEpicList(stale: (list: OpenEpic[]) => boolean): Promise<OpenEpic[]> {
+    let list = await readEpicList();
+    for (let attempt = 1; attempt < trackerSettle.attempts && stale(list); attempt += 1) {
+      await Bun.sleep(trackerSettle.delayMs);
+      await holdWhilePaused();
+      if (!lifecycleRunning) return list;
+      list = await readEpicList();
+    }
+    return list;
+  }
+
+  function hasRetryingEpic(): boolean {
+    return [...epicStates.values()].some((state) => state.status === "retrying");
+  }
+
+  function liveImplementationFor(id: string): boolean {
+    return [...liveLanes].some(
+      (lane) => lane.kind === "implementation" && String(lane.epic?.number) === id,
+    );
+  }
+
+  function clearRetry(state: EpicState) {
+    if (state.timer === undefined) return;
+    clearTimeout(state.timer);
+    state.timer = undefined;
+  }
+
+  /** Reports the stage implied by the live lanes, without duplicating a state. */
+  function publishStage() {
+    if (!lifecycleRunning) return;
+    const implementations = [...liveLanes].filter((lane) => lane.kind === "implementation");
+    const adr = [...liveLanes].find((lane) => lane.kind === "adr");
+    const generating = [...liveLanes].some((lane) => lane.kind === "generation");
+
+    if (implementations.length > 0) {
+      const epic = implementations.length === 1 ? implementations[0]?.epic : null;
+      setLifecycle(
+        "implementation",
+        epic == null
+          ? null
+          : {
+              kind: "epic",
+              id: String(epic.number),
+              ...(epic.url.length === 0 ? {} : { url: epic.url }),
+            },
+      );
+      return;
+    }
+    if (adr !== undefined) {
+      setLifecycle("adr", { kind: "adr", id: adr.record?.file ?? "" });
+      return;
+    }
+    if (
+      [...epicStates.values()].some(
+        (state) =>
+          state.status === "running" || state.status === "retrying" || state.status === "parked",
+      )
+    ) {
+      setLifecycle("implementation", null);
+      return;
+    }
+    if (generating) setLifecycle("epic", null);
+  }
+
+  /** Runs one lane's peer and records its question and activity. */
+  async function runLanePeer(lane: Lane, prompt: string): Promise<void> {
+    broadcast({
+      type: "runStarted",
+      lane: lane.id,
+      kind: lane.kind,
+      attempt: lane.attempt,
+      file: lane.record?.file ?? "",
+      title: laneTitle(lane),
+      action: laneAction(lane),
+    });
+    try {
+      const agent = new AcpConnection({
+        command: agentCommand,
+        cwd: repoDir,
+        onActivity(activity) {
+          recordLaneActivity(lane, activity);
+        },
+        onQuestion(question: AcpQuestion) {
+          if (!liveLanes.has(lane)) return;
+          lane.question = {
+            id: question.id,
+            message: question.message,
+            options: question.options,
+          };
+          broadcast({
+            type: "question",
+            lane: lane.id,
+            id: question.id,
+            message: question.message,
+            options: question.options,
+          });
+          publishLanes();
+        },
+        onStderr(text) {
+          process.stderr.write(text);
+        },
+      });
+      lane.agent = agent;
+      if (lifecycle.paused) agent.pause();
+      await agent.run(prompt);
+    } catch (error) {
+      if (liveLanes.has(lane)) {
+        lane.failure = error instanceof Error ? error.message : String(error);
+        broadcast({ type: "error", lane: lane.id, message: lane.failure });
+      }
+    } finally {
+      lane.agent = undefined;
+      lane.question = null;
+      liveLanes.delete(lane);
+    }
+  }
+
+  function broadcastLaneStopped(lane: Lane, resolved: boolean, status: string) {
+    broadcast({
+      type: "runStopped",
+      lane: lane.id,
+      file: lane.record?.file ?? "",
+      title: laneTitle(lane),
+      resolved,
+      status,
+    });
+  }
+
+  /** Starts exactly one implementation lane for the epic, no matter how often it is asked. */
+  function startImplementationLane(id: string, attempt: number) {
+    if (lifecycle.paused) return;
+    const epic = knownEpics.get(id);
+    if (epic === undefined || liveImplementationFor(id)) return;
+
+    const state = epicStates.get(id);
+    if (state !== undefined) {
+      clearRetry(state);
+      state.epic = epic;
+      state.attempts = attempt;
+      state.status = "running";
+      state.mainAtFailure = undefined;
+    } else {
+      epicStates.set(id, {
+        epic,
+        attempts: attempt,
+        status: "running",
+        timer: undefined,
+        mainAtFailure: undefined,
+      });
+    }
+    parkedEpics.delete(id);
+    generationAttempted = false;
+
+    const lane: Lane = {
+      id: `lane-${++laneSequence}`,
+      kind: "implementation",
+      epic,
+      record: null,
+      attempt,
+      status: "running",
+      agent: undefined,
+      activity: [],
+      question: null,
+      blocked: false,
+      failure: null,
+    };
+    lanes.push(lane);
+    liveLanes.add(lane);
+    publishLanes();
+    publishStage();
+
+    void (async () => {
+      await runLanePeer(lane, `${IMPLEMENT_PROMPT} ${id}`);
+      if (!lifecycleRunning) return;
+
+      let list: OpenEpic[];
+      try {
+        list = await settleEpicList((candidate) =>
+          candidate.some((entry) => String(entry.number) === id),
+        );
+        await holdWhilePaused();
+        if (!lifecycleRunning) return;
+        applyEpicList(list);
+      } catch (error) {
+        if (!lifecycleRunning) return;
+        broadcast({
+          type: "error",
+          lane: lane.id,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        list = [...knownEpics.values()];
+      }
+
+      if (!lifecycleRunning) return;
+      const stillOpen = knownEpics.has(id);
+      const current = epicStates.get(id);
+
+      if (!stillOpen) {
+        lane.status = "closed";
+        if (current !== undefined) {
+          clearRetry(current);
+        }
+        epicStates.delete(id);
+        parkedEpics.delete(id);
+        broadcastLaneStopped(lane, true, "closed");
+        const others = [...liveLanes].some((entry) => entry.kind === "implementation");
+        if (others) {
+          publishStage();
+        } else {
+          lifecycle = {
+            stage: "epic",
+            pass: lifecycle.pass + 1,
+            work: null,
+            paused: lifecycle.paused,
+          };
+          publishLifecycle();
+        }
+        publishLanes();
+        requestGeneration();
+        return;
+      }
+
+      if (current !== undefined) current.epic = knownEpics.get(id) ?? current.epic;
+      const stoppedMain = await readMainRevision();
+      if (current !== undefined && stoppedMain !== undefined) {
+        current.mainAtFailure = stoppedMain;
+      }
+      if (lane.blocked) {
+        lane.status = "parked";
+        if (current !== undefined) current.status = "parked";
+        parkedEpics.add(id);
+        broadcastLaneStopped(lane, false, "parked");
+      } else {
+        lane.status = "retrying";
+        if (current !== undefined) current.status = "retrying";
+        broadcast({
+          type: "error",
+          lane: lane.id,
+          message: `Implementation ended but epic #${id} is still open.`,
+        });
+        broadcastLaneStopped(lane, false, "retrying");
+        scheduleRetry(id);
+      }
+      publishLanes();
+      publishStage();
+      wakeLifecycle();
+    })();
+  }
+
+  function scheduleRetry(id: string) {
+    const state = epicStates.get(id);
+    if (state === undefined || state.timer !== undefined) return;
+    state.timer = setTimeout(() => {
+      state.timer = undefined;
+      void retryEpic(id);
+    }, laneBackoffMs);
+  }
+
+  async function retryEpic(id: string) {
+    await holdWhilePaused();
+    if (!lifecycleRunning) return;
+    const state = epicStates.get(id);
+    if (state === undefined || state.status !== "retrying") return;
+    if (liveImplementationFor(id)) return;
+    startImplementationLane(id, state.attempts + 1);
+  }
+
+  /** Starts a lane for every open epic that does not already own one. */
+  function reconcileLanes() {
+    for (const [id] of knownEpics) {
+      const state = epicStates.get(id);
+      if (state === undefined || state.status === "closed") {
+        startImplementationLane(id, (state?.attempts ?? 0) + 1);
+      }
+    }
+    for (const [id, state] of [...epicStates]) {
+      if (knownEpics.has(id) || liveImplementationFor(id)) continue;
+      clearRetry(state);
+      epicStates.delete(id);
+      parkedEpics.delete(id);
+    }
+    publishStage();
+  }
+
+  /** Runs one epic-generation peer and applies the epics it filed. */
+  async function runGenerationPass() {
+    if (!lifecycleRunning) return;
+    generationAttempted = true;
+    const before = new Set(knownEpics.keys());
+    const lane: Lane = {
+      id: `lane-${++laneSequence}`,
+      kind: "generation",
+      epic: null,
+      record: null,
+      attempt: 1,
+      status: "running",
+      agent: undefined,
+      activity: [],
+      question: null,
+      blocked: false,
+      failure: null,
+    };
+    lanes.push(lane);
+    liveLanes.add(lane);
+    publishLanes();
+    publishStage();
+
+    await runLanePeer(lane, EPIC_PROMPT);
+    lane.status = lane.failure === null ? "closed" : "failed";
+    broadcastLaneStopped(lane, lane.status === "closed", lane.status);
+    publishLanes();
+    if (!lifecycleRunning) return;
+
+    try {
+      const list = await settleEpicList(
+        (candidate) => !candidate.some((entry) => !before.has(String(entry.number))),
+      );
+      applyEpicList(list);
+    } catch (error) {
+      broadcast({
+        type: "error",
+        lane: lane.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Runs one ADR resolution lane and republishes the record list. */
+  async function runAdrLane(record: AdrRecord) {
+    if (!lifecycleRunning) return;
+    const lane: Lane = {
+      id: `lane-${++laneSequence}`,
+      kind: "adr",
+      epic: null,
+      record: { file: record.file, title: record.title },
+      attempt: 1,
+      status: "running",
+      agent: undefined,
+      activity: [],
+      question: null,
+      blocked: false,
+      failure: null,
+    };
+    lanes.push(lane);
+    liveLanes.add(lane);
+    setLifecycle("adr", { kind: "adr", id: record.file });
+    publishLanes();
+
+    await runLanePeer(lane, agentPrompt(adrDir, record.file));
+    lane.status = lane.failure === null ? "closed" : "failed";
+    const current = await readRecord(record.file);
+    broadcastLaneStopped(
+      lane,
+      current !== undefined && !current.pending,
+      current?.status ?? "",
+    );
+    publishLanes();
+
+    try {
+      broadcast({ type: "records", ...(await readRecords(adrDir)) });
+    } catch (error) {
+      broadcast({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Starts the refill scheduler without waiting for the idle lanes. */
+  function requestGeneration() {
+    generationQueued = true;
+    generationAttempted = false;
+    wakeLifecycle();
+    void drainGenerations();
+  }
+
+  /**
+   * Runs the queued generation passes one at a time. A request that arrives
+   * while a pass is active leaves one follow-up pass queued, never a second
+   * concurrent generation peer.
+   */
+  async function drainGenerations() {
+    if (generationActive || !lifecycleRunning) return;
+    generationActive = true;
+    try {
+      while (generationQueued && lifecycleRunning) {
+        generationQueued = false;
+        await holdWhilePaused();
+        if (!lifecycleRunning) return;
+        await runGenerationPass();
+        reconcileLanes();
+        wakeLifecycle();
+      }
+    } finally {
+      generationActive = false;
+      wakeLifecycle();
+    }
+  }
+
+  function stopMainWatcher() {
+    if (mainTimer !== undefined) {
+      clearInterval(mainTimer);
+      mainTimer = undefined;
+    }
+    mainPolling = false;
+  }
+
+  /**
+   * Runs a lane again as soon as `main` changes, which is what makes a parked
+   * or retrying epic responsive without a fixed attempt cap.
+   */
+  async function readMainRevision(): Promise<string | undefined> {
+    const result = await runGit(repoDir, ["rev-parse", "--verify", "main"]);
+    return result.code === 0 ? result.stdout.trim() : undefined;
+  }
+
+  async function checkMainAdvance() {
+    if (!lifecycleRunning || mainPolling) return;
+    if (
+      ![...epicStates.values()].some(
+        (state) => state.status === "retrying" || state.status === "parked",
+      )
+    ) {
+      return;
+    }
+    mainPolling = true;
+    try {
+      const value = await readMainRevision();
+      if (value === undefined) return;
+
+      await holdWhilePaused();
+      if (!lifecycleRunning) return;
+      for (const [id, state] of [...epicStates]) {
+        if (state.status !== "retrying" && state.status !== "parked") continue;
+        if (!knownEpics.has(id) || liveImplementationFor(id)) continue;
+        // The lane recorded where main pointed when it stopped; any later
+        // revision means the repository changed and the lane runs again.
+        if (state.mainAtFailure === undefined) {
+          state.mainAtFailure = value;
+          continue;
+        }
+        if (state.mainAtFailure === value) continue;
+        clearRetry(state);
+        parkedEpics.delete(id);
+        startImplementationLane(id, state.attempts + 1);
+      }
+      wakeLifecycle();
+    } finally {
+      mainPolling = false;
+    }
+  }
+
+  function startMainWatcher() {
+    stopMainWatcher();
+    mainTimer = setInterval(() => {
+      void checkMainAdvance();
+    }, mainPollMs);
+  }
+
+  /** Closes every lane and timer this run owns; reports whether one was live. */
+  function stopAllLanes(): boolean {
+    stopMainWatcher();
+    generationQueued = false;
+    for (const state of epicStates.values()) clearRetry(state);
+    const live = liveLanes.size > 0;
+    for (const lane of [...liveLanes]) {
+      lane.agent?.close();
+      lane.agent = undefined;
+      lane.question = null;
+      if (lane.status === "running" || lane.status === "paused") lane.status = "failed";
+    }
+    liveLanes.clear();
+    wakeLifecycle();
+    return live;
+  }
+
+  function clearLaneState() {
+    stopAllLanes();
+    lanes = [];
+    epicStates.clear();
+    parkedEpics.clear();
+    knownEpics.clear();
+    generationActive = false;
+    generationQueued = false;
+    generationAttempted = false;
+    laneSequence = 0;
+    publishLanes();
   }
 
   function pauseLifecycle(ws: { send(data: string): unknown }) {
@@ -1818,9 +2385,15 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    activeRun?.agent?.pause();
+    for (const lane of liveLanes) {
+      if (lane.status !== "running") continue;
+      lane.agent?.pause();
+      lane.status = "paused";
+    }
     lifecycle = { ...lifecycle, paused: true };
     publishLifecycle();
+    publishLanes();
+    wakeLifecycle();
   }
 
   function resumeLifecycle(ws: { send(data: string): unknown }) {
@@ -1856,14 +2429,21 @@ export function createApp(options: AppOptions) {
 
     lifecycle = { ...lifecycle, paused: false };
     publishLifecycle();
-    activeRun?.agent?.resume();
+    for (const lane of liveLanes) {
+      if (lane.status !== "paused") continue;
+      lane.agent?.resume();
+      lane.status = "running";
+    }
+    publishLanes();
     for (const resolve of resumeWaiters.splice(0)) resolve();
+    wakeLifecycle();
   }
 
   /**
-   * Ends the lifecycle for real: the loop leaves at its next check, the peer
-   * it holds is closed, and the interface returns to the idle goal stage.
-   * Unlike a pause, nothing of the run stays suspended behind the button.
+   * Ends the lifecycle for real: the loop leaves at its next check, every
+   * lane peer it holds is closed, and the interface returns to the idle goal
+   * stage. Unlike a pause, nothing of the run stays suspended behind the
+   * button.
    */
   function stopLifecycle(ws: { send(data: string): unknown }) {
     if (!lifecycleRunning) {
@@ -1871,73 +2451,16 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    const run = activeRun;
-    activeRun = undefined;
-    if (run !== undefined) {
-      run.question = null;
-      run.agent?.close();
-      broadcast({
-        type: "runStopped",
-        file: run.file,
-        title: run.title,
-        resolved: false,
-        status: "",
-      });
-    }
-
     lifecyclePausedForManualRun = false;
     lifecycleRunning = false;
+    if (stopAllLanes()) publishLanes();
     lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
-    publishLifecycle();
+    publishLifecycle(true);
     for (const resolve of resumeWaiters.splice(0)) resolve();
+    wakeLifecycle();
   }
 
-  async function runLifecycleStage(
-    file: string,
-    title: string,
-    prompt: string,
-    action: RunAction,
-    continuation?: Continuation,
-  ) {
-    const run: ActiveRun = {
-      file,
-      title,
-      action,
-      agent: undefined,
-      activity: [],
-      question: null,
-    };
-    activeRun = run;
-    broadcast({
-      type: "runStarted",
-      file: run.file,
-      title: run.title,
-      action: run.action,
-    });
-    await runAgent(run, prompt, continuation);
-  }
-
-  /**
-   * Re-reads the tracker while its answer could still be the pre-peer state.
-   * The peer that just exited may have opened an epic or closed the one it
-   * implemented, and the forge's read path can expose that write a moment
-   * later. `stale` names the answer that write would replace. Pause holds the
-   * loop before the next read, and a stopped run returns without another read.
-   */
-  async function settleTracker(
-    stale: (epic: OpenEpic | undefined) => boolean,
-  ): Promise<OpenEpic | undefined> {
-    let epic = await tracker(repoDir);
-    for (let attempt = 1; attempt < trackerSettle.attempts && stale(epic); attempt += 1) {
-      await Bun.sleep(trackerSettle.delayMs);
-      await holdWhilePaused();
-      if (!lifecycleRunning) return epic;
-      epic = await tracker(repoDir);
-    }
-    return epic;
-  }
-
-  /** Returns true only when the pass produced no epic and no pending ADR. */
+  /** Returns true only when the run produced no epic and no pending ADR. */
   async function runLifecycle(): Promise<boolean> {
     let previousPending: string | undefined;
 
@@ -1945,57 +2468,51 @@ export function createApp(options: AppOptions) {
       await holdWhilePaused();
       if (!lifecycleRunning) return false;
 
-      const existing = await tracker(repoDir);
-      await holdWhilePaused();
-      if (!lifecycleRunning) return false;
-      if (existing !== undefined) {
-        const id = String(existing.number);
-        setLifecycle("implementation", {
-          kind: "epic",
-          id,
-          ...(existing.url.length === 0 ? {} : { url: existing.url }),
-        });
-        await runLifecycleStage("", existing.title, IMPLEMENT_PROMPT, "implementing", {
-          id,
-          open: async () => {
-            const remaining = await settleTracker(
-              (epic) => epic !== undefined && String(epic.number) === id,
-            );
-            return remaining !== undefined && String(remaining.number) === id;
-          },
-        });
-        await holdWhilePaused();
-        if (!lifecycleRunning) return false;
-
-        const remaining = await settleTracker(
-          (epic) => epic !== undefined && String(epic.number) === id,
-        );
-        await holdWhilePaused();
-        if (!lifecycleRunning) return false;
-        if (remaining !== undefined && String(remaining.number) === id) {
-          broadcast({
-            type: "error",
-            message: `Implementation ended but epic #${id} is still open.`,
-          });
-          return false;
-        }
-
-        lifecycle = { stage: "epic", pass: lifecycle.pass + 1, work: null, paused: false };
-        publishLifecycle();
+      if (liveLanes.size > 0 || generationActive || generationQueued) {
+        await waitForLifecycleChange();
+        continue;
+      }
+      if (hasRetryingEpic()) {
+        await waitForLifecycleChange();
         continue;
       }
 
-      if (lifecycle.stage !== "epic" || lifecycle.work !== null) {
-        setLifecycle("epic", null);
-      }
-      await runLifecycleStage("", "Epic generation", EPIC_PROMPT, "generating");
-      await holdWhilePaused();
-      if (!lifecycleRunning) return false;
+      reconcileLanes();
+      if (liveLanes.size > 0) continue;
+      if (hasRetryingEpic()) continue;
 
-      const created = await settleTracker((epic) => epic === undefined);
-      await holdWhilePaused();
-      if (!lifecycleRunning) return false;
-      if (created !== undefined) continue;
+      if (parkedEpics.size > 0) {
+        if (!generationAttempted) {
+          await runGenerationPass();
+          reconcileLanes();
+          if (liveLanes.size > 0 || hasRetryingEpic()) continue;
+        }
+        if (parkedEpics.size > 0) {
+          const names = [...parkedEpics]
+            .sort((left, right) => Number(left) - Number(right))
+            .map((id) => `#${id}`)
+            .join(", ");
+          broadcast({
+            type: "error",
+            message: `Lifecycle stopped with parked epics: ${names}.`,
+          });
+          return false;
+        }
+      }
+
+      if (knownEpics.size === 0 && !generationAttempted) {
+        await runGenerationPass();
+        reconcileLanes();
+        if (liveLanes.size > 0 || hasRetryingEpic()) continue;
+        if (knownEpics.size > 0) continue;
+      }
+
+      if (knownEpics.size > 0) {
+        // An open epic is waiting on its retry timer or on the parked policy;
+        // the timer and the main watcher wake this loop again.
+        await waitForLifecycleChange();
+        continue;
+      }
 
       const list = await readRecords(adrDir);
       await holdWhilePaused();
@@ -2003,8 +2520,6 @@ export function createApp(options: AppOptions) {
       const pending = list.records.filter((record) => record.pending).map((record) => record.file);
 
       if (pending.length === 0) {
-        await holdWhilePaused();
-        if (!lifecycleRunning) return false;
         setLifecycle("finished", null);
         return true;
       }
@@ -2026,17 +2541,14 @@ export function createApp(options: AppOptions) {
         await holdWhilePaused();
         if (!lifecycleRunning) return false;
         if (record === undefined || !record.pending) continue;
-
-        setLifecycle("adr", { kind: "adr", id: record.file });
-        await runLifecycleStage(
-          record.file,
-          record.title,
-          agentPrompt(adrDir, record.file),
-          "resolving",
-        );
+        await runAdrLane(record);
         await holdWhilePaused();
         if (!lifecycleRunning) return false;
       }
+
+      // A generation pass decides whether the resolved records revealed work.
+      setLifecycle("epic", null);
+      generationAttempted = false;
     }
 
     return false;
@@ -2067,7 +2579,7 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    if (activeRun !== undefined || manualRun !== undefined || sequencing || manualSequencing) {
+    if (manualRun !== undefined || sequencing || manualSequencing) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
     }
@@ -2116,13 +2628,19 @@ export function createApp(options: AppOptions) {
     const unwinding = Promise.withResolvers<void>();
     lifecycleUnwinding = unwinding.promise;
     settleLifecycleUnwinding = unwinding.resolve;
+    clearLaneState();
     lifecycleRunning = true;
+    startMainWatcher();
     // Report the run as active before the first tracker lookup: clients need the
-    // stage to disable their start controls and offer stop while the lookup runs.
+    // stage to disable their start controls and offer pause while the lookup runs.
     lifecycle = { stage: "epic", pass: lifecycle.pass, work: null, paused: false };
-    publishLifecycle();
+    publishLifecycle(true);
     let finished = false;
     try {
+      applyEpicList(await readEpicList());
+      await holdWhilePaused();
+      if (!lifecycleRunning) return;
+      reconcileLanes();
       finished = await runLifecycle();
     } catch (error) {
       broadcast({
@@ -2133,6 +2651,7 @@ export function createApp(options: AppOptions) {
       const wasPaused = lifecycle.paused;
       lifecycleRunning = false;
       lifecyclePausedForManualRun = false;
+      if (stopAllLanes()) publishLanes();
       lifecycle = { ...lifecycle, paused: false };
       for (const resolve of resumeWaiters.splice(0)) resolve();
       if (finished) {
@@ -2143,6 +2662,7 @@ export function createApp(options: AppOptions) {
         lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
         publishLifecycle();
       }
+      wakeLifecycle();
       settleLifecycleUnwinding?.();
       settleLifecycleUnwinding = undefined;
       lifecycleUnwinding = undefined;
@@ -2153,10 +2673,12 @@ export function createApp(options: AppOptions) {
     ws: { send(data: string): unknown },
     id: unknown,
     value: unknown,
+    laneId: unknown,
   ) {
-    const active =
-      goalCreation ?? goalRevision ?? skillsPreparation ?? manualRun ?? activeRun;
-    if (active === undefined) {
+    const active = goalCreation ?? goalRevision ?? skillsPreparation ?? manualRun;
+    const lane =
+      typeof laneId === "string" ? lanes.find((candidate) => candidate.id === laneId) : undefined;
+    if (active === undefined && lane === undefined && liveLanes.size === 0) {
       send(ws, { type: "error", message: "No run is active." });
       return;
     }
@@ -2174,17 +2696,40 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    if (active.question === null || String(active.question.id) !== String(id)) {
+    const laneAnswer = (target: Lane | undefined): boolean => {
+      if (target === undefined) return false;
+      if (target.question === null || String(target.question.id) !== String(id)) return false;
+      if (target.agent === undefined || !target.agent.answer(target.question.id, value)) {
+        send(ws, { type: "error", message: "The question is no longer pending." });
+        return true;
+      }
+      target.question = null;
+      publishLanes();
+      return true;
+    };
+
+    if (lane !== undefined) {
+      if (laneAnswer(lane)) return;
       send(ws, { type: "error", message: "No pending question with that id." });
       return;
     }
 
-    if (active.agent === undefined || !active.agent.answer(active.question.id, value)) {
-      send(ws, { type: "error", message: "The question is no longer pending." });
+    if (active !== undefined && active.question !== null && String(active.question.id) === String(id)) {
+      if (active.agent === undefined || !active.agent.answer(active.question.id, value)) {
+        send(ws, { type: "error", message: "The question is no longer pending." });
+        return;
+      }
+      active.question = null;
       return;
     }
 
-    active.question = null;
+    const matching = [...liveLanes].find(
+      (candidate) =>
+        candidate.question !== null && String(candidate.question.id) === String(id),
+    );
+    if (laneAnswer(matching)) return;
+
+    send(ws, { type: "error", message: "No pending question with that id." });
   }
 
   function gitDetail(result: GitResult): string {
@@ -2210,24 +2755,14 @@ export function createApp(options: AppOptions) {
     if (lifecycleRunning) {
       lifecycleRunning = false;
       lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
+      clearLaneState();
       publishLifecycle();
       for (const resolve of resumeWaiters.splice(0)) resolve();
+    } else if (lanes.length > 0) {
+      clearLaneState();
     }
 
     sequencing = false;
-    const run = activeRun;
-    if (run !== undefined) {
-      activeRun = undefined;
-      run.question = null;
-      run.agent?.close();
-      broadcast({
-        type: "runStopped",
-        file: run.file,
-        title: run.title,
-        resolved: false,
-        status: "",
-      });
-    }
 
     skillsPreparationRequest += 1;
     skillsPreparationPending = false;
@@ -2546,7 +3081,9 @@ export function createApp(options: AppOptions) {
           : (lastLifecycle ?? (lifecycle.pass > 1 ? lifecycle : undefined));
         if (replayed !== undefined) send(ws, { type: "lifecycleState", ...replayed });
         if (manualRun !== undefined) sendRunConversation(ws, manualRun, true);
-        else if (activeRun !== undefined) sendRunConversation(ws, activeRun);
+        if (lanes.length > 0 || lifecycleRunning || lastLifecycle !== undefined) {
+          publishLaneSnapshot(ws);
+        }
 
         const creation = goalCreation;
         if (creation !== undefined) {
@@ -2655,7 +3192,7 @@ export function createApp(options: AppOptions) {
           } else if (command.type === "resetImplementation") {
             startImplementationReset(ws);
           } else if (command.type === "answer") {
-            answerQuestion(ws, command.id, command.value);
+            answerQuestion(ws, command.id, command.value, command.lane);
           }
         } catch (error) {
           send(ws, {
@@ -2673,8 +3210,7 @@ export function createApp(options: AppOptions) {
     manualSequencing = false;
     lifecyclePausedForManualRun = false;
     lifecycleRunning = false;
-    activeRun?.agent?.close();
-    activeRun = undefined;
+    stopAllLanes();
     manualRun?.agent?.close();
     manualRun = undefined;
     goalRevision?.agent?.close();

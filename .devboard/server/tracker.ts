@@ -6,7 +6,20 @@ export interface OpenEpic {
   url: string;
 }
 
-export type EpicLookup = (repoDir: string) => Promise<OpenEpic | undefined>;
+/**
+ * Reads every open epic on the origin tracker. A lookup may return one epic or
+ * `undefined` for the single-epic callers tests use; the lifecycle normalizes
+ * both shapes with `normalizeEpics`.
+ */
+export type EpicLookup = (
+  repoDir: string,
+) => Promise<OpenEpic[] | OpenEpic | undefined>;
+
+/** Normalizes a tracker answer to the list shape the lifecycle consumes. */
+export function normalizeEpics(value: OpenEpic[] | OpenEpic | undefined): OpenEpic[] {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
 
 interface Remote {
   forge: "github" | "gitlab";
@@ -132,17 +145,18 @@ function toEpic(entry: IssueEntry): OpenEpic | undefined {
   return { number, title, url: url ?? "" };
 }
 
-function firstEpic(entries: unknown): OpenEpic | undefined {
-  if (!Array.isArray(entries)) return undefined;
+function allEpics(entries: unknown): OpenEpic[] {
+  if (!Array.isArray(entries)) return [];
+  const epics: OpenEpic[] = [];
   for (const entry of entries) {
     if (typeof entry !== "object" || entry === null) continue;
     const epic = toEpic(entry as IssueEntry);
-    if (epic !== undefined) return epic;
+    if (epic !== undefined) epics.push(epic);
   }
-  return undefined;
+  return epics;
 }
 
-async function githubEpic(cwd: string, project: string): Promise<OpenEpic | undefined> {
+async function githubEpics(cwd: string, project: string): Promise<OpenEpic[]> {
   const labels = await commandJson<LabelEntry[]>(
     cwd,
     ["gh", "label", "list", "--search", "epic", "--limit", "100", "--json", "name"],
@@ -170,7 +184,7 @@ async function githubEpic(cwd: string, project: string): Promise<OpenEpic | unde
       ],
       "list open epics",
     );
-    return firstEpic(issues);
+    return allEpics(issues);
   }
 
   const issues = await commandJson<unknown>(
@@ -193,10 +207,10 @@ async function githubEpic(cwd: string, project: string): Promise<OpenEpic | unde
     ],
     "search open epics",
   );
-  return firstEpic(issues);
+  return allEpics(issues);
 }
 
-async function gitlabEpic(cwd: string): Promise<OpenEpic | undefined> {
+async function gitlabEpics(cwd: string): Promise<OpenEpic[]> {
   const labels = await commandJson<LabelEntry[]>(
     cwd,
     ["glab", "label", "list", "--output", "json"],
@@ -212,7 +226,7 @@ async function gitlabEpic(cwd: string): Promise<OpenEpic | undefined> {
       ["glab", "issue", "list", "--label", label.name, "--output", "json"],
       "list open epics",
     );
-    return firstEpic(issues);
+    return allEpics(issues);
   }
 
   const issues = await commandJson<unknown>(
@@ -220,15 +234,15 @@ async function gitlabEpic(cwd: string): Promise<OpenEpic | undefined> {
     ["glab", "issue", "list", "--search", "devboard-epic", "--in", "description", "--output", "json"],
     "search open epics",
   );
-  return firstEpic(issues);
+  return allEpics(issues);
 }
 
 /**
- * Finds an open epic on the origin tracker. An issue is an epic when it is
+ * Finds every open epic on the origin tracker. An issue is an epic when it is
  * open and either carries the label `epic` ignoring case or contains the
  * `devboard-epic` marker in its body. Only read-only CLI queries run.
  */
-export async function findOpenEpic(repoDir: string): Promise<OpenEpic | undefined> {
+export async function findOpenEpics(repoDir: string): Promise<OpenEpic[]> {
   const remote = await command(repoDir, ["git", "remote", "get-url", "origin"]);
   if (remote.exitCode !== 0) {
     const detail = remote.stderr.trim() || `exit code ${remote.exitCode}`;
@@ -241,6 +255,6 @@ export async function findOpenEpic(repoDir: string): Promise<OpenEpic | undefine
   }
 
   return classified.forge === "github"
-    ? await githubEpic(repoDir, classified.project)
-    : await gitlabEpic(repoDir);
+    ? await githubEpics(repoDir, classified.project)
+    : await gitlabEpics(repoDir);
 }

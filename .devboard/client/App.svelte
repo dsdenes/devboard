@@ -61,6 +61,33 @@
     paused: boolean;
   }
 
+  type LaneKind = "generation" | "implementation" | "adr";
+  type LaneStatus = "running" | "paused" | "closed" | "failed" | "retrying" | "parked";
+
+  interface LaneEpic {
+    number: number;
+    title: string;
+    url: string;
+  }
+
+  interface Lane {
+    id: string;
+    kind: LaneKind;
+    epic: LaneEpic | null;
+    record: { file: string; title: string } | null;
+    attempt: number;
+    status: LaneStatus;
+    activity: string[];
+    question: RunQuestion | null;
+  }
+
+  interface LaneStateEvent {
+    type: "laneState";
+    lanes: Lane[];
+    openEpics: number;
+    runningLanes: number;
+  }
+
   const STAGE_LABELS: Record<LifecycleStage, string> = {
     goal: "Goal setup",
     epic: "Epic generation",
@@ -90,6 +117,11 @@
   let revisionRequest = $state("");
   let lifecycle = $state<LifecycleState>({ stage: "goal", pass: 1, work: null, paused: false });
   let lifecycleSeen = $state(false);
+  let lanes = $state<Lane[]>([]);
+  let openEpics = $state(0);
+  let runningLanes = $state(0);
+  let selectedLaneId = $state<string | null>(null);
+  let laneDraft = $state("");
   let skills = $state<SkillSummary[]>([]);
   let contradictions = $state<SkillContradiction[]>([]);
   let skillsPrepActive = $state(false);
@@ -186,6 +218,12 @@
   let lifecycleWorkUrl = $derived(
     lifecycle.work?.kind === "epic" ? (lifecycle.work.url ?? null) : null,
   );
+  let selectedLane = $derived(lanes.find((lane) => lane.id === selectedLaneId) ?? null);
+  let selectedLaneActivity = $derived(selectedLane?.activity ?? []);
+  let selectedLaneCurrent = $derived(
+    selectedLaneActivity[selectedLaneActivity.length - 1] ?? "",
+  );
+  let selectedLaneHistory = $derived(selectedLaneActivity.slice(0, -1));
 
   let socket: WebSocket | undefined;
   let retryTimer: number | undefined;
@@ -389,6 +427,7 @@
     title: string;
     action?: RunAction;
     manual?: boolean;
+    lane?: string;
   } {
     return (
       typeof value === "object" &&
@@ -433,14 +472,15 @@
 
   function isActivityEvent(
     value: unknown,
-  ): value is { type: "activity"; text: string; append?: boolean } {
+  ): value is { type: "activity"; text: string; append?: boolean; lane?: string } {
     return (
       typeof value === "object" &&
       value !== null &&
       "type" in value &&
       value.type === "activity" &&
       "text" in value &&
-      typeof value.text === "string"
+      typeof value.text === "string" &&
+      (!("lane" in value) || typeof value.lane === "string")
     );
   }
 
@@ -458,7 +498,9 @@
     );
   }
 
-  function isQuestionEvent(value: unknown): value is { type: "question" } & RunQuestion {
+  function isQuestionEvent(
+    value: unknown,
+  ): value is { type: "question"; lane?: string } & RunQuestion {
     return (
       typeof value === "object" &&
       value !== null &&
@@ -470,13 +512,21 @@
       typeof value.message === "string" &&
       "options" in value &&
       Array.isArray(value.options) &&
-      value.options.every(isQuestionOption)
+      value.options.every(isQuestionOption) &&
+      (!("lane" in value) || typeof value.lane === "string")
     );
   }
 
   function isRunStoppedEvent(
     value: unknown,
-  ): value is { type: "runStopped"; file: string; title: string; resolved: boolean; status: string } {
+  ): value is {
+    type: "runStopped";
+    file: string;
+    title: string;
+    resolved: boolean;
+    status: string;
+    lane?: string;
+  } {
     return (
       typeof value === "object" &&
       value !== null &&
@@ -548,6 +598,90 @@
       (!("url" in value.work) ||
         value.work.url === undefined ||
         typeof value.work.url === "string")
+    );
+  }
+
+  function isLaneStatus(value: unknown): value is LaneStatus {
+    return (
+      value === "running" ||
+      value === "paused" ||
+      value === "closed" ||
+      value === "failed" ||
+      value === "retrying" ||
+      value === "parked"
+    );
+  }
+
+  function isLaneEpic(value: unknown): value is LaneEpic {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "number" in value &&
+      typeof value.number === "number" &&
+      "title" in value &&
+      typeof value.title === "string" &&
+      "url" in value &&
+      typeof value.url === "string"
+    );
+  }
+
+  function isLaneRecord(value: unknown): value is { file: string; title: string } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "file" in value &&
+      typeof value.file === "string" &&
+      "title" in value &&
+      typeof value.title === "string"
+    );
+  }
+
+  function isLane(value: unknown): value is Lane {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "id" in value &&
+      typeof value.id === "string" &&
+      "kind" in value &&
+      (value.kind === "generation" || value.kind === "implementation" || value.kind === "adr") &&
+      "attempt" in value &&
+      typeof value.attempt === "number" &&
+      "status" in value &&
+      isLaneStatus(value.status) &&
+      "epic" in value &&
+      (value.epic === null || isLaneEpic(value.epic)) &&
+      "record" in value &&
+      (value.record === null || isLaneRecord(value.record)) &&
+      "activity" in value &&
+      Array.isArray(value.activity) &&
+      value.activity.every((line) => typeof line === "string") &&
+      "question" in value &&
+      (value.question === null ||
+        (typeof value.question === "object" &&
+          value.question !== null &&
+          "id" in value.question &&
+          (typeof value.question.id === "string" || typeof value.question.id === "number") &&
+          "message" in value.question &&
+          typeof value.question.message === "string" &&
+          "options" in value.question &&
+          Array.isArray(value.question.options) &&
+          value.question.options.every(isQuestionOption)))
+    );
+  }
+
+  function isLaneStateEvent(value: unknown): value is LaneStateEvent {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "laneState" &&
+      "lanes" in value &&
+      Array.isArray(value.lanes) &&
+      value.lanes.every(isLane) &&
+      "openEpics" in value &&
+      typeof value.openEpics === "number" &&
+      "runningLanes" in value &&
+      typeof value.runningLanes === "number"
     );
   }
 
@@ -651,6 +785,44 @@
     question = null;
     draft = "";
     sendCommand({ type: "answer", id, value: trimmed });
+  }
+
+  /** Sends an answer to the selected lane only, leaving every other lane alone. */
+  function submitLaneAnswer(value: string) {
+    if (selectedLane === null || selectedLane.question === null) return;
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return;
+
+    const lane = selectedLane;
+    const id = lane.question.id;
+    lanes = lanes.map((entry) =>
+      entry.id === lane.id ? { ...entry, question: null } : entry,
+    );
+    laneDraft = "";
+    sendCommand({ type: "answer", lane: lane.id, id, value: trimmed });
+  }
+
+  function laneLabel(lane: Lane): string {
+    const base =
+      lane.kind === "generation"
+        ? "Epic generation"
+        : lane.kind === "adr"
+          ? (lane.record?.title ?? lane.record?.file ?? "ADR resolution")
+          : `Epic #${lane.epic?.number ?? ""}`;
+    return lane.attempt > 1 ? `${base} (attempt ${lane.attempt})` : base;
+  }
+
+  function laneIdentity(lane: Lane): string {
+    if (lane.kind === "generation") return "Epic generation";
+    if (lane.kind === "adr") {
+      return `${lane.record?.title ?? ""} (${lane.record?.file ?? ""})`;
+    }
+    return `${lane.epic?.title ?? ""} — ${lane.epic?.url ?? ""}`;
+  }
+
+  function selectLane(id: string) {
+    selectedLaneId = id;
+    laneDraft = "";
   }
 
   function connect() {
@@ -777,18 +949,42 @@
           skills = message.skills;
           contradictions = message.contradictions;
         }
+      } else if (isLaneStateEvent(message)) {
+        lanes = message.lanes;
+        openEpics = message.openEpics;
+        runningLanes = message.runningLanes;
+        if (selectedLaneId === null || !lanes.some((lane) => lane.id === selectedLaneId)) {
+          selectedLaneId =
+            lanes.find((lane) => lane.status === "running")?.id ??
+            lanes[lanes.length - 1]?.id ??
+            null;
+        }
       } else if (isRunStartedEvent(message)) {
-        runFile = message.file;
-        runTitle = message.title;
-        runAction = message.action ?? "resolving";
-        runState = "active";
-        manualRunActive = message.manual === true;
-        activity = [];
-        question = null;
-        draft = "";
-        error = null;
+        if (message.lane === undefined) {
+          runFile = message.file;
+          runTitle = message.title;
+          runAction = message.action ?? "resolving";
+          runState = "active";
+          manualRunActive = message.manual === true;
+          activity = [];
+          question = null;
+          draft = "";
+          error = null;
+        }
       } else if (isActivityEvent(message)) {
-        if (message.append === true && activity.length > 0) {
+        if (message.lane !== undefined) {
+          const laneId = message.lane;
+          lanes = lanes.map((lane) => {
+            if (lane.id !== laneId) return lane;
+            const next = [...lane.activity];
+            if (message.append === true && next.length > 0) {
+              next[next.length - 1] += message.text;
+            } else {
+              next.push(message.text);
+            }
+            return { ...lane, activity: next };
+          });
+        } else if (message.append === true && activity.length > 0) {
           activity = [
             ...activity.slice(0, -1),
             activity[activity.length - 1] + message.text,
@@ -797,15 +993,33 @@
           activity = [...activity, message.text];
         }
       } else if (isQuestionEvent(message)) {
-        question = { id: message.id, message: message.message, options: message.options };
-        draft = "";
+        if (message.lane !== undefined) {
+          const laneId = message.lane;
+          lanes = lanes.map((lane) =>
+            lane.id === laneId
+              ? {
+                  ...lane,
+                  question: {
+                    id: message.id,
+                    message: message.message,
+                    options: message.options,
+                  },
+                }
+              : lane,
+          );
+        } else {
+          question = { id: message.id, message: message.message, options: message.options };
+          draft = "";
+        }
       } else if (isRunStoppedEvent(message)) {
-        runFile = null;
-        runTitle = null;
-        runState = "stopped";
-        manualRunActive = false;
-        question = null;
-        draft = "";
+        if (message.lane === undefined) {
+          runFile = null;
+          runTitle = null;
+          runState = "stopped";
+          manualRunActive = false;
+          question = null;
+          draft = "";
+        }
       } else if (isErrorEvent(message)) {
         error = message.message;
         if (restarting) {
@@ -1020,6 +1234,12 @@
       Stage <strong data-testid="lifecycle-stage">{lifecycleStageLabel}</strong>
     </p>
     <p class="lifecycle-line">
+      Open epics <strong data-testid="epic-count">{openEpics}</strong>
+    </p>
+    <p class="lifecycle-line">
+      Running lanes <strong data-testid="lane-count">{runningLanes}</strong>
+    </p>
+    <p class="lifecycle-line">
       Pass <strong data-testid="lifecycle-pass">{lifecycle.pass}</strong>
     </p>
     {#if lifecycleWorkTitle !== null}
@@ -1039,6 +1259,112 @@
       </p>
     {/if}
   </section>
+
+  {#if lanes.length > 0}
+    <section class="lanes" data-testid="lane-tabs">
+      <div class="lane-tab-row" role="tablist" aria-label="Agent lanes">
+        {#each lanes as lane (lane.id)}
+          <button
+            type="button"
+            class="lane-tab"
+            class:selected={lane.id === selectedLaneId}
+            role="tab"
+            aria-selected={lane.id === selectedLaneId}
+            data-testid="lane-tab"
+            data-lane={lane.id}
+            data-kind={lane.kind}
+            data-epic={lane.epic === null ? undefined : String(lane.epic.number)}
+            data-record={lane.record?.file}
+            data-attempt={lane.attempt}
+            data-status={lane.status}
+            onclick={() => selectLane(lane.id)}
+          >
+            <span class="lane-label">{laneLabel(lane)}</span>
+            <span class="lane-tab-status">{lane.status}</span>
+          </button>
+        {/each}
+      </div>
+
+      {#if selectedLane !== null}
+        <div class="lane-panel" data-testid="lane-panel" data-lane={selectedLane.id}>
+          <p class="lane-identity" data-testid="lane-identity">{laneIdentity(selectedLane)}</p>
+          <p class="lifecycle-line">
+            Status
+            <strong data-testid="lane-status">{selectedLane.status}</strong>
+          </p>
+
+          {#if selectedLaneActivity.length > 0}
+            <p class="activity-current" data-testid="lane-current">{selectedLaneCurrent}</p>
+            {#if selectedLaneHistory.length > 0}
+              <details class="activity-history">
+                <summary data-testid="lane-history">
+                  {selectedLaneHistory.length}
+                  {selectedLaneHistory.length === 1 ? "previous action" : "previous actions"}
+                </summary>
+                <ol class="activity-log" data-testid="lane-history-log">
+                  {#each [...selectedLaneHistory].reverse() as line, index (index)}
+                    <li>{line}</li>
+                  {/each}
+                </ol>
+              </details>
+            {/if}
+          {/if}
+
+          {#if selectedLane.question !== null}
+            <div class="question" data-testid="lane-question" data-lane={selectedLane.id}>
+              <p class="question-message">{selectedLane.question.message}</p>
+
+              {#if selectedLane.question.options.length > 0}
+                <div class="choices">
+                  {#each selectedLane.question.options as option (option.label)}
+                    <button
+                      type="button"
+                      class="choice"
+                      data-testid="lane-choice"
+                      onclick={() => submitLaneAnswer(option.label)}
+                    >
+                      <span class="choice-label">
+                        {option.label}
+                        {#if option.recommended}
+                          <span class="choice-recommended">Recommended</span>
+                        {/if}
+                      </span>
+                      {#if option.description}
+                        <span class="choice-description">{option.description}</span>
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+
+              <form
+                class="answer-form"
+                onsubmit={(event) => {
+                  event.preventDefault();
+                  submitLaneAnswer(laneDraft);
+                }}
+              >
+                <input
+                  type="text"
+                  bind:value={laneDraft}
+                  placeholder="Your answer"
+                  aria-label="Your answer"
+                  data-testid="lane-answer-input"
+                />
+                <button
+                  type="submit"
+                  data-testid="lane-submit-answer"
+                  disabled={laneDraft.trim().length === 0}
+                >
+                  Submit answer
+                </button>
+              </form>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </section>
+  {/if}
 
   {#if connection !== "open"}
     <p class="connection" role="status">

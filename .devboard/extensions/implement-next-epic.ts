@@ -1,6 +1,10 @@
 /**
- * `/implement-next-epic` — read the single open epic created by `/epic-next`
+ * `/implement-next-epic [ref]` — read one open epic created by `/epic-next`
  * and start it as an omp goal in the current session.
+ *
+ * The server gives every implementation lane exactly one epic reference, so a
+ * lane never selects a different epic. With no reference the command accepts
+ * the single open epic and refuses (listing the URLs) when several are open.
  *
  * Goal mode's `goal` tool is not part of the default tool set. A file-based
  * slash command cannot add it, so this command is registered by a small
@@ -547,9 +551,13 @@ After the goal tool succeeds, implement the epic end to end:
   still-running snapshot, call \`wait\` again. Leave the turn only once the work is finished or
   the exact blocker is known.
 - Keep the goal active until every criterion is verified. Call the \`goal\` tool with {"op":"complete"} only then.
-- When complete, merge ${branch} into main from ${repo}, delete the branch, and remove the worktree with \`git worktree remove\`, per AGENTS.md.
-- When complete, close the epic issue ${epic.ref} in ${repo}: ${forge === "github" ? `\`gh issue close ${epic.ref}\`` : `\`glab issue close ${epic.ref}\``}. Close it only after the merge succeeded and the worktree was removed. If closing fails, report that failure once as the run's blocker.
-- If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once. Do not ask for permission or guidance.`;
+- When complete, merge ${branch} into main from ${repo}. First fetch the latest main and integrate
+  it into ${branch}; then merge. If the merge fails, fetch the latest main again, integrate it,
+  and retry. Never force-push. After the merge succeeds, push main to origin and remove the
+  worktree and branch, per AGENTS.md. If the push is rejected, fetch and integrate the new main
+  and push again.
+- When complete, close the epic issue ${epic.ref} in ${repo}: ${forge === "github" ? `\`gh issue close ${epic.ref}\`` : `\`glab issue close ${epic.ref}\``}. Close it only after the merge succeeded, main was pushed, and the worktree was removed. If closing fails, report that failure once as the run's blocker.
+- If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once on a line beginning \`DEVBOARD-BLOCKED:\`. Do not ask for permission or guidance.`;
 }
 
 function notify(ctx: ExtensionCommandContext, message: string, type: "info" | "warning" | "error"): void {
@@ -573,9 +581,14 @@ export async function runImplementNextEpic(
   ctx: ExtensionCommandContext,
   args = "",
 ): Promise<RunResult> {
-  if (args.trim()) {
-    return fail(ctx, "takes no arguments; it reads the single open epic from the tracker");
+  const requested = args.trim();
+  if (requested.length > 0 && !/^\d+$/.test(requested)) {
+    return fail(
+      ctx,
+      "takes an optional epic reference; with no reference it implements the single open epic",
+    );
   }
+  const reference = requested.length > 0 ? Number(requested) : undefined;
 
   const top = await run(pi, "git", ["rev-parse", "--show-toplevel"], ctx.cwd);
   if (top.code !== 0) {
@@ -622,16 +635,34 @@ export async function runImplementNextEpic(
   if (epics.length === 0) {
     return fail(ctx, "no open epic found; run /epic-next first");
   }
-  if (epics.length > 1) {
-    return fail(
-      ctx,
-      `expected exactly one open epic, found ${epics.length}:\n${epics
-        .map((epic) => `${epic.url}`)
-        .join("\n")}`,
-    );
+
+  let selected: EpicSummary | undefined;
+  if (reference !== undefined) {
+    selected = epics.find((epic) => epic.ref === reference);
+    if (selected === undefined) {
+      return fail(
+        ctx,
+        `epic ${reference} is not open, found ${epics.length}:\n${epics
+          .map((epic) => `${epic.url}`)
+          .join("\n")}`,
+      );
+    }
+  } else {
+    if (epics.length > 1) {
+      return fail(
+        ctx,
+        `expected exactly one open epic, found ${epics.length}:\n${epics
+          .map((epic) => `${epic.url}`)
+          .join("\n")}`,
+      );
+    }
+    selected = epics[0];
+  }
+  if (selected === undefined) {
+    return fail(ctx, "no open epic found; run /epic-next first");
   }
 
-  const fetched = await fetchEpic(pi, info, epics[0].ref, repo);
+  const fetched = await fetchEpic(pi, info, selected.ref, repo);
   if (isFailure(fetched)) return fail(ctx, fetched.error);
   const epic = fetched;
 
@@ -694,7 +725,7 @@ export async function runImplementNextEpic(
 export default function implementNextEpicExtension(pi: ExtensionAPI): void {
   pi.registerCommand("implement-next-epic", {
     description:
-      "Read the single open epic created by /epic-next and start it as an omp goal",
+      "Implement the open epic given by reference, or the single open epic created by /epic-next",
     handler: async (args, ctx) => {
       try {
         await runImplementNextEpic(pi, ctx, args);
