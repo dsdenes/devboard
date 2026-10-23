@@ -182,6 +182,33 @@ function lifecycleStates(client: TestClient): Record<string, unknown>[] {
   return client.events.filter((message) => message.type === "lifecycleState");
 }
 
+async function waitUntil(
+  predicate: () => boolean,
+  message: string,
+  timeout = 5000,
+): Promise<void> {
+  const deadline = Date.now() + timeout;
+  while (!predicate() && Date.now() < deadline) await Bun.sleep(25);
+  if (!predicate()) throw new Error(message);
+}
+
+async function waitForAt(
+  client: TestClient,
+  start: number,
+  predicate: (message: Record<string, unknown>) => boolean,
+  message: string,
+  timeout = 5000,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeout;
+  let index = -1;
+  while (Date.now() < deadline) {
+    index = client.events.slice(start).findIndex(predicate);
+    if (index >= 0) return client.events[start + index] as Record<string, unknown>;
+    await Bun.sleep(25);
+  }
+  throw new Error(message);
+}
+
 afterAll(async () => {
   await Promise.all(
     temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })),
@@ -193,6 +220,102 @@ const PENDING_TWO = "# Second decision\n\n- Status: Proposed\n\n## Context\n\nSe
 const PENDING_THREE = "# Third decision\n\n- Status: Proposed\n\n## Context\n\nThird.\n\n## Decision\n\n";
 
 describe("lifecycle runs", () => {
+  test(
+    "stops a running lifecycle and closes its in-flight peer",
+    async () => {
+      const epic: OpenEpic = {
+        number: 55,
+        title: "Stoppable",
+        url: "https://example.test/issues/55",
+      };
+      const { server, logPath, url } = await startServer(
+        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        {
+          agentArguments: "--delay-ms=5000",
+          tracker: async () => epic,
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.stage === "implementation",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "implementation",
+          pass: 1,
+          work: { kind: "epic", id: "55", url: "https://example.test/issues/55" },
+          paused: false,
+        });
+        expect(await client.waitFor((message) => message.type === "runStarted")).toMatchObject({
+          file: "",
+          title: "Stoppable",
+          action: "implementing",
+        });
+        await waitUntil(() => spawnCount(logPath) === 1, "the lifecycle peer did not spawn");
+        await waitUntil(() => prompts(logPath).length === 1, "the epic peer did not prompt");
+
+        const stopIndex = client.events.length;
+        client.send({ type: "stopLifecycle" });
+        expect(
+          await waitForAt(
+            client,
+            stopIndex,
+            (message) => message.type === "runStopped",
+            "the stopped run was not reported",
+          ),
+        ).toMatchObject({ file: "", title: "Stoppable", resolved: false });
+        expect(
+          await waitForAt(
+            client,
+            stopIndex,
+            (message) => message.type === "lifecycleState",
+            "the stopped lifecycle did not report an idle state",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "goal",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+
+        const idleIndex = client.events.length;
+        client.send({ type: "stopLifecycle" });
+        expect(
+          await waitForAt(
+            client,
+            idleIndex,
+            (message) => message.type === "error",
+            "a second stop was not refused",
+          ),
+        ).toEqual({ type: "error", message: "No lifecycle run is active." });
+
+        // The closed peer receives no further prompt after the stop.
+        expect(prompts(logPath)).toHaveLength(1);
+
+        // The interface controls the lifecycle with one button, so a stopped
+        // run must be startable again without waiting for the old loop.
+        client.send({ type: "startLifecycle" });
+        expect(
+          await waitForAt(
+            client,
+            idleIndex,
+            (message) => message.type === "lifecycleState" && message.stage === "implementation",
+            "the lifecycle did not start again after a stop",
+          ),
+        ).toMatchObject({ stage: "implementation", pass: 1 });
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
   test(
     "starts one epic-generation peer and reports the initial state first",
     async () => {
@@ -568,7 +691,7 @@ describe("lifecycle runs", () => {
           type: "lifecycleState",
           stage: "implementation",
           pass: 1,
-          work: { kind: "epic", id: "42" },
+          work: { kind: "epic", id: "42", url: "https://example.test/issues/42" },
           paused: false,
         });
         expect(await client.waitFor((message) => message.type === "runStarted")).toMatchObject({
@@ -593,7 +716,7 @@ describe("lifecycle runs", () => {
             type: "lifecycleState",
             stage: "implementation",
             pass: 1,
-            work: { kind: "epic", id: "42" },
+            work: { kind: "epic", id: "42", url: "https://example.test/issues/42" },
             paused: false,
           },
         ]);
@@ -641,7 +764,7 @@ describe("lifecycle runs", () => {
         ).toMatchObject({
           stage: "implementation",
           pass: 1,
-          work: { kind: "epic", id: "7" },
+          work: { kind: "epic", id: "7", url: "https://example.test/issues/7" },
         });
         expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
           type: "lifecycleState",
@@ -673,7 +796,7 @@ describe("lifecycle runs", () => {
             type: "lifecycleState",
             stage: "implementation",
             pass: 1,
-            work: { kind: "epic", id: "7" },
+            work: { kind: "epic", id: "7", url: "https://example.test/issues/7" },
             paused: false,
           },
           { type: "lifecycleState", stage: "epic", pass: 2, work: null, paused: false },
@@ -725,7 +848,7 @@ describe("lifecycle runs", () => {
           type: "lifecycleState",
           stage: "implementation",
           pass: 1,
-          work: { kind: "epic", id: "31" },
+          work: { kind: "epic", id: "31", url: "https://example.test/issues/31" },
           paused: false,
         });
         expect(
@@ -947,7 +1070,7 @@ describe("lifecycle runs", () => {
               type: "lifecycleState",
               stage: "implementation",
               pass: 1,
-              work: { kind: "epic", id: "5" },
+              work: { kind: "epic", id: "5", url: "https://example.test/issues/5" },
               paused: false,
             },
             { type: "runStarted", file: "", title: "Replay the epic", action: "implementing" },
@@ -1001,7 +1124,7 @@ describe("lifecycle runs", () => {
             type: "lifecycleState",
             stage: "implementation",
             pass: 1,
-            work: { kind: "epic", id: "11" },
+            work: { kind: "epic", id: "11", url: "https://example.test/issues/11" },
             paused: false,
           },
           {
@@ -1334,7 +1457,7 @@ describe("lifecycle runs", () => {
         expect(await client.waitFor((message) => message.type === "lifecycleState")).toMatchObject({
           stage: "implementation",
           pass: 1,
-          work: { kind: "epic", id: "7" },
+          work: { kind: "epic", id: "7", url: "https://example.test/issues/7" },
         });
         expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
           message: "Implementation ended but epic #7 is still open.",

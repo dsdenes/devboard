@@ -145,6 +145,8 @@ type LifecycleStage = "goal" | "epic" | "adr" | "implementation" | "finished";
 interface LifecycleWork {
   kind: "adr" | "epic";
   id: string;
+  /** The tracker page for an epic, so the interface can link to it. */
+  url?: string;
 }
 
 interface LifecycleState {
@@ -242,6 +244,7 @@ type ClientMessage =
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
   | { type: "startLifecycle" }
+  | { type: "stopLifecycle" }
   | { type: "pauseLifecycle" }
   | { type: "resumeLifecycle" }
   | { type: "reviseGoal"; request?: unknown }
@@ -270,6 +273,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "startRun", file: "file" in value ? value.file : undefined };
     case "startLifecycle":
       return { type: "startLifecycle" };
+    case "stopLifecycle":
+      return { type: "stopLifecycle" };
     case "pauseLifecycle":
       return { type: "pauseLifecycle" };
     case "resumeLifecycle":
@@ -751,6 +756,11 @@ export function createApp(options: AppOptions) {
   };
   let lastLifecycle: LifecycleState | undefined;
   let lifecycleRunning = false;
+  /** True while a manual ADR start has taken the slot from a running lifecycle. */
+  let lifecyclePausedForManualRun = false;
+  /** Resolves when a stopped lifecycle loop has finished unwinding. */
+  let lifecycleUnwinding: Promise<void> | undefined;
+  let settleLifecycleUnwinding: (() => void) | undefined;
   let restarting = false;
   /** Invalidates an in-flight lifecycle start when a reset takes over. */
   let lifecycleStartRequest = 0;
@@ -1305,9 +1315,13 @@ export function createApp(options: AppOptions) {
     manualStartRequest += 1;
     let stopped = abortManualRun();
 
-    if (lifecycleRunning && lifecycle.paused) return stopped;
+    if (lifecycleRunning && lifecycle.paused) {
+      lifecyclePausedForManualRun = false;
+      return stopped;
+    }
 
     if (lifecycleRunning) {
+      lifecyclePausedForManualRun = false;
       lifecycleRunning = false;
       lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
       publishLifecycle();
@@ -1684,6 +1698,7 @@ export function createApp(options: AppOptions) {
       }
 
       pauseLifecycle(ws);
+      lifecyclePausedForManualRun = true;
     }
 
     manualSequencing = true;
@@ -1758,7 +1773,18 @@ export function createApp(options: AppOptions) {
       // restores or replaces the foreground conversation itself.
       const interrupted = !manualSequencing;
       manualSequencing = false;
-      if (!interrupted) broadcastRunConversation();
+      if (interrupted) {
+        lifecyclePausedForManualRun = false;
+      } else {
+        broadcastRunConversation();
+        // The interface controls the lifecycle with one start/stop button, so
+        // the suspension this manual sequence needed ends with the sequence
+        // instead of waiting for a resume the interface no longer offers.
+        if (lifecyclePausedForManualRun) {
+          lifecyclePausedForManualRun = false;
+          if (lifecycleRunning && lifecycle.paused) resumeLifecycle(ws);
+        }
+      }
     }
   }
 
@@ -1834,6 +1860,38 @@ export function createApp(options: AppOptions) {
     for (const resolve of resumeWaiters.splice(0)) resolve();
   }
 
+  /**
+   * Ends the lifecycle for real: the loop leaves at its next check, the peer
+   * it holds is closed, and the interface returns to the idle goal stage.
+   * Unlike a pause, nothing of the run stays suspended behind the button.
+   */
+  function stopLifecycle(ws: { send(data: string): unknown }) {
+    if (!lifecycleRunning) {
+      send(ws, { type: "error", message: "No lifecycle run is active." });
+      return;
+    }
+
+    const run = activeRun;
+    activeRun = undefined;
+    if (run !== undefined) {
+      run.question = null;
+      run.agent?.close();
+      broadcast({
+        type: "runStopped",
+        file: run.file,
+        title: run.title,
+        resolved: false,
+        status: "",
+      });
+    }
+
+    lifecyclePausedForManualRun = false;
+    lifecycleRunning = false;
+    lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
+    publishLifecycle();
+    for (const resolve of resumeWaiters.splice(0)) resolve();
+  }
+
   async function runLifecycleStage(
     file: string,
     title: string,
@@ -1892,7 +1950,11 @@ export function createApp(options: AppOptions) {
       if (!lifecycleRunning) return false;
       if (existing !== undefined) {
         const id = String(existing.number);
-        setLifecycle("implementation", { kind: "epic", id });
+        setLifecycle("implementation", {
+          kind: "epic",
+          id,
+          ...(existing.url.length === 0 ? {} : { url: existing.url }),
+        });
         await runLifecycleStage("", existing.title, IMPLEMENT_PROMPT, "implementing", {
           id,
           open: async () => {
@@ -1981,6 +2043,10 @@ export function createApp(options: AppOptions) {
   }
 
   async function startLifecycle(ws: { send(data: string): unknown }) {
+    // A stopped run leaves the loop at its next check, but its own finale may
+    // still be in flight. Wait for it so the two runs cannot both publish.
+    if (!lifecycleRunning && lifecycleUnwinding !== undefined) await lifecycleUnwinding;
+
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
@@ -2047,9 +2113,12 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    const unwinding = Promise.withResolvers<void>();
+    lifecycleUnwinding = unwinding.promise;
+    settleLifecycleUnwinding = unwinding.resolve;
     lifecycleRunning = true;
     // Report the run as active before the first tracker lookup: clients need the
-    // stage to disable their start controls and offer pause while the lookup runs.
+    // stage to disable their start controls and offer stop while the lookup runs.
     lifecycle = { stage: "epic", pass: lifecycle.pass, work: null, paused: false };
     publishLifecycle();
     let finished = false;
@@ -2063,6 +2132,7 @@ export function createApp(options: AppOptions) {
     } finally {
       const wasPaused = lifecycle.paused;
       lifecycleRunning = false;
+      lifecyclePausedForManualRun = false;
       lifecycle = { ...lifecycle, paused: false };
       for (const resolve of resumeWaiters.splice(0)) resolve();
       if (finished) {
@@ -2073,6 +2143,9 @@ export function createApp(options: AppOptions) {
         lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
         publishLifecycle();
       }
+      settleLifecycleUnwinding?.();
+      settleLifecycleUnwinding = undefined;
+      lifecycleUnwinding = undefined;
     }
   }
 
@@ -2133,6 +2206,7 @@ export function createApp(options: AppOptions) {
     abortManualRun();
 
     lifecycleStartRequest += 1;
+    lifecyclePausedForManualRun = false;
     if (lifecycleRunning) {
       lifecycleRunning = false;
       lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
@@ -2564,6 +2638,8 @@ export function createApp(options: AppOptions) {
             await startRun(ws, command.file);
           } else if (command.type === "startLifecycle") {
             await startLifecycle(ws);
+          } else if (command.type === "stopLifecycle") {
+            stopLifecycle(ws);
           } else if (command.type === "pauseLifecycle") {
             pauseLifecycle(ws);
           } else if (command.type === "resumeLifecycle") {
@@ -2595,6 +2671,7 @@ export function createApp(options: AppOptions) {
   server.stop = (closeActiveConnections?: boolean) => {
     sequencing = false;
     manualSequencing = false;
+    lifecyclePausedForManualRun = false;
     lifecycleRunning = false;
     activeRun?.agent?.close();
     activeRun = undefined;

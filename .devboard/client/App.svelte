@@ -51,6 +51,7 @@
   interface LifecycleWork {
     kind: "adr" | "epic";
     id: string;
+    url?: string;
   }
 
   interface LifecycleState {
@@ -126,8 +127,12 @@
       manualRunActive ||
       (lifecycleActive ? !lifecycle.paused : running),
   );
-  let resumeDisabled = $derived(
-    creationActive || skillsPrepActive || revisionActive || manualRunActive,
+  let lifecycleButtonDisabled = $derived(
+    connection !== "open"
+      ? true
+      : lifecycleActive
+        ? resetting || creationActive || revisionActive || skillsPrepActive
+        : resetting || controlsDisabled || !goalReady || !skillsPrepared,
   );
   let createGoalTitle = $derived(
     creationActive
@@ -151,9 +156,14 @@
         ? "Prepare skills before starting the lifecycle."
         : undefined,
   );
+  let lifecycleButtonTitle = $derived(
+    lifecycleActive
+      ? "Stop the lifecycle and its current run."
+      : startLifecycleTitle,
+  );
   let runStartTitle = $derived(
-    lifecycleActive && !lifecycle.paused
-      ? "Pause the lifecycle and resolve the ADRs manually."
+    lifecycleActive
+      ? "Interrupt the lifecycle and resolve the ADRs manually."
       : undefined,
   );
   let activityActive = $derived(running || creationActive || revisionActive || skillsPrepActive);
@@ -172,6 +182,9 @@
         ? `Epic #${lifecycle.work.id}`
         : (records.find((record) => record.file === lifecycle.work?.id)?.title ??
           lifecycle.work.id),
+  );
+  let lifecycleWorkUrl = $derived(
+    lifecycle.work?.kind === "epic" ? (lifecycle.work.url ?? null) : null,
   );
 
   let socket: WebSocket | undefined;
@@ -531,7 +544,10 @@
       "kind" in value.work &&
       (value.work.kind === "adr" || value.work.kind === "epic") &&
       "id" in value.work &&
-      (typeof value.work.id === "string" || typeof value.work.id === "number")
+      (typeof value.work.id === "string" || typeof value.work.id === "number") &&
+      (!("url" in value.work) ||
+        value.work.url === undefined ||
+        typeof value.work.url === "string")
     );
   }
 
@@ -563,16 +579,9 @@
     );
   }
 
-  function startLifecycle() {
-    sendCommand({ type: "startLifecycle" });
-  }
-
-  function pauseLifecycle() {
-    sendCommand({ type: "pauseLifecycle" });
-  }
-
-  function resumeLifecycle() {
-    sendCommand({ type: "resumeLifecycle" });
+  function toggleLifecycle() {
+    if (lifecycleActive) sendCommand({ type: "stopLifecycle" });
+    else sendCommand({ type: "startLifecycle" });
   }
 
   function saveGoal() {
@@ -700,7 +709,13 @@
           work:
             message.work === null
               ? null
-              : { kind: message.work.kind, id: String(message.work.id) },
+              : {
+                  kind: message.work.kind,
+                  id: String(message.work.id),
+                  ...(typeof message.work.url === "string"
+                    ? { url: message.work.url }
+                    : {}),
+                },
           paused: message.paused,
         };
         if (message.stage !== "goal" || message.paused) lifecycleSeen = true;
@@ -876,6 +891,10 @@
   </div>
 {/snippet}
 
+<svelte:head>
+  <title>{projectPath.trim().length > 0 ? projectPath : "Devboard"}</title>
+</svelte:head>
+
 <svelte:window onkeydown={handleKeydown} />
 
 <main>
@@ -924,12 +943,13 @@
         <button
           type="button"
           class="start-button"
-          data-testid="start-lifecycle"
-          title={startLifecycleTitle}
-          disabled={controlsDisabled || !goalReady || !skillsPrepared}
-          onclick={startLifecycle}
+          data-testid="lifecycle-control"
+          class:stop-button={lifecycleActive}
+          title={lifecycleButtonTitle}
+          disabled={lifecycleButtonDisabled}
+          onclick={toggleLifecycle}
         >
-          Start lifecycle
+          {lifecycleActive ? "Stop implementation" : "Start implementation"}
         </button>
         {#if pendingCount > 0}
           <button
@@ -942,8 +962,57 @@
             Resolve ADRs
           </button>
         {/if}
+        <button
+          type="button"
+          class="start-button reset-button"
+          data-testid="reset-implementation"
+          disabled={resetDisabled}
+          onclick={armReset}
+        >
+          Reset implementation
+        </button>
       </div>
     </div>
+
+    {#if resetArmed}
+      <div class="reset-confirmation" data-testid="reset-confirmation">
+        <p class="reset-keep-set" data-testid="reset-keep-set">
+          Reset deletes every top-level entry except
+          <code>.devboard</code>, <code>.omp</code>, <code>AGENTS.md</code>,
+          <code>.gitignore</code>, and <code>GOAL.md</code>. The internal
+          <code>.git</code> and <code>.worktree</code> directories are preserved.
+          Any active run, lifecycle, goal creation, revision, or skills
+          preparation stops first.
+        </p>
+        <div class="reset-actions">
+          <button
+            type="button"
+            class="start-button reset-confirm"
+            data-testid="confirm-reset"
+            disabled={resetDisabled}
+            onclick={confirmReset}
+          >
+            Confirm reset
+          </button>
+          <button
+            type="button"
+            class="start-button reset-cancel"
+            data-testid="cancel-reset"
+            onclick={() => (resetArmed = false)}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    {/if}
+
+    {#if resetting}
+      <p class="reset-running" data-testid="reset-running">Resetting implementation…</p>
+    {/if}
+
+    {#if resetStatus}
+      <p class="reset-status" data-testid="reset-status" role="status">{resetStatus}</p>
+    {/if}
   </header>
 
   <section class="lifecycle" data-testid="lifecycle">
@@ -954,34 +1023,20 @@
       Pass <strong data-testid="lifecycle-pass">{lifecycle.pass}</strong>
     </p>
     {#if lifecycleWorkTitle !== null}
-      <p class="lifecycle-work" data-testid="lifecycle-work">{lifecycleWorkTitle}</p>
-    {/if}
-    {#if lifecycleActive}
-      <div class="lifecycle-controls">
-        {#if lifecycle.paused}
-          <p class="lifecycle-paused" data-testid="lifecycle-paused">
-            Paused at {lifecycleStageLabel}
-          </p>
-          <button
-            type="button"
-            class="start-button"
-            data-testid="resume-lifecycle"
-            disabled={resumeDisabled}
-            onclick={resumeLifecycle}
+      <p class="lifecycle-work" data-testid="lifecycle-work">
+        {#if lifecycleWorkUrl !== null}
+          <a
+            href={lifecycleWorkUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="lifecycle-work-link"
           >
-            Resume lifecycle
-          </button>
+            {lifecycleWorkTitle}
+          </a>
         {:else}
-          <button
-            type="button"
-            class="start-button"
-            data-testid="pause-lifecycle"
-            onclick={pauseLifecycle}
-          >
-            Pause lifecycle
-          </button>
+          {lifecycleWorkTitle}
         {/if}
-      </div>
+      </p>
     {/if}
   </section>
 
@@ -1303,51 +1358,6 @@
       </div>
     </div>
   {/if}
-
-  <section class="reset" data-testid="reset-section">
-    <div class="reset-heading">
-      <h2>Danger zone</h2>
-      <button
-        type="button"
-        class="start-button reset-button"
-        data-testid="reset-implementation"
-        disabled={resetDisabled}
-        onclick={armReset}
-      >
-        Reset Implementation
-      </button>
-    </div>
-
-    {#if resetArmed}
-      <div class="reset-confirmation" data-testid="reset-confirmation">
-        <p class="reset-keep-set" data-testid="reset-keep-set">
-          Reset deletes every top-level entry except
-          <code>.devboard</code>, <code>.omp</code>, <code>AGENTS.md</code>,
-          <code>.gitignore</code>, and <code>GOAL.md</code>. The internal
-          <code>.git</code> and <code>.worktree</code> directories are preserved.
-          Any active run, lifecycle, goal creation, revision, or skills
-          preparation stops first.
-        </p>
-        <button
-          type="button"
-          class="start-button reset-confirm"
-          data-testid="confirm-reset"
-          disabled={resetDisabled}
-          onclick={confirmReset}
-        >
-          Confirm reset
-        </button>
-      </div>
-    {/if}
-
-    {#if resetting}
-      <p class="reset-running" data-testid="reset-running">Resetting implementation…</p>
-    {/if}
-
-    {#if resetStatus}
-      <p class="reset-status" data-testid="reset-status" role="status">{resetStatus}</p>
-    {/if}
-  </section>
 </main>
 
 <FeedbackOverlay />
