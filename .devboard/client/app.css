@@ -442,6 +442,15 @@ h1 {
   padding: 0.65rem 0.9rem;
 }
 
+.upgrade-pending {
+  background: var(--pending-surface);
+  border: 1px solid var(--pending-border);
+  border-radius: 8px;
+  color: var(--pending);
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.9rem;
+}
+
 .error {
   border-color: var(--error);
   color: var(--error);

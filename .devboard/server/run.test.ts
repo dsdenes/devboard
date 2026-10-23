@@ -26,7 +26,11 @@ async function temporaryDirectory() {
   return directory;
 }
 
-async function startServer(files: Record<string, string>, agentArguments = ""): Promise<TestServer> {
+async function startServer(
+  files: Record<string, string>,
+  agentArguments = "",
+  options: { restart?: () => void } = {},
+): Promise<TestServer> {
   const root = await temporaryDirectory();
   const adrDir = join(root, "adrs");
   const staticDir = join(root, "static");
@@ -47,6 +51,7 @@ async function startServer(files: Record<string, string>, agentArguments = ""): 
     repoDir: root,
     stateDir: join(root, "state"),
     agentCommand: `bun ${STUB_AGENT} --log=${logPath} ${agentArguments}`.trim(),
+    restart: options.restart,
   });
 
   return { server, adrDir, logPath, url: `127.0.0.1:${server.port}` };
@@ -225,6 +230,42 @@ describe("agent runs", () => {
         for (const file of ["0001-first.md", "0002-second.md", "0003-third.md"]) {
           expect(await readFile(join(adrDir, file), "utf8")).toContain("- Status: Accepted");
         }
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "defers an idle restart until the active run ends",
+    async () => {
+      let restarts = 0;
+      const { server, url } = await startServer(
+        { "0001-first.md": PENDING_ONE },
+        "--delay-ms=800 --questions=0",
+        { restart: () => (restarts += 1) },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startRun", file: "0001-first.md" });
+        await client.waitFor((message) => message.type === "runStarted");
+
+        client.send({ type: "restartServer", whenIdle: true });
+        expect(await client.waitFor((message) => message.type === "upgradePending")).toEqual({
+          type: "upgradePending",
+        });
+        expect(restarts).toBe(0);
+
+        await client.waitFor(
+          (message) => message.type === "runStopped" && message.resolved === true,
+        );
+        expect(await client.waitFor((message) => message.type === "serverRestarting")).toEqual({
+          type: "serverRestarting",
+        });
+        expect(restarts).toBe(1);
       } finally {
         client.close();
         server.stop(true);

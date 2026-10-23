@@ -274,6 +274,35 @@ ADRS_DIR="<host>/adrs" bun run start
 
 Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
 
+## Publish a change
+
+A running dashboard keeps the server code it loaded at startup and serves whatever `dist/`
+contains, so merging source is not enough. After a change is on `main` and pushed, run this from
+the integration checkout — the checkout every host's `.devboard` symlink names:
+
+```bash
+cd .devboard
+bun run publish
+```
+
+`bun run publish` verifies the checkout is the main worktree on `main`, fetches and fast-forwards
+`main` to its canonical remote without discarding uncommitted work, installs dependencies,
+rebuilds `dist/`, then finds every running dashboard whose server runs from this checkout or
+serves its `dist` and restarts it. That covers every host whose `.devboard` points at this
+checkout; nothing is written into a host. Each restarted dashboard is checked for
+`versionState.stale === false`.
+
+A dashboard with active work (run, lifecycle lane, goal creation or revision, skills
+preparation, or reset) is not killed: it answers `upgradePending` and restarts itself as soon as
+that work ends, after which the browser reloads. `--wait` blocks until deferred dashboards
+restart; `--wait-timeout N` bounds that wait (default 1800 seconds). `--no-restart` rebuilds
+only, and `--allow-worktree` permits a verification build from a worktree, where no dashboard is
+served.
+
+The script refuses to run from a worktree, from a branch other than `main`, when local `main`
+is ahead of or diverged from the remote, and when uncommitted changes would be overwritten by
+the fast-forward; it names the blocking paths instead of touching them.
+
 |Variable|Default|Purpose|
 |---|---|---|
 |`HOST`|`127.0.0.1`|Listen address.|
@@ -325,6 +354,7 @@ The client sends:
 { "type": "getProject" }
 { "type": "getVersion" }
 { "type": "restartServer" }
+{ "type": "restartServer", "whenIdle": true }
 { "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
 { "type": "startRun" }
 { "type": "startRun", "file": "0002-example.md" }
@@ -352,7 +382,10 @@ The client sends:
 - `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
   stops the listener, starts the current host harness, and exits. It is refused with an `error`
   when no launcher is configured or while a restart is already in progress. A client that sees
-  `serverRestarting` waits for the replacement to answer and reloads the page.
+  `serverRestarting` waits for the replacement to answer and reloads the page. With
+  `"whenIdle": true`, a dashboard with active work answers `upgradePending` instead and
+  restarts itself as soon as that work ends; an idle dashboard restarts immediately. This is the
+  command `bun run publish` uses.
 - `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`. It is accepted while the lifecycle is paused and refused while the lifecycle is advancing.
 - `startRun` without `file` starts the sequence with the lowest-numbered pending record.
 - `startRun` with `file` starts that record first only when it is pending; the sequence then
@@ -512,6 +545,7 @@ The server answers with events:
 { "type": "project", "path": "projects/devboard" }
 { "type": "versionState", "running": "0123456789abcdef0123456789abcdef01234567", "current": "fedcba9876543210fedcba9876543210fedcba98", "stale": true }
 { "type": "serverRestarting" }
+{ "type": "upgradePending" }
 { "type": "goal", "text": "# Goal\n\nThe complete goal text." }
 { "type": "goalRevisionStarted" }
 { "type": "goalRevisionStopped", "completed": true, "text": "# Revised goal\n\nThe agent rewrote this." }
@@ -636,7 +670,8 @@ keeps unrelated files, a host without `.devboard/`, a differing file refused wit
 against the stub ACP agent, covering sequential
 resolution in file-name order, selected first records, refusal of a second start during a run
 and between runs, activity and question/answer relay, the unresolved-record stop, the
-removed-record stop, disconnect continuation, and records refresh. `server/app.test.ts`
+removed-record stop, disconnect continuation, records refresh, and an idle restart deferred
+until the active run ends. `server/app.test.ts`
 covers `getGoal`/`saveGoal`, including verbatim writes, failure responses, and the absence of
 agent startup. `server/goal-revision.test.ts` covers guided goal revision: request and
 no-request starts, activity and question relay, the rewritten goal reported verbatim, refusal

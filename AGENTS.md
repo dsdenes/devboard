@@ -75,22 +75,60 @@ the host supplies: `ADRS_DIR`, `REPO_DIR`, `GOAL_FILE`, `STATIC_DIR`, `AGENT_COM
 lifecycle prompts under `.devboard/prompts/` likewise treat the repository root as the host and
 exclude `.devboard/` and `.worktree/` from every survey and every write.
 
-## Build after every change
+## Publish after every change
 
 `dist/` is a local build artifact and the server serves it verbatim (`STATIC_DIR`, default
 `.devboard/dist`). The server never builds. Any change to `.devboard/client`, `index.html`,
 `vite.config.ts`, `svelte.config.js`, or an asset the client imports stays invisible until the
-bundle is rebuilt, and the browser keeps running old JS while the server code is current.
+bundle is rebuilt, and a running server keeps the code it loaded at startup, so a fresh `dist/`
+alone still leaves the old server answering.
 
-- Rebuild after every change and before any check that exercises the UI:
-  `cd .devboard && bun run build`.
-- Rebuild after every checkout, pull, merge, reset, or worktree switch that touches those paths,
-  then restart the server. A server restarted against a stale `dist/` serves the old client.
-- `dist/` is gitignored and never committed. Merge, push, and worktree removal do not produce it;
-  each checkout must build for itself.
+A change is not finished on the integration line until every running dashboard that serves this
+checkout runs the published revision. Host installs symlink their `.devboard` to one checkout,
+so updating, rebuilding, and restarting that checkout updates every such host at once. Never
+copy files or `dist/` between checkouts and never edit a host project to refresh its dashboard.
+
+After the worktree commit is merged into `main` and pushed, run from the integration checkout —
+never from a worktree:
+
+```bash
+cd .devboard
+bun run publish
+```
+
+`bun run publish` is the only supported refresh path. It:
+
+1. refuses a worktree, a branch other than `main`, or a checkout ahead of or diverged from its
+   canonical remote;
+2. fetches the remote and fast-forwards `main` to it; uncommitted work is never discarded — an
+   overlapping local change stops the run and names the blocking paths;
+3. runs `bun install --frozen-lockfile` and `bun run build`, then proves `dist/index.html` is
+   newer than every client source and that every referenced asset exists;
+4. finds every running dashboard whose server runs from this checkout or serves its `dist`,
+   including every symlinked host, and asks each one to restart;
+5. never interrupts work: a dashboard with an active run, lifecycle lane, creation, revision,
+   skills preparation, or reset answers `upgradePending` and restarts itself as soon as that
+   work ends; `--wait` blocks until those restarts complete;
+6. verifies every restarted dashboard reports `versionState.stale === false` and exits nonzero
+   otherwise.
+
+Options: `--no-restart` rebuilds only; `--wait` and `--wait-timeout N` (default 1800 seconds)
+wait for deferred dashboards; `--allow-worktree` is for verification only and never finds a
+live dashboard.
+
+The integration checkout is advanced and rebuilt after a push; it is never a place for feature
+work. If its uncommitted changes block the fast-forward, preserve them (copy or patch them
+aside, apply the published revision, reapply the changes) and rerun `publish`. Never discard
+them and never bypass the fast-forward.
+
+Guardrails:
+
+- Never rebuild only the worktree or only the client and call the change done.
+- Never kill, spawn, or relaunch a dashboard server by hand; use `bun run publish`.
 - Stale output is the first suspect, not the last: when the UI behaves like an older revision,
   compare the build time of `dist/` with the sources before debugging the client code.
-- A UI check against a bundle older than the changed source is not a passing verification.
+- A UI check against a bundle or server older than the changed source is not a passing
+  verification.
 
 ## Wrappers
 
@@ -120,6 +158,11 @@ never pushed is a failed task, even when every test passes. If a push is rejecte
 tip, integrate it, resolve every conflict yourself, rerun the checks it invalidates, and push
 again. Never finish, hand off, or delete the worktree with local-only changes.
 
+After the push, advance the integration checkout to the published revision without discarding
+its uncommitted work, then run `cd .devboard && bun run publish` so every dashboard that serves
+the checkout runs the new bundle and server. Deleting the worktree before the integration
+checkout is published and verified is a failed task.
+
 ## Line length
 
 Never create a line longer than 768 bytes (UTF-8) in a repository text file. Hard-wrap
@@ -143,13 +186,18 @@ never hand-edit them.
   verified that the upstream tip is the integrated commit. Only then are the worktree and branch
   removed. Local-only main is never done.
 - Host mode: host build/tests run; `.devboard/` unchanged.
-- Harness mode: `bun run build` has run since the last change to anything the client bundle
-  includes; the changed entry point runs from the repo root against a supplied host path; no
-  absolute paths or host specifics under `.devboard/`; nothing created outside `.devboard/`.
+- Harness mode: `bun run publish` has rebuilt the integration checkout from the published
+  revision; every running dashboard reports `versionState.stale === false`, or is explicitly
+  deferred because its active work must finish first; the changed entry point runs from the repo
+  root against a supplied host path; no absolute paths or host specifics under `.devboard/`;
+  nothing created outside `.devboard/`.
 
 ## Map
 
-- `.devboard/` — harness root: interface, toolchain, prompts, extensions, goals, tests, `omp/`, `install.sh`.
+- `.devboard/` — harness root: interface, toolchain, prompts, extensions, goals, tests,
+  `omp/`, `install.sh`, `scripts/publish.ts`.
+- `.devboard/scripts/publish.ts` — verifies `main`, rebuilds the bundle, and refreshes every
+  running dashboard.
 - `.devboard/omp/` — canonical agent commands and extensions.
 - `.omp/` — installed copy of `.devboard/omp/`; never edited by hand.
 - `adrs/`, `GOAL.md` — host data at the root; not harness artifacts.

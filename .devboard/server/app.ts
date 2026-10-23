@@ -263,7 +263,7 @@ type ClientMessage =
   | { type: "getGoal" }
   | { type: "getProject" }
   | { type: "getVersion" }
-  | { type: "restartServer" }
+  | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
   | { type: "startLifecycle" }
@@ -289,7 +289,10 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
     case "getVersion":
       return { type: "getVersion" };
     case "restartServer":
-      return { type: "restartServer" };
+      return {
+        type: "restartServer",
+        whenIdle: "whenIdle" in value ? value.whenIdle : undefined,
+      };
     case "saveGoal":
       return { type: "saveGoal", text: "text" in value ? value.text : undefined };
     case "startRun":
@@ -786,6 +789,9 @@ export function createApp(options: AppOptions) {
   let lifecycleUnwinding: Promise<void> | undefined;
   let settleLifecycleUnwinding: (() => void) | undefined;
   let restarting = false;
+  /** A refresh waits for active work before it replaces this process. */
+  let restartWhenIdle = false;
+  let restartWhenIdleTimer: Timer | undefined;
   /** Invalidates an in-flight lifecycle start when a reset takes over. */
   let lifecycleStartRequest = 0;
   let implementationReset: { commit?: string } | undefined;
@@ -830,11 +836,70 @@ export function createApp(options: AppOptions) {
     send(ws, { type: "versionState", ...readVersion() });
   }
 
+  /** True while any run, lifecycle lane, creation, revision, or reset is live. */
+  function workActive(): boolean {
+    return (
+      implementationReset !== undefined ||
+      lifecycleRunning ||
+      liveLanes.size > 0 ||
+      sequencing ||
+      manualRun !== undefined ||
+      manualSequencing ||
+      goalCreation !== undefined ||
+      goalRevision !== undefined ||
+      skillsPreparation !== undefined ||
+      skillsPreparationPending ||
+      generationActive ||
+      generationQueued
+    );
+  }
+
   /**
-   * Hands the process to its launcher. The event leaves first so a browser
-   * stops reconnecting and waits for the replacement instead.
+   * Replaces this process through its launcher. The event leaves first so a
+   * browser stops reconnecting and waits for the replacement instead. Returns
+   * the failure detail, or undefined once the launcher owns the process.
    */
-  function restartServer(ws: { send(data: string): unknown }) {
+  function beginRestart(): string | undefined {
+    restarting = true;
+    restartWhenIdle = false;
+    if (restartWhenIdleTimer !== undefined) {
+      clearInterval(restartWhenIdleTimer);
+      restartWhenIdleTimer = undefined;
+    }
+    broadcast({ type: "serverRestarting" });
+    try {
+      options.restart?.();
+      return undefined;
+    } catch (error) {
+      restarting = false;
+      return `Could not restart the server: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  }
+
+  /**
+   * A refresh requested while a peer or run is live stays pending and takes
+   * effect as soon as the dashboard has no work left to lose.
+   */
+  function holdRestartUntilIdle() {
+    restartWhenIdle = true;
+    if (restartWhenIdleTimer !== undefined) return;
+    restartWhenIdleTimer = setInterval(() => {
+      if (!restartWhenIdle || restarting || workActive()) return;
+      const failure = beginRestart();
+      if (failure !== undefined) {
+        restartWhenIdle = false;
+        if (restartWhenIdleTimer !== undefined) {
+          clearInterval(restartWhenIdleTimer);
+          restartWhenIdleTimer = undefined;
+        }
+        broadcast({ type: "error", message: failure });
+      }
+    }, 500);
+  }
+
+  function restartServer(ws: { send(data: string): unknown }, whenIdle = false) {
     if (options.restart === undefined) {
       send(ws, { type: "error", message: "Restarting the server is not available." });
       return;
@@ -843,19 +908,13 @@ export function createApp(options: AppOptions) {
       send(ws, { type: "error", message: "A server restart is already in progress." });
       return;
     }
-    restarting = true;
-    broadcast({ type: "serverRestarting" });
-    try {
-      options.restart();
-    } catch (error) {
-      restarting = false;
-      send(ws, {
-        type: "error",
-        message: `Could not restart the server: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      });
+    if (whenIdle && workActive()) {
+      holdRestartUntilIdle();
+      broadcast({ type: "upgradePending" });
+      return;
     }
+    const failure = beginRestart();
+    if (failure !== undefined) send(ws, { type: "error", message: failure });
   }
 
   /**
@@ -3168,7 +3227,7 @@ export function createApp(options: AppOptions) {
           } else if (command.type === "getVersion") {
             sendVersion(ws);
           } else if (command.type === "restartServer") {
-            restartServer(ws);
+            restartServer(ws, command.whenIdle === true);
           } else if (command.type === "saveGoal") {
             await saveGoal(ws, command.text);
           } else if (command.type === "startRun") {
@@ -3206,6 +3265,11 @@ export function createApp(options: AppOptions) {
 
   const stop = server.stop.bind(server);
   server.stop = (closeActiveConnections?: boolean) => {
+    if (restartWhenIdleTimer !== undefined) {
+      clearInterval(restartWhenIdleTimer);
+      restartWhenIdleTimer = undefined;
+    }
+    restartWhenIdle = false;
     sequencing = false;
     manualSequencing = false;
     lifecyclePausedForManualRun = false;

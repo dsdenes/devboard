@@ -133,6 +133,7 @@
   let version = $state<VersionState | null>(null);
   let restarting = $state(false);
   let awaitingRestart = $state(false);
+  let upgradePending = $state(false);
 
   let pendingCount = $derived(records.filter((record) => record.pending).length);
   let running = $derived(runState === "active");
@@ -467,6 +468,15 @@
       value !== null &&
       "type" in value &&
       value.type === "serverRestarting"
+    );
+  }
+
+  function isUpgradePendingEvent(value: unknown): value is { type: "upgradePending" } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "upgradePending"
     );
   }
 
@@ -836,6 +846,7 @@
       error = null;
       resetArmed = false;
       manualRunActive = false;
+      upgradePending = false;
       current.send(JSON.stringify({ type: "listRecords" }));
       current.send(JSON.stringify({ type: "getGoal" }));
       current.send(JSON.stringify({ type: "getSkills" }));
@@ -860,8 +871,11 @@
       } else if (isServerRestartingEvent(message)) {
         awaitingRestart = true;
         restarting = true;
+        upgradePending = false;
         error = null;
         socket?.close();
+      } else if (isUpgradePendingEvent(message)) {
+        upgradePending = true;
       } else if (isImplementationResetStartedEvent(message)) {
         resetting = true;
         resetArmed = false;
@@ -1369,6 +1383,12 @@
   {#if connection !== "open"}
     <p class="connection" role="status">
       {connection === "connecting" ? "Connecting to the server…" : "Connection lost. Reconnecting…"}
+    </p>
+  {/if}
+
+  {#if upgradePending}
+    <p class="upgrade-pending" data-testid="upgrade-pending" role="status">
+      An update is waiting for the current work to finish. This dashboard restarts when it ends.
     </p>
   {/if}
 
