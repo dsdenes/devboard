@@ -117,33 +117,17 @@ describe("feedback endpoint", () => {
     }
   });
 
-  test("passes an explicit repository to gh", async () => {
-    const root = await temporaryDirectory();
-    const adrDir = join(root, "adrs");
-    const staticDir = join(root, "static");
-    const recordPath = join(root, "gh-call.json");
-    await mkdir(adrDir, { recursive: true });
-    await mkdir(staticDir, { recursive: true });
-    const server = createApp({
-      adrDir,
-      staticDir,
-      hostname: "127.0.0.1",
-      port: 0,
-      repoDir: root,
-      feedback: {
-        ghCommand: ["bun", STUB_GH],
-        repository: "example/host",
-        env: { STUB_GH_RECORD: recordPath },
-      },
-    });
+  test("always files the issue in the harness repository", async () => {
+    const { server, url, recordPath } = await startServer();
 
     try {
-      const response = await submit(`127.0.0.1:${server.port}`, report());
+      const response = await submit(url, report());
 
       expect(response.status).toBe(201);
       const call = await recorded(recordPath);
       const repoIndex = call.args.indexOf("--repo");
-      expect(call.args[repoIndex + 1]).toBe("example/host");
+      expect(repoIndex).toBeGreaterThan(-1);
+      expect(call.args[repoIndex + 1]).toBe("dsdenes/devboard");
     } finally {
       server.stop(true);
     }
