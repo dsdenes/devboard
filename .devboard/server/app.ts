@@ -14,6 +14,7 @@ import type { ServerWebSocket } from "bun";
 import {
   AcpConnection,
   agentPrompt,
+  isSessionBusy,
   type AcpActivity,
   type AcpQuestion,
   type AcpQuestionOption,
@@ -68,6 +69,15 @@ interface ActiveRun {
   agent: AcpConnection | undefined;
   activity: string[];
   question: RunQuestion | null;
+}
+
+/**
+ * Asks a peer to keep going after a turn that ended before the work did. `open`
+ * reports whether the run's tracker condition is still unmet.
+ */
+interface Continuation {
+  id: string;
+  open: () => Promise<boolean>;
 }
 
 interface GoalRevision {
@@ -130,6 +140,18 @@ interface LifecycleState {
 
 const EPIC_PROMPT = "/epic-next";
 const IMPLEMENT_PROMPT = "/implement-next-epic";
+
+/** Wakes a peer whose turn ended while the epic is still open. */
+function continuationPrompt(id: string): string {
+  return [
+    `The implementation turn ended before the run was complete: epic #${id} is still open.`,
+    "Continue from where the turn stopped.",
+    "Do not end a turn while a background job you started is still running:",
+    "if the wait tool returns a still-running snapshot, call wait again.",
+    "Finish the merge and close the epic before ending the turn, or report the exact blocker once.",
+  ].join(" ");
+}
+
 /**
  * A forge can take a moment to expose a tracker write made by the peer that
  * just exited. After such a peer the lifecycle re-reads the tracker for this
@@ -137,6 +159,14 @@ const IMPLEMENT_PROMPT = "/implement-next-epic";
  */
 const TRACKER_SETTLE_ATTEMPTS = 7;
 const TRACKER_SETTLE_DELAY_MS = 500;
+/**
+ * Turns the implementation peer may be asked for after a yield that leaves the
+ * epic open. The peer keeps its session and its background work alive across
+ * turns; this bound only stops a runaway peer from looping forever.
+ */
+const IMPLEMENT_CONTINUATIONS = 8;
+/** Delay before retrying a continuation while the peer is still in its own turn. */
+const CONTINUATION_RETRY_MS = 1_000;
 const GOAL_CREATION_PROMPT = "/goal-outcome";
 const SKILLS_PROMPT = "/prepare-skills";
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -1386,9 +1416,29 @@ export function createApp(options: AppOptions) {
     }
   }
 
+  /**
+   * Sends a continuation while the peer is still finishing its own turn. The
+   * peer rejects a prompt during a live turn, so a rejection means its
+   * background work is running and the session is still worth keeping.
+   */
+  async function continueWhenIdle(agent: AcpConnection, text: string): Promise<void> {
+    for (;;) {
+      try {
+        await agent.prompt(text);
+        return;
+      } catch (error) {
+        if (!isSessionBusy(error)) throw error;
+        await holdWhilePaused();
+        if (!lifecycleRunning) return;
+        await Bun.sleep(CONTINUATION_RETRY_MS);
+      }
+    }
+  }
+
   async function runAgent(
     run: ActiveRun,
     prompt = agentPrompt(adrDir, run.file),
+    continuation?: Continuation,
   ): Promise<boolean> {
     try {
       const agent = new AcpConnection({
@@ -1419,6 +1469,14 @@ export function createApp(options: AppOptions) {
       run.agent = agent;
 
       await agent.run(prompt);
+      if (continuation !== undefined) {
+        for (let attempt = 0; attempt < IMPLEMENT_CONTINUATIONS; attempt += 1) {
+          if (!(await continuation.open())) break;
+          if (!lifecycleRunning) break;
+          await holdWhilePaused();
+          await continueWhenIdle(agent, continuationPrompt(continuation.id));
+        }
+      }
       const record = await readRecord(run.file);
       return await stopRun(run, record !== undefined && !record.pending, record?.status ?? "");
     } catch (error) {
@@ -1676,7 +1734,12 @@ export function createApp(options: AppOptions) {
     for (const resolve of resumeWaiters.splice(0)) resolve();
   }
 
-  async function runLifecycleStage(file: string, title: string, prompt: string) {
+  async function runLifecycleStage(
+    file: string,
+    title: string,
+    prompt: string,
+    continuation?: Continuation,
+  ) {
     const run: ActiveRun = {
       file,
       title,
@@ -1686,7 +1749,7 @@ export function createApp(options: AppOptions) {
     };
     activeRun = run;
     broadcast({ type: "runStarted", file: run.file, title: run.title });
-    await runAgent(run, prompt);
+    await runAgent(run, prompt, continuation);
   }
 
   /**
@@ -1723,7 +1786,15 @@ export function createApp(options: AppOptions) {
       if (existing !== undefined) {
         const id = String(existing.number);
         setLifecycle("implementation", { kind: "epic", id });
-        await runLifecycleStage("", existing.title, IMPLEMENT_PROMPT);
+        await runLifecycleStage("", existing.title, IMPLEMENT_PROMPT, {
+          id,
+          open: async () => {
+            const remaining = await settleTracker(
+              (epic) => epic !== undefined && String(epic.number) === id,
+            );
+            return remaining !== undefined && String(remaining.number) === id;
+          },
+        });
         await holdWhilePaused();
         if (!lifecycleRunning) return false;
 

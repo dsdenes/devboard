@@ -72,19 +72,22 @@ therefore shows `Epic generation` with the pause control available and the lifec
 control disabled while that query runs. When the origin tracker already has an open epic, the
 lifecycle then reports `implementation` and implements that epic with `/implement-next-epic`; otherwise it
 runs the `/epic-next` agent, resolves any pending ADRs the run leaves behind with
-`/adr-resolve` in file-name order, and repeats. After an implementation peer exits, the pass
-increments and the lifecycle returns to epic generation; the epic the generation peer creates
-is implemented in turn. A forge can expose a peer's tracker write a moment after the peer
-exits, so the server re-reads the tracker for a bounded settle window after epic generation
-and after implementation before it trusts an answer that still shows the pre-peer state. When the
+`/adr-resolve` in file-name order, and repeats. Each implementation turn ends when the peer
+yields; while the epic is still open the server keeps that same peer and asks it to continue
+rather than closing it, so background work the turn left running is not abandoned. A forge can
+expose a peer's tracker write a moment after the peer exits, so the server re-reads the tracker
+for a bounded settle window after epic generation and after implementation before it trusts an
+answer that still shows the pre-peer state. When the implementation peer leaves the epic closed,
+the pass increments and the lifecycle returns to epic generation; the epic the generation peer
+creates is implemented in turn. When the
 generation peer opens no epic and no record in `adrs/` is still `Proposed`, the lifecycle reports
 the `finished` stage and stops; a later start begins
-a new run. If the same epic is still open after its implementation, or epic generation leaves
-the same pending records without opening an epic, or a tracker or record read fails, the
-lifecycle stops with an `error` and returns to the idle goal stage instead of staying at the
-interrupted stage. An epic is an open issue carrying the label `epic` (ignoring case) or the
-`<!-- devboard-epic -->` marker in its body; the server reads it with read-only `gh` or
-`glab` queries. While a lifecycle run advances, the goal editor and the lifecycle start control
+a new run. If the same epic is still open after the implementation peer's bounded continuations,
+or epic generation leaves the same pending records without opening an epic, or a tracker or
+record read fails, the lifecycle stops with an `error` and returns to the idle goal stage instead
+of staying at the interrupted stage. An epic is an open issue carrying the label `epic` (ignoring
+case) or the `<!-- devboard-epic -->` marker in its body; the server reads it with read-only `gh`
+or `glab` queries. While a lifecycle run advances, the goal editor and the lifecycle start control
 are disabled, but the ADR start controls remain available: selecting one pauses the run at its
 interrupted stage, starts the manual record sequence, and leaves the lifecycle paused so the
 developer can resume it afterward. A client that connects or reloads receives the current stage,
@@ -179,6 +182,28 @@ The host must already contain a `.devboard/` directory. Every file under `omp/` 
 same relative path under `<host>/.omp/`; matching files are left alone, unrelated host files are
 never removed, and a differing file stops the run unless `--force` is given. Without a host path,
 the script uses `git rev-parse --show-toplevel` of the working directory.
+
+### Set up a host from the canonical checkout
+
+`setup-devboard.sh` installs the harness for a host without copying it, then starts the
+interface:
+
+```bash
+~/devboard/.devboard/setup-devboard.sh [--force] [--no-ui] [--port N] [host-path]
+```
+
+The host defaults to the working directory. `<host>/.devboard`, `<host>/.omp/commands`, and
+`<host>/.omp/extensions` become symlinks to the canonical checkout at `$DEVBOARD_HOME`
+(default `~/devboard`), and the same entries are added to the host `.gitignore`. A real
+directory at a link path stops the run unless `--force` is given. `--no-ui` installs the links
+only; otherwise the script rebuilds the client and starts the interface in the background,
+picking the first free port from 8080 unless `--port` or `PORT` names one, and prints its URL.
+Rerunning it for a host that is already served reports the running URL instead of starting a
+second server.
+
+The global `/setup-devboard` command runs this script against the invoking session's working
+directory. It lives here as `omp/commands/setup-devboard.md` and is linked into the user-level
+command directory (`$HOME/.omp/agent/commands/setup-devboard.md`) so every session sees it.
 
 ### Model selection
 

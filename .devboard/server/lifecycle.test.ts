@@ -734,7 +734,9 @@ describe("lifecycle runs", () => {
 
         const started = Date.now() + 5000;
         while (prompts(logPath).length < 2 && Date.now() < started) await Bun.sleep(25);
-        expect(prompts(logPath).slice(0, 2)).toEqual(["/epic-next", "/implement-next-epic"]);
+        const lines = prompts(logPath);
+        expect(lines[0]).toBe("/epic-next");
+        expect(lines[1]).toBe("/implement-next-epic");
       } finally {
         client.close();
         server.stop(true);
@@ -842,7 +844,7 @@ describe("lifecycle runs", () => {
       };
       const { server, goalFile, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
-        { agentArguments: "--delay-ms=1200", tracker: async () => epic },
+        { agentArguments: "--delay-ms=1200", trackerSettle: { attempts: 1, delayMs: 0 }, tracker: async () => epic },
       );
       const client = await connect(url);
       const originalGoal = await readFile(goalFile, "utf8");
@@ -892,7 +894,9 @@ describe("lifecycle runs", () => {
             message.message === "Implementation ended but epic #9 is still open.",
         );
         expect(spawnCount(logPath)).toBe(1);
-        expect(prompts(logPath)).toEqual(["/implement-next-epic"]);
+        const lines = prompts(logPath);
+        expect(lines[0]).toBe("/implement-next-epic");
+        expect(lines.length).toBeGreaterThan(1);
       } finally {
         client.close();
         server.stop(true);
@@ -968,7 +972,7 @@ describe("lifecycle runs", () => {
       };
       const { server, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
-        { tracker: async () => epic },
+        { trackerSettle: { attempts: 1, delayMs: 0 }, tracker: async () => epic },
       );
       const client = await connect(url);
 
@@ -984,9 +988,11 @@ describe("lifecycle runs", () => {
         await client.waitFor(
           (message) => message.type === "lifecycleState" && message.stage === "goal",
         );
-        await Bun.sleep(300);
         expect(spawnCount(logPath)).toBe(1);
-        expect(prompts(logPath)).toEqual(["/implement-next-epic"]);
+        const lines = prompts(logPath);
+        expect(lines[0]).toBe("/implement-next-epic");
+        expect(lines.length).toBeGreaterThan(1);
+        expect(lines.slice(1).every((line) => line.includes("epic #11 is still open"))).toBe(true);
         expect(lifecycleStates(client)).toEqual([
           { type: "lifecycleState", stage: "epic", pass: 1, work: null, paused: false },
           {
@@ -1013,6 +1019,104 @@ describe("lifecycle runs", () => {
   );
 
   test(
+    "continues the same implementation peer until the epic closes",
+    async () => {
+      const epic: OpenEpic = {
+        number: 33,
+        title: "Still open after a yield",
+        url: "https://example.test/issues/33",
+      };
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        {
+          trackerSettle: { attempts: 1, delayMs: 0 },
+          tracker: async () => {
+            lookups += 1;
+            return lookups < 3 ? epic : undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "implementation",
+        );
+        await client.waitFor(
+          (message) =>
+            message.type === "lifecycleState" &&
+            message.stage === "epic" &&
+            message.pass === 2,
+        );
+
+        expect(spawnCount(logPath)).toBe(1);
+        const lines = prompts(logPath);
+        expect(lines[0]).toBe("/implement-next-epic");
+        expect(lines[1]).toContain("epic #33 is still open");
+        expect(
+          client.events.filter((message) => message.type === "error"),
+        ).toEqual([]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "retries a continuation the peer is still busy with",
+    async () => {
+      const epic: OpenEpic = {
+        number: 34,
+        title: "Busy peer",
+        url: "https://example.test/issues/34",
+      };
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        {
+          agentArguments: "--busy-continuations=1",
+          trackerSettle: { attempts: 1, delayMs: 0 },
+          tracker: async () => {
+            lookups += 1;
+            return lookups < 3 ? epic : undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "implementation",
+        );
+        await client.waitFor(
+          (message) =>
+            message.type === "lifecycleState" &&
+            message.stage === "epic" &&
+            message.pass === 2,
+        );
+
+        expect(spawnCount(logPath)).toBe(1);
+        const lines = prompts(logPath);
+        expect(lines[0]).toBe("/implement-next-epic");
+        expect(lines[1]).toContain("epic #34 is still open");
+        const busyLines = readFileSync(logPath, "utf8")
+          .split("\n")
+          .filter((line) => line === "busy");
+        expect(busyLines).toHaveLength(1);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
     "returns an aborted run to an editable idle goal state for reconnecting clients",
     async () => {
       const epic: OpenEpic = {
@@ -1020,14 +1124,12 @@ describe("lifecycle runs", () => {
         title: "Aborted epic",
         url: "https://example.test/issues/21",
       };
-      let lookups = 0;
+      let epicOpen = true;
       const { server, goalFile, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
         {
-          tracker: async () => {
-            lookups += 1;
-            return lookups <= 2 ? epic : undefined;
-          },
+          trackerSettle: { attempts: 1, delayMs: 0 },
+          tracker: async () => (epicOpen ? epic : undefined),
         },
       );
       const client = await connect(url);
@@ -1070,6 +1172,7 @@ describe("lifecycle runs", () => {
         });
         expect(await readFile(goalFile, "utf8")).toBe(revised);
 
+        epicOpen = false;
         client.send({ type: "startLifecycle" });
         expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
           type: "lifecycleState",
@@ -1088,7 +1191,10 @@ describe("lifecycle runs", () => {
               message.message === "A lifecycle run is already active.",
           ),
         ).toEqual([]);
-        expect(prompts(logPath)).toEqual(["/implement-next-epic", "/epic-next"]);
+        const lines = prompts(logPath);
+        expect(lines.length).toBeGreaterThan(2);
+        expect(lines[0]).toBe("/implement-next-epic");
+        expect(lines.at(-1)).toBe("/epic-next");
       } finally {
         client.close();
         server.stop(true);
@@ -1207,6 +1313,7 @@ describe("lifecycle runs", () => {
       const { server, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
         {
+          trackerSettle: { attempts: 1, delayMs: 0 },
           tracker: async () => {
             lookups += 1;
             return lookups === 1 ? undefined : epic;
@@ -1234,7 +1341,10 @@ describe("lifecycle runs", () => {
         const started = Date.now() + 5000;
         while (spawnCount(logPath) < 2 && Date.now() < started) await Bun.sleep(25);
         expect(spawnCount(logPath)).toBe(2);
-        expect(prompts(logPath)).toEqual(["/epic-next", "/implement-next-epic"]);
+        const lines = prompts(logPath);
+        expect(lines[0]).toBe("/epic-next");
+        expect(lines[1]).toBe("/implement-next-epic");
+        expect(lines.length).toBeGreaterThan(2);
       } finally {
         client.close();
         server.stop(true);
