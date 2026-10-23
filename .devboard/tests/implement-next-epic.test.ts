@@ -200,7 +200,50 @@ describe("runImplementNextEpic", () => {
     expect(harness.sent[0]).toContain("Never offer the user options");
     expect(harness.sent[0]).not.toContain("If blocked by genuine ambiguity");
     expect(harness.sent[0]).toContain("gh issue close 42");
+    expect(harness.sent[0]).toContain("fetch the latest main");
+    expect(harness.sent[0]).toContain("retry");
+    expect(harness.sent[0]).toContain("Never force-push");
+    expect(harness.sent[0]).toContain("push main to origin");
+    expect(harness.sent[0]).toContain("DEVBOARD-BLOCKED:");
     expect(harness.notifications.at(-1)?.type).toBe("info");
+  });
+
+  test("implements the referenced epic while several are open", async () => {
+    const other = {
+      number: 43,
+      title: "Other epic",
+      url: "https://github.com/owner/repo/issues/43",
+      body: BODY,
+    };
+    const harness = makeHarness(
+      baseTable({
+        "gh issue list --label epic --state open --json number,title,url --limit 100": {
+          stdout: JSON.stringify([
+            { number: 42, title: EPIC_GITHUB.title, url: EPIC_GITHUB.url },
+            { number: 43, title: other.title, url: other.url },
+          ]),
+        },
+        "gh issue view 43 --json number,title,body,url": { stdout: JSON.stringify(other) },
+        "git show-ref --verify --quiet refs/heads/devboard/other-epic": { code: 1 },
+        "git worktree add /repo/.worktree/other-epic -b devboard/other-epic main": { code: 0 },
+      }),
+    );
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "43");
+
+    expect(result.ok).toBe(true);
+    expect(harness.sent).toHaveLength(1);
+    expect(harness.sent[0]).toContain(other.url);
+    expect(harness.sent[0]).toContain("gh issue close 43");
+    expect(harness.sent[0]).not.toContain(EPIC_GITHUB.url);
+  });
+
+  test("refuses a reference that is not open", async () => {
+    const harness = makeHarness(baseTable());
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "99");
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("epic 99 is not open");
+    expect(harness.sent).toHaveLength(0);
   });
 
   test("halts when no open epic exists", async () => {
@@ -351,6 +394,30 @@ describe("runImplementNextEpic", () => {
 });
 
 describe("listOpenEpics and fetchEpic", () => {
+  test("lists every open epic rather than the first", async () => {
+    const rows = Array.from({ length: 5 }, (_, index) => ({
+      number: 100 + index,
+      title: `Epic ${index + 1}`,
+      url: `https://github.com/owner/repo/issues/${100 + index}`,
+    }));
+    const harness = makeHarness(
+      baseTable({
+        "gh issue list --label epic --state open --json number,title,url --limit 100": {
+          stdout: JSON.stringify(rows),
+        },
+      }),
+    );
+    const listed = await listOpenEpics(
+      harness.pi,
+      { host: "github.com", project: "owner/repo", forge: "github" },
+      "/repo",
+    );
+    expect("error" in listed).toBe(false);
+    if ("error" in listed) return;
+    expect(listed.epics).toHaveLength(5);
+    expect(listed.epics.map((epic) => epic.ref)).toEqual([100, 101, 102, 103, 104]);
+  });
+
   test("normalizes GitHub listing and fetch results", async () => {
     const harness = makeHarness(baseTable());
     const listed = await listOpenEpics(

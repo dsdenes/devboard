@@ -56,6 +56,8 @@ async function startServer(
     tracker?: EpicLookup;
     goalText?: string | null;
     trackerSettle?: { attempts: number; delayMs: number };
+    laneBackoffMs?: number;
+    mainPollMs?: number;
     installedSkills?: "managed" | "unmanaged" | "none";
   } = {},
 ): Promise<TestServer> {
@@ -94,6 +96,8 @@ async function startServer(
     agentCommand: `bun ${STUB_AGENT} --log=${logPath} ${options.agentArguments ?? ""}`.trim(),
     tracker: options.tracker ?? (async () => undefined),
     trackerSettle: options.trackerSettle ?? { attempts: 1 },
+    laneBackoffMs: options.laneBackoffMs,
+    mainPollMs: options.mainPollMs,
   });
 
   return { server, root, adrDir, goalFile, logPath, url: `127.0.0.1:${server.port}` };
@@ -580,7 +584,7 @@ describe("lifecycle runs", () => {
         const spawned = Date.now() + 5000;
         while (prompts(logPath).length < 1 && Date.now() < spawned) await Bun.sleep(25);
         expect(spawnCount(logPath)).toBe(1);
-        expect(prompts(logPath)).toEqual(["/implement-next-epic"]);
+        expect(prompts(logPath)).toEqual(["/implement-next-epic 42"]);
         expect(lifecycleStates(client)).toEqual([
           {
             type: "lifecycleState",
@@ -659,7 +663,7 @@ describe("lifecycle runs", () => {
         const started = Date.now() + 5000;
         while (prompts(logPath).length < 2 && Date.now() < started) await Bun.sleep(25);
         expect(spawnCount(logPath)).toBe(2);
-        expect(prompts(logPath)).toEqual(["/implement-next-epic", "/epic-next"]);
+        expect(prompts(logPath)).toEqual(["/implement-next-epic 7", "/epic-next"]);
         expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
           type: "lifecycleState",
           stage: "finished",
@@ -738,7 +742,7 @@ describe("lifecycle runs", () => {
         while (prompts(logPath).length < 2 && Date.now() < started) await Bun.sleep(25);
         const lines = prompts(logPath);
         expect(lines[0]).toBe("/epic-next");
-        expect(lines[1]).toBe("/implement-next-epic");
+        expect(lines[1]).toBe("/implement-next-epic 31");
       } finally {
         client.close();
         server.stop(true);
@@ -797,7 +801,7 @@ describe("lifecycle runs", () => {
 
         const started = Date.now() + 5000;
         while (prompts(logPath).length < 2 && Date.now() < started) await Bun.sleep(25);
-        expect(prompts(logPath)).toEqual(["/implement-next-epic", "/epic-next"]);
+        expect(prompts(logPath)).toEqual(["/implement-next-epic 32", "/epic-next"]);
       } finally {
         client.close();
         server.stop(true);
@@ -846,7 +850,13 @@ describe("lifecycle runs", () => {
       };
       const { server, goalFile, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
-        { agentArguments: "--delay-ms=1200", trackerSettle: { attempts: 1, delayMs: 0 }, tracker: async () => epic },
+        {
+          agentArguments: "--delay-ms=1200",
+          trackerSettle: { attempts: 1, delayMs: 0 },
+          tracker: async () => epic,
+          laneBackoffMs: 60_000,
+          mainPollMs: 60_000,
+        },
       );
       const client = await connect(url);
       const originalGoal = await readFile(goalFile, "utf8");
@@ -897,8 +907,8 @@ describe("lifecycle runs", () => {
         );
         expect(spawnCount(logPath)).toBe(1);
         const lines = prompts(logPath);
-        expect(lines[0]).toBe("/implement-next-epic");
-        expect(lines.length).toBeGreaterThan(1);
+        expect(lines[0]).toBe("/implement-next-epic 9");
+        expect(lines.length).toBe(1);
       } finally {
         client.close();
         server.stop(true);
@@ -934,25 +944,33 @@ describe("lifecycle runs", () => {
           (message) => message.type === "lifecycleState" && message.stage === "implementation",
         );
         await client.waitFor(
-          (message) =>
-            message.type === "activity" && message.text === "Working on /implement-next-epic",
+          (message) => message.type === "activity" && message.text === "Working on epic 5",
         );
 
         const late = await connect(url);
         try {
           const received = Date.now() + 5000;
-          while (late.events.length < 3 && Date.now() < received) await Bun.sleep(25);
-          expect(late.events.slice(0, 3)).toEqual([
-            {
-              type: "lifecycleState",
-              stage: "implementation",
-              pass: 1,
-              work: { kind: "epic", id: "5" },
-              paused: false,
-            },
-            { type: "runStarted", file: "", title: "Replay the epic", action: "implementing" },
-            { type: "activity", text: "Working on /implement-next-epic" },
-          ]);
+          while (late.events.length < 2 && Date.now() < received) await Bun.sleep(25);
+          expect(late.events[0]).toEqual({
+            type: "lifecycleState",
+            stage: "implementation",
+            pass: 1,
+            work: { kind: "epic", id: "5" },
+            paused: false,
+          });
+          const snapshot = late.events.find((message) => message.type === "laneState");
+          expect(snapshot).toMatchObject({
+            openEpics: 1,
+            runningLanes: 1,
+            lanes: [
+              {
+                kind: "implementation",
+                status: "running",
+                epic: { number: 5, title: "Replay the epic" },
+                activity: ["Working on epic 5"],
+              },
+            ],
+          });
         } finally {
           late.close();
         }
@@ -965,7 +983,7 @@ describe("lifecycle runs", () => {
   );
 
   test(
-    "stops after an implementation that leaves the same epic open",
+    "marks a lane retrying without stopping the run when its epic stays open",
     async () => {
       const epic: OpenEpic = {
         number: 11,
@@ -974,7 +992,12 @@ describe("lifecycle runs", () => {
       };
       const { server, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
-        { trackerSettle: { attempts: 1, delayMs: 0 }, tracker: async () => epic },
+        {
+          trackerSettle: { attempts: 1, delayMs: 0 },
+          tracker: async () => epic,
+          laneBackoffMs: 60_000,
+          mainPollMs: 60_000,
+        },
       );
       const client = await connect(url);
 
@@ -986,32 +1009,27 @@ describe("lifecycle runs", () => {
         expect(await client.waitFor((message) => message.type === "error")).toMatchObject({
           message: "Implementation ended but epic #11 is still open.",
         });
+        expect(
+          await client.waitFor(
+            (message) =>
+              message.type === "laneState" &&
+              Array.isArray(message.lanes) &&
+              message.lanes.some(
+                (lane) =>
+                  typeof lane === "object" &&
+                  lane !== null &&
+                  "status" in lane &&
+                  lane.status === "retrying",
+              ),
+          ),
+        ).toMatchObject({ openEpics: 1, runningLanes: 0 });
 
-        await client.waitFor(
-          (message) => message.type === "lifecycleState" && message.stage === "goal",
-        );
         expect(spawnCount(logPath)).toBe(1);
         const lines = prompts(logPath);
-        expect(lines[0]).toBe("/implement-next-epic");
-        expect(lines.length).toBeGreaterThan(1);
-        expect(lines.slice(1).every((line) => line.includes("epic #11 is still open"))).toBe(true);
-        expect(lifecycleStates(client)).toEqual([
-          { type: "lifecycleState", stage: "epic", pass: 1, work: null, paused: false },
-          {
-            type: "lifecycleState",
-            stage: "implementation",
-            pass: 1,
-            work: { kind: "epic", id: "11" },
-            paused: false,
-          },
-          {
-            type: "lifecycleState",
-            stage: "goal",
-            pass: 1,
-            work: null,
-            paused: false,
-          },
-        ]);
+        expect(lines).toEqual(["/implement-next-epic 11"]);
+        expect(
+          lifecycleStates(client).every((message) => message.stage !== "goal"),
+        ).toBe(true);
       } finally {
         client.close();
         server.stop(true);
@@ -1021,7 +1039,7 @@ describe("lifecycle runs", () => {
   );
 
   test(
-    "continues the same implementation peer until the epic closes",
+    "retries an epic that stayed open in a new lane and finishes when it closes",
     async () => {
       const epic: OpenEpic = {
         number: 33,
@@ -1037,6 +1055,8 @@ describe("lifecycle runs", () => {
             lookups += 1;
             return lookups < 3 ? epic : undefined;
           },
+          laneBackoffMs: 20,
+          mainPollMs: 60_000,
         },
       );
       const client = await connect(url);
@@ -1047,19 +1067,29 @@ describe("lifecycle runs", () => {
           (message) => message.type === "lifecycleState" && message.stage === "implementation",
         );
         await client.waitFor(
-          (message) =>
-            message.type === "lifecycleState" &&
-            message.stage === "epic" &&
-            message.pass === 2,
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
         );
 
-        expect(spawnCount(logPath)).toBe(1);
         const lines = prompts(logPath);
-        expect(lines[0]).toBe("/implement-next-epic");
-        expect(lines[1]).toContain("epic #33 is still open");
-        expect(
-          client.events.filter((message) => message.type === "error"),
-        ).toEqual([]);
+        expect(lines.slice(0, 2)).toEqual([
+          "/implement-next-epic 33",
+          "/implement-next-epic 33",
+        ]);
+        expect(lines[2]).toBe("/epic-next");
+        const laneSnapshots = client.events.filter(
+          (message) => message.type === "laneState" && Array.isArray(message.lanes),
+        );
+        const attempts = laneSnapshots.flatMap((message) =>
+          Array.isArray(message.lanes)
+            ? message.lanes
+                .filter(
+                  (lane): lane is Record<string, unknown> =>
+                    typeof lane === "object" && lane !== null && "attempt" in lane,
+                )
+                .map((lane) => lane.attempt)
+            : [],
+        );
+        expect(attempts).toContain(2);
       } finally {
         client.close();
         server.stop(true);
@@ -1069,23 +1099,24 @@ describe("lifecycle runs", () => {
   );
 
   test(
-    "retries a continuation the peer is still busy with",
+    "retries a lane after the backoff without a second concurrent lane",
     async () => {
       const epic: OpenEpic = {
         number: 34,
-        title: "Busy peer",
+        title: "Retry peer",
         url: "https://example.test/issues/34",
       };
       let lookups = 0;
       const { server, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
         {
-          agentArguments: "--busy-continuations=1",
           trackerSettle: { attempts: 1, delayMs: 0 },
           tracker: async () => {
             lookups += 1;
             return lookups < 3 ? epic : undefined;
           },
+          laneBackoffMs: 20,
+          mainPollMs: 60_000,
         },
       );
       const client = await connect(url);
@@ -1096,20 +1127,15 @@ describe("lifecycle runs", () => {
           (message) => message.type === "lifecycleState" && message.stage === "implementation",
         );
         await client.waitFor(
-          (message) =>
-            message.type === "lifecycleState" &&
-            message.stage === "epic" &&
-            message.pass === 2,
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
         );
 
-        expect(spawnCount(logPath)).toBe(1);
         const lines = prompts(logPath);
-        expect(lines[0]).toBe("/implement-next-epic");
-        expect(lines[1]).toContain("epic #34 is still open");
-        const busyLines = readFileSync(logPath, "utf8")
-          .split("\n")
-          .filter((line) => line === "busy");
-        expect(busyLines).toHaveLength(1);
+        expect(lines).toEqual([
+          "/implement-next-epic 34",
+          "/implement-next-epic 34",
+          "/epic-next",
+        ]);
       } finally {
         client.close();
         server.stop(true);
@@ -1130,6 +1156,7 @@ describe("lifecycle runs", () => {
       const { server, goalFile, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
         {
+          agentArguments: "--blocker-epic=21",
           trackerSettle: { attempts: 1, delayMs: 0 },
           tracker: async () => (epicOpen ? epic : undefined),
         },
@@ -1151,7 +1178,7 @@ describe("lifecycle runs", () => {
         await client.waitFor(
           (message) =>
             message.type === "error" &&
-            message.message === "Implementation ended but epic #21 is still open.",
+            message.message === "Lifecycle stopped with parked epics: #21.",
         );
         await client.waitFor(
           (message) => message.type === "lifecycleState" && message.stage === "goal",
@@ -1194,8 +1221,7 @@ describe("lifecycle runs", () => {
           ),
         ).toEqual([]);
         const lines = prompts(logPath);
-        expect(lines.length).toBeGreaterThan(2);
-        expect(lines[0]).toBe("/implement-next-epic");
+        expect(lines[0]).toBe("/implement-next-epic 21");
         expect(lines.at(-1)).toBe("/epic-next");
       } finally {
         client.close();
@@ -1304,7 +1330,7 @@ describe("lifecycle runs", () => {
   );
 
   test(
-    "implements the epic the generation peer creates and stops when it stays open",
+    "implements the epic the generation peer creates and retries when it stays open",
     async () => {
       let lookups = 0;
       const epic: OpenEpic = {
@@ -1320,6 +1346,8 @@ describe("lifecycle runs", () => {
             lookups += 1;
             return lookups === 1 ? undefined : epic;
           },
+          laneBackoffMs: 60_000,
+          mainPollMs: 60_000,
         },
       );
       const client = await connect(url);
@@ -1345,8 +1373,8 @@ describe("lifecycle runs", () => {
         expect(spawnCount(logPath)).toBe(2);
         const lines = prompts(logPath);
         expect(lines[0]).toBe("/epic-next");
-        expect(lines[1]).toBe("/implement-next-epic");
-        expect(lines.length).toBeGreaterThan(2);
+        expect(lines[1]).toBe("/implement-next-epic 7");
+        expect(lines).toHaveLength(2);
       } finally {
         client.close();
         server.stop(true);

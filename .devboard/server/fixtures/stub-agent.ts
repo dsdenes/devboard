@@ -1,4 +1,13 @@
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 /**
@@ -14,6 +23,39 @@ function argument(name: string): string | undefined {
   return process.argv.slice(2).find((value) => value.startsWith(prefix))?.slice(prefix.length);
 }
 
+function argumentAll(name: string): string[] {
+  const prefix = `--${name}=`;
+  return process.argv
+    .slice(2)
+    .filter((value) => value.startsWith(prefix))
+    .map((value) => value.slice(prefix.length));
+}
+
+/** Parses repeated `--mode=<id>:<value>` arguments into an id-keyed map. */
+function idOptions(name: string): Map<string, string> {
+  const options = new Map<string, string>();
+  for (const entry of argumentAll(name)) {
+    const split = entry.indexOf(":");
+    if (split < 0) continue;
+    options.set(entry.slice(0, split), entry.slice(split + 1));
+  }
+  return options;
+}
+
+/** Deterministic per-epic timing and one-line activity overrides. */
+const laneDelays = idOptions("lane-delay");
+const laneActivities = idOptions("lane-activity");
+const blockerEpics = new Set(argumentAll("blocker-epic"));
+const questionEpics = new Set(argumentAll("question-epic"));
+/** JSON list of open epics the verification server's tracker reads. */
+const fixtureTracker = argument("fixture-tracker");
+/** Repository whose branches and `main` a fixture lane merges into. */
+const fixtureRepo = argument("fixture-repo");
+const noClose = process.argv.includes("--no-close");
+const generatedEpics = argumentAll("generate-epic");
+const generationBudget = Number(argument("generation-budget") ?? generatedEpics.length);
+const laneDelayMs = Number(argument("lane-delay-ms") ?? 0);
+const laneSettleMs = Number(argument("lane-settle-ms") ?? 0);
 const logPath = argument("log");
 const delayMs = Number(argument("delay-ms") ?? 0);
 const forcedQuestions = argument("questions");
@@ -72,6 +114,238 @@ function markAccepted(file: string) {
     ? source.replace(/^(\s*(?:[-*+]\s+)?status\s*:\s*)proposed\s*$/im, "$1Accepted")
     : `${source.replace(/\s*$/, "")}\n\n- Status: Accepted\n`;
   writeFileSync(file, updated);
+}
+
+interface FixtureEpic {
+  number: number;
+  title: string;
+  url: string;
+}
+
+function readFixtureTracker(path: string): FixtureEpic[] {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (entry): entry is FixtureEpic =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "number" in entry &&
+        typeof entry.number === "number",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeFixtureTracker(path: string, list: FixtureEpic[]) {
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(list, null, 2)}\n`);
+  renameSync(temporary, path);
+}
+
+/** Serializes the stub's own tracker and merge writes across lane processes. */
+function withLock<T>(lockPath: string, action: () => T): T {
+  const started = Date.now();
+  for (;;) {
+    try {
+      mkdirSync(lockPath);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (Date.now() - started > 10_000) {
+        rmSync(lockPath, { recursive: true, force: true });
+        continue;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+  try {
+    return action();
+  } finally {
+    rmSync(lockPath, { recursive: true, force: true });
+  }
+}
+
+function closeFixtureEpic(id: string) {
+  if (fixtureTracker === undefined) return;
+  withLock(`${fixtureTracker}.lock`, () => {
+    writeFixtureTracker(
+      fixtureTracker,
+      readFixtureTracker(fixtureTracker).filter((epic) => String(epic.number) !== id),
+    );
+  });
+  log(`closed ${id}`);
+}
+
+function fileFixtureEpic(entry: string): boolean {
+  if (fixtureTracker === undefined) return false;
+  const split = entry.indexOf(":");
+  if (split < 0) return false;
+  const number = Number(entry.slice(0, split));
+  const title = entry.slice(split + 1);
+  if (!Number.isInteger(number)) return false;
+
+  let filed = false;
+  withLock(`${fixtureTracker}.lock`, () => {
+    const counterPath = `${fixtureTracker}.generation-count`;
+    let count = 0;
+    try {
+      count = Number(readFileSync(counterPath, "utf8").trim());
+    } catch {
+      count = 0;
+    }
+    if (Number.isFinite(count) && count >= generationBudget) return;
+    const list = readFixtureTracker(fixtureTracker);
+    if (list.some((epic) => epic.number === number)) return;
+    list.push({ number, title, url: `https://fixture.test/issues/${number}` });
+    writeFixtureTracker(fixtureTracker, list);
+    writeFileSync(counterPath, `${count + 1}\n`);
+    filed = true;
+  });
+  if (filed) log(`filed ${number}`);
+  return filed;
+}
+
+function gitTeardown(repo: string, args: string[]): { code: number; stderr: string } {
+  const result = Bun.spawnSync({
+    cmd: ["git", "-C", repo, ...args],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return { code: result.exitCode ?? -1, stderr: result.stderr.toString() };
+}
+
+/** Simulates the peer's own merge: branch, sentinel commit, merge, cleanup. */
+function mergeFixtureLane(id: string) {
+  if (fixtureRepo === undefined) return;
+  const worktree = join(fixtureRepo, ".worktree", `stub-epic-${id}`);
+  const branch = `devboard/stub-epic-${id}`;
+  mkdirSync(join(fixtureRepo, ".worktree"), { recursive: true });
+  gitTeardown(fixtureRepo, ["worktree", "remove", "--force", worktree]);
+  gitTeardown(fixtureRepo, ["branch", "-D", branch]);
+  const added = gitTeardown(fixtureRepo, ["worktree", "add", worktree, "-b", branch, "main"]);
+  if (added.code !== 0) {
+    log(`merge-failed ${id} worktree ${added.stderr.trim()}`);
+    return;
+  }
+  writeFileSync(join(worktree, `epic-${id}.txt`), `epic ${id}\n`);
+  gitTeardown(worktree, ["add", "-A"]);
+  gitTeardown(worktree, ["commit", "-m", `feat: epic ${id}`]);
+
+  withLock(join(fixtureRepo, ".git", "stub-merge.lock"), () => {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const merged = gitTeardown(fixtureRepo, [
+        "merge",
+        "--no-ff",
+        branch,
+        "-m",
+        `merge epic ${id}`,
+      ]);
+      if (merged.code === 0) {
+        log(`merged ${id}`);
+        const pushed = gitTeardown(fixtureRepo, ["push", "origin", "main"]);
+        if (pushed.code === 0) log(`pushed ${id}`);
+        else log(`push-failed ${id}`);
+        return;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+    log(`merge-failed ${id}`);
+  });
+
+  gitTeardown(fixtureRepo, ["worktree", "remove", "--force", worktree]);
+  gitTeardown(fixtureRepo, ["branch", "-D", branch]);
+}
+
+function implementationEpic(text: string): string | undefined {
+  const match = /^\/implement-next-epic(?:\s+(\d+))?/.exec(text);
+  if (match === null) return undefined;
+  if (match[1] !== undefined) return match[1];
+  const open = fixtureTracker === undefined ? [] : readFixtureTracker(fixtureTracker);
+  return open.length === 1 && open[0] !== undefined ? String(open[0].number) : undefined;
+}
+
+async function runImplementationLane(id: string) {
+  const activity = laneActivities.get(id) ?? `Working on epic ${id}`;
+  write({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "stub-session",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: activity },
+      },
+    },
+  });
+
+  const override = laneDelays.get(id);
+  const delay = override !== undefined ? Number(override) : laneDelayMs > 0 ? laneDelayMs : delayMs;
+  if (Number.isFinite(delay) && delay > 0) await Bun.sleep(delay);
+
+  const questionCount = questionEpics.has(id)
+    ? 1
+    : forcedQuestions !== undefined
+      ? Number(forcedQuestions)
+      : 0;
+  if (questionCount > 0) {
+    await askQuestions(questionCount);
+  }
+
+  if (blockerEpics.has(id)) {
+    const message = `DEVBOARD-BLOCKED: fixture blocker for epic ${id}`;
+    log(`blocked ${id}`);
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: message },
+        },
+      },
+    });
+    return;
+  }
+
+  if (noClose) return;
+  if (laneSettleMs > 0) await Bun.sleep(laneSettleMs);
+  mergeFixtureLane(id);
+  closeFixtureEpic(id);
+}
+
+async function runGenerationLane() {
+  write({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "stub-session",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Choosing the next epics" },
+      },
+    },
+  });
+  if (delayMs > 0) await Bun.sleep(delayMs);
+  for (const entry of generatedEpics) {
+    if (fileFixtureEpic(entry)) {
+      const number = entry.slice(0, entry.indexOf(":"));
+      write({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "stub-session",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `Filed epic ${number}` },
+          },
+        },
+      });
+    }
+  }
+  if (laneSettleMs > 0) await Bun.sleep(laneSettleMs);
 }
 
 function writeSkill(
@@ -234,6 +508,20 @@ async function promptTurn(params: unknown) {
         },
       },
     });
+    return;
+  }
+
+  const laneEpic =
+    firstLine.startsWith("/implement-next-epic") && !creating && !revising
+      ? implementationEpic(firstLine)
+      : undefined;
+  if (laneEpic !== undefined) {
+    await runImplementationLane(laneEpic);
+    return;
+  }
+
+  if (firstLine === "/epic-next" && !creating && !revising) {
+    await runGenerationLane();
     return;
   }
 
