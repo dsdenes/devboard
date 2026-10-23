@@ -71,19 +71,22 @@ therefore shows `Epic generation` with the pause control available and its start
 disabled while that query runs. When the origin tracker already has an open epic, the lifecycle
 then reports `implementation` and implements that epic with `/implement-next-epic`; otherwise it
 runs the `/epic-next` agent, resolves any pending ADRs the run leaves behind with
-`/adr-resolve` in file-name order, and repeats. After an implementation peer exits, the pass
-increments and the lifecycle returns to epic generation; the epic the generation peer creates
-is implemented in turn. A forge can expose a peer's tracker write a moment after the peer
-exits, so the server re-reads the tracker for a bounded settle window after epic generation
-and after implementation before it trusts an answer that still shows the pre-peer state. When the
+`/adr-resolve` in file-name order, and repeats. Each implementation turn ends when the peer
+yields; while the epic is still open the server keeps that same peer and asks it to continue
+rather than closing it, so background work the turn left running is not abandoned. A forge can
+expose a peer's tracker write a moment after the peer exits, so the server re-reads the tracker
+for a bounded settle window after epic generation and after implementation before it trusts an
+answer that still shows the pre-peer state. When the implementation peer leaves the epic closed,
+the pass increments and the lifecycle returns to epic generation; the epic the generation peer
+creates is implemented in turn. When the
 generation peer opens no epic and no record in `adrs/` is still `Proposed`, the lifecycle reports
 the `finished` stage and stops; a later start begins
-a new run. If the same epic is still open after its implementation, or epic generation leaves
-the same pending records without opening an epic, or a tracker or record read fails, the
-lifecycle stops with an `error` and returns to the idle goal stage instead of staying at the
-interrupted stage. An epic is an open issue carrying the label `epic` (ignoring case) or the
-`<!-- devboard-epic -->` marker in its body; the server reads it with read-only `gh` or
-`glab` queries. While a lifecycle run works, the goal editor and every start control are
+a new run. If the same epic is still open after the implementation peer's bounded continuations,
+or epic generation leaves the same pending records without opening an epic, or a tracker or
+record read fails, the lifecycle stops with an `error` and returns to the idle goal stage instead
+of staying at the interrupted stage. An epic is an open issue carrying the label `epic` (ignoring
+case) or the `<!-- devboard-epic -->` marker in its body; the server reads it with read-only `gh`
+or `glab` queries. While a lifecycle run works, the goal editor and every start control are
 disabled, and a client that connects or reloads receives the current stage, pass, and work in
 progress first. Once a run reports `finished`, the server keeps that state for its lifetime
 and replays it to every client that connects or reloads, so the interface still shows

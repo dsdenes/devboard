@@ -200,6 +200,11 @@ export function nextActivity(
   }
 }
 
+/** True when the peer rejected a prompt because its previous turn is still running. */
+export function isSessionBusy(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === -32003;
+}
+
 /**
  * A minimal ACP client: JSON-RPC 2.0 over newline-delimited JSON on the child's
  * stdio. It starts a session, sends one prompt, relays session updates as
@@ -255,8 +260,14 @@ export class AcpConnection {
     }
     this.#sessionId = sessionId;
 
+    return await this.prompt(prompt);
+  }
+
+  /** Sends another prompt on the session this connection opened. */
+  async prompt(prompt: string): Promise<unknown> {
+    if (this.#sessionId === undefined) throw new Error("No agent session is open.");
     return await this.#request("session/prompt", {
-      sessionId,
+      sessionId: this.#sessionId,
       prompt: [{ type: "text", text: prompt }],
     });
   }
@@ -381,7 +392,12 @@ export class AcpConnection {
     this.#pending.delete(String(message.id));
 
     if (message.error !== undefined) {
-      pending.reject(new Error(message.error.message ?? "Agent request failed."));
+      const error: Error & { code?: number; data?: unknown } = new Error(
+        message.error.message ?? "Agent request failed.",
+      );
+      error.code = message.error.code;
+      error.data = message.error.data;
+      pending.reject(error);
     } else {
       pending.resolve(message.result);
     }
