@@ -45,6 +45,7 @@ async function startServer(files: Record<string, string>, agentArguments = ""): 
     hostname: "127.0.0.1",
     port: 0,
     repoDir: root,
+    stateDir: join(root, "state"),
     agentCommand: `bun ${STUB_AGENT} --log=${logPath} ${agentArguments}`.trim(),
   });
 

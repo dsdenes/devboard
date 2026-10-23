@@ -81,6 +81,7 @@ async function startServer(options: ServerOptions = {}): Promise<TestServer> {
     hostname: "127.0.0.1",
     port: 0,
     repoDir: root,
+    stateDir: join(root, "state"),
     goalFile,
     agentCommand: command,
     tracker: options.tracker ?? (async () => undefined),

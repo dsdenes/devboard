@@ -21,7 +21,13 @@ afterAll(async () => {
 });
 
 async function startServer(
-  options: { goalText?: string; goalFile?: string; agentCommand?: string } = {},
+  options: {
+    goalText?: string;
+    goalFile?: string;
+    agentCommand?: string;
+    restart?: () => void;
+    versionState?: () => { running: string | null; current: string | null; stale: boolean };
+  } = {},
 ) {
   const root = await temporaryDirectory();
   const adrDir = join(root, "adrs");
@@ -40,8 +46,11 @@ async function startServer(
     hostname: "127.0.0.1",
     port: 0,
     repoDir: root,
+    stateDir: join(root, "state"),
     goalFile: options.goalFile,
     agentCommand: options.agentCommand,
+    restart: options.restart,
+    versionState: options.versionState,
   });
   return { server, adrDir, root, url: `127.0.0.1:${server.port}` };
 }
@@ -121,9 +130,59 @@ describe("createApp", () => {
             title: "First",
             status: "Accepted",
             pending: false,
+            summary: "",
           },
         ],
         next: null,
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("restarts once on request and refuses a concurrent restart", async () => {
+    let restarts = 0;
+    const { server, url } = await startServer({ restart: () => (restarts += 1) });
+
+    try {
+      expect(await exchange(url, { type: "restartServer" })).toEqual({
+        type: "serverRestarting",
+      });
+      expect(restarts).toBe(1);
+      expect(await exchange(url, { type: "restartServer" })).toEqual({
+        type: "error",
+        message: "A server restart is already in progress.",
+      });
+      expect(restarts).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("reports that restarting is unavailable without a launcher", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      expect(await exchange(url, { type: "restartServer" })).toEqual({
+        type: "error",
+        message: "Restarting the server is not available.",
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers getVersion from the supplied probe", async () => {
+    const { server, url } = await startServer({
+      versionState: () => ({ running: "old", current: "new", stale: true }),
+    });
+
+    try {
+      expect(await exchange(url, { type: "getVersion" })).toEqual({
+        type: "versionState",
+        running: "old",
+        current: "new",
+        stale: true,
       });
     } finally {
       server.stop(true);

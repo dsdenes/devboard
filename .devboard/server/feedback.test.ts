@@ -42,6 +42,7 @@ async function startServer(mode: "ok" | "fail" | "hang" = "ok", timeoutMs = 5_00
     hostname: "127.0.0.1",
     port: 0,
     repoDir: root,
+    stateDir: join(root, "state"),
     feedback: {
       ghCommand: ["bun", STUB_GH],
       timeoutMs,

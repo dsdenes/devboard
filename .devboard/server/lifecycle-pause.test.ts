@@ -29,6 +29,7 @@ const QUESTION_OPTIONS = [
 
 interface TestServer {
   server: Server<unknown>;
+  root: string;
   adrDir: string;
   goalFile: string;
   logPath: string;
@@ -43,9 +44,14 @@ async function temporaryDirectory() {
 
 async function startServer(
   files: Record<string, string>,
-  options: { agentArguments?: string; tracker?: EpicLookup; reviseGoal?: boolean } = {},
+  options: {
+    agentArguments?: string;
+    tracker?: EpicLookup;
+    reviseGoal?: boolean;
+    root?: string;
+  } = {},
 ): Promise<TestServer> {
-  const root = await temporaryDirectory();
+  const root = options.root ?? (await temporaryDirectory());
   const adrDir = join(root, "adrs");
   const staticDir = join(root, "static");
   const goalFile = join(root, "GOAL.md");
@@ -77,13 +83,14 @@ async function startServer(
     hostname: "127.0.0.1",
     port: 0,
     repoDir: root,
+    stateDir: join(root, "state"),
     goalFile,
     agentCommand: command,
     tracker: options.tracker ?? (async () => undefined),
     trackerSettle: { attempts: 1 },
   });
 
-  return { server, adrDir, goalFile, logPath, url: `127.0.0.1:${server.port}` };
+  return { server, root, adrDir, goalFile, logPath, url: `127.0.0.1:${server.port}` };
 }
 
 interface TestClient {
@@ -1014,6 +1021,7 @@ describe("lifecycle pause and resume", () => {
           type: "runStarted",
           file: "0001-first.md",
           title: "First decision",
+          action: "resolving",
           manual: true,
         });
 
@@ -1629,5 +1637,57 @@ describe("lifecycle pause and resume", () => {
       }
     },
     40000,
+  );
+
+  test(
+    "retains the lifecycle pass across a server restart",
+    async () => {
+      const epic: OpenEpic = {
+        number: 77,
+        title: "Restart the pass",
+        url: "https://example.test/issues/77",
+      };
+      let lookups = 0;
+      const first = await startServer(
+        {},
+        {
+          agentArguments: "--delay-ms=100 --questions=0",
+          tracker: async () => {
+            lookups += 1;
+            return lookups === 1 ? epic : undefined;
+          },
+        },
+      );
+      const client = await connect(first.url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.pass === 2,
+          ),
+        ).toMatchObject({ stage: "epic", pass: 2 });
+      } finally {
+        client.close();
+        first.server.stop(true);
+      }
+
+      const second = await startServer({}, { root: first.root, tracker: async () => undefined });
+      const resumed = await connect(second.url);
+
+      try {
+        expect(await resumed.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "goal",
+          pass: 2,
+          work: null,
+          paused: false,
+        });
+      } finally {
+        resumed.close();
+        second.server.stop(true);
+      }
+    },
+    30000,
   );
 });

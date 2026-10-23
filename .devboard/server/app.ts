@@ -1,4 +1,5 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -28,6 +29,12 @@ import {
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
 import { findOpenEpic, type EpicLookup, type OpenEpic } from "./tracker";
+import {
+  gitRevision,
+  runningHarnessDir,
+  serverVersion,
+  type ServerVersion,
+} from "./version";
 
 export interface TrackerSettle {
   /** Total tracker reads per settle, including the first. */
@@ -55,7 +62,14 @@ export interface AppOptions {
   tracker?: EpicLookup;
   trackerSettle?: Partial<TrackerSettle>;
   feedback?: FeedbackOptions;
+  /** Directory that retains the lifecycle pass between process lifetimes. */
+  stateDir?: string;
+  /** Replaces the process; `index.ts` re-execs the host's current harness. */
+  restart?: () => void;
+  versionState?: () => ServerVersion;
 }
+
+type RunAction = "resolving" | "implementing" | "generating";
 
 interface RunQuestion {
   id: number | string;
@@ -66,6 +80,8 @@ interface RunQuestion {
 interface ActiveRun {
   file: string;
   title: string;
+  /** What the agent is doing, so the interface never calls an implementation a resolution. */
+  action: RunAction;
   agent: AcpConnection | undefined;
   activity: string[];
   question: RunQuestion | null;
@@ -221,6 +237,8 @@ type ClientMessage =
   | { type: "listRecords" }
   | { type: "getGoal" }
   | { type: "getProject" }
+  | { type: "getVersion" }
+  | { type: "restartServer" }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
   | { type: "startLifecycle" }
@@ -242,6 +260,10 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "getGoal" };
     case "getProject":
       return { type: "getProject" };
+    case "getVersion":
+      return { type: "getVersion" };
+    case "restartServer":
+      return { type: "restartServer" };
     case "saveGoal":
       return { type: "saveGoal", text: "text" in value ? value.text : undefined };
     case "startRun":
@@ -667,6 +689,37 @@ export function createApp(options: AppOptions) {
   const feedbackCommand = options.feedback?.ghCommand ?? ["gh"];
   const feedbackTimeoutMs = Math.max(1, options.feedback?.timeoutMs ?? FEEDBACK_TIMEOUT_MS);
   const feedbackEnv = options.feedback?.env;
+  // The pass belongs to this checkout, not to the harness installation: hosts
+  // share one harness through a symlink, so the repository path keys the file.
+  const stateDir = resolve(options.stateDir ?? join(import.meta.dir, "..", ".tmp"));
+  const passStateFile = join(
+    stateDir,
+    `lifecycle-pass-${createHash("sha256").update(repoDir).digest("hex").slice(0, 24)}`,
+  );
+  const runningRevision = gitRevision(runningHarnessDir());
+  const readVersion = options.versionState ?? (() => serverVersion(repoDir, runningRevision));
+
+  function readPersistedPass(): number {
+    try {
+      const pass = Number.parseInt(readFileSync(passStateFile, "utf8").trim(), 10);
+      return Number.isInteger(pass) && pass > 0 ? pass : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  let persistedPass = readPersistedPass();
+  function persistPass() {
+    if (lifecycle.pass === persistedPass) return;
+    persistedPass = lifecycle.pass;
+    try {
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(passStateFile, `${lifecycle.pass}\n`);
+    } catch {
+      // A read-only state directory must not stop the lifecycle; the next
+      // process then starts from the last pass it could record.
+    }
+  }
 
   const clients = new Set<ServerWebSocket<unknown>>();
   let activeRun: ActiveRun | undefined;
@@ -690,9 +743,15 @@ export function createApp(options: AppOptions) {
   let skillsPreparationRequest = 0;
   /** Resolves when the in-flight preparation has unwound and cleaned up. */
   let skillsPreparationSettled: Promise<void> | undefined;
-  let lifecycle: LifecycleState = { stage: "goal", pass: 1, work: null, paused: false };
+  let lifecycle: LifecycleState = {
+    stage: "goal",
+    pass: persistedPass,
+    work: null,
+    paused: false,
+  };
   let lastLifecycle: LifecycleState | undefined;
   let lifecycleRunning = false;
+  let restarting = false;
   /** Invalidates an in-flight lifecycle start when a reset takes over. */
   let lifecycleStartRequest = 0;
   let implementationReset: { commit?: string } | undefined;
@@ -714,6 +773,38 @@ export function createApp(options: AppOptions) {
       } catch {
         // A closing client must not interrupt delivery to the others.
       }
+    }
+  }
+
+  function sendVersion(ws: { send(data: string): unknown }) {
+    send(ws, { type: "versionState", ...readVersion() });
+  }
+
+  /**
+   * Hands the process to its launcher. The event leaves first so a browser
+   * stops reconnecting and waits for the replacement instead.
+   */
+  function restartServer(ws: { send(data: string): unknown }) {
+    if (options.restart === undefined) {
+      send(ws, { type: "error", message: "Restarting the server is not available." });
+      return;
+    }
+    if (restarting) {
+      send(ws, { type: "error", message: "A server restart is already in progress." });
+      return;
+    }
+    restarting = true;
+    broadcast({ type: "serverRestarting" });
+    try {
+      options.restart();
+    } catch (error) {
+      restarting = false;
+      send(ws, {
+        type: "error",
+        message: `Could not restart the server: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      });
     }
   }
 
@@ -741,6 +832,7 @@ export function createApp(options: AppOptions) {
       type: "runStarted",
       file: run.file,
       title: run.title,
+      action: run.action,
       ...(manual ? { manual: true } : {}),
     });
     for (const text of run.activity) send(target, { type: "activity", text });
@@ -1639,12 +1731,19 @@ export function createApp(options: AppOptions) {
         const run: ActiveRun = {
           file: record.file,
           title: record.title,
+          action: "resolving",
           agent: undefined,
           activity: [],
           question: null,
         };
         manualRun = run;
-        broadcast({ type: "runStarted", file: run.file, title: run.title, manual: true });
+        broadcast({
+          type: "runStarted",
+          file: run.file,
+          title: run.title,
+          action: run.action,
+          manual: true,
+        });
 
         const resolved = await runAgent(run);
         if (!resolved) return;
@@ -1663,8 +1762,9 @@ export function createApp(options: AppOptions) {
     }
   }
 
-  /** Broadcasts the current state and retains it for clients that connect later. */
+  /** Broadcasts the current state, retains it for later clients, and records the pass. */
   function publishLifecycle() {
+    persistPass();
     lastLifecycle = lifecycle;
     broadcast({ type: "lifecycleState", ...lifecycle });
   }
@@ -1738,17 +1838,24 @@ export function createApp(options: AppOptions) {
     file: string,
     title: string,
     prompt: string,
+    action: RunAction,
     continuation?: Continuation,
   ) {
     const run: ActiveRun = {
       file,
       title,
+      action,
       agent: undefined,
       activity: [],
       question: null,
     };
     activeRun = run;
-    broadcast({ type: "runStarted", file: run.file, title: run.title });
+    broadcast({
+      type: "runStarted",
+      file: run.file,
+      title: run.title,
+      action: run.action,
+    });
     await runAgent(run, prompt, continuation);
   }
 
@@ -1786,7 +1893,7 @@ export function createApp(options: AppOptions) {
       if (existing !== undefined) {
         const id = String(existing.number);
         setLifecycle("implementation", { kind: "epic", id });
-        await runLifecycleStage("", existing.title, IMPLEMENT_PROMPT, {
+        await runLifecycleStage("", existing.title, IMPLEMENT_PROMPT, "implementing", {
           id,
           open: async () => {
             const remaining = await settleTracker(
@@ -1819,7 +1926,7 @@ export function createApp(options: AppOptions) {
       if (lifecycle.stage !== "epic" || lifecycle.work !== null) {
         setLifecycle("epic", null);
       }
-      await runLifecycleStage("", "Epic generation", EPIC_PROMPT);
+      await runLifecycleStage("", "Epic generation", EPIC_PROMPT, "generating");
       await holdWhilePaused();
       if (!lifecycleRunning) return false;
 
@@ -1859,7 +1966,12 @@ export function createApp(options: AppOptions) {
         if (record === undefined || !record.pending) continue;
 
         setLifecycle("adr", { kind: "adr", id: record.file });
-        await runLifecycleStage(record.file, record.title, agentPrompt(adrDir, record.file));
+        await runLifecycleStage(
+          record.file,
+          record.title,
+          agentPrompt(adrDir, record.file),
+          "resolving",
+        );
         await holdWhilePaused();
         if (!lifecycleRunning) return false;
       }
@@ -2352,7 +2464,12 @@ export function createApp(options: AppOptions) {
         if (implementationReset !== undefined) {
           send(ws, { type: "implementationResetStarted" });
         }
-        const replayed = lifecycleRunning ? lifecycle : lastLifecycle;
+        // A retained pass must reach every client, including the first one
+        // after a restart; a fresh pass 1 needs no event because that is the
+        // state a client starts from.
+        const replayed = lifecycleRunning
+          ? lifecycle
+          : (lastLifecycle ?? (lifecycle.pass > 1 ? lifecycle : undefined));
         if (replayed !== undefined) send(ws, { type: "lifecycleState", ...replayed });
         if (manualRun !== undefined) sendRunConversation(ws, manualRun, true);
         else if (activeRun !== undefined) sendRunConversation(ws, activeRun);
@@ -2422,6 +2539,7 @@ export function createApp(options: AppOptions) {
           command.type === "listRecords" ||
           command.type === "getGoal" ||
           command.type === "getProject" ||
+          command.type === "getVersion" ||
           command.type === "getSkills";
         if (implementationReset !== undefined && !readOnly) {
           send(ws, { type: "error", message: "An implementation reset is active." });
@@ -2436,6 +2554,10 @@ export function createApp(options: AppOptions) {
             await getGoal(ws);
           } else if (command.type === "getProject") {
             send(ws, { type: "project", path: project });
+          } else if (command.type === "getVersion") {
+            sendVersion(ws);
+          } else if (command.type === "restartServer") {
+            restartServer(ws);
           } else if (command.type === "saveGoal") {
             await saveGoal(ws, command.text);
           } else if (command.type === "startRun") {

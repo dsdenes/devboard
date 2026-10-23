@@ -1,12 +1,16 @@
 # Devboard ADR interface
 
-Local browser interface for the records in `adrs/`. It lists every record, distinguishes records
+Local browser interface for the records in `adrs/`. The header `ADRs` control opens every record
+in an overlay; each record title is a dropdown that expands to the first paragraph of its
+`Decision` section, a brief summary of what was decided. The overlay distinguishes records
 awaiting a decision (`Status: Proposed`) from resolved records, marks the pending record an agent
 run would take up first, and starts an agent on that record or on one the developer selects. The
 page heading names the project by its directory path relative to the user's home directory,
 falling back to the absolute path when the repository lies outside it. A pending badge appears in
-the header only while at least one record is `Proposed`, and the header `Start` control appears
-only then; it resolves the pending sequence.
+the header only while at least one record is `Proposed`, and the header `Resolve ADRs` control
+appears only then; it resolves the pending sequence. When the harness checkout named by the
+project's `.devboard` link names a commit other than the one the backend started from, the header
+shows a reload icon; selecting it restarts the backend from that checkout and reloads the page.
 
 It also shows the repository's current goal in a `Current goal` section. Until a goal is set the
 editor is expanded. Once the goal document contains non-whitespace text, the editor, `Save goal`
@@ -50,21 +54,24 @@ it receives the start, every recorded activity line, and the pending question. W
 runs, starting a run or the lifecycle, resuming a paused lifecycle, and revising the goal are
 each refused; creation itself always restarts.
 
-While a run is active the interface names the record being resolved, shows the agent's latest
-ACP session update as the current action, folds earlier updates into a collapsed history, and
-presents each interview question with its options, each labeled with the consequence of choosing
-it and with the recommended one marked, plus a free-form answer field. One start
+While a run is active the interface names the record being resolved, or says `Implementing` when
+the lifecycle peer is implementing an epic and `Generating` while it creates one, shows the
+agent's latest ACP session update as the current action, folds earlier updates into a collapsed
+history, and presents each interview question with its options, each labeled with the consequence
+of choosing it and with the recommended one marked, plus a free-form answer field. One start
 resolves every pending record in ascending file-name order: after each run the server re-reads
 `adrs/`, and the sequence ends when no pending record remains or when the finished record is
 still `Proposed` (or has been removed). The chain runs in the server, so it continues if the
 browser disconnects.
 
-The page also shows a lifecycle stage and pass number. The lifecycle starts only from a settled
-goal and a prepared skill set: the goal section reports `Goal ready` when the document contains
-at least one non-whitespace character and `Goal not set` otherwise, the Skills panel lists the
-managed skills read from `<REPO_DIR>/.omp/skills/`, and `Start lifecycle` stays disabled until
-the goal is ready and at least one managed skill is installed. The server enforces the same
-rules: a start is refused with an `error` when the goal is not settled, when the skills
+The page also shows a lifecycle stage and pass number. The pass is retained per repository in the
+harness state directory and reloaded when the backend restarts, so an interrupted run's pass is
+still shown afterwards; an explicit reset sets it back to 1. The lifecycle starts only from a
+settled goal and a prepared skill set: the goal section reports `Goal ready` when the document
+contains at least one non-whitespace character and `Goal not set` otherwise, the skills overlay
+lists the managed skills read from `<REPO_DIR>/.omp/skills/`, and `Start lifecycle` stays
+disabled until the goal is ready and at least one managed skill is installed. The server enforces
+the same rules: a start is refused with an `error` when the goal is not settled, when the skills
 directory cannot be read, or when no managed skill is installed. Selecting `Start lifecycle`
 gives the server the loop, and the server reports the run as active at the `epic` stage with no
 work as soon as it accepts the command, before it queries the origin tracker; every client
@@ -115,10 +122,11 @@ managed skill must be a directory containing `SKILL.md` with a matching name, a 
 description of at most 1024 characters, and `metadata.devboard-managed: "true"`, and the managed
 set must contain at least one skill. The final pass compares every installed skill, including
 hand-authored ones, and succeeds only when no pair gives incompatible instructions. On success
-the collapsed Skills dropdown shows its skill count and, when expanded, lists each prepared skill
-with its name and description and reports `No contradictions`; a later run, reload, reconnect, or
-server restart shows the set read from disk. A run replaces only the skills carrying the managed
-marker: an unmanaged skill is never
+the goal section's control reads `Show skills (<count>)` and opens an overlay that lists each
+prepared skill with its name and description, reports `No contradictions`, and offers
+`Prepare skills again`; the control reads `Prepare Skills` while no skill is installed. A later
+run, reload, reconnect, or server restart shows the set read from disk. A run replaces only the
+skills carrying the managed marker: an unmanaged skill is never
 overwritten or deleted, and a generated name that collides with one fails the run with an `error`
 naming it. Any failure sends an `error` and a failed `skillsPreparationStopped`, restores the
 previous skills directory byte for byte, and leaves the last Skills panel state visible. While
@@ -166,7 +174,11 @@ writes no `adrs/` file.
 
 - Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`. Each run spawns one `omp acp` subprocess over stdio.
 - Client: Svelte built with Vite.
-- Records: read from `adrs/` on every `listRecords` command and after every run, so files added, removed, or resolved while the server runs appear without a restart.
+- Records: read from `adrs/` on every `listRecords` command and after every run, so files added,
+  removed, or resolved while the server runs appear without a restart. Each record carries the
+  first paragraph of its `Decision` section as a short summary.
+- State: the lifecycle pass is written to `<harness>/.tmp/lifecycle-pass-<hash of REPO_DIR>` so it
+  survives a backend restart without leaking between repositories that share one harness install.
 
 ## Install
 
@@ -280,6 +292,8 @@ The client sends:
 { "type": "listRecords" }
 { "type": "getGoal" }
 { "type": "getProject" }
+{ "type": "getVersion" }
+{ "type": "restartServer" }
 { "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
 { "type": "startRun" }
 { "type": "startRun", "file": "0002-example.md" }
@@ -299,6 +313,14 @@ The client sends:
   absent document answers with empty text, so the goal section reports `Goal not set`.
 - `getProject` answers with the page heading label. `path` is `REPO_DIR` relative to the user's
   home directory when the repository lies inside it, and the absolute path otherwise.
+- `getVersion` answers with `versionState`: `running` is the commit the backend started from,
+  `current` is the commit the project's `.devboard` link names now, and `stale` is true only
+  when both are readable and differ. A client that connects, and the page every few seconds,
+  asks for it; a stale answer makes the reload control appear.
+- `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
+  stops the listener, starts the current host harness, and exits. It is refused with an `error`
+  when no launcher is configured or while a restart is already in progress. A client that sees
+  `serverRestarting` waits for the replacement to answer and reloads the page.
 - `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`. It is accepted while the lifecycle is paused and refused while the lifecycle is advancing.
 - `startRun` without `file` starts the sequence with the lowest-numbered pending record.
 - `startRun` with `file` starts that record first only when it is pending; the sequence then
@@ -426,7 +448,11 @@ The client sends:
   read also stops the run. Every stop before `finished` reports the idle `goal` stage with
   `work: null`, `paused: false`, and the pass reached, making goal editing, goal saving, and a
   new start available again.
-- Each lifecycle stage is still one `omp acp` process and relays activity and questions through the existing `runStarted`, `activity`, `question`, `runStopped`, and `records` events. Lifecycle state lives in server memory only.
+- Each lifecycle stage is still one `omp acp` process and relays activity and questions through
+  the existing `runStarted`, `activity`, `question`, `runStopped`, and `records` events.
+  Lifecycle state lives in server memory; only the pass is retained, in the harness state
+  directory keyed by `REPO_DIR`, and loaded when the backend starts. A client that connects
+  while no run is active receives the idle `goal` state when the retained pass is above 1.
 
 The server answers with events:
 
@@ -437,8 +463,10 @@ The server answers with events:
 { "type": "lifecycleState", "stage": "implementation", "pass": 1, "work": { "kind": "epic", "id": "42" }, "paused": true }
 { "type": "lifecycleState", "stage": "epic", "pass": 2, "work": null, "paused": false }
 { "type": "lifecycleState", "stage": "goal", "pass": 2, "work": null, "paused": false }
-{ "type": "records", "records": [ { "file": "0001-example.md", "title": "Example", "status": "Accepted", "pending": false } ], "next": null }
+{ "type": "records", "records": [ { "file": "0001-example.md", "title": "Example", "status": "Accepted", "pending": false, "summary": "Use the simplest runtime." } ], "next": null }
 { "type": "project", "path": "projects/devboard" }
+{ "type": "versionState", "running": "0123456789abcdef0123456789abcdef01234567", "current": "fedcba9876543210fedcba9876543210fedcba98", "stale": true }
+{ "type": "serverRestarting" }
 { "type": "goal", "text": "# Goal\n\nThe complete goal text." }
 { "type": "goalRevisionStarted" }
 { "type": "goalRevisionStopped", "completed": true, "text": "# Revised goal\n\nThe agent rewrote this." }
@@ -454,8 +482,10 @@ The server answers with events:
 { "type": "implementationResetStopped", "completed": true, "commit": "0123456789abcdef0123456789abcdef01234567" }
 { "type": "implementationResetStopped", "completed": false, "commit": "0123456789abcdef0123456789abcdef01234567" }
 { "type": "implementationResetStopped", "completed": false }
-{ "type": "runStarted", "file": "0001-example.md", "title": "Example" }
-{ "type": "runStarted", "file": "0002-example.md", "title": "Manual example", "manual": true }
+{ "type": "runStarted", "file": "0001-example.md", "title": "Example", "action": "resolving" }
+{ "type": "runStarted", "file": "", "title": "Improve watch mode", "action": "implementing" }
+{ "type": "runStarted", "file": "", "title": "Epic generation", "action": "generating" }
+{ "type": "runStarted", "file": "0002-example.md", "title": "Manual example", "action": "resolving", "manual": true }
 { "type": "activity", "text": "Inspecting 0001-example.md" }
 { "type": "activity", "text": " and its status line", "append": true }
 {
@@ -471,6 +501,12 @@ The server answers with events:
 { "type": "error", "message": "No pending ADRs to start." }
 ```
 
+- A `records` event carries every record in file-name order. `summary` is the first paragraph
+  of the record's `Decision` section, shortened at a word boundary; it is empty when the record
+  has no such section. `next` names the lowest-numbered pending record, or null.
+- `runStarted` carries `action`: `resolving` for an ADR peer, `implementing` when the lifecycle
+  peer implements an epic, and `generating` when it creates one. The client labels the run from
+  it, so an implementation is never described as a resolution.
 - `activity` events carry one line of the agent's output. An event with `"append": true`
   continues the previous line: the client appends `text` to it instead of starting a new one.
   Streamed ACP text updates are deltas of one assistant message (identified by its

@@ -7,6 +7,8 @@ export interface AdrRecord {
   title: string;
   status: string;
   pending: boolean;
+  /** The first paragraph of the Decision section, shortened for the record dropdown. */
+  summary: string;
 }
 
 export interface AdrList {
@@ -16,12 +18,61 @@ export interface AdrList {
 
 const TITLE_PATTERN = /^#\s+(.+?)\s*$/;
 const STATUS_PATTERN = /^\s*(?:[-*+]\s+)?status\s*:\s*(.+?)\s*$/i;
+const HEADING_PATTERN = /^#{1,6}\s+(.+?)\s*$/;
+const DECISION_HEADING = /^decision$/i;
+const SUMMARY_LIMIT = 280;
+
+/** Collapses the first decision paragraph to the short form the dropdown shows. */
+function summarizeDecision(paragraph: string[]): string {
+  if (paragraph.length === 0) return "";
+  const text = paragraph
+    .join(" ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[`*_]/g, "")
+    .replace(/^[-+]\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length <= SUMMARY_LIMIT) return text;
+  const cut = text.slice(0, SUMMARY_LIMIT);
+  const boundary = cut.lastIndexOf(" ");
+  return `${(boundary > 0 ? cut.slice(0, boundary) : cut).replace(/[.,;:!?-]+$/, "")}…`;
+}
+
+/** Reads the first paragraph under the record's Decision heading. */
+function readDecision(lines: string[]): string {
+  let inDecision = false;
+  let started = false;
+  const paragraph: string[] = [];
+
+  for (const line of lines) {
+    const heading = HEADING_PATTERN.exec(line)?.[1];
+    if (heading !== undefined) {
+      if (DECISION_HEADING.test(heading)) {
+        inDecision = true;
+        continue;
+      }
+      if (inDecision) break;
+      continue;
+    }
+    if (!inDecision) continue;
+
+    if (line.trim().length === 0) {
+      if (started) break;
+      continue;
+    }
+    started = true;
+    paragraph.push(line.trim());
+  }
+
+  return summarizeDecision(paragraph);
+}
 
 export function parseRecord(file: string, source: string): AdrRecord {
   let title: string | undefined;
   let status: string | undefined;
+  const lines = source.split(/\r?\n/);
 
-  for (const line of source.split(/\r?\n/)) {
+  for (const line of lines) {
     title ??= TITLE_PATTERN.exec(line)?.[1];
     status ??= STATUS_PATTERN.exec(line)?.[1];
     if (title !== undefined && status !== undefined) break;
@@ -32,6 +83,7 @@ export function parseRecord(file: string, source: string): AdrRecord {
     title: title ?? file.replace(/\.md$/i, ""),
     status: status ?? "",
     pending: status?.toLowerCase() === "proposed",
+    summary: readDecision(lines),
   };
 }
 

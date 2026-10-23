@@ -7,6 +7,15 @@
     title: string;
     status: string;
     pending: boolean;
+    summary: string;
+  }
+
+  type RunAction = "resolving" | "implementing" | "generating";
+
+  interface VersionState {
+    running: string | null;
+    current: string | null;
+    stale: boolean;
   }
 
   interface RecordsEvent {
@@ -70,6 +79,7 @@
 
   let runFile = $state<string | null>(null);
   let runTitle = $state<string | null>(null);
+  let runAction = $state<RunAction>("resolving");
   let runState = $state<"idle" | "active" | "stopped">("idle");
   let manualRunActive = $state(false);
   let activity = $state<string[]>([]);
@@ -85,6 +95,11 @@
   let resetArmed = $state(false);
   let resetting = $state(false);
   let resetStatus = $state<string | null>(null);
+  let skillsOpen = $state(false);
+  let adrsOpen = $state(false);
+  let version = $state<VersionState | null>(null);
+  let restarting = $state(false);
+  let awaitingRestart = $state(false);
 
   let pendingCount = $derived(records.filter((record) => record.pending).length);
   let running = $derived(runState === "active");
@@ -174,7 +189,9 @@
       "status" in value &&
       typeof value.status === "string" &&
       "pending" in value &&
-      typeof value.pending === "boolean"
+      typeof value.pending === "boolean" &&
+      "summary" in value &&
+      typeof value.summary === "string"
     );
   }
 
@@ -353,7 +370,13 @@
 
   function isRunStartedEvent(
     value: unknown,
-  ): value is { type: "runStarted"; file: string; title: string; manual?: boolean } {
+  ): value is {
+    type: "runStarted";
+    file: string;
+    title: string;
+    action?: RunAction;
+    manual?: boolean;
+  } {
     return (
       typeof value === "object" &&
       value !== null &&
@@ -363,7 +386,35 @@
       typeof value.file === "string" &&
       "title" in value &&
       typeof value.title === "string" &&
+      (!("action" in value) ||
+        value.action === "resolving" ||
+        value.action === "implementing" ||
+        value.action === "generating") &&
       (!("manual" in value) || typeof value.manual === "boolean")
+    );
+  }
+
+  function isVersionStateEvent(value: unknown): value is { type: "versionState" } & VersionState {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "versionState" &&
+      "running" in value &&
+      (value.running === null || typeof value.running === "string") &&
+      "current" in value &&
+      (value.current === null || typeof value.current === "string") &&
+      "stale" in value &&
+      typeof value.stale === "boolean"
+    );
+  }
+
+  function isServerRestartingEvent(value: unknown): value is { type: "serverRestarting" } {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "type" in value &&
+      value.type === "serverRestarting"
     );
   }
 
@@ -536,6 +587,45 @@
     sendCommand({ type: "prepareSkills" });
   }
 
+  function requestRestart() {
+    if (restarting) return;
+    restarting = true;
+    if (!sendCommand({ type: "restartServer" })) restarting = false;
+  }
+
+  async function waitForRestart() {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch("/", { cache: "no-store", method: "HEAD" });
+        if (response.ok) {
+          location.reload();
+          return;
+        }
+      } catch {
+        // The replacement is still starting.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    awaitingRestart = false;
+    restarting = false;
+    error = "The server did not come back after the restart.";
+    connect();
+  }
+
+  function closeOverlays() {
+    adrsOpen = false;
+    skillsOpen = false;
+  }
+
+  function focusOnMount(node: HTMLElement) {
+    node.focus();
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") closeOverlays();
+  }
+
   function reviseGoal() {
     const request = revisionRequest.trim();
     sendCommand(
@@ -569,6 +659,7 @@
       current.send(JSON.stringify({ type: "getGoal" }));
       current.send(JSON.stringify({ type: "getSkills" }));
       current.send(JSON.stringify({ type: "getProject" }));
+      current.send(JSON.stringify({ type: "getVersion" }));
     };
 
     current.onmessage = (event) => {
@@ -579,7 +670,18 @@
         return;
       }
 
-      if (isImplementationResetStartedEvent(message)) {
+      if (isVersionStateEvent(message)) {
+        version = {
+          running: message.running,
+          current: message.current,
+          stale: message.stale,
+        };
+      } else if (isServerRestartingEvent(message)) {
+        awaitingRestart = true;
+        restarting = true;
+        error = null;
+        socket?.close();
+      } else if (isImplementationResetStartedEvent(message)) {
         resetting = true;
         resetArmed = false;
         resetStatus = null;
@@ -663,6 +765,7 @@
       } else if (isRunStartedEvent(message)) {
         runFile = message.file;
         runTitle = message.title;
+        runAction = message.action ?? "resolving";
         runState = "active";
         manualRunActive = message.manual === true;
         activity = [];
@@ -690,26 +793,40 @@
         draft = "";
       } else if (isErrorEvent(message)) {
         error = message.message;
+        if (restarting) {
+          awaitingRestart = false;
+          restarting = false;
+        }
       }
     };
 
     current.onerror = () => {
-      error = "Could not reach the server.";
+      if (!awaitingRestart) error = "Could not reach the server.";
     };
 
     current.onclose = () => {
       connection = "closed";
       resetArmed = false;
+      if (awaitingRestart) {
+        void waitForRestart();
+        return;
+      }
       if (!disposed) retryTimer = window.setTimeout(connect, 1000);
     };
   }
 
   onMount(() => {
     connect();
+    const versionTimer = window.setInterval(() => {
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "getVersion" }));
+      }
+    }, 3000);
 
     return () => {
       disposed = true;
       if (retryTimer !== undefined) clearTimeout(retryTimer);
+      clearInterval(versionTimer);
       socket?.close();
     };
   });
@@ -759,6 +876,8 @@
   </div>
 {/snippet}
 
+<svelte:window onkeydown={handleKeydown} />
+
 <main>
   <header class="page-header">
     <div class="heading-row">
@@ -772,6 +891,36 @@
         {/if}
       </div>
       <div class="header-actions">
+        {#if version?.stale}
+          <button
+            type="button"
+            class="icon-button reload-button"
+            data-testid="reload-devboard"
+            title="A different devboard version is installed. Restart the server and reload."
+            aria-label="Restart the devboard server and reload"
+            disabled={restarting}
+            onclick={requestRestart}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path
+                d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5V6H10"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        {/if}
+        <button
+          type="button"
+          class="start-button adrs-button"
+          data-testid="open-adrs"
+          onclick={() => (adrsOpen = true)}
+        >
+          ADRs
+        </button>
         <button
           type="button"
           class="start-button"
@@ -784,13 +933,13 @@
         </button>
         {#if pendingCount > 0}
           <button
-            class="start-button"
+            class="start-button resolve-button"
             data-testid="start-next"
             title={runStartTitle}
             disabled={runStartDisabled}
             onclick={() => start()}
           >
-            Start
+            Resolve ADRs
           </button>
         {/if}
       </div>
@@ -852,15 +1001,26 @@
       <p class="goal-state" data-testid="goal-state" aria-live="polite">
         {goalReady ? "Goal ready" : "Goal not set"}
       </p>
-      <button
-        type="button"
-        class="start-button prepare-skills"
-        data-testid="prepare-skills"
-        disabled={prepareDisabled}
-        onclick={prepareSkills}
-      >
-        Prepare Skills
-      </button>
+      {#if skills.length > 0}
+        <button
+          type="button"
+          class="start-button prepare-skills"
+          data-testid="show-skills"
+          onclick={() => (skillsOpen = true)}
+        >
+          Show skills ({skills.length})
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="start-button prepare-skills"
+          data-testid="prepare-skills"
+          disabled={prepareDisabled}
+          onclick={prepareSkills}
+        >
+          Prepare Skills
+        </button>
+      {/if}
       <button
         type="button"
         class="start-button create-goal"
@@ -901,9 +1061,15 @@
   {/if}
 
   {#if runState === "active" && runTitle !== null}
-    <section class="run active-run" data-testid="active-run">
+    <section class="run active-run" data-testid="active-run" data-action={runAction}>
       <p class="run-heading">
-        Resolving <strong>{runTitle}</strong>
+        {#if runAction === "implementing"}
+          Implementing <strong>{runTitle}</strong>
+        {:else if runAction === "generating"}
+          Generating <strong>the next epic</strong>
+        {:else}
+          Resolving <strong>{runTitle}</strong>
+        {/if}
       </p>
     </section>
   {:else if runState === "stopped"}
@@ -978,83 +1144,167 @@
     </section>
   {/if}
 
-  {#if skills.length > 0}
-    <details class="skills" data-testid="skills-panel">
-      <summary class="skills-heading">
-        Skills
-        <span class="skills-count" data-testid="skills-count">{skills.length}</span>
-      </summary>
-      <ul class="skill-list">
-        {#each skills as skill (skill.name)}
-          <li class="skill" data-testid="skill" data-name={skill.name}>
-            <span class="skill-name">{skill.name}</span>
-            <p class="skill-description">{skill.description}</p>
-          </li>
-        {/each}
-      </ul>
-      {#if contradictions.length === 0}
-        <p class="skills-contradictions" data-testid="skills-no-contradictions">No contradictions</p>
-      {:else}
-        <ul class="skills-contradictions" data-testid="skills-contradictions">
-          {#each contradictions as contradiction (`${contradiction.skills[0]}:${contradiction.skills[1]}`)}
-            <li>
-              {contradiction.skills[0]} and {contradiction.skills[1]}:
-              “{contradiction.directives[0]}” vs “{contradiction.directives[1]}”
+  {#if skillsOpen}
+    <div
+      class="overlay"
+      role="presentation"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) skillsOpen = false;
+      }}
+    >
+      <div
+        class="overlay-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="skills-overlay-title"
+        data-testid="skills-overlay"
+      >
+        <div class="overlay-heading">
+          <h2 id="skills-overlay-title">
+            Skills <span class="skills-count" data-testid="skills-count">{skills.length}</span>
+          </h2>
+          <button
+            type="button"
+            class="start-button overlay-close"
+            data-testid="close-skills"
+            use:focusOnMount
+            onclick={() => (skillsOpen = false)}
+          >
+            Close
+          </button>
+        </div>
+
+        <ul class="skill-list">
+          {#each skills as skill (skill.name)}
+            <li class="skill" data-testid="skill" data-name={skill.name}>
+              <span class="skill-name">{skill.name}</span>
+              <p class="skill-description">{skill.description}</p>
             </li>
           {/each}
         </ul>
-      {/if}
-    </details>
+        {#if contradictions.length === 0}
+          <p class="skills-contradictions" data-testid="skills-no-contradictions">
+            No contradictions
+          </p>
+        {:else}
+          <ul class="skills-contradictions" data-testid="skills-contradictions">
+            {#each contradictions as contradiction (`${contradiction.skills[0]}:${contradiction.skills[1]}`)}
+              <li>
+                {contradiction.skills[0]} and {contradiction.skills[1]}:
+                “{contradiction.directives[0]}” vs “{contradiction.directives[1]}”
+              </li>
+            {/each}
+          </ul>
+        {/if}
+
+        <div class="overlay-actions">
+          <button
+            type="button"
+            class="start-button prepare-skills"
+            data-testid="prepare-skills-overlay"
+            disabled={prepareDisabled}
+            onclick={prepareSkills}
+          >
+            Prepare skills again
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 
-  {#if records.length === 0}
-    <p class="empty">No records found.</p>
-  {:else}
-    <ul class="records">
-      {#each records as record (record.file)}
-        <li
-          class="record"
-          class:pending={record.pending}
-          class:resolved={!record.pending}
-          class:active={runFile === record.file}
-          data-testid="record"
-          data-file={record.file}
-          data-pending={record.pending}
-          data-next={next === record.file}
-          data-active={runFile === record.file}
-        >
-          <div class="record-heading">
-            <h2>{record.title}</h2>
-            <div class="record-actions">
-              {#if next === record.file}
-                <span class="next-marker" data-testid="next-marker" aria-label="Next record to resolve">
-                  Next
-                </span>
-              {/if}
-              {#if record.pending}
-                <button
-                  type="button"
-                  class="start-button record-start"
-                  data-testid="start"
-                  data-file={record.file}
-                  title={runStartTitle}
-                  disabled={runStartDisabled}
-                  onclick={() => start(record.file === next ? undefined : record.file)}
-                >
-                  Start
-                </button>
-              {/if}
-            </div>
-          </div>
+  {#if adrsOpen}
+    <div
+      class="overlay"
+      role="presentation"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) adrsOpen = false;
+      }}
+    >
+      <div
+        class="overlay-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="adrs-overlay-title"
+        data-testid="adrs-overlay"
+      >
+        <div class="overlay-heading">
+          <h2 id="adrs-overlay-title">ADRs</h2>
+          <button
+            type="button"
+            class="start-button overlay-close"
+            data-testid="close-adrs"
+            use:focusOnMount
+            onclick={() => (adrsOpen = false)}
+          >
+            Close
+          </button>
+        </div>
 
-          <div class="meta">
-            <span class="status">{record.status || "Unknown"}</span>
-            <span class="state">{record.pending ? "Pending" : "Resolved"}</span>
-            <code>{record.file}</code>
-          </div>
-        </li>
-      {/each}
-    </ul>
+        {#if records.length === 0}
+          <p class="empty">No records found.</p>
+        {:else}
+          <ul class="records">
+            {#each records as record (record.file)}
+              <li
+                class="record"
+                class:pending={record.pending}
+                class:resolved={!record.pending}
+                class:active={runFile === record.file}
+                data-testid="record"
+                data-file={record.file}
+                data-pending={record.pending}
+                data-next={next === record.file}
+                data-active={runFile === record.file}
+              >
+                <div class="record-heading">
+                  <details class="record-details">
+                    <summary class="record-summary">
+                      <span class="record-title">{record.title}</span>
+                    </summary>
+                    <p class="record-decision" data-testid="record-summary">
+                      {record.summary || "No decision summary recorded."}
+                    </p>
+                  </details>
+                  <div class="record-actions">
+                    {#if next === record.file}
+                      <span
+                        class="next-marker"
+                        data-testid="next-marker"
+                        aria-label="Next record to resolve"
+                      >
+                        Next
+                      </span>
+                    {/if}
+                    {#if record.pending}
+                      <button
+                        type="button"
+                        class="start-button record-start"
+                        data-testid="start"
+                        data-file={record.file}
+                        title={runStartTitle}
+                        disabled={runStartDisabled}
+                        onclick={() => {
+                          adrsOpen = false;
+                          start(record.file === next ? undefined : record.file);
+                        }}
+                      >
+                        Start
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+
+                <div class="meta">
+                  <span class="status">{record.status || "Unknown"}</span>
+                  <span class="state">{record.pending ? "Pending" : "Resolved"}</span>
+                  <code>{record.file}</code>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    </div>
   {/if}
 
   <section class="reset" data-testid="reset-section">

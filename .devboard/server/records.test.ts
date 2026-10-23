@@ -30,7 +30,48 @@ describe("parseRecord", () => {
       title: "Example record",
       status: "Accepted",
       pending: false,
+      summary: "",
     });
+  });
+
+  test("summarizes the first paragraph of the Decision section", () => {
+    const record = parseRecord(
+      "0007-decision.md",
+      [
+        "# A decision",
+        "",
+        "- Status: Accepted",
+        "",
+        "## Context",
+        "",
+        "This must not be the summary.",
+        "",
+        "## Decision",
+        "",
+        "Use the `boring` runtime for **every** service.",
+        "The second sentence stays in the summary.",
+        "",
+        "## Consequences",
+        "",
+        "Ignored.",
+      ].join("\n"),
+    );
+
+    expect(record.summary).toBe(
+      "Use the boring runtime for every service. The second sentence stays in the summary.",
+    );
+  });
+
+  test("shortens a long decision paragraph at a word boundary", () => {
+    const paragraph = `${"word ".repeat(80)}end.`;
+    const record = parseRecord(
+      "0008-long.md",
+      `# Long\n\n- Status: Proposed\n\n## Decision\n\n${paragraph}\n`,
+    );
+
+    expect(record.summary.length).toBeLessThanOrEqual(281);
+    expect(record.summary.endsWith("…")).toBe(true);
+    expect(record.summary.startsWith("word word")).toBe(true);
   });
 
   test("marks only Proposed records as pending", () => {

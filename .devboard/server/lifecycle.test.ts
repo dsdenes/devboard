@@ -89,6 +89,7 @@ async function startServer(
     hostname: "127.0.0.1",
     port: 0,
     repoDir: root,
+    stateDir: join(root, "state"),
     goalFile,
     agentCommand: `bun ${STUB_AGENT} --log=${logPath} ${options.agentArguments ?? ""}`.trim(),
     tracker: options.tracker ?? (async () => undefined),
@@ -573,6 +574,7 @@ describe("lifecycle runs", () => {
         expect(await client.waitFor((message) => message.type === "runStarted")).toMatchObject({
           file: "",
           title: "An existing epic",
+          action: "implementing",
         });
 
         const spawned = Date.now() + 5000;
@@ -652,7 +654,7 @@ describe("lifecycle runs", () => {
           await client.waitFor(
             (message) => message.type === "runStarted" && message.title === "Epic generation",
           ),
-        ).toMatchObject({ file: "", title: "Epic generation" });
+        ).toMatchObject({ file: "", title: "Epic generation", action: "generating" });
 
         const started = Date.now() + 5000;
         while (prompts(logPath).length < 2 && Date.now() < started) await Bun.sleep(25);
@@ -730,7 +732,7 @@ describe("lifecycle runs", () => {
           await client.waitFor(
             (message) => message.type === "runStarted" && message.title === "Just created",
           ),
-        ).toMatchObject({ file: "", title: "Just created" });
+        ).toMatchObject({ file: "", title: "Just created", action: "implementing" });
 
         const started = Date.now() + 5000;
         while (prompts(logPath).length < 2 && Date.now() < started) await Bun.sleep(25);
@@ -948,7 +950,7 @@ describe("lifecycle runs", () => {
               work: { kind: "epic", id: "5" },
               paused: false,
             },
-            { type: "runStarted", file: "", title: "Replay the epic" },
+            { type: "runStarted", file: "", title: "Replay the epic", action: "implementing" },
             { type: "activity", text: "Working on /implement-next-epic" },
           ]);
         } finally {

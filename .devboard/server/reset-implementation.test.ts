@@ -186,6 +186,7 @@ async function startServer(
     hostname: "127.0.0.1",
     port: 0,
     repoDir: options.repoDir ?? host.host,
+    stateDir: join(host.root, "state"),
     goalFile: options.goalFile ?? join(host.host, "GOAL.md"),
     agentCommand: options.agentCommand,
     ...(options.tracker === undefined ? {} : { tracker: options.tracker }),
