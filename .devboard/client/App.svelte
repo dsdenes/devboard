@@ -998,9 +998,6 @@
   <section class="goal" data-testid="goal-editor">
     <div class="goal-heading">
       <span class="goal-label">Current goal</span>
-      <p class="goal-state" data-testid="goal-state" aria-live="polite">
-        {goalReady ? "Goal ready" : "Goal not set"}
-      </p>
       {#if skills.length > 0}
         <button
           type="button"
@@ -1029,7 +1026,7 @@
         disabled={connection !== "open"}
         onclick={createGoal}
       >
-        Create goal
+        {goalReady ? "Recreate goal" : "Create goal"}
       </button>
     </div>
     {#if goalReady}

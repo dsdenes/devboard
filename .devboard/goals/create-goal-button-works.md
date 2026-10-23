@@ -11,7 +11,7 @@ real skill path, not the deterministic stub, is the acceptance path.
 
 - The interface launched from `.devboard` with no `AGENT_COMMAND` override uses the existing
   `omp acp` default. With an empty, whitespace-only, or absent `GOAL.md`, the goal section shows
-  `Goal not set` and an enabled `Create goal` control (`data-testid="create-goal"`).
+  an enabled `Create goal` control (`data-testid="create-goal"`).
 - Loading, reloading, or reconnecting a client never sends `createGoal` and never starts an
   agent. A non-empty goal hides the control.
 - Clicking `Create goal` sends `{ "type": "createGoal" }`, the server broadcasts
@@ -24,8 +24,8 @@ real skill path, not the deterministic stub, is the acceptance path.
 - When the real peer ends after the developer answers its questions, the server broadcasts
   `{ "type": "goalCreationStopped", "completed": true, "text": "<bytes>" }` where `<bytes>` is
   exactly the content of `<repo root>/GOAL.md`. That file contains non-whitespace text, the
-  textarea shows the same text, `[data-testid="goal-state"]` reads `Goal ready`,
-  `create-goal` is absent, and `[data-testid="start-lifecycle"]` is enabled.
+  textarea shows the same text, the control reads `Recreate goal`, and
+  `[data-testid="start-lifecycle"]` is enabled.
 - If the peer ends while `<repo root>/GOAL.md` is absent, empty, or whitespace-only, the server
   broadcasts an `error` and `{ "type": "goalCreationStopped", "completed": false }` without
   `text`. The interface shows that error, leaves the textarea and goal state unchanged, and keeps
@@ -83,8 +83,8 @@ delete the worktree and its branch, and run the browser acceptance against the m
   ```
 
   Open `http://127.0.0.1:18081/`, click `Create goal`, answer the stub question, and confirm an
-  error appears, `[data-testid="goal-state"]` stays `Goal not set`, `[data-testid="create-goal"]`
-  is still present and enabled, `goal-creation-active` is gone, and `$tmp/GOAL.md` is unchanged.
+  error appears, `[data-testid="create-goal"]` still reads `Create goal` and is
+  present and enabled, `goal-creation-active` is gone, and `$tmp/GOAL.md` is unchanged.
 - Real-skill browser acceptance against the merged checkout, with the repository's real
   `GOAL.md` as the deliberate write target:
 
@@ -96,14 +96,14 @@ delete the worktree and its branch, and run the browser acceptance against the m
   ```
 
   `AGENT_COMMAND` MUST be unset so the default `omp acp` is used. Open
-  `http://127.0.0.1:8090/` and confirm `Goal not set` plus a visible enabled `Create goal`.
+  `http://127.0.0.1:8090/` and confirm a visible enabled `Create goal`.
   Wait two seconds and confirm no `omp acp` child of the server exists before the click. Click
   `Create goal`; confirm `goal-creation-active`, an activity line, and at least one question
   appear, and that the server has exactly one `omp acp` child (`pgrep -P <server pid> -f "omp acp"`
   prints one pid). Answer every question through the UI until the peer ends. Then confirm the
   server event order, that `<repo root>/GOAL.md` is non-empty, that the textarea equals its exact
-  bytes, `goal-state` reads `Goal ready`, `create-goal` is absent, and `start-lifecycle` is
-  enabled. Reload the page and confirm `create-goal` stays absent.
+  bytes, the control reads `Recreate goal`, and `start-lifecycle` is enabled. Reload the page
+  and confirm the control still reads `Recreate goal`.
 - Single-agent and reconnect real-skill check: restart the server with `GOAL.md` cleared, click
   `Create goal`, close the tab before answering, open a new tab, confirm
   `goal-creation-active`, the recorded activity, and the pending question are replayed, and

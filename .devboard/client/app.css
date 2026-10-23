@@ -160,10 +160,6 @@ main {
   margin-bottom: 0.5rem;
 }
 
-.goal-state {
-  margin: 0;
-}
-
 .goal-details {
   border-top: 1px solid var(--border);
   margin-top: 0.2rem;

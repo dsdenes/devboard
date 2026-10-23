@@ -29,8 +29,8 @@ flow never starts on page load or reconnect, and a non-empty goal hides the cont
   the pending question before that client's own command replies.
 - When the peer ends, the server reads `<repoDir>/GOAL.md` and broadcasts
   `{ "type": "goalCreationStopped", "completed": true, "text": "<exact file bytes>" }`. The
-  textarea shows that text, `[data-testid="goal-state"]` reports `Goal ready`, the
-  `create-goal` button is gone, and `[data-testid="start-lifecycle"]` is enabled.
+  textarea shows that text, the `create-goal` control reads `Recreate goal`, and
+  `[data-testid="start-lifecycle"]` is enabled.
 - If `<repoDir>/GOAL.md` cannot be read after the peer ends, the server broadcasts an `error`
   and `{ "type": "goalCreationStopped", "completed": false }` without `text`; the goal editor is
   unchanged and the `Create goal` control remains available.
@@ -97,17 +97,16 @@ built interface. Runtime checks use a temporary host directory; they never write
   ```
 
   Open `http://127.0.0.1:18080/`.
-  - Confirm `[data-testid="goal-state"]` reads `Goal not set` and
-    `[data-testid="create-goal"]` is visible.
+  - Confirm `[data-testid="create-goal"]` reads `Create goal` and is visible.
   - Wait two seconds without clicking and confirm `! grep -q '^spawn' "$tmp/agent.log"`: page
     load spawned nothing and sent no `createGoal`.
   - Click `Create goal`; confirm `[data-testid="goal-creation-active"]`, an activity line, and
     `[data-testid="question"]` appear, and `grep -q '^prompt /goal-outcome$'
     "$tmp/agent.log"` succeeds.
   - Answer the question; confirm `[data-testid="goal-text"]` equals the text the stub wrote to
-    `$tmp/GOAL.md`, `goal-state` reads `Goal ready`, `create-goal` is absent, and
+    `$tmp/GOAL.md`, `create-goal` reads `Recreate goal`, and
     `[data-testid="start-lifecycle"]` is enabled.
-  - Reload the page; confirm `create-goal` stays absent because `$tmp/GOAL.md` is non-empty.
+  - Reload the page; confirm `create-goal` still reads `Recreate goal` because `$tmp/GOAL.md` is non-empty.
   - Clear `$tmp/GOAL.md`, restart the server, click `Create goal`, close the tab before
     answering, and open a new tab. Confirm `goal-creation-active`, the recorded activity, and
     the pending question are replayed and the answer completes the run.
@@ -118,7 +117,7 @@ built interface. Runtime checks use a temporary host directory; they never write
     `GOAL_FILE="$tmp/custom.md"` and an empty `$tmp/GOAL.md`. Click `Create goal`; confirm the
     completion text comes from `$tmp/GOAL.md`,
     `$tmp/custom.md` is unchanged, and a reload returns the empty `$tmp/custom.md` from
-    `getGoal`, so `Goal not set` and the button return.
+    `getGoal`, so the control reads `Create goal` again.
 - Boundary checks in the worktree, before merging:
   - `git diff --exit-code main -- .devboard/prompts/goal-outcome.md
     .devboard/omp/commands/goal-outcome.md .devboard/prompts/goal-spec.md AGENTS.md adrs .omp`

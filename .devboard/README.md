@@ -15,7 +15,7 @@ shows a reload icon; selecting it restarts the backend from that checkout and re
 It also shows the repository's current goal in a `Current goal` section. Until a goal is set the
 editor is expanded. Once the goal document contains non-whitespace text, the editor, `Save goal`
 control, and revision controls collapse into a `Goal document` dropdown, while the heading keeps
-`Goal ready`, `Prepare Skills`, and `Create goal` visible. The developer can edit the text and
+the skills control and `Recreate goal` visible. The developer can edit the text and
 select `Save goal`; the server writes the submitted text verbatim to the goal document, and every
 page load reads that file rather than browser state.
 
@@ -30,14 +30,15 @@ while the lifecycle is paused. ADR starts likewise remain available while the li
 paused, and selecting one while it advances pauses the lifecycle first. Only one foreground
 agent runs at a time, so a revision and a manual ADR sequence exclude each other.
 
-The goal section always shows a `Create goal` control, and it stays selectable whenever the
-connection is open, including while the goal document already has content and while a creation,
+The goal section always shows a goal-creation control: `Create goal` while the document has no
+non-whitespace text and `Recreate goal` otherwise. It stays selectable whenever the connection is
+open, including while the goal document already has content and while a creation,
 revision, or run is active. Selecting it asks the server to start the installed `/goal-outcome`
 skill in one ACP peer, in the background; its activity and interview questions stream into the
 same live log and question UI, and the goal section shows `Creating the goal` while it runs. The
 developer answers the skill's questions; the skill interviews them and writes the goal document.
 The flow never starts on page load or reconnect. When the goal document is empty, whitespace-only,
-or absent, the section reports `Goal not set`; otherwise it reports `Goal ready`.
+or absent, the control reads `Create goal`; otherwise it reads `Recreate goal`.
 
 Selecting `Create goal` always starts a fresh creation. The server replaces an existing goal when
 the new creation writes non-empty text, and it stops whatever would contend with the new peer: an
@@ -45,7 +46,7 @@ in-flight creation or revision is cancelled with a failed `goalCreationStopped` 
 `goalRevisionStopped`, and an advancing ADR run or lifecycle is stopped and reported idle before
 creation begins. A paused lifecycle keeps its suspended conversation, which is replayed when the
 creation ends. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` and the textarea shows
-those bytes, so `Goal ready` becomes available; `Start lifecycle` becomes available once the
+those bytes, so `Recreate goal` becomes available; `Start lifecycle` becomes available once the
 goal is ready and at least one managed skill is installed. A creation that ends with no
 non-empty `GOAL.md` is reported as an error: the server sends an `error` and a failed
 `goalCreationStopped`, and the textarea and goal state keep their previous content. The server
@@ -67,10 +68,9 @@ browser disconnects.
 The page also shows a lifecycle stage and pass number. The pass is retained per repository in the
 harness state directory and reloaded when the backend restarts, so an interrupted run's pass is
 still shown afterwards; an explicit reset sets it back to 1. The lifecycle starts only from a
-settled goal and a prepared skill set: the goal section reports `Goal ready` when the document
-contains at least one non-whitespace character and `Goal not set` otherwise, the skills overlay
-lists the managed skills read from `<REPO_DIR>/.omp/skills/`, and `Start lifecycle` stays
-disabled until the goal is ready and at least one managed skill is installed. The server enforces
+settled goal and a prepared skill set: `Start lifecycle` stays disabled until the goal document
+contains at least one non-whitespace character and at least one managed skill is installed in
+`<REPO_DIR>/.omp/skills/`, which the skills overlay lists. The server enforces
 the same rules: a start is refused with an `error` when the goal is not settled, when the skills
 directory cannot be read, or when no managed skill is installed. Selecting `Start lifecycle`
 gives the server the loop, and the server reports the run as active at the `epic` stage with no
@@ -310,7 +310,8 @@ The client sends:
 ```
 
 - `getGoal` reads the goal document from disk and answers with its complete contents; an
-  absent document answers with empty text, so the goal section reports `Goal not set`.
+  absent document answers with empty text, which shows `Create goal` and keeps the lifecycle
+  start disabled.
 - `getProject` answers with the page heading label. `path` is `REPO_DIR` relative to the user's
   home directory when the repository lies inside it, and the absolute path otherwise.
 - `getVersion` answers with `versionState`: `running` is the commit the backend started from,

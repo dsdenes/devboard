@@ -887,8 +887,8 @@ export function createApp(options: AppOptions) {
     try {
       send(ws, { type: "goal", text: await readGoal(goalFile) });
     } catch (error) {
-      // An absent goal document is an unset goal, so the section reports
-      // `Goal not set` and offers the creation control instead of an error.
+      // An absent goal document is an unset goal, so the section offers the
+      // creation control instead of an error.
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         send(ws, { type: "goal", text: "" });
         return;
