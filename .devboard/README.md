@@ -22,8 +22,9 @@ activity log, questions use the same options, consequence explanations, recommen
 free-form answer field, and when the revision ends the textarea is replaced with the text the
 agent wrote to the goal document. A revision
 is unavailable while a run is active or the lifecycle is advancing, but remains available
-while the lifecycle is paused; starting another run or revision is blocked while one is in
-progress.
+while the lifecycle is paused. ADR starts likewise remain available while the lifecycle is
+paused, and selecting one while it advances pauses the lifecycle first. Only one foreground
+agent runs at a time, so a revision and a manual ADR sequence exclude each other.
 
 The goal section always shows a `Create goal` control, and it stays selectable whenever the
 connection is open, including while the goal document already has content and while a creation,
@@ -67,9 +68,9 @@ rules: a start is refused with an `error` when the goal is not settled, when the
 directory cannot be read, or when no managed skill is installed. Selecting `Start lifecycle`
 gives the server the loop, and the server reports the run as active at the `epic` stage with no
 work as soon as it accepts the command, before it queries the origin tracker; every client
-therefore shows `Epic generation` with the pause control available and its start controls
-disabled while that query runs. When the origin tracker already has an open epic, the lifecycle
-then reports `implementation` and implements that epic with `/implement-next-epic`; otherwise it
+therefore shows `Epic generation` with the pause control available and the lifecycle start
+control disabled while that query runs. When the origin tracker already has an open epic, the
+lifecycle then reports `implementation` and implements that epic with `/implement-next-epic`; otherwise it
 runs the `/epic-next` agent, resolves any pending ADRs the run leaves behind with
 `/adr-resolve` in file-name order, and repeats. After an implementation peer exits, the pass
 increments and the lifecycle returns to epic generation; the epic the generation peer creates
@@ -83,10 +84,12 @@ the same pending records without opening an epic, or a tracker or record read fa
 lifecycle stops with an `error` and returns to the idle goal stage instead of staying at the
 interrupted stage. An epic is an open issue carrying the label `epic` (ignoring case) or the
 `<!-- devboard-epic -->` marker in its body; the server reads it with read-only `gh` or
-`glab` queries. While a lifecycle run works, the goal editor and every start control are
-disabled, and a client that connects or reloads receives the current stage, pass, and work in
-progress first. Once a run reports `finished`, the server keeps that state for its lifetime
-and replays it to every client that connects or reloads, so the interface still shows
+`glab` queries. While a lifecycle run advances, the goal editor and the lifecycle start control
+are disabled, but the ADR start controls remain available: selecting one pauses the run at its
+interrupted stage, starts the manual record sequence, and leaves the lifecycle paused so the
+developer can resume it afterward. A client that connects or reloads receives the current stage,
+pass, and work in progress first. Once a run reports `finished`, the server keeps that state for
+its lifetime and replays it to every client that connects or reloads, so the interface still shows
 `Finished` and the final pass until a new run starts or the backend restarts. An aborted run
 likewise replays the idle goal stage, with no work, not paused, and the pass it had reached,
 so the goal becomes editable and another lifecycle run can start.
@@ -273,20 +276,35 @@ The client sends:
   home directory when the repository lies inside it, and the absolute path otherwise.
 - `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`. It is accepted while the lifecycle is paused and refused while the lifecycle is advancing.
 - `startRun` without `file` starts the sequence with the lowest-numbered pending record.
-- `startRun` with `file` starts that record first only when it is pending; the sequence then continues with the lowest-numbered remaining pending records.
-- Every accepted start resolves one record at a time until no pending record remains or a run ends without resolving its record. A still-`Proposed` or removed active record ends the sequence.
-- A start is refused with an `error` event while the sequence is running (including between records), when no record is pending, or when the named record is not pending.
+- `startRun` with `file` starts that record first only when it is pending; the sequence then
+  continues with the lowest-numbered remaining pending records.
+- Every accepted start resolves one record at a time until no pending record remains or a run
+  ends without resolving its record. A still-`Proposed` or removed active record ends the
+  sequence.
+- A manual start is accepted while a lifecycle run is active. When the lifecycle is advancing,
+  the server first pauses it at its interrupted stage and then starts the sequence; a start that
+  cannot run leaves the lifecycle advancing. While the lifecycle is paused, the manual sequence
+  runs beside the suspended lifecycle peer, which keeps its stage and conversation. Resolving
+  the record the lifecycle itself has in progress is refused. When the sequence ends, the
+  suspended lifecycle conversation is replayed and the lifecycle stays paused until it is
+  resumed. `runStarted` events for a manual record carry `"manual": true`, and a client that
+  connects during the sequence receives that conversation.
+- A start is refused with an `error` event while another manual sequence is running (including
+  between records), while a goal revision, goal creation, or skills preparation is active, when
+  no record is pending, or when the named record is not pending.
 - `answer` supplies one value for the pending elicitation; the question is cleared after the first answer.
 - `reviseGoal` starts a guided goal revision with one ACP peer. `request` is optional free-form guidance passed to the agent; without it, the agent establishes the direction through its interview questions. The agent writes the goal document itself. Activity and questions use the existing `activity` and `question` events, and `answer` replies to a revision question exactly as it does to a run question. It is accepted while the lifecycle is paused, where the suspended peer keeps its stage and conversation.
-- A revision is refused with an `error` event while the lifecycle is advancing, a run or run sequence is active, or another revision is active. While a revision is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and another `reviseGoal` are each refused with an `error`, and no agent is spawned.
+- A revision is refused with an `error` event while the lifecycle is advancing, a run or run
+  sequence is active, a manual ADR sequence is active, or another revision is active. While a revision is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and another `reviseGoal` are each refused with an `error`, and no agent is spawned.
 - `createGoal` starts the guided goal creation with one ACP peer whose prompt is exactly
   `/goal-outcome`, the installed skill command that reads the harness prompt and interviews the
   developer. The server accepts it in every state: it replaces a goal document that already has
-  content, and it preempts an in-flight creation or revision and stops an advancing ADR run or
-  lifecycle before the new peer starts. It reads `<REPO_DIR>/GOAL.md` before and after the peer,
-  while `getGoal` and `saveGoal` keep using `GOAL_FILE`. It is accepted while a lifecycle run is
-  paused, where the suspended peer keeps its stage and conversation. Activity and questions use
-  the existing `activity` and `question` events, and `answer` replies to a creation question
+  content, and it preempts an in-flight creation or revision and stops an advancing ADR run,
+  manual ADR sequence, or lifecycle before the new peer starts. It reads
+  `<REPO_DIR>/GOAL.md` before and after the peer, while `getGoal` and `saveGoal` keep using
+  `GOAL_FILE`. It is accepted while a lifecycle run is paused, where the suspended peer keeps its
+  stage and conversation, and it stops a manual sequence running beside that peer. Activity and
+  questions use the existing `activity` and `question` events, and `answer` replies to a creation question
   exactly as it does to a revision question; a second answer for the same question id is refused
   with an `error`. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` again: text that
   contains at least one non-whitespace character completes the creation, while an absent, empty,
@@ -333,20 +351,33 @@ The client sends:
   an empty list and `next: null`, and `goal` with the unchanged text (empty when the document
   is absent).
 - `startLifecycle` starts the backend-owned loop. It is refused with an `error` while a run,
-  a run sequence, a goal revision, a goal creation, or another lifecycle run is active; when the
-  goal document is absent, unreadable, or contains only whitespace; when `<REPO_DIR>/.omp/skills/`
-  cannot be read; and when no managed skill is installed there. A refused start spawns no agent
-  and reports no `lifecycleState`. An accepted start reports `lifecycleState` at
+  a run sequence, a manual ADR sequence, a goal revision, a goal creation, or another lifecycle
+  run is active; when the goal document is absent, unreadable, or contains only whitespace; when
+  `<REPO_DIR>/.omp/skills/` cannot be read; and when no managed skill is installed there. A
+  refused start spawns no agent and reports no `lifecycleState`. An accepted start reports
+  `lifecycleState` at
   `epic` with `work: null`, the pass already held, and `paused: false` before its first
   tracker query and before any agent starts. While the lifecycle run is active, `startLifecycle`
-  and `startRun` are also refused, because the lifecycle owns the tracker. `reviseGoal` and
-  `saveGoal` are refused only while the lifecycle is advancing. A run that stops before
-  `finished` — because the same epic stayed open, the same pending records remained without
-  an epic, or a tracker or record read failed — sends its `error`, then reports the idle
-  `goal` stage with `work: null`, `paused: false`, and the pass it reached; `saveGoal`,
-  `reviseGoal`, and a new `startLifecycle` are accepted again.
-- `pauseLifecycle` suspends an active lifecycle run with `SIGSTOP` on the current ACP child, or holds the loop before its next agent start when the run is between stages or its first tracker query is outstanding. It reports `lifecycleState` with the interrupted `stage`, `pass`, and `work` and `paused: true`; a pause during the first lookup therefore reports `epic` with `work: null`. No stage transition, tracker result use, or new ACP peer happens until a resume. A pending question stays visible, and `answer` is accepted and buffered for the suspended child.
-- `resumeLifecycle` reports the same `stage`, `pass`, and `work` with `paused: false` and continues the same ACP child with `SIGCONT` or releases the held loop. It is refused while a goal revision is active, which keeps the single-agent rule and leaves the lifecycle paused until the revision ends. Pause and resume are each refused with an `error` when no lifecycle run is active, when pausing an already-paused run, and when resuming a run that is not paused. The paused flag lives in server memory and is discarded when the run ends.
+  is also refused. `startRun` is accepted and pauses the run as described above, because one
+  agent works at a time. `reviseGoal` and `saveGoal` are refused only while the lifecycle is
+  advancing. A run that stops before `finished` — because the same epic stayed open, the same
+  pending records remained without an epic, or a tracker or record read failed — sends its
+  `error`, then reports the idle `goal` stage with `work: null`, `paused: false`, and the pass
+  it reached; `saveGoal`, `reviseGoal`, and a new `startLifecycle` are accepted again.
+- `pauseLifecycle` suspends an active lifecycle run with `SIGSTOP` on the current ACP child, or
+  holds the loop before its next agent start when the run is between stages or its first tracker
+  query is outstanding. It reports `lifecycleState` with the interrupted `stage`, `pass`, and
+  `work` and `paused: true`; a pause during the first lookup therefore reports `epic` with
+  `work: null`. No stage transition, tracker result use, or new ACP peer happens until a resume.
+  A pending question stays visible, and `answer` is accepted and buffered for the suspended
+  child. An accepted `startRun` that has a record to resolve pauses an advancing run the same
+  way before it starts the manual sequence.
+- `resumeLifecycle` reports the same `stage`, `pass`, and `work` with `paused: false` and
+  continues the same ACP child with `SIGCONT` or releases the held loop. It is refused while a
+  goal revision or a manual ADR sequence is active, which keeps the single-agent rule and leaves
+  the lifecycle paused until that peer ends. Pause and resume are each refused with an `error`
+  when no lifecycle run is active, when pausing an already-paused run, and when resuming a run
+  that is not paused. The paused flag lives in server memory and is discarded when the run ends.
 - The lifecycle checks the origin tracker on every pass. The accepted run is already reported
   at `epic` with `work: null`; when the first query finds an epic open, the lifecycle reports
   `implementation` with that epic as `work`, sends `/implement-next-epic` to one ACP peer,
@@ -399,6 +430,7 @@ The server answers with events:
 { "type": "implementationResetStopped", "completed": false, "commit": "0123456789abcdef0123456789abcdef01234567" }
 { "type": "implementationResetStopped", "completed": false }
 { "type": "runStarted", "file": "0001-example.md", "title": "Example" }
+{ "type": "runStarted", "file": "0002-example.md", "title": "Manual example", "manual": true }
 { "type": "activity", "text": "Inspecting 0001-example.md" }
 { "type": "activity", "text": " and its status line", "append": true }
 {
@@ -423,6 +455,11 @@ The server answers with events:
   run receives each line once, without the `append` flag. Text updates that carry no message
   id are complete lines and always start a new one. The interface renders the last line as the
   current action and lists earlier lines under a collapsed history.
+- A manual record `runStarted` carries `"manual": true`; a lifecycle stage's event omits the
+  field. The flag lets the client keep its start controls disabled for the manual sequence while
+  a paused lifecycle remains resumable. A client that connects during a manual sequence receives
+  that `runStarted`, the recorded activity, and the pending question, ahead of the suspended
+  lifecycle conversation.
 - A `question` event carries one option per choice. Each option has a `label`, an optional
   `description` stating the consequence of choosing it, and `recommended`, true for the answer
   the agent suggests. `answer` names the selected label as `value`.
@@ -470,7 +507,14 @@ The server answers with events:
   and shows `No contradictions` when the list is empty; the contradiction review itself covers
   every skill directory, managed or not.
 - The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written verbatim by `saveGoal` and by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file.
-- Skills preparation writes only under `<REPO_DIR>/.omp/skills/` and only through its ACP peer; the server deletes managed skill directories before the run and restores the snapshot after a failure. `runStopped` reports whether the active record is now resolved; a `records` event follows each `runStopped` before the next `runStarted`. Only one run, sequence, lifecycle run, goal revision, goal creation, or skills preparation exists at a time, in server memory; stopping the server terminates its child process and the loop.
+- Skills preparation writes only under `<REPO_DIR>/.omp/skills/` and only through its ACP peer;
+  the server deletes managed skill directories before the run and restores the snapshot after a
+  failure. `runStopped` reports whether the active record is now resolved; a `records` event
+  follows each `runStopped` before the next `runStarted`. One foreground agent — a run, manual
+  sequence, lifecycle stage, goal revision, goal creation, or skills preparation — works at a
+  time, in server memory. A paused lifecycle's suspended peer coexists with a manual sequence or
+  revision, and resume waits until that peer ends. Stopping the server terminates its child
+  process and the loop.
 
 ## Tests
 
@@ -505,8 +549,8 @@ peer, ADR-order resolution, implementation of an already-open epic, return to ep
 on the next pass, the settle window that waits out a lagging tracker after epic generation and
 after implementation and that finishes when the window is exhausted, the same-epic stop, the
 finished transition when a pass yields no epic and no pending ADR, restart after that
-transition, the three lifecycle refusals during
-implementation, replay of the implementation state and activity to a reconnecting client and
+transition, the lifecycle and goal-save refusals during implementation plus an empty ADR start,
+replay of the implementation state and activity to a reconnecting client and
 of the finished state to a client that connects after the run ends, the absence of a
 `lifecycleState` before any run, the new run's stage after restarting from `finished`, and the
 goal precondition: an absent, whitespace-only, or just-cleared goal refuses the start with one
@@ -527,8 +571,10 @@ previous managed set, and the absence of `GOAL.md` or `adrs/` writes.
 peer, pausing with a pending question and carrying its answer across the pause, pausing between
 stages while a tracker query is outstanding, pausing the initial tracker lookup and resuming
 into its result, paused replay with recorded activity and question, goal saving while paused,
-guided goal revision while paused including replay of the suspended conversation and every
-refusal path with unchanged state.
+manual ADR resolution while paused and while advancing (which pauses first), refusal of the
+lifecycle's own in-progress record and of resume during the manual sequence, replay of the
+suspended lifecycle conversation when the sequence ends, guided goal revision while paused
+including replay of the suspended conversation and every refusal path with unchanged state.
 `server/reset-implementation.test.ts` drives the reset against temporary hosts with local bare
 remotes: the command and started/stopped events, tracked/untracked/ignored deletion, keep-set
 bytes, the `.worktree` sentinel, symlink removal without following, the exact commit subject and

@@ -394,7 +394,7 @@ describe("lifecycle runs", () => {
   );
 
   test(
-    "refuses startLifecycle, startRun, and saveGoal while the epic peer runs",
+    "refuses startLifecycle, an empty startRun, and saveGoal while the epic peer runs",
     async () => {
       const { server, goalFile, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
@@ -417,7 +417,7 @@ describe("lifecycle runs", () => {
 
         for (const expected of [
           "A lifecycle run is already active.",
-          "A lifecycle run is active.",
+          "No pending ADRs to start.",
           "A lifecycle run is active.",
         ]) {
           await client.waitFor(
@@ -428,12 +428,15 @@ describe("lifecycle runs", () => {
         expect(
           client.events
             .filter((message) => message.type === "error")
-            .map((message) => message.message),
-        ).toEqual([
-          "A lifecycle run is already active.",
-          "A lifecycle run is active.",
-          "A lifecycle run is active.",
-        ]);
+            .map((message) => message.message)
+            .sort(),
+        ).toEqual(
+          [
+            "A lifecycle run is already active.",
+            "No pending ADRs to start.",
+            "A lifecycle run is active.",
+          ].sort(),
+        );
         expect(spawnCount(logPath)).toBe(1);
         expect(await readFile(goalFile, "utf8")).toBe(originalGoal);
 
@@ -731,7 +734,7 @@ describe("lifecycle runs", () => {
 
         const started = Date.now() + 5000;
         while (prompts(logPath).length < 2 && Date.now() < started) await Bun.sleep(25);
-        expect(prompts(logPath)).toEqual(["/epic-next", "/implement-next-epic"]);
+        expect(prompts(logPath).slice(0, 2)).toEqual(["/epic-next", "/implement-next-epic"]);
       } finally {
         client.close();
         server.stop(true);
@@ -860,7 +863,7 @@ describe("lifecycle runs", () => {
 
         for (const expected of [
           "A lifecycle run is already active.",
-          "A lifecycle run is active.",
+          "No pending ADRs to start.",
           "A lifecycle run is active.",
         ]) {
           await client.waitFor(
@@ -871,12 +874,15 @@ describe("lifecycle runs", () => {
         expect(
           client.events
             .filter((message) => message.type === "error")
-            .map((message) => message.message),
-        ).toEqual([
-          "A lifecycle run is already active.",
-          "A lifecycle run is active.",
-          "A lifecycle run is active.",
-        ]);
+            .map((message) => message.message)
+            .sort(),
+        ).toEqual(
+          [
+            "A lifecycle run is already active.",
+            "No pending ADRs to start.",
+            "A lifecycle run is active.",
+          ].sort(),
+        );
         expect(spawnCount(logPath)).toBe(1);
         expect(await readFile(goalFile, "utf8")).toBe(originalGoal);
 

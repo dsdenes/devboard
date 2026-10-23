@@ -212,6 +212,7 @@ async function waitForAt(
 }
 
 const PENDING_ONE = "# First decision\n\n- Status: Proposed\n\n## Context\n\nFirst.\n\n## Decision\n\n";
+const PENDING_TWO = "# Second decision\n\n- Status: Proposed\n\n## Context\n\nSecond.\n\n## Decision\n\n";
 
 /** Covers the revision start/stop and replay, then resumes the suspended peer. */
 async function exercisePausedRevision(request: string | undefined) {
@@ -882,7 +883,7 @@ describe("lifecycle pause and resume", () => {
   );
 
   test(
-    "allows goal saving while paused and refuses other starts",
+    "allows goal saving while paused and starts no run without pending ADRs",
     async () => {
       const epic: OpenEpic = {
         number: 4,
@@ -930,7 +931,7 @@ describe("lifecycle pause and resume", () => {
 
         for (const expected of [
           "A lifecycle run is already active.",
-          "A lifecycle run is active.",
+          "No pending ADRs to start.",
         ]) {
           expect(
             await client.waitFor(
@@ -941,6 +942,325 @@ describe("lifecycle pause and resume", () => {
 
         expect(spawnCount(logPath)).toBe(1);
         expect(prompts(logPath)).toEqual(["/implement-next-epic"]);
+        expect(
+          lifecycleStates(client).filter((message) => message.paused === false),
+        ).toEqual([
+          {
+            type: "lifecycleState",
+            stage: "epic",
+            pass: 1,
+            work: null,
+            paused: false,
+          },
+          {
+            type: "lifecycleState",
+            stage: "implementation",
+            pass: 1,
+            work: { kind: "epic", id: "4" },
+            paused: false,
+          },
+        ]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "resolves pending ADRs while paused and restores the lifecycle conversation",
+    async () => {
+      const epic: OpenEpic = {
+        number: 31,
+        title: "Manual while paused",
+        url: "https://example.test/issues/31",
+      };
+      let lookups = 0;
+      const { server, adrDir, logPath, url } = await startServer(
+        { "0001-first.md": PENDING_ONE, "0002-second.md": PENDING_TWO },
+        {
+          agentArguments: "--delay-ms=900 --questions=0",
+          tracker: async () => {
+            lookups += 1;
+            return lookups === 1 ? epic : undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "implementation",
+        );
+        await waitUntil(() => spawnCount(logPath) === 1, "the lifecycle peer did not spawn");
+
+        client.send({ type: "pauseLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.paused === true,
+        );
+        const pausedIndex = client.events.length;
+
+        client.send({ type: "startRun", file: "0001-first.md" });
+        expect(
+          await waitForAt(
+            client,
+            pausedIndex,
+            (message) => message.type === "runStarted" && message.file === "0001-first.md",
+            "the manual run did not start while paused",
+          ),
+        ).toEqual({
+          type: "runStarted",
+          file: "0001-first.md",
+          title: "First decision",
+          manual: true,
+        });
+
+        const resumeIndex = client.events.length;
+        client.send({ type: "resumeLifecycle" });
+        expect(
+          await waitForAt(
+            client,
+            resumeIndex,
+            (message) => message.type === "error",
+            "resuming during the manual run was not refused",
+          ),
+        ).toEqual({ type: "error", message: "A manual ADR run is active." });
+
+        await waitForAt(
+          client,
+          pausedIndex,
+          (message) =>
+            message.type === "runStopped" &&
+            message.file === "0001-first.md" &&
+            message.resolved === true,
+          "the first manual record did not resolve",
+          10000,
+        );
+        await waitForAt(
+          client,
+          pausedIndex,
+          (message) => message.type === "runStarted" && message.file === "0002-second.md",
+          "the manual sequence did not continue",
+          10000,
+        );
+        await waitForAt(
+          client,
+          pausedIndex,
+          (message) =>
+            message.type === "runStopped" &&
+            message.file === "0002-second.md" &&
+            message.resolved === true,
+          "the second manual record did not resolve",
+          10000,
+        );
+
+        expect(await readFile(join(adrDir, "0001-first.md"), "utf8")).toContain(
+          "- Status: Accepted",
+        );
+        expect(await readFile(join(adrDir, "0002-second.md"), "utf8")).toContain(
+          "- Status: Accepted",
+        );
+        expect(
+          await client.waitFor((message) => message.type === "records" && message.next === null),
+        ).toMatchObject({ next: null });
+
+        const replayIndex = await waitForIndex(
+          client,
+          pausedIndex,
+          (message) => message.type === "runStarted" && message.file === "",
+          "the lifecycle conversation was not restored",
+          10000,
+        );
+        expect(client.events[replayIndex]).toMatchObject({ title: "Manual while paused" });
+        expect(
+          client.events
+            .slice(pausedIndex, replayIndex)
+            .filter((message) => message.type === "lifecycleState" && message.paused === false),
+        ).toEqual([]);
+        expect(spawnCount(logPath)).toBe(3);
+        expect(prompts(logPath)[0]).toBe("/implement-next-epic");
+        expect(prompts(logPath)[1]?.startsWith("/adr-resolve ")).toBe(true);
+        expect(prompts(logPath)[2]?.startsWith("/adr-resolve ")).toBe(true);
+
+        const resumedIndex = client.events.length;
+        client.send({ type: "resumeLifecycle" });
+        expect(
+          await waitForAt(
+            client,
+            resumedIndex,
+            (message) => message.type === "lifecycleState" && message.paused === false,
+            "the paused lifecycle did not resume",
+          ),
+        ).toMatchObject({
+          stage: "implementation",
+          pass: 1,
+          work: { kind: "epic", id: "31" },
+        });
+        expect(
+          await waitForAt(
+            client,
+            resumedIndex,
+            (message) =>
+              message.type === "lifecycleState" && message.stage === "epic" && message.pass === 2,
+            "the resumed peer did not advance the lifecycle",
+            15000,
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 2,
+          work: null,
+          paused: false,
+        });
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "pauses an advancing lifecycle to resolve a pending ADR manually",
+    async () => {
+      const epic: OpenEpic = {
+        number: 32,
+        title: "Paused while advancing",
+        url: "https://example.test/issues/32",
+      };
+      let lookups = 0;
+      const { server, adrDir, logPath, url } = await startServer(
+        { "0001-first.md": PENDING_ONE },
+        {
+          agentArguments: "--delay-ms=1500 --questions=0",
+          tracker: async () => {
+            lookups += 1;
+            return lookups === 1 ? epic : undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "implementation",
+        );
+        await waitUntil(() => spawnCount(logPath) === 1, "the lifecycle peer did not spawn");
+
+        const beforeStart = client.events.length;
+        client.send({ type: "startRun", file: "0001-first.md" });
+        const paused = await waitForAt(
+          client,
+          beforeStart,
+          (message) => message.type === "lifecycleState" && message.paused === true,
+          "the advancing lifecycle was not paused",
+        );
+        expect(paused).toMatchObject({
+          stage: "implementation",
+          pass: 1,
+          work: { kind: "epic", id: "32" },
+        });
+
+        const pausedIndex = client.events.indexOf(paused);
+        expect(
+          await waitForAt(
+            client,
+            pausedIndex,
+            (message) => message.type === "runStarted" && message.file === "0001-first.md",
+            "the manual run did not start after the pause",
+          ),
+        ).toMatchObject({ manual: true });
+        await waitForAt(
+          client,
+          pausedIndex,
+          (message) =>
+            message.type === "runStopped" &&
+            message.file === "0001-first.md" &&
+            message.resolved === true,
+          "the manual record did not resolve",
+          10000,
+        );
+
+        expect(await readFile(join(adrDir, "0001-first.md"), "utf8")).toContain(
+          "- Status: Accepted",
+        );
+        expect(spawnCount(logPath)).toBe(2);
+        expect(prompts(logPath)[0]).toBe("/implement-next-epic");
+        expect(prompts(logPath)[1]?.startsWith("/adr-resolve ")).toBe(true);
+        expect(
+          await waitForAt(
+            client,
+            pausedIndex,
+            (message) => message.type === "runStarted" && message.file === "",
+            "the lifecycle conversation was not restored",
+            10000,
+          ),
+        ).toMatchObject({ title: "Paused while advancing" });
+        expect(
+          client.events.filter(
+            (message) => message.type === "lifecycleState" && message.paused === false,
+          ),
+        ).toHaveLength(2);
+
+        const resumedIndex = client.events.length;
+        client.send({ type: "resumeLifecycle" });
+        expect(
+          await waitForAt(
+            client,
+            resumedIndex,
+            (message) => message.type === "lifecycleState" && message.paused === false,
+            "the paused lifecycle did not resume",
+          ),
+        ).toMatchObject({
+          stage: "implementation",
+          pass: 1,
+          work: { kind: "epic", id: "32" },
+        });
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "refuses a manual start for the record the lifecycle is resolving",
+    async () => {
+      const { server, url } = await startServer(
+        { "0001-first.md": PENDING_ONE, "0002-second.md": PENDING_TWO },
+        { agentArguments: "--delay-ms=2000 --questions=0" },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "adr",
+        );
+        client.send({ type: "pauseLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.paused === true,
+        );
+
+        const beforeStart = client.events.length;
+        client.send({ type: "startRun", file: "0001-first.md" });
+        expect(
+          await waitForAt(
+            client,
+            beforeStart,
+            (message) => message.type === "error",
+            "the manual start was not refused",
+          ),
+        ).toEqual({ type: "error", message: "The lifecycle is already resolving that ADR." });
+        expect(
+          client.events.filter(
+            (message) => message.type === "runStarted" && message.manual === true,
+          ),
+        ).toEqual([]);
       } finally {
         client.close();
         server.stop(true);

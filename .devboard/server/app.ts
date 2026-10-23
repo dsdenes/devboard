@@ -641,6 +641,16 @@ export function createApp(options: AppOptions) {
   const clients = new Set<ServerWebSocket<unknown>>();
   let activeRun: ActiveRun | undefined;
   let sequencing = false;
+  /**
+   * A manual ADR sequence started from the interface. When the lifecycle is
+   * paused, its suspended peer stays in `activeRun` and keeps its stage and
+   * conversation while this sequence resolves records; the lifecycle never
+   * advances until it is resumed.
+   */
+  let manualRun: ActiveRun | undefined;
+  let manualSequencing = false;
+  /** Invalidates an in-flight manual start when a reset takes over. */
+  let manualStartRequest = 0;
   let goalRevision: GoalRevision | undefined;
   let goalCreation: GoalCreation | undefined;
   let goalCreationRequest = 0;
@@ -692,8 +702,17 @@ export function createApp(options: AppOptions) {
     broadcast({ type: "activity", text: activity.text });
   }
 
-  function sendRunConversation(target: { send(data: string): unknown }, run: ActiveRun) {
-    send(target, { type: "runStarted", file: run.file, title: run.title });
+  function sendRunConversation(
+    target: { send(data: string): unknown },
+    run: ActiveRun,
+    manual = false,
+  ) {
+    send(target, {
+      type: "runStarted",
+      file: run.file,
+      title: run.title,
+      ...(manual ? { manual: true } : {}),
+    });
     for (const text of run.activity) send(target, { type: "activity", text });
     if (run.question !== null) {
       send(target, {
@@ -705,10 +724,33 @@ export function createApp(options: AppOptions) {
     }
   }
 
-  /** Restores the suspended lifecycle conversation after a revision ends. */
+  function isLiveRun(run: ActiveRun): boolean {
+    return activeRun === run || manualRun === run;
+  }
+
+  /** Restores the suspended lifecycle conversation after a foreground peer ends. */
   function broadcastRunConversation() {
     if (activeRun === undefined) return;
     for (const client of clients) sendRunConversation(client, activeRun);
+  }
+
+  /** Ends a manual sequence and closes its peer without touching the lifecycle. */
+  function abortManualRun(): boolean {
+    let stopped = manualSequencing;
+    manualSequencing = false;
+    const run = manualRun;
+    if (run === undefined) return stopped;
+    manualRun = undefined;
+    run.question = null;
+    run.agent?.close();
+    broadcast({
+      type: "runStopped",
+      file: run.file,
+      title: run.title,
+      resolved: false,
+      status: "",
+    });
+    return true;
   }
 
   async function readRecord(file: string): Promise<AdrRecord | undefined> {
@@ -962,7 +1004,7 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    if (activeRun !== undefined || sequencing) {
+    if (activeRun !== undefined || manualRun !== undefined || sequencing || manualSequencing) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
     }
@@ -1132,12 +1174,17 @@ export function createApp(options: AppOptions) {
 
   /**
    * Stops the run or lifecycle the creation would contend with. A paused
-   * lifecycle keeps its suspended peer, which creation already coexists with.
+   * lifecycle keeps its suspended peer, which creation already coexists with;
+   * a manual ADR run started while it is paused is stopped.
    */
   function abortActiveRun(): boolean {
-    if (lifecycleRunning && lifecycle.paused) return false;
+    // Invalidate a manual start still validating records before creation takes
+    // the checkout over.
+    manualStartRequest += 1;
+    let stopped = abortManualRun();
 
-    let stopped = false;
+    if (lifecycleRunning && lifecycle.paused) return stopped;
+
     if (lifecycleRunning) {
       lifecycleRunning = false;
       lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
@@ -1275,8 +1322,13 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    // A paused lifecycle keeps its suspended peer in activeRun; only a run that
-    // the revision would contend with refuses the start.
+    // A paused lifecycle keeps its suspended peer in activeRun; only a manual
+    // run or sequence that the revision would contend with refuses the start.
+    if (manualRun !== undefined || manualSequencing) {
+      send(ws, { type: "error", message: "A run is already active." });
+      return;
+    }
+
     if (!(lifecycleRunning && lifecycle.paused) && (activeRun !== undefined || sequencing)) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
@@ -1343,11 +1395,11 @@ export function createApp(options: AppOptions) {
         command: agentCommand,
         cwd: repoDir,
         onActivity(activity) {
-          if (activeRun !== run) return;
+          if (!isLiveRun(run)) return;
           recordActivity(run.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
-          if (activeRun !== run) return;
+          if (!isLiveRun(run)) return;
           run.question = {
             id: question.id,
             message: question.message,
@@ -1370,7 +1422,7 @@ export function createApp(options: AppOptions) {
       const record = await readRecord(run.file);
       return await stopRun(run, record !== undefined && !record.pending, record?.status ?? "");
     } catch (error) {
-      if (activeRun !== run) return false;
+      if (!isLiveRun(run)) return false;
       broadcast({
         type: "error",
         message: error instanceof Error ? error.message : String(error),
@@ -1381,8 +1433,10 @@ export function createApp(options: AppOptions) {
   }
 
   async function stopRun(run: ActiveRun, resolved: boolean, status: string): Promise<boolean> {
-    if (activeRun !== run) return false;
-    activeRun = undefined;
+    const manual = manualRun === run;
+    if (!manual && activeRun !== run) return false;
+    if (manual) manualRun = undefined;
+    else activeRun = undefined;
     run.question = null;
     run.agent?.close();
 
@@ -1419,27 +1473,74 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    if (lifecycleRunning) {
-      send(ws, { type: "error", message: "A lifecycle run is active." });
-      return;
-    }
-
     if (goalRevision !== undefined) {
       send(ws, { type: "error", message: "A goal revision is active." });
       return;
     }
 
-    if (activeRun !== undefined || sequencing) {
+    if (manualRun !== undefined || manualSequencing || sequencing) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
     }
 
-    sequencing = true;
+    // Only the lifecycle's own peer may already hold the agent slot.
+    if (activeRun !== undefined && !lifecycleRunning) {
+      send(ws, { type: "error", message: "A run is already active." });
+      return;
+    }
+
+    const request = ++manualStartRequest;
     let selected = typeof file === "string" ? file : undefined;
+
+    // A manual start takes the single agent slot from an advancing lifecycle.
+    // Validate the record first so a start that cannot run leaves the
+    // lifecycle advancing, then pause it so its stage and conversation stay
+    // resumable while this peer works.
+    if (lifecycleRunning && !lifecycle.paused) {
+      let record: AdrRecord | undefined;
+      try {
+        const list = await readRecords(adrDir);
+        record =
+          selected === undefined
+            ? list.records.find((candidate) => candidate.file === list.next)
+            : list.records.find(
+                (candidate) => candidate.file === selected && candidate.pending,
+              );
+      } catch (error) {
+        send(ws, {
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+      if (request !== manualStartRequest) return;
+
+      if (record === undefined) {
+        send(ws, {
+          type: "error",
+          message:
+            selected === undefined ? "No pending ADRs to start." : "That ADR is not pending.",
+        });
+        return;
+      }
+
+      if (
+        lifecycle.stage === "adr" &&
+        lifecycle.work?.kind === "adr" &&
+        lifecycle.work.id === record.file
+      ) {
+        send(ws, { type: "error", message: "The lifecycle is already resolving that ADR." });
+        return;
+      }
+
+      pauseLifecycle(ws);
+    }
+
+    manualSequencing = true;
     let first = true;
 
     try {
-      while (sequencing) {
+      while (manualSequencing) {
         const list = await readRecords(adrDir);
         let record: AdrRecord | undefined;
 
@@ -1462,7 +1563,21 @@ export function createApp(options: AppOptions) {
 
         first = false;
         // A creation request clears the sequence; never start another record.
-        if (!sequencing) return;
+        if (!manualSequencing) return;
+
+        // The suspended lifecycle peer keeps its record; a manual peer must
+        // not write the same file behind it.
+        if (
+          lifecycleRunning &&
+          lifecycle.paused &&
+          lifecycle.stage === "adr" &&
+          lifecycle.work?.kind === "adr" &&
+          lifecycle.work.id === record.file
+        ) {
+          send(ws, { type: "error", message: "The lifecycle is already resolving that ADR." });
+          return;
+        }
+
         const run: ActiveRun = {
           file: record.file,
           title: record.title,
@@ -1470,8 +1585,8 @@ export function createApp(options: AppOptions) {
           activity: [],
           question: null,
         };
-        activeRun = run;
-        broadcast({ type: "runStarted", file: run.file, title: run.title });
+        manualRun = run;
+        broadcast({ type: "runStarted", file: run.file, title: run.title, manual: true });
 
         const resolved = await runAgent(run);
         if (!resolved) return;
@@ -1482,7 +1597,11 @@ export function createApp(options: AppOptions) {
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      sequencing = false;
+      // A creation or reset clears the sequence to take the checkout over; it
+      // restores or replaces the foreground conversation itself.
+      const interrupted = !manualSequencing;
+      manualSequencing = false;
+      if (!interrupted) broadcastRunConversation();
     }
   }
 
@@ -1538,6 +1657,11 @@ export function createApp(options: AppOptions) {
 
     if (goalRevision !== undefined) {
       send(ws, { type: "error", message: "A goal revision is active." });
+      return;
+    }
+
+    if (manualRun !== undefined || manualSequencing) {
+      send(ws, { type: "error", message: "A manual ADR run is active." });
       return;
     }
 
@@ -1694,7 +1818,7 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    if (activeRun !== undefined || sequencing) {
+    if (activeRun !== undefined || manualRun !== undefined || sequencing || manualSequencing) {
       send(ws, { type: "error", message: "A run is already active." });
       return;
     }
@@ -1774,7 +1898,8 @@ export function createApp(options: AppOptions) {
     id: unknown,
     value: unknown,
   ) {
-    const active = goalCreation ?? goalRevision ?? skillsPreparation ?? activeRun;
+    const active =
+      goalCreation ?? goalRevision ?? skillsPreparation ?? manualRun ?? activeRun;
     if (active === undefined) {
       send(ws, { type: "error", message: "No run is active." });
       return;
@@ -1821,6 +1946,8 @@ export function createApp(options: AppOptions) {
     goalCreationRequest += 1;
     abortGoalCreation();
     abortGoalRevision();
+    manualStartRequest += 1;
+    abortManualRun();
 
     lifecycleStartRequest += 1;
     if (lifecycleRunning) {
@@ -2156,7 +2283,8 @@ export function createApp(options: AppOptions) {
         }
         const replayed = lifecycleRunning ? lifecycle : lastLifecycle;
         if (replayed !== undefined) send(ws, { type: "lifecycleState", ...replayed });
-        if (activeRun !== undefined) sendRunConversation(ws, activeRun);
+        if (manualRun !== undefined) sendRunConversation(ws, manualRun, true);
+        else if (activeRun !== undefined) sendRunConversation(ws, activeRun);
 
         const creation = goalCreation;
         if (creation !== undefined) {
@@ -2273,9 +2401,12 @@ export function createApp(options: AppOptions) {
   const stop = server.stop.bind(server);
   server.stop = (closeActiveConnections?: boolean) => {
     sequencing = false;
+    manualSequencing = false;
     lifecycleRunning = false;
     activeRun?.agent?.close();
     activeRun = undefined;
+    manualRun?.agent?.close();
+    manualRun = undefined;
     goalRevision?.agent?.close();
     goalRevision = undefined;
     goalCreation?.agent?.close();

@@ -71,6 +71,7 @@
   let runFile = $state<string | null>(null);
   let runTitle = $state<string | null>(null);
   let runState = $state<"idle" | "active" | "stopped">("idle");
+  let manualRunActive = $state(false);
   let activity = $state<string[]>([]);
   let question = $state<RunQuestion | null>(null);
   let draft = $state("");
@@ -97,10 +98,21 @@
   let controlsDisabled = $derived(
     running || lifecycleActive || revisionActive || creationActive || skillsPrepActive,
   );
+  let runStartDisabled = $derived(
+    creationActive ||
+      revisionActive ||
+      skillsPrepActive ||
+      manualRunActive ||
+      (!lifecycleActive && running),
+  );
   let revisionDisabled = $derived(
     creationActive ||
       skillsPrepActive ||
+      manualRunActive ||
       (lifecycleActive ? !lifecycle.paused : running),
+  );
+  let resumeDisabled = $derived(
+    creationActive || skillsPrepActive || revisionActive || manualRunActive,
   );
   let createGoalTitle = $derived(
     creationActive
@@ -123,6 +135,11 @@
       : !skillsPrepared
         ? "Prepare skills before starting the lifecycle."
         : undefined,
+  );
+  let runStartTitle = $derived(
+    lifecycleActive && !lifecycle.paused
+      ? "Pause the lifecycle and resolve the ADRs manually."
+      : undefined,
   );
   let activityActive = $derived(running || creationActive || revisionActive || skillsPrepActive);
   let currentAction = $derived(activity[activity.length - 1] ?? "");
@@ -336,7 +353,7 @@
 
   function isRunStartedEvent(
     value: unknown,
-  ): value is { type: "runStarted"; file: string; title: string } {
+  ): value is { type: "runStarted"; file: string; title: string; manual?: boolean } {
     return (
       typeof value === "object" &&
       value !== null &&
@@ -345,7 +362,8 @@
       "file" in value &&
       typeof value.file === "string" &&
       "title" in value &&
-      typeof value.title === "string"
+      typeof value.title === "string" &&
+      (!("manual" in value) || typeof value.manual === "boolean")
     );
   }
 
@@ -546,6 +564,7 @@
       connection = "open";
       error = null;
       resetArmed = false;
+      manualRunActive = false;
       current.send(JSON.stringify({ type: "listRecords" }));
       current.send(JSON.stringify({ type: "getGoal" }));
       current.send(JSON.stringify({ type: "getSkills" }));
@@ -645,6 +664,7 @@
         runFile = message.file;
         runTitle = message.title;
         runState = "active";
+        manualRunActive = message.manual === true;
         activity = [];
         question = null;
         draft = "";
@@ -665,6 +685,7 @@
         runFile = null;
         runTitle = null;
         runState = "stopped";
+        manualRunActive = false;
         question = null;
         draft = "";
       } else if (isErrorEvent(message)) {
@@ -765,7 +786,8 @@
           <button
             class="start-button"
             data-testid="start-next"
-            disabled={controlsDisabled}
+            title={runStartTitle}
+            disabled={runStartDisabled}
             onclick={() => start()}
           >
             Start
@@ -795,7 +817,7 @@
             type="button"
             class="start-button"
             data-testid="resume-lifecycle"
-            disabled={revisionActive}
+            disabled={resumeDisabled}
             onclick={resumeLifecycle}
           >
             Resume lifecycle
@@ -1015,7 +1037,8 @@
                   class="start-button record-start"
                   data-testid="start"
                   data-file={record.file}
-                  disabled={controlsDisabled}
+                  title={runStartTitle}
+                  disabled={runStartDisabled}
                   onclick={() => start(record.file === next ? undefined : record.file)}
                 >
                   Start
