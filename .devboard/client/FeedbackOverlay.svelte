@@ -9,7 +9,7 @@
    * implementation agent and returns its URL.
    */
 
-  type Phase = "idle" | "picking" | "composing" | "sending" | "sent" | "failed";
+  type Phase = "idle" | "picking" | "composing" | "sending" | "failed";
 
   type Rect = { top: number; left: number; width: number; height: number };
 
@@ -26,7 +26,6 @@
   let marker = $state<Rect | null>(null);
   let panel = $state<{ top: number; left: number } | null>(null);
   let report = $state("");
-  let issueUrl = $state<string | null>(null);
   let errorMessage = $state<string | null>(null);
   let textarea = $state<HTMLTextAreaElement | null>(null);
 
@@ -103,7 +102,6 @@
     marker = rect;
     panel = anchorFor(rect);
     report = "";
-    issueUrl = null;
     errorMessage = null;
     phase = "composing";
     document.body.style.cursor = "";
@@ -117,7 +115,6 @@
     marker = null;
     panel = null;
     report = "";
-    issueUrl = null;
     errorMessage = null;
     document.body.style.cursor = "";
   }
@@ -210,8 +207,7 @@
         phase = "failed";
         return;
       }
-      issueUrl = body.url;
-      phase = "sent";
+      reset();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
       phase = "failed";
@@ -250,68 +246,39 @@
   <div class="feedback-hint" data-feedback-overlay>Click an element · Esc cancels</div>
 {/if}
 
-{#if (
-  panel !== null &&
-  (phase === "composing" || phase === "sending" || phase === "sent" || phase === "failed")
-)}
-  {#if phase === "sent"}
-    <div
-      class="feedback-panel"
-      data-feedback-overlay
-      role="dialog"
-      aria-label="Report filed"
-      style={`top:${panel.top}px;left:${panel.left}px;width:${PANEL_WIDTH}px`}
-    >
-      <header>
-        <strong>Issue filed</strong>
-        <button type="button" class="feedback-close" aria-label="Close" onclick={reset}>×</button>
-      </header>
-      <p class="feedback-muted">
-        Filed as <a href={issueUrl ?? "#"} target="_blank" rel="noreferrer">{issueUrl}</a>
-      </p>
-      <div class="feedback-actions">
-        <button type="button" onclick={startPicking}>New report</button>
-        <button type="button" class="feedback-secondary" onclick={reset}>Close</button>
-      </div>
+{#if panel !== null && (phase === "composing" || phase === "sending" || phase === "failed")}
+  <div
+    class="feedback-panel"
+    data-feedback-overlay
+    role="dialog"
+    aria-label="Report a UI issue"
+    style={`top:${panel.top}px;left:${panel.left}px;width:${PANEL_WIDTH}px`}
+  >
+    <header>
+      <strong>Report a UI issue</strong>
+      <button type="button" class="feedback-close" aria-label="Close" onclick={reset}>×</button>
+    </header>
+    <code class="feedback-selector" title={selector}>{selector}</code>
+    <textarea
+      bind:this={textarea}
+      bind:value={report}
+      placeholder="What is wrong with this element?"
+      aria-label="Issue description"
+      rows="5"
+      disabled={sending}
+    ></textarea>
+    {#if phase === "failed" && errorMessage !== null}
+      <p class="feedback-error">{errorMessage}</p>
+    {/if}
+    <div class="feedback-actions">
+      <button type="button" onclick={send} disabled={sending || report.trim().length === 0}>
+        {sending ? "Filing…" : "File issue"}
+      </button>
+      <button type="button" class="feedback-secondary" onclick={reset} disabled={sending}>
+        Cancel
+      </button>
     </div>
-  {:else}
-    <div
-      class="feedback-panel"
-      data-feedback-overlay
-      role="dialog"
-      aria-label="Report a UI issue"
-      style={`top:${panel.top}px;left:${panel.left}px;width:${PANEL_WIDTH}px`}
-    >
-      <header>
-        <strong>Report a UI issue</strong>
-        <button type="button" class="feedback-close" aria-label="Close" onclick={reset}>×</button>
-      </header>
-      <code class="feedback-selector" title={selector}>{selector}</code>
-      <textarea
-        bind:this={textarea}
-        bind:value={report}
-        placeholder="What is wrong with this element?"
-        aria-label="Issue description"
-        rows="5"
-        disabled={sending}
-      ></textarea>
-      {#if phase === "failed" && errorMessage !== null}
-        <p class="feedback-error">{errorMessage}</p>
-      {/if}
-      <div class="feedback-actions">
-        <button
-          type="button"
-          onclick={send}
-          disabled={sending || report.trim().length === 0}
-        >
-          {sending ? "Filing…" : "File issue"}
-        </button>
-        <button type="button" class="feedback-secondary" onclick={reset} disabled={sending}>
-          Cancel
-        </button>
-      </div>
-    </div>
-  {/if}
+  </div>
 {/if}
 
 <button
@@ -480,12 +447,5 @@
     color: var(--error);
     font-size: 0.8rem;
     margin: 0;
-  }
-
-  .feedback-muted {
-    color: var(--muted);
-    font-size: 0.85rem;
-    margin: 0;
-    overflow-wrap: anywhere;
   }
 </style>
