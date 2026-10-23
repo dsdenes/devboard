@@ -38,8 +38,6 @@ export interface TrackerSettle {
 export interface FeedbackOptions {
   /** Executable plus leading arguments that can create GitHub issues. */
   ghCommand?: string[];
-  /** `owner/name`; when absent `gh` resolves the remote from `repoDir`. */
-  repository?: string;
   timeoutMs?: number;
   /** Extra environment for the `gh` child. */
   env?: Record<string, string>;
@@ -637,7 +635,6 @@ export function createApp(options: AppOptions) {
     delayMs: Math.max(0, options.trackerSettle?.delayMs ?? TRACKER_SETTLE_DELAY_MS),
   };
   const feedbackCommand = options.feedback?.ghCommand ?? ["gh"];
-  const feedbackRepository = options.feedback?.repository;
   const feedbackTimeoutMs = Math.max(1, options.feedback?.timeoutMs ?? FEEDBACK_TIMEOUT_MS);
   const feedbackEnv = options.feedback?.env;
 
@@ -2085,7 +2082,6 @@ export function createApp(options: AppOptions) {
       const filed = await fileFeedbackIssue(submission, {
         command: feedbackCommand,
         repoDir,
-        repository: feedbackRepository,
         timeoutMs: feedbackTimeoutMs,
         env: feedbackEnv,
       });

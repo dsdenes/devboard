@@ -4,9 +4,14 @@
  * The client sends one free-text report plus the DOM context of the element
  * the report is about. This module validates that payload, renders it as a
  * GitHub issue for an implementation agent, and files the issue through the
- * host's authenticated `gh` command. Nothing about the host is assumed beyond
- * a GitHub remote reachable from `REPO_DIR` (or an explicit `FEEDBACK_REPO`).
+ * operator's authenticated `gh` command.
+ *
+ * Reports describe the harness interface itself, so the issue always lands in
+ * the harness repository, never in the host project that embeds the harness.
  */
+
+/** The repository that receives every reported UI issue. */
+export const FEEDBACK_REPOSITORY = "dsdenes/devboard";
 
 const MAX_REPORT = 8000;
 const MAX_CONTEXT_FIELD = 2000;
@@ -58,10 +63,8 @@ export class FeedbackDeliveryError extends Error {
 export interface FeedbackIssueOptions {
   /** Executable plus leading arguments, default `["gh"]`. */
   command: string[];
-  /** Directory `gh` runs in; it resolves the GitHub remote from here. */
+  /** Directory `gh` runs in. */
   repoDir: string;
-  /** `owner/name` override; when absent `gh` uses `repoDir`'s remote. */
-  repository?: string;
   /** Wall-clock bound for the `gh` invocation. */
   timeoutMs: number;
   /** Extra environment for the child, merged after the process environment. */
@@ -199,10 +202,9 @@ export async function fileFeedbackIssue(
     title,
     "--body-file",
     "-",
+    "--repo",
+    FEEDBACK_REPOSITORY,
   ];
-  if (options.repository !== undefined && options.repository.length > 0) {
-    args.push("--repo", options.repository);
-  }
 
   let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
   try {
