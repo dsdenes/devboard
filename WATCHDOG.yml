@@ -1,0 +1,4 @@
+advisors:
+  - name: default
+    model: opencode-go/deepseek-v4.1-flash:high
+    reviewMode: agent-end
