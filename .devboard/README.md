@@ -177,6 +177,28 @@ same relative path under `<host>/.omp/`; matching files are left alone, unrelate
 never removed, and a differing file stops the run unless `--force` is given. Without a host path,
 the script uses `git rev-parse --show-toplevel` of the working directory.
 
+### Set up a host from the canonical checkout
+
+`setup-devboard.sh` installs the harness for a host without copying it, then starts the
+interface:
+
+```bash
+~/devboard/.devboard/setup-devboard.sh [--force] [--no-ui] [--port N] [host-path]
+```
+
+The host defaults to the working directory. `<host>/.devboard`, `<host>/.omp/commands`, and
+`<host>/.omp/extensions` become symlinks to the canonical checkout at `$DEVBOARD_HOME`
+(default `~/devboard`), and the same entries are added to the host `.gitignore`. A real
+directory at a link path stops the run unless `--force` is given. `--no-ui` installs the links
+only; otherwise the script rebuilds the client and starts the interface in the background,
+picking the first free port from 8080 unless `--port` or `PORT` names one, and prints its URL.
+Rerunning it for a host that is already served reports the running URL instead of starting a
+second server.
+
+The global `/setup-devboard` command runs this script against the invoking session's working
+directory. It lives here as `omp/commands/setup-devboard.md` and is linked into the user-level
+command directory (`$HOME/.omp/agent/commands/setup-devboard.md`) so every session sees it.
+
 ### Model selection
 
 `omp/config.yml` is installed as `<host>/.omp/config.yml`, the host's omp project settings.
