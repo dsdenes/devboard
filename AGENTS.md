@@ -75,6 +75,23 @@ the host supplies: `ADRS_DIR`, `REPO_DIR`, `GOAL_FILE`, `STATIC_DIR`, `AGENT_COM
 lifecycle prompts under `.devboard/prompts/` likewise treat the repository root as the host and
 exclude `.devboard/` and `.worktree/` from every survey and every write.
 
+## Build after every change
+
+`dist/` is a local build artifact and the server serves it verbatim (`STATIC_DIR`, default
+`.devboard/dist`). The server never builds. Any change to `.devboard/client`, `index.html`,
+`vite.config.ts`, `svelte.config.js`, or an asset the client imports stays invisible until the
+bundle is rebuilt, and the browser keeps running old JS while the server code is current.
+
+- Rebuild after every change and before any check that exercises the UI:
+  `cd .devboard && bun run build`.
+- Rebuild after every checkout, pull, merge, reset, or worktree switch that touches those paths,
+  then restart the server. A server restarted against a stale `dist/` serves the old client.
+- `dist/` is gitignored and never committed. Merge, push, and worktree removal do not produce it;
+  each checkout must build for itself.
+- Stale output is the first suspect, not the last: when the UI behaves like an older revision,
+  compare the build time of `dist/` with the sources before debugging the client code.
+- A UI check against a bundle older than the changed source is not a passing verification.
+
 ## Wrappers
 
 `.devboard/omp/` is canonical: agent commands live in `omp/commands/` and extensions in
@@ -126,7 +143,9 @@ never hand-edit them.
   verified that the upstream tip is the integrated commit. Only then are the worktree and branch
   removed. Local-only main is never done.
 - Host mode: host build/tests run; `.devboard/` unchanged.
-- Harness mode: the changed entry point runs from the repo root against a supplied host path; no absolute paths or host specifics under `.devboard/`; nothing created outside `.devboard/`.
+- Harness mode: `bun run build` has run since the last change to anything the client bundle
+  includes; the changed entry point runs from the repo root against a supplied host path; no
+  absolute paths or host specifics under `.devboard/`; nothing created outside `.devboard/`.
 
 ## Map
 
