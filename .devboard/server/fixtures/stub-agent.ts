@@ -30,6 +30,8 @@ const prepareSkillsError = process.argv.includes("--prepare-skills-error");
 const collisionName = argument("collision-name") ?? "custom-skill";
 const resolveRecord = !process.argv.includes("--no-resolve");
 const removeRecord = process.argv.includes("--remove-record");
+const busyContinuations = Number(argument("busy-continuations") ?? 0);
+let busyRemaining = busyContinuations;
 const CREATED_GOAL = "# Created goal\n\nThe agent wrote this.";
 const SETTLE_DELAY_MS = 400;
 
@@ -177,15 +179,20 @@ async function askQuestions(count: number) {
   }
 }
 
-async function promptTurn(params: Record<string, unknown>) {
+function promptText(params: unknown): string | undefined {
+  if (typeof params !== "object" || params === null || !("prompt" in params)) return undefined;
   const blocks = Array.isArray(params.prompt) ? params.prompt : [];
-  const text = blocks
+  return blocks
     .map((block) => {
       if (typeof block !== "object" || block === null || !("text" in block)) return undefined;
       const value = block.text;
       return typeof value === "string" ? value : undefined;
     })
     .find((candidate): candidate is string => typeof candidate === "string");
+}
+
+async function promptTurn(params: unknown) {
+  const text = promptText(params);
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
   const firstLine = text?.split("\n")[0] ?? "";
   const creating = createGoal && firstLine === "/goal-outcome";
@@ -369,7 +376,22 @@ function handleMessage(message: Record<string, unknown>) {
     } else if (message.method === "session/new") {
       write({ jsonrpc: "2.0", id: message.id, result: { sessionId: "stub-session" } });
     } else if (message.method === "session/prompt") {
-      void promptTurn((message.params ?? {}) as Record<string, unknown>).then(() => {
+      const text = promptText(message.params) ?? "";
+      if (busyRemaining > 0 && text.startsWith("The implementation turn ended")) {
+        busyRemaining -= 1;
+        log("busy");
+        write({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: {
+            code: -32003,
+            message: "Session is busy",
+            data: { reason: "session_busy", hint: "steer|followUp|wait" },
+          },
+        });
+        return;
+      }
+      void promptTurn(message.params).then(() => {
         write({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
       });
     } else if (message.method === "session/cancel") {
