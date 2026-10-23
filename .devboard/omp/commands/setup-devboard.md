@@ -14,6 +14,6 @@ It makes `.devboard`, `.omp/commands`, and `.omp/extensions` symlinks to `$HOME/
 it never copies the harness — records `/.devboard`, `/.omp/commands`, and `/.omp/extensions`
 in the host `.gitignore`, rebuilds the client, and starts the interface in the background.
 
-Report the final `setup-devboard: interface ...` line verbatim. On a nonzero exit, report the
+Report the script's final `setup-devboard:` line verbatim. On a nonzero exit, report the
 script's stderr and stop. Do not create, copy, or edit harness or host files yourself; the
 script owns the install.
