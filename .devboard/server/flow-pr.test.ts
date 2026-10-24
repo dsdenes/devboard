@@ -315,6 +315,9 @@ function createFixture(name: string): Fixture {
   git(root, ["add", "-A"]);
   git(root, ["commit", "-m", "chore: fixture base"]);
   git(root, ["init", "--bare", join(root, "origin.git")]);
+  // A bare repository's HEAD defaults to the machine's init.defaultBranch; the
+  // fixture's clones must see main even where that default is master.
+  git(join(root, "origin.git"), ["symbolic-ref", "HEAD", "refs/heads/main"]);
   git(root, ["remote", "add", "origin", join(root, "origin.git")]);
   git(root, ["push", "-u", "origin", "main"]);
   const fixture = {

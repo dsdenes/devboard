@@ -441,6 +441,8 @@ export class FlowController {
   /** True until Start: a restored session never spawns an analyst by itself. */
   #quiet = false;
   #prBusy = false;
+  /** The newest checkpoint tip a busy PR sync must pick up when it finishes. */
+  #prPendingTip: string | null = null;
   #decisionsChain: Promise<void> = Promise.resolve();
   #seenCommits = new Set<string>();
   #startedAt: string;
@@ -1682,7 +1684,12 @@ export class FlowController {
   // --------------------------------------------------------------- forge
 
   async #syncPullRequest(session: FlowSession, tip: string): Promise<void> {
-    if (this.#prBusy) return;
+    if (this.#prBusy) {
+      // A checkpoint that lands during a push is not dropped: the running sync
+      // picks up the newest tip when it finishes.
+      this.#prPendingTip = tip;
+      return;
+    }
     this.#prBusy = true;
     try {
       const pushed = await this.#git(session.worktree, ["push", "origin", session.branch]);
@@ -1743,6 +1750,11 @@ export class FlowController {
       this.#publish();
     } finally {
       this.#prBusy = false;
+      const pending = this.#prPendingTip;
+      this.#prPendingTip = null;
+      if (pending !== null && pending !== session.pushedTip) {
+        void this.#syncPullRequest(session, pending);
+      }
     }
   }
 
