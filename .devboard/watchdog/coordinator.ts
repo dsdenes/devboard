@@ -46,15 +46,18 @@ export interface GateOutcome {
   detail?: string;
 }
 
-export interface IntegrateOutcome {
+export interface PublishOutcome {
   ok: boolean;
+  refreshed: number;
+  deferred: string[];
+  detail?: string;
+}
+
+export interface IntegrateOutcome extends PublishOutcome {
   /** The merged commit, when the merge happened. */
   commit?: string;
   /** True once the local merge was pushed. */
   pushed?: boolean;
-  refreshed: number;
-  deferred: string[];
-  detail?: string;
 }
 
 export interface CycleContext {
@@ -83,6 +86,8 @@ export interface CycleDeps {
     branch: string,
     base: string,
   ) => Promise<IntegrateOutcome>;
+  /** Runs `bun run publish` alone; used to retry a pushed revision. */
+  publish: (context: CycleContext) => Promise<PublishOutcome>;
 }
 
 export interface ReportInstance {
@@ -230,6 +235,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     agent: defaultAgent,
     gate: defaultGate,
     integrate: defaultIntegrate,
+    publish: defaultPublish,
     ...options.deps,
   };
   if (!options.dryRun) mkdirSync(runDir, { recursive: true });
@@ -316,6 +322,29 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
   const actionable = findings.filter(
     (finding) => !isSettled(ledger.findings[finding.fingerprint], finding, head),
   );
+
+  if (ledger.pendingPublish !== undefined) {
+    if (options.dryRun) {
+      report.action = "blocked";
+      report.reason = `dry run: ${ledger.pendingPublish.commit} is waiting for publish`;
+      return { report, exitCode: 0 };
+    }
+    const commit = ledger.pendingPublish.commit;
+    report.commit = commit;
+    const published = await deps.publish(context);
+    report.dashboards = { refreshed: published.refreshed, deferred: published.deferred };
+    if (!published.ok) {
+      report.action = "failed";
+      report.reason = `publish retry failed: ${published.detail ?? "unknown error"}`;
+      context.log(report.reason);
+      return finish(context, ledger, report, 1, options.dryRun);
+    }
+    report.action = "published";
+    report.reason = `published ${commit} on retry`;
+    delete ledger.pendingPublish;
+    context.log(report.reason);
+    return finish(context, ledger, report, 0, options.dryRun);
+  }
 
   if (findings.length === 0) {
     report.reason = "no actionable finding";
@@ -465,8 +494,15 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     report.reason = integrated.pushed
       ? `push succeeded but publish failed: ${integrated.detail ?? "unknown error"}`
       : `integration failed: ${integrated.detail ?? "unknown error"}`;
+    if (integrated.pushed && integrated.commit !== undefined) {
+      markPublished(ledger, actionable, integrated.commit);
+      ledger.pendingPublish = {
+        commit: integrated.commit,
+        findings: actionable.map((finding) => finding.fingerprint),
+      };
+    }
     context.log(report.reason);
-    return finish(context, ledger, report, 1, options.dryRun, actionable);
+    return finish(context, ledger, report, 1, options.dryRun);
   }
 
   const commit = integrated.commit ?? head ?? null;
@@ -721,21 +757,23 @@ async function defaultIntegrate(
       detail: `the remote tip ${tip ?? "unknown"} does not name ${commit}`,
     };
   }
+  const published = await defaultPublish(context);
+  return {
+    ...published,
+    commit,
+    pushed: true,
+  };
+}
+
+async function defaultPublish(context: CycleContext): Promise<PublishOutcome> {
   const published = run(["bun", "run", "publish"], join(context.root, ".devboard"), context);
   const refreshed = Number(/refreshing (\d+) dashboard/.exec(published.stdout)?.[1] ?? "0");
   const deferred = [...published.stdout.matchAll(/^publish: port (\d+) .* has active work/gm)].map(
     (match) => match[1] ?? "",
   );
-  const publishFailure = commandFailure(published);
-  if (publishFailure !== undefined) {
-    return {
-      ok: false,
-      commit,
-      pushed: true,
-      refreshed,
-      deferred,
-      detail: publishFailure,
-    };
+  const failure = commandFailure(published);
+  if (failure !== undefined) {
+    return { ok: false, refreshed, deferred, detail: failure };
   }
-  return { ok: true, commit, pushed: true, refreshed, deferred };
+  return { ok: true, refreshed, deferred };
 }

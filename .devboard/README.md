@@ -457,8 +457,9 @@ worktree has no `node_modules`, then `bun test`, `bun run build`, and
 `bun run watchdog -- --collect --dry-run` to pass, and it rejects any diff outside
 `.devboard/**`. It then fast-forwards `main`, pushes the canonical remote, and runs
 `bun run publish`. A gate, scope, or merge failure leaves `main` unchanged and preserves the
-worktree; a push or publish failure leaves the pushed revision in place and exits nonzero. A
-pre-existing uncommitted change is recorded and blocks merge, push, and publish; it is never
+worktree; a push or publish failure leaves the pushed revision in place and exits nonzero, and
+a failed publish after a successful push is retried by the next cycle without another agent run.
+A pre-existing uncommitted change is recorded and blocks merge, push, and publish; it is never
 discarded, stashed, or committed.
 
 Operate it from the canonical `.devboard`:
