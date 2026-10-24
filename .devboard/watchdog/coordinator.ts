@@ -608,16 +608,21 @@ Explain briefly what you changed and why. Do not ask questions.
 `;
 }
 
-function sessionDirectory(): string {
-  return join(homedir(), ".omp", "agent", "sessions", "-devboard");
-}
-
+/** Every session file omp keeps, across all project directories. */
 function sessionFiles(): Set<string> {
+  const root = join(homedir(), ".omp", "agent", "sessions");
+  const files = new Set<string>();
   try {
-    return new Set(readdirSync(sessionDirectory()).filter((name) => name.endsWith(".jsonl")));
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      for (const name of readdirSync(join(root, entry.name))) {
+        if (name.endsWith(".jsonl")) files.add(name);
+      }
+    }
   } catch {
-    return new Set();
+    // No omp sessions yet.
   }
+  return files;
 }
 
 async function defaultAgent(
