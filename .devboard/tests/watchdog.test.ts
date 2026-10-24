@@ -125,7 +125,7 @@ function stubDeps(
   } = {},
 ): { deps: Partial<CycleDeps>; counts: { agent: number; gate: number; integrate: number } } {
   const instance = instanceFor(root, 8080);
-  const counts = { agent: 0, gate: 0, integrate: 0 };
+  const counts = { agent: 0, gate: 0, integrate: 0, publish: 0 };
   const deps: Partial<CycleDeps> = {
     discover: () => [instance],
     collect: () => ({ events, malformed: 0, unattributed: 0 }),
@@ -142,6 +142,10 @@ function stubDeps(
       counts.integrate += 1;
       overrides.onIntegrate?.();
       return { ok: true, commit: "a".repeat(40), pushed: true, refreshed: 1, deferred: [] };
+    },
+    publish: async () => {
+      counts.publish += 1;
+      return { ok: true, refreshed: 1, deferred: [] };
     },
     ...overrides,
   };
@@ -371,7 +375,7 @@ describe("cycle", () => {
     expect(result.report.action).toBe("none");
     expect(result.report.reason).toBe("no actionable finding");
     expect(result.exitCode).toBe(0);
-    expect(counts).toEqual({ agent: 0, gate: 0, integrate: 0 });
+    expect(counts).toEqual({ agent: 0, gate: 0, integrate: 0, publish: 0 });
     expect(git(root, "rev-parse", "HEAD")).toBe(before);
   });
 
@@ -410,7 +414,7 @@ describe("cycle", () => {
     expect(first.report.action).toBe("published");
     expect(first.report.commit).toBe("a".repeat(40));
     expect(first.report.dashboards).toEqual({ refreshed: 1, deferred: [] });
-    expect(counts).toEqual({ agent: 1, gate: 1, integrate: 1 });
+    expect(counts).toEqual({ agent: 1, gate: 1, integrate: 1, publish: 0 });
     const runDir = first.runDir as string;
     expect(existsSync(join(runDir, "report.json"))).toBe(true);
     expect(existsSync(join(runDir, "report.md"))).toBe(true);
@@ -422,7 +426,7 @@ describe("cycle", () => {
     const second = await runCycle({ root, now: fixedNow, stateDir, deps });
     expect(second.report.action).toBe("duplicate");
     expect(second.exitCode).toBe(0);
-    expect(counts).toEqual({ agent: 1, gate: 1, integrate: 1 });
+    expect(counts).toEqual({ agent: 1, gate: 1, integrate: 1, publish: 0 });
   });
 
   test("captures the prompt, canonical cwd, and worktree path in a stub agent", async () => {
@@ -561,6 +565,44 @@ await Bun.write(capture, JSON.stringify({
     expect(result.report.reason).toContain("uncommitted operator work");
     expect(result.exitCode).toBe(0);
     expect(counts.agent).toBe(0);
+  });
+
+  test("retries publish on the next cycle after a successful push", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    const events = [event(root, 1, "synthetic error: ENOTFOUND the model endpoint")];
+    let publishCalls = 0;
+    const { deps, counts } = stubDeps(root, events, {
+      onAgent(worktree) {
+        writeFileSync(join(worktree, ".devboard", "healed.txt"), "fixed\n");
+      },
+      integrate: async () => ({
+        ok: false,
+        commit: "b".repeat(40),
+        pushed: true,
+        refreshed: 0,
+        deferred: [],
+        detail: "publish: unreachable remote",
+      }),
+      publish: async () => {
+        publishCalls += 1;
+        return { ok: true, refreshed: 2, deferred: ["8080"] };
+      },
+    });
+    const first = await runCycle({ root, now: fixedNow, stateDir, deps });
+    expect(first.report.action).toBe("failed");
+    expect(first.report.commit).toBe("b".repeat(40));
+    expect(first.exitCode).toBe(1);
+    expect(loadLedger(stateDir).pendingPublish?.commit).toBe("b".repeat(40));
+
+    const second = await runCycle({ root, now: fixedNow, stateDir, deps });
+    expect(second.report.action).toBe("published");
+    expect(second.report.reason).toContain("on retry");
+    expect(second.report.dashboards).toEqual({ refreshed: 2, deferred: ["8080"] });
+    expect(second.exitCode).toBe(0);
+    expect(publishCalls).toBe(1);
+    expect(counts).toEqual({ agent: 1, gate: 1, integrate: 0, publish: 0 });
+    expect(loadLedger(stateDir).pendingPublish).toBeUndefined();
   });
 
   test("dry run writes no run directory and invokes no agent", async () => {
