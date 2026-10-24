@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type { Server } from "bun";
+import { agentPrompt } from "./acp";
 import { createApp } from "./app";
 import {
   ACTIVITY_MAX_BYTES,
@@ -1380,6 +1381,67 @@ describe("epic bookkeeping and generation", () => {
       } finally {
         late.close();
         third.stop(true);
+      }
+    },
+    30000,
+  );
+});
+
+describe("ADR lane restore", () => {
+  test(
+    "re-spawns a restored ADR lane with the same record prompt",
+    async () => {
+      const fixture = await createFixture({ git: true, adrs: { "0001-first.md": PENDING_ONE } });
+      const lifecycle = {
+        stage: "adr",
+        pass: 1,
+        work: { kind: "adr", id: "0001-first.md" },
+        paused: false,
+      };
+      writeStored(fixture, {
+        lifecycle,
+        lastLifecycle: lifecycle,
+        lifecycleRunning: true,
+        laneSequence: 1,
+        lanes: [
+          laneEntry({
+            kind: "adr",
+            epic: null,
+            record: { file: "0001-first.md", title: "First decision" },
+            activity: ["Working on /adr-resolve"],
+          }),
+        ],
+      });
+
+      const host = startHost(fixture, { agentArguments: "--delay-ms=3000 --questions=0" });
+      const client = await connect(`127.0.0.1:${host.port}`);
+      try {
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          ...lifecycle,
+        });
+        const snapshot = await client.waitFor((message) => message.type === "laneState");
+        const lane = (snapshot.lanes as {
+          kind: string;
+          record: { file: string };
+          status: string;
+          activity: string[];
+        }[])[0];
+        expect(lane?.kind).toBe("adr");
+        expect(lane?.record.file).toBe("0001-first.md");
+        expect(lane?.status).toBe("running");
+        expect(lane?.activity).toEqual(["Working on /adr-resolve"]);
+
+        await waitUntil(
+          () => prompts(fixture.logPath).length === 1,
+          "the restored ADR lane did not re-spawn",
+        );
+        expect(prompts(fixture.logPath)).toEqual([
+          agentPrompt(fixture.adrDir, "0001-first.md").split("\n")[0] ?? "",
+        ]);
+      } finally {
+        client.close();
+        host.stop(true);
       }
     },
     30000,
