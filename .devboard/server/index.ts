@@ -1,6 +1,8 @@
 import { dirname, join, resolve } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
+import type { ForgeTarget } from "./forge-pr";
+import { StubForge } from "./fixtures/stub-forge";
 import { hostHarnessDir } from "./version";
 
 const hostname = process.env.HOST ?? "127.0.0.1";
@@ -57,6 +59,27 @@ function restart(server: Server<unknown>) {
   process.exit(0);
 }
 
+/**
+ * A deterministic forge for browser verification: `DEVBOARD_FLOW_FORGE=stub`
+ * replaces the real `gh`/`glab` adapter and logs every operation. Production
+ * runs leave it unset and use the host forge.
+ */
+function flowOptions() {
+  if (process.env.DEVBOARD_FLOW_FORGE !== "stub") return undefined;
+  const target: ForgeTarget = {
+    forge: process.env.DEVBOARD_FLOW_FORGE_KIND === "gitlab" ? "gitlab" : "github",
+    host: "forge.test",
+    project: "acme/fixture",
+  };
+  const watch = Number(process.env.DEVBOARD_FLOW_WATCH_MS ?? "");
+  return {
+    forge: new StubForge({ logPath: process.env.DEVBOARD_FLOW_FORGE_LOG }),
+    forgeTarget: target,
+    ...(Number.isFinite(watch) && watch > 0 ? { watchMs: watch } : {}),
+  };
+}
+
+const injectedFlow = flowOptions();
 let server: Server<unknown> | undefined;
 for (let attempt = 0; ; attempt += 1) {
   try {
@@ -69,6 +92,7 @@ for (let attempt = 0; ; attempt += 1) {
       stateDir,
       hostname,
       port,
+      ...(injectedFlow === undefined ? {} : { flow: injectedFlow }),
       restart: () => {
         if (server !== undefined) restart(server);
       },

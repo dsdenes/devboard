@@ -24,6 +24,7 @@ import {
   fileFeedbackIssue,
   parseFeedbackSubmission,
 } from "./feedback";
+import { FlowController, type FlowOptions } from "./flow";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
@@ -90,6 +91,11 @@ export interface AppOptions {
   /** Replaces the process; `index.ts` re-execs the host's current harness. */
   restart?: () => void;
   versionState?: () => ServerVersion;
+  /**
+   * Flow Mode's deterministic seams: an injected forge and executor for tests
+   * and browser verification, and the watcher timings for focused runs.
+   */
+  flow?: Pick<FlowOptions, "forge" | "forgeTarget" | "exec" | "watchMs" | "analystTimeoutMs" | "goalTimeoutMs">;
 }
 
 type RunAction = "resolving" | "implementing" | "generating";
@@ -377,6 +383,23 @@ type ClientMessage =
   | { type: "prepareSkills" }
   | { type: "getSkills" }
   | { type: "resetImplementation" }
+  | { type: "createFlowGoal" }
+  | { type: "startFlowImplementation" }
+  | { type: "stopFlowImplementation" }
+  | { type: "saveFlowGoal"; text?: unknown }
+  | { type: "retryFlowPr" }
+  | { type: "markFlowPrReady" }
+  | { type: "mergeFlowPr" }
+  | { type: "sendFlowSteering"; text?: unknown }
+  | { type: "saveFlowDecisions"; text?: unknown }
+  | { type: "acceptFlowWidget"; id?: unknown; accepted?: unknown }
+  | { type: "refuseFlowWidget"; id?: unknown; reason?: unknown }
+  | { type: "openFlowWidget"; id?: unknown }
+  | { type: "closeFlowWidget" }
+  | { type: "sendFlowConversation"; text?: unknown }
+  | { type: "sendFlowConclusion"; text?: unknown }
+  | { type: "dismissFlowBlocker"; id?: unknown }
+  | { type: "flowAnswer"; id?: unknown; value?: unknown; target?: unknown }
   | { type: "answer"; id?: unknown; value?: unknown; lane?: unknown };
 
 function parseClientMessage(value: unknown): ClientMessage | undefined {
@@ -417,6 +440,53 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "getSkills" };
     case "resetImplementation":
       return { type: "resetImplementation" };
+    case "createFlowGoal":
+      return { type: "createFlowGoal" };
+    case "startFlowImplementation":
+      return { type: "startFlowImplementation" };
+    case "stopFlowImplementation":
+      return { type: "stopFlowImplementation" };
+    case "saveFlowGoal":
+      return { type: "saveFlowGoal", text: "text" in value ? value.text : undefined };
+    case "retryFlowPr":
+      return { type: "retryFlowPr" };
+    case "markFlowPrReady":
+      return { type: "markFlowPrReady" };
+    case "mergeFlowPr":
+      return { type: "mergeFlowPr" };
+    case "sendFlowSteering":
+      return { type: "sendFlowSteering", text: "text" in value ? value.text : undefined };
+    case "saveFlowDecisions":
+      return { type: "saveFlowDecisions", text: "text" in value ? value.text : undefined };
+    case "acceptFlowWidget":
+      return {
+        type: "acceptFlowWidget",
+        id: "id" in value ? value.id : undefined,
+        accepted: "accepted" in value ? value.accepted : undefined,
+      };
+    case "refuseFlowWidget":
+      return {
+        type: "refuseFlowWidget",
+        id: "id" in value ? value.id : undefined,
+        reason: "reason" in value ? value.reason : undefined,
+      };
+    case "openFlowWidget":
+      return { type: "openFlowWidget", id: "id" in value ? value.id : undefined };
+    case "closeFlowWidget":
+      return { type: "closeFlowWidget" };
+    case "sendFlowConversation":
+      return { type: "sendFlowConversation", text: "text" in value ? value.text : undefined };
+    case "sendFlowConclusion":
+      return { type: "sendFlowConclusion", text: "text" in value ? value.text : undefined };
+    case "dismissFlowBlocker":
+      return { type: "dismissFlowBlocker", id: "id" in value ? value.id : undefined };
+    case "flowAnswer":
+      return {
+        type: "flowAnswer",
+        id: "id" in value ? value.id : undefined,
+        value: "value" in value ? value.value : undefined,
+        target: "target" in value ? value.target : undefined,
+      };
     case "answer":
       return {
         type: "answer",
@@ -1128,6 +1198,21 @@ export function createApp(options: AppOptions) {
   const runningRevision = gitRevision(runningHarnessDir());
   const readVersion = options.versionState ?? (() => serverVersion(repoDir, runningRevision));
 
+  /**
+   * Flow Mode's controller. It owns its own session files under `stateDir` and
+   * never touches Goal Mode's state: it only reports its active work so the
+   * two modes cannot both hold the checkout.
+   */
+  const flow = new FlowController({
+    repoDir,
+    stateDir,
+    agentCommand,
+    journal,
+    goalWorkActive: activeGoalWork,
+    broadcast: (event) => broadcast(event),
+    ...(options.flow ?? {}),
+  });
+
   const clients = new Set<ServerWebSocket<unknown>>();
   let sequencing = false;
   /**
@@ -1527,7 +1612,7 @@ export function createApp(options: AppOptions) {
     send(ws, { type: "versionState", ...readVersion() });
   }
 
-  /** True while any run, lifecycle lane, creation, revision, or reset is live. */
+  /** True while any run, lifecycle lane, creation, revision, reset, or Flow work is live. */
   function workActive(): boolean {
     return (
       implementationReset !== undefined ||
@@ -1541,8 +1626,31 @@ export function createApp(options: AppOptions) {
       skillsPreparation !== undefined ||
       skillsPreparationPending ||
       generationActive ||
-      generationQueued
+      generationQueued ||
+      flow.hasActiveWork()
     );
+  }
+
+  /** Names the Goal Mode work Flow Mode would contend with, if any. */
+  function activeGoalWork(): string | undefined {
+    if (implementationReset !== undefined) return "an implementation reset";
+    if (goalCreation !== undefined) return "a goal creation";
+    if (goalRevision !== undefined) return "a goal revision";
+    if (skillsPreparation !== undefined || skillsPreparationPending) return "skills preparation";
+    if (lifecycleRunning) return "the lifecycle";
+    if (manualRun !== undefined || manualSequencing || sequencing) return "a manual ADR run";
+    return undefined;
+  }
+
+  /**
+   * Only one mode may hold the checkout. A Goal Mode start while Flow work is
+   * live is refused with a single error and spawns no peer; view switching and
+   * read-only commands stay available.
+   */
+  function refuseFlowActive(ws: { send(data: string): unknown }): boolean {
+    if (!flow.hasActiveWork()) return false;
+    send(ws, { type: "error", message: "Flow Mode is active. Finish or stop its work first." });
+    return true;
   }
 
   /**
@@ -1915,6 +2023,8 @@ export function createApp(options: AppOptions) {
     ws: { send(data: string): unknown },
     restored?: { snapshot: SkillsSnapshot; unmanagedNames: Set<string> },
   ) {
+    if (refuseFlowActive(ws)) return;
+
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is already active." });
       return;
@@ -2160,6 +2270,8 @@ export function createApp(options: AppOptions) {
   }
 
   async function startGoalCreation(ws: { send(data: string): unknown }) {
+    if (refuseFlowActive(ws)) return;
+
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
@@ -2252,6 +2364,8 @@ export function createApp(options: AppOptions) {
   }
 
   async function startGoalRevision(ws: { send(data: string): unknown }, request: unknown) {
+    if (refuseFlowActive(ws)) return;
+
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
@@ -2422,6 +2536,8 @@ export function createApp(options: AppOptions) {
   }
 
   async function startRun(ws: { send(data: string): unknown }, file: unknown) {
+    if (refuseFlowActive(ws)) return;
+
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
@@ -3431,6 +3547,8 @@ export function createApp(options: AppOptions) {
   }
 
   async function startLifecycle(ws: { send(data: string): unknown }) {
+    if (refuseFlowActive(ws)) return;
+
     // A stopped run leaves the loop at its next check, but its own finale may
     // still be in flight. Wait for it so the two runs cannot both publish.
     if (!lifecycleRunning && lifecycleUnwinding !== undefined) await lifecycleUnwinding;
@@ -3960,6 +4078,17 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    // Resetting the host would discard reviewed Flow work and leave its pull
+    // request open, so an unmerged Flow session refuses the reset.
+    if (flow.hasUnmergedSession()) {
+      send(ws, {
+        type: "error",
+        message:
+          "A Flow session is not merged. Merge it before resetting the implementation.",
+      });
+      return;
+    }
+
     // Reset is available in every state: once the git preconditions pass it
     // stops any active run, lifecycle, creation, revision, or preparation.
     implementationReset = {};
@@ -4160,6 +4289,10 @@ export function createApp(options: AppOptions) {
             });
           }
         }
+
+        // Flow's own state follows Goal Mode's, so the two modes replay
+        // independently; it still precedes every reply to the client's commands.
+        flow.replay(ws);
       },
 
       close(ws) {
@@ -4225,6 +4358,40 @@ export function createApp(options: AppOptions) {
             await sendSkillsState(ws);
           } else if (command.type === "resetImplementation") {
             startImplementationReset(ws);
+          } else if (command.type === "createFlowGoal") {
+            await flow.createGoal();
+          } else if (command.type === "startFlowImplementation") {
+            await flow.startImplementation();
+          } else if (command.type === "stopFlowImplementation") {
+            flow.stopImplementation();
+          } else if (command.type === "saveFlowGoal") {
+            flow.saveGoal(command.text);
+          } else if (command.type === "retryFlowPr") {
+            await flow.retryPr();
+          } else if (command.type === "markFlowPrReady") {
+            await flow.markPrReady();
+          } else if (command.type === "mergeFlowPr") {
+            await flow.mergePr();
+          } else if (command.type === "sendFlowSteering") {
+            flow.sendSteering(command.text);
+          } else if (command.type === "saveFlowDecisions") {
+            flow.saveDecisions(command.text);
+          } else if (command.type === "acceptFlowWidget") {
+            flow.acceptWidget(command.id, command.accepted);
+          } else if (command.type === "refuseFlowWidget") {
+            flow.refuseWidget(command.id, command.reason);
+          } else if (command.type === "openFlowWidget") {
+            flow.openConversation(command.id);
+          } else if (command.type === "closeFlowWidget") {
+            flow.closeConversation();
+          } else if (command.type === "sendFlowConversation") {
+            flow.sendConversationMessage(command.text);
+          } else if (command.type === "sendFlowConclusion") {
+            await flow.sendConversationConclusion(command.text);
+          } else if (command.type === "dismissFlowBlocker") {
+            flow.dismissBlocker(command.id);
+          } else if (command.type === "flowAnswer") {
+            flow.answer(command.id, command.value, command.target);
           } else if (command.type === "answer") {
             answerQuestion(ws, command.id, command.value, command.lane);
           }
@@ -4240,6 +4407,7 @@ export function createApp(options: AppOptions) {
 
   const stop = server.stop.bind(server);
   server.stop = (closeActiveConnections?: boolean) => {
+    flow.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);
       restartWhenIdleTimer = undefined;

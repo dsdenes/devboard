@@ -471,6 +471,7 @@ describe("lifecycle pause and resume", () => {
 
         const spawned = Date.now() + 5000;
         while (spawnCount(logPath) < 1 && Date.now() < spawned) await Bun.sleep(25);
+        while (prompts(logPath).length < 1 && Date.now() < spawned) await Bun.sleep(25);
         expect(spawnCount(logPath)).toBe(1);
         expect(prompts(logPath)).toEqual(["/implement-next-epic 5"]);
 

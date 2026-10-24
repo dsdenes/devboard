@@ -74,6 +74,27 @@ const resolveRecord = !process.argv.includes("--no-resolve");
 const removeRecord = process.argv.includes("--remove-record");
 const busyContinuations = Number(argument("busy-continuations") ?? 0);
 let busyRemaining = busyContinuations;
+
+/** Flow Mode: the goal, implementation, analyst, and widget-conversation turns. */
+const flowGoal = process.argv.includes("--flow-goal");
+const flowImplement = process.argv.includes("--flow-implement");
+const flowChange = process.argv.includes("--flow-change");
+const flowWidget = process.argv.includes("--flow-widget");
+const flowGoalEmpty = process.argv.includes("--flow-goal-empty");
+const flowGoalFail = process.argv.includes("--flow-goal-fail");
+const flowGoalText =
+  argument("flow-goal-text") ?? "# Flow goal\n\nMake the fixture behavior observable.";
+const flowCheckpoints = Math.max(1, Number(argument("flow-checkpoints") ?? 1));
+const flowStepDelay = Number(argument("flow-step-delay") ?? 0);
+const flowBlocked = process.argv.includes("--flow-blocked");
+const flowQuestion = process.argv.includes("--flow-question");
+const flowVerification = argument("flow-verification") ?? "passed";
+const flowAnalystPartial = process.argv.includes("--flow-analyst-partial");
+const flowAnalystFail = process.argv.includes("--flow-analyst-fail");
+const flowAnalystEmpty = process.argv.includes("--flow-analyst-empty");
+const flowSilentCheckpoints = process.argv.includes("--flow-silent-checkpoints");
+const flowPreCommitDelay = Number(argument("flow-pre-commit-delay") ?? 0);
+const flowNoVerification = process.argv.includes("--flow-no-verification");
 const CREATED_GOAL = "# Created goal\n\nThe agent wrote this.";
 const SETTLE_DELAY_MS = 400;
 
@@ -88,6 +109,8 @@ function write(message: unknown) {
 
 const pending = new Map<string, (result: unknown) => void>();
 let nextRequestId = 1;
+/** One prompt turn at a time, so a queued message answers in order. */
+let promptChain: Promise<void> = Promise.resolve();
 
 function request(method: string, params: unknown): Promise<unknown> {
   const id = nextRequestId++;
@@ -465,10 +488,273 @@ function promptText(params: unknown): string | undefined {
     .find((candidate): candidate is string => typeof candidate === "string");
 }
 
+/** JSON lines of a Flow session file, tolerant of an absent or partial file. */
+function readLines(path: string): Record<string, unknown>[] {
+  let source = "";
+  try {
+    source = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const entries: Record<string, unknown>[] = [];
+  for (const line of source.split("\n")) {
+    if (line.trim().length === 0) continue;
+    try {
+      const value: unknown = JSON.parse(line);
+      if (typeof value === "object" && value !== null) entries.push(value as Record<string, unknown>);
+    } catch {
+      // A partial tail costs one entry.
+    }
+  }
+  return entries;
+}
+
+function writeJsonFile(path: string, value: unknown) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function flowGit(repo: string, args: string[]) {
+  return Bun.spawnSync({
+    cmd: [
+      "git",
+      "-C",
+      repo,
+      "-c",
+      "user.name=Flow Stub",
+      "-c",
+      "user.email=stub@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
+function stream(text: string, append = false) {
+  write({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "stub-session",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text },
+        ...(append ? { messageId: "flow-stream" } : {}),
+      },
+    },
+  });
+}
+
+/** Reads new steering notes and acknowledges each one before a checkpoint. */
+function consumeSteering(directory: string): Record<string, unknown>[] {
+  const notes = readLines(join(directory, "steering.jsonl"));
+  const acked = new Set(
+    readLines(join(directory, "steering-ack.jsonl")).map((entry) => String(entry.id ?? "")),
+  );
+  const fresh = notes.filter((note) => !acked.has(String(note.id ?? "")));
+  for (const note of fresh) {
+    mkdirSync(directory, { recursive: true });
+    appendFileSync(join(directory, "steering-ack.jsonl"), `${JSON.stringify({ id: note.id })}\n`);
+    log(`flow-ack ${String(note.id ?? "")}`);
+    appendFileSync(join(process.cwd(), "steering-applied.txt"), `${String(note.text ?? "")}\n`);
+  }
+  log(`flow-steering-read ${fresh.length}`);
+  return fresh;
+}
+
+async function runFlowGoal(directory: string) {
+  log(`flow-goal ${directory}`);
+  stream("Interviewing the developer about the Flow goal");
+  if (delayMs > 0) await Bun.sleep(delayMs);
+  await askQuestions(1);
+  if (flowGoalFail) {
+    log("flow-goal-failed");
+    return;
+  }
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "goal.md"), flowGoalEmpty ? "" : flowGoalText);
+  log(`flow-goal-written ${directory}`);
+  stream("Wrote the Flow goal");
+}
+
+async function runFlowImplementation(directory: string) {
+  log(`flow-implement ${directory} cwd=${process.cwd()}`);
+  stream("Reading the plan");
+
+  if (flowQuestion) await askQuestions(1);
+  if (flowPreCommitDelay > 0) await Bun.sleep(flowPreCommitDelay);
+
+  for (let index = 1; index <= flowCheckpoints; index += 1) {
+    try {
+      const decisions = readFileSync(join(directory, "decisions.md"), "utf8");
+      log(`flow-decisions-read ${index} ${decisions.length}`);
+    } catch {
+      log(`flow-decisions-read ${index} 0`);
+    }
+    if (index > 1) consumeSteering(directory);
+    mkdirSync(join(process.cwd(), "src"), { recursive: true });
+    writeFileSync(join(process.cwd(), "src", "app.txt"), `version ${index}\n`);
+    writeFileSync(
+      join(process.cwd(), "src", "config.json"),
+      `${JSON.stringify({ version: index }, null, 2)}\n`,
+    );
+    if (index > 1) writeFileSync(join(process.cwd(), "src", `extra-${index}.txt`), `extra ${index}\n`);
+
+    flowGit(process.cwd(), ["add", "-A"]);
+    const committed = flowGit(process.cwd(), [
+      "commit",
+      "-m",
+      `checkpoint ${index}: fixture change`,
+    ]);
+    if ((committed.exitCode ?? 1) !== 0) {
+      log(`flow-commit-failed ${committed.stderr.toString().trim()}`);
+      return;
+    }
+    const revision = flowGit(process.cwd(), ["rev-parse", "--short=7", "HEAD"]);
+    const commit = revision.stdout.toString().trim();
+    const verifiedAt = new Date().toISOString();
+    if (!flowNoVerification) {
+      writeJsonFile(join(directory, "verification.json"), {
+        command: "bun test",
+        status: flowVerification,
+        timestamp: verifiedAt,
+        output:
+          flowVerification === "failed"
+            ? "1 failing test: fixture verification failed\n"
+            : "0 failing tests: fixture verification passed\n",
+      });
+    }
+    mkdirSync(directory, { recursive: true });
+    if (!flowSilentCheckpoints) {
+      appendFileSync(
+        join(directory, "checkpoints.jsonl"),
+        `${JSON.stringify({
+          id: `cp-${index}`,
+          timestamp: verifiedAt,
+          summary: `checkpoint ${index} — fixture change`,
+          files: index > 1 ? 3 : 2,
+          commit,
+          verification: flowVerification,
+        })}\n`,
+      );
+    }
+    log(`flow-checkpoint ${index} ${commit}`);
+    stream(`Committed checkpoint ${index}`);
+    if (index < flowCheckpoints && flowStepDelay > 0) await Bun.sleep(flowStepDelay);
+  }
+
+  if (flowBlocked) {
+    const message = "DEVBOARD-BLOCKED: the fixture cannot continue past this checkpoint";
+    log("flow-blocked");
+    stream(message);
+    mkdirSync(directory, { recursive: true });
+    appendFileSync(
+      join(directory, "blockers.jsonl"),
+      `${JSON.stringify({ id: "blocker-fixture", timestamp: new Date().toISOString(), text: message.slice("DEVBOARD-BLOCKED: ".length) })}\n`,
+    );
+  }
+}
+
+async function runFlowChange(directory: string) {
+  log(`flow-change ${directory}`);
+  stream("Classifying the changed files");
+  const request = JSON.parse(readFileSync(join(directory, "request.json"), "utf8")) as {
+    files?: { path?: unknown }[];
+  };
+  const files = (request.files ?? [])
+    .map((file) => file.path)
+    .filter((path): path is string => typeof path === "string");
+  if (flowAnalystFail) {
+    writeFileSync(join(directory, "widgets.json"), "this is not widget json");
+    log("flow-widgets-failed");
+    return;
+  }
+  if (flowAnalystEmpty) {
+    writeJsonFile(join(directory, "widgets.json"), { widgets: [] });
+    log("flow-widgets 0");
+    return;
+  }
+  const selected = flowAnalystPartial ? files.slice(0, 1) : files;
+  const widgets: unknown[] = [];
+  if (selected.length > 0) {
+    widgets.push({
+      category: "contract",
+      concept: "Application contract",
+      summary: "The application's observable contract changed.",
+      rationale: "Callers observe a different result.",
+      files: [selected[0]],
+    });
+  }
+  if (selected.length > 1) {
+    widgets.push({
+      category: "data",
+      concept: "Stored configuration",
+      summary: "The stored configuration changed.",
+      rationale: "Persisted values have a new shape.",
+      files: selected.slice(1),
+    });
+  }
+  writeJsonFile(join(directory, "widgets.json"), { widgets });
+  log(`flow-widgets ${widgets.length}`);
+}
+
+async function runFlowWidget(rest: string) {
+  const split = /^(\S+)\s+(\S+)/.exec(rest);
+  log(`flow-widget ${split?.[1] ?? ""} ${split?.[2] ?? ""}`);
+  stream("Reviewing the widget and its diff");
+  await askQuestions(1);
+  stream("The widget conversation is read-only");
+}
+
+/**
+ * The peer is announced with the prompt that starts its first turn, so a test
+ * that counts peers sees the announcement together with the turn it started.
+ */
+let announced = false;
+
 async function promptTurn(params: unknown) {
+  if (!announced) {
+    announced = true;
+    log(`spawn ${process.pid}`);
+  }
   const text = promptText(params);
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
   const firstLine = text?.split("\n")[0] ?? "";
+
+  if (flowGoal && firstLine.startsWith("/flow-goal ")) {
+    log(`prompt ${firstLine}`);
+    await runFlowGoal(firstLine.slice("/flow-goal ".length).trim());
+    return;
+  }
+  if (flowImplement && firstLine.startsWith("/flow-implement ")) {
+    log(`prompt ${firstLine}`);
+    await runFlowImplementation(firstLine.slice("/flow-implement ".length).trim());
+    return;
+  }
+  if (flowChange && firstLine.startsWith("/flow-change ")) {
+    log(`prompt ${firstLine}`);
+    await runFlowChange(firstLine.slice("/flow-change ".length).trim());
+    return;
+  }
+  if (flowWidget && firstLine.startsWith("/flow-widget ")) {
+    log(`prompt ${firstLine}`);
+    await runFlowWidget(firstLine.slice("/flow-widget ".length).trim());
+    return;
+  }
+  if (
+    flowWidget &&
+    text !== undefined &&
+    !firstLine.startsWith("/") &&
+    !firstLine.startsWith("Revise the goal")
+  ) {
+    log(`flow-conversation ${firstLine}`);
+    stream(`Developer: ${firstLine}`);
+    return;
+  }
+
   const creating = createGoal && firstLine === "/goal-outcome";
   const revising = reviseGoal && firstLine.startsWith("Revise the goal");
   log(`prompt ${firstLine}`);
@@ -679,8 +965,17 @@ function handleMessage(message: Record<string, unknown>) {
         });
         return;
       }
-      void promptTurn(message.params).then(() => {
-        write({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+      promptChain = promptChain.then(async () => {
+        try {
+          await promptTurn(message.params);
+          write({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+        } catch (error) {
+          write({
+            jsonrpc: "2.0",
+            id: message.id,
+            error: { code: -32603, message: error instanceof Error ? error.message : String(error) },
+          });
+        }
       });
     } else if (message.method === "session/cancel") {
       // Nothing to do for the stub.
@@ -698,8 +993,6 @@ function handleMessage(message: Record<string, unknown>) {
   pending.get(String(message.id))?.(message.result);
   pending.delete(String(message.id));
 }
-
-log(`spawn ${process.pid}`);
 
 const decoder = new TextDecoder();
 let buffer = "";

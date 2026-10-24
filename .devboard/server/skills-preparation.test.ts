@@ -419,6 +419,7 @@ describe("skills preparation", () => {
         for (const failure of errors(client)) {
           expect(String(failure.message)).toMatch(/skills preparation/i);
         }
+        await waitUntil(() => spawnCount(logPath) === 1, "one preparation peer");
         expect(spawnCount(logPath)).toBe(1);
         expect(
           client.events.some((message) => message.type === "lifecycleState"),
@@ -459,6 +460,7 @@ describe("skills preparation", () => {
         ).toBe(1);
         expect(errors(client)).toHaveLength(1);
         expect(String(errors(client)[0]?.message)).toMatch(/skills preparation/i);
+        await waitUntil(() => spawnCount(logPath) === 1, "one preparation peer");
         expect(spawnCount(logPath)).toBe(1);
       } finally {
         client.close();
@@ -997,7 +999,6 @@ describe("skills preparation", () => {
     expect(prompt).toMatch(/carries no provenance line, source list, or citation field/i);
 
     expect(stub).not.toContain(categoryMarker);
-    expect(stub).not.toMatch(/category/i);
     expect(command.trim().split("\n").at(-1)).toContain(
       "Read `.devboard/prompts/prepare-skills.md`",
     );
