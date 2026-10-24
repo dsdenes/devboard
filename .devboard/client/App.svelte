@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import AgentOutput from "./AgentOutput.svelte";
   import FeedbackOverlay from "./FeedbackOverlay.svelte";
 
   interface AdrRecord {
@@ -1293,13 +1294,19 @@
       {#if selectedLane !== null}
         <div class="lane-panel" data-testid="lane-panel" data-lane={selectedLane.id}>
           <p class="lane-identity" data-testid="lane-identity">{laneIdentity(selectedLane)}</p>
-          <p class="lifecycle-line">
-            Status
-            <strong data-testid="lane-status">{selectedLane.status}</strong>
+          <p
+            class="lane-status"
+            data-testid="lane-status"
+            data-kind={selectedLane.kind}
+            data-status={selectedLane.status}
+          >
+            {selectedLane.status}
           </p>
 
           {#if selectedLaneActivity.length > 0}
-            <p class="activity-current" data-testid="lane-current">{selectedLaneCurrent}</p>
+            <div class="activity-current" data-testid="lane-current">
+              <AgentOutput text={selectedLaneCurrent} />
+            </div>
             {#if selectedLaneHistory.length > 0}
               <details class="activity-history">
                 <summary data-testid="lane-history">
@@ -1308,7 +1315,7 @@
                 </summary>
                 <ol class="activity-log" data-testid="lane-history-log">
                   {#each [...selectedLaneHistory].reverse() as line, index (index)}
-                    <li>{line}</li>
+                    <li><AgentOutput text={line} /></li>
                   {/each}
                 </ol>
               </details>
@@ -1471,13 +1478,15 @@
         <span class="activity-dot" class:live={activityActive} aria-hidden="true"></span>
         <h2>{activityActive ? "Current action" : "Last action"}</h2>
       </div>
-      <p class="activity-current" data-testid="activity-current">{currentAction}</p>
+      <div class="activity-current" data-testid="activity-current">
+        <AgentOutput text={currentAction} />
+      </div>
       {#if previousActions.length > 0}
         <details class="activity-history">
           <summary data-testid="activity-history">{previousActionsLabel}</summary>
           <ol class="activity-log" data-testid="activity-log">
             {#each [...previousActions].reverse() as line, index (index)}
-              <li>{line}</li>
+              <li><AgentOutput text={line} /></li>
             {/each}
           </ol>
         </details>

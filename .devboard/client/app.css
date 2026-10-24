@@ -285,14 +285,12 @@ main {
 }
 
 .activity-current {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.9rem;
   line-height: 1.5;
   margin: 0;
   max-height: 10rem;
   overflow-wrap: anywhere;
   overflow-y: auto;
-  white-space: pre-wrap;
 }
 
 .activity-history {
@@ -314,7 +312,6 @@ main {
 
 .activity-log {
   color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.78rem;
   line-height: 1.45;
   margin: 0.45rem 0 0;
@@ -326,7 +323,113 @@ main {
 .activity-log li {
   margin: 0.15rem 0;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
+}
+
+.agent-output {
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+
+.agent-output > :first-child {
+  margin-top: 0;
+}
+
+.agent-output > :last-child {
+  margin-bottom: 0;
+}
+
+.agent-output p,
+.agent-output ul,
+.agent-output ol,
+.agent-output pre,
+.agent-output blockquote {
+  margin: 0.4rem 0;
+}
+
+.agent-output h1,
+.agent-output h2,
+.agent-output h3,
+.agent-output h4,
+.agent-output h5,
+.agent-output h6 {
+  color: var(--text);
+  font-size: 0.92rem;
+  margin: 0.6rem 0 0.3rem;
+}
+
+.agent-output ul,
+.agent-output ol {
+  padding-left: 1.25rem;
+}
+
+.agent-output li {
+  margin: 0.15rem 0;
+}
+
+.agent-output a {
+  color: var(--accent);
+}
+
+.agent-output strong {
+  color: var(--text);
+}
+
+.agent-output code {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  padding: 0.05rem 0.3rem;
+}
+
+.agent-output pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+  padding: 0.6rem 0.75rem;
+}
+
+.agent-output pre code {
+  background: none;
+  border: 0;
+  color: var(--text);
+  padding: 0;
+}
+
+.agent-output blockquote {
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+  padding-left: 0.75rem;
+}
+
+.agent-output table {
+  border-collapse: collapse;
+  display: block;
+  margin: 0.4rem 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.agent-output th,
+.agent-output td {
+  border: 1px solid var(--border);
+  padding: 0.2rem 0.45rem;
+}
+
+.agent-output th {
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+
+.agent-output hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 0.6rem 0;
 }
 
 .question {
@@ -887,7 +990,48 @@ code {
 }
 
 .lane-panel {
+  height: 26rem;
+  overflow-y: auto;
   padding: 0.9rem 1rem 1.6rem;
+}
+
+.lane-panel .activity-current {
+  max-height: none;
+  overflow: visible;
+}
+
+.lane-status {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  margin: 0 0 1rem;
+  text-transform: uppercase;
+}
+
+.lane-status[data-kind="generation"] {
+  color: var(--generation);
+}
+
+.lane-status[data-kind="adr"] {
+  color: var(--adr);
+}
+
+.lane-status[data-kind="implementation"][data-status="running"] {
+  color: var(--resolved);
+}
+
+.lane-status[data-kind="implementation"][data-status="failed"] {
+  color: var(--error);
+}
+
+.lane-status[data-kind="implementation"][data-status="paused"],
+.lane-status[data-kind="implementation"][data-status="retrying"],
+.lane-status[data-kind="implementation"][data-status="parked"] {
+  color: var(--pending);
+}
+
+.lane-status[data-kind="implementation"][data-status="closed"] {
+  color: var(--muted);
 }
 
 .lane-identity {

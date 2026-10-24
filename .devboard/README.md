@@ -118,14 +118,17 @@ identity and an attempt number when the epic was retried. Its left edge is color
 and state: purple for epic generation, teal for ADR resolution, green for a running
 implementation, amber while one is paused, retrying, or parked, red when it failed, and gray
 once it closed. The tab carries no status text. A closed or failed lane leaves the active list
-after 30 seconds. Selecting a tab shows only that lane's current action, history, status, and
-pending question; two peers streaming at once never mix their lines. The lifecycle advances while
-a run is active, so the goal editor and the lifecycle start control are disabled, but the ADR
-start controls remain available: selecting one interrupts every lane at its interrupted stage,
-starts the manual record sequence, and resumes the lifecycle when that sequence ends. A client
-that connects or reloads receives the current stage, pass, counts, tab list, and every live lane's
-recorded activity and pending question. An epic's work state carries the tracker page, and the
-page renders `Epic #<n>` as a link to that issue. Once a run reports `finished`, the server keeps
+after 30 seconds. Selecting a tab opens a fixed-height, scrolling panel that shows only that
+lane's current action, history, status, and pending question. The status label is uppercased and
+colored like the tab; the action and every history entry render as sanitized Markdown with styled
+headings, lists, code, and links, so agent output is structured instead of one wall of text. Two
+peers streaming at once never mix their lines. The lifecycle advances while a run is active, so
+the goal editor and the lifecycle start control are disabled, but the ADR start controls remain
+available: selecting one interrupts every lane at its interrupted stage, starts the manual record
+sequence, and resumes the lifecycle when that sequence ends. A client that connects or reloads
+receives the current stage, pass, counts, tab list, and every live lane's recorded activity and
+pending question. An epic's work state carries the tracker page, and the page renders
+`Epic #<n>` as a link to that issue. Once a run reports `finished`, the server keeps
 that state for its lifetime and replays it, together with the lanes still retained, to every client
 that connects or reloads, so the interface still shows the final pass and any recent tabs until a
 new run starts or the backend restarts. An aborted run likewise replays the idle goal stage with
