@@ -465,6 +465,9 @@ describe("Flow Mode contract", () => {
     expect(git(worktree, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe(`flow/${sessionId}`);
 
     await waitForStub(fixture, (line) => line.startsWith("prompt /flow-implement "));
+    // The first checkpoint proves the implementation turn is under way, so the
+    // peer's own log lines exist before they are asserted.
+    await waitForStub(fixture, (line) => line.startsWith("flow-checkpoint 1 "));
     expect(spawns(fixture)).toHaveLength(2);
     const implementationPrompts = prompts(fixture).filter((line) =>
       line.startsWith("prompt /flow-implement "),

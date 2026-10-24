@@ -608,10 +608,12 @@ describe("Flow pull-request lifecycle", () => {
     await createGoal(client);
     const session = await startFlow(client, fixture);
     await client.waitFor((event) => event.type === "flowPr" && (event.pr as { state: string }).state === "draft");
-    await waitForStub(fixture, (line) => line.startsWith("flow-checkpoint 2"), 30_000);
+    // The update only happens for a tip beyond the first pushed one, so it is
+    // the deterministic signal that the second checkpoint was pushed.
     await waitUntil(
       () => forgeStub.calls.some((call) => call.op === "update"),
       "the PR body update",
+      40_000,
     );
 
     const pushes = server.calls.filter(
