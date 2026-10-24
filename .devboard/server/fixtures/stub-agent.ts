@@ -1,5 +1,6 @@
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -95,6 +96,8 @@ const flowAnalystEmpty = process.argv.includes("--flow-analyst-empty");
 const flowAnalystForeign = process.argv.includes("--flow-analyst-foreign");
 const flowSilentCheckpoints = process.argv.includes("--flow-silent-checkpoints");
 const flowPreCommitDelay = Number(argument("flow-pre-commit-delay") ?? 0);
+/** File this stub waits for before its second and later checkpoints. */
+const flowWaitFile = argument("flow-wait-file");
 const flowNoVerification = process.argv.includes("--flow-no-verification");
 const CREATED_GOAL = "# Created goal\n\nThe agent wrote this.";
 const SETTLE_DELAY_MS = 400;
@@ -595,7 +598,14 @@ async function runFlowImplementation(directory: string) {
     } catch {
       log(`flow-decisions-read ${index} 0`);
     }
-    if (index > 1) consumeSteering(directory);
+    if (index > 1) {
+      if (flowWaitFile !== undefined) {
+        const deadline = Date.now() + 30_000;
+        while (!existsSync(flowWaitFile) && Date.now() < deadline) await Bun.sleep(25);
+        log(`flow-wait-done ${existsSync(flowWaitFile) ? "yes" : "timeout"}`);
+      }
+      consumeSteering(directory);
+    }
     mkdirSync(join(process.cwd(), "src"), { recursive: true });
     writeFileSync(join(process.cwd(), "src", "app.txt"), `version ${index}\n`);
     writeFileSync(

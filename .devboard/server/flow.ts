@@ -1837,6 +1837,13 @@ export class FlowController {
     }
 
     try {
+      // The forge is the authority on the request's current state: a request
+      // closed or reopened elsewhere is never merged on stale local state.
+      const current = await this.#forge.view(this.repoDir, target, session.pr.number);
+      if (current.state !== "open" || current.draft) {
+        this.#error("The pull request is not an open, live pull request.");
+        return;
+      }
       await this.#forge.merge(this.repoDir, target, session.pr.number);
       const state = await this.#forge.view(this.repoDir, target, session.pr.number);
       if (state.state !== "merged") {
