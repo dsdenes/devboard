@@ -133,15 +133,38 @@ pull request, and the remainder goes to Non-goals.
    port; the hostname decides the forge:
    - `github.com` → GitHub, CLI `gh`;
    - a hostname containing `gitlab` → GitLab, CLI `glab`;
-   - any other hostname → a self-hosted instance of one of the two: use that forge's CLI, but
-     require the exact hostname in the CLI's own configuration (`gh auth status --hostname
-     <host>`, `glab auth status --hostname <host>`). Unconfigured, or the forge cannot be told
-     apart → halt.
-3. CLI absent, or `gh auth status --hostname <host>` / `glab auth status --hostname <host>` reports
-   no authenticated account for that host → halt. The CLIs are only ever called in non-interactive
-   form; never let one prompt.
-4. Derive the project path from the remote: strip a trailing `.git` and any leading `/`, keep the
+   - any other hostname → a self-hosted instance of one of the two: the wrapper in step 4
+     decides which forge CLI is authenticated for that exact hostname. Neither configured, both
+     configured, or the forge cannot be told apart → halt.
+3. Derive the project path from the remote: strip a trailing `.git` and any leading `/`, keep the
    full namespace — `owner/repo` on GitHub, `group/subgroup/project` on GitLab.
+4. Resolve the identity against that exact project, from the host repository root:
+
+   ```sh
+   bun <host>/.devboard/scripts/forge-auth.ts check \
+     --host <host> --project <project> --forge <github|gitlab> --required write --cwd <host>
+   ```
+
+   The wrapper inspects every authenticated account for the host, tests each token against this
+   repository, and chooses a write-capable account (repository owner first, then the active
+   account, then any other write-capable account). An ambient `GH_TOKEN`/`GITHUB_TOKEN` is used
+   only when it is valid and has access; it never shadows a usable account just because it is
+   exported. The wrapper never changes the global active account and never prompts.
+   Exit non-zero → halt, quoting the wrapper's message. Never switch the active account by hand,
+   never retry another login, and never proceed with a read-only account: every later write
+   would be refused.
+5. Every later `gh` or `glab` call in this run MUST run through the same selection. Write
+   `<auth>` for:
+
+   ```sh
+   bun <host>/.devboard/scripts/forge-auth.ts exec \
+     --host <host> --project <project> --forge <forge> --required write --
+   ```
+
+   Then run `<auth> gh ...` or `<auth> glab ...`. A direct CLI call can silently use a different
+   account or a stale token; the wrapper is the only supported path. It puts the selected token
+   in the child environment, never in an argument or a reply. The CLIs are only ever called in
+   non-interactive form: never let one prompt.
 
 ## Phase B — End goal
 
@@ -306,30 +329,30 @@ Phase H.
 An issue is an epic when it is open and either carries a label named `epic` ignoring case, or
 contains the marker `<!-- devboard-epic -->` in its body.
 
-1. List the repository's labels once — `gh label list --search epic --limit 100 --json name`, or
-   `glab label list --output json`. The match is the whole label name being equal to `epic`
-   ignoring case; a name that merely contains it (`type::epic`) is not a match, and `--search` can
-   return such near-misses, so filter what comes back. Zero matches means the label does not
-   exist: go to step 3.
+1. List the repository's labels once — `<auth> gh label list --search epic --limit 100 --json
+   name`, or `<auth> glab label list --output json`. The match is the whole label name being equal
+   to `epic` ignoring case; a name that merely contains it (`type::epic`) is not a match, and
+   `--search` can return such near-misses, so filter what comes back. Zero matches means the label
+   does not exist: go to step 3.
 2. Label exists → list the open issues carrying it, passing the exact spelling the repository
    stores (`Epic` when that is what it holds — GitLab label names are case-sensitive, and the
    wrong case silently returns zero, which must not be read as "no epics"):
-   `gh issue list --label <name> --state open --json number,title,url --limit 100`, or
-   `glab issue list --label <name> --output json`.
+   `<auth> gh issue list --label <name> --state open --json number,title,url --limit 100`, or
+   `<auth> glab issue list --label <name> --output json`.
 3. No such label → search open issue bodies for the marker, scoped to the project:
-   `gh search issues --repo <owner>/<repo> --match body --state open 'devboard-epic' --json
-   number,title,url --limit 100`, or `glab issue list --search devboard-epic --in description
-   --output json`. If the CLI cannot search issue bodies at all → halt: the predicate is
-   unverifiable.
+   `<auth> gh search issues --repo <owner>/<repo> --match body --state open 'devboard-epic' --json
+   number,title,url --limit 100`, or `<auth> glab issue list --search devboard-epic --in
+   description --output json`. If the CLI cannot search issue bodies at all → halt: the predicate
+   is unverifiable.
 4. Record every open epic URL. Open epics are exclusions, not a halt: skip any selected candidate
    whose outcome duplicates, overlaps, or re-cuts one of them, and file the remaining candidates.
    Filing zero epics after these exclusions is a valid result. Never comment on an open issue,
    relabel it, reassign it, close it, or reuse it.
 5. Duplicate goal → search first, then compare, for each selected candidate: fetch open issues
-   matching the goal document's first heading and its filename stem (`gh issue list --search
-   "<term>" --state open --json number,title,url,body --limit 100`, or `glab issue list --search
-   <term> --in title --output json`, once per term), and skip that candidate when one of them
-   names the same result — its title equal to that heading or stem after normalising case,
+   matching the goal document's first heading and its filename stem (`<auth> gh issue list
+   --search "<term>" --state open --json number,title,url,body --limit 100`, or `<auth> glab issue
+   list --search <term> --in title --output json`, once per term), and skip that candidate when one
+   of them names the same result — its title equal to that heading or stem after normalising case,
    punctuation, and the words `epic` and `goal`, or its body citing the goal document's path. The
    search is only a candidate fetch; that comparison is the predicate, and an unrelated open
    issue is not a duplicate. Skipping every candidate leaves zero epics and is not a halt.
@@ -468,9 +491,10 @@ Write each body to a temp file outside the repository and pass it by file, so sh
 damage it; delete it afterwards.
 
 Labels: `epic` — the exact case variant chosen in Phase F, or `epic` when the repository has none.
-If the label does not exist, create it with the CLI's defaults (`gh label create epic`, or `glab
-label create --name epic`), inventing no description or colour. Label creation rejected
-(permissions) → create the issue anyway, carrying the marker and no label, and say so in the reply.
+If the label does not exist, create it with the CLI's defaults (`<auth> gh label create epic`, or
+`<auth> glab label create --name epic`), inventing no description or colour. Label creation
+rejected (permissions) → create the issue anyway, carrying the marker and no label, and say so in
+the reply.
 
 No other label, tracker milestone, assignee, project, type, or template may be set or invented;
 forge issue templates are not used, because the body contract above is fixed. On GitLab, never use
@@ -479,8 +503,8 @@ the native epic object and never pass `--epic`: the deliverable is a plain issue
 Create each epic non-interactively from the repository root, so the CLI infers the project from
 `origin`:
 
-- `gh issue create --title <title> --body-file <file> --label <label>`
-- `glab issue create --title <title> --description-file <file> --label <label> --yes`
+- `<auth> gh issue create --title <title> --body-file <file> --label <label>`
+- `<auth> glab issue create --title <title> --description-file <file> --label <label> --yes`
 
 Never open an editor or a browser, never let a prompt appear. Creation failure → halt, quoting the
 CLI's error.
@@ -489,7 +513,8 @@ CLI's error.
 
 `halt: <reason>` and nothing else — no epic created by this run, no writes from Phases G and H that
 had not already completed, existing state untouched. Reasons: not a git repository or no `origin`;
-unrecognised or unconfigured forge; CLI absent or unauthenticated; no goal document or one without
+unrecognised or unconfigured forge; no authenticated account with write access to the project (CLI
+absent, all tokens rejected, or every valid token read-only); no goal document or one without
 an end state; two binding records contradicting; an architectural choice whose every realistic
 answer forecloses a goal capability, with no goal-preserving slice; a pending record the selected
 slice cannot route around, with no other goal-preserving slice; no candidate passing the Phase E

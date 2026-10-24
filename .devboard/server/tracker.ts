@@ -1,4 +1,11 @@
 import type { Subprocess } from "bun";
+import {
+  authEnvironment,
+  isAuthFailure,
+  resolveForgeAuth,
+  type Exec,
+  type ResolvedAuth,
+} from "../lib/forge-auth.ts";
 
 export interface OpenEpic {
   number: number;
@@ -23,6 +30,7 @@ export function normalizeEpics(value: OpenEpic[] | OpenEpic | undefined): OpenEp
 
 interface Remote {
   forge: "github" | "gitlab";
+  host: string;
   project: string;
 }
 
@@ -44,21 +52,57 @@ interface IssueEntry {
   web_url?: unknown;
 }
 
-const COMMAND_ENV = {
-  ...process.env,
-  GH_PROMPT_DISABLED: "1",
-  GH_NO_UPDATE_NOTIFIER: "1",
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_ASKPASS: "true",
-  NO_COLOR: "1",
+function baseEnvironment(): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === "string") environment[key] = value;
+  }
+  return {
+    ...environment,
+    GH_PROMPT_DISABLED: "1",
+    GH_NO_UPDATE_NOTIFIER: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "true",
+    NO_COLOR: "1",
+  };
+}
+
+const bunExec: Exec = async (commandName, args, options) => {
+  try {
+    const process = Bun.spawn({
+      cmd: [commandName, ...args],
+      cwd: options.cwd,
+      env: options.env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]);
+    return { stdout, stderr, code };
+  } catch (error) {
+    return {
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+      code: -1,
+      killed: false,
+    };
+  }
 };
 
-async function command(cwd: string, argv: string[]): Promise<CommandResult> {
+async function command(
+  cwd: string,
+  argv: string[],
+  env: Record<string, string> = baseEnvironment(),
+): Promise<CommandResult> {
   let process: Subprocess<"ignore", "pipe", "pipe">;
   try {
     process = Bun.spawn(argv, {
       cwd,
-      env: COMMAND_ENV,
+      env,
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -77,8 +121,13 @@ async function command(cwd: string, argv: string[]): Promise<CommandResult> {
   return { stdout, stderr, exitCode };
 }
 
-async function commandJson<T>(cwd: string, argv: string[], description: string): Promise<T> {
-  const result = await command(cwd, argv);
+async function commandJson<T>(
+  cwd: string,
+  argv: string[],
+  description: string,
+  env?: Record<string, string>,
+): Promise<T> {
+  const result = await command(cwd, argv, env);
   if (result.exitCode !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`;
     throw new Error(`Could not ${description}: ${detail}`);
@@ -122,8 +171,8 @@ export function classifyRemote(remote: string): Remote | undefined {
   const project = path.replace(/^\/+/, "").replace(/\.git$/i, "").replace(/\/+$/, "");
   if (hostname.length === 0 || project.length === 0) return undefined;
 
-  if (hostname === "github.com") return { forge: "github", project };
-  if (hostname.includes("gitlab")) return { forge: "gitlab", project };
+  if (hostname === "github.com") return { forge: "github", host: hostname, project };
+  if (hostname.includes("gitlab")) return { forge: "gitlab", host: hostname, project };
   return undefined;
 }
 
@@ -156,11 +205,16 @@ function allEpics(entries: unknown): OpenEpic[] {
   return epics;
 }
 
-async function githubEpics(cwd: string, project: string): Promise<OpenEpic[]> {
+async function githubEpics(
+  cwd: string,
+  project: string,
+  env: Record<string, string>,
+): Promise<OpenEpic[]> {
   const labels = await commandJson<LabelEntry[]>(
     cwd,
     ["gh", "label", "list", "--search", "epic", "--limit", "100", "--json", "name"],
     "list tracker labels",
+    env,
   );
   const label = labels.find(
     (entry) => typeof entry.name === "string" && entry.name.toLowerCase() === "epic",
@@ -183,6 +237,7 @@ async function githubEpics(cwd: string, project: string): Promise<OpenEpic[]> {
         "100",
       ],
       "list open epics",
+      env,
     );
     return allEpics(issues);
   }
@@ -206,15 +261,17 @@ async function githubEpics(cwd: string, project: string): Promise<OpenEpic[]> {
       "100",
     ],
     "search open epics",
+    env,
   );
   return allEpics(issues);
 }
 
-async function gitlabEpics(cwd: string): Promise<OpenEpic[]> {
+async function gitlabEpics(cwd: string, env: Record<string, string>): Promise<OpenEpic[]> {
   const labels = await commandJson<LabelEntry[]>(
     cwd,
     ["glab", "label", "list", "--output", "json"],
     "list tracker labels",
+    env,
   );
   const label = labels.find(
     (entry) => typeof entry.name === "string" && entry.name.toLowerCase() === "epic",
@@ -225,6 +282,7 @@ async function gitlabEpics(cwd: string): Promise<OpenEpic[]> {
       cwd,
       ["glab", "issue", "list", "--label", label.name, "--output", "json"],
       "list open epics",
+      env,
     );
     return allEpics(issues);
   }
@@ -233,8 +291,40 @@ async function gitlabEpics(cwd: string): Promise<OpenEpic[]> {
     cwd,
     ["glab", "issue", "list", "--search", "devboard-epic", "--in", "description", "--output", "json"],
     "search open epics",
+    env,
   );
   return allEpics(issues);
+}
+
+const AUTH_CACHE_MS = 60_000;
+const authCache = new Map<string, { auth: ResolvedAuth; expires: number }>();
+
+/**
+ * The lifecycle re-reads the tracker on every lane transition and settle
+ * attempt. Re-probing every account on each read would add seconds and several
+ * API calls, so a successful selection is reused for a short window.
+ */
+async function resolveTrackerAuth(
+  host: string,
+  project: string,
+  forge: "github" | "gitlab",
+  repoDir: string,
+): Promise<ResolvedAuth> {
+  const key = `${forge}:${host}:${project}`;
+  const cached = authCache.get(key);
+  if (cached !== undefined && cached.expires > Date.now()) return cached.auth;
+
+  const auth = await resolveForgeAuth(bunExec, {
+    forge,
+    host,
+    project,
+    cwd: repoDir,
+    required: "read",
+    env: process.env,
+  });
+  if (isAuthFailure(auth)) throw new Error(auth.error);
+  authCache.set(key, { auth, expires: Date.now() + AUTH_CACHE_MS });
+  return auth;
 }
 
 /**
@@ -254,7 +344,15 @@ export async function findOpenEpics(repoDir: string): Promise<OpenEpic[]> {
     throw new Error("The origin remote does not name a GitHub or GitLab repository.");
   }
 
+  const auth = await resolveTrackerAuth(
+    classified.host,
+    classified.project,
+    classified.forge,
+    repoDir,
+  );
+  const env = authEnvironment(auth);
+
   return classified.forge === "github"
-    ? await githubEpics(repoDir, classified.project)
-    : await gitlabEpics(repoDir);
+    ? await githubEpics(repoDir, classified.project, env)
+    : await gitlabEpics(repoDir, env);
 }

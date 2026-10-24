@@ -134,9 +134,19 @@ lifecycle run can start.
 
 An epic is an open issue carrying the label `epic` (ignoring case) or the
 `<!-- devboard-epic -->` marker in its body; the server reads every such issue with read-only
-`gh` or `glab` queries. Forge reads may expose a peer's tracker write a moment after the peer
-exits, so the server re-reads the tracker for a bounded settle window per lane before trusting an
-answer that still shows the pre-peer state.
+`gh` or `glab` queries. Every tracker operation first resolves the forge identity against the
+repository itself: it lists every account authenticated for the origin host, rejects tokens that
+are invalid or lack access to that project, and prefers a write-capable account owned by the
+repository owner, then the active account, then any other write-capable account. An ambient
+`GH_TOKEN`/`GITHUB_TOKEN` is used only when it passes the same check, so a stale or wrong-user
+token cannot shadow a usable account. The selected token travels in the child environment, never
+in an argument; the global `gh` active account is never switched, so parallel lanes and
+dashboards cannot race. Epic generation, implementation lanes, and the server's tracker reads
+call the same resolver, and the lane prompt routes its tracker writes through
+`.devboard/scripts/forge-auth.ts`. A repository with no write-capable authenticated account stops
+before an agent writes instead of surfacing a 401 or 403. Forge reads may expose a peer's tracker
+write a moment after the peer exits, so the server re-reads the tracker for a bounded settle
+window per lane before trusting an answer that still shows the pre-peer state.
 
 The goal section also offers `Prepare Skills` whenever the goal document contains non-whitespace
 text. Selecting it sends one `prepareSkills` command, which starts one ACP peer with the installed

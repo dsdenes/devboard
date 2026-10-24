@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   distillObjective,
   fetchEpic,
@@ -12,6 +12,141 @@ interface Reply {
   code?: number;
   stdout?: string;
   stderr?: string;
+}
+
+const AUTH_ENV_KEYS = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "GH_HOST",
+  "GITLAB_TOKEN",
+  "GITLAB_ACCESS_TOKEN",
+  "OAUTH_TOKEN",
+  "GITLAB_HOST",
+  "GH_PROMPT_DISABLED",
+  "NO_COLOR",
+  "GIT_TERMINAL_PROMPT",
+] as const;
+
+const savedEnvironment = new Map<string, string | undefined>();
+
+beforeEach(() => {
+  savedEnvironment.clear();
+  for (const key of AUTH_ENV_KEYS) savedEnvironment.set(key, process.env[key]);
+});
+
+afterEach(() => {
+  for (const [key, value] of savedEnvironment) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
+
+interface AuthReply {
+  code: number;
+  stdout: string;
+  stderr: string;
+  killed: boolean;
+}
+
+type AuthExec = (
+  command: string,
+  args: string[],
+  options: { cwd: string; env?: Record<string, string> },
+) => Promise<AuthReply>;
+
+interface AuthOptions {
+  accounts?: Array<{ login: string; active?: boolean; state?: string; error?: string }>;
+  tokens?: Record<string, string>;
+  permissions?: Record<string, Record<string, boolean>>;
+  users?: Record<string, string>;
+  gitlabStatus?: string;
+  gitlabAccess?: number;
+}
+
+function makeAuthExec(options: AuthOptions = {}): AuthExec {
+  const accounts = options.accounts ?? [{ login: "dsdenes", active: true, state: "success" }];
+  const tokens = options.tokens ?? { dsdenes: "gho_dsdenes" };
+  const permissions = options.permissions ?? {
+    gho_dsdenes: { admin: true, maintain: true, push: true, triage: true, pull: true },
+  };
+  const users = options.users ?? {};
+
+  return async (command, args, execOptions) => {
+    const key = [command, ...args].join(" ");
+    if (command === "gh" && key === "gh auth status --hostname github.com --json hosts") {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          hosts: {
+            "github.com": accounts.map((account) => ({
+              login: account.login,
+              active: account.active ?? false,
+              state: account.state ?? "success",
+              error: account.error ?? "",
+            })),
+          },
+        }),
+        stderr: "",
+        killed: false,
+      };
+    }
+    if (command === "gh" && args[0] === "auth" && args[1] === "token") {
+      const userIndex = args.indexOf("--user");
+      const login = userIndex >= 0 ? args[userIndex + 1] : undefined;
+      const token = login === undefined ? undefined : tokens[login];
+      return token === undefined
+        ? { code: 1, stdout: "", stderr: "no token", killed: false }
+        : { code: 0, stdout: `${token}\n`, stderr: "", killed: false };
+    }
+    if (command === "gh" && args[0] === "api") {
+      const token = execOptions.env?.GH_TOKEN ?? "";
+      if (args.includes("user")) {
+        const login =
+          users[token] ??
+          Object.entries(tokens).find(([, candidate]) => candidate === token)?.[0];
+        return login === undefined
+          ? { code: 1, stdout: "", stderr: "Bad credentials (HTTP 401)", killed: false }
+          : { code: 0, stdout: `${login}\n`, stderr: "", killed: false };
+      }
+      const permission = permissions[token];
+      return permission === undefined
+        ? { code: 1, stdout: "", stderr: "Not Found (HTTP 404)", killed: false }
+        : { code: 0, stdout: JSON.stringify(permission), stderr: "", killed: false };
+    }
+    if (
+      command === "glab" &&
+      key === "glab auth status --hostname gitlab.com --show-token"
+    ) {
+      return {
+        code: 0,
+        stdout: options.gitlabStatus ?? "  ✓ Token: glpat-test\n",
+        stderr: "",
+        killed: false,
+      };
+    }
+    if (command === "glab" && args[0] === "api") {
+      if (args.includes("user")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ username: "gitlab-user" }),
+          stderr: "",
+          killed: false,
+        };
+      }
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          visibility: "private",
+          permissions: { project_access: { access_level: options.gitlabAccess ?? 40 } },
+        }),
+        stderr: "",
+        killed: false,
+      };
+    }
+    return { code: 1, stdout: "", stderr: `unexpected auth command: ${key}`, killed: false };
+  };
 }
 
 const BODY = `## Objective
@@ -51,6 +186,7 @@ function makeHarness(
     goalEnabled?: boolean;
     activeTools?: string[];
     goalMode?: "active" | "paused" | "none";
+    authExec?: AuthExec;
   } = {},
 ) {
   const notifications: Array<{ message: string; type?: string }> = [];
@@ -113,14 +249,20 @@ function makeHarness(
     async waitForIdle() {},
   };
 
-  return { pi, ctx, notifications, sent, activeTools };
+  return {
+    pi,
+    ctx,
+    notifications,
+    sent,
+    activeTools,
+    authExec: options.authExec ?? makeAuthExec(),
+  };
 }
 
 function baseTable(overrides: Record<string, Reply> = {}) {
   const replies: Record<string, Reply> = {
     "git rev-parse --show-toplevel": { stdout: "/repo\n" },
     "git remote get-url origin": { stdout: "git@github.com:owner/repo.git\n" },
-    "gh auth status --hostname github.com": { code: 0 },
     "gh label list --search epic --limit 100 --json name": { stdout: '[{"name":"epic"}]' },
     "gh issue list --label epic --state open --json number,title,url --limit 100": {
       stdout: JSON.stringify([{ number: 42, title: EPIC_GITHUB.title, url: EPIC_GITHUB.url }]),
@@ -184,7 +326,7 @@ describe("slugify", () => {
 describe("runImplementNextEpic", () => {
   test("activates the goal tool and sends the distilled epic objective", async () => {
     const harness = makeHarness(baseTable());
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(true);
     expect(harness.activeTools).toContain("goal");
@@ -200,6 +342,8 @@ describe("runImplementNextEpic", () => {
     expect(harness.sent[0]).toContain("Never offer the user options");
     expect(harness.sent[0]).not.toContain("If blocked by genuine ambiguity");
     expect(harness.sent[0]).toContain("gh issue close 42");
+    expect(harness.sent[0]).toContain(".devboard/scripts/forge-auth.ts exec");
+    expect(harness.sent[0]).toContain("--required write");
     expect(harness.sent[0]).toContain("fetch the latest main");
     expect(harness.sent[0]).toContain("retry");
     expect(harness.sent[0]).toContain("Never force-push");
@@ -228,7 +372,7 @@ describe("runImplementNextEpic", () => {
         "git worktree add /repo/.worktree/other-epic -b devboard/other-epic main": { code: 0 },
       }),
     );
-    const result = await runImplementNextEpic(harness.pi, harness.ctx, "43");
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "43", harness.authExec);
 
     expect(result.ok).toBe(true);
     expect(harness.sent).toHaveLength(1);
@@ -239,7 +383,7 @@ describe("runImplementNextEpic", () => {
 
   test("refuses a reference that is not open", async () => {
     const harness = makeHarness(baseTable());
-    const result = await runImplementNextEpic(harness.pi, harness.ctx, "99");
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "99", harness.authExec);
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("epic 99 is not open");
@@ -254,7 +398,7 @@ describe("runImplementNextEpic", () => {
         },
       }),
     );
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("no open epic");
@@ -273,7 +417,7 @@ describe("runImplementNextEpic", () => {
         },
       }),
     );
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("found 2");
@@ -290,7 +434,7 @@ describe("runImplementNextEpic", () => {
         },
       }),
     );
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(true);
     expect(harness.sent).toHaveLength(1);
@@ -308,7 +452,7 @@ describe("runImplementNextEpic", () => {
         },
       }),
     );
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("no open epic");
@@ -317,7 +461,7 @@ describe("runImplementNextEpic", () => {
 
   test("halts when the goal tool cannot be activated", async () => {
     const harness = makeHarness(baseTable(), { goalEnabled: false });
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("goal mode is unavailable");
@@ -326,7 +470,7 @@ describe("runImplementNextEpic", () => {
 
   test("does not treat an active goal tool as an existing goal", async () => {
     const harness = makeHarness(baseTable(), { activeTools: ["read", "goal"] });
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(true);
     expect(harness.sent).toHaveLength(1);
@@ -334,7 +478,7 @@ describe("runImplementNextEpic", () => {
 
   test("halts when the session branch has an active goal", async () => {
     const harness = makeHarness(baseTable(), { goalMode: "active" });
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("already active");
@@ -343,7 +487,7 @@ describe("runImplementNextEpic", () => {
 
   test("halts when the session branch has a paused goal", async () => {
     const harness = makeHarness(baseTable(), { goalMode: "paused" });
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("already paused");
@@ -352,7 +496,7 @@ describe("runImplementNextEpic", () => {
 
   test("starts a new epic after the latest mode change cleared the goal", async () => {
     const harness = makeHarness(baseTable(), { goalMode: "none", activeTools: ["read", "goal"] });
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(true);
     expect(harness.sent).toHaveLength(1);
@@ -362,7 +506,7 @@ describe("runImplementNextEpic", () => {
     const harness = makeHarness(
       baseTable({ "git remote get-url origin": { code: 1, stderr: "No such remote" } }),
     );
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("origin remote is not configured");
@@ -378,14 +522,12 @@ describe("runImplementNextEpic", () => {
     const harness = makeHarness(
       baseTable({
         "git remote get-url origin": { stdout: "git@gitlab.com:group/sub/project.git\n" },
-        "gh auth status --hostname gitlab.com": { code: 1 },
-        "glab auth status --hostname gitlab.com": { code: 0 },
         "glab label list --output json": { stdout: '[{"name":"epic"}]' },
         "glab issue list --label epic --output json": { stdout: JSON.stringify([gitlabBody]) },
         "glab issue view 7 --output json": { stdout: JSON.stringify(gitlabBody) },
       }),
     );
-    const result = await runImplementNextEpic(harness.pi, harness.ctx);
+    const result = await runImplementNextEpic(harness.pi, harness.ctx, "", harness.authExec);
 
     expect(result.ok).toBe(true);
     expect(harness.sent[0]).toContain(gitlabBody.web_url);

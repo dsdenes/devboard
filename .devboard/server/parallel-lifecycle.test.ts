@@ -936,6 +936,9 @@ describe("tracker reads every open epic", () => {
       cli === "gh"
         ? `#!/bin/sh
 case "$*" in
+  "auth status --hostname github.com --json hosts") echo '{"hosts":{"github.com":[{"login":"reviewer","active":true,"state":"success"}]}}' ;;
+  "auth token --hostname github.com --user reviewer") echo "gho_test" ;;
+  "api --hostname github.com repos/owner/repo --jq .permissions") echo '{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}' ;;
   "label list --search epic --limit 100 --json name") echo '[{"name":"epic"}]' ;;
   "issue list --label epic --state open --json number,title,url --limit 100") echo '${output}' ;;
   *) echo "unexpected gh $*" >&2; exit 1 ;;
@@ -943,6 +946,9 @@ esac
 `
         : `#!/bin/sh
 case "$*" in
+  "auth status --hostname gitlab.com --show-token") echo "  ✓ Token: glpat-test" ;;
+  "api --hostname gitlab.com user") echo '{"username":"reviewer"}' ;;
+  "api --hostname gitlab.com projects/group%2Fproject") echo '{"visibility":"private","permissions":{"project_access":{"access_level":40}}}' ;;
   "label list --output json") echo '[{"name":"epic"}]' ;;
   "issue list --label epic --output json") echo '${output}' ;;
   *) echo "unexpected glab $*" >&2; exit 1 ;;

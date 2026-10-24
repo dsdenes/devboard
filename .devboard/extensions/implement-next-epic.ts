@@ -17,6 +17,12 @@
  */
 
 import { resolve } from "node:path";
+import {
+  applyAuthToProcess,
+  isAuthFailure,
+  resolveForgeAuth,
+  type Exec,
+} from "../lib/forge-auth.ts";
 
 interface ExecResult {
   stdout: string;
@@ -66,6 +72,8 @@ export interface RemoteInfo {
   host: string;
   project: string;
   forge: "github" | "gitlab";
+  /** The authenticated account selected for this repository. */
+  login?: string;
 }
 
 export interface EpicSummary {
@@ -196,45 +204,95 @@ export function parseRemote(url: string): { host: string; project: string } | nu
   return { host, project };
 }
 
+/**
+ * Run one auth probe with an explicit environment. `pi.exec` cannot set env,
+ * so credential validation cannot use it; every probe starts its own child and
+ * the selected token only ever travels in that child's environment.
+ */
+async function execWithEnvironment(
+  command: string,
+  args: string[],
+  options: { cwd: string; env?: Record<string, string> },
+): Promise<ExecResult> {
+  try {
+    const child = Bun.spawn({
+      cmd: [command, ...args],
+      cwd: options.cwd,
+      env: options.env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { stdout, stderr, code, killed: false };
+  } catch (error) {
+    return {
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+      code: -1,
+      killed: false,
+    };
+  }
+}
+
 export async function detectForge(
-  pi: ExtensionAPI,
   remote: { host: string; project: string },
   cwd: string,
+  authExec: Exec = execWithEnvironment,
 ): Promise<Outcome<RemoteInfo>> {
   const host = remote.host;
   const lower = host.toLowerCase();
+  const resolveFor = (forge: "github" | "gitlab") =>
+    resolveForgeAuth(authExec, {
+      forge,
+      host,
+      project: remote.project,
+      cwd,
+      required: "write",
+      env: process.env,
+    });
 
   if (host === "github.com") {
-    const result = await run(pi, "gh", ["auth", "status", "--hostname", host], cwd);
-    if (result.code !== 0) {
-      return {
-        error: `gh is unavailable or unauthenticated for ${host}: ${firstLine(result.stderr) || "no authenticated account"}`,
-      };
-    }
-    return { ...remote, forge: "github" };
+    const github = await resolveFor("github");
+    if (isAuthFailure(github)) return { error: github.error };
+    applyAuthToProcess(github);
+    return { ...remote, forge: "github", login: github.login };
   }
 
-  if (lower === "gitlab.com" || lower.includes("gitlab")) {
-    const result = await run(pi, "glab", ["auth", "status", "--hostname", host], cwd);
-    if (result.code !== 0) {
-      return {
-        error: `glab is unavailable or unauthenticated for ${host}: ${firstLine(result.stderr) || "no authenticated account"}`,
-      };
-    }
-    return { ...remote, forge: "gitlab" };
+  if (lower.includes("gitlab")) {
+    const gitlab = await resolveFor("gitlab");
+    if (isAuthFailure(gitlab)) return { error: gitlab.error };
+    applyAuthToProcess(gitlab);
+    return { ...remote, forge: "gitlab", login: gitlab.login };
   }
 
-  // Self-hosted: use whichever forge CLI is configured for this exact host.
-  // Both configured means the forge cannot be told apart → halt.
-  const gh = await run(pi, "gh", ["auth", "status", "--hostname", host], cwd);
-  const glab = await run(pi, "glab", ["auth", "status", "--hostname", host], cwd);
-  if (gh.code === 0 && glab.code !== 0) return { ...remote, forge: "github" };
-  if (glab.code === 0 && gh.code !== 0) return { ...remote, forge: "gitlab" };
+  // Self-hosted: use whichever forge CLI is authenticated for this exact host.
+  // Both configured means the forge cannot be told apart.
+  const gitlab = await resolveFor("gitlab");
+  const github = await resolveFor("github");
+  if (!isAuthFailure(gitlab) && !isAuthFailure(github)) {
+    return {
+      error: `both gh and glab are configured for ${host}; cannot tell which forge serves the remote`,
+    };
+  }
+  if (!isAuthFailure(gitlab)) {
+    applyAuthToProcess(gitlab);
+    return { ...remote, forge: "gitlab", login: gitlab.login };
+  }
+  if (!isAuthFailure(github)) {
+    applyAuthToProcess(github);
+    return { ...remote, forge: "github", login: github.login };
+  }
   return {
-    error:
-      gh.code === 0
-        ? `both gh and glab are configured for ${host}; cannot tell which forge serves the remote`
-        : `no authenticated gh or glab account for ${host}`,
+    error: [
+      `no authenticated gh or glab account has write access to ${remote.project} on ${host}`,
+      `gh: ${github.error}`,
+      `glab: ${gitlab.error}`,
+    ].join("\n"),
   };
 }
 
@@ -509,6 +567,30 @@ export async function createWorktree(
   return { path, branch };
 }
 
+function shellArgument(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** The exact wrapper every tracker command in the lane prompt must use. */
+export function forgeAuthCommand(repo: string, info: RemoteInfo): string {
+  const script = resolve(repo, ".devboard", "scripts", "forge-auth.ts");
+  return [
+    "bun",
+    shellArgument(script),
+    "exec",
+    "--host",
+    shellArgument(info.host),
+    "--project",
+    shellArgument(info.project),
+    "--forge",
+    info.forge,
+    "--required",
+    "write",
+    "--",
+  ].join(" ");
+}
+
 export function buildGoalPrompt(
   epic: Epic,
   objective: string,
@@ -516,6 +598,7 @@ export function buildGoalPrompt(
   worktree: string,
   branch: string,
   forge: RemoteInfo["forge"],
+  authCommand: string,
 ): string {
   return `Implement the next epic from the tracker. This run is fully autonomous.
 
@@ -556,7 +639,9 @@ After the goal tool succeeds, implement the epic end to end:
   and retry. Never force-push. After the merge succeeds, push main to origin and remove the
   worktree and branch, per AGENTS.md. If the push is rejected, fetch and integrate the new main
   and push again.
-- When complete, close the epic issue ${epic.ref} in ${repo}: ${forge === "github" ? `\`gh issue close ${epic.ref}\`` : `\`glab issue close ${epic.ref}\``}. Close it only after the merge succeeded, main was pushed, and the worktree was removed. If closing fails, report that failure once as the run's blocker.
+- Never call \`gh\` or \`glab\` directly. Route every tracker command through the harness auth wrapper, which selects the authenticated account with write access to this repository and overrides any stale ambient token:
+  \`${authCommand} gh issue close <n>\`
+- When complete, close the epic issue ${epic.ref} in ${repo} with \`${authCommand} ${forge === "github" ? "gh" : "glab"} issue close ${epic.ref}\`. Close it only after the merge succeeded, main was pushed, and the worktree was removed. If closing fails, report that failure once as the run's blocker.
 - If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once on a line beginning \`DEVBOARD-BLOCKED:\`. Do not ask for permission or guidance.`;
 }
 
@@ -580,6 +665,7 @@ export async function runImplementNextEpic(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
   args = "",
+  authExec: Exec = execWithEnvironment,
 ): Promise<RunResult> {
   const requested = args.trim();
   if (requested.length > 0 && !/^\d+$/.test(requested)) {
@@ -614,7 +700,7 @@ export async function runImplementNextEpic(
     return fail(ctx, `cannot parse origin remote: ${origin.stdout.trim()}`);
   }
 
-  const info = await detectForge(pi, remote, repo);
+  const info = await detectForge(remote, repo, authExec);
   if (isFailure(info)) return fail(ctx, info.error);
 
   const listed = await listOpenEpics(pi, info, repo);
@@ -696,7 +782,15 @@ export async function runImplementNextEpic(
 
   await ctx.waitForIdle?.();
 
-  const prompt = buildGoalPrompt(epic, objective, repo, worktree.path, worktree.branch, info.forge);
+  const prompt = buildGoalPrompt(
+    epic,
+    objective,
+    repo,
+    worktree.path,
+    worktree.branch,
+    info.forge,
+    forgeAuthCommand(repo, info),
+  );
   try {
     pi.sendUserMessage(prompt);
   } catch (error) {
