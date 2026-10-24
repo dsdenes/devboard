@@ -1,4 +1,8 @@
 <script lang="ts">
+  import AgentOutput from "./AgentOutput.svelte";
+  import { html as diffHtml } from "diff2html";
+  import "diff2html/bundles/css/diff2html.min.css";
+
   type Confidence = "observed" | "declared" | "inferred" | "unknown";
 
   interface Leaf {
@@ -98,26 +102,28 @@
     { id: "glossary", label: "Glossary", skill: null },
     {
       id: "testing-strategy",
-      label: "Testing Strategy",
+      label: "Testing Strategy Skill",
       skill: "discover-testing-strategy",
     },
     {
       id: "naming-conventions",
-      label: "Naming Conventions",
+      label: "Naming Conventions Skill",
       skill: "discover-naming-conventions",
     },
     {
       id: "coding-conventions",
-      label: "Coding Conventions",
+      label: "Coding Conventions Skill",
       skill: "discover-coding-conventions",
     },
     {
       id: "architecture-boundaries",
-      label: "Architecture & Boundaries",
+      label: "Architecture & Boundaries Skill",
       skill: "discover-architecture-boundaries",
     },
     { id: "glossary-skill", label: "Glossary Skill", skill: "discover-glossary" },
   ];
+
+  const SKILL_TAB_BREAK_ID = TABS.find((tab) => tab.skill !== null)?.id ?? null;
 
   const SECTION_KEYS = [
     "definition",
@@ -148,6 +154,36 @@
     dependencyMap: "Entry points & dependency map",
     delivery: "Delivery & versioning",
   };
+
+  /** The runtime inventory is the first thing an operator scans for. */
+  const SECTION_ORDER = [
+    "runtime",
+    ...SECTION_KEYS.filter((key) => key !== "runtime"),
+  ];
+
+  /** Leaves already shown by a more specific widget, so they are not repeated. */
+  const DUPLICATED_LEAVES: Record<string, string[]> = {
+    dependencyMap: ["binaries", "packages", "jobs"],
+  };
+
+  const COMMAND_LABELS: Record<string, string> = {
+    install: "Install",
+    build: "Build",
+    test: "Test",
+    lint: "Lint",
+    typecheck: "Typecheck",
+    dev: "Dev / run",
+    tryOut: "Try it out",
+    release: "Release",
+  };
+
+  const COMMAND_HINTS: Record<string, string> = {
+    test: "Runs the whole test suite.",
+    tryOut: "Starts the project for a hands-on try; it is not the test suite.",
+  };
+
+  /** Pyramid tiers from the base (widest) to the apex (narrowest). */
+  const PYRAMID_LEVELS = ["unit", "integration", "contract", "end-to-end", "other"];
 
   const GLOSSARY_STATUSES = [
     "proposed",
@@ -190,6 +226,18 @@
   let hasArtifacts = $derived(sheet !== null);
   let displayError = $derived(error ?? state?.error ?? null);
   let displayedWarnings = $derived(warnings.length > 0 ? warnings : (state?.warnings ?? []));
+
+  function sectionLeaf(section: unknown, key: string): Leaf | undefined {
+    if (typeof section !== "object" || section === null) return undefined;
+    const leaf = (section as Record<string, unknown>)[key];
+    return isLeaf(leaf) ? leaf : undefined;
+  }
+
+  let testCommand = $derived.by(() => {
+    const commands = sheet?.commands;
+    const leaf = sectionLeaf(commands, "test");
+    return leaf === undefined || leaf.confidence === "unknown" ? "" : scalarText(leaf.value);
+  });
 
   let startDisabled = $derived(!connected || active || busy !== null);
   let startTitle = $derived(
@@ -274,40 +322,108 @@
     return "";
   }
 
-  function objectLine(value: Record<string, unknown>): string {
+  function objectEntries(value: Record<string, unknown>): Array<[string, string]> {
     return Object.entries(value)
       .filter(([, entry]) => entry !== null && entry !== undefined && entry !== "")
-      .map(([key, entry]) => {
-        if (Array.isArray(entry)) {
-          return `${humanize(key)}: ${entry.map((item) => scalarText(item)).join(", ")}`;
-        }
-        return `${humanize(key)}: ${scalarText(entry)}`;
-      })
-      .filter((line) => !line.endsWith(": "))
-      .join(" · ");
+      .map(([key, entry]) => [
+        key,
+        Array.isArray(entry)
+          ? entry.map((item) => scalarText(item)).join(", ")
+          : typeof entry === "object" && entry !== null
+            ? ""
+            : scalarText(entry),
+      ] as [string, string])
+      .filter(([, text]) => text.length > 0);
   }
 
-  /** Renders any leaf value shape as one display line per item. */
+  /** Renders a scalar or scalar list as one display line per item. */
   function leafLines(value: unknown): string[] {
     if (value === null || value === undefined) return ["Not recorded."];
     if (typeof value === "string") return value.length === 0 ? ["Not recorded."] : [value];
     if (typeof value === "number" || typeof value === "boolean") return [String(value)];
     if (Array.isArray(value)) {
       if (value.length === 0) return ["None detected."];
-      return value.map((item) =>
-        typeof item === "object" && item !== null
-          ? objectLine(item as Record<string, unknown>)
-          : scalarText(item),
-      );
+      return value
+        .map((item) =>
+          typeof item === "object" && item !== null ? "" : scalarText(item),
+        )
+        .filter((line) => line.length > 0);
     }
     if (typeof value === "object") {
-      return [objectLine(value as Record<string, unknown>)];
+      const lines = objectEntries(value as Record<string, unknown>).map(
+        ([key, text]) => `${humanize(key)}: ${text}`,
+      );
+      return lines.length === 0 ? ["Not recorded."] : lines;
     }
     return [String(value)];
   }
 
-  function confidenceLabel(confidence: string): string {
-    return confidence.length === 0 ? "unknown" : confidence;
+  function recordItems(leaf: Leaf | null | undefined): Array<Record<string, unknown>> {
+    if (leaf === null || leaf === undefined || !Array.isArray(leaf.value)) return [];
+    return leaf.value.filter(
+      (item): item is Record<string, unknown> =>
+        typeof item === "object" && item !== null && !Array.isArray(item),
+    );
+  }
+
+  function unknownText(leaf: Leaf): string {
+    return typeof leaf.reason === "string" && leaf.reason.length > 0
+      ? `unknown — ${leaf.reason}`
+      : "unknown";
+  }
+
+  interface RecordField {
+    key: string;
+    label: string;
+    values: string[];
+  }
+
+  function recordFields(record: Record<string, unknown>): RecordField[] {
+    return Object.entries(record)
+      .filter(([, value]) => value !== null && value !== undefined && value !== "")
+      .map(([key, value]) => ({
+        key,
+        label: humanize(key),
+        values: (Array.isArray(value) ? value : [value])
+          .map((item) => scalarText(item))
+          .filter((text) => text.length > 0),
+      }))
+      .filter((field) => field.values.length > 0);
+  }
+
+  interface PyramidTier {
+    level: string;
+    tests: string;
+    command: string;
+    detail: string;
+  }
+
+  /** Pyramid tiers ordered from the base to the apex. */
+  function pyramidTiers(leaf: Leaf | null | undefined): PyramidTier[] {
+    return recordItems(leaf)
+      .map((record) => {
+        const paths = Array.isArray(record.paths)
+          ? record.paths.map((item) => scalarText(item)).filter(Boolean)
+          : [];
+        const fixtures = Array.isArray(record.fixtures)
+          ? record.fixtures.map((item) => scalarText(item)).filter(Boolean)
+          : [];
+        return {
+          level: scalarText(record.level) || "other",
+          tests: scalarText(record.tests) || "unknown",
+          command: scalarText(record.command),
+          detail: [...paths, ...fixtures].join(" · "),
+        };
+      })
+      .sort(
+        (left, right) =>
+          (PYRAMID_LEVELS.indexOf(left.level) + 1 || PYRAMID_LEVELS.length) -
+          (PYRAMID_LEVELS.indexOf(right.level) + 1 || PYRAMID_LEVELS.length),
+      );
+  }
+
+  function tierWidth(indexFromBase: number): string {
+    return `${Math.max(30, 100 - indexFromBase * 17)}%`;
   }
 
   function skillStateLabel(value: string): string {
@@ -411,23 +527,72 @@
     send({ type: "saveDiscoverSkill", name, text: drafts[name] ?? "" });
   }
 
-  function resetSkill(name: string): void {
+  function restoreSkill(name: string): void {
     const baseline = skillEntry(name)?.baseline ?? null;
     if (baseline !== null) {
       drafts = { ...drafts, [name]: baseline };
       dirty = { ...dirty, [name]: false };
     }
-    send({ type: "resetDiscoverSkill", name });
+    send({ type: "restoreDiscoverSkill", name });
   }
 
-  function rederiveSkill(name: string): void {
-    const baseline = skillEntry(name)?.baseline ?? null;
-    if (baseline !== null) {
-      drafts = { ...drafts, [name]: baseline };
-      dirty = { ...dirty, [name]: false };
+  function unifiedDiff(name: string, baseline: string, current: string): string {
+    const positioned: Array<DiffLine & { oldLine: number; newLine: number }> = [];
+    let oldLine = 1;
+    let newLine = 1;
+    for (const line of diffLines(baseline, current)) {
+      positioned.push({ ...line, oldLine, newLine });
+      if (line.kind !== "added") oldLine += 1;
+      if (line.kind !== "removed") newLine += 1;
     }
-    send({ type: "rederiveDiscoverSkill", name });
+
+    const changed = positioned
+      .map((line, index) => (line.kind === "same" ? -1 : index))
+      .filter((index) => index >= 0);
+    if (changed.length === 0) return "";
+
+    const context = 3;
+    const ranges: Array<{ start: number; end: number }> = [];
+    for (const index of changed) {
+      const start = Math.max(0, index - context);
+      const end = Math.min(positioned.length - 1, index + context);
+      const last = ranges[ranges.length - 1];
+      if (last !== undefined && start <= last.end + 1) {
+        last.end = Math.max(last.end, end);
+      } else {
+        ranges.push({ start, end });
+      }
+    }
+
+    const output = [`--- a/${name}/SKILL.md`, `+++ b/${name}/SKILL.md`];
+    for (const range of ranges) {
+      const slice = positioned.slice(range.start, range.end + 1);
+      const first = slice[0] as DiffLine & { oldLine: number; newLine: number };
+      const oldCount = slice.filter((line) => line.kind !== "added").length;
+      const newCount = slice.filter((line) => line.kind !== "removed").length;
+      const oldStart = oldCount === 0 ? Math.max(1, first.oldLine - 1) : first.oldLine;
+      const newStart = newCount === 0 ? Math.max(1, first.newLine - 1) : first.newLine;
+      output.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
+      for (const line of slice) {
+        output.push(
+          line.kind === "added"
+            ? `+${line.text}`
+            : line.kind === "removed"
+              ? `-${line.text}`
+              : ` ${line.text}`,
+        );
+      }
+    }
+    output.push("");
+    return output.join("\n");
   }
+
+  const DIFF_OPTIONS = {
+    outputFormat: "line-by-line" as const,
+    drawFileList: false,
+    matching: "none" as const,
+    colorScheme: "auto" as const,
+  };
 
   /** Line diff without a dependency; the baseline is the left side. */
   function diffLines(baseline: string, current: string): DiffLine[] {
@@ -635,37 +800,161 @@
   </div>
 {/snippet}
 
-{#snippet leafView(label: string, leaf: Leaf)}
-  <div class="discover-leaf">
-    <p class="discover-leaf-label">{label}</p>
-    {#if leaf.confidence === "unknown"}
-      <p class="discover-value discover-value-unknown">
-        unknown{#if typeof leaf.reason === "string" && leaf.reason.length > 0}
-          — {leaf.reason}{/if}
-      </p>
-    {:else}
-      <div class="discover-value">
-        {#each leafLines(leaf.value) as line, index (index)}
-          <p class="discover-value-line">{line}</p>
-        {/each}
-      </div>
-    {/if}
-    <div class="discover-badges">
-      <span
-        class="discover-badge"
-        data-testid="discover-confidence"
-        data-confidence={leaf.confidence}
-      >
-        {confidenceLabel(leaf.confidence)}
-      </span>
+{#snippet leafValue(leaf: Leaf)}
+  {#if leaf.confidence === "unknown"}
+    <p class="discover-value discover-value-unknown">{unknownText(leaf)}</p>
+  {:else}
+    <div class="discover-value">
+      {#each leafLines(leaf.value) as line, index (index)}
+        <p class="discover-value-line">{line}</p>
+      {/each}
     </div>
-    {#if leaf.evidence.length > 0}
-      <div class="discover-chips">
-        {#each leaf.evidence as evidence, index (index)}
-          <span class="discover-chip" data-testid="discover-evidence">{evidence}</span>
-        {/each}
-      </div>
+  {/if}
+{/snippet}
+
+{#snippet leafView(leaf: Leaf, label: string | null = null)}
+  <div class="discover-leaf">
+    {#if label !== null}
+      <p class="discover-leaf-label">{label}</p>
     {/if}
+    {@render leafValue(leaf)}
+  </div>
+{/snippet}
+
+{#snippet recordLeafView(leaf: Leaf, label: string | null = null)}
+  <div class="discover-leaf">
+    {#if label !== null}
+      <p class="discover-leaf-label">{label}</p>
+    {/if}
+    {#if leaf.confidence === "unknown"}
+      <p class="discover-value discover-value-unknown">{unknownText(leaf)}</p>
+    {:else if recordItems(leaf).length > 0}
+      <ul class="discover-record-list">
+        {#each recordItems(leaf) as record, index (index)}
+          <li class="discover-record">
+            {#each recordFields(record) as field (field.key)}
+              <div class="discover-record-field">
+                <span class="discover-record-name">{field.label}</span>
+                <span class="discover-record-values">
+                  {#each field.values as value, valueIndex (valueIndex)}
+                    {#if ["path", "paths", "entryPoints", "fixtures"].includes(field.key)}
+                      <code>{value}</code>
+                    {:else}
+                      <span>{value}</span>
+                    {/if}
+                  {/each}
+                </span>
+              </div>
+            {/each}
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      {@render leafValue(leaf)}
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet contextsView(leaf: Leaf)}
+  {#if leaf.confidence === "unknown"}
+    <div class="discover-leaf">
+      <p class="discover-value discover-value-unknown">{unknownText(leaf)}</p>
+    </div>
+  {:else}
+    <div class="discover-context-cards" data-testid="discover-context-cards">
+      {#each recordItems(leaf) as context, index (index)}
+        {@const path = scalarText(context.path)}
+        {@const entryPoints = Array.isArray(context.entryPoints)
+          ? context.entryPoints.map((entry) => scalarText(entry)).filter(Boolean)
+          : []}
+        <article class="discover-context-card">
+          <h3>{scalarText(context.name) || "Context"}</h3>
+          <p class="discover-context-responsibility">
+            {scalarText(context.responsibility) || "No responsibility recorded."}
+          </p>
+          <dl class="discover-context-facts">
+            {#if path.length > 0}
+              <dt>Path</dt>
+              <dd><code>{path}</code></dd>
+            {/if}
+            {#if entryPoints.length > 0}
+              <dt>Entry points</dt>
+              <dd>
+                {#each entryPoints as entry, entryIndex (entryIndex)}
+                  <code>{entry}</code>
+                {/each}
+              </dd>
+            {/if}
+          </dl>
+        </article>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet testingView(
+  levels: Leaf | undefined,
+  pyramid: Leaf | undefined,
+  fullSuite: string,
+)}
+  {#if fullSuite.length > 0}
+    <div class="discover-suite-command" data-testid="discover-suite-command">
+      <span class="flow-label">Whole suite</span>
+      <code>{fullSuite}</code>
+    </div>
+  {/if}
+  {#if levels === undefined}
+    <p class="discover-value discover-value-unknown">No test levels were detected.</p>
+  {:else if levels.confidence === "unknown"}
+    {@render leafValue(levels)}
+  {:else if pyramidTiers(levels).length > 0}
+    <div class="discover-pyramid" data-testid="discover-pyramid">
+      {#each [...pyramidTiers(levels)].reverse() as tier, index (tier.level)}
+        <div
+          class="discover-pyramid-tier"
+          data-level={tier.level}
+          style={`--tier-width: ${tierWidth(pyramidTiers(levels).length - 1 - index)}`}
+          title={tier.detail}
+        >
+          <span class="discover-pyramid-level">{humanize(tier.level)}</span>
+          <span class="discover-pyramid-count">
+            {tier.tests === "unknown"
+              ? "count unknown"
+              : `${tier.tests} ${tier.tests === "1" ? "test" : "tests"}`}
+          </span>
+          {#if tier.command.length > 0}
+            <code class="discover-pyramid-command">{tier.command}</code>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {:else}
+    {@render leafValue(levels)}
+  {/if}
+  {#if pyramid !== undefined && pyramid.confidence !== "unknown" && pyramid.value !== null}
+    <p class="discover-pyramid-caption">{scalarText(pyramid.value)}</p>
+  {/if}
+{/snippet}
+
+{#snippet commandsView(section: Record<string, unknown>, testCommand: string)}
+  <div class="discover-command-list" data-testid="discover-command-list">
+    {#each Object.entries(section) as [key, leaf] (key)}
+      {#if isLeaf(leaf)}
+        {#if !(key === "tryOut" && testCommand.length > 0 && scalarText(leaf.value) === testCommand)}
+          <div class="discover-command" data-command={key}>
+            <span class="discover-command-name">{COMMAND_LABELS[key] ?? humanize(key)}</span>
+            {#if leaf.confidence === "unknown"}
+              <span class="discover-command-value discover-value-unknown">unknown</span>
+            {:else}
+              <code class="discover-command-value">{scalarText(leaf.value)}</code>
+            {/if}
+            {#if COMMAND_HINTS[key] !== undefined && leaf.confidence !== "unknown"}
+              <span class="discover-command-hint">{COMMAND_HINTS[key]}</span>
+            {/if}
+          </div>
+        {/if}
+      {/if}
+    {/each}
   </div>
 {/snippet}
 
@@ -697,13 +986,18 @@
 
   <div class="discover-tabs" role="tablist" aria-label="Discover sections">
     {#each TABS as tab (tab.id)}
+      {#if tab.id === SKILL_TAB_BREAK_ID}
+        <span class="discover-tab-break" role="presentation"></span>
+      {/if}
       <button
         type="button"
         class="discover-tab"
+        class:discover-tab-skill={tab.skill !== null}
         role="tab"
         aria-selected={selectedTab === tab.id}
         data-testid="discover-tab"
         data-tab={tab.id}
+        data-skill={tab.skill ?? undefined}
         onclick={() => (selectedTab = tab.id)}
       >
         {tab.label}
@@ -766,14 +1060,6 @@
               {freshness.project}
             </span>
             <span>
-              <span class="flow-label">Commit</span>
-              <code>{freshness.commit}</code>
-            </span>
-            <span>
-              <span class="flow-label">Tree</span>
-              {freshness.dirty ? "dirty" : "clean"}
-            </span>
-            <span>
               <span class="flow-label">Discovered</span>
               {freshness.discoveredAt}
             </span>
@@ -787,7 +1073,7 @@
 
         {#if sheet !== null}
           <div class="discover-sheet" data-testid="discover-sheet">
-            {#each SECTION_KEYS as key (key)}
+            {#each SECTION_ORDER as key (key)}
               {@const section = sheet[key]}
               <section
                 class="flow-panel discover-card"
@@ -795,14 +1081,43 @@
                 data-field={key}
               >
                 <h2>{SECTION_LABELS[key] ?? humanize(key)}</h2>
-                {#if isLeaf(section)}
-                  {@render leafView(SECTION_LABELS[key] ?? humanize(key), section)}
+                {#if key === "testing" && typeof section === "object" && section !== null}
+                  {@render testingView(
+                    sectionLeaf(section, "levels"),
+                    sectionLeaf(section, "pyramid"),
+                    testCommand,
+                  )}
+                {:else if key === "commands" && typeof section === "object" && section !== null}
+                  {@render commandsView(section, testCommand)}
+                {:else if isLeaf(section)}
+                  {@render leafView(section)}
                 {:else if typeof section === "object" && section !== null}
-                  {#each Object.entries(section) as [leafKey, leaf] (leafKey)}
-                    {#if isLeaf(leaf)}
-                      {@render leafView(humanize(leafKey), leaf)}
-                    {/if}
-                  {/each}
+                  {@const entries = Object.entries(section).filter(
+                    ([leafKey, leaf]) =>
+                      isLeaf(leaf) &&
+                      !(DUPLICATED_LEAVES[key] ?? []).includes(leafKey),
+                  )}
+                  {#if entries.length === 0}
+                    <p class="empty">Not recorded.</p>
+                  {:else}
+                    {#each entries as [leafKey, leaf] (leafKey)}
+                      {#if isLeaf(leaf)}
+                        {#if key === "architecture" && leafKey === "contexts"}
+                          {@render contextsView(leaf)}
+                        {:else if recordItems(leaf).length > 0}
+                          {@render recordLeafView(
+                            leaf,
+                            entries.length === 1 ? null : humanize(leafKey),
+                          )}
+                        {:else}
+                          {@render leafView(
+                            leaf,
+                            entries.length === 1 ? null : humanize(leafKey),
+                          )}
+                        {/if}
+                      {/if}
+                    {/each}
+                  {/if}
                 {:else}
                   <p class="empty">Not recorded.</p>
                 {/if}
@@ -863,7 +1178,6 @@
             >
               <div class="discover-context-heading">
                 <h2>{labelText(context.titles) || context.boundedContext}</h2>
-                <code class="discover-context-id">{context.boundedContext}</code>
               </div>
               <div class="discover-terms">
                 {#each context.concepts as concept (concept.id)}
@@ -874,6 +1188,7 @@
                     data-context={context.boundedContext}
                     data-id={concept.id}
                     data-status={concept.status}
+                    data-kind={concept.kind}
                   >
                     <div class="discover-term-heading">
                       <span class="discover-term-label">
@@ -984,27 +1299,37 @@
         {@const entry = skillEntry(name)}
         {@const draft = skillDraft(entry, name)}
         {@const baseline = entry?.baseline ?? null}
-        {@const diff = baseline === null ? [] : diffLines(baseline, draft)}
+        {@const skillState = entry?.state ?? "missing"}
         <div class="discover-skill" data-testid="discover-skill" data-name={name}>
           <div class="discover-skill-heading">
             <h2>{TABS.find((tab) => tab.id === selectedTab)?.label}</h2>
-            <span class="discover-skill-identity"><code>{name}</code></span>
             <span
               class="discover-badge"
               data-testid="discover-skill-state"
-              data-state={entry?.state ?? "missing"}
+              data-state={skillState}
             >
-              {skillStateLabel(entry?.state ?? "missing")}
+              {skillStateLabel(skillState)}
             </span>
           </div>
 
-          <textarea
-            class="flow-textarea discover-skill-text"
-            aria-label={`${name} skill text`}
-            data-testid="discover-skill-text"
-            value={draft}
-            oninput={(event) => updateDraft(name, event.currentTarget.value)}
-          ></textarea>
+          <div class="discover-skill-panes">
+            <label class="discover-skill-pane">
+              <span class="flow-label">Markdown</span>
+              <textarea
+                class="flow-textarea discover-skill-text"
+                aria-label={`${name} skill text`}
+                data-testid="discover-skill-text"
+                value={draft}
+                oninput={(event) => updateDraft(name, event.currentTarget.value)}
+              ></textarea>
+            </label>
+            <div class="discover-skill-pane">
+              <span class="flow-label">Preview</span>
+              <div class="discover-skill-preview" data-testid="discover-skill-preview">
+                <AgentOutput text={draft} />
+              </div>
+            </div>
+          </div>
 
           <div class="flow-actions discover-skill-actions">
             <button
@@ -1015,54 +1340,29 @@
             >
               Save
             </button>
-            <button
-              type="button"
-              class="start-button"
-              data-testid="discover-skill-reset"
-              onclick={() => resetSkill(name)}
-            >
-              Reset to baseline
-            </button>
-            <button
-              type="button"
-              class="start-button"
-              data-testid="discover-skill-rederive"
-              onclick={() => rederiveSkill(name)}
-            >
-              Re-derive
-            </button>
-            {#if (entry?.state ?? "missing") === "missing"}
+            {#if skillState !== "generated"}
               <button
                 type="button"
                 class="start-button"
                 data-testid="discover-skill-restore"
-                onclick={() => resetSkill(name)}
+                title={skillState === "missing"
+                  ? "Recreate the skill from its generated version."
+                  : "Discard your edits and return to the generated version."}
+                onclick={() => restoreSkill(name)}
               >
-                Restore
+                {skillState === "missing" ? "Recreate generated version" : "Discard edits"}
               </button>
             {/if}
           </div>
 
-          <div class="discover-skill-diff-section">
-            <p class="flow-section-title">Diff against generated baseline</p>
-            {#if baseline === null}
-              <p class="empty" data-testid="discover-skill-diff">
-                No baseline has been published for this skill yet.
-              </p>
-            {:else}
-              <ol class="discover-diff" data-testid="discover-skill-diff">
-                {#each diff as line, index (index)}
-                  <li data-diff={line.kind}>
-                    {line.kind === "added"
-                      ? `+ ${line.text}`
-                      : line.kind === "removed"
-                        ? `- ${line.text}`
-                        : `  ${line.text}`}
-                  </li>
-                {/each}
-              </ol>
-            {/if}
-          </div>
+          {#if baseline !== null && draft !== baseline}
+            <div class="discover-skill-diff-section">
+              <p class="flow-section-title">Your changes against the generated version</p>
+              <div class="discover-diff" data-testid="discover-skill-diff">
+                {@html diffHtml(unifiedDiff(name, baseline, draft), DIFF_OPTIONS)}
+              </div>
+            </div>
+          {/if}
         </div>
       {/if}
     </section>

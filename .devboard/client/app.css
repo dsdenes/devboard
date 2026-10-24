@@ -40,12 +40,8 @@
   --discover-invalidated-surface: #fdf2f1;
   --discover-unconfirmed-border: #656d76;
   --discover-unconfirmed-surface: #f0f2f4;
-  --discover-observed-border: #1a7f37;
-  --discover-observed-surface: #f0f7f2;
   --discover-declared-border: #0969da;
   --discover-declared-surface: #eef4ff;
-  --discover-inferred-border: #8250df;
-  --discover-inferred-surface: #f6f1ff;
   --discover-unknown-border: #656d76;
   --discover-unknown-surface: #f0f2f4;
   --discover-stale-border: #9a6700;
@@ -96,12 +92,8 @@
     --discover-invalidated-surface: #2b1513;
     --discover-unconfirmed-border: #9aa4ae;
     --discover-unconfirmed-surface: #22272c;
-    --discover-observed-border: #3fb950;
-    --discover-observed-surface: #16251b;
     --discover-declared-border: #58a6ff;
     --discover-declared-surface: #16233a;
-    --discover-inferred-border: #bc8cff;
-    --discover-inferred-surface: #241a33;
     --discover-unknown-border: #9aa4ae;
     --discover-unknown-surface: #22272c;
     --discover-stale-border: #e3b341;
@@ -1046,6 +1038,22 @@ code {
   border-left-color: var(--muted);
 }
 
+/* A closed lane keeps its kind in the label, but the tab itself is always
+   muted so a stopped lane never looks like a running one. */
+.lane-tab[data-status="closed"] {
+  background: var(--background);
+  border-left-color: var(--muted);
+  opacity: 0.7;
+}
+
+.lane-tab[data-status="closed"] .lane-label {
+  color: var(--muted);
+}
+
+.lane-tab[data-status="closed"].selected {
+  opacity: 1;
+}
+
 .lane-tab.selected {
   background: var(--accent-surface);
   color: var(--text);
@@ -1094,7 +1102,7 @@ code {
   color: var(--pending);
 }
 
-.lane-status[data-kind="implementation"][data-status="closed"] {
+.lane-status[data-status="closed"] {
   color: var(--muted);
 }
 
@@ -2022,6 +2030,11 @@ code {
   padding: 0.2rem;
 }
 
+.discover-tab-break {
+  flex-basis: 100%;
+  height: 0;
+}
+
 .discover-tab {
   background: transparent;
   border: 1px solid transparent;
@@ -2042,6 +2055,46 @@ code {
   background: var(--accent-surface);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* Skill tabs sit on their own row and carry their own color, so the kind of
+   artifact is visible before the tab is opened. */
+.discover-tab-skill {
+  border-left: 3px solid var(--discover-skill-color, var(--border));
+  color: var(--discover-skill-color, var(--muted));
+  font-size: 0.78rem;
+  padding: 0.3rem 0.55rem;
+}
+
+.discover-tab-skill[data-skill="discover-testing-strategy"] {
+  --discover-skill-color: var(--resolved);
+  --discover-skill-surface: var(--resolved-surface);
+}
+
+.discover-tab-skill[data-skill="discover-naming-conventions"] {
+  --discover-skill-color: var(--generation);
+  --discover-skill-surface: var(--generation-surface);
+}
+
+.discover-tab-skill[data-skill="discover-coding-conventions"] {
+  --discover-skill-color: var(--accent);
+  --discover-skill-surface: var(--accent-surface);
+}
+
+.discover-tab-skill[data-skill="discover-architecture-boundaries"] {
+  --discover-skill-color: var(--adr);
+  --discover-skill-surface: var(--adr-surface);
+}
+
+.discover-tab-skill[data-skill="discover-glossary"] {
+  --discover-skill-color: var(--pending);
+  --discover-skill-surface: var(--pending-surface);
+}
+
+.discover-tab-skill[aria-selected="true"] {
+  background: var(--discover-skill-surface, var(--accent-surface));
+  border-color: var(--discover-skill-color, var(--accent));
+  color: var(--text);
 }
 
 .discover-panel {
@@ -2137,6 +2190,196 @@ code {
   margin-bottom: 0.5rem;
 }
 
+.discover-suite-command {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+
+.discover-suite-command code {
+  overflow-wrap: anywhere;
+}
+
+.discover-pyramid {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.35rem 0 0.6rem;
+}
+
+.discover-pyramid-tier {
+  align-items: baseline;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  gap: 0.3rem 0.7rem;
+  justify-content: center;
+  padding: 0.35rem 0.5rem;
+  width: var(--tier-width, 100%);
+}
+
+.discover-pyramid-level {
+  font-weight: 700;
+}
+
+.discover-pyramid-count,
+.discover-pyramid-command {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.discover-pyramid-tier[data-level="unit"] {
+  background: var(--resolved-surface);
+  border-color: var(--resolved);
+}
+
+.discover-pyramid-tier[data-level="integration"] {
+  background: var(--accent-surface);
+  border-color: var(--accent);
+}
+
+.discover-pyramid-tier[data-level="contract"] {
+  background: var(--generation-surface);
+  border-color: var(--generation);
+}
+
+.discover-pyramid-tier[data-level="end-to-end"] {
+  background: var(--pending-surface);
+  border-color: var(--pending);
+}
+
+.discover-pyramid-tier[data-level="other"] {
+  background: var(--background);
+  border-color: var(--muted);
+}
+
+.discover-pyramid-caption {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: 0.4rem 0 0;
+}
+
+.discover-command-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.discover-command {
+  align-items: baseline;
+  display: grid;
+  gap: 0.2rem 0.6rem;
+  grid-template-columns: 7rem 1fr;
+}
+
+.discover-command-name {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.discover-command-value {
+  overflow-wrap: anywhere;
+}
+
+.discover-command-hint {
+  color: var(--muted);
+  font-size: 0.75rem;
+  grid-column: 2;
+}
+
+.discover-record-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.discover-record {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+}
+
+.discover-record-field {
+  display: grid;
+  font-size: 0.8rem;
+  gap: 0.5rem;
+  grid-template-columns: minmax(6rem, auto) 1fr;
+}
+
+.discover-record-field + .discover-record-field {
+  margin-top: 0.25rem;
+}
+
+.discover-record-name {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.discover-record-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.discover-context-cards {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+}
+
+.discover-context-card {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--adr);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+}
+
+.discover-context-card h3 {
+  font-size: 0.95rem;
+  margin: 0 0 0.3rem;
+}
+
+.discover-context-responsibility {
+  margin: 0 0 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.discover-context-facts {
+  display: grid;
+  font-size: 0.78rem;
+  gap: 0.2rem 0.6rem;
+  grid-template-columns: auto 1fr;
+  margin: 0;
+}
+
+.discover-context-facts dt {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.discover-context-facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .discover-leaf {
   border-top: 1px solid var(--border);
   margin-top: 0.6rem;
@@ -2176,13 +2419,6 @@ code {
   font-style: italic;
 }
 
-.discover-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-  margin-top: 0.35rem;
-}
-
 .discover-badge {
   background: var(--background);
   border: 1px solid var(--border);
@@ -2195,25 +2431,6 @@ code {
   text-transform: uppercase;
 }
 
-.discover-badge[data-confidence="observed"] {
-  background: var(--discover-observed-surface);
-  border-color: var(--discover-observed-border);
-  color: var(--discover-observed-border);
-}
-
-.discover-badge[data-confidence="declared"] {
-  background: var(--discover-declared-surface);
-  border-color: var(--discover-declared-border);
-  color: var(--discover-declared-border);
-}
-
-.discover-badge[data-confidence="inferred"] {
-  background: var(--discover-inferred-surface);
-  border-color: var(--discover-inferred-border);
-  color: var(--discover-inferred-border);
-}
-
-.discover-badge[data-confidence="unknown"],
 .discover-badge[data-status="unconfirmed"],
 .discover-badge[data-status="deprecated"] {
   background: var(--discover-unknown-surface);
@@ -2251,24 +2468,6 @@ code {
   background: var(--discover-stale-surface);
   border-color: var(--discover-stale-border);
   color: var(--discover-stale-border);
-}
-
-.discover-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-  margin-top: 0.4rem;
-}
-
-.discover-chip {
-  background: var(--background);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.7rem;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  padding: 0.08rem 0.4rem;
 }
 
 .discover-glossary-controls {
@@ -2323,11 +2522,6 @@ code {
   margin-bottom: 0.6rem;
 }
 
-.discover-context-id {
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
 .discover-terms {
   display: flex;
   flex-direction: column;
@@ -2335,23 +2529,39 @@ code {
 }
 
 .discover-term {
-  --discover-status-border: var(--border);
+  --discover-kind-border: var(--border);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--discover-status-border);
+  border-left: 3px solid var(--discover-kind-border);
   border-radius: 8px;
   padding: 0.6rem 0.75rem;
 }
 
-.discover-term[data-status="proposed"] {
-  --discover-status-border: var(--discover-proposed-border);
+.discover-term[data-kind="entity"] {
+  --discover-kind-border: var(--generation);
 }
 
-.discover-term[data-status="confirmed"] {
-  --discover-status-border: var(--discover-confirmed-border);
+.discover-term[data-kind="event"] {
+  --discover-kind-border: var(--adr);
 }
 
-.discover-term[data-status="invalidated"] {
-  --discover-status-border: var(--discover-invalidated-border);
+.discover-term[data-kind="field"] {
+  --discover-kind-border: var(--accent);
+}
+
+.discover-term[data-kind="role"] {
+  --discover-kind-border: var(--generation);
+}
+
+.discover-term[data-kind="actor"] {
+  --discover-kind-border: var(--pending);
+}
+
+.discover-term[data-kind="value"] {
+  --discover-kind-border: var(--resolved);
+}
+
+.discover-term[data-kind="rule"] {
+  --discover-kind-border: var(--error);
 }
 
 .discover-term-heading {
@@ -2433,17 +2643,36 @@ code {
   margin: 0;
 }
 
-.discover-skill-identity code {
-  color: var(--muted);
-  font-size: 0.75rem;
+.discover-skill-panes {
+  align-items: start;
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+}
+
+.discover-skill-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
 }
 
 .discover-skill-text {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.78rem;
   margin-bottom: 0;
-  min-height: 20rem;
+  min-height: 22rem;
   white-space: pre;
+}
+
+.discover-skill-preview {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 30rem;
+  min-height: 22rem;
+  overflow: auto;
+  padding: 0.6rem 0.8rem;
 }
 
 .discover-skill-actions {
@@ -2460,27 +2689,16 @@ code {
   background: var(--background);
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.72rem;
-  list-style: none;
-  margin: 0;
-  max-height: 20rem;
+  max-height: 24rem;
   overflow: auto;
-  padding: 0.5rem 0.6rem;
 }
 
-.discover-diff li {
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
+.discover-diff .d2h-file-header {
+  display: none;
 }
 
-.discover-diff li[data-diff="added"] {
-  background: var(--discover-confirmed-surface);
-  color: var(--discover-confirmed-border);
-}
-
-.discover-diff li[data-diff="removed"] {
-  background: var(--discover-invalidated-surface);
-  color: var(--discover-invalidated-border);
+.discover-diff .d2h-file-wrapper {
+  border: 0;
+  margin: 0;
 }
 

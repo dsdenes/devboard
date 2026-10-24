@@ -565,11 +565,13 @@ and starts, stops, resets, or clears nothing; all three views stay mounted, so n
 scroll state, and focus survive. Discover events render only in this view and never touch Goal
 Mode's activity, question, or error state.
 
-The Discover view has its own flat tab list whose sub-tabs are exactly `Overview`, `Glossary`,
-`Testing Strategy`, `Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and
-`Glossary Skill` (`data-testid="discover-tab"` with `data-tab` values `overview`, `glossary`,
-`testing-strategy`, `naming-conventions`, `coding-conventions`, `architecture-boundaries`, and
-`glossary-skill`). The active panel carries `data-testid="discover-panel"` and the same `data-tab`.
+The Discover view has its own tab list whose non-skill sub-tabs are exactly `Overview` and
+`Glossary`, followed by a second, color-coded row of skill sub-tabs:
+`Testing Strategy Skill`, `Naming Conventions Skill`, `Coding Conventions Skill`,
+`Architecture & Boundaries Skill`, and `Glossary Skill` (`data-testid="discover-tab"` with
+`data-tab` values `overview`, `glossary`, `testing-strategy`, `naming-conventions`,
+`coding-conventions`, `architecture-boundaries`, and `glossary-skill`). The active panel carries
+`data-testid="discover-panel"` and the same `data-tab`.
 
 With no published artifacts the Overview tab shows an empty state (`data-testid="discover-empty"`)
 and a `Discover project` button (`data-testid="discover-start"`); with artifacts it shows
@@ -594,7 +596,7 @@ byte-identical; it spawns no replacement peer.
 
 Discover uses the same WebSocket at `/ws`. The client sends `discoverProject`, `stopDiscover`,
 `answerDiscover` (with `id` and `value`), `getDiscover`, `saveDiscoverSkill` (with `name` and
-`text`), `resetDiscoverSkill`, `rederiveDiscoverSkill`, `confirmGlossaryTerm` (with `context` and
+`text`), `restoreDiscoverSkill` (with `name`), `confirmGlossaryTerm` (with `context` and
 `id`), and `rejectGlossaryTerm` (with `context`, `id`, and a non-empty `reason`). `getDiscover`
 asks for the current snapshot and is answered with `discoverState`. The server
 broadcasts `discoverState`, `discoverStarted`, `discoverActivity`, `discoverQuestion`,
@@ -629,20 +631,31 @@ secrets and no absolute path.
 `definition`, `stack`, `deployment`, `environments`, `commands`, `branching`, `testing`,
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint, and
-the Overview tab renders it as cards with label, value, evidence chips, and a confidence badge
-(`data-testid="discover-freshness"`, `discover-card` with `data-field`, `discover-evidence`, and
-`discover-confidence` with `data-confidence`); a differing fingerprint shows an explicit `stale`
-badge, and color is never the only cue because every badge carries text. Every non-`unknown` leaf
-carries at least one sorted, unique repository-relative evidence path, symbol anchor, or safe git
-fact and a confidence of `observed`, `declared`, `inferred`, or `unknown`; `unknown` carries empty
-evidence and a short reason. The definition is exactly one sentence of at most 240 characters;
-every value and list entry is a single line of at most 160 characters. The sheet covers stack,
-customer-facing deployment (artifact class, artifact, target, and pipeline sources), every detected
-environment, exact main commands (with `unknown` for an unobserved command), branching strategy and
-model, test levels and pyramid, architecture boundaries, CI provider, triggers, jobs, and quality
-gates, and the three mandatory extra cards: runtime inventory, entry-point and dependency map, and
-delivery and versioning. It never guesses, invents an environment, copies README prose, or records
-a configuration value; a claim it cannot ground is `unknown`.
+the Overview tab renders the project and discovery time plus an explicit `stale` badge
+(`data-testid="discover-freshness"`) when the fingerprint differs. Cards carry `discover-card` and
+`data-field` and are ordered with the runtime inventory first. A card whose section has one leaf
+renders the value without repeating the card title as a sub-header; a card with several leaves
+keeps one label per leaf. The view does not render confidence badges or evidence chips: the sheet
+still records both for every leaf, but they do not help an operator read the card. Every
+non-`unknown` leaf carries at least one sorted, unique repository-relative evidence path, symbol
+anchor, or safe git fact and a confidence of `observed`, `declared`, `inferred`, or `unknown`;
+`unknown` carries empty evidence and a short reason. The definition is exactly one sentence of at
+most 240 characters; every value and list entry is a single line of at most 160 characters. The
+sheet covers stack, customer-facing deployment (artifact class, artifact, target, and pipeline
+sources), every detected environment, exact main commands (with `unknown` for an unobserved
+command), branching strategy and model, test levels and pyramid, architecture boundaries, CI
+provider, triggers, jobs, and quality gates, and the three mandatory extra cards: runtime
+inventory, entry-point and dependency map, and delivery and versioning. It never guesses, invents
+an environment, copies README prose, or records a configuration value; a claim it cannot ground is
+`unknown`.
+
+The Overview also renders that data for scanning: main commands as a labeled list where the test
+command is named as the whole suite and a try-out command equal to the test command is omitted;
+the test levels as a color-coded pyramid of stacked tiers with counts and commands, above its
+one-line description; architecture contexts as cards with path, responsibility, and entry points;
+record lists such as environments as labeled rows; and the dependency-map card only for facts not
+already shown by the stack, runtime, and CI cards. A test pyramid with no observed level and a
+glossary with no matching term keep their explicit empty state.
 
 The Glossary tab and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
 document per bounded context named `<bounded-context>.glossary.yaml`, top-level `boundedContext`,
@@ -658,9 +671,11 @@ ungrounded candidate is omitted. The crawl writes
 and `status: proposed` with `origin: llm` for a name it proposes for an existing unnamed concept;
 it never writes `confirmed`, `deprecated`, or `invalidated`. The tab groups terms by context and
 offers search and a status filter; each term carries `data-testid="discover-term"`, `data-context`,
-`data-id`, and `data-status`, and each context carries `data-testid="discover-context"`. Proposed,
-confirmed, and rejected terms use distinct color tokens with light and dark variants, and the
-status text is always present.
+`data-id`, `data-status`, and `data-kind`, and each context carries
+`data-testid="discover-context"`. The context heading shows its title, falling back to the context
+id only when no title exists. Term cards are color-coded by `kind` (`entity`, `event`, `field`,
+`role`, `actor`, `value`, `rule`) while the status badge always spells the status, so color is
+never the only cue.
 
 A proposed term offers `Confirm` and `Reject` (`data-testid="discover-confirm"` and
 `data-testid="discover-reject"`); a confirmed term still offers `Reject` with a reason.
@@ -680,7 +695,7 @@ A successful run publishes exactly five skills under `.omp/skills/`: `discover-t
 `SKILL.md` whose frontmatter has `name` equal to the directory, a non-empty `description` of at most
 1024 characters, `metadata.devboard-managed: "true"`, `metadata.devboard-family: "discover"`, and
 `metadata.devboard-skill` naming its role. The bodies are project-specific and directive: one
-imperative bullet per rule, with an evidence path for every project-specific claim. Testing
+imperative bullet per rule, naming a path only when that path helps apply the rule. Testing
 strategy states levels, pyramid, commands, paths, fixtures, coverage expectations, and how to add a
 test; naming conventions state canonical terms, casing, and rejected aliases; coding conventions
 state patterns, error handling, typing, async, logging, dependencies, formatting, and prohibited
@@ -690,21 +705,23 @@ published glossary files, the confirmed and rejected rules, and the proposal pro
 root, a new `omp` session lists the five (`omp skill list`) and loads their bodies as skills, so
 every implementation agent in that host discovers the set with no extra configuration.
 
-Each skill has a sub-tab and editor: a `data-testid="discover-skill-text"` field holding the whole
-`SKILL.md`, `discover-skill-save`, `discover-skill-reset`, and `discover-skill-rederive` controls,
-a `discover-skill-state` badge reading `Generated`, `Edited`, or `Missing`, and a
-`discover-skill-diff` view of the live text against the generated baseline. `saveDiscoverSkill`
-writes the submitted bytes verbatim and updates the manifest's current hash and edited state; it is
-refused with one `discoverError` when the name is not one of the five, the skill is missing, the
-frontmatter name no longer matches the directory, the description is empty or too long, or a
-marker was removed, and invalid text leaves the previous file byte-identical.
-`rederiveDiscoverSkill` copies the current baseline over the live skill and returns it to
-`Generated`; `resetDiscoverSkill` does the same and is also allowed when the skill is missing.
-Neither spawns an agent. A later run compares each live hash with its last baseline: an unedited
-skill is replaced, an edited skill is preserved byte for byte with its new baseline published
-beside it and its diff available, and a skill the developer deleted is not recreated but shows
-`Missing` with a `Restore` action. A generated name colliding with a prepare-family, unmanaged, or
-different Discover skill fails the run and publishes nothing.
+Each skill has a sub-tab with a Markdown editor and a rendered preview: a
+`data-testid="discover-skill-text"` field holding the whole `SKILL.md`, a
+`data-testid="discover-skill-preview"` rendered from the draft, `discover-skill-save`, and
+`discover-skill-restore` controls, and a `discover-skill-state` badge reading `Generated`,
+`Edited`, or `Missing`. A `discover-skill-diff` view of the live text against the generated
+version appears only while the draft differs from that generated version; an untouched or
+byte-identical skill shows no diff. `saveDiscoverSkill` writes the submitted bytes verbatim and
+updates the manifest's current hash and edited state; it is refused with one `discoverError` when
+the name is not one of the five, the skill is missing, the frontmatter name no longer matches the
+directory, the description is empty or too long, or a marker was removed, and invalid text leaves
+the previous file byte-identical. `restoreDiscoverSkill` copies the current generated version over
+the live skill, recreating it when it was deleted, and returns it to `Generated`; it spawns no
+agent. A later run compares each live hash with its last baseline: an unedited skill is replaced,
+an edited skill is preserved byte for byte with its new baseline published beside it and its diff
+available, and a skill the developer deleted is not recreated but shows `Missing` with a
+`Recreate generated version` action. A generated name colliding with a prepare-family, unmanaged,
+or different Discover skill fails the run and publishes nothing.
 
 The goal lifecycle's skill prerequisite accepts a managed skill from either family: at least one
 prepare-family or Discover skill is enough for `Start implementation`. `getSkills` and `skillsState`

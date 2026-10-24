@@ -1975,11 +1975,7 @@ export function saveLiveSkill(repoDir: string, name: string, text: string): stri
   return null;
 }
 
-export function resetLiveSkill(
-  repoDir: string,
-  name: string,
-  options: { allowMissing: boolean },
-): string | null {
+export function restoreLiveSkill(repoDir: string, name: string): string | null {
   if (!isDiscoverSkill(name)) {
     return `${name} is not one of the five Discover skills`;
   }
@@ -1988,7 +1984,6 @@ export function resetLiveSkill(
   const baselineFile = baselinePath(repoDir, name);
   if (!existsSync(baselineFile)) return `no generated baseline exists for ${name}`;
   const liveFile = liveSkillPath(repoDir, name);
-  if (!options.allowMissing && !existsSync(liveFile)) return `${name} is missing`;
   const baselineHash = hashText(readFileSync(baselineFile, "utf8"));
   const next: Manifest = {
     ...manifest,

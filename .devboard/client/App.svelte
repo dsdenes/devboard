@@ -904,12 +904,12 @@
     return lane.attempt > 1 ? `${base} (attempt ${lane.attempt})` : base;
   }
 
-  function laneIdentity(lane: Lane): string {
-    if (lane.kind === "generation") return "Epic generation";
+  function laneIdentityParts(lane: Lane): { text: string; url: string | null } {
+    if (lane.kind === "generation") return { text: "Epic generation", url: null };
     if (lane.kind === "adr") {
-      return `${lane.record?.title ?? ""} (${lane.record?.file ?? ""})`;
+      return { text: `${lane.record?.title ?? ""} (${lane.record?.file ?? ""})`, url: null };
     }
-    return `${lane.epic?.title ?? ""} — ${lane.epic?.url ?? ""}`;
+    return { text: lane.epic?.title ?? "", url: lane.epic?.url ?? null };
   }
 
   function selectLane(id: string) {
@@ -1435,8 +1435,20 @@
       </div>
 
       {#if selectedLane !== null}
+        {@const identity = laneIdentityParts(selectedLane)}
         <div class="lane-panel" data-testid="lane-panel" data-lane={selectedLane.id}>
-          <p class="lane-identity" data-testid="lane-identity">{laneIdentity(selectedLane)}</p>
+          <p class="lane-identity" data-testid="lane-identity">
+            {#if identity.text.length > 0}
+              {identity.text}{#if identity.url !== null}{" — "}{/if}
+            {/if}
+            {#if identity.url !== null}
+              <a
+                href={identity.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="lane-identity-link">{identity.url}</a>
+            {/if}
+          </p>
           <p
             class="lane-status"
             data-testid="lane-status"
@@ -1446,23 +1458,24 @@
             {selectedLane.status}
           </p>
 
+          {#if selectedLaneHistory.length > 0}
+            <details class="activity-history">
+              <summary data-testid="lane-history">
+                {selectedLaneHistory.length}
+                {selectedLaneHistory.length === 1 ? "previous action" : "previous actions"}
+              </summary>
+              <ol class="activity-log" data-testid="lane-history-log">
+                {#each [...selectedLaneHistory].reverse() as line, index (index)}
+                  <li><AgentOutput text={line} /></li>
+                {/each}
+              </ol>
+            </details>
+          {/if}
+
           {#if selectedLaneActivity.length > 0}
             <div class="activity-current" data-testid="lane-current">
               <AgentOutput text={selectedLaneCurrent} />
             </div>
-            {#if selectedLaneHistory.length > 0}
-              <details class="activity-history">
-                <summary data-testid="lane-history">
-                  {selectedLaneHistory.length}
-                  {selectedLaneHistory.length === 1 ? "previous action" : "previous actions"}
-                </summary>
-                <ol class="activity-log" data-testid="lane-history-log">
-                  {#each [...selectedLaneHistory].reverse() as line, index (index)}
-                    <li><AgentOutput text={line} /></li>
-                  {/each}
-                </ol>
-              </details>
-            {/if}
           {/if}
 
           {#if selectedLane.question !== null}

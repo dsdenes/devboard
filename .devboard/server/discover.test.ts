@@ -802,7 +802,7 @@ describe("discover mode", () => {
         expect(skill?.currentHash).toBe(hashText(beforeReRun));
         expect(state.warnings).toEqual([]);
 
-        // A deleted skill is not recreated; Restore copies the baseline.
+        // A deleted skill is not recreated by a crawl; Restore recreates it.
         rmSync(join(fixture.root, ".omp", "skills", "discover-glossary"), { recursive: true });
         const missing = await discoverState(after);
         const glossarySkill = missing.skills.find((entry) => entry.name === "discover-glossary");
@@ -810,7 +810,7 @@ describe("discover mode", () => {
         expect(existsSync(join(fixture.root, ".omp", "skills", "discover-glossary"))).toBe(false);
 
         const restored = await afterCommand(after, {
-          type: "resetDiscoverSkill",
+          type: "restoreDiscoverSkill",
           name: "discover-glossary",
         });
         expect(restored.skills.find((entry) => entry.name === "discover-glossary")?.state).toBe(
@@ -825,9 +825,9 @@ describe("discover mode", () => {
           ),
         );
 
-        // Reset returns an edited skill to its generated baseline.
+        // Restore returns an edited skill to its generated version.
         const rederived = await afterCommand(after, {
-          type: "rederiveDiscoverSkill",
+          type: "restoreDiscoverSkill",
           name: "discover-coding-conventions",
         });
         expect(

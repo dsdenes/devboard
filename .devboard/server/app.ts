@@ -37,7 +37,7 @@ import {
   readArtifacts,
   rejectGlossaryTerm,
   removeStaging,
-  resetLiveSkill,
+  restoreLiveSkill,
   saveLiveSkill,
   stagingDirectory,
   validateStaged,
@@ -443,8 +443,7 @@ type ClientMessage =
   | { type: "answerDiscover"; id?: unknown; value?: unknown }
   | { type: "getDiscover" }
   | { type: "saveDiscoverSkill"; name?: unknown; text?: unknown }
-  | { type: "resetDiscoverSkill"; name?: unknown }
-  | { type: "rederiveDiscoverSkill"; name?: unknown }
+  | { type: "restoreDiscoverSkill"; name?: unknown }
   | { type: "confirmGlossaryTerm"; context?: unknown; id?: unknown }
   | { type: "rejectGlossaryTerm"; context?: unknown; id?: unknown; reason?: unknown };
 
@@ -558,10 +557,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
         name: "name" in value ? value.name : undefined,
         text: "text" in value ? value.text : undefined,
       };
-    case "resetDiscoverSkill":
-      return { type: "resetDiscoverSkill", name: "name" in value ? value.name : undefined };
-    case "rederiveDiscoverSkill":
-      return { type: "rederiveDiscoverSkill", name: "name" in value ? value.name : undefined };
+    case "restoreDiscoverSkill":
+      return { type: "restoreDiscoverSkill", name: "name" in value ? value.name : undefined };
     case "confirmGlossaryTerm":
       return {
         type: "confirmGlossaryTerm",
@@ -2160,16 +2157,12 @@ export function createApp(options: AppOptions) {
     afterDiscoverMutation(ws, saveLiveSkill(repoDir, name, text));
   }
 
-  function resetDiscoverSkillCommand(
-    ws: { send(data: string): unknown },
-    name: unknown,
-    rederive: boolean,
-  ) {
+  function restoreDiscoverSkillCommand(ws: { send(data: string): unknown }, name: unknown) {
     if (typeof name !== "string") {
-      discoverFailure(ws, "Resetting a Discover skill needs its name.");
+      discoverFailure(ws, "Restoring a Discover skill needs its name.");
       return;
     }
-    afterDiscoverMutation(ws, resetLiveSkill(repoDir, name, { allowMissing: !rederive }));
+    afterDiscoverMutation(ws, restoreLiveSkill(repoDir, name));
   }
 
   /**
@@ -5004,10 +4997,8 @@ export function createApp(options: AppOptions) {
             answerDiscoverQuestion(ws, command.id, command.value);
           } else if (command.type === "saveDiscoverSkill") {
             saveDiscoverSkillCommand(ws, command.name, command.text);
-          } else if (command.type === "resetDiscoverSkill") {
-            resetDiscoverSkillCommand(ws, command.name, false);
-          } else if (command.type === "rederiveDiscoverSkill") {
-            resetDiscoverSkillCommand(ws, command.name, true);
+          } else if (command.type === "restoreDiscoverSkill") {
+            restoreDiscoverSkillCommand(ws, command.name);
           } else if (command.type === "confirmGlossaryTerm") {
             const term = discoverTermRequest(command.context, command.id);
             if (term === null) {

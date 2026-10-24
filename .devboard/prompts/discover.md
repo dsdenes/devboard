@@ -193,8 +193,11 @@ Section rules:
   files, CI configuration, and deployment descriptors, with its short purpose. A source path
   belongs in `evidence`; never invent an environment.
 - `commands` repeats the exact install, build, test, lint, typecheck, dev/run, try-out, and release
-  command found in a manifest, task runner, CI file, or documentation. A command the crawl did not
-  observe is `unknown`; never execute it and never reconstruct it from another ecosystem's habit.
+  command found in a manifest, task runner, CI file, or documentation. `test` is the one command
+  that runs the whole suite. `tryOut` starts or opens the project for a hands-on try — a dev
+  server, a demo entry point, or an example invocation — and is never the test command; when the
+  crawl found no such command, write `unknown`. A command the crawl did not observe is `unknown`;
+  never execute it and never reconstruct it from another ecosystem's habit.
 - `branching` reports the observed default branch and release branches, the observed or inferred
   merge method, and one of `direct`, `pull-request`, or `git-flow`, supported by git and CI
   evidence. A model the repository does not evidence is `value: null` with `confidence: unknown`
@@ -290,8 +293,11 @@ metadata:
 - The body is a `#` heading title followed only by imperative bullets, one directive per bullet.
   Every non-empty, non-heading line starts with `- `. No paragraphs, tables, prose introduction, or
   chat report.
-- Every project-specific claim names its evidence path in the bullet, for example a source path, a
-  test path, a manifest, or a CI file.
+- Name a source, test, manifest, or CI path in a bullet only when the path itself helps apply the
+  rule, for example when it identifies where a convention lives, which file a command runs, or
+  which boundary to respect. Do not append a path merely to show where a claim was derived: the
+  sheet and its evidence already carry that provenance, and a path that adds nothing makes the
+  skill harder to read.
 - When a previously published generated baseline exists under
   `<host>/.omp/discover/skills/<name>/SKILL.md`, read it for continuity of scope and structure.
   Always regenerate from the current crawl. Never copy a developer's live edits into the baseline;
@@ -376,8 +382,8 @@ Confirm all of the following:
 - [ ] Every concept is `unconfirmed` or `proposed`; every `origin: standard` has a `standardRef`;
       no confirmed, deprecated, or invalidated status appears.
 - [ ] All five `skills/<name>/SKILL.md` files exist with matching names, non-empty descriptions of
-      at most 1024 characters, and both markers; each body is a heading plus imperative bullets
-      with evidence.
+      at most 1024 characters, and both markers; each body is a heading plus imperative bullets,
+      and a path appears only where it helps apply the rule.
 - [ ] The five baselines do not contradict each other or the glossary, and no skill recommends an
       invalidated label.
 - [ ] Nothing was written outside `<staging-dir>`; `GOAL.md`, `adrs/`, host source, `.omp/discover`,
