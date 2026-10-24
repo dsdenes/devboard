@@ -1449,10 +1449,24 @@ export class FlowController {
     }
 
     const context = [
-      `Goal: ${session.goal}`,
-      "Changed files and diffs are in request.json in the session directory.",
-      "The previous widget list is in request.json.",
-      "The decision board is in decisions.md in the session directory.",
+      "Session goal:",
+      session.goal,
+      "",
+      "Decision board:",
+      session.decisions,
+      "",
+      "Previous widget list:",
+      JSON.stringify(session.widgets),
+      "",
+      "Current diff:",
+      ...files.map((file) =>
+        [
+          `--- ${file.path} (${file.status}, +${file.insertions} -${file.deletions}) ---`,
+          file.diff,
+        ].join("\n"),
+      ),
+      "",
+      "The same data is in request.json in the session directory.",
       "Write the complete widget list to widgets.json in the session directory.",
     ].join("\n");
 
