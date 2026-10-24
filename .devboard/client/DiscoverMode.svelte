@@ -155,15 +155,19 @@
     delivery: "Delivery & versioning",
   };
 
+  /** The delivery card repeats facts shown by deployment, CI, and runtime. */
+  const HIDDEN_SECTIONS = new Set(["delivery"]);
+
   /** The runtime inventory is the first thing an operator scans for. */
   const SECTION_ORDER = [
     "runtime",
-    ...SECTION_KEYS.filter((key) => key !== "runtime"),
+    ...SECTION_KEYS.filter((key) => key !== "runtime" && !HIDDEN_SECTIONS.has(key)),
   ];
 
-  /** Leaves already shown by a more specific widget, so they are not repeated. */
-  const DUPLICATED_LEAVES: Record<string, string[]> = {
+  /** Leaves already shown elsewhere or too detailed for the operator's scan. */
+  const HIDDEN_LEAVES: Record<string, string[]> = {
     dependencyMap: ["binaries", "packages", "jobs"],
+    deployment: ["pipelineSources"],
   };
 
   const COMMAND_LABELS: Record<string, string> = {
@@ -428,6 +432,19 @@
 
   function skillStateLabel(value: string): string {
     return value === "generated" ? "Generated" : value === "edited" ? "Edited" : "Missing";
+  }
+
+  function statusTitle(status: string): string {
+    if (status === "unconfirmed") {
+      return "Discover found this term in the project; no operator has confirmed it yet.";
+    }
+    if (status === "proposed") {
+      return "Discover suggests this term; confirm it or reject it with a reason.";
+    }
+    if (status === "confirmed") return "An operator confirmed this term.";
+    if (status === "deprecated") return "This term is deprecated.";
+    if (status === "invalidated") return "An operator rejected this term.";
+    return status;
   }
 
   function skillDraft(entry: DiscoverSkill | null, name: string): string {
@@ -1090,12 +1107,16 @@
                 {:else if key === "commands" && typeof section === "object" && section !== null}
                   {@render commandsView(section, testCommand)}
                 {:else if isLeaf(section)}
-                  {@render leafView(section)}
+                  {#if recordItems(section).length > 0}
+                    {@render recordLeafView(section)}
+                  {:else}
+                    {@render leafView(section)}
+                  {/if}
                 {:else if typeof section === "object" && section !== null}
                   {@const entries = Object.entries(section).filter(
                     ([leafKey, leaf]) =>
                       isLeaf(leaf) &&
-                      !(DUPLICATED_LEAVES[key] ?? []).includes(leafKey),
+                      !(HIDDEN_LEAVES[key] ?? []).includes(leafKey),
                   )}
                   {#if entries.length === 0}
                     <p class="empty">Not recorded.</p>
@@ -1194,7 +1215,11 @@
                       <span class="discover-term-label">
                         {labelText(concept.prefLabels) || concept.id}
                       </span>
-                      <span class="discover-badge" data-status={concept.status}>
+                      <span
+                        class="discover-badge"
+                        data-status={concept.status}
+                        title={statusTitle(concept.status)}
+                      >
                         {concept.status}
                       </span>
                     </div>
@@ -1215,7 +1240,7 @@
                       <code>{concept.id}</code>
                     </p>
 
-                    {#if concept.status === "proposed"}
+                    {#if concept.status === "proposed" || concept.status === "unconfirmed"}
                       <div class="discover-term-actions">
                         <button
                           type="button"

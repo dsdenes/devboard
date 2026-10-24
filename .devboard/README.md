@@ -641,20 +641,23 @@ non-`unknown` leaf carries at least one sorted, unique repository-relative evide
 anchor, or safe git fact and a confidence of `observed`, `declared`, `inferred`, or `unknown`;
 `unknown` carries empty evidence and a short reason. The definition is exactly one sentence of at
 most 240 characters; every value and list entry is a single line of at most 160 characters. The
-sheet covers stack, customer-facing deployment (artifact class, artifact, target, and pipeline
-sources), every detected environment, exact main commands (with `unknown` for an unobserved
-command), branching strategy and model, test levels and pyramid, architecture boundaries, CI
-provider, triggers, jobs, and quality gates, and the three mandatory extra cards: runtime
-inventory, entry-point and dependency map, and delivery and versioning. It never guesses, invents
-an environment, copies README prose, or records a configuration value; a claim it cannot ground is
-`unknown`.
+sheet covers the short platform stack (languages, runtimes, package managers, frameworks, and
+major tools, not individual dependencies), customer-facing deployment (artifact class, artifact,
+target, and pipeline sources), every environment (at least `production`, whose purpose states how
+changes reach it), exact main commands (with `unknown` for an unobserved command), branching
+strategy and model, test levels and pyramid, architecture boundaries, CI provider, triggers, jobs,
+and quality gates, and the three mandatory extra cards: runtime inventory, entry-point and
+dependency map, and delivery and versioning. It never guesses, invents an additional environment,
+copies README prose, or records a configuration value; a claim it cannot ground is `unknown`.
 
 The Overview also renders that data for scanning: main commands as a labeled list where the test
 command is named as the whole suite and a try-out command equal to the test command is omitted;
 the test levels as a color-coded pyramid of stacked tiers with counts and commands, above its
 one-line description; architecture contexts as cards with path, responsibility, and entry points;
 record lists such as environments as labeled rows; and the dependency-map card only for facts not
-already shown by the stack, runtime, and CI cards. A test pyramid with no observed level and a
+already shown by the stack, runtime, and CI cards. It omits the delivery card because its facts
+repeat deployment, CI, and runtime, and it omits the deployment pipeline sources because those
+are CI provenance rather than deployment information. A test pyramid with no observed level and a
 glossary with no matching term keep their explicit empty state.
 
 The Glossary tab and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
@@ -677,10 +680,11 @@ id only when no title exists. Term cards are color-coded by `kind` (`entity`, `e
 `role`, `actor`, `value`, `rule`) while the status badge always spells the status, so color is
 never the only cue.
 
-A proposed term offers `Confirm` and `Reject` (`data-testid="discover-confirm"` and
-`data-testid="discover-reject"`); a confirmed term still offers `Reject` with a reason.
-`confirmGlossaryTerm` changes a proposed term to `confirmed`, and `rejectGlossaryTerm` requires a
-non-empty reason and changes a proposed or confirmed term to `invalidated`. Both append a dated
+A proposed or unconfirmed term offers `Confirm` and `Reject` (`data-testid="discover-confirm"` and
+`data-testid="discover-reject"`), and the status badge explains what the status means; a confirmed
+term still offers `Reject` with a reason. `confirmGlossaryTerm` changes a proposed or unconfirmed
+term to `confirmed`, and `rejectGlossaryTerm` requires a non-empty reason and changes a proposed,
+unconfirmed, or confirmed term to `invalidated`. Both append a dated
 decision to `decisions.json` with the context, id, action, reason when rejecting, and date, never
 adding a field to the YAML, and the change survives reload, reconnect, and restart. A later crawl
 preserves every confirmed or invalidated concept's labels, definitions, notes, status, origin,

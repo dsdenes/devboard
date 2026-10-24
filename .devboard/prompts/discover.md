@@ -106,8 +106,8 @@ Every value below is a **leaf**:
   characters. No value is a paragraph, a sentence fragment copied from documentation, or a secret.
   A list carries at most 64 entries.
 - Lists are sorted by their first string. A leaf whose fact does not exist is `unknown` with
-  `"value": null` and a reason; it is never an empty guess. `environments` with nothing detected
-  uses `"value": null`, `"evidence": []`, `"confidence": "unknown"`, and reason `none detected`.
+  `"value": null` and a reason; it is never an empty guess. `environments` is the exception and
+  always carries at least the production entry described below.
 
 Sections and required keys:
 
@@ -185,13 +185,17 @@ Section rules:
 
 - `definition` is exactly one sentence of at most 240 characters, ends with `.`, and describes what
   the project is for its users. It is not a copy of the README's opening paragraph.
-- `stack` names the detected technologies and versions without choosing or recommending one.
+- `stack` is the short platform list: languages, runtimes, package managers, frameworks, and major
+  tools actually used to build or run the project. Do not list individual third-party
+  dependencies; those belong in `dependencyMap.keyDependencies`.
 - `deployment.class` uses the fixed enum; use `none` when the host publishes nothing, and
   `value: null` with `confidence: unknown` when the class is undetermined. Only the confidence can
   be `unknown`; the literal string `unknown` is not an enum value.
-- `environments` records every environment name found in manifests, configuration, container
-  files, CI configuration, and deployment descriptors, with its short purpose. A source path
-  belongs in `evidence`; never invent an environment.
+- `environments` always records at least one entry. Record every environment name found in
+  manifests, configuration, container files, CI configuration, and deployment descriptors, with
+  its short purpose. When no other environment is evidenced, record exactly one `production`
+  entry whose purpose states how changes reach it, such as a direct push or a published package.
+  A source path belongs in `evidence`; never invent additional environments.
 - `commands` repeats the exact install, build, test, lint, typecheck, dev/run, try-out, and release
   command found in a manifest, task runner, CI file, or documentation. `test` is the one command
   that runs the whole suite. `tryOut` starts or opens the project for a hands-on try — a dev
@@ -371,8 +375,9 @@ Confirm all of the following:
       in canonical order, and has every section and leaf required above.
 - [ ] The definition is one sentence of at most 240 characters and ends with `.`.
 - [ ] Every string value and list entry is a non-empty single line of at most 160 characters;
-      every `unknown` has a null value, empty evidence, and a reason; every known leaf has at
-      least one repo-relative evidence entry.
+      every `unknown` leaf other than `environments` has a null value, empty evidence, and a
+      reason; every known leaf has at least one repo-relative evidence entry; `environments`
+      carries at least the production entry.
 - [ ] No staged file contains an absolute path, a secret value, a URL with user info, a paragraph,
       a timestamp, or a run id.
 - [ ] At least one `glossary/<boundedContext>.glossary.yaml` exists, parses as YAML, has the

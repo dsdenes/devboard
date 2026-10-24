@@ -851,7 +851,11 @@ function discoverSheet(): Record<string, unknown> {
           ? discoverUnknown("No CI configuration was found in the crawled files.")
           : discoverLeaf([paths.ci], [paths.ci], "observed"),
     },
-    environments: discoverUnknown("none detected"),
+    environments: discoverLeaf(
+      [{ name: "production", purpose: "Changes reach production through a direct push." }],
+      evidence,
+      "inferred",
+    ),
     commands: {
       install: paths.hasManifest
         ? discoverLeaf("bun install", [paths.manifest], "declared")

@@ -2063,7 +2063,9 @@ export function confirmGlossaryTerm(repoDir: string, context: string, id: string
     context,
     id,
     (concept) => {
-      if (concept.status !== "proposed") return `${id} is ${concept.status}, not proposed`;
+      if (concept.status !== "proposed" && concept.status !== "unconfirmed") {
+        return `${id} is ${concept.status}, not confirmable`;
+      }
       concept.status = "confirmed";
       return null;
     },
@@ -2084,7 +2086,11 @@ export function rejectGlossaryTerm(
     context,
     id,
     (concept) => {
-      if (concept.status !== "proposed" && concept.status !== "confirmed") {
+      if (
+        concept.status !== "proposed" &&
+        concept.status !== "unconfirmed" &&
+        concept.status !== "confirmed"
+      ) {
         return `${id} is ${concept.status}, so it cannot be rejected`;
       }
       concept.status = "invalidated";

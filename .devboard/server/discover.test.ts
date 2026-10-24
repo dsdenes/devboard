@@ -842,6 +842,43 @@ describe("discover mode", () => {
   );
 
   test(
+    "lets an operator confirm a grounded unconfirmed term",
+    async () => {
+      const { server, url } = startServer();
+      const client = await connect(url);
+      try {
+        const before = await runDiscover(client);
+        const initial = before.glossaries[0] as { concepts: Array<Record<string, unknown>> };
+        expect(initial.concepts.find((concept) => concept.id === "order")?.status).toBe(
+          "unconfirmed",
+        );
+
+        const confirmed = await afterCommand(client, {
+          type: "confirmGlossaryTerm",
+          context: "orders",
+          id: "order",
+        });
+        const glossary = confirmed.glossaries[0] as {
+          concepts: Array<Record<string, unknown>>;
+        };
+        expect(glossary.concepts.find((concept) => concept.id === "order")?.status).toBe(
+          "confirmed",
+        );
+        expect(confirmed.decisions).toHaveLength(1);
+        expect(confirmed.decisions[0]).toMatchObject({
+          context: "orders",
+          id: "order",
+          action: "confirm",
+        });
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
     "records glossary confirm and reject decisions, persists them, and preserves them on a re-crawl",
     async () => {
       const { server, url } = startServer();
