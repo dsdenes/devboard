@@ -802,11 +802,14 @@ wait (default 1800 seconds).
 
 Installed dashboards update themselves: each checks the newest release at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), verifies the `.sha256`, installs the
-tarball through a staging prefix, and keeps serving its loaded code. `versionState` reports
-`running`, `installed`, `latest`, and `stale`; the reload control appears while `stale` is true
-and restarts the server from the installed package. A failed check, checksum, authentication, or
-npm install leaves the previous package and server intact, writes `update-error` to the journal,
-and is retried with exponential backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it).
+tarball through a staging prefix, and keeps serving its loaded code. The npm child always runs in
+that staging directory, and the dashboard starts from the host root rather than the replaceable
+package directory, so replacing the package never leaves a child with a deleted working
+directory. `versionState` reports `running`, `installed`, `latest`, and `stale`; the reload
+control appears while `stale` is true and restarts the server from the installed package. A
+failed check, checksum, authentication, or npm install leaves the previous package and server
+intact, writes `update-error` to the journal, and is retried with exponential backoff
+(`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it).
 
 |Variable|Default|Purpose|
 |---|---|---|
@@ -1260,8 +1263,10 @@ touch a real host.
 
 `tests/launcher.test.ts` covers the launcher and harness package boundaries: the help output,
 the launcher's file list and size, the harness tarball's required and forbidden paths, its size,
-and template identity. `lib/inventory.test.ts` covers the publish report. `server/updates.test.ts`
-covers the startup check, the interval, backoff, single-flight, and failure journaling.
+and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`
+covers installing a release when the process working directory has been deleted.
+`server/updates.test.ts` covers the startup check, the interval, backoff, single-flight, and
+failure journaling.
 `tests/install.test.ts` covers the wrapper script: a fresh install, an idempotent rerun that
 keeps unrelated files, a host without `.devboard/`, a differing file refused without `--force`,
 `--force` replacing it, and the default host path. `server/run.test.ts` drives the interface

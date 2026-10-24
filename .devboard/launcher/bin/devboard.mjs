@@ -32,6 +32,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -88,9 +89,19 @@ function firstLine(text) {
 
 class LauncherError extends Error {}
 
+function safeCwd(cwd) {
+  if (cwd !== undefined) return cwd;
+  try {
+    const current = process.cwd();
+    return existsSync(current) ? current : homedir();
+  } catch {
+    return homedir();
+  }
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
-    cwd: options.cwd,
+    cwd: safeCwd(options.cwd),
     env: { ...process.env, ...options.env, GH_PROMPT_DISABLED: "1" },
     encoding: "utf8",
     timeout: options.timeoutMs ?? 120_000,
@@ -437,7 +448,7 @@ async function installTarball(prefix, tarball, version) {
       ["install", "--prefix", staging, "--ignore-scripts", "--no-audit", "--no-fund",
         "--no-save", tarball],
       "npm install",
-      { timeoutMs: 10 * 60_000 },
+      { cwd: staging, timeoutMs: 10 * 60_000 },
     );
     const staged = harnessDir(staging);
     const stagedVersion = installedVersion(staging);
@@ -643,7 +654,10 @@ async function startDashboard(host, harness, port, stateDir) {
   await mkdir(stateDir, { recursive: true });
   const fd = openSync(log, "a");
   const child = spawn(bun, [join(harness, "server", "index.ts")], {
-    cwd: harness,
+    // Keep the dashboard out of the replaceable package directory: an update
+    // renames and removes it, leaving a deleted cwd that child processes
+    // cannot start from.
+    cwd: host,
     detached: true,
     stdio: ["ignore", fd, fd],
     env: {

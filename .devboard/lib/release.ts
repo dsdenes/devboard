@@ -10,6 +10,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 /**
@@ -196,7 +197,7 @@ async function githubRelease(repo: string): Promise<ReleaseInfo> {
   const result = await exec(
     "gh",
     ["api", `repos/${repo}/releases/latest`],
-    { timeoutMs: 60_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
+    { cwd: homedir(), timeoutMs: 60_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
   );
   if (result.code !== 0) throw failure("gh api releases/latest", result);
   let parsed: GithubRelease;
@@ -249,7 +250,11 @@ async function downloadAsset(
         "Accept: application/octet-stream",
         `repos/${repo}/releases/assets/${asset.id}`,
       ],
-      { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
+      {
+        cwd: dirname(destination),
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, GH_PROMPT_DISABLED: "1" },
+      },
     );
     const sink = createWriteStream(destination);
     const err: Buffer[] = [];
@@ -411,6 +416,11 @@ export async function installHarnessTarball(options: InstallTarballOptions): Pro
         options.tarball,
       ],
       {
+        // The server's working directory can be the package directory that an
+        // earlier update replaced and deleted. npm inherits that process cwd
+        // and cannot start in a missing directory, so run it in the staging
+        // directory this call just created.
+        cwd: staging,
         env: options.env ?? process.env,
         timeoutMs: options.timeoutMs ?? 10 * 60_000,
       },

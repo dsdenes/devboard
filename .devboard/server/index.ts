@@ -42,7 +42,9 @@ function restart(server: Server<unknown>) {
       process.execPath,
       join(harness, "server", "index.ts"),
     ],
-    cwd: harness,
+    // Never start from the replaceable package directory: an update can
+    // rename and delete it, and a child cannot start from a missing cwd.
+    cwd: repoDir,
     env: {
       ...process.env,
       HOST: hostname,
