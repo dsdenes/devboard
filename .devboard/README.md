@@ -68,10 +68,11 @@ browser disconnects.
 The page also shows a pass number plus `Open epics` and `Running lanes` counts. It shows no
 single lifecycle stage, because epic generation can run in parallel with implementation; the
 counts and the lane tabs describe the run instead.
-The pass is retained per repository in the harness state directory and reloaded when the backend
-restarts, so an interrupted run's pass is still shown afterwards; an explicit reset sets it back
-to 1. The lifecycle starts only from a settled goal and a prepared skill set: `Start implementation`
-stays disabled until the goal document contains at least one non-whitespace character and at
+The pass is part of the durable per-repository state (see
+[Durable state](#durable-state)) and is restored when the backend restarts, so an interrupted
+run's pass is still shown afterwards; an explicit reset sets it back to 1. The lifecycle starts
+only from a settled goal and a prepared skill set: `Start implementation` stays disabled until
+the goal document contains at least one non-whitespace character and at
 least one managed skill is installed in `<REPO_DIR>/.omp/skills/`, which the skills overlay lists.
 The server enforces the same rules: a start is refused with an `error` when the goal is not
 settled, when the skills directory cannot be read, or when no managed skill is installed.
@@ -131,7 +132,8 @@ pending question. An epic's work state carries the tracker page, and the page re
 `Epic #<n>` as a link to that issue. Once a run reports `finished`, the server keeps
 that state for its lifetime and replays it, together with the lanes still retained, to every client
 that connects or reloads, so the interface still shows the final pass and any recent tabs until a
-new run starts or the backend restarts. An aborted run likewise replays the idle goal stage with
+new run starts; a backend restart restores the same state. An aborted run likewise replays the
+idle goal stage with
 no work, not paused, and the pass it had reached, so the goal becomes editable and another
 lifecycle run can start.
 
@@ -226,8 +228,10 @@ writes no `adrs/` file.
 - Records: read from `adrs/` on every `listRecords` command and after every run, so files added,
   removed, or resolved while the server runs appear without a restart. Each record carries the
   first paragraph of its `Decision` section as a short summary.
-- State: the lifecycle pass is written to `<harness>/.tmp/lifecycle-pass-<hash of REPO_DIR>` so it
+- State: the dashboard's server-owned state is written atomically to
+  `<stateDir>/state/<24-hex hash of REPO_DIR>.json` (default `stateDir` is `<harness>/.tmp`), so it
   survives a backend restart without leaking between repositories that share one harness install.
+  See [Durable state](#durable-state).
 
 ## Install
 
@@ -291,6 +295,78 @@ ADRS_DIR="<host>/adrs" bun run start
 ```
 
 Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
+
+## Durable state
+
+The dashboard keeps the state that drives the page in one file per host repository and restores
+it from a new process after a graceful stop, a launcher restart, or a `SIGKILL`. The file is
+`<stateDir>/state/<key>.json`, where `key` is the 24-hex SHA-256 prefix of the resolved
+`REPO_DIR` (the same key the journal uses) and `stateDir` is the harness state directory,
+`<harness>/.tmp` by default and overridable with `STATE_DIR`. Two repositories that share one
+harness therefore never read or overwrite each other's lifecycle, lane, pass, or foreground
+state, and a repository with no stored state starts at pass 1 with no lanes and no
+`lifecycleState` until a run starts. The file is never committed, never copied between
+repositories, and never written outside the repository root.
+
+Every change a client can observe is written before the event that announces it is broadcast.
+Writes replace the file atomically (temporary file plus rename), so the last complete state stays
+readable at every instant, a kill during a write leaves the previous state, and a client never
+sees an event that the replacement process cannot replay. The stored state covers the lifecycle
+stage, pass, work, and paused flag; every lane with its id, kind, epic or record, attempt, status,
+activity, question, blocked/failure bookkeeping, and remaining retention; epic attempts,
+`mainAtFailure`, status, and the parked and retrying sets; the last reported lifecycle state
+including `finished`; the manual ADR sequence; goal creation; goal revision with its guidance;
+skills preparation with the pre-run rollback snapshot; an interrupted implementation reset; and an
+accepted `whenIdle` restart. Browser-only state (selected lane, draft text, banners, overlays,
+connection status) and full ACP transcripts, raw stderr, and secrets stay out of the file.
+
+Restored activity is bounded per foreground run and per lane at the first of 1,000 entries or
+1 MiB of UTF-8 text. Within that bound no line is lost across a kill; beyond it the newest
+entries are kept and one marker entry stating that earlier activity was trimmed precedes them.
+The total serialized state for one repository stays under 32 MiB with 20 concurrent lanes at
+full bounds.
+
+A restored lifecycle that was advancing re-spawns every incomplete lane with the same id, kind,
+epic or record, attempt, recorded activity (as an exact prefix), and lifecycle position:
+implementation lanes receive `/implement-next-epic <epic>`, a generation lane receives
+`/epic-next`, and an ADR lane receives the same `agentPrompt(adrDir, file)`. The replacement
+never creates a second lane for an epic that still owns one, `laneSequence` continues above the
+highest restored id, a retrying epic retries after the configured backoff, and a parked epic
+starts no peer until `main` advances past its recorded revision. A queued generation pass runs
+exactly once after the restored in-flight pass. A run that was paused stays paused: its lanes
+replay status `paused`, no stage transition, tracker read, retry, generation pass, or new peer
+happens until `resumeLifecycle`, and the resume then re-spawns each interrupted lane.
+
+Foreground work that was live at death resumes with its original input. A manual ADR sequence
+continues from its persisted record, re-spawning that record only while it is still `Proposed`
+and otherwise advancing to the next pending record; goal creation re-spawns `/goal-outcome`; a
+revision re-spawns the same prompt including its original guidance; skills preparation re-spawns
+`/prepare-skills` after restoring the same pre-run snapshot, so a resumed preparation that ends in
+failure restores the exact bytes captured before the original run. Restored activity is kept and
+new lines append. A pending lane or foreground question is replayed to every connecting client
+after the restored activity; answering a restored question that the replacement peer has not
+re-issued is refused with `The question is no longer pending.` and the page updates without a
+reload. Before re-spawning a unit, the replacement ends any recorded ACP child of the killed
+process whose process table entry proves it is that peer; it never signals a process it cannot
+prove.
+
+A reset that was active at death is never re-run. The replacement performs no git commit, push,
+deletion, or staging, emits `implementationResetStopped` with `completed: false` and one `error`
+naming the interruption, and leaves the working tree and refs as the killed process left them.
+After a successful reset the stored state holds pass 1 and the idle `goal` stage, so a restart
+restores neither the old lanes nor the old pass. An accepted `restartServer` with
+`whenIdle: true` survives the process death and is honored exactly once after the restored work
+becomes idle; the pending flag is cleared before the launcher is invoked, so the replacement
+never restarts itself again for the same request. With no launcher configured, the existing
+unavailable-restart error is reported and the flag is cleared.
+
+A closed or failed lane whose retention window expired while the server was down is not
+replayed; the remaining window is honored after a restart. An unreadable, truncated, or
+unsupported-version state file never prevents startup: the server renames it aside inside
+`stateDir` (`.damaged-<timestamp>`), starts from the initial state, and reports exactly one
+`error` to the first connecting client and on stderr, leaving the preserved bytes in place. A
+read-only state directory never stops the server: it keeps serving from memory and reports one
+`error` on stderr and in the journal.
 
 ## Publish a change
 
@@ -604,16 +680,18 @@ The client sends:
   every suspended lane with `SIGCONT`, and releases the held loop. It is refused while a goal
   revision or a manual ADR sequence is active, leaving the lifecycle paused until that peer ends.
   Pause and resume are each refused with an `error` when no lifecycle run is active, when pausing
-  an already-paused run, and when resuming a run that is not paused. The paused flag lives in
-  server memory and is discarded when the run ends.
+  an already-paused run, and when resuming a run that is not paused. The paused flag is part of
+  the durable state, so a run paused before a restart stays paused and spawns no peer until
+  `resumeLifecycle`; it is discarded when the run ends.
 - Each lifecycle lane is one `omp acp` process. `runStarted`, `activity`, `question`, and
   `runStopped` for a lane carry its `lane` id; lanes also report their epic or record identity,
   attempt number, status, recorded activity, and pending question in `laneState`. Untagged
   `runStarted`, `activity`, `question`, and `runStopped` events remain the foreground run,
-  revision, creation, and skills preparation. Lifecycle state lives in server memory, including
-  every lane tab for the current run; only the pass is retained, in the harness state directory
-  keyed by `REPO_DIR`, and loaded when the backend starts. A client that connects while no run is
-  active receives the idle `goal` state when the retained pass is above 1.
+  revision, creation, and skills preparation. Lifecycle state is durable: the lifecycle, its
+  pass, every lane tab with its activity and question, and the epic bookkeeping are written to
+  the harness state directory keyed by `REPO_DIR` and restored when the backend starts. A client
+  that connects while no run is active receives the idle `goal` state when the retained pass is
+  above 1.
 
 The server answers with events:
 
@@ -708,7 +786,8 @@ The server answers with events:
   `paused: true`, followed by the lane snapshot with every lane's recorded activity and pending
   question. Stage `goal` is the idle state before a lifecycle run starts and after one
   stops before `finished`; a backend on which no lifecycle run has ever started sends no
-  `lifecycleState` on connection. Retained state lives in server memory, so a restart forgets it.
+  `lifecycleState` on connection. The retained state is durable, so a replacement process
+  replays the same `lifecycleState`, lanes, activity, questions, and pass.
 - `goalRevisionStarted` marks the beginning of a revision. `goalRevisionStopped` marks its end: `completed` is `true` only when the peer ended without error and the goal file could be read, in which case `text` carries the complete file contents. A failed revision has `completed: false`, omits `text`, and is accompanied by an `error` event.
 - A revision emits no `runStarted` or `runStopped` events of its own and does not read or write `adrs/`. When it ends while a lifecycle run is paused, the suspended lane tabs stay as they were; the server does not replay them because they were never removed.
 - `goalCreationStarted` marks the beginning of a guided goal creation. `goalCreationStopped`

@@ -1,0 +1,249 @@
+import { readFileSync, readlinkSync, unlinkSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { journalKey } from "./journal";
+
+/**
+ * Durable dashboard state for one host repository. The server writes the whole
+ * state before it broadcasts any event, and a replacement process restores it,
+ * so a graceful stop, a launcher restart, or a SIGKILL loses no state a client
+ * has already seen. One file per repository keyed like the journal keeps two
+ * repositories that share a harness from reading each other's state.
+ */
+
+/** Envelope version. A file with another version is preserved, never read. */
+export const STATE_VERSION = 1;
+
+/** Restored activity is bounded to the first of these limits. */
+export const ACTIVITY_MAX_ENTRIES = 1000;
+export const ACTIVITY_MAX_BYTES = 1024 * 1024;
+
+/** Replaces trimmed lines so the reader knows the log is older than it looks. */
+export const ACTIVITY_TRIMMED_MARKER = "Earlier activity was trimmed.";
+
+/** Total serialized state one repository may keep with every activity bound full. */
+export const STATE_MAX_BYTES = 32 * 1024 * 1024;
+
+/** The 24-hex repository key that names this repository's state file. */
+export const stateKey = journalKey;
+
+export function stateFile(stateDir: string, repoDir: string): string {
+  return join(stateDir, "state", `${stateKey(repoDir)}.json`);
+}
+
+export type StateLoad =
+  | { kind: "missing" }
+  /** The file parsed and named this version; `value` is the envelope's state. */
+  | { kind: "loaded"; value: unknown }
+  /** Unusable bytes; they were preserved aside when the rename succeeded. */
+  | { kind: "damaged"; reason: string; preserved: string | undefined };
+
+/** Moves unusable bytes aside so they are never overwritten or deleted. */
+function preserve(path: string): string | undefined {
+  const aside = `${path}.damaged-${Date.now()}`;
+  try {
+    renameSync(path, aside);
+    return aside;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Moves a state file whose contents cannot be used out of the way, unread. */
+export function preserveStateFile(path: string): string | undefined {
+  return preserve(path);
+}
+
+export function readStateFile(path: string): StateLoad {
+  let source: string;
+  try {
+    source = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+    return {
+      kind: "damaged",
+      reason: `could not read ${path}: ${error instanceof Error ? error.message : String(error)}`,
+      preserved: preserve(path),
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch (error) {
+    return {
+      kind: "damaged",
+      reason: `the state file is not valid JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      preserved: preserve(path),
+    };
+  }
+
+  if (typeof parsed !== "object" || parsed === null || !("version" in parsed)) {
+    return {
+      kind: "damaged",
+      reason: "the state file is not a state envelope",
+      preserved: preserve(path),
+    };
+  }
+
+  const version = parsed.version;
+  if (version !== STATE_VERSION) {
+    return {
+      kind: "damaged",
+      reason:
+        typeof version === "number"
+          ? `the state file has unsupported version ${version}`
+          : "the state file has no version",
+      preserved: preserve(path),
+    };
+  }
+
+  if (!("state" in parsed)) {
+    return {
+      kind: "damaged",
+      reason: "the state envelope holds no state",
+      preserved: preserve(path),
+    };
+  }
+  const value = parsed.state;
+  if (typeof value !== "object" || value === null) {
+    return {
+      kind: "damaged",
+      reason: "the state envelope holds no state",
+      preserved: preserve(path),
+    };
+  }
+
+  return { kind: "loaded", value };
+}
+
+/**
+ * Replaces the state file atomically: the last complete state stays readable at
+ * every instant, and a crash during the write leaves the previous state.
+ */
+export function writeStateFile(path: string, text: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  // A per-process name keeps two writers for different repositories apart even
+  // when they share one directory.
+  const temporary = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, text);
+    renameSync(temporary, path);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The temporary file was never created or is already gone.
+    }
+    throw error;
+  }
+}
+
+function byteLength(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+export function activityWithinBounds(store: string[]): boolean {
+  if (store.length > ACTIVITY_MAX_ENTRIES) return false;
+  let bytes = 0;
+  for (const line of store) {
+    bytes += byteLength(line);
+    if (bytes > ACTIVITY_MAX_BYTES) return false;
+  }
+  return true;
+}
+
+/**
+ * Keeps the newest activity entries inside the bound and prefixes one marker so
+ * the trimmed log never looks complete. The newest entry is always kept, even
+ * when it alone exceeds the byte bound.
+ */
+export function trimActivity(store: string[]): void {
+  if (activityWithinBounds(store)) return;
+
+  const markerBytes = byteLength(ACTIVITY_TRIMMED_MARKER);
+  const kept: string[] = [];
+  let bytes = markerBytes;
+  for (let index = store.length - 1; index >= 0; index -= 1) {
+    const line = store[index];
+    if (line === undefined) continue;
+    const size = byteLength(line);
+    const entries = kept.length + 2;
+    if (kept.length > 0 && (entries > ACTIVITY_MAX_ENTRIES || bytes + size > ACTIVITY_MAX_BYTES)) {
+      break;
+    }
+    kept.unshift(line);
+    bytes += size;
+  }
+
+  store.splice(0, store.length, ACTIVITY_TRIMMED_MARKER, ...kept);
+}
+
+/** Records one activity line, or one streamed delta, inside the activity bound. */
+export function appendActivity(store: string[], text: string, append: boolean): void {
+  if (append && store.length > 0) {
+    store[store.length - 1] += text;
+  } else {
+    store.push(text);
+  }
+  trimActivity(store);
+}
+
+/** One ACP child recorded in the state so a replacement can prove and end it. */
+export interface RecordedChild {
+  pid: number;
+  argv: string[];
+  cwd: string;
+}
+
+/** True only when the pid still runs exactly the recorded command in the recorded cwd. */
+export function recordedChildAlive(child: RecordedChild): boolean {
+  try {
+    process.kill(child.pid, 0);
+  } catch {
+    return false;
+  }
+  let cmdline: string;
+  try {
+    cmdline = readFileSync(`/proc/${child.pid}/cmdline`, "utf8");
+  } catch {
+    // Without proof from the process table the child is left alone.
+    return false;
+  }
+  const argv = cmdline.split("\u0000").filter((entry) => entry.length > 0);
+  if (argv.length !== child.argv.length) return false;
+  for (const [index, entry] of child.argv.entries()) {
+    if (argv[index] !== entry) return false;
+  }
+  try {
+    return readlinkSync(`/proc/${child.pid}/cwd`) === child.cwd;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ends every recorded child whose process table entry proves it is the peer the
+ * killed process left behind, and waits until it is gone. A pid that cannot be
+ * proven is never signalled.
+ */
+export async function terminateRecordedChildren(
+  children: RecordedChild[],
+  timeoutMs = 5000,
+): Promise<RecordedChild[]> {
+  const proven = children.filter((child) => recordedChildAlive(child));
+  for (const child of proven) {
+    try {
+      process.kill(child.pid, "SIGKILL");
+    } catch {
+      // It exited between the check and the signal.
+    }
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && proven.some((child) => recordedChildAlive(child))) {
+    await Bun.sleep(20);
+  }
+  return proven;
+}

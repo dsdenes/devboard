@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -28,6 +27,17 @@ import {
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
+import {
+  appendActivity,
+  preserveStateFile,
+  readStateFile,
+  stateFile,
+  STATE_VERSION,
+  terminateRecordedChildren,
+  trimActivity,
+  writeStateFile,
+  type RecordedChild,
+} from "./state";
 import {
   findOpenEpics,
   normalizeEpics,
@@ -192,6 +202,91 @@ interface LifecycleState {
   pass: number;
   work: LifecycleWork | null;
   paused: boolean;
+}
+
+/**
+ * The dashboard state one server process leaves for its replacement. It holds
+ * only what drives the page: the lifecycle, its lanes and epic bookkeeping, the
+ * foreground runs with the bytes a skills rollback needs, and an accepted
+ * when-idle restart. A lane's retention deadline is absolute so a window that
+ * elapsed while the server was down is not replayed.
+ */
+interface StoredSnapshot {
+  exists: boolean;
+  files: [string, string][];
+}
+
+interface StoredQuestion {
+  id: number | string;
+  message: string;
+  options: AcpQuestionOption[];
+}
+
+interface StoredLane {
+  id: string;
+  kind: LaneKind;
+  epic: OpenEpic | null;
+  record: { file: string; title: string } | null;
+  attempt: number;
+  status: LaneStatus;
+  activity: string[];
+  question: StoredQuestion | null;
+  blocked: boolean;
+  failure: string | null;
+  /** Absolute time at which a closed or failed tab leaves the list. */
+  retainUntil: number | null;
+}
+
+interface StoredEpicState {
+  id: string;
+  epic: OpenEpic;
+  attempts: number;
+  status: EpicState["status"];
+  mainAtFailure: string | null;
+}
+
+interface StoredRun {
+  activity: string[];
+  question: StoredQuestion | null;
+}
+
+interface StoredManualRun extends StoredRun {
+  file: string;
+  title: string;
+  action: RunAction;
+}
+
+interface StoredRevision extends StoredRun {
+  /** The original guidance, so a resumed revision asks the same question. */
+  request: string | null;
+}
+
+interface StoredSkills extends StoredRun {
+  snapshot: StoredSnapshot | null;
+  unmanagedNames: string[] | null;
+}
+
+interface StoredState {
+  lifecycle: LifecycleState;
+  lastLifecycle: LifecycleState | null;
+  lifecycleRunning: boolean;
+  lifecyclePausedForManualRun: boolean;
+  laneSequence: number;
+  lanes: StoredLane[];
+  epicStates: StoredEpicState[];
+  parkedEpics: string[];
+  knownEpics: OpenEpic[];
+  generationQueued: boolean;
+  generationAttempted: boolean;
+  manualSequencing: boolean;
+  manualRun: StoredManualRun | null;
+  goalCreation: StoredRun | null;
+  goalRevision: StoredRevision | null;
+  skillsPreparation: StoredSkills | null;
+  skillsPreparationPending: StoredSkills | null;
+  resetActive: boolean;
+  restartWhenIdle: boolean;
+  children: RecordedChild[];
 }
 
 const EPIC_PROMPT = "/epic-next";
@@ -694,6 +789,296 @@ function resetKeepSet(repoDir: string, goalFile: string): Set<string> {
   return names;
 }
 
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function compact<T>(values: (T | undefined)[]): T[] {
+  return values.filter((value): value is T => value !== undefined);
+}
+
+function parseStoredLifecycle(value: unknown): LifecycleState | undefined {
+  const record = asObject(value);
+  if (record === undefined) return undefined;
+  const stage = record.stage;
+  if (
+    stage !== "goal" &&
+    stage !== "epic" &&
+    stage !== "adr" &&
+    stage !== "implementation" &&
+    stage !== "finished"
+  ) {
+    return undefined;
+  }
+  const pass = record.pass;
+  if (typeof pass !== "number" || !Number.isInteger(pass) || pass < 1) return undefined;
+
+  let work: LifecycleWork | null = null;
+  const storedWork = asObject(record.work);
+  if (storedWork !== undefined) {
+    const kind = storedWork.kind;
+    const id = storedWork.id;
+    if ((kind === "adr" || kind === "epic") && typeof id === "string") {
+      work = { kind, id, ...(typeof storedWork.url === "string" ? { url: storedWork.url } : {}) };
+    }
+  }
+
+  return { stage, pass, work, paused: record.paused === true };
+}
+
+function parseOpenEpic(value: unknown): OpenEpic | undefined {
+  const record = asObject(value);
+  if (record === undefined) return undefined;
+  const number = record.number;
+  const title = record.title;
+  const url = record.url;
+  if (typeof number !== "number" || !Number.isInteger(number)) return undefined;
+  if (typeof title !== "string" || typeof url !== "string") return undefined;
+  return { number, title, url };
+}
+
+function parseStoredQuestion(value: unknown): StoredQuestion | null {
+  const record = asObject(value);
+  if (record === undefined) return null;
+  const id = record.id;
+  const message = record.message;
+  if (typeof message !== "string") return null;
+  if (typeof id !== "string" && typeof id !== "number") return null;
+  const options = Array.isArray(record.options)
+    ? record.options.filter(
+        (option): option is AcpQuestionOption =>
+          typeof option === "object" && option !== null && "label" in option,
+      )
+    : [];
+  return { id, message, options };
+}
+
+function parseStoredActivity(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const lines = value.filter((line): line is string => typeof line === "string");
+  trimActivity(lines);
+  return lines;
+}
+
+function parseStoredSnapshot(value: unknown): StoredSnapshot | null {
+  const record = asObject(value);
+  if (record === undefined) return null;
+  const files: [string, string][] = [];
+  if (Array.isArray(record.files)) {
+    for (const entry of record.files) {
+      if (!Array.isArray(entry)) continue;
+      const [relative, content] = entry;
+      if (typeof relative !== "string" || typeof content !== "string") continue;
+      files.push([relative, content]);
+    }
+  }
+  return { exists: record.exists === true, files };
+}
+
+function parseStoredLane(value: unknown): StoredLane | undefined {
+  const record = asObject(value);
+  if (record === undefined) return undefined;
+  const id = record.id;
+  const kind = record.kind;
+  const status = record.status;
+  const attempt = record.attempt;
+  if (typeof id !== "string" || typeof attempt !== "number") return undefined;
+  if (kind !== "generation" && kind !== "implementation" && kind !== "adr") return undefined;
+  if (
+    status !== "running" &&
+    status !== "paused" &&
+    status !== "closed" &&
+    status !== "failed" &&
+    status !== "retrying" &&
+    status !== "parked"
+  ) {
+    return undefined;
+  }
+  const activity = parseStoredActivity(record.activity);
+  if (activity === undefined) return undefined;
+
+  let record_: { file: string; title: string } | null = null;
+  const storedRecord = asObject(record.record);
+  if (storedRecord !== undefined) {
+    const file = storedRecord.file;
+    const title = storedRecord.title;
+    if (typeof file === "string" && typeof title === "string") {
+      record_ = { file, title };
+    }
+  }
+
+  const retainUntil = record.retainUntil;
+  return {
+    id,
+    kind,
+    epic: parseOpenEpic(record.epic) ?? null,
+    record: record_,
+    attempt,
+    status,
+    activity,
+    question: parseStoredQuestion(record.question),
+    blocked: record.blocked === true,
+    failure: typeof record.failure === "string" ? record.failure : null,
+    retainUntil: typeof retainUntil === "number" && Number.isFinite(retainUntil) ? retainUntil : null,
+  };
+}
+
+function parseStoredEpicState(value: unknown): StoredEpicState | undefined {
+  const record = asObject(value);
+  if (record === undefined) return undefined;
+  const id = record.id;
+  const epic = parseOpenEpic(record.epic);
+  const attempts = record.attempts;
+  const status = record.status;
+  if (typeof id !== "string" || epic === undefined) return undefined;
+  if (typeof attempts !== "number" || !Number.isInteger(attempts) || attempts < 0) return undefined;
+  if (status !== "running" && status !== "retrying" && status !== "parked" && status !== "closed") {
+    return undefined;
+  }
+  return {
+    id,
+    epic,
+    attempts,
+    status,
+    mainAtFailure: typeof record.mainAtFailure === "string" ? record.mainAtFailure : null,
+  };
+}
+
+function parseStoredRun(value: unknown): StoredRun | undefined {
+  const record = asObject(value);
+  if (record === undefined) return undefined;
+  const activity = parseStoredActivity(record.activity);
+  if (activity === undefined) return undefined;
+  return { activity, question: parseStoredQuestion(record.question) };
+}
+
+function parseStoredManualRun(value: unknown): StoredManualRun | undefined {
+  const run = parseStoredRun(value);
+  const record = asObject(value);
+  if (run === undefined || record === undefined) return undefined;
+  const file = record.file;
+  const title = record.title;
+  const action = record.action;
+  if (typeof file !== "string" || typeof title !== "string") return undefined;
+  if (action !== "resolving" && action !== "implementing" && action !== "generating") {
+    return undefined;
+  }
+  return { ...run, file, title, action };
+}
+
+function parseStoredRevision(value: unknown): StoredRevision | undefined {
+  const run = parseStoredRun(value);
+  const record = asObject(value);
+  if (run === undefined || record === undefined) return undefined;
+  return {
+    ...run,
+    request: typeof record.request === "string" ? record.request : null,
+  };
+}
+
+function parseStoredSkills(value: unknown): StoredSkills | undefined {
+  const run = parseStoredRun(value);
+  const record = asObject(value);
+  if (run === undefined || record === undefined) return undefined;
+  const names = Array.isArray(record.unmanagedNames)
+    ? record.unmanagedNames.filter((name): name is string => typeof name === "string")
+    : null;
+  return {
+    ...run,
+    snapshot: parseStoredSnapshot(record.snapshot),
+    unmanagedNames: names,
+  };
+}
+
+/**
+ * Reads one stored state. Anything structurally unusable rejects the whole
+ * state, so the caller preserves the bytes and starts from the initial state
+ * instead of serving a half-restored page.
+ */
+function parseStoredState(value: unknown): StoredState | undefined {
+  const record = asObject(value);
+  if (record === undefined) return undefined;
+  const lifecycle = parseStoredLifecycle(record.lifecycle);
+  const lastLifecycle = parseStoredLifecycle(record.lastLifecycle);
+  if (lifecycle === undefined) return undefined;
+  if (!Array.isArray(record.lanes) || !Array.isArray(record.epicStates)) return undefined;
+
+  const epicStates = compact(record.epicStates.map(parseStoredEpicState));
+  const lanes = compact(record.lanes.map(parseStoredLane));
+  const parkedEpics = Array.isArray(record.parkedEpics)
+    ? record.parkedEpics.filter((id): id is string => typeof id === "string")
+    : [];
+  const knownEpics = Array.isArray(record.knownEpics)
+    ? compact(record.knownEpics.map(parseOpenEpic))
+    : [];
+  const children = Array.isArray(record.children)
+    ? compact(
+        record.children.map((child): RecordedChild | undefined => {
+          const stored = asObject(child);
+          if (stored === undefined) return undefined;
+          const pid = stored.pid;
+          const cwd = stored.cwd;
+          const argv = stored.argv;
+          if (typeof pid !== "number" || !Number.isInteger(pid)) return undefined;
+          if (typeof cwd !== "string" || !Array.isArray(argv)) return undefined;
+          const parts = argv.filter((part): part is string => typeof part === "string");
+          if (parts.length === 0) return undefined;
+          return { pid, argv: parts, cwd };
+        }),
+      )
+    : [];
+
+  const laneSequence =
+    typeof record.laneSequence === "number" && Number.isInteger(record.laneSequence)
+      ? record.laneSequence
+      : 0;
+
+  return {
+    lifecycle,
+    lastLifecycle: lastLifecycle ?? null,
+    lifecycleRunning: record.lifecycleRunning === true,
+    lifecyclePausedForManualRun: record.lifecyclePausedForManualRun === true,
+    laneSequence,
+    lanes,
+    epicStates,
+    parkedEpics,
+    knownEpics,
+    generationQueued: record.generationQueued === true,
+    generationAttempted: record.generationAttempted === true,
+    manualSequencing: record.manualSequencing === true,
+    manualRun: parseStoredManualRun(record.manualRun) ?? null,
+    goalCreation: parseStoredRun(record.goalCreation) ?? null,
+    goalRevision: parseStoredRevision(record.goalRevision) ?? null,
+    skillsPreparation: parseStoredSkills(record.skillsPreparation) ?? null,
+    skillsPreparationPending: parseStoredSkills(record.skillsPreparationPending) ?? null,
+    resetActive: record.resetActive === true,
+    restartWhenIdle: record.restartWhenIdle === true,
+    children,
+  };
+}
+
+function captureSnapshot(snapshot: SkillsSnapshot): StoredSnapshot {
+  return {
+    exists: snapshot.exists,
+    files: [...snapshot.files].map(([relative, bytes]) => [relative, bytes.toString("base64")]),
+  };
+}
+
+function restoreSnapshot(stored: StoredSnapshot): SkillsSnapshot {
+  return {
+    exists: stored.exists,
+    files: new Map(stored.files.map(([relative, content]) => [relative, Buffer.from(content, "base64")])),
+  };
+}
+
+function captureQuestion(question: RunQuestion | null): StoredQuestion | null {
+  return question === null
+    ? null
+    : { id: question.id, message: question.message, options: question.options };
+}
+
 /**
  * Names the project in the page heading. A project inside the user's home
  * directory is shown by its path relative to it, so the heading identifies
@@ -731,41 +1116,17 @@ export function createApp(options: AppOptions) {
   const feedbackCommand = options.feedback?.ghCommand ?? ["gh"];
   const feedbackTimeoutMs = Math.max(1, options.feedback?.timeoutMs ?? FEEDBACK_TIMEOUT_MS);
   const feedbackEnv = options.feedback?.env;
-  // The pass belongs to this checkout, not to the harness installation: hosts
+  // The state belongs to this checkout, not to the harness installation: hosts
   // share one harness through a symlink, so the repository path keys the file.
   const stateDir = resolve(options.stateDir ?? join(import.meta.dir, "..", ".tmp"));
   // The journal records what happened for the watchdog. It is never part of a
   // run's behavior: a failed write only adds a line to stderr.
   const journal =
     options.journal ?? openJournal({ stateDir, repoDir, port: options.port });
-  const passStateFile = join(
-    stateDir,
-    `lifecycle-pass-${createHash("sha256").update(repoDir).digest("hex").slice(0, 24)}`,
-  );
+  const statePath = stateFile(stateDir, resolve(repoDir));
+  const loadedState = readStateFile(statePath);
   const runningRevision = gitRevision(runningHarnessDir());
   const readVersion = options.versionState ?? (() => serverVersion(repoDir, runningRevision));
-
-  function readPersistedPass(): number {
-    try {
-      const pass = Number.parseInt(readFileSync(passStateFile, "utf8").trim(), 10);
-      return Number.isInteger(pass) && pass > 0 ? pass : 1;
-    } catch {
-      return 1;
-    }
-  }
-
-  let persistedPass = readPersistedPass();
-  function persistPass() {
-    if (lifecycle.pass === persistedPass) return;
-    persistedPass = lifecycle.pass;
-    try {
-      mkdirSync(stateDir, { recursive: true });
-      writeFileSync(passStateFile, `${lifecycle.pass}\n`);
-    } catch {
-      // A read-only state directory must not stop the lifecycle; the next
-      // process then starts from the last pass it could record.
-    }
-  }
 
   const clients = new Set<ServerWebSocket<unknown>>();
   let sequencing = false;
@@ -789,7 +1150,7 @@ export function createApp(options: AppOptions) {
   let skillsPreparationSettled: Promise<void> | undefined;
   let lifecycle: LifecycleState = {
     stage: "goal",
-    pass: persistedPass,
+    pass: 1,
     work: null,
     paused: false,
   };
@@ -813,7 +1174,7 @@ export function createApp(options: AppOptions) {
   // a lane that finished keeps it for `laneRetentionMs` so the outcome stays
   // readable, then leaves the active list.
   let lanes: Lane[] = [];
-  const laneRetentionTimers = new Map<Lane, Timer>();
+  const laneRetentionTimers = new Map<Lane, { timer: Timer; until: number }>();
   const liveLanes = new Set<Lane>();
   const epicStates = new Map<string, EpicState>();
   const parkedEpics = new Set<string>();
@@ -827,6 +1188,31 @@ export function createApp(options: AppOptions) {
   let mainTimer: Timer | undefined;
   let mainPolling = false;
 
+  /** Events a restored process owes the first client before its own replies. */
+  const startupNotices: unknown[] = [];
+  /** A paused lifecycle that must spawn no peer until `resumeLifecycle`. */
+  let restoredPausedLifecycle = false;
+  /** The guidance of a restored goal revision, replayed in its new prompt. */
+  let goalRevisionRequest: string | undefined;
+  /** The pre-run skills bytes a restored pending preparation still owes. */
+  let restoredPendingSkills:
+    | { snapshot: SkillsSnapshot | null; unmanagedNames: Set<string> }
+    | undefined;
+  /** The snapshot a pending preparation took before it replaced the skills. */
+  let pendingSkills: { snapshot: SkillsSnapshot; unmanagedNames: Set<string> } | undefined;
+  let lastSavedState: string | undefined;
+  let persistFailureReported = false;
+  /** A target for work the restore starts before any client is attached. */
+  const restoreTarget = {
+    send(data: string) {
+      try {
+        broadcast(JSON.parse(data) as unknown);
+      } catch {
+        // A malformed event is not worth failing the restore over.
+      }
+    },
+  };
+
   function send(ws: { send(data: string): unknown }, event: unknown) {
     try {
       ws.send(JSON.stringify(event));
@@ -835,7 +1221,13 @@ export function createApp(options: AppOptions) {
     }
   }
 
+  /**
+   * Every event a client can observe leaves after the state that produced it
+   * is on disk. A SIGKILL after delivery therefore loses nothing the client
+   * already saw, and a replacement replays at least that state.
+   */
   function broadcast(event: unknown) {
+    persistState();
     const payload = JSON.stringify(event);
     for (const client of clients) {
       try {
@@ -843,6 +1235,291 @@ export function createApp(options: AppOptions) {
       } catch {
         // A closing client must not interrupt delivery to the others.
       }
+    }
+  }
+
+  /** The pids and commands a replacement needs to end this process's peers. */
+  function captureChildren(): RecordedChild[] {
+    const children: RecordedChild[] = [];
+    const remember = (agent: AcpConnection | undefined) => {
+      const pid = agent?.pid;
+      if (agent === undefined || pid === undefined) return;
+      children.push({ pid, argv: agent.argv, cwd: repoDir });
+    };
+    remember(manualRun?.agent);
+    remember(goalCreation?.agent);
+    remember(goalRevision?.agent);
+    remember(skillsPreparation?.agent);
+    for (const lane of liveLanes) remember(lane.agent);
+    return children;
+  }
+
+  function captureState(): StoredState {
+    return {
+      lifecycle,
+      lastLifecycle: lastLifecycle ?? null,
+      lifecycleRunning,
+      lifecyclePausedForManualRun,
+      laneSequence,
+      lanes: lanes.map((lane) => ({
+        id: lane.id,
+        kind: lane.kind,
+        epic: lane.epic,
+        record: lane.record,
+        attempt: lane.attempt,
+        status: lane.status,
+        activity: [...lane.activity],
+        question: captureQuestion(lane.question),
+        blocked: lane.blocked,
+        failure: lane.failure,
+        retainUntil: laneRetentionTimers.get(lane)?.until ?? null,
+      })),
+      epicStates: [...epicStates].map(([id, state]) => ({
+        id,
+        epic: state.epic,
+        attempts: state.attempts,
+        status: state.status,
+        mainAtFailure: state.mainAtFailure ?? null,
+      })),
+      parkedEpics: [...parkedEpics],
+      knownEpics: [...knownEpics.values()],
+      generationQueued,
+      generationAttempted,
+      manualSequencing,
+      manualRun:
+        manualRun === undefined
+          ? null
+          : {
+              file: manualRun.file,
+              title: manualRun.title,
+              action: manualRun.action,
+              activity: [...manualRun.activity],
+              question: captureQuestion(manualRun.question),
+            },
+      goalCreation:
+        goalCreation === undefined
+          ? null
+          : {
+              activity: [...goalCreation.activity],
+              question: captureQuestion(goalCreation.question),
+            },
+      goalRevision:
+        goalRevision === undefined
+          ? null
+          : {
+              activity: [...goalRevision.activity],
+              question: captureQuestion(goalRevision.question),
+              request: goalRevisionRequest ?? null,
+            },
+      skillsPreparation:
+        skillsPreparation === undefined
+          ? null
+          : {
+              activity: [...skillsPreparation.activity],
+              question: captureQuestion(skillsPreparation.question),
+              snapshot: captureSnapshot(skillsPreparation.snapshot),
+              unmanagedNames: [...skillsPreparation.unmanagedNames],
+            },
+      skillsPreparationPending:
+        skillsPreparationPending && pendingSkills !== undefined
+          ? {
+              activity: [],
+              question: null,
+              snapshot: captureSnapshot(pendingSkills.snapshot),
+              unmanagedNames: [...pendingSkills.unmanagedNames],
+            }
+          : null,
+      resetActive: implementationReset !== undefined,
+      restartWhenIdle,
+      children: captureChildren(),
+    };
+  }
+
+  function reportPersistFailure(error: unknown): void {
+    if (persistFailureReported) return;
+    persistFailureReported = true;
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = `state: could not write ${statePath}: ${detail}`;
+    journal.write("server-error", message);
+    process.stderr.write(`${message}\n`);
+  }
+
+  function persistState(): void {
+    let text: string;
+    try {
+      text = JSON.stringify({ version: STATE_VERSION, state: captureState() });
+    } catch (error) {
+      reportPersistFailure(error);
+      return;
+    }
+    if (text === lastSavedState) return;
+    try {
+      writeStateFile(statePath, text);
+      lastSavedState = text;
+    } catch (error) {
+      reportPersistFailure(error);
+    }
+  }
+
+  /** Applies a stored state to memory. A peer always spawns after this. */
+  function applyRestoredState(stored: StoredState): void {
+    lifecycle = stored.lifecycle;
+    lastLifecycle = stored.lastLifecycle ?? undefined;
+    generationQueued = stored.generationQueued;
+    generationAttempted = stored.generationAttempted;
+    manualSequencing = stored.manualSequencing;
+    lifecyclePausedForManualRun = stored.lifecyclePausedForManualRun;
+    restartWhenIdle = stored.restartWhenIdle;
+    parkedEpics.clear();
+    for (const id of stored.parkedEpics) parkedEpics.add(id);
+    knownEpics = new Map(stored.knownEpics.map((epic) => [String(epic.number), epic]));
+
+    let sequence = stored.laneSequence;
+    for (const entry of stored.lanes) {
+      const match = /^lane-(\d+)$/.exec(entry.id);
+      if (match !== null) sequence = Math.max(sequence, Number(match[1]));
+    }
+    laneSequence = sequence;
+
+    const now = Date.now();
+    lanes = [];
+    for (const entry of stored.lanes) {
+      // A closed or failed tab whose window elapsed while the server was down
+      // is not replayed.
+      const retained = entry.status === "closed" || entry.status === "failed";
+      if (retained && (entry.retainUntil === null || entry.retainUntil <= now)) continue;
+      const lane: Lane = {
+        id: entry.id,
+        kind: entry.kind,
+        epic: entry.epic,
+        record: entry.record,
+        attempt: entry.attempt,
+        status: entry.status,
+        agent: undefined,
+        activity: entry.activity,
+        question: entry.question,
+        blocked: entry.blocked,
+        failure: entry.failure,
+      };
+      lanes.push(lane);
+      if (lane.status === "running" || lane.status === "paused") liveLanes.add(lane);
+      if (retained && entry.retainUntil !== null) scheduleLaneRemoval(lane, entry.retainUntil);
+    }
+
+    for (const entry of stored.epicStates) {
+      epicStates.set(entry.id, {
+        epic: entry.epic,
+        attempts: entry.attempts,
+        status: entry.status,
+        timer: undefined,
+        mainAtFailure: entry.mainAtFailure ?? undefined,
+      });
+    }
+
+    if (stored.manualRun !== null) {
+      manualRun = {
+        file: stored.manualRun.file,
+        title: stored.manualRun.title,
+        action: stored.manualRun.action,
+        agent: undefined,
+        activity: stored.manualRun.activity,
+        question: stored.manualRun.question,
+      };
+    }
+    if (stored.goalCreation !== null) {
+      goalCreation = {
+        agent: undefined,
+        activity: stored.goalCreation.activity,
+        question: stored.goalCreation.question,
+      };
+    }
+    if (stored.goalRevision !== null) {
+      goalRevision = {
+        agent: undefined,
+        activity: stored.goalRevision.activity,
+        question: stored.goalRevision.question,
+      };
+      goalRevisionRequest = stored.goalRevision.request ?? undefined;
+    }
+    if (stored.skillsPreparation !== null) {
+      skillsPreparation = {
+        agent: undefined,
+        activity: stored.skillsPreparation.activity,
+        question: stored.skillsPreparation.question,
+        snapshot: stored.skillsPreparation.snapshot
+          ? restoreSnapshot(stored.skillsPreparation.snapshot)
+          : { exists: false, files: new Map() },
+        unmanagedNames: new Set(stored.skillsPreparation.unmanagedNames ?? []),
+      };
+    }
+    if (stored.skillsPreparationPending !== null) {
+      skillsPreparationPending = true;
+      restoredPendingSkills = {
+        snapshot: stored.skillsPreparationPending.snapshot
+          ? restoreSnapshot(stored.skillsPreparationPending.snapshot)
+          : null,
+        unmanagedNames: new Set(stored.skillsPreparationPending.unmanagedNames ?? []),
+      };
+    }
+
+    if (stored.resetActive) {
+      // A reset owns the checkout until it reports. Re-running it would repeat
+      // deletions and git operations; it is surfaced as failed instead.
+      lanes = [];
+      liveLanes.clear();
+      epicStates.clear();
+      parkedEpics.clear();
+      knownEpics.clear();
+      manualRun = undefined;
+      manualSequencing = false;
+      goalCreation = undefined;
+      goalRevision = undefined;
+      goalRevisionRequest = undefined;
+      skillsPreparation = undefined;
+      skillsPreparationPending = false;
+      pendingSkills = undefined;
+      restoredPendingSkills = undefined;
+      lifecycle = { stage: "goal", pass: stored.lifecycle.pass, work: null, paused: false };
+      lastLifecycle = lifecycle;
+      startupNotices.push({
+        type: "error",
+        message:
+          "The implementation reset was interrupted when the server stopped, so it was not resumed.",
+      });
+      startupNotices.push({ type: "implementationResetStopped", completed: false });
+      return;
+    }
+
+    if (stored.lifecycleRunning) {
+      lifecycleRunning = true;
+      restoredPausedLifecycle = stored.lifecycle.paused;
+      for (const [id, state] of epicStates) {
+        if (state.status === "retrying") scheduleRetry(id);
+      }
+    }
+  }
+
+  if (loadedState.kind === "damaged") {
+    const message = `The saved dashboard state could not be restored: ${loadedState.reason}. Starting from an empty dashboard.`;
+    process.stderr.write(`${message}\n`);
+    startupNotices.push({ type: "error", message });
+  } else if (loadedState.kind === "loaded") {
+    const stored = parseStoredState(loadedState.value);
+    if (stored === undefined) {
+      preserveStateFile(statePath);
+      const message =
+        "The saved dashboard state could not be restored: its contents are not a dashboard state. Starting from an empty dashboard.";
+      process.stderr.write(`${message}\n`);
+      startupNotices.push({ type: "error", message });
+    } else {
+      applyRestoredState(stored);
+      // Ends the killed process's peers and continues its work once the
+      // listener is bound; a restore failure is reported, never thrown.
+      void resumeRestoredWork(stored.children).catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        journal.write("server-error", `state: could not resume: ${detail}`);
+        process.stderr.write(`state: could not resume: ${detail}\n`);
+      });
     }
   }
 
@@ -938,13 +1615,13 @@ export function createApp(options: AppOptions) {
    */
   function recordActivity(store: string[], activity: AcpActivity) {
     journal.write("activity", activity.text);
-    if (activity.append && store.length > 0) {
-      store[store.length - 1] += activity.text;
-      broadcast({ type: "activity", text: activity.text, append: true });
-      return;
-    }
-    store.push(activity.text);
-    broadcast({ type: "activity", text: activity.text });
+    const append = activity.append && store.length > 0;
+    appendActivity(store, activity.text, append);
+    broadcast(
+      append
+        ? { type: "activity", text: activity.text, append: true }
+        : { type: "activity", text: activity.text },
+    );
   }
 
   /**
@@ -955,13 +1632,13 @@ export function createApp(options: AppOptions) {
   function recordLaneActivity(lane: Lane, activity: AcpActivity) {
     if (!liveLanes.has(lane)) return;
     journal.write("activity", activity.text);
-    if (activity.append && lane.activity.length > 0) {
-      lane.activity[lane.activity.length - 1] += activity.text;
-      broadcast({ type: "activity", lane: lane.id, text: activity.text, append: true });
-    } else {
-      lane.activity.push(activity.text);
-      broadcast({ type: "activity", lane: lane.id, text: activity.text });
-    }
+    const append = activity.append && lane.activity.length > 0;
+    appendActivity(lane.activity, activity.text, append);
+    broadcast(
+      append
+        ? { type: "activity", lane: lane.id, text: activity.text, append: true }
+        : { type: "activity", lane: lane.id, text: activity.text },
+    );
     if (lane.activity.some((line) => line.startsWith(BLOCKER_MARKER))) lane.blocked = true;
   }
 
@@ -1234,7 +1911,10 @@ export function createApp(options: AppOptions) {
     });
   }
 
-  async function startSkillsPreparation(ws: { send(data: string): unknown }) {
+  async function startSkillsPreparation(
+    ws: { send(data: string): unknown },
+    restored?: { snapshot: SkillsSnapshot; unmanagedNames: Set<string> },
+  ) {
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is already active." });
       return;
@@ -1305,12 +1985,21 @@ export function createApp(options: AppOptions) {
       let managedNames: Set<string>;
       let unmanagedNames: Set<string>;
       try {
-        snapshot = await snapshotDirectory(skillsDir);
+        if (restored === undefined) {
+          snapshot = await snapshotDirectory(skillsDir);
+          unmanagedNames = new Set((await inspectSkills(skillsDir)).unmanaged.keys());
+        } else {
+          // The interrupted run may have deleted managed skills already; its
+          // exact pre-run bytes go back before the run replaces them again.
+          snapshot = restored.snapshot;
+          unmanagedNames = restored.unmanagedNames;
+          await restoreDirectory(skillsDir, snapshot);
+        }
         managedNames = await managedSkillNames(skillsDir, snapshot);
-        unmanagedNames = new Set((await inspectSkills(skillsDir)).unmanaged.keys());
       } catch (error) {
         if (cancelled()) return;
         skillsPreparationPending = false;
+        pendingSkills = undefined;
         send(ws, {
           type: "error",
           message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
@@ -1318,6 +2007,10 @@ export function createApp(options: AppOptions) {
         return;
       }
       if (cancelled()) return;
+      // Record the rollback bytes before anything is deleted, so a kill during
+      // the replacement still restores the pre-run skills on the next start.
+      pendingSkills = { snapshot, unmanagedNames };
+      persistState();
 
       try {
         // The feature owns every managed skill: a run replaces the whole set
@@ -1335,6 +2028,7 @@ export function createApp(options: AppOptions) {
           return;
         }
         skillsPreparationPending = false;
+        pendingSkills = undefined;
         await restoreDirectory(skillsDir, snapshot);
         send(ws, {
           type: "error",
@@ -1356,52 +2050,58 @@ export function createApp(options: AppOptions) {
         unmanagedNames,
       };
       skillsPreparation = preparation;
+      pendingSkills = undefined;
       broadcast({ type: "skillsPreparationStarted" });
 
-      try {
-        const agent = new AcpConnection({
-          command: agentCommand,
-          cwd: repoDir,
-          onActivity(activity) {
-            if (skillsPreparation !== preparation) return;
-            recordActivity(preparation.activity, activity);
-          },
-          onQuestion(question: AcpQuestion) {
-            journal.write("question", question.message);
-            if (skillsPreparation !== preparation) return;
-            preparation.question = {
-              id: question.id,
-              message: question.message,
-              options: question.options,
-            };
-            broadcast({
-              type: "question",
-              id: question.id,
-              message: question.message,
-              options: question.options,
-            });
-          },
-          onStderr(text) {
-            journal.write("acp-stderr", text);
-            process.stderr.write(text);
-          },
-        });
-        preparation.agent = agent;
-
-        await agent.run(SKILLS_PROMPT);
-        if (skillsPreparation !== preparation) return;
-        await finishSkillsPreparation(preparation);
-      } catch (error) {
-        if (skillsPreparation !== preparation) return;
-        broadcast({
-          type: "error",
-          message: error instanceof Error ? error.message : String(error),
-        });
-        await stopSkillsPreparation(preparation, false);
-      }
+      await spawnSkillsPreparation(preparation);
     } finally {
       settled.resolve();
       if (skillsPreparationSettled === settled.promise) skillsPreparationSettled = undefined;
+    }
+  }
+
+  /** Runs a preparation peer to its outcome; also resumes a restored one. */
+  async function spawnSkillsPreparation(preparation: SkillsPreparation) {
+    try {
+      const agent = new AcpConnection({
+        command: agentCommand,
+        cwd: repoDir,
+        onActivity(activity) {
+          if (skillsPreparation !== preparation) return;
+          recordActivity(preparation.activity, activity);
+        },
+        onQuestion(question: AcpQuestion) {
+          journal.write("question", question.message);
+          if (skillsPreparation !== preparation) return;
+          preparation.question = {
+            id: question.id,
+            message: question.message,
+            options: question.options,
+          };
+          broadcast({
+            type: "question",
+            id: question.id,
+            message: question.message,
+            options: question.options,
+          });
+        },
+        onStderr(text) {
+          journal.write("acp-stderr", text);
+          process.stderr.write(text);
+        },
+      });
+      preparation.agent = agent;
+
+      await agent.run(SKILLS_PROMPT);
+      if (skillsPreparation !== preparation) return;
+      await finishSkillsPreparation(preparation);
+    } catch (error) {
+      if (skillsPreparation !== preparation) return;
+      broadcast({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      await stopSkillsPreparation(preparation, false);
     }
   }
 
@@ -1503,6 +2203,11 @@ export function createApp(options: AppOptions) {
     goalCreation = creation;
     broadcast({ type: "goalCreationStarted" });
 
+    await spawnGoalCreation(creation);
+  }
+
+  /** Runs a creation peer to its outcome; also resumes a restored one. */
+  async function spawnGoalCreation(creation: GoalCreation) {
     try {
       const agent = new AcpConnection({
         command: agentCommand,
@@ -1584,10 +2289,16 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    goalRevisionRequest = typeof request === "string" ? request : undefined;
     const revision: GoalRevision = { agent: undefined, activity: [], question: null };
     goalRevision = revision;
     broadcast({ type: "goalRevisionStarted" });
 
+    await spawnGoalRevision(revision);
+  }
+
+  /** Runs a revision peer to its outcome; also resumes a restored one. */
+  async function spawnGoalRevision(revision: GoalRevision) {
     try {
       const agent = new AcpConnection({
         command: agentCommand,
@@ -1618,9 +2329,7 @@ export function createApp(options: AppOptions) {
       });
       revision.agent = agent;
 
-      await agent.run(
-        goalRevisionPrompt(goalFile, typeof request === "string" ? request : undefined),
-      );
+      await agent.run(goalRevisionPrompt(goalFile, goalRevisionRequest));
       if (goalRevision !== revision) return;
       await stopGoalRevision(revision, true);
     } catch (error) {
@@ -1781,10 +2490,39 @@ export function createApp(options: AppOptions) {
       lifecyclePausedForManualRun = true;
     }
 
+    await runManualSequence(ws, selected, undefined);
+  }
+
+  /**
+   * Resolves pending records one at a time. A restored run continues from its
+   * own record, and a record that was resolved before the interruption is
+   * skipped so the sequence advances to the next pending one.
+   */
+  async function runManualSequence(
+    target: { send(data: string): unknown },
+    initial: string | undefined,
+    resume: ActiveRun | undefined,
+    quietEmpty = false,
+  ) {
+    let selected = initial;
+    let first = resume === undefined;
     manualSequencing = true;
-    let first = true;
 
     try {
+      if (resume !== undefined) {
+        manualRun = resume;
+        journal.write("run-start", `${resume.file}: ${resume.title}`);
+        broadcast({
+          type: "runStarted",
+          file: resume.file,
+          title: resume.title,
+          action: resume.action,
+          manual: true,
+        });
+        const resolved = await runAgent(resume);
+        if (!resolved) return;
+      }
+
       while (manualSequencing) {
         const list = await readRecords(adrDir);
         let record: AdrRecord | undefined;
@@ -1795,13 +2533,15 @@ export function createApp(options: AppOptions) {
           );
           selected = undefined;
           if (record === undefined) {
-            send(ws, { type: "error", message: "That ADR is not pending." });
+            send(target, { type: "error", message: "That ADR is not pending." });
             return;
           }
         } else {
           record = list.records.find((candidate) => candidate.file === list.next);
           if (record === undefined) {
-            if (first) send(ws, { type: "error", message: "No pending ADRs to start." });
+            if (first && !quietEmpty) {
+              send(target, { type: "error", message: "No pending ADRs to start." });
+            }
             return;
           }
         }
@@ -1819,7 +2559,7 @@ export function createApp(options: AppOptions) {
           lifecycle.work?.kind === "adr" &&
           lifecycle.work.id === record.file
         ) {
-          send(ws, { type: "error", message: "The lifecycle is already resolving that ADR." });
+          send(target, { type: "error", message: "The lifecycle is already resolving that ADR." });
           return;
         }
 
@@ -1845,7 +2585,7 @@ export function createApp(options: AppOptions) {
         if (!resolved) return;
       }
     } catch (error) {
-      send(ws, {
+      send(target, {
         type: "error",
         message: error instanceof Error ? error.message : String(error),
       });
@@ -1860,14 +2600,13 @@ export function createApp(options: AppOptions) {
         // the suspension this manual sequence needed ends with the sequence
         // instead of waiting for a resume the interface no longer offers.
         lifecyclePausedForManualRun = false;
-        if (lifecycleRunning && lifecycle.paused) resumeLifecycle(ws);
+        if (lifecycleRunning && lifecycle.paused) resumeLifecycle(target);
       }
     }
   }
 
-  /** Broadcasts the current state, retains it for later clients, and records the pass. */
+  /** Broadcasts the current state and retains it for later clients. */
   function publishLifecycle(force = false) {
-    persistPass();
     if (
       !force &&
       lastLifecycle !== undefined &&
@@ -1954,7 +2693,7 @@ export function createApp(options: AppOptions) {
   }
 
   /** Drops a finished lane once its retention window elapses. */
-  function scheduleLaneRemoval(lane: Lane) {
+  function scheduleLaneRemoval(lane: Lane, until = Date.now() + laneRetentionMs) {
     if (lane.status !== "closed" && lane.status !== "failed") return;
     if (laneRetentionTimers.has(lane)) return;
     const timer = setTimeout(() => {
@@ -1963,12 +2702,12 @@ export function createApp(options: AppOptions) {
       if (index < 0) return;
       lanes.splice(index, 1);
       publishLanes();
-    }, laneRetentionMs);
-    laneRetentionTimers.set(lane, timer);
+    }, Math.max(0, until - Date.now()));
+    laneRetentionTimers.set(lane, { timer, until });
   }
 
   function clearLaneRetention() {
-    for (const timer of laneRetentionTimers.values()) clearTimeout(timer);
+    for (const { timer } of laneRetentionTimers.values()) clearTimeout(timer);
     laneRetentionTimers.clear();
   }
 
@@ -2174,82 +2913,85 @@ export function createApp(options: AppOptions) {
     publishLanes();
     publishStage();
 
-    void (async () => {
-      await runLanePeer(lane, `${IMPLEMENT_PROMPT} ${id}`);
+    void continueImplementationLane(lane, id);
+  }
+
+  /** Runs an implementation lane to its outcome; also resumes a restored one. */
+  async function continueImplementationLane(lane: Lane, id: string) {
+    await runLanePeer(lane, `${IMPLEMENT_PROMPT} ${id}`);
+    if (!lifecycleRunning) return;
+
+    let list: OpenEpic[];
+    try {
+      list = await settleEpicList((candidate) =>
+        candidate.some((entry) => String(entry.number) === id),
+      );
+      await holdWhilePaused();
       if (!lifecycleRunning) return;
-
-      let list: OpenEpic[];
-      try {
-        list = await settleEpicList((candidate) =>
-          candidate.some((entry) => String(entry.number) === id),
-        );
-        await holdWhilePaused();
-        if (!lifecycleRunning) return;
-        applyEpicList(list);
-      } catch (error) {
-        if (!lifecycleRunning) return;
-        broadcast({
-          type: "error",
-          lane: lane.id,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        list = [...knownEpics.values()];
-      }
-
+      applyEpicList(list);
+    } catch (error) {
       if (!lifecycleRunning) return;
-      const stillOpen = knownEpics.has(id);
-      const current = epicStates.get(id);
+      broadcast({
+        type: "error",
+        lane: lane.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      list = [...knownEpics.values()];
+    }
 
-      if (!stillOpen) {
-        lane.status = "closed";
-        if (current !== undefined) {
-          clearRetry(current);
-        }
-        epicStates.delete(id);
-        parkedEpics.delete(id);
-        broadcastLaneStopped(lane, true, "closed");
-        const others = [...liveLanes].some((entry) => entry.kind === "implementation");
-        if (others) {
-          publishStage();
-        } else {
-          lifecycle = {
-            stage: "epic",
-            pass: lifecycle.pass + 1,
-            work: null,
-            paused: lifecycle.paused,
-          };
-          publishLifecycle();
-        }
-        publishLanes();
-        requestGeneration();
-        return;
-      }
+    if (!lifecycleRunning) return;
+    const stillOpen = knownEpics.has(id);
+    const current = epicStates.get(id);
 
-      if (current !== undefined) current.epic = knownEpics.get(id) ?? current.epic;
-      const stoppedMain = await readMainRevision();
-      if (current !== undefined && stoppedMain !== undefined) {
-        current.mainAtFailure = stoppedMain;
+    if (!stillOpen) {
+      lane.status = "closed";
+      if (current !== undefined) {
+        clearRetry(current);
       }
-      if (lane.blocked) {
-        lane.status = "parked";
-        if (current !== undefined) current.status = "parked";
-        parkedEpics.add(id);
-        broadcastLaneStopped(lane, false, "parked");
+      epicStates.delete(id);
+      parkedEpics.delete(id);
+      broadcastLaneStopped(lane, true, "closed");
+      const others = [...liveLanes].some((entry) => entry.kind === "implementation");
+      if (others) {
+        publishStage();
       } else {
-        lane.status = "retrying";
-        if (current !== undefined) current.status = "retrying";
-        broadcast({
-          type: "error",
-          lane: lane.id,
-          message: `Implementation ended but epic #${id} is still open.`,
-        });
-        broadcastLaneStopped(lane, false, "retrying");
-        scheduleRetry(id);
+        lifecycle = {
+          stage: "epic",
+          pass: lifecycle.pass + 1,
+          work: null,
+          paused: lifecycle.paused,
+        };
+        publishLifecycle();
       }
       publishLanes();
-      publishStage();
-      wakeLifecycle();
-    })();
+      requestGeneration();
+      return;
+    }
+
+    if (current !== undefined) current.epic = knownEpics.get(id) ?? current.epic;
+    const stoppedMain = await readMainRevision();
+    if (current !== undefined && stoppedMain !== undefined) {
+      current.mainAtFailure = stoppedMain;
+    }
+    if (lane.blocked) {
+      lane.status = "parked";
+      if (current !== undefined) current.status = "parked";
+      parkedEpics.add(id);
+      broadcastLaneStopped(lane, false, "parked");
+    } else {
+      lane.status = "retrying";
+      if (current !== undefined) current.status = "retrying";
+      broadcast({
+        type: "error",
+        lane: lane.id,
+        message: `Implementation ended but epic #${id} is still open.`,
+      });
+      broadcastLaneStopped(lane, false, "retrying");
+      scheduleRetry(id);
+    }
+    publishLanes();
+    publishStage();
+    wakeLifecycle();
   }
 
   function scheduleRetry(id: string) {
@@ -2310,6 +3052,11 @@ export function createApp(options: AppOptions) {
     publishLanes();
     publishStage();
 
+    await continueGenerationLane(lane, before);
+  }
+
+  /** Finishes a generation lane; also resumes a restored one. */
+  async function continueGenerationLane(lane: Lane, before = new Set(knownEpics.keys())) {
     await runLanePeer(lane, EPIC_PROMPT);
     lane.status = lane.failure === null ? "closed" : "failed";
     broadcastLaneStopped(lane, lane.status === "closed", lane.status);
@@ -2351,14 +3098,16 @@ export function createApp(options: AppOptions) {
     setLifecycle("adr", { kind: "adr", id: record.file });
     publishLanes();
 
-    await runLanePeer(lane, agentPrompt(adrDir, record.file));
+    await continueAdrLane(lane);
+  }
+
+  /** Finishes an ADR lane; also resumes a restored one. */
+  async function continueAdrLane(lane: Lane) {
+    const file = lane.record?.file ?? "";
+    await runLanePeer(lane, agentPrompt(adrDir, file));
     lane.status = lane.failure === null ? "closed" : "failed";
-    const current = await readRecord(record.file);
-    broadcastLaneStopped(
-      lane,
-      current !== undefined && !current.pending,
-      current?.status ?? "",
-    );
+    const current = await readRecord(file);
+    broadcastLaneStopped(lane, current !== undefined && !current.pending, current?.status ?? "");
     publishLanes();
 
     try {
@@ -2556,6 +3305,13 @@ export function createApp(options: AppOptions) {
     publishLanes();
     for (const resolve of resumeWaiters.splice(0)) resolve();
     wakeLifecycle();
+
+    if (restoredPausedLifecycle) {
+      // A restored paused run has no peer and no loop yet; the resume starts
+      // both from the restored lanes.
+      restoredPausedLifecycle = false;
+      void continueRestoredLifecycle();
+    }
   }
 
   /**
@@ -2769,25 +3525,167 @@ export function createApp(options: AppOptions) {
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      const wasPaused = lifecycle.paused;
-      lifecycleRunning = false;
-      lifecyclePausedForManualRun = false;
-      if (stopAllLanes()) publishLanes();
-      lifecycle = { ...lifecycle, paused: false };
-      for (const resolve of resumeWaiters.splice(0)) resolve();
-      if (finished) {
-        if (wasPaused) publishLifecycle();
-      } else {
-        // An aborted run leaves no work behind: report the idle goal stage,
-        // retain the pass already reached, and make the run available again.
-        lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
-        publishLifecycle();
-      }
-      wakeLifecycle();
-      settleLifecycleUnwinding?.();
-      settleLifecycleUnwinding = undefined;
-      lifecycleUnwinding = undefined;
+      finalizeLifecycleRun(finished, lifecycle.paused);
     }
+  }
+
+  /**
+   * Ends a lifecycle loop for this process: every lane peer it holds is closed
+   * and the interface returns to a stable stage. A finished run keeps its
+   * `finished` stage; an aborted one replays the idle goal stage and its pass.
+   */
+  function finalizeLifecycleRun(finished: boolean, wasPaused: boolean) {
+    lifecycleRunning = false;
+    lifecyclePausedForManualRun = false;
+    if (stopAllLanes()) publishLanes();
+    lifecycle = { ...lifecycle, paused: false };
+    for (const resolve of resumeWaiters.splice(0)) resolve();
+    if (finished) {
+      if (wasPaused) publishLifecycle();
+    } else {
+      lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
+      publishLifecycle();
+    }
+    wakeLifecycle();
+    settleLifecycleUnwinding?.();
+    settleLifecycleUnwinding = undefined;
+    lifecycleUnwinding = undefined;
+  }
+
+  /**
+   * Takes over a lifecycle that was advancing when the process died: its
+   * incomplete lanes are re-spawned with their original prompts and the
+   * scheduler continues from the restored stage.
+   */
+  async function continueRestoredLifecycle() {
+    const unwinding = Promise.withResolvers<void>();
+    lifecycleUnwinding = unwinding.promise;
+    settleLifecycleUnwinding = unwinding.resolve;
+    startMainWatcher();
+    let finished = false;
+    try {
+      spawnRestoredLanes();
+      applyEpicList(await readEpicList());
+      reconcileLanes();
+      if (generationQueued) void drainGenerations();
+      finished = await runLifecycle();
+    } catch (error) {
+      broadcast({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      finalizeLifecycleRun(finished, false);
+    }
+  }
+
+  /** Re-spawns every restored lane that has no peer yet. */
+  function spawnRestoredLanes() {
+    for (const lane of [...lanes]) {
+      if (!liveLanes.has(lane) || lane.status !== "running" || lane.agent !== undefined) continue;
+      if (lane.kind === "generation") {
+        generationActive = true;
+        void (async () => {
+          try {
+            await continueGenerationLane(lane);
+          } finally {
+            generationActive = false;
+          }
+          reconcileLanes();
+          wakeLifecycle();
+          if (generationQueued) void drainGenerations();
+        })();
+      } else if (lane.kind === "adr" && lane.record !== null) {
+        void continueAdrLane(lane);
+      } else if (lane.kind === "implementation" && lane.epic !== null) {
+        void continueImplementationLane(lane, String(lane.epic.number));
+      }
+    }
+  }
+
+  /**
+   * Resumes a restored manual sequence from its own record, skipping a record
+   * the interrupted peer already resolved.
+   */
+  async function resumeRestoredManualSequence() {
+    const run = manualRun;
+    if (run === undefined) {
+      if (!manualSequencing) return;
+      manualSequencing = false;
+      await runManualSequence(restoreTarget, undefined, undefined, true);
+      return;
+    }
+
+    const record = await readRecord(run.file);
+    if (record !== undefined && record.pending) {
+      await runManualSequence(restoreTarget, undefined, run, true);
+      return;
+    }
+
+    manualRun = undefined;
+    persistState();
+    await runManualSequence(restoreTarget, undefined, undefined, true);
+  }
+
+  /** Starts a restored foreground run; the lifecycle never owns one of these. */
+  function spawnRestoredForeground() {
+    if (manualRun !== undefined || manualSequencing) {
+      void resumeRestoredManualSequence();
+      return;
+    }
+    if (goalCreation !== undefined) {
+      void spawnGoalCreation(goalCreation);
+      return;
+    }
+    if (goalRevision !== undefined) {
+      void spawnGoalRevision(goalRevision);
+      return;
+    }
+    if (skillsPreparation !== undefined) {
+      void spawnSkillsPreparation(skillsPreparation);
+    }
+  }
+
+  /**
+   * A restored process ends the peers its predecessor left and continues its
+   * work. A paused run spawns nothing until `resumeLifecycle`.
+   */
+  async function resumeRestoredWork(children: RecordedChild[]): Promise<void> {
+    await terminateRecordedChildren(children);
+
+    if (restartWhenIdle) {
+      if (options.restart === undefined) {
+        restartWhenIdle = false;
+        persistState();
+        startupNotices.push({
+          type: "error",
+          message: "Restarting the server is not available.",
+        });
+      } else {
+        // The request survives this process; the fleet's idle wait resumes it.
+        holdRestartUntilIdle();
+      }
+    }
+
+    if (skillsPreparationPending) {
+      const pending = restoredPendingSkills;
+      restoredPendingSkills = undefined;
+      skillsPreparationPending = false;
+      if (pending === undefined || pending.snapshot === null) {
+        await startSkillsPreparation(restoreTarget);
+      } else {
+        await startSkillsPreparation(restoreTarget, {
+          snapshot: pending.snapshot,
+          unmanagedNames: pending.unmanagedNames,
+        });
+      }
+      return;
+    }
+
+    spawnRestoredForeground();
+
+    if (!lifecycleRunning || restoredPausedLifecycle) return;
+    await continueRestoredLifecycle();
   }
 
   function answerQuestion(
@@ -2887,6 +3785,15 @@ export function createApp(options: AppOptions) {
 
     skillsPreparationRequest += 1;
     skillsPreparationPending = false;
+    if (pendingSkills !== undefined) {
+      // The interrupted preparation may have deleted managed skills already.
+      try {
+        restoreDirectorySync(skillsDir, pendingSkills.snapshot);
+      } catch {
+        // The reset reports its own failures; the skills snapshot is best effort.
+      }
+      pendingSkills = undefined;
+    }
     const preparation = skillsPreparation;
     if (preparation !== undefined) {
       skillsPreparation = undefined;
@@ -3191,6 +4098,12 @@ export function createApp(options: AppOptions) {
     websocket: {
       open(ws) {
         clients.add(ws);
+        // An unusable state file and an interrupted reset are reported once,
+        // to the first client, before any restored state.
+        while (startupNotices.length > 0) {
+          const notice = startupNotices.shift();
+          if (notice !== undefined) send(ws, notice);
+        }
         if (implementationReset !== undefined) {
           send(ws, { type: "implementationResetStarted" });
         }
@@ -3349,6 +4262,10 @@ export function createApp(options: AppOptions) {
       skillsPreparation = undefined;
     }
     skillsPreparationPending = false;
+    if (pendingSkills !== undefined) {
+      restoreDirectorySync(skillsDir, pendingSkills.snapshot);
+      pendingSkills = undefined;
+    }
     return stop(closeActiveConnections);
   };
 

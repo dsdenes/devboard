@@ -12,6 +12,7 @@ const goalFile = process.env.GOAL_FILE
   : join(repoDir, "GOAL.md");
 const staticDir = process.env.STATIC_DIR ?? join(import.meta.dir, "..", "dist");
 const agentCommand = process.env.AGENT_COMMAND ?? "omp acp";
+const stateDir = resolve(process.env.STATE_DIR ?? join(import.meta.dir, "..", ".tmp"));
 
 function isAddressInUse(error: unknown): boolean {
   if (typeof error === "object" && error !== null && "code" in error) {
@@ -46,6 +47,7 @@ function restart(server: Server<unknown>) {
       REPO_DIR: repoDir,
       GOAL_FILE: goalFile,
       STATIC_DIR: join(harness, "dist"),
+      STATE_DIR: stateDir,
     },
     stdin: "ignore",
     stdout: "ignore",
@@ -64,6 +66,7 @@ for (let attempt = 0; ; attempt += 1) {
       goalFile,
       agentCommand,
       staticDir,
+      stateDir,
       hostname,
       port,
       restart: () => {

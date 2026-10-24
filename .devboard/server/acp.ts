@@ -215,6 +215,7 @@ export class AcpConnection {
   readonly #options: AcpConnectionOptions;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #questions = new Map<string, PendingQuestion>();
+  readonly #argv: string[];
   #nextRequestId = 1;
   #closed = false;
   #sessionId: string | undefined;
@@ -224,6 +225,7 @@ export class AcpConnection {
     this.#options = options;
     const argv = options.command.trim().split(/\s+/).filter(Boolean);
     if (argv.length === 0) throw new Error("AGENT_COMMAND is empty.");
+    this.#argv = argv;
 
     this.#process = Bun.spawn(argv, {
       cwd: options.cwd,
@@ -238,6 +240,16 @@ export class AcpConnection {
 
   get closed(): boolean {
     return this.#closed;
+  }
+
+  /** The child's pid, recorded so a replacement can end an orphaned peer. */
+  get pid(): number | undefined {
+    return this.#closed ? undefined : this.#process.pid;
+  }
+
+  /** The exact argv the child was spawned with, used to prove its identity. */
+  get argv(): string[] {
+    return [...this.#argv];
   }
 
   async run(prompt: string): Promise<unknown> {

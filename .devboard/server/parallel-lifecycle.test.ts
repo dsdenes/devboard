@@ -843,7 +843,20 @@ describe("parallel lifecycle", () => {
         );
         expect(stopped).toMatchObject({ completed: true });
         expect(readdirSync(host.root).filter((name) => name === "adrs")).toEqual([]);
-        expect(existsSync(join(host.root, "state"))).toBe(false);
+        // The reset's own outcome is durable: pass 1, idle goal, no lanes.
+        // The server recreates its state directory to record exactly that.
+        const files = readdirSync(join(host.root, "state", "state"));
+        expect(files.length).toBe(1);
+        const stored = JSON.parse(
+          readFileSync(join(host.root, "state", "state", String(files[0])), "utf8"),
+        ) as { state: { lifecycle: unknown; lanes: unknown[] } };
+        expect(stored.state.lifecycle).toEqual({
+          stage: "goal",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+        expect(stored.state.lanes).toEqual([]);
       } finally {
         client.close();
         server.stop(true);
