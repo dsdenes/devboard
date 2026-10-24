@@ -600,7 +600,7 @@ describe("Flow pull-request lifecycle", () => {
         "--flow-implement",
         "--flow-change",
         "--flow-checkpoints=2",
-        "--flow-step-delay=1500",
+        `--flow-wait-file=${join(fixture.stateDir, "proceed")}`,
       ],
     });
     const client = await connect(server);
@@ -608,8 +608,10 @@ describe("Flow pull-request lifecycle", () => {
     await createGoal(client);
     const session = await startFlow(client, fixture);
     await client.waitFor((event) => event.type === "flowPr" && (event.pr as { state: string }).state === "draft");
-    // The update only happens for a tip beyond the first pushed one, so it is
-    // the deterministic signal that the second checkpoint was pushed.
+    // The stub holds its second checkpoint until the first draft PR exists, so
+    // the update is deterministic rather than dependent on watcher timing.
+    mkdirSync(fixture.stateDir, { recursive: true });
+    writeFileSync(join(fixture.stateDir, "proceed"), "second checkpoint\n");
     await waitUntil(
       () => forgeStub.calls.some((call) => call.op === "update"),
       "the PR body update",
