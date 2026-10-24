@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import AgentOutput from "./AgentOutput.svelte";
+  import DiscoverMode from "./DiscoverMode.svelte";
   import FeedbackOverlay from "./FeedbackOverlay.svelte";
   import FlowMode from "./FlowMode.svelte";
 
@@ -132,7 +133,7 @@
   let awaitingRestart = $state(false);
   let upgradePending = $state(false);
 
-  type ViewName = "goal" | "flow";
+  type ViewName = "goal" | "flow" | "discover";
 
   interface SavedViewState {
     focus: HTMLElement | null;
@@ -142,10 +143,13 @@
   let mode = $state<ViewName>("goal");
   let goalViewEl: HTMLDivElement;
   let flowViewEl: HTMLDivElement;
+  let discoverViewEl: HTMLDivElement;
   let flowComponent: FlowMode;
+  let discoverComponent: DiscoverMode;
   const savedViews: Record<ViewName, SavedViewState> = {
     goal: { focus: null, scrolls: [] },
     flow: { focus: null, scrolls: [] },
+    discover: { focus: null, scrolls: [] },
   };
 
   let pendingCount = $derived(records.filter((record) => record.pending).length);
@@ -839,7 +843,12 @@
   function selectMode(next: ViewName) {
     if (next === mode) return;
     const outgoing = mode;
-    const captured = captureViewState(outgoing === "goal" ? goalViewEl : flowViewEl);
+    const viewFor: Record<ViewName, HTMLDivElement> = {
+      goal: goalViewEl,
+      flow: flowViewEl,
+      discover: discoverViewEl,
+    };
+    const captured = captureViewState(viewFor[outgoing]);
     // A click on the switch already moved focus out of the outgoing view; the
     // remembered control is the developer's actual place in it.
     savedViews[outgoing] = {
@@ -848,10 +857,7 @@
     };
     mode = next;
     void tick().then(() => {
-      restoreViewState(
-        next === "goal" ? goalViewEl : flowViewEl,
-        savedViews[next],
-      );
+      restoreViewState(viewFor[next], savedViews[next]);
     });
   }
 
@@ -939,6 +945,7 @@
       }
 
       flowComponent?.handleEvent(message);
+      discoverComponent?.handleEvent(message);
 
       if (isVersionStateEvent(message)) {
         version = {
@@ -1229,6 +1236,18 @@
       onclick={() => selectMode("flow")}
     >
       Flow
+    </button>
+    <button
+      type="button"
+      class="mode-tab"
+      role="tab"
+      id="mode-discover-tab"
+      aria-controls="discover-view"
+      aria-selected={mode === "discover"}
+      data-testid="mode-discover"
+      onclick={() => selectMode("discover")}
+    >
+      Discover
     </button>
   </div>
 
@@ -1840,6 +1859,22 @@
     onfocusin={(event) => rememberFocus("flow", event)}
   >
     <FlowMode send={sendCommand} bind:this={flowComponent} />
+  </div>
+
+  <div
+    class="mode-view"
+    id="discover-view"
+    role="tabpanel"
+    aria-labelledby="mode-discover-tab"
+    bind:this={discoverViewEl}
+    hidden={mode !== "discover"}
+    onfocusin={(event) => rememberFocus("discover", event)}
+  >
+    <DiscoverMode
+      send={sendCommand}
+      connected={connection === "open"}
+      bind:this={discoverComponent}
+    />
   </div>
 </main>
 

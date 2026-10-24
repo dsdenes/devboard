@@ -377,9 +377,10 @@ read-only state directory never stops the server: it keeps serving from memory a
 
 ## Flow Mode
 
-The page header carries two client-only tabs, `Goal` and `Flow` (`data-testid="mode-goal"` and
-`data-testid="mode-flow"`). Switching is a view change only: it sends no WebSocket frame and
-starts, stops, pauses, or resumes no work in either mode. Goal Mode is the goal, ADR, epic,
+The page header carries three client-only tabs, `Goal`, `Flow`, and `Discover`
+(`data-testid="mode-goal"`, `data-testid="mode-flow"`, and `data-testid="mode-discover"`).
+Switching is a view change only: it sends no WebSocket frame and
+starts, stops, pauses, or resumes no work in any mode. Goal Mode is the goal, ADR, epic,
 lifecycle, and skills interface described above. Flow Mode is one implementation session that the
 developer steers while it works: the developer interviews for a goal, starts an implementation
 agent in an isolated worktree, reviews the changes as color-coded widgets, discusses a widget with
@@ -553,6 +554,203 @@ comments on one. Its forge use is limited to the session's draft pull request or
 that request's branch: create, update, mark ready, view, merge, and delete the remote branch. Flow
 never writes `GOAL.md` and never writes `adrs/`; the flow goal belongs only to its session
 directory, and the decision board is never an ADR record.
+
+## Discover Mode
+
+The `Discover` tab is the third client-only mode. It exists for an existing host project: one
+read-only crawl produces an evidence-backed project sheet, a UbiLang glossary for each detected
+bounded context, and five project-specific Agent Skills that every devboard implementation agent in
+that host discovers. Switching to Discover, and switching its sub-tabs, sends no WebSocket frame
+and starts, stops, resets, or clears nothing; all three views stay mounted, so native details,
+scroll state, and focus survive. Discover events render only in this view and never touch Goal
+Mode's activity, question, or error state.
+
+The Discover view has its own flat tab list whose sub-tabs are exactly `Overview`, `Glossary`,
+`Testing Strategy`, `Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and
+`Glossary Skill` (`data-testid="discover-tab"` with `data-tab` values `overview`, `glossary`,
+`testing-strategy`, `naming-conventions`, `coding-conventions`, `architecture-boundaries`, and
+`glossary-skill`). The active panel carries `data-testid="discover-panel"` and the same `data-tab`.
+
+With no published artifacts the Overview tab shows an empty state (`data-testid="discover-empty"`)
+and a `Discover project` button (`data-testid="discover-start"`); with artifacts it shows
+`Re-discover`. The button is disabled when the socket is not open, while a Discover run is active,
+or while Goal or Flow work is active, and its title names the reason. It never starts on page
+load, reconnect, mode switch, or sub-tab switch. Selecting it sends `{ "type": "discoverProject" }`;
+the server broadcasts `discoverStarted` and starts exactly one ACP peer whose prompt is exactly
+`/discover <staging-dir>`, whose working directory is the repository root, and whose staging
+directory is `<host>/.omp/discover/staging/<run-id>/`. A second start while one runs is refused
+with one `discoverError` and spawns no peer. A start requires no `GOAL.md`, no prepared skill, a
+clean tree, or a forge account; it is accepted on a host with a dirty tree and no goal document.
+
+The run is server-owned: closing the browser or switching views does not stop it. The view shows
+an active marker (`data-testid="discover-active"`) and the activity log, and a reconnect receives
+`discoverState`, `discoverStarted`, every recorded activity line, and any pending question before
+its own command replies. The crawl is not an interview: an ambiguity is recorded as `unknown` with
+a reason, never a blocking question. `answerDiscover` with the pending id and a non-empty value
+answers it once; a second answer, a stale id, or an empty value is refused with one
+`discoverError`. `stopDiscover` closes the peer, clears the pending question, removes staging,
+broadcasts `discoverStopped { completed: false }`, and leaves the last published artifacts
+byte-identical; it spawns no replacement peer.
+
+Discover uses the same WebSocket at `/ws`. The client sends `discoverProject`, `stopDiscover`,
+`answerDiscover` (with `id` and `value`), `getDiscover`, `saveDiscoverSkill` (with `name` and
+`text`), `resetDiscoverSkill`, `rederiveDiscoverSkill`, `confirmGlossaryTerm` (with `context` and
+`id`), and `rejectGlossaryTerm` (with `context`, `id`, and a non-empty `reason`). `getDiscover`
+asks for the current snapshot and is answered with `discoverState`. The server
+broadcasts `discoverState`, `discoverStarted`, `discoverActivity`, `discoverQuestion`,
+`discoverStopped`, and `discoverError`; it never sends `activity`, `question`, `error`,
+`runStarted`, or `runStopped` for Discover. `discoverState` carries the active and interrupt flags,
+staleness, warnings, the busy reason, the last read error, the manifest, freshness, sheet,
+glossaries, decisions, and the five skills with baseline text, live text, hashes, and state.
+`discoverQuestion` carries `id`, `message`, and `options` of `{ label, description?, recommended }`.
+
+When the peer exits, the server validates every staged artifact and the whole staged set before
+publishing. Success publishes atomically, removes staging, broadcasts `discoverState` with the new
+artifacts, and broadcasts `discoverStopped { completed: true }`. Any invalid, missing, unreadable,
+or incomplete artifact, schema violation, write outside staging, or collision with a non-Discover
+skill fails the run: staging is removed, one `discoverError` names the reason,
+`discoverStopped { completed: false }` follows, and the previous sheet, glossary, manifest,
+baselines, and live skills stay byte-identical.
+Published artifacts are read from disk when a client connects, so no prior run in the process is
+required; an unreadable or invalid published artifact is reported with one `discoverError` and the
+files are never overwritten.
+
+Artifacts live only under the host: `.omp/discover/manifest.json`, `.omp/discover/sheet.json`,
+`.omp/discover/decisions.json`, `.omp/discover/glossary/<bounded-context>.glossary.yaml`,
+`.omp/discover/skills/<skill>/SKILL.md` for the generated baselines, and the live, editable
+`.omp/skills/<skill>/SKILL.md`. Staging mirrors the crawl's relative layout without `manifest.json`
+or `decisions.json`, and the staged sheet omits freshness. The manifest carries a schema version,
+the discovery fingerprint, the publication time, the run id, the sheet's structural digest, one
+structural digest per glossary, the five skill names, each live skill's baseline and current hash,
+each skill's edited or missing state, and artifact paths relative to the host; it contains no
+secrets and no absolute path.
+
+`sheet.json` is the canonical data sheet, with top-level keys in the fixed order `schemaVersion`,
+`definition`, `stack`, `deployment`, `environments`, `commands`, `branching`, `testing`,
+`architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
+the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint, and
+the Overview tab renders it as cards with label, value, evidence chips, and a confidence badge
+(`data-testid="discover-freshness"`, `discover-card` with `data-field`, `discover-evidence`, and
+`discover-confidence` with `data-confidence`); a differing fingerprint shows an explicit `stale`
+badge, and color is never the only cue because every badge carries text. Every non-`unknown` leaf
+carries at least one sorted, unique repository-relative evidence path, symbol anchor, or safe git
+fact and a confidence of `observed`, `declared`, `inferred`, or `unknown`; `unknown` carries empty
+evidence and a short reason. The definition is exactly one sentence of at most 240 characters;
+every value and list entry is a single line of at most 160 characters. The sheet covers stack,
+customer-facing deployment (artifact class, artifact, target, and pipeline sources), every detected
+environment, exact main commands (with `unknown` for an unobserved command), branching strategy and
+model, test levels and pyramid, architecture boundaries, CI provider, triggers, jobs, and quality
+gates, and the three mandatory extra cards: runtime inventory, entry-point and dependency map, and
+delivery and versioning. It never guesses, invents an environment, copies README prose, or records
+a configuration value; a claim it cannot ground is `unknown`.
+
+The Glossary tab and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
+document per bounded context named `<bounded-context>.glossary.yaml`, top-level `boundedContext`,
+`titles`, and `concepts`, and concepts carrying `id`, `prefLabels`, `altLabels`, `hiddenLabels`,
+`definitions`, `scopeNote`, `example`, `historyNote`, `status`, `origin`, `standardRef`, `kind`,
+`grounding`, `broader`, and `related` in that order. Fields are camelCase, enum values use the
+standard's snake_case spellings, ids are unique kebab case, every concept has an English preferred
+label and at least one `en` definition, and every label language is `en` or `de`. No undeclared
+field is written. Every concept has at least one grounding of the form
+`code:<repository-relative path that exists>` or `model:<name that appears in the host>`; an
+ungrounded candidate is omitted. The crawl writes
+`status: unconfirmed` with `origin: owner` or `standard` for a term found in code or documentation,
+and `status: proposed` with `origin: llm` for a name it proposes for an existing unnamed concept;
+it never writes `confirmed`, `deprecated`, or `invalidated`. The tab groups terms by context and
+offers search and a status filter; each term carries `data-testid="discover-term"`, `data-context`,
+`data-id`, and `data-status`, and each context carries `data-testid="discover-context"`. Proposed,
+confirmed, and rejected terms use distinct color tokens with light and dark variants, and the
+status text is always present.
+
+A proposed term offers `Confirm` and `Reject` (`data-testid="discover-confirm"` and
+`data-testid="discover-reject"`); a confirmed term still offers `Reject` with a reason.
+`confirmGlossaryTerm` changes a proposed term to `confirmed`, and `rejectGlossaryTerm` requires a
+non-empty reason and changes a proposed or confirmed term to `invalidated`. Both append a dated
+decision to `decisions.json` with the context, id, action, reason when rejecting, and date, never
+adding a field to the YAML, and the change survives reload, reconnect, and restart. A later crawl
+preserves every confirmed or invalidated concept's labels, definitions, notes, status, origin,
+standard reference, kind, and related ids; it may refresh grounding and add proposed concepts, but
+it never resurrects an invalidated id, never overwrites a human decision, and removes an undecided
+proposal only when the new crawl no longer grounds it. A malformed or structurally invalid glossary
+fails the run atomically with one `discoverError` naming the file and rule.
+
+A successful run publishes exactly five skills under `.omp/skills/`: `discover-testing-strategy`,
+`discover-naming-conventions`, `discover-coding-conventions`,
+`discover-architecture-boundaries`, and `discover-glossary`. Each is a directory containing
+`SKILL.md` whose frontmatter has `name` equal to the directory, a non-empty `description` of at most
+1024 characters, `metadata.devboard-managed: "true"`, `metadata.devboard-family: "discover"`, and
+`metadata.devboard-skill` naming its role. The bodies are project-specific and directive: one
+imperative bullet per rule, with an evidence path for every project-specific claim. Testing
+strategy states levels, pyramid, commands, paths, fixtures, coverage expectations, and how to add a
+test; naming conventions state canonical terms, casing, and rejected aliases; coding conventions
+state patterns, error handling, typing, async, logging, dependencies, formatting, and prohibited
+constructs; architecture and boundaries state contexts, entry points, dependency direction,
+persistence, integrations, and prohibited cross-boundary imports; the glossary skill names the
+published glossary files, the confirmed and rejected rules, and the proposal process. From the host
+root, a new `omp` session lists the five (`omp skill list`) and loads their bodies as skills, so
+every implementation agent in that host discovers the set with no extra configuration.
+
+Each skill has a sub-tab and editor: a `data-testid="discover-skill-text"` field holding the whole
+`SKILL.md`, `discover-skill-save`, `discover-skill-reset`, and `discover-skill-rederive` controls,
+a `discover-skill-state` badge reading `Generated`, `Edited`, or `Missing`, and a
+`discover-skill-diff` view of the live text against the generated baseline. `saveDiscoverSkill`
+writes the submitted bytes verbatim and updates the manifest's current hash and edited state; it is
+refused with one `discoverError` when the name is not one of the five, the skill is missing, the
+frontmatter name no longer matches the directory, the description is empty or too long, or a
+marker was removed, and invalid text leaves the previous file byte-identical.
+`rederiveDiscoverSkill` copies the current baseline over the live skill and returns it to
+`Generated`; `resetDiscoverSkill` does the same and is also allowed when the skill is missing.
+Neither spawns an agent. A later run compares each live hash with its last baseline: an unedited
+skill is replaced, an edited skill is preserved byte for byte with its new baseline published
+beside it and its diff available, and a skill the developer deleted is not recreated but shows
+`Missing` with a `Restore` action. A generated name colliding with a prepare-family, unmanaged, or
+different Discover skill fails the run and publishes nothing.
+
+The goal lifecycle's skill prerequisite accepts a managed skill from either family: at least one
+prepare-family or Discover skill is enough for `Start implementation`. `getSkills` and `skillsState`
+carry `name`, `description`, `family` (`prepare` or `discover`), and `state` (`generated`, `edited`,
+or `missing`), and a managed skill with no `devboard-family` field belongs to `prepare`. The Skills
+panel lists both families with their family and Discover state. Prepare Skills replaces only its
+own family, and its contradiction review covers its family plus hand-authored unmanaged skills, so
+a project-specific Discover directive cannot fail a project-agnostic preparation. Discover's
+generated baselines must agree with each other and with the glossary; a contradiction there fails
+the run, while a contradiction introduced by a developer's skill edit is a non-blocking warning in
+the Discover view and never discards the edit.
+
+The sheet and every glossary are canonicalized before publication: fixed schema key order, arrays
+sorted by stable identity, evidence sorted and de-duplicated, and enums in fixed spelling. The
+structural digest excludes volatile fields (`discoveredAt`, fingerprint timestamps, run id, and
+publication time) and bounded prose (the definition, glossary titles, definitions, scope notes,
+history notes, and unknown reasons); skill bodies and descriptions are not part of it. Two runs
+against the same unchanged host fingerprint produce the same sheet digest and the same digest for
+every unchanged glossary, while bounded prose may differ. The fingerprint covers the host `HEAD`
+and the content of tracked and untracked non-ignored files, excluding `.devboard/`, `.worktree/`,
+`.omp/discover/`, `.omp/skills/`, VCS internals, and ignored files; the manifest stores it, and
+`stale` is true only when the current fingerprint is readable and differs. Discover caches nothing:
+every accepted start re-crawls.
+
+The crawl is read-only with respect to the host. Its tools read files and safe read-only git facts
+(`git rev-parse`, `git log`, `git branch`, `git status`, `git ls-files`) only; they never run a
+project command, test, build, package manager, install, web fetch, or forge query, and the only
+network traffic is the model endpoint that serves the peer. The crawl excludes `.devboard/`,
+`.worktree/`, `.git/` internals, `.omp/`, dependency caches, build outputs, and ignored files, but
+reads `README`, `AGENTS.md`, `GOAL.md`, `adrs/`, manifests, configuration, source, tests, and CI
+files that remain. It never modifies `GOAL.md`, `adrs/`, or host source and never writes
+`.omp/discover` or `.omp/skills` directly; its only write is the staging directory. Environment
+and configuration names may be recorded, but their values, tokens, credentials, private URLs, and
+URLs with user info are never copied into an artifact.
+
+A Discover run is active work. While it runs, `startRun`, `startLifecycle`, `resumeLifecycle`,
+`saveGoal`, `reviseGoal`, `createGoal`, `prepareSkills`, every Flow start, and a second
+`discoverProject` are refused with one error naming the active run and spawn no peer; view and
+sub-tab switching, read-only commands, and `resetImplementation` stay available. While any Goal or
+Flow work is active, `discoverProject` is refused with one `discoverError` naming the active work.
+`restartServer` with `whenIdle: true` treats a Discover run as active and answers `upgradePending`,
+and an immediate restart ends the recorded child, removes staging, publishes nothing, sends one
+`discoverError` naming the interruption, sets the interrupted flag, and never auto-resumes.
+`resetImplementation` cancels a run the same way and leaves `.omp/discover` and the Discover skills
+untouched because reset preserves `.omp`. Only one run exists at a time; a stopped or interrupted
+run leaves the previous artifacts readable, and a later start uses a fresh staging directory.
 
 ## Publish a change
 

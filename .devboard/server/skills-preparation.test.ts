@@ -323,7 +323,9 @@ describe("skills preparation", () => {
         expect(stopped).toMatchObject({ completed: true, contradictions: [] });
         expect(skillSummaries(stopped).length).toBeGreaterThanOrEqual(1);
         for (const summary of skillSummaries(stopped)) {
-          expect(Object.keys(summary).sort()).toEqual(["description", "name"]);
+          expect(Object.keys(summary).sort()).toEqual(["description", "family", "name", "state"]);
+          expect(summary.family).toBe("prepare");
+          expect(summary.state).toBe("generated");
         }
 
         expect(spawnCount(logPath)).toBe(1);

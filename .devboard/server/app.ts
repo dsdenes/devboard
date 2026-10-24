@@ -27,6 +27,22 @@ import {
 import { FlowController, type FlowOptions } from "./flow";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { openJournal, type Journal, type JournalKind } from "./journal";
+import {
+  DISCOVER_SKILLS,
+  artifactsStale,
+  confirmGlossaryTerm,
+  hostFacts,
+  liveWarnings,
+  publishStaged,
+  readArtifacts,
+  rejectGlossaryTerm,
+  removeStaging,
+  resetLiveSkill,
+  saveLiveSkill,
+  stagingDirectory,
+  validateStaged,
+  type DiscoverArtifacts,
+} from "./discover";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
 import {
   appendActivity,
@@ -166,9 +182,14 @@ interface GoalCreation {
   question: RunQuestion | null;
 }
 
+type SkillFamily = "prepare" | "discover";
+type SkillState = "generated" | "edited" | "missing";
+
 interface SkillSummary {
   name: string;
   description: string;
+  family: SkillFamily;
+  state: SkillState;
 }
 
 /** Two skills whose directives state opposite policies for the same subject. */
@@ -182,6 +203,7 @@ interface SkillFile {
   name: string;
   description: string;
   managed: boolean;
+  family: SkillFamily;
   directives: { polarity: "positive" | "negative"; text: string; source: string }[];
 }
 
@@ -276,6 +298,15 @@ interface StoredSkills extends StoredRun {
   unmanagedNames: string[] | null;
 }
 
+/** A Discover run a replacement must interrupt rather than resume. */
+interface StoredDiscover {
+  runId: string;
+  stagingDir: string;
+  startedAt: string;
+  activity: string[];
+  question: StoredQuestion | null;
+}
+
 interface StoredState {
   lifecycle: LifecycleState;
   lastLifecycle: LifecycleState | null;
@@ -296,6 +327,8 @@ interface StoredState {
   skillsPreparationPending: StoredSkills | null;
   resetActive: boolean;
   restartWhenIdle: boolean;
+  discover: StoredDiscover | null;
+  discoverInterrupted: boolean;
   children: RecordedChild[];
 }
 
@@ -404,7 +437,16 @@ type ClientMessage =
   | { type: "sendFlowConclusion"; text?: unknown }
   | { type: "dismissFlowBlocker"; id?: unknown }
   | { type: "flowAnswer"; id?: unknown; value?: unknown; target?: unknown }
-  | { type: "answer"; id?: unknown; value?: unknown; lane?: unknown };
+  | { type: "answer"; id?: unknown; value?: unknown; lane?: unknown }
+  | { type: "discoverProject" }
+  | { type: "stopDiscover" }
+  | { type: "answerDiscover"; id?: unknown; value?: unknown }
+  | { type: "getDiscover" }
+  | { type: "saveDiscoverSkill"; name?: unknown; text?: unknown }
+  | { type: "resetDiscoverSkill"; name?: unknown }
+  | { type: "rederiveDiscoverSkill"; name?: unknown }
+  | { type: "confirmGlossaryTerm"; context?: unknown; id?: unknown }
+  | { type: "rejectGlossaryTerm"; context?: unknown; id?: unknown; reason?: unknown };
 
 function parseClientMessage(value: unknown): ClientMessage | undefined {
   if (typeof value !== "object" || value === null || !("type" in value)) return undefined;
@@ -497,6 +539,41 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
         id: "id" in value ? value.id : undefined,
         value: "value" in value ? value.value : undefined,
         lane: "lane" in value ? value.lane : undefined,
+      };
+    case "discoverProject":
+      return { type: "discoverProject" };
+    case "stopDiscover":
+      return { type: "stopDiscover" };
+    case "answerDiscover":
+      return {
+        type: "answerDiscover",
+        id: "id" in value ? value.id : undefined,
+        value: "value" in value ? value.value : undefined,
+      };
+    case "getDiscover":
+      return { type: "getDiscover" };
+    case "saveDiscoverSkill":
+      return {
+        type: "saveDiscoverSkill",
+        name: "name" in value ? value.name : undefined,
+        text: "text" in value ? value.text : undefined,
+      };
+    case "resetDiscoverSkill":
+      return { type: "resetDiscoverSkill", name: "name" in value ? value.name : undefined };
+    case "rederiveDiscoverSkill":
+      return { type: "rederiveDiscoverSkill", name: "name" in value ? value.name : undefined };
+    case "confirmGlossaryTerm":
+      return {
+        type: "confirmGlossaryTerm",
+        context: "context" in value ? value.context : undefined,
+        id: "id" in value ? value.id : undefined,
+      };
+    case "rejectGlossaryTerm":
+      return {
+        type: "rejectGlossaryTerm",
+        context: "context" in value ? value.context : undefined,
+        id: "id" in value ? value.id : undefined,
+        reason: "reason" in value ? value.reason : undefined,
       };
     default:
       return undefined;
@@ -646,11 +723,15 @@ async function readSkillAt(root: string, directory: string): Promise<SkillFile |
 
   const fields = parseFrontmatter(source) ?? new Map<string, string>();
   const description = fields.get("description") ?? "";
+  const familyField = fields.get("metadata.devboard-family");
   return {
     directory,
     name: fields.get("name") ?? "",
     description,
     managed: fields.get(`metadata.${MANAGED_MARKER}`) === "true",
+    // A managed skill without a family belongs to the prepare family, so
+    // skills written before the family marker keep working.
+    family: familyField === "discover" ? "discover" : "prepare",
     directives: extractDirectives(source),
   };
 }
@@ -740,7 +821,7 @@ async function managedSkillNames(root: string, snapshot: SkillsSnapshot): Promis
     const [directory, ...rest] = relative.split("/");
     if (directory === undefined || rest.length !== 1 || rest[0] !== "SKILL.md") continue;
     const skill = await readSkillAt(root, directory);
-    if (skill?.managed === true) names.add(directory);
+    if (skill?.managed === true && skill.family === "prepare") names.add(directory);
   }
   return names;
 }
@@ -748,6 +829,8 @@ async function managedSkillNames(root: string, snapshot: SkillsSnapshot): Promis
 interface SkillsInspection {
   skills: SkillSummary[];
   managed: Map<string, SkillFile>;
+  prepare: Map<string, SkillFile>;
+  discover: Map<string, SkillFile>;
   unmanaged: Map<string, SkillFile>;
   errors: string[];
   contradictions: SkillContradiction[];
@@ -755,16 +838,19 @@ interface SkillsInspection {
 
 async function inspectSkills(root: string): Promise<SkillsInspection> {
   const managed = new Map<string, SkillFile>();
+  const prepare = new Map<string, SkillFile>();
+  const discover = new Map<string, SkillFile>();
   const unmanaged = new Map<string, SkillFile>();
 
-  let entries;
+  let entries: import("node:fs").Dirent[];
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { skills: [], managed, unmanaged, errors: [], contradictions: [] };
+      entries = [];
+    } else {
+      throw error;
     }
-    throw error;
   }
 
   for (const entry of entries) {
@@ -773,8 +859,25 @@ async function inspectSkills(root: string): Promise<SkillsInspection> {
     if (skill === undefined) continue;
     if (skill.managed) {
       managed.set(entry.name, skill);
+      if (skill.family === "discover") discover.set(entry.name, skill);
+      else prepare.set(entry.name, skill);
     } else {
       unmanaged.set(entry.name, skill);
+    }
+  }
+
+  // Discover's published manifest names the five skills even when the
+  // developer deleted one; a missing skill is listed instead of vanishing.
+  const published = readArtifacts(dirname(dirname(root)));
+  const discoverStates = new Map<string, SkillSummary>();
+  if (published.artifacts !== null) {
+    for (const skill of published.artifacts.skills) {
+      discoverStates.set(skill.name, {
+        name: skill.name,
+        description: skill.description,
+        family: "discover",
+        state: skill.state,
+      });
     }
   }
 
@@ -797,11 +900,27 @@ async function inspectSkills(root: string): Promise<SkillsInspection> {
     }
   }
 
-  const skills = [...managed.values()]
-    .sort((left, right) => left.name.localeCompare(right.name))
-    .map((skill) => ({ name: skill.name, description: skill.description }));
-  const contradictions = findContradictions([...managed.values(), ...unmanaged.values()]);
-  return { skills, managed, unmanaged, errors, contradictions };
+  const summaries: SkillSummary[] = [...managed.values()].map((skill) => {
+    const view = discoverStates.get(skill.directory);
+    const live = skill.family === "discover" ? view?.state ?? "generated" : "generated";
+    return {
+      name: skill.name,
+      description: skill.description,
+      family: skill.family,
+      state: live,
+    };
+  });
+  for (const [name, view] of discoverStates) {
+    if (managed.has(name)) continue;
+    if (view.state !== "missing") continue;
+    summaries.push(view);
+  }
+  summaries.sort((left, right) => left.name.localeCompare(right.name));
+
+  // Preparation's contradiction review covers its own family plus hand-authored
+  // skills only: a project-specific Discover directive cannot fail it.
+  const contradictions = findContradictions([...prepare.values(), ...unmanaged.values()]);
+  return { skills: summaries, managed, prepare, discover, unmanaged, errors, contradictions };
 }
 
 function describeContradictions(
@@ -1066,6 +1185,18 @@ function parseStoredSkills(value: unknown): StoredSkills | undefined {
   };
 }
 
+function parseStoredDiscover(value: unknown): StoredDiscover | null {
+  const record = asObject(value);
+  if (record === undefined) return null;
+  const runId = record.runId;
+  const stagingDir = record.stagingDir;
+  const startedAt = record.startedAt;
+  const activity = parseStoredActivity(record.activity);
+  if (typeof runId !== "string" || typeof stagingDir !== "string") return null;
+  if (typeof startedAt !== "string" || activity === undefined) return null;
+  return { runId, stagingDir, startedAt, activity, question: parseStoredQuestion(record.question) };
+}
+
 /**
  * Reads one stored state. Anything structurally unusable rejects the whole
  * state, so the caller preserves the bytes and starts from the initial state
@@ -1129,6 +1260,8 @@ function parseStoredState(value: unknown): StoredState | undefined {
     skillsPreparationPending: parseStoredSkills(record.skillsPreparationPending) ?? null,
     resetActive: record.resetActive === true,
     restartWhenIdle: record.restartWhenIdle === true,
+    discover: parseStoredDiscover(record.discover),
+    discoverInterrupted: record.discoverInterrupted === true,
     children,
   };
 }
@@ -1203,6 +1336,31 @@ export function createApp(options: AppOptions) {
   const readVersion =
     options.versionState ??
     (() => serverVersion(repoDir, runningVersion, options.latestVersion?.() ?? null));
+
+  /**
+   * Discover Mode's run state. The crawl is server-owned: a browser
+   * disconnect, a view switch, or a stopped run never resumes it, and a
+   * replacement process interrupts it instead.
+   */
+  interface DiscoverRun {
+    runId: string;
+    stagingDir: string;
+    startedAt: string;
+    agent: AcpConnection | undefined;
+    activity: string[];
+    question: RunQuestion | null;
+  }
+  let discoverRun: DiscoverRun | undefined;
+  let discoverInterrupted = false;
+  /** Invalidates an in-flight start when a reset or stop takes over. */
+  let discoverRequest = 0;
+  let discoverArtifacts: DiscoverArtifacts | null = null;
+  let discoverReadError: string | null = null;
+  let discoverWarnings: string[] = [];
+  let discoverStale = false;
+  let restoredDiscover: StoredDiscover | undefined;
+  let lastDiscoverBusy: string | null = null;
+  const DISCOVER_PROMPT = "/discover";
 
   /**
    * Flow Mode's controller. It owns its own session files under `stateDir` and
@@ -1317,8 +1475,7 @@ export function createApp(options: AppOptions) {
    * is on disk. A SIGKILL after delivery therefore loses nothing the client
    * already saw, and a replacement replays at least that state.
    */
-  function broadcast(event: unknown) {
-    persistState();
+  function sendAll(event: unknown) {
     const payload = JSON.stringify(event);
     for (const client of clients) {
       try {
@@ -1327,6 +1484,14 @@ export function createApp(options: AppOptions) {
         // A closing client must not interrupt delivery to the others.
       }
     }
+  }
+
+  function broadcast(event: unknown) {
+    persistState();
+    sendAll(event);
+    // The Discover start control's disabled state follows the work the other
+    // modes hold, so a transition is pushed once per change.
+    syncDiscoverBusy();
   }
 
   /** The pids and commands a replacement needs to end this process's peers. */
@@ -1341,6 +1506,7 @@ export function createApp(options: AppOptions) {
     remember(goalCreation?.agent);
     remember(goalRevision?.agent);
     remember(skillsPreparation?.agent);
+    remember(discoverRun?.agent);
     for (const lane of liveLanes) remember(lane.agent);
     return children;
   }
@@ -1422,6 +1588,17 @@ export function createApp(options: AppOptions) {
           : null,
       resetActive: implementationReset !== undefined,
       restartWhenIdle,
+      discover:
+        discoverRun === undefined
+          ? null
+          : {
+              runId: discoverRun.runId,
+              stagingDir: discoverRun.stagingDir,
+              startedAt: discoverRun.startedAt,
+              activity: [...discoverRun.activity],
+              question: captureQuestion(discoverRun.question),
+            },
+      discoverInterrupted,
       children: captureChildren(),
     };
   }
@@ -1461,6 +1638,13 @@ export function createApp(options: AppOptions) {
     manualSequencing = stored.manualSequencing;
     lifecyclePausedForManualRun = stored.lifecyclePausedForManualRun;
     restartWhenIdle = stored.restartWhenIdle;
+    discoverInterrupted = stored.discoverInterrupted;
+    if (stored.discover !== null) {
+      // The replacement never resumes a crawl: it interrupts it and keeps the
+      // last published artifacts.
+      restoredDiscover = stored.discover;
+      discoverInterrupted = true;
+    }
     parkedEpics.clear();
     for (const id of stored.parkedEpics) parkedEpics.add(id);
     knownEpics = new Map(stored.knownEpics.map((epic) => [String(epic.number), epic]));
@@ -1633,12 +1817,13 @@ export function createApp(options: AppOptions) {
       skillsPreparationPending ||
       generationActive ||
       generationQueued ||
-      flow.hasActiveWork()
+      flow.hasActiveWork() ||
+      discoverRun !== undefined
     );
   }
 
-  /** Names the Goal Mode work Flow Mode would contend with, if any. */
-  function activeGoalWork(): string | undefined {
+  /** Names the work that keeps another mode out, Discover excluded. */
+  function goalWorkLabel(): string | undefined {
     if (implementationReset !== undefined) return "an implementation reset";
     if (goalCreation !== undefined) return "a goal creation";
     if (goalRevision !== undefined) return "a goal revision";
@@ -1646,6 +1831,19 @@ export function createApp(options: AppOptions) {
     if (lifecycleRunning) return "the lifecycle";
     if (manualRun !== undefined || manualSequencing || sequencing) return "a manual ADR run";
     return undefined;
+  }
+
+  /** Names the Goal Mode work Flow Mode would contend with, if any. */
+  function activeGoalWork(): string | undefined {
+    return goalWorkLabel() ?? (discoverRun === undefined ? undefined : "a Discover run");
+  }
+
+  /** What blocks a Discover start, as a sentence the control shows verbatim. */
+  function discoverBusyReason(): string | null {
+    const label = goalWorkLabel();
+    if (label !== undefined) return `${label.charAt(0).toUpperCase()}${label.slice(1)} is active.`;
+    if (flow.hasActiveWork()) return "Flow Mode is active.";
+    return null;
   }
 
   /**
@@ -1657,6 +1855,352 @@ export function createApp(options: AppOptions) {
     if (!flow.hasActiveWork()) return false;
     send(ws, { type: "error", message: "Flow Mode is active. Finish or stop its work first." });
     return true;
+  }
+
+  function refreshDiscoverSnapshot(): void {
+    const read = readArtifacts(repoDir);
+    discoverArtifacts = read.artifacts;
+    discoverReadError = read.error;
+    if (read.artifacts === null) {
+      discoverWarnings = [];
+      discoverStale = false;
+      return;
+    }
+    try {
+      discoverWarnings = liveWarnings(repoDir, read.artifacts);
+    } catch {
+      discoverWarnings = [];
+    }
+    discoverStale = artifactsStale(repoDir, read.artifacts);
+  }
+
+  function discoverStatePayload(): Record<string, unknown> {
+    const artifacts = discoverArtifacts;
+    return {
+      active: discoverRun !== undefined,
+      runId: discoverRun?.runId ?? null,
+      startedAt: discoverRun?.startedAt ?? null,
+      interrupted: discoverInterrupted,
+      stale: discoverStale,
+      warnings: discoverWarnings,
+      busy: discoverBusyReason(),
+      error: discoverReadError,
+      manifest: artifacts?.manifest ?? null,
+      freshness: artifacts?.sheet.freshness ?? null,
+      sheet: artifacts?.sheet ?? null,
+      glossaries: artifacts?.glossaries ?? [],
+      decisions: artifacts?.decisions ?? [],
+      skills: artifacts?.skills ?? [],
+    };
+  }
+
+  function sendDiscoverState(target: { send(data: string): unknown }) {
+    send(target, { type: "discoverState", state: discoverStatePayload() });
+  }
+
+  /**
+   * Pushes the whole Discover snapshot. It is derived from the published
+   * artifacts and the run in memory, so it never adds anything to the durable
+   * state beyond the run itself.
+   */
+  function broadcastDiscoverState() {
+    persistState();
+    sendAll({ type: "discoverState", state: discoverStatePayload() });
+  }
+
+  /** Pushes the start control's disabled reason once per change. */
+  function syncDiscoverBusy() {
+    const reason = discoverBusyReason();
+    if (reason === lastDiscoverBusy) return;
+    lastDiscoverBusy = reason;
+    sendAll({ type: "discoverState", state: discoverStatePayload() });
+  }
+
+  function discoverFailure(ws: { send(data: string): unknown }, message: string) {
+    send(ws, { type: "discoverError", message });
+  }
+
+  /** Ends a run without publishing: staging goes, the last artifacts stay. */
+  function failDiscover(run: DiscoverRun, message: string) {
+    if (discoverRun !== run) return;
+    discoverRun = undefined;
+    run.question = null;
+    run.agent?.close();
+    try {
+      removeStaging(repoDir, run.runId);
+    } catch {
+      // A staging directory that cannot be removed is reported by the next run.
+    }
+    refreshDiscoverSnapshot();
+    broadcast({ type: "discoverError", message });
+    broadcastDiscoverState();
+    broadcast({ type: "discoverStopped", completed: false });
+  }
+
+  /** True while a Discover run is the active work; used by the refusal text. */
+  function refuseGoalWhileDiscovering(ws: { send(data: string): unknown }): boolean {
+    if (discoverRun === undefined) return false;
+    send(ws, {
+      type: "error",
+      message: "A Discover run is active. Finish or stop it before starting other work.",
+    });
+    return true;
+  }
+
+  async function startDiscoverProject(ws: { send(data: string): unknown }) {
+    if (discoverRun !== undefined) {
+      discoverFailure(ws, "A Discover run is already active.");
+      return;
+    }
+    const busy = discoverBusyReason();
+    if (busy !== null) {
+      discoverFailure(ws, `A Discover run cannot start: ${busy}`);
+      return;
+    }
+
+    let factsBefore;
+    const runId = `run-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const stagingDir = stagingDirectory(repoDir, runId);
+    try {
+      factsBefore = hostFacts(repoDir);
+      mkdirSync(stagingDir, { recursive: true });
+    } catch (error) {
+      discoverFailure(
+        ws,
+        `Could not prepare the Discover staging directory: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+
+    const request = ++discoverRequest;
+    const run: DiscoverRun = {
+      runId,
+      stagingDir,
+      startedAt: new Date().toISOString(),
+      agent: undefined,
+      activity: [],
+      question: null,
+    };
+    discoverRun = run;
+    discoverInterrupted = false;
+    journal.write("lifecycle", "discover-start");
+    broadcast({ type: "discoverStarted", runId, startedAt: run.startedAt });
+    broadcastDiscoverState();
+
+    let agent: AcpConnection;
+    try {
+      agent = new AcpConnection({
+        command: agentCommand,
+        cwd: repoDir,
+        onActivity(activity: AcpActivity) {
+          if (discoverRun !== run) return;
+          journal.write("activity", activity.text);
+          const append = activity.append && run.activity.length > 0;
+          appendActivity(run.activity, activity.text, append);
+          broadcast(
+            append
+              ? { type: "discoverActivity", text: activity.text, append: true }
+              : { type: "discoverActivity", text: activity.text },
+          );
+        },
+        onQuestion(question: AcpQuestion) {
+          journal.write("question", question.message);
+          if (discoverRun !== run) return;
+          run.question = {
+            id: question.id,
+            message: question.message,
+            options: question.options,
+          };
+          broadcast({
+            type: "discoverQuestion",
+            id: question.id,
+            message: question.message,
+            options: question.options,
+          });
+        },
+        onStderr(text) {
+          journal.write("acp-stderr", text);
+          process.stderr.write(text);
+        },
+      });
+    } catch (error) {
+      failDiscover(
+        run,
+        `Could not start the Discover agent: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    run.agent = agent;
+
+    try {
+      await agent.run(`${DISCOVER_PROMPT} ${stagingDir}`);
+    } catch (error) {
+      failDiscover(
+        run,
+        `The Discover crawl failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    if (discoverRun !== run || request !== discoverRequest) return;
+
+    try {
+      const facts = hostFacts(repoDir);
+      if (facts.fingerprint !== factsBefore.fingerprint) {
+        throw new Error("the crawl changed host files outside its staging directory");
+      }
+      const staged = validateStaged(repoDir, stagingDir, {
+        project,
+        commit: facts.commit,
+        dirty: facts.dirty,
+        discoveredAt: new Date().toISOString(),
+        fingerprint: facts.fingerprint,
+      });
+      publishStaged({ repoDir, runId, facts, staged, project });
+    } catch (error) {
+      failDiscover(
+        run,
+        `Discover failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+
+    discoverRun = undefined;
+    run.question = null;
+    run.agent?.close();
+    try {
+      removeStaging(repoDir, runId);
+    } catch {
+      // The run's staging is best-effort; the published set is already valid.
+    }
+    discoverInterrupted = false;
+    refreshDiscoverSnapshot();
+    broadcast({ type: "discoverState", state: discoverStatePayload() });
+    broadcast({ type: "discoverStopped", completed: true });
+  }
+
+  function stopDiscover(ws: { send(data: string): unknown }) {
+    const run = discoverRun;
+    if (run === undefined) {
+      discoverFailure(ws, "No Discover run is active.");
+      return;
+    }
+    discoverRequest += 1;
+    discoverRun = undefined;
+    run.question = null;
+    run.agent?.close();
+    try {
+      removeStaging(repoDir, run.runId);
+    } catch {
+      // The staging directory may already be gone.
+    }
+    refreshDiscoverSnapshot();
+    broadcast({ type: "discoverStopped", completed: false });
+    broadcastDiscoverState();
+  }
+
+  function answerDiscoverQuestion(
+    ws: { send(data: string): unknown },
+    id: unknown,
+    value: unknown,
+  ) {
+    const run = discoverRun;
+    if (run === undefined) {
+      discoverFailure(ws, "No Discover run is active.");
+      return;
+    }
+    if (
+      id === undefined ||
+      (typeof id !== "string" && typeof id !== "number") ||
+      typeof value !== "string" ||
+      value.trim().length === 0
+    ) {
+      discoverFailure(ws, "An answer needs the question id and a non-empty value.");
+      return;
+    }
+    if (run.question === null || String(run.question.id) !== String(id)) {
+      discoverFailure(ws, "No pending Discover question with that id.");
+      return;
+    }
+    if (run.agent === undefined || !run.agent.answer(run.question.id, value)) {
+      discoverFailure(ws, "The Discover question is no longer pending.");
+      return;
+    }
+    run.question = null;
+  }
+
+  function discoverTermRequest(context: unknown, id: unknown): { context: string; id: string } | null {
+    if (typeof context !== "string" || context.length === 0) return null;
+    if (typeof id !== "string" || id.length === 0) return null;
+    return { context, id };
+  }
+
+  function afterDiscoverMutation(
+    ws: { send(data: string): unknown },
+    error: string | null,
+  ) {
+    if (error !== null) {
+      discoverFailure(ws, error);
+      return;
+    }
+    refreshDiscoverSnapshot();
+    broadcastDiscoverState();
+  }
+
+  function saveDiscoverSkillCommand(
+    ws: { send(data: string): unknown },
+    name: unknown,
+    text: unknown,
+  ) {
+    if (typeof name !== "string" || typeof text !== "string") {
+      discoverFailure(ws, "Saving a Discover skill needs its name and text.");
+      return;
+    }
+    afterDiscoverMutation(ws, saveLiveSkill(repoDir, name, text));
+  }
+
+  function resetDiscoverSkillCommand(
+    ws: { send(data: string): unknown },
+    name: unknown,
+    rederive: boolean,
+  ) {
+    if (typeof name !== "string") {
+      discoverFailure(ws, "Resetting a Discover skill needs its name.");
+      return;
+    }
+    afterDiscoverMutation(ws, resetLiveSkill(repoDir, name, { allowMissing: !rederive }));
+  }
+
+  /**
+   * Replays the Discover state a client needs before its own command replies.
+   * A host with nothing published, no run, and no recorded interruption has
+   * nothing to replay: its Discover view starts from the same empty state.
+   */
+  function replayDiscover(ws: { send(data: string): unknown }) {
+    refreshDiscoverSnapshot();
+    const replayable =
+      discoverArtifacts !== null ||
+      discoverRun !== undefined ||
+      discoverInterrupted ||
+      discoverReadError !== null;
+    if (!replayable) return;
+    send(ws, { type: "discoverState", state: discoverStatePayload() });
+    if (discoverReadError !== null) {
+      send(ws, { type: "discoverError", message: discoverReadError });
+    }
+    const run = discoverRun;
+    if (run === undefined) return;
+    send(ws, { type: "discoverStarted", runId: run.runId, startedAt: run.startedAt });
+    for (const text of run.activity) send(ws, { type: "discoverActivity", text });
+    if (run.question !== null) {
+      send(ws, {
+        type: "discoverQuestion",
+        id: run.question.id,
+        message: run.question.message,
+        options: run.question.options,
+      });
+    }
   }
 
   /**
@@ -1828,6 +2372,8 @@ export function createApp(options: AppOptions) {
   }
 
   async function saveGoal(ws: { send(data: string): unknown }, text: unknown) {
+    if (refuseGoalWhileDiscovering(ws)) return;
+
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
@@ -1974,7 +2520,7 @@ export function createApp(options: AppOptions) {
     if (skillsPreparation !== preparation) return;
 
     const errors = [...inspection.errors];
-    if (inspection.managed.size === 0) {
+    if (inspection.prepare.size === 0) {
       errors.push("no managed skill was prepared.");
     }
 
@@ -1993,9 +2539,9 @@ export function createApp(options: AppOptions) {
     for (const name of [...changed].sort()) {
       errors.push(`unmanaged skill "${name}" must not be changed by skills preparation.`);
     }
-    for (const name of [...inspection.managed.keys()].sort()) {
+    for (const name of [...inspection.prepare.keys()].sort()) {
       if (preparation.unmanagedNames.has(name)) {
-        errors.push(`managed skill "${name}" collides with an unmanaged skill of the same name.`);
+        errors.push(`managed skill "${name}" collides with a skill of another family or owner.`);
       }
     }
 
@@ -2030,6 +2576,7 @@ export function createApp(options: AppOptions) {
     restored?: { snapshot: SkillsSnapshot; unmanagedNames: Set<string> },
   ) {
     if (refuseFlowActive(ws)) return;
+    if (refuseGoalWhileDiscovering(ws)) return;
 
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is already active." });
@@ -2103,7 +2650,10 @@ export function createApp(options: AppOptions) {
       try {
         if (restored === undefined) {
           snapshot = await snapshotDirectory(skillsDir);
-          unmanagedNames = new Set((await inspectSkills(skillsDir)).unmanaged.keys());
+          const installed = await inspectSkills(skillsDir);
+          // Preparing owns the prepare family only: unmanaged skills and the
+          // Discover family stay untouched and are checked byte for byte.
+          unmanagedNames = new Set([...installed.unmanaged.keys(), ...installed.discover.keys()]);
         } else {
           // The interrupted run may have deleted managed skills already; its
           // exact pre-run bytes go back before the run replaces them again.
@@ -2277,6 +2827,7 @@ export function createApp(options: AppOptions) {
 
   async function startGoalCreation(ws: { send(data: string): unknown }) {
     if (refuseFlowActive(ws)) return;
+    if (refuseGoalWhileDiscovering(ws)) return;
 
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
@@ -2371,6 +2922,7 @@ export function createApp(options: AppOptions) {
 
   async function startGoalRevision(ws: { send(data: string): unknown }, request: unknown) {
     if (refuseFlowActive(ws)) return;
+    if (refuseGoalWhileDiscovering(ws)) return;
 
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
@@ -2543,6 +3095,7 @@ export function createApp(options: AppOptions) {
 
   async function startRun(ws: { send(data: string): unknown }, file: unknown) {
     if (refuseFlowActive(ws)) return;
+    if (refuseGoalWhileDiscovering(ws)) return;
 
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
@@ -3387,6 +3940,8 @@ export function createApp(options: AppOptions) {
   }
 
   function resumeLifecycle(ws: { send(data: string): unknown }) {
+    if (refuseGoalWhileDiscovering(ws)) return;
+
     if (skillsPreparation !== undefined || skillsPreparationPending) {
       send(ws, { type: "error", message: "A skills preparation is active." });
       return;
@@ -3554,6 +4109,7 @@ export function createApp(options: AppOptions) {
 
   async function startLifecycle(ws: { send(data: string): unknown }) {
     if (refuseFlowActive(ws)) return;
+    if (refuseGoalWhileDiscovering(ws)) return;
 
     // A stopped run leaves the loop at its next check, but its own finale may
     // still be in flight. Wait for it so the two runs cannot both publish.
@@ -3605,7 +4161,8 @@ export function createApp(options: AppOptions) {
 
     let preparedSkills = 0;
     try {
-      preparedSkills = (await inspectSkills(skillsDir)).managed.size;
+      const installed = await inspectSkills(skillsDir);
+      preparedSkills = installed.prepare.size + installed.discover.size;
     } catch (error) {
       if (request !== lifecycleStartRequest) return;
       send(ws, {
@@ -3777,6 +4334,23 @@ export function createApp(options: AppOptions) {
   async function resumeRestoredWork(children: RecordedChild[]): Promise<void> {
     await terminateRecordedChildren(children);
 
+    if (restoredDiscover !== undefined) {
+      const interrupted = restoredDiscover;
+      restoredDiscover = undefined;
+      try {
+        rmSync(interrupted.stagingDir, { recursive: true, force: true });
+      } catch {
+        // The staging directory may already be gone.
+      }
+      discoverInterrupted = true;
+      refreshDiscoverSnapshot();
+      startupNotices.push({
+        type: "discoverError",
+        message: `The Discover run started at ${interrupted.startedAt} was interrupted when the server restarted, so it was not resumed.`,
+      });
+      persistState();
+    }
+
     if (restartWhenIdle) {
       if (options.restart === undefined) {
         restartWhenIdle = false;
@@ -3887,6 +4461,20 @@ export function createApp(options: AppOptions) {
    * caller deletes anything.
    */
   function stopActiveWorkForReset() {
+    discoverRequest += 1;
+    const discovering = discoverRun;
+    if (discovering !== undefined) {
+      discoverRun = undefined;
+      discovering.question = null;
+      discovering.agent?.close();
+      try {
+        removeStaging(repoDir, discovering.runId);
+      } catch {
+        // Reset preserves `.omp`, so a leftover staging directory is harmless.
+      }
+      broadcast({ type: "discoverStopped", completed: false });
+    }
+
     goalCreationRequest += 1;
     abortGoalCreation();
     abortGoalRevision();
@@ -4299,6 +4887,10 @@ export function createApp(options: AppOptions) {
         // Flow's own state follows Goal Mode's, so the two modes replay
         // independently; it still precedes every reply to the client's commands.
         flow.replay(ws);
+
+        // Discover replays its published artifacts, then the run a reconnect
+        // landed in, before any reply to this client's own commands.
+        replayDiscover(ws);
       },
 
       close(ws) {
@@ -4324,7 +4916,8 @@ export function createApp(options: AppOptions) {
           command.type === "getGoal" ||
           command.type === "getProject" ||
           command.type === "getVersion" ||
-          command.type === "getSkills";
+          command.type === "getSkills" ||
+          command.type === "getDiscover";
         if (implementationReset !== undefined && !readOnly) {
           send(ws, { type: "error", message: "An implementation reset is active." });
           return;
@@ -4400,6 +4993,38 @@ export function createApp(options: AppOptions) {
             flow.answer(command.id, command.value, command.target);
           } else if (command.type === "answer") {
             answerQuestion(ws, command.id, command.value, command.lane);
+          } else if (command.type === "getDiscover") {
+            refreshDiscoverSnapshot();
+            sendDiscoverState(ws);
+          } else if (command.type === "discoverProject") {
+            await startDiscoverProject(ws);
+          } else if (command.type === "stopDiscover") {
+            stopDiscover(ws);
+          } else if (command.type === "answerDiscover") {
+            answerDiscoverQuestion(ws, command.id, command.value);
+          } else if (command.type === "saveDiscoverSkill") {
+            saveDiscoverSkillCommand(ws, command.name, command.text);
+          } else if (command.type === "resetDiscoverSkill") {
+            resetDiscoverSkillCommand(ws, command.name, false);
+          } else if (command.type === "rederiveDiscoverSkill") {
+            resetDiscoverSkillCommand(ws, command.name, true);
+          } else if (command.type === "confirmGlossaryTerm") {
+            const term = discoverTermRequest(command.context, command.id);
+            if (term === null) {
+              discoverFailure(ws, "Confirming a term needs its bounded context and id.");
+            } else {
+              afterDiscoverMutation(ws, confirmGlossaryTerm(repoDir, term.context, term.id));
+            }
+          } else if (command.type === "rejectGlossaryTerm") {
+            const term = discoverTermRequest(command.context, command.id);
+            if (term === null || typeof command.reason !== "string") {
+              discoverFailure(ws, "Rejecting a term needs its bounded context, id, and reason.");
+            } else {
+              afterDiscoverMutation(
+                ws,
+                rejectGlossaryTerm(repoDir, term.context, term.id, command.reason),
+              );
+            }
           }
         } catch (error) {
           send(ws, {
@@ -4439,6 +5064,16 @@ export function createApp(options: AppOptions) {
     if (pendingSkills !== undefined) {
       restoreDirectorySync(skillsDir, pendingSkills.snapshot);
       pendingSkills = undefined;
+    }
+    const discovering = discoverRun;
+    discoverRun = undefined;
+    discovering?.agent?.close();
+    if (discovering !== undefined) {
+      try {
+        rmSync(discovering.stagingDir, { recursive: true, force: true });
+      } catch {
+        // A staging directory left behind is removed by the replacement.
+      }
     }
     return stop(closeActiveConnections);
   };

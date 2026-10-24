@@ -23,8 +23,11 @@ current public practice, and leave no contradictions among the installed skills.
 - NEVER write, rewrite, or delete `<host>/GOAL.md`, anything under `<host>/adrs/`, or any other
   host file.
 - Replace only the skills this feature owns. At the start, delete every skill directory whose
-  `SKILL.md` frontmatter has `metadata.devboard-managed: "true"`. Never delete, rename, or edit a
-  skill without that marker: those are hand-authored or third-party and belong to the developer.
+  `SKILL.md` frontmatter has `metadata.devboard-managed: "true"` and does not carry
+  `metadata.devboard-family: "discover"`. A managed skill with no `metadata.devboard-family` field
+  belongs to this prepare family for backward compatibility. Never delete, rename, or edit a skill
+  that does not belong to this family, including a Discover-family skill: the Discover family is
+  project-specific, owned by Discover, and belongs to the developer once it is published.
 - Install no third-party skill. `npx skills` may be used only to inspect or adapt public skill
   content while authoring; every delivered `SKILL.md` is written locally for this goal.
 
@@ -73,6 +76,7 @@ name: lower-case-hyphenated-name
 description: One sentence naming the policy the skill states and when to apply it.
 metadata:
   devboard-managed: "true"
+  devboard-family: "prepare"
 ---
 
 # Title
@@ -103,7 +107,10 @@ Rules for every skill:
 
 ## Phase 5 — Review every installed skill
 
-This pass is mandatory and covers every skill in `<host>/.omp/skills/`, managed or not.
+This pass is mandatory and covers every skill in `<host>/.omp/skills/` that belongs to this
+prepare family, plus every hand-authored skill without a `devboard-managed` marker. It never reads
+a skill whose frontmatter carries `metadata.devboard-family: "discover"`: Discover's
+project-specific policy is not measured against project-agnostic preparation.
 
 1. List every skill directory and read every `SKILL.md` in it.
 2. Extract the directive statements: bullets or lines beginning with a policy word such as
@@ -111,15 +118,17 @@ This pass is mandatory and covers every skill in `<host>/.omp/skills/`, managed 
 3. Compare each pair of skills. Two skills contradict when they state opposite policies for the
    same subject, for example "Always use dependency injection" and "Never use dependency
    injection".
-4. Resolve every contradiction by rewriting a managed skill so both give compatible instructions.
-   You may rephrase, narrow, merge, or delete managed skills. Never change an unmanaged skill.
+4. Resolve every contradiction by rewriting a skill of this prepare family so both give compatible
+   instructions. You may rephrase, narrow, merge, or delete prepare-family skills. Never change an
+   unmanaged skill or a Discover-family skill.
 5. If a contradiction cannot be resolved without changing an unmanaged skill, stop: leave the
    unmanaged file exactly as it was and `halt: unresolvable contradiction with unmanaged skill
    <name>`. Do not claim success.
 
 ## Phase 6 — Finish
 
-- Every managed skill must carry the marker, and the managed set must contain at least one skill.
+- Every skill of this family must carry both markers, and the prepare family must contain at least
+  one skill.
 - The final review must have no remaining contradictions.
 - Reply with a short list of the prepared skill names and `No contradictions`; never paste skill
   bodies into chat.

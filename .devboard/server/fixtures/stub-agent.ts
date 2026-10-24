@@ -16,7 +16,8 @@ import { basename, dirname, join } from "node:path";
  *
  * It answers the protocol handshake, streams a little activity, optionally
  * interviews the developer, writes `- Status: Accepted` into the record named
- * in the prompt, and ends the turn.
+ * in the prompt, and ends the turn. With `--discover` it instead stages the
+ * sheet, glossary, and five Discover skills named by `/discover <staging-dir>`.
  */
 
 function argument(name: string): string | undefined {
@@ -99,6 +100,26 @@ const flowPreCommitDelay = Number(argument("flow-pre-commit-delay") ?? 0);
 /** File this stub waits for before its second and later checkpoints. */
 const flowWaitFile = argument("flow-wait-file");
 const flowNoVerification = process.argv.includes("--flow-no-verification");
+
+/** Discover Mode: the crawl staging turn and its validation-failure variants. */
+const discover = process.argv.includes("--discover");
+const discoverQuestion = process.argv.includes("--discover-question");
+const discoverProse =
+  argument("discover-prose") ??
+  "A fixture host with a small order domain used to verify the Discover crawl";
+const discoverInvalidSheet = process.argv.includes("--discover-invalid-sheet");
+const discoverSheetAbsolute = process.argv.includes("--discover-sheet-absolute");
+const discoverSheetNoEvidence = process.argv.includes("--discover-sheet-no-evidence");
+const discoverSheetSecret = process.argv.includes("--discover-sheet-secret");
+const discoverSheetTwoSentences = process.argv.includes("--discover-sheet-two-sentences");
+const discoverGlossaryInvalid = process.argv.includes("--discover-glossary-invalid");
+const discoverGlossaryGrounding = process.argv.includes("--discover-glossary-grounding");
+const discoverMissingArtifact = process.argv.includes("--discover-missing-artifact");
+const discoverExtraArtifact = process.argv.includes("--discover-extra-artifact");
+const discoverWriteOutside = process.argv.includes("--discover-write-outside");
+const discoverError = process.argv.includes("--discover-error");
+const discoverNoExit = process.argv.includes("--discover-no-exit");
+const DISCOVER_SECRET = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
 const CREATED_GOAL = "# Created goal\n\nThe agent wrote this.";
 const SETTLE_DELAY_MS = 400;
 
@@ -729,6 +750,480 @@ async function runFlowWidget(rest: string) {
   stream("The widget conversation is read-only");
 }
 
+type DiscoverConfidence = "observed" | "declared" | "inferred" | "unknown";
+
+interface DiscoverLabel {
+  language: "en" | "de";
+  text: string;
+}
+
+interface DiscoverConcept {
+  id: string;
+  prefLabels: DiscoverLabel[];
+  altLabels: DiscoverLabel[];
+  hiddenLabels: Array<DiscoverLabel & { reason: string; rejectedOn: string }>;
+  definitions: DiscoverLabel[];
+  scopeNote: null;
+  example: null;
+  historyNote: null;
+  status: "unconfirmed" | "proposed";
+  origin: "owner" | "llm";
+  standardRef: null;
+  kind: "entity" | "value";
+  grounding: string[];
+  broader: null;
+  related: string[];
+}
+
+const discoverEvidenceCandidates = [
+  "README.md",
+  "package.json",
+  "src",
+  "test",
+  ".github/workflows",
+];
+
+/** Existing repo-relative evidence paths, in candidate order, plus a safe fallback. */
+function discoverEvidencePaths() {
+  const available = discoverEvidenceCandidates.filter((path) =>
+    existsSync(join(process.cwd(), path)),
+  );
+  const fallback = available.length > 0 ? available : ["."];
+  return {
+    available,
+    primary: fallback[0] ?? ".",
+    manifest: existsSync(join(process.cwd(), "package.json")) ? "package.json" : fallback[0] ?? ".",
+    source: existsSync(join(process.cwd(), "src")) ? "src" : fallback[0] ?? ".",
+    tests: existsSync(join(process.cwd(), "test")) ? "test" : fallback[0] ?? ".",
+    ci: existsSync(join(process.cwd(), ".github", "workflows")) ? ".github/workflows" : undefined,
+    hasManifest: existsSync(join(process.cwd(), "package.json")),
+    hasTests: existsSync(join(process.cwd(), "test")),
+    hasSource: existsSync(join(process.cwd(), "src")),
+  };
+}
+
+function discoverLeaf(
+  value: unknown,
+  evidence: string[],
+  confidence: DiscoverConfidence = "observed",
+): Record<string, unknown> {
+  return { value, evidence: [...new Set(evidence)].sort(), confidence };
+}
+
+function discoverUnknown(reason: string): Record<string, unknown> {
+  return { value: null, evidence: [], confidence: "unknown", reason };
+}
+
+/** One-line, one-sentence bounded prose no longer than `limit` characters. */
+function discoverOneSentence(text: string, limit: number): string {
+  const flat = text.replace(/\s+/g, " ").trim().replace(/[.!?]+$/g, "").replace(/[.!?]\s+/g, " ");
+  if (flat.length > limit - 1) return `${flat.slice(0, limit - 1).trimEnd()}.`;
+  return `${flat}.`;
+}
+
+function discoverSheet(): Record<string, unknown> {
+  const paths = discoverEvidencePaths();
+  const evidence = [paths.primary];
+  const sheet: Record<string, unknown> = {
+    schemaVersion: 1,
+    definition: discoverLeaf(
+      discoverSheetTwoSentences
+        ? "First sentence describes the fixture project. Second sentence describes the crawl."
+        : discoverOneSentence(discoverProse, 240),
+      evidence,
+      "declared",
+    ),
+    stack: discoverLeaf(
+      ["Bun", "TypeScript"],
+      [paths.manifest],
+      paths.hasManifest ? "declared" : "inferred",
+    ),
+    deployment: {
+      class: discoverLeaf(
+        paths.hasManifest ? "package" : "none",
+        [paths.manifest],
+        "observed",
+      ),
+      artifact: discoverLeaf("fixture-host", [paths.manifest], "declared"),
+      target: discoverUnknown("No publication target was found in the crawled files."),
+      pipelineSources:
+        paths.ci === undefined
+          ? discoverUnknown("No CI configuration was found in the crawled files.")
+          : discoverLeaf([paths.ci], [paths.ci], "observed"),
+    },
+    environments: discoverUnknown("none detected"),
+    commands: {
+      install: paths.hasManifest
+        ? discoverLeaf("bun install", [paths.manifest], "declared")
+        : discoverUnknown("No install command was found in the crawled files."),
+      build: paths.hasManifest
+        ? discoverLeaf("bun run build", [paths.manifest], "declared")
+        : discoverUnknown("No build command was found in the crawled files."),
+      test: paths.hasManifest
+        ? discoverLeaf("bun test", [paths.manifest], "declared")
+        : discoverUnknown("No test command was found in the crawled files."),
+      lint: discoverUnknown("No lint command was found in the crawled files."),
+      typecheck: discoverUnknown("No typecheck command was found in the crawled files."),
+      dev: paths.hasManifest
+        ? discoverLeaf("bun run dev", [paths.manifest], "declared")
+        : discoverUnknown("No dev command was found in the crawled files."),
+      tryOut: discoverUnknown("No try-out command was found in the crawled files."),
+      release: discoverUnknown("No release command was found in the crawled files."),
+    },
+    branching: {
+      defaultBranch: discoverLeaf("main", ["git branch"], "observed"),
+      mergeMethod: discoverLeaf("merge commit", ["git log"], "inferred"),
+      releaseBranches: discoverLeaf([], ["git branch"], "observed"),
+      model: discoverLeaf("pull-request", ["git log"], "inferred"),
+    },
+    testing: {
+      levels: paths.hasTests
+        ? discoverLeaf(
+            [
+              {
+                level: "unit",
+                tests: "unknown",
+                paths: [paths.tests],
+                command: "bun test",
+                fixtures: [],
+              },
+            ],
+            [paths.tests],
+            "observed",
+          )
+        : discoverUnknown("No test files were found in the crawled files."),
+      pyramid: paths.hasTests
+        ? discoverLeaf("Unit tests are the only observed level.", [paths.tests], "inferred")
+        : discoverUnknown("No test files were found in the crawled files."),
+    },
+    architecture: {
+      contexts: paths.hasSource
+        ? discoverLeaf(
+            [
+              {
+                name: "Orders",
+                path: "src",
+                responsibility: "Owns order records and order totals.",
+                entryPoints: ["src"],
+              },
+            ],
+            ["src"],
+            "observed",
+          )
+        : discoverUnknown("No source directory was found in the crawled files."),
+      dependencyDirection: paths.hasSource
+        ? discoverLeaf(
+            "Dependencies point inward toward the Orders domain code.",
+            ["src"],
+            "inferred",
+          )
+        : discoverUnknown("No source directory was found in the crawled files."),
+      externalBoundaries: paths.hasSource
+        ? discoverLeaf([], ["src"], "observed")
+        : discoverUnknown("No source directory was found in the crawled files."),
+      sharedKernels: paths.hasSource
+        ? discoverLeaf([], ["src"], "observed")
+        : discoverUnknown("No source directory was found in the crawled files."),
+    },
+    ci: {
+      provider:
+        paths.ci === undefined
+          ? discoverLeaf("none detected", evidence, "observed")
+          : discoverLeaf("GitHub Actions", [paths.ci], "observed"),
+      triggers:
+        paths.ci === undefined
+          ? discoverLeaf([], evidence, "observed")
+          : discoverLeaf(["push"], [paths.ci], "observed"),
+      jobs:
+        paths.ci === undefined
+          ? discoverLeaf([], evidence, "observed")
+          : discoverLeaf(["test"], [paths.ci], "observed"),
+      qualityGates:
+        paths.ci === undefined
+          ? discoverLeaf([], evidence, "observed")
+          : discoverLeaf(["bun test"], [paths.ci], "declared"),
+      artifacts:
+        paths.ci === undefined
+          ? discoverLeaf([], evidence, "observed")
+          : discoverLeaf([], [paths.ci], "observed"),
+    },
+    runtime: {
+      languages: discoverLeaf(["TypeScript"], [paths.manifest], "declared"),
+      runtimes: discoverLeaf(["Bun"], [paths.manifest], "declared"),
+      packageManagers: discoverLeaf(["bun"], [paths.manifest], "declared"),
+      versions: discoverLeaf([], [paths.manifest], "observed"),
+      manifests: paths.hasManifest
+        ? discoverLeaf(["package.json"], [paths.manifest], "observed")
+        : discoverUnknown("No manifest was found in the crawled files."),
+    },
+    dependencyMap: {
+      binaries: discoverLeaf([], [paths.manifest], "observed"),
+      packages: discoverLeaf([], [paths.manifest], "observed"),
+      routes: discoverLeaf([], [paths.manifest], "observed"),
+      jobs: discoverLeaf([], [paths.manifest], "observed"),
+      externalServices: discoverLeaf([], [paths.manifest], "observed"),
+      dataStores: discoverLeaf([], [paths.manifest], "observed"),
+      keyDependencies: discoverLeaf([], [paths.manifest], "declared"),
+    },
+    delivery: {
+      artifactTarget: discoverLeaf("package", [paths.manifest], "declared"),
+      releaseChannels: discoverLeaf([], [paths.manifest], "declared"),
+      versionScheme: discoverUnknown("No versioning scheme was found in the crawled files."),
+      migrationPolicy: discoverUnknown("No migration policy was found in the crawled files."),
+    },
+  };
+
+  // Both leaf shapes were constructed above; the casts only narrow the variant mutations.
+  const stack = sheet.stack as { value: unknown; evidence: string[] };
+  const deployment = sheet.deployment as { artifact: { value: unknown } };
+  if (discoverInvalidSheet) stack.value = ["x".repeat(200)];
+  if (discoverSheetAbsolute) stack.evidence = ["/etc/passwd"];
+  if (discoverSheetNoEvidence) stack.evidence = [];
+  if (discoverSheetSecret) deployment.artifact.value = DISCOVER_SECRET;
+
+  return sheet;
+}
+
+function discoverLabelLines(field: string, labels: DiscoverLabel[]): string[] {
+  if (labels.length === 0) return [`    ${field}: []`];
+  return [
+    `    ${field}:`,
+    ...labels.flatMap((label) => [
+      `      - language: ${label.language}`,
+      `        text: ${JSON.stringify(label.text)}`,
+    ]),
+  ];
+}
+
+function discoverConceptLines(concept: DiscoverConcept): string[] {
+  const hidden =
+    concept.hiddenLabels.length === 0
+      ? ["    hiddenLabels: []"]
+      : [
+          "    hiddenLabels:",
+          ...concept.hiddenLabels.flatMap((label) => [
+            `      - language: ${label.language}`,
+            `        text: ${JSON.stringify(label.text)}`,
+            `        reason: ${JSON.stringify(label.reason)}`,
+            `        rejectedOn: ${JSON.stringify(label.rejectedOn)}`,
+          ]),
+        ];
+  return [
+    `  - id: ${concept.id}`,
+    ...discoverLabelLines("prefLabels", concept.prefLabels),
+    ...discoverLabelLines("altLabels", concept.altLabels),
+    ...hidden,
+    ...discoverLabelLines("definitions", concept.definitions),
+    "    scopeNote: null",
+    "    example: null",
+    "    historyNote: null",
+    `    status: ${concept.status}`,
+    `    origin: ${concept.origin}`,
+    "    standardRef: null",
+    `    kind: ${concept.kind}`,
+    "    grounding:",
+    ...concept.grounding.map((entry) => `      - ${JSON.stringify(entry)}`),
+    "    broader: null",
+    `    related: ${JSON.stringify(concept.related)}`,
+  ];
+}
+
+function discoverGlossaryYaml(): string {
+  const paths = discoverEvidencePaths();
+  const available = paths.available.length > 0 ? paths.available : ["."];
+  const firstGrounding = `code:${available[0] ?? "."}`;
+  const secondGrounding = `code:${available[1] ?? available[0] ?? "."}`;
+  const seed = discoverOneSentence(discoverProse, 152).replace(/\.$/, "");
+  const order: DiscoverConcept = {
+    id: "order",
+    prefLabels: [{ language: "en", text: "Order" }],
+    altLabels: [],
+    hiddenLabels: [],
+    definitions: [
+      { language: "en", text: discoverOneSentence(`${seed} names one customer order request`, 160) },
+    ],
+    scopeNote: null,
+    example: null,
+    historyNote: null,
+    status: "unconfirmed",
+    origin: "owner",
+    standardRef: null,
+    kind: "entity",
+    grounding: [firstGrounding],
+    broader: null,
+    related: [],
+  };
+  const orderTotal: DiscoverConcept = {
+    id: discoverGlossaryInvalid ? "order" : "order-total",
+    prefLabels: [{ language: "en", text: "Order Total" }],
+    altLabels: [],
+    hiddenLabels: [],
+    definitions: [
+      {
+        language: "en",
+        text: discoverOneSentence(`${seed} sums the lines of one order`, 160),
+      },
+    ],
+    scopeNote: null,
+    example: null,
+    historyNote: null,
+    status: "proposed",
+    origin: "llm",
+    standardRef: null,
+    kind: "value",
+    grounding: [discoverGlossaryGrounding ? "code:src/does-not-exist.ts" : secondGrounding],
+    broader: null,
+    related: [],
+  };
+  const lines = [
+    "boundedContext: orders",
+    "titles:",
+    "  - language: en",
+    `    text: ${JSON.stringify("Orders")}`,
+    "concepts:",
+    ...discoverConceptLines(order),
+    ...discoverConceptLines(orderTotal),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+interface DiscoverSkill {
+  name: string;
+  role: string;
+  description: string;
+  body: string[];
+}
+
+function discoverSkills(): DiscoverSkill[] {
+  const paths = discoverEvidencePaths();
+  const glossaryPath = ".omp/discover/glossary/orders.glossary.yaml";
+  return [
+    {
+      name: "discover-testing-strategy",
+      role: "testing-strategy",
+      description:
+        "Apply the observed unit-test level and the project's recorded test command before requesting review.",
+      body: [
+        `- Run \`bun test\` from the repository root before review; ${paths.manifest} records it as the test command.`,
+        `- Treat ${paths.tests} as the only observed test level and add new cases there.`,
+        `- Add a failing case first and keep one assertion focus per file under ${paths.tests}.`,
+        `- Report untested areas as unknown in the sheet instead of inventing an integration or end-to-end suite; ${paths.manifest} is the only command source.`,
+      ],
+    },
+    {
+      name: "discover-naming-conventions",
+      role: "naming-conventions",
+      description:
+        "Name code after the grounded glossary terms and keep the observed casing across the project.",
+      body: [
+        `- Name domain types and functions after the preferred labels in ${glossaryPath}.`,
+        `- Keep file names kebab-case and exported types PascalCase under ${paths.source}.`,
+        `- Use camelCase for functions, variables, and flags in ${paths.source}.`,
+        `- Reject aliases the glossary does not define; propose new terms through the glossary process in ${glossaryPath}.`,
+      ],
+    },
+    {
+      name: "discover-coding-conventions",
+      role: "coding-conventions",
+      description:
+        "Keep typed, explicit code that reuses the dependencies the manifest already records.",
+      body: [
+        `- Keep exported functions typed under ${paths.source}; never leave an implicit any boundary.`,
+        `- Handle recoverable errors at the caller in ${paths.source}; never swallow a failure silently.`,
+        `- Prefer APIs already declared in ${paths.manifest} over adding a new dependency.`,
+        `- Run the test command recorded in ${paths.manifest} before claiming a change is complete.`,
+      ],
+    },
+    {
+      name: "discover-architecture-boundaries",
+      role: "architecture-boundaries",
+      description:
+        "Keep domain behavior inside its bounded context and preserve the observed dependency direction.",
+      body: [
+        `- Keep domain behavior inside its bounded context under ${paths.source}.`,
+        `- Point imports inward toward domain modules under ${paths.source}; never import delivery code from the domain.`,
+        `- Do not add a cross-context import without recording the boundary in ${glossaryPath}.`,
+        `- Treat external services as absent until ${paths.manifest} or ${paths.source} declares one.`,
+      ],
+    },
+    {
+      name: "discover-glossary",
+      role: "glossary",
+      description:
+        "Use the canonical glossary, honor human decisions, and propose new terms explicitly.",
+      body: [
+        `- Treat ${glossaryPath} as the canonical glossary for every naming decision.`,
+        "- Never write a confirmed status into a generated glossary; only a human confirm decision may do that.",
+        "- Reject a proposed term with a non-empty reason instead of deleting it.",
+        `- Propose new terms through Discover with grounding under ${paths.source} and let a human confirm them.`,
+        "- Never label code with an invalidated preferred label; no concept is invalidated in this baseline.",
+      ],
+    },
+  ];
+}
+
+function discoverSkillText(skill: DiscoverSkill): string {
+  return [
+    "---",
+    `name: ${skill.name}`,
+    `description: ${skill.description}`,
+    "metadata:",
+    '  devboard-managed: "true"',
+    '  devboard-family: "discover"',
+    `  devboard-skill: ${skill.role}`,
+    "---",
+    "",
+    ...skill.body,
+    "",
+  ].join("\n");
+}
+
+async function runDiscover(staging: string) {
+  stream("Scanning manifests");
+  stream("Reading tests");
+  stream("Mapping architecture");
+  if (discoverQuestion) await askQuestions(1);
+
+  if (discoverError) {
+    stream("Crawl failed while reading manifests");
+    process.exit(1);
+  }
+
+  mkdirSync(staging, { recursive: true });
+  writeFileSync(join(staging, "sheet.json"), `${JSON.stringify(discoverSheet(), null, 2)}\n`);
+
+  mkdirSync(join(staging, "glossary"), { recursive: true });
+  writeFileSync(join(staging, "glossary", "orders.glossary.yaml"), discoverGlossaryYaml());
+
+  const skills = discoverSkills();
+  for (const [index, skill] of skills.entries()) {
+    if (discoverMissingArtifact && index === skills.length - 1) continue;
+    const directory = join(staging, "skills", skill.name);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "SKILL.md"), discoverSkillText(skill));
+  }
+
+  if (discoverExtraArtifact) {
+    writeFileSync(join(staging, "notes.txt"), "Extra staged note.\n");
+  }
+
+  if (discoverWriteOutside) {
+    const note = join(process.cwd(), ".omp", "discover", "staging-note.txt");
+    mkdirSync(dirname(note), { recursive: true });
+    writeFileSync(note, "Written outside staging by the stub.\n");
+    writeFileSync(
+      join(process.cwd(), "GOAL.md"),
+      "# Discover stub goal\n\nThe stub wrote outside staging.\n",
+    );
+    // The host fingerprint ignores .omp/discover, and the failure drill must
+    // leave the published Discover tree byte-identical; GOAL.md still proves
+    // the outside write.
+    unlinkSync(note);
+  }
+
+  if (discoverNoExit) await Bun.sleep(delayMs > 0 ? delayMs : 60_000);
+}
+
 /**
  * The peer is announced with the prompt that starts its first turn, so a test
  * that counts peers sees the announcement together with the turn it started.
@@ -772,6 +1267,12 @@ async function promptTurn(params: unknown) {
   ) {
     log(`flow-conversation ${firstLine}`);
     stream(`Developer: ${firstLine}`);
+    return;
+  }
+
+  if (discover && firstLine.startsWith("/discover ")) {
+    log(`prompt ${firstLine}`);
+    await runDiscover(firstLine.slice("/discover ".length).trim());
     return;
   }
 
