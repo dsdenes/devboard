@@ -439,7 +439,7 @@ describe("lifecycle pause and resume", () => {
       const { server, logPath, url } = await startServer(
         { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
         {
-          agentArguments: "--delay-ms=1500",
+          agentArguments: "--delay-ms=6000",
           tracker: async () => {
             lookups += 1;
             return lookups === 1 ? epic : undefined;
@@ -1504,7 +1504,7 @@ describe("lifecycle pause and resume", () => {
       const active = await startServer(
         {},
         {
-          agentArguments: "--delay-ms=1500",
+          agentArguments: "--delay-ms=6000",
           tracker: async () => {
             lookups += 1;
             return lookups === 1 ? activeEpic : undefined;
