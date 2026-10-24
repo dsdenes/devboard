@@ -331,6 +331,76 @@ the fast-forward; it names the blocking paths instead of touching them.
 |`STATIC_DIR`|`dist`|Built client directory.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
 
+## Harness watchdog
+
+A machine-level systemd user timer runs the watchdog independently of every dashboard: at
+minutes 0, 10, 20, 30, 40, and 50 of every hour (`OnCalendar=*:0/10`, `Persistent=true`), the
+`devboard-watchdog.service` oneshot runs `bun run watchdog -- --once` from the canonical harness.
+It survives logout (`Linger=yes`) and never starts, stops, or restarts a dashboard itself.
+
+Each cycle reads the ten minutes before cycle start, both ends inclusive, from:
+
+- every live dashboard's JSONL journal, `<serving harness>/.tmp/journal/<24-hex>.jsonl`, whose
+  key is the first 24 hex characters of `sha256(REPO_DIR)`. Each record carries `ts` (UTC ISO
+  8601), `repo`, `port`, `pid`, `kind`, and `text`; kinds are `activity`, `question`,
+  `run-start`, `run-stop`, `lane-start`, `lane-stop`, `lifecycle`, `acp-stderr`, and
+  `server-error`. A live journal rotates at 8 MiB instead of truncating.
+- omp's own warnings and errors under `~/.omp/logs/omp.*.log`, attributed to an instance only
+  through that pid's working directory or process ancestry.
+
+Retention is bounded: the watchdog deletes rotated journal files older than seven days at cycle
+start and enforces a 1 GiB total for `.tmp/journal`, deleting the oldest complete files first. A
+file still holding records inside the live window always wins over that bound, so the current
+cycle never loses evidence.
+
+Discovery scans `/proc` for every process running `server/index.ts` that supplies `REPO_DIR` and
+`PORT`, de-duplicates by `(REPO_DIR, PORT)`, resolves the serving harness from `STATIC_DIR` or
+the process working directory, and excludes the watchdog and its descendants. Instances from
+other harness checkouts are covered too; an instance whose harness has no journal is reported
+`uninstrumented` and its legacy `.tmp/devboard-<cksum>.log` is read when present.
+
+Findings are derived from evidence, one per distinct signal: `error`, `failed-command`, `retry`,
+`blocker`, `confusion`, `question-loop`, and `stall`. A clean window reports zero findings and
+changes nothing.
+
+Each cycle writes one run directory, `<harness>/.tmp/watchdog/runs/<UTC timestamp>/`, containing
+`report.json`, `report.md`, and `coordinator.log`; the newest report is also
+`.tmp/watchdog/latest.json`. A persistent ledger at `.tmp/watchdog/state.json` records each
+finding's first and last sighting, count, and disposition; an unchanged window reports
+`action: "duplicate"` and publishes nothing.
+
+A singleton lock at `.tmp/watchdog/lock` serializes every invocation: a second manual run or a
+`systemctl --user start devboard-watchdog.service` while a cycle is live prints `already running`
+and exits without invoking an agent. A stale lock whose pid is gone is reclaimed.
+
+An actionable cycle starts a headless `omp` from the canonical repository root with auto-approval,
+so `AGENTS.md` and `.omp/config.yml` apply. The prompt carries the evidence, the exact window,
+the instance list, and this change policy. The agent works only in a fresh `.worktree/<name>`
+worktree. Before merging, the coordinator requires `bun install --frozen-lockfile` when the
+worktree has no `node_modules`, then `bun test`, `bun run build`, and
+`bun run watchdog -- --collect --dry-run` to pass, and it rejects any diff outside
+`.devboard/**`. It then fast-forwards `main`, pushes the canonical remote, and runs
+`bun run publish`. A gate, scope, or merge failure leaves `main` unchanged and preserves the
+worktree; a push or publish failure leaves the pushed revision in place and exits nonzero. A
+pre-existing uncommitted change is recorded and blocks merge, push, and publish; it is never
+discarded, stashed, or committed.
+
+Operate it from the canonical `.devboard`:
+
+```bash
+bun run watchdog:install     # write the two units, enable and start the timer
+bun run watchdog -- --once   # run one cycle now
+bun run watchdog -- --collect --dry-run   # print this cycle's report; change nothing
+bun run watchdog:uninstall   # stop, disable, and remove the units
+```
+
+`watchdog:install` refuses a worktree, verifies `Linger=yes` before writing anything, discovers
+the absolute Bun executable plus the `omp` and `git` directories for the unit's `PATH`, and is
+idempotent. `watchdog:uninstall` changes no repository file. To pause the watchdog without
+uninstalling, `systemctl --user stop devboard-watchdog.timer`; `systemctl --user start
+devboard-watchdog.timer` resumes it. `WATCHDOG_AGENT_COMMAND` replaces the agent command for a
+manual run, which is how the tests inject a stub.
+
 ## Report a UI issue
 
 Every page carries a `Report UI issue` button in the lower-right corner. Selecting it enters
@@ -756,3 +826,13 @@ hook, refusal off `main`, without `origin`, outside the top level, with an unbor
 during an active run, a rejecting pre-receive hook retaining the local commit, a commit failure
 retaining the staged deletion, mutating-command refusal during a reset, replay to a late client,
 and the post-reset empty records, goal text, `getGoal`, and `saveGoal` behavior.
+`server/journal.test.ts` covers the dashboard journal: a real stub-agent run writes `activity`,
+`question`, `run-start`, and `run-stop` records with `ts`, `repo`, `port`, and `pid`; a write
+failure is reported without interrupting the run; rotation keeps every record; and pruning
+applies the seven-day limit and the size bound without deleting the live window.
+`tests/watchdog.test.ts` covers discovery (de-duplication, harness resolution, self-exclusion,
+legacy logs), the inclusive ten-minute window, omp-log attribution and self-exclusion, one
+finding per signal, the no-op and zero-instance paths, the duplicate ledger, the stub-agent
+prompt (sentinels, window bounds, instances, canonical cwd, worktree), the failed-gate and
+scope-block paths with a preserved worktree, dry-run purity, and the singleton lock. All new
+fixtures live under `.devboard/.tmp`; no test uses the network or a real model.

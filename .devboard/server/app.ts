@@ -26,6 +26,7 @@ import {
   parseFeedbackSubmission,
 } from "./feedback";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
+import { openJournal, type Journal, type JournalKind } from "./journal";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
 import {
   findOpenEpics,
@@ -74,6 +75,8 @@ export interface AppOptions {
   feedback?: FeedbackOptions;
   /** Directory that retains the lifecycle pass between process lifetimes. */
   stateDir?: string;
+  /** Injectable journal for tests; defaults to the harness `.tmp/journal`. */
+  journal?: Journal;
   /** Replaces the process; `index.ts` re-execs the host's current harness. */
   restart?: () => void;
   versionState?: () => ServerVersion;
@@ -731,6 +734,10 @@ export function createApp(options: AppOptions) {
   // The pass belongs to this checkout, not to the harness installation: hosts
   // share one harness through a symlink, so the repository path keys the file.
   const stateDir = resolve(options.stateDir ?? join(import.meta.dir, "..", ".tmp"));
+  // The journal records what happened for the watchdog. It is never part of a
+  // run's behavior: a failed write only adds a line to stderr.
+  const journal =
+    options.journal ?? openJournal({ stateDir, repoDir, port: options.port });
   const passStateFile = join(
     stateDir,
     `lifecycle-pass-${createHash("sha256").update(repoDir).digest("hex").slice(0, 24)}`,
@@ -930,6 +937,7 @@ export function createApp(options: AppOptions) {
    * they were shown.
    */
   function recordActivity(store: string[], activity: AcpActivity) {
+    journal.write("activity", activity.text);
     if (activity.append && store.length > 0) {
       store[store.length - 1] += activity.text;
       broadcast({ type: "activity", text: activity.text, append: true });
@@ -946,6 +954,7 @@ export function createApp(options: AppOptions) {
    */
   function recordLaneActivity(lane: Lane, activity: AcpActivity) {
     if (!liveLanes.has(lane)) return;
+    journal.write("activity", activity.text);
     if (activity.append && lane.activity.length > 0) {
       lane.activity[lane.activity.length - 1] += activity.text;
       broadcast({ type: "activity", lane: lane.id, text: activity.text, append: true });
@@ -1358,6 +1367,7 @@ export function createApp(options: AppOptions) {
             recordActivity(preparation.activity, activity);
           },
           onQuestion(question: AcpQuestion) {
+            journal.write("question", question.message);
             if (skillsPreparation !== preparation) return;
             preparation.question = {
               id: question.id,
@@ -1372,6 +1382,7 @@ export function createApp(options: AppOptions) {
             });
           },
           onStderr(text) {
+            journal.write("acp-stderr", text);
             process.stderr.write(text);
           },
         });
@@ -1501,6 +1512,7 @@ export function createApp(options: AppOptions) {
           recordActivity(creation.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
+          journal.write("question", question.message);
           if (goalCreation !== creation) return;
           creation.question = {
             id: question.id,
@@ -1515,6 +1527,7 @@ export function createApp(options: AppOptions) {
           });
         },
         onStderr(text) {
+          journal.write("acp-stderr", text);
           process.stderr.write(text);
         },
       });
@@ -1584,6 +1597,7 @@ export function createApp(options: AppOptions) {
           recordActivity(revision.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
+          journal.write("question", question.message);
           if (goalRevision !== revision) return;
           revision.question = {
             id: question.id,
@@ -1598,6 +1612,7 @@ export function createApp(options: AppOptions) {
           });
         },
         onStderr(text) {
+          journal.write("acp-stderr", text);
           process.stderr.write(text);
         },
       });
@@ -1628,6 +1643,7 @@ export function createApp(options: AppOptions) {
           recordActivity(run.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
+          journal.write("question", question.message);
           if (!isLiveRun(run)) return;
           run.question = {
             id: question.id,
@@ -1642,6 +1658,7 @@ export function createApp(options: AppOptions) {
           });
         },
         onStderr(text) {
+          journal.write("acp-stderr", text);
           process.stderr.write(text);
         },
       });
@@ -1656,6 +1673,10 @@ export function createApp(options: AppOptions) {
         type: "error",
         message: error instanceof Error ? error.message : String(error),
       });
+      journal.write(
+        "server-error",
+        error instanceof Error ? error.message : String(error),
+      );
       const record = await readRecord(run.file);
       return await stopRun(run, record !== undefined && !record.pending, record?.status ?? "");
     }
@@ -1666,6 +1687,8 @@ export function createApp(options: AppOptions) {
     manualRun = undefined;
     run.question = null;
     run.agent?.close();
+    const outcome = status.length > 0 ? status : resolved ? "resolved" : "stopped";
+    journal.write("run-stop", `${run.file}: ${outcome}`);
 
     broadcast({
       type: "runStopped",
@@ -1809,6 +1832,7 @@ export function createApp(options: AppOptions) {
           question: null,
         };
         manualRun = run;
+        journal.write("run-start", `${run.file}: ${run.title}`);
         broadcast({
           type: "runStarted",
           file: run.file,
@@ -1862,6 +1886,7 @@ export function createApp(options: AppOptions) {
 
   function setLifecycle(stage: LifecycleStage, work: LifecycleWork | null) {
     lifecycle = { stage, pass: lifecycle.pass, work, paused: lifecycle.paused };
+    journal.write("lifecycle", `${stage}${work === null ? "" : ` ${work.kind}`}`);
     publishLifecycle();
   }
 
@@ -2039,6 +2064,7 @@ export function createApp(options: AppOptions) {
 
   /** Runs one lane's peer and records its question and activity. */
   async function runLanePeer(lane: Lane, prompt: string): Promise<void> {
+    journal.write("lane-start", `${lane.id} ${lane.kind} ${laneTitle(lane)}`);
     broadcast({
       type: "runStarted",
       lane: lane.id,
@@ -2056,6 +2082,7 @@ export function createApp(options: AppOptions) {
           recordLaneActivity(lane, activity);
         },
         onQuestion(question: AcpQuestion) {
+          journal.write("question", question.message);
           if (!liveLanes.has(lane)) return;
           lane.question = {
             id: question.id,
@@ -2072,6 +2099,7 @@ export function createApp(options: AppOptions) {
           publishLanes();
         },
         onStderr(text) {
+          journal.write("acp-stderr", text);
           process.stderr.write(text);
         },
       });
@@ -2081,6 +2109,7 @@ export function createApp(options: AppOptions) {
     } catch (error) {
       if (liveLanes.has(lane)) {
         lane.failure = error instanceof Error ? error.message : String(error);
+        journal.write("server-error", lane.failure);
         broadcast({ type: "error", lane: lane.id, message: lane.failure });
       }
     } finally {
@@ -2091,6 +2120,7 @@ export function createApp(options: AppOptions) {
   }
 
   function broadcastLaneStopped(lane: Lane, resolved: boolean, status: string) {
+    journal.write("lane-stop", `${lane.id} ${status.length > 0 ? status : "stopped"}`);
     broadcast({
       type: "runStopped",
       lane: lane.id,
@@ -2542,6 +2572,7 @@ export function createApp(options: AppOptions) {
 
     lifecyclePausedForManualRun = false;
     lifecycleRunning = false;
+    journal.write("lifecycle", "stop");
     if (stopAllLanes()) publishLanes();
     lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
     publishLifecycle(true);
@@ -2719,6 +2750,7 @@ export function createApp(options: AppOptions) {
     settleLifecycleUnwinding = unwinding.resolve;
     clearLaneState();
     lifecycleRunning = true;
+    journal.write("lifecycle", "start");
     startMainWatcher();
     // Report the run as active before the first tracker lookup: clients need the
     // stage to disable their start controls and offer pause while the lookup runs.
