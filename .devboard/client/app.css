@@ -12,6 +12,10 @@
   --resolved-surface: #f0f7f2;
   --accent: #0969da;
   --accent-surface: #eef4ff;
+  --generation: #8250df;
+  --generation-surface: #f6f1ff;
+  --adr: #1f7a8c;
+  --adr-surface: #eef8f9;
   --error: #b42318;
   --error-surface: #fdf2f1;
   font-family:
@@ -32,6 +36,10 @@
     --resolved-surface: #16251b;
     --accent: #58a6ff;
     --accent-surface: #16233a;
+    --generation: #bc8cff;
+    --generation-surface: #241a33;
+    --adr: #6cb6c8;
+    --adr-surface: #13292c;
     --error: #ff7b72;
     --error-surface: #2b1513;
   }
@@ -806,28 +814,76 @@ code {
 .lane-tab {
   background: var(--surface);
   border: 1px solid var(--border);
+  border-left-width: 3px;
   border-radius: 6px;
   color: var(--muted);
   cursor: pointer;
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
+  align-items: center;
   font: inherit;
   font-size: 0.78rem;
-  gap: 0.15rem;
   padding: 0.35rem 0.6rem;
   text-align: left;
 }
 
-.lane-tab.selected {
-  background: var(--accent-surface);
-  border-color: var(--accent);
-  color: var(--text);
+/* Each lane kind has its own color, and an implementation tells a running
+   peer from a stopped one, so the tab needs no status text. */
+.lane-tab[data-kind="generation"] {
+  background: var(--generation-surface);
+  border-left-color: var(--generation);
 }
 
-.lane-tab-status {
-  font-size: 0.68rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+.lane-tab[data-kind="generation"] .lane-label {
+  color: var(--generation);
+}
+
+.lane-tab[data-kind="adr"] {
+  background: var(--adr-surface);
+  border-left-color: var(--adr);
+}
+
+.lane-tab[data-kind="adr"] .lane-label {
+  color: var(--adr);
+}
+
+.lane-tab[data-kind="implementation"][data-status="running"] {
+  background: var(--resolved-surface);
+  border-left-color: var(--resolved);
+}
+
+.lane-tab[data-kind="implementation"][data-status="running"] .lane-label {
+  color: var(--resolved);
+}
+
+.lane-tab[data-kind="implementation"][data-status="failed"] {
+  border-left-color: var(--error);
+}
+
+.lane-tab[data-kind="implementation"][data-status="failed"] .lane-label {
+  color: var(--error);
+}
+
+.lane-tab[data-kind="implementation"][data-status="paused"],
+.lane-tab[data-kind="implementation"][data-status="retrying"],
+.lane-tab[data-kind="implementation"][data-status="parked"] {
+  border-left-color: var(--pending);
+}
+
+.lane-tab[data-kind="implementation"][data-status="paused"] .lane-label,
+.lane-tab[data-kind="implementation"][data-status="retrying"] .lane-label,
+.lane-tab[data-kind="implementation"][data-status="parked"] .lane-label {
+  color: var(--pending);
+}
+
+.lane-tab[data-kind="implementation"][data-status="closed"] {
+  border-left-color: var(--muted);
+}
+
+.lane-tab.selected {
+  background: var(--accent-surface);
+  color: var(--text);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .lane-panel {

@@ -133,6 +133,7 @@ async function startServer(
   options: {
     agentArguments?: string;
     laneBackoffMs?: number;
+    laneRetentionMs?: number;
     mainPollMs?: number;
   } = {},
 ): Promise<{ server: Server<unknown>; url: string }> {
@@ -157,6 +158,7 @@ async function startServer(
     tracker: async () => readTracker(host.trackerFile),
     trackerSettle: { attempts: 1 },
     laneBackoffMs: options.laneBackoffMs,
+    laneRetentionMs: options.laneRetentionMs,
     mainPollMs: options.mainPollMs,
   });
   return { server, url: `127.0.0.1:${server.port}` };
@@ -870,6 +872,43 @@ describe("parallel lifecycle", () => {
         expect(state?.openEpics).toBe(0);
         expect(state?.runningLanes).toBe(0);
         expect(state?.lanes.map((lane) => lane.status)).toEqual(["closed"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30_000,
+  );
+
+  test(
+    "drops a closed lane from the active list after its retention window",
+    async () => {
+      const host = await makeHost([]);
+      const { server, url } = await startServer(host, { laneRetentionMs: 100 });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
+        const closed = [...client.events]
+          .reverse()
+          .map((message) => laneState(message))
+          .find((state) => state?.lanes.some((lane) => lane.status === "closed"));
+        const laneId = closed?.lanes.find((lane) => lane.status === "closed")?.id;
+        expect(laneId).toBeDefined();
+
+        await waitUntil(
+          () => {
+            const states = client.events
+              .map((message) => laneState(message))
+              .filter((state) => state !== undefined);
+            const latest = states[states.length - 1];
+            return latest !== undefined && !latest.lanes.some((lane) => lane.id === laneId);
+          },
+          "the closed lane was not removed after its retention window",
+        );
       } finally {
         client.close();
         server.stop(true);

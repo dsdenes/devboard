@@ -88,13 +88,7 @@
     runningLanes: number;
   }
 
-  const STAGE_LABELS: Record<LifecycleStage, string> = {
-    goal: "Goal setup",
-    epic: "Epic generation",
-    adr: "ADR resolution",
-    implementation: "Implementation",
-    finished: "Finished",
-  };
+  const STAGE_NAMES = new Set<string>(["goal", "epic", "adr", "implementation", "finished"]);
 
   let records = $state<AdrRecord[]>([]);
   let next = $state<string | null>(null);
@@ -207,7 +201,6 @@
       ? "1 previous action"
       : `${previousActions.length} previous actions`,
   );
-  let lifecycleStageLabel = $derived(STAGE_LABELS[lifecycle.stage]);
   let lifecycleWorkTitle = $derived(
     lifecycle.work === null
       ? null
@@ -587,7 +580,8 @@
       !("type" in value) ||
       value.type !== "lifecycleState" ||
       !("stage" in value) ||
-      !(value.stage in STAGE_LABELS) ||
+      typeof value.stage !== "string" ||
+      !STAGE_NAMES.has(value.stage) ||
       !("pass" in value) ||
       typeof value.pass !== "number" ||
       !("work" in value) ||
@@ -1245,9 +1239,6 @@
 
   <section class="lifecycle" data-testid="lifecycle">
     <p class="lifecycle-line">
-      Stage <strong data-testid="lifecycle-stage">{lifecycleStageLabel}</strong>
-    </p>
-    <p class="lifecycle-line">
       Open epics <strong data-testid="epic-count">{openEpics}</strong>
     </p>
     <p class="lifecycle-line">
@@ -1291,10 +1282,10 @@
             data-record={lane.record?.file}
             data-attempt={lane.attempt}
             data-status={lane.status}
+            aria-label="{laneLabel(lane)} ({lane.status})"
             onclick={() => selectLane(lane.id)}
           >
             <span class="lane-label">{laneLabel(lane)}</span>
-            <span class="lane-tab-status">{lane.status}</span>
           </button>
         {/each}
       </div>

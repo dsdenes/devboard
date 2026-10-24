@@ -67,6 +67,8 @@ export interface AppOptions {
   trackerSettle?: Partial<TrackerSettle>;
   /** Delay before an implementation lane whose epic stayed open runs again. */
   laneBackoffMs?: number;
+  /** How long a finished lane keeps its tab before leaving the active list. */
+  laneRetentionMs?: number;
   /** Interval at which `main` is checked for a parked or retrying lane. */
   mainPollMs?: number;
   feedback?: FeedbackOptions;
@@ -206,6 +208,8 @@ const TRACKER_SETTLE_ATTEMPTS = 7;
 const TRACKER_SETTLE_DELAY_MS = 500;
 /** Delay before a lane whose epic stayed open runs again. */
 const LANE_BACKOFF_MS = 5_000;
+/** How long a closed or failed lane stays in the active lane list. */
+const LANE_RETENTION_MS = 30_000;
 /** Interval at which `main` is checked while a retry or a parked epic waits. */
 const MAIN_POLL_MS = 2_000;
 const GOAL_CREATION_PROMPT = "/goal-outcome";
@@ -719,6 +723,7 @@ export function createApp(options: AppOptions) {
     delayMs: Math.max(0, options.trackerSettle?.delayMs ?? TRACKER_SETTLE_DELAY_MS),
   };
   const laneBackoffMs = Math.max(0, options.laneBackoffMs ?? LANE_BACKOFF_MS);
+  const laneRetentionMs = Math.max(0, options.laneRetentionMs ?? LANE_RETENTION_MS);
   const mainPollMs = Math.max(10, options.mainPollMs ?? MAIN_POLL_MS);
   const feedbackCommand = options.feedback?.ghCommand ?? ["gh"];
   const feedbackTimeoutMs = Math.max(1, options.feedback?.timeoutMs ?? FEEDBACK_TIMEOUT_MS);
@@ -798,8 +803,10 @@ export function createApp(options: AppOptions) {
   const resumeWaiters: (() => void)[] = [];
 
   // A lifecycle run owns these. Every lane keeps its tab for the whole run;
-  // stopped lanes stay in `lanes` beside the attempt that replaces them.
+  // a lane that finished keeps it for `laneRetentionMs` so the outcome stays
+  // readable, then leaves the active list.
   let lanes: Lane[] = [];
+  const laneRetentionTimers = new Map<Lane, Timer>();
   const liveLanes = new Set<Lane>();
   const epicStates = new Map<string, EpicState>();
   const parkedEpics = new Set<string>();
@@ -1921,7 +1928,29 @@ export function createApp(options: AppOptions) {
     };
   }
 
+  /** Drops a finished lane once its retention window elapses. */
+  function scheduleLaneRemoval(lane: Lane) {
+    if (lane.status !== "closed" && lane.status !== "failed") return;
+    if (laneRetentionTimers.has(lane)) return;
+    const timer = setTimeout(() => {
+      laneRetentionTimers.delete(lane);
+      const index = lanes.indexOf(lane);
+      if (index < 0) return;
+      lanes.splice(index, 1);
+      publishLanes();
+    }, laneRetentionMs);
+    laneRetentionTimers.set(lane, timer);
+  }
+
+  function clearLaneRetention() {
+    for (const timer of laneRetentionTimers.values()) clearTimeout(timer);
+    laneRetentionTimers.clear();
+  }
+
   function publishLanes() {
+    // A lane that has just finished keeps its tab briefly for the operator,
+    // then leaves the active list instead of accumulating for the whole run.
+    for (const lane of lanes) scheduleLaneRemoval(lane);
     broadcast(laneSnapshot());
   }
 
@@ -2422,6 +2451,7 @@ export function createApp(options: AppOptions) {
 
   function clearLaneState() {
     stopAllLanes();
+    clearLaneRetention();
     lanes = [];
     epicStates.clear();
     parkedEpics.clear();

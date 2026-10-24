@@ -65,7 +65,9 @@ resolves every pending record in ascending file-name order: after each run the s
 still `Proposed` (or has been removed). The chain runs in the server, so it continues if the
 browser disconnects.
 
-The page also shows a lifecycle stage, a pass number, `Open epics`, and `Running lanes` counts.
+The page also shows a pass number plus `Open epics` and `Running lanes` counts. It shows no
+single lifecycle stage, because epic generation can run in parallel with implementation; the
+counts and the lane tabs describe the run instead.
 The pass is retained per repository in the harness state directory and reloaded when the backend
 restarts, so an interrupted run's pass is still shown afterwards; an explicit reset sets it back
 to 1. The lifecycle starts only from a settled goal and a prepared skill set: `Start implementation`
@@ -76,11 +78,11 @@ settled, when the skills directory cannot be read, or when no managed skill is i
 One button in the page header controls the lifecycle: it reads `Start implementation` while idle
 and turns red with `Stop implementation` while a run is active.
 Selecting `Start implementation` reports the run as active at the `epic` stage with no work as
-soon as the server accepts the command, before it queries the origin tracker; every client
-therefore shows `Epic generation` with the header control reading `Stop implementation` while
-that query runs. Selecting `Stop implementation` closes every lane peer, ends the loop, and
-reports the idle `goal` stage with the pass already reached; a stop never leaves the run
-suspended, and a new start is accepted only after the stopped loop has finished unwinding.
+soon as the server accepts the command, before it queries the origin tracker; the header control
+therefore reads `Stop implementation` while that query runs. Selecting `Stop implementation`
+closes every lane peer, ends the loop, and reports the idle `goal` stage with the pass already
+reached; a stop never leaves the run suspended, and a new start is accepted only after the
+stopped loop has finished unwinding.
 
 A lifecycle run is a continuously refilling parallel pipeline. The server reads every open epic,
 not only the first, and starts one implementation lane per open epic at once, with no fixed
@@ -111,21 +113,24 @@ epic is open, a generation pass files nothing, and no ADR is still `Proposed`, t
 `finished`; pending ADRs are resolved first with `/adr-resolve` in file-name order.
 
 The page renders one tab per active agent lane under `Open epics`/`Running lanes`: epic
-generation, each implementation epic, and ADR resolution. Each tab carries the lane kind and its
-epic or record identity, and an attempt number when the epic was retried, so a stopped tab stays
-beside the attempt that replaces it for the rest of the run. Selecting a tab shows only that
-lane's current action, history, status, and pending question; two peers streaming at once never
-mix their lines. The lifecycle advances while a run is active, so the goal editor and the
-lifecycle start control are disabled, but the ADR start controls remain available: selecting one
-interrupts every lane at its interrupted stage, starts the manual record sequence, and resumes the
-lifecycle when that sequence ends. A client that connects or reloads
-receives the current stage, pass, counts, tab list, and every live lane's recorded activity and
-pending question. An epic's work state carries the tracker page, and the page renders `Epic #<n>`
-as a link to that issue. Once a run reports `finished`, the server keeps that state for its lifetime and
-replays it, together with the final tabs, to every client that connects or reloads, so the
-interface still shows `Finished` and the final pass until a new run starts or the backend
-restarts. An aborted run likewise replays the idle goal stage with no work, not paused, and the
-pass it had reached, so the goal becomes editable and another lifecycle run can start.
+generation, each implementation epic, and ADR resolution. Each tab carries its epic or record
+identity and an attempt number when the epic was retried. Its left edge is colored by lane kind
+and state: purple for epic generation, teal for ADR resolution, green for a running
+implementation, amber while one is paused, retrying, or parked, red when it failed, and gray
+once it closed. The tab carries no status text. A closed or failed lane leaves the active list
+after 30 seconds. Selecting a tab shows only that lane's current action, history, status, and
+pending question; two peers streaming at once never mix their lines. The lifecycle advances while
+a run is active, so the goal editor and the lifecycle start control are disabled, but the ADR
+start controls remain available: selecting one interrupts every lane at its interrupted stage,
+starts the manual record sequence, and resumes the lifecycle when that sequence ends. A client
+that connects or reloads receives the current stage, pass, counts, tab list, and every live lane's
+recorded activity and pending question. An epic's work state carries the tracker page, and the
+page renders `Epic #<n>` as a link to that issue. Once a run reports `finished`, the server keeps
+that state for its lifetime and replays it, together with the lanes still retained, to every client
+that connects or reloads, so the interface still shows the final pass and any recent tabs until a
+new run starts or the backend restarts. An aborted run likewise replays the idle goal stage with
+no work, not paused, and the pass it had reached, so the goal becomes editable and another
+lifecycle run can start.
 
 An epic is an open issue carrying the label `epic` (ignoring case) or the
 `<!-- devboard-epic -->` marker in its body; the server reads every such issue with read-only
