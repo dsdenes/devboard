@@ -22,11 +22,20 @@ export interface LedgerEntry {
   head?: string;
 }
 
+export interface PendingPublish {
+  /** The pushed commit whose publish failed. */
+  commit: string;
+  /** The findings that commit fixes. */
+  findings: string[];
+}
+
 export interface Ledger {
   version: 1;
   findings: Record<string, LedgerEntry>;
   /** Session ids of earlier watchdog agent runs, excluded from evidence. */
   selfSessions: string[];
+  /** A pushed revision whose publish has not succeeded yet. */
+  pendingPublish?: PendingPublish;
 }
 
 export function loadLedger(stateDir: string): Ledger {
@@ -44,7 +53,25 @@ export function loadLedger(stateDir: string): Ledger {
     const selfSessions = Array.isArray(record.selfSessions)
       ? record.selfSessions.filter((entry): entry is string => typeof entry === "string")
       : [];
-    return { version: 1, findings, selfSessions };
+    const pending = record.pendingPublish;
+    const pendingPublish =
+      typeof pending === "object" &&
+      pending !== null &&
+      typeof (pending as PendingPublish).commit === "string" &&
+      Array.isArray((pending as PendingPublish).findings)
+        ? {
+            commit: (pending as PendingPublish).commit,
+            findings: (pending as PendingPublish).findings.filter(
+              (entry): entry is string => typeof entry === "string",
+            ),
+          }
+        : undefined;
+    return {
+      version: 1,
+      findings,
+      selfSessions,
+      ...(pendingPublish === undefined ? {} : { pendingPublish }),
+    };
   } catch {
     return { version: 1, findings: {}, selfSessions: [] };
   }
