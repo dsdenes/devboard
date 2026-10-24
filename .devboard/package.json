@@ -7,7 +7,10 @@
     "build": "vite build",
     "start": "bun run server/index.ts",
     "publish": "bun run scripts/publish.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "watchdog": "bun run watchdog/main.ts",
+    "watchdog:install": "bun run watchdog/install.ts",
+    "watchdog:uninstall": "bun run watchdog/uninstall.ts"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Devboard watchdog every ten minutes
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+Unit=devboard-watchdog.service
+
+[Install]
+WantedBy=timers.target
