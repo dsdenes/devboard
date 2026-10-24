@@ -92,6 +92,7 @@ const flowVerification = argument("flow-verification") ?? "passed";
 const flowAnalystPartial = process.argv.includes("--flow-analyst-partial");
 const flowAnalystFail = process.argv.includes("--flow-analyst-fail");
 const flowAnalystEmpty = process.argv.includes("--flow-analyst-empty");
+const flowAnalystForeign = process.argv.includes("--flow-analyst-foreign");
 const flowSilentCheckpoints = process.argv.includes("--flow-silent-checkpoints");
 const flowPreCommitDelay = Number(argument("flow-pre-commit-delay") ?? 0);
 const flowNoVerification = process.argv.includes("--flow-no-verification");
@@ -695,6 +696,15 @@ async function runFlowChange(directory: string) {
       summary: "The stored configuration changed.",
       rationale: "Persisted values have a new shape.",
       files: selected.slice(1),
+    });
+  }
+  if (flowAnalystForeign) {
+    widgets.push({
+      category: "entity",
+      concept: "A file outside the diff",
+      summary: "This widget invents a file.",
+      rationale: "It must be rejected by the server's validation.",
+      files: ["src/not-in-the-diff.txt"],
     });
   }
   writeJsonFile(join(directory, "widgets.json"), { widgets });

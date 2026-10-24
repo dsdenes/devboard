@@ -1293,3 +1293,207 @@ describe("Flow persistence and isolation", () => {
 function promptCount(fixture: Fixture, directory: string): number {
   return prompts(fixture).filter((line) => line === `prompt /flow-implement ${directory}`).length;
 }
+
+describe("Flow replay, base resolution, and validation edges", () => {
+  test("a client connecting during the goal interview gets the session, marker, activity, and question first", async () => {
+    const fixture = createFixture("replay-goal");
+    const testServer = startServer(fixture, { stub: ["--flow-goal"] });
+    const first = await connect(testServer);
+    await connected(first);
+    first.send({ type: "createFlowGoal" });
+    await first.waitFor((event) => event.type === "flowQuestion");
+
+    const late = await connect(testServer);
+    const sessionId = sessionIds(fixture)[0] as string;
+    late.send({ type: "getGoal" });
+    await late.waitFor((event) => event.type === "goal");
+    const types = late.events.map((event) => event.type);
+    const snapshot = late.events.find(
+      (event) => event.type === "flowSnapshot" && event.sessionId === sessionId,
+    );
+    expect(snapshot).toBeDefined();
+    expect(types.indexOf("flowGoalStarted")).toBeGreaterThanOrEqual(0);
+    expect(types.indexOf("flowActivity")).toBeGreaterThan(types.indexOf("flowGoalStarted"));
+    expect(types.indexOf("flowQuestion")).toBeGreaterThan(types.indexOf("flowActivity"));
+    expect(types.indexOf("goal")).toBeGreaterThan(types.indexOf("flowQuestion"));
+    const question = late.events.find((event) => event.type === "flowQuestion");
+    expect(question?.target).toBe("goal");
+    first.send({ type: "flowAnswer", target: "goal", id: question?.id, value: "Alpha" });
+    await first.waitFor((event) => event.type === "flowGoalStopped");
+    first.close();
+    late.close();
+  }, 40_000);
+
+  test("the base falls back to local main when origin has no main, and refuses when neither exists", async () => {
+    const fixture = createFixture("base-fallback");
+    git(fixture.root, ["remote", "remove", "origin"]);
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", "--flow-implement", "--flow-change"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "startFlowImplementation" });
+    const started = await client.waitFor((event) => event.type === "flowImplementationStarted");
+    expect(started.baseRevision).toBe(git(fixture.root, ["rev-parse", "main"]).trim());
+    await client.waitFor((event) => event.type === "flowStopped");
+    client.close();
+
+    const root = testDirectory("no-main");
+    mkdirSync(join(root, "adrs"), { recursive: true });
+    mkdirSync(join(root, "static"), { recursive: true });
+    writeFileSync(join(root, "static", "index.html"), "<!doctype html>");
+    writeFileSync(join(root, "GOAL.md"), "# Host\n");
+    writeFileSync(join(root, "file.txt"), "x\n");
+    git(root, ["init", "-b", "trunk"]);
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-m", "base"]);
+    const noMain: Fixture = {
+      root,
+      logPath: join(root, "agent.log"),
+      forgeLog: join(root, "forge.log"),
+      stateDir: join(root, "state"),
+      goalFile: join(root, "GOAL.md"),
+    };
+    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const failing = startServer(noMain, {
+      stub: ["--flow-goal", "--flow-implement", "--flow-change"],
+    });
+    const failingClient = await connect(failing);
+    await connected(failingClient);
+    await createGoal(failingClient, noMain);
+    failingClient.send({ type: "startFlowImplementation" });
+    const error = await failingClient.waitFor((event) => event.type === "flowError");
+    expect(String(error.message)).toContain("neither origin/main nor main");
+    expect(existsSync(join(root, ".worktree"))).toBe(false);
+    expect(prompts(noMain).filter((line) => line.startsWith("prompt /flow-implement "))).toHaveLength(0);
+    failingClient.close();
+  }, 60_000);
+
+  test("an analyst that names a file outside the diff is rejected and covered instead", async () => {
+    const fixture = createFixture("analyst-foreign");
+    const testServer = startServer(fixture, {
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-change",
+        "--flow-analyst-foreign",
+      ],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "startFlowImplementation" });
+    const error = await client.waitFor((event) => event.type === "flowError");
+    expect(String(error.message)).toContain("valid widget list");
+    await waitUntil(
+      () => {
+        const widgets = latest(client, "flowWidgets")?.widgets as
+          | { files: string[]; category: string }[]
+          | undefined;
+        const files = latest(client, "flowFiles")?.files as { path: string }[] | undefined;
+        if (!Array.isArray(widgets) || !Array.isArray(files) || files.length === 0) return false;
+        const covered = new Set(widgets.flatMap((widget) => widget.files));
+        return files.every((file) => covered.has(file.path));
+      },
+      "fallback coverage after an invalid analyst result",
+    );
+    const widgets = latest(client, "flowWidgets")?.widgets as { files: string[]; category: string }[];
+    for (const widget of widgets) {
+      for (const path of widget.files) expect(path).not.toBe("src/not-in-the-diff.txt");
+      expect(widget.category).toBe("structure");
+    }
+    client.close();
+  }, 60_000);
+
+  test("a reconnecting client receives the open conversation, its messages, and its pending question", async () => {
+    const fixture = createFixture("replay-conversation");
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", "--flow-implement", "--flow-change", "--flow-widget"],
+    });
+    const first = await connect(testServer);
+    await connected(first);
+    await createGoal(first, fixture);
+    first.send({ type: "startFlowImplementation" });
+    await waitUntil(
+      () => {
+        const widgets = latest(first, "flowWidgets")?.widgets as unknown[] | undefined;
+        return Array.isArray(widgets) && widgets.length > 0;
+      },
+      "the first widget snapshot",
+    );
+    await first.waitFor((event) => event.type === "flowStopped");
+    const widget = (latest(first, "flowWidgets")?.widgets as { id: string }[])[0] as { id: string };
+    first.send({ type: "openFlowWidget", id: widget.id });
+    await first.waitFor((event) => event.type === "flowConversationQuestion");
+    first.send({ type: "sendFlowConversation", text: "Recorded developer message" });
+    await waitUntil(
+      () => {
+        const message = latest(first, "flowConversationMessage");
+        return message?.text === "Recorded developer message";
+      },
+      "the recorded conversation message",
+    );
+
+    const late = await connect(testServer);
+    late.send({ type: "getGoal" });
+    await late.waitFor((event) => event.type === "goal");
+    const types = late.events.map((event) => event.type);
+    expect(types).toContain("flowConversationStarted");
+    expect(types).toContain("flowConversationQuestion");
+    expect(types).toContain("flowConversationMessage");
+    expect(types.indexOf("flowConversationStarted")).toBeLessThan(types.indexOf("goal"));
+    const message = late.events.find((event) => event.type === "flowConversationMessage");
+    expect(message?.text).toBe("Recorded developer message");
+    first.send({ type: "closeFlowWidget" });
+    first.close();
+    late.close();
+  }, 60_000);
+
+  test("the widget identity ignores concept text and the seven categories have distinct colors", async () => {
+    const here = import.meta.dir;
+    const flowSource = readFileSync(join(here, "flow.ts"), "utf8");
+    expect(flowSource).toContain("export function widgetSignature");
+    // The signature takes only category, paths, and diffs, never concept text.
+    const signatureCall = /widgetSignature\(([^)]*)\)/.exec(
+      flowSource.slice(flowSource.indexOf("function widgetSignature")),
+    );
+    expect(signatureCall?.[1]).toContain("category");
+
+    const css = readFileSync(join(here, "..", "client", "app.css"), "utf8");
+    const categories = [
+      "contract",
+      "entity",
+      "naming",
+      "data",
+      "dependency",
+      "irreversible",
+      "structure",
+    ];
+    const lightRoot = css.slice(0, css.indexOf("@media (prefers-color-scheme: dark)"));
+    const darkRoot = css.slice(css.indexOf("@media (prefers-color-scheme: dark)"));
+    const lightBorders = categories.map((category) => {
+      const match = new RegExp(`--flow-${category}-border:\\s*([^;]+);`).exec(lightRoot);
+      return match?.[1]?.trim();
+    });
+    const darkBorders = categories.map((category) => {
+      const match = new RegExp(`--flow-${category}-border:\\s*([^;]+);`).exec(darkRoot);
+      return match?.[1]?.trim();
+    });
+    const lightSurfaces = categories.map((category) => {
+      const match = new RegExp(`--flow-${category}-surface:\\s*([^;]+);`).exec(lightRoot);
+      return match?.[1]?.trim();
+    });
+    expect(lightBorders.every((value) => value !== undefined)).toBe(true);
+    expect(darkBorders.every((value) => value !== undefined)).toBe(true);
+    expect(lightSurfaces.every((value) => value !== undefined)).toBe(true);
+    expect(new Set(lightBorders).size).toBe(categories.length);
+    expect(new Set(darkBorders).size).toBe(categories.length);
+    expect(new Set(lightSurfaces).size).toBe(categories.length);
+
+    const view = readFileSync(join(here, "..", "client", "FlowMode.svelte"), "utf8");
+    expect(view).toContain('from "diff2html"');
+    expect(view).toContain('data-category={widget.category}');
+    expect(view).toContain('data-testid="flow-widget"');
+  });
+});
