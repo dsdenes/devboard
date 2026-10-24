@@ -14,6 +14,7 @@ import { journalFile } from "../server/journal";
 import {
   normalizeEvidenceLine,
   readJournalEvidence,
+  readLegacyEvidence,
   readOmpEvidence,
   type EvidenceEvent,
   type Window,
@@ -237,6 +238,23 @@ describe("window and attribution", () => {
     expect(collected.malformed).toBe(1);
   });
 
+  test("reads a legacy log only while it is inside the window", async () => {
+    const base = await temporaryDirectory("test-watchdog-legacy");
+    const harness = join(base, "harness");
+    await mkdir(join(harness, ".tmp"), { recursive: true });
+    const instance = instanceFor(base, 8080, harness);
+    const legacy = legacyLogPath(harness, base);
+    await writeFile(legacy, "legacy failure line\n");
+    await utimes(legacy, window.end, window.end);
+    const instanceWithLegacy = { ...instance, legacyLog: legacy };
+    expect(
+      readLegacyEvidence(instanceWithLegacy, { window }).map((item) => item.text),
+    ).toEqual(["legacy failure line"]);
+    const old = new Date(window.start.getTime() - 60_000);
+    await utimes(legacy, old, old);
+    expect(readLegacyEvidence(instanceWithLegacy, { window })).toEqual([]);
+  });
+
   test("includes an in-window omp error and drops self and unrelated lines", async () => {
     const base = await temporaryDirectory("test-watchdog-omp");
     const logsDir = join(base, "logs");
@@ -318,6 +336,19 @@ describe("findings", () => {
     expect(
       findings.every((finding) => finding.source === ".devboard/.tmp/journal/fixture.jsonl"),
     ).toBe(true);
+  });
+
+  test("detects a question loop and a stalled start", async () => {
+    const root = await temporaryDirectory("test-watchdog-loop");
+    const owner = instanceFor(root, 8080);
+    const events = [
+      event(root, 6, "Choose an answer", "question", owner),
+      event(root, 5, "Choose an answer 2", "question", owner),
+      event(root, 4, "Choose an answer 3", "question", owner),
+      event(root, 8, "lane-1 implementing", "lane-start", owner),
+    ];
+    const findings = analyzeEvidence(events, { root, window });
+    expect(findings.map((finding) => finding.category)).toEqual(["stall", "question-loop"]);
   });
 
   test("invents nothing from a clean window", async () => {
@@ -500,6 +531,36 @@ await Bun.write(capture, JSON.stringify({
     expect(result.report.blocked).toContain("host-file.txt");
     expect(integrated).toBe(0);
     expect(existsSync(result.report.worktree as string)).toBe(true);
+  });
+
+  test("exits nonzero when the agent session fails and keeps the worktree", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    const events = [event(root, 1, "synthetic error: ENOTFOUND the model endpoint")];
+    const { deps, counts } = stubDeps(root, events, {
+      agent: async () => ({ code: 7, stdout: "", stderr: "model unavailable" }),
+    });
+    const result = await runCycle({ root, now: fixedNow, stateDir, deps });
+    expect(result.report.action).toBe("failed");
+    expect(result.report.reason).toContain("exit 7");
+    expect(result.exitCode).toBe(1);
+    expect(counts.gate).toBe(0);
+    expect(counts.integrate).toBe(0);
+    expect(existsSync(result.report.worktree as string)).toBe(true);
+  });
+
+  test("blocks while operator work is uncommitted and never starts an agent", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    writeFileSync(join(root, "operator.txt"), "mine\n");
+    const events = [event(root, 1, "synthetic error: ENOTFOUND the model endpoint")];
+    const { deps, counts } = stubDeps(root, events);
+    const result = await runCycle({ root, now: fixedNow, stateDir, deps });
+    expect(result.report.action).toBe("blocked");
+    expect(result.report.blocked).toContain("operator.txt");
+    expect(result.report.reason).toContain("uncommitted operator work");
+    expect(result.exitCode).toBe(0);
+    expect(counts.agent).toBe(0);
   });
 
   test("dry run writes no run directory and invokes no agent", async () => {
