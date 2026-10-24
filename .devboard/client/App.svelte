@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import AgentOutput from "./AgentOutput.svelte";
   import FeedbackOverlay from "./FeedbackOverlay.svelte";
+  import FlowMode from "./FlowMode.svelte";
 
   interface AdrRecord {
     file: string;
@@ -129,6 +130,22 @@
   let restarting = $state(false);
   let awaitingRestart = $state(false);
   let upgradePending = $state(false);
+
+  type ViewName = "goal" | "flow";
+
+  interface SavedViewState {
+    focus: HTMLElement | null;
+    scrolls: Array<[Element, number]>;
+  }
+
+  let mode = $state<ViewName>("goal");
+  let goalViewEl: HTMLDivElement;
+  let flowViewEl: HTMLDivElement;
+  let flowComponent: FlowMode;
+  const savedViews: Record<ViewName, SavedViewState> = {
+    goal: { focus: null, scrolls: [] },
+    flow: { focus: null, scrolls: [] },
+  };
 
   let pendingCount = $derived(records.filter((record) => record.pending).length);
   let running = $derived(runState === "active");
@@ -774,6 +791,60 @@
     if (event.key === "Escape") closeOverlays();
   }
 
+  /**
+   * The view remembers the last control focused inside it. Switching tabs moves
+   * focus to the tab button before the click handler runs, so reading
+   * `document.activeElement` at switch time would lose the developer's place.
+   */
+  function rememberFocus(view: ViewName, event: FocusEvent): void {
+    const target = event.target;
+    if (target instanceof HTMLElement) savedViews[view].focus = target;
+  }
+
+  function captureViewState(view: HTMLDivElement | undefined): SavedViewState {
+    const state: SavedViewState = { focus: null, scrolls: [] };
+    if (view === undefined) return state;
+
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && view.contains(active)) state.focus = active;
+
+    if (view.scrollTop !== 0) state.scrolls.push([view, view.scrollTop]);
+    for (const element of view.querySelectorAll("*")) {
+      if (element.scrollTop !== 0) state.scrolls.push([element, element.scrollTop]);
+    }
+    return state;
+  }
+
+  function restoreViewState(view: HTMLDivElement | undefined, state: SavedViewState): void {
+    if (view === undefined) return;
+    for (const [element, top] of state.scrolls) {
+      if (element.isConnected) element.scrollTop = top;
+    }
+    if (state.focus !== null && state.focus.isConnected) {
+      state.focus.focus({ preventScroll: true });
+    }
+  }
+
+  /** Purely local: switching modes never sends or clears anything. */
+  function selectMode(next: ViewName) {
+    if (next === mode) return;
+    const outgoing = mode;
+    const captured = captureViewState(outgoing === "goal" ? goalViewEl : flowViewEl);
+    // A click on the switch already moved focus out of the outgoing view; the
+    // remembered control is the developer's actual place in it.
+    savedViews[outgoing] = {
+      ...captured,
+      focus: captured.focus ?? savedViews[outgoing].focus,
+    };
+    mode = next;
+    void tick().then(() => {
+      restoreViewState(
+        next === "goal" ? goalViewEl : flowViewEl,
+        savedViews[next],
+      );
+    });
+  }
+
   function reviseGoal() {
     const request = revisionRequest.trim();
     sendCommand(
@@ -856,6 +927,8 @@
       } catch {
         return;
       }
+
+      flowComponent?.handleEvent(message);
 
       if (isVersionStateEvent(message)) {
         version = {
@@ -1121,6 +1194,42 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <main>
+  <div class="mode-switch" role="tablist" aria-label="Devboard mode">
+    <button
+      type="button"
+      class="mode-tab"
+      role="tab"
+      id="mode-goal-tab"
+      aria-controls="goal-view"
+      aria-selected={mode === "goal"}
+      data-testid="mode-goal"
+      onclick={() => selectMode("goal")}
+    >
+      Goal
+    </button>
+    <button
+      type="button"
+      class="mode-tab"
+      role="tab"
+      id="mode-flow-tab"
+      aria-controls="flow-view"
+      aria-selected={mode === "flow"}
+      data-testid="mode-flow"
+      onclick={() => selectMode("flow")}
+    >
+      Flow
+    </button>
+  </div>
+
+  <div
+    class="mode-view"
+    id="goal-view"
+    role="tabpanel"
+    aria-labelledby="mode-goal-tab"
+    bind:this={goalViewEl}
+    hidden={mode !== "goal"}
+    onfocusin={(event) => rememberFocus("goal", event)}
+  >
   <header class="page-header">
     <div class="heading-row">
       <div>
@@ -1704,6 +1813,19 @@
       </div>
     </div>
   {/if}
+  </div>
+
+  <div
+    class="mode-view"
+    id="flow-view"
+    role="tabpanel"
+    aria-labelledby="mode-flow-tab"
+    bind:this={flowViewEl}
+    hidden={mode !== "flow"}
+    onfocusin={(event) => rememberFocus("flow", event)}
+  >
+    <FlowMode send={sendCommand} bind:this={flowComponent} />
+  </div>
 </main>
 
 <FeedbackOverlay />

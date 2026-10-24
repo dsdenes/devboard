@@ -368,6 +368,185 @@ unsupported-version state file never prevents startup: the server renames it asi
 read-only state directory never stops the server: it keeps serving from memory and reports one
 `error` on stderr and in the journal.
 
+## Flow Mode
+
+The page header carries two client-only tabs, `Goal` and `Flow` (`data-testid="mode-goal"` and
+`data-testid="mode-flow"`). Switching is a view change only: it sends no WebSocket frame and
+starts, stops, pauses, or resumes no work in either mode. Goal Mode is the goal, ADR, epic,
+lifecycle, and skills interface described above. Flow Mode is one implementation session that the
+developer steers while it works: the developer interviews for a goal, starts an implementation
+agent in an isolated worktree, reviews the changes as color-coded widgets, discusses a widget with
+a read-only agent, and writes steering notes and decisions that the agent consumes between
+checkpoints.
+
+### One mode at a time
+
+Both modes may be viewed at any time, but only one may hold the checkout. Starting Flow work —
+creating its goal, starting its implementation — is refused with one `error` while any Goal Mode
+work is live; starting a Goal Mode run, lifecycle, goal creation or revision, or skills
+preparation is refused with one `error` while any Flow work is live. Merging a Flow pull request
+is likewise refused while Goal Mode work is live. Flow work means a goal interview, an
+implementation turn, a change analysis, a widget conversation, or pull-request work. View
+switching and read-only commands stay available in both cases. Goal Mode's implementation reset is
+refused while a Flow session exists whose worktree or pull request is not merged.
+
+### Commands and events
+
+Flow Mode uses one WebSocket at `/ws`. The client sends `createFlowGoal`,
+`startFlowImplementation`, `stopFlowImplementation`, `saveFlowGoal`, `retryFlowPr`,
+`markFlowPrReady`, `mergeFlowPr`, `sendFlowSteering`, `saveFlowDecisions`, `acceptFlowWidget`,
+`refuseFlowWidget`, `openFlowWidget`, `closeFlowWidget`, `sendFlowConversation`,
+`sendFlowConclusion`, `dismissFlowBlocker`, and `flowAnswer` (with `target` naming the goal,
+implementation, or conversation question). The server broadcasts `flowSnapshot`,
+`flowGoalStarted`, `flowGoalStopped`, `flowImplementationStarted`, `flowStopped`, `flowActivity`,
+`flowQuestion`, `flowFiles`, `flowWidgets`, `flowSteering`, `flowDecisions`, `flowCheckpoints`,
+`flowVerification`, `flowBlockers`, `flowPr`, `flowNotice`, `flowError`,
+`flowConversationStarted`, `flowConversationActivity`, `flowConversationQuestion`,
+`flowConversationMessage`, and `flowConversationStopped`. A connecting client with a Flow session
+receives one `flowSnapshot` holding the whole state followed by every section event, so a reload
+never loses a widget, checkpoint, verification result, blocker, steering note, decision board, or
+pull-request state; a server with no Flow work sends nothing and the view starts empty.
+
+Flow's four agent commands are `/flow-goal <session-dir>`, `/flow-implement <session-dir>`,
+`/flow-change <session-dir>`, and `/flow-widget <session-dir> <widget-id>`. The server spawns each
+as its own ACP peer; the goal interview runs in the repository root, the implementation runs with
+the isolated worktree as its working directory, and the change analyst and widget conversation are
+read-only.
+
+### Goal and implementation
+
+`createFlowGoal` creates a session when none is unmerged and starts `/flow-goal <session-dir>` in
+one ACP peer. The prompt interviews the developer one question at a time until the desired end
+result and every load-bearing boundary are settled, then writes only `<session-dir>/goal.md`; its
+questions arrive as `flowQuestion` with `target: "goal"` and are answered with `flowAnswer`. The
+goal text is end-result only: no implementation, technology, path, step, or internal criterion.
+`saveFlowGoal` replaces the goal text while the implementation is stopped. `startFlowImplementation`
+requires a non-empty goal and starts `/flow-implement`; `stopFlowImplementation` ends that peer and
+reports the session `stopped`. A session whose pull request has merged cannot be restarted: create
+a new goal.
+
+The implementation commits each coherent unit itself and never pushes. The server reads its
+commits, records the checkpoints, follows the diff, and runs the change analyst whenever the
+diff changes. The developer watches activity, answers implementation questions, accepts or refuses
+widgets, and writes steering notes and decisions while it works. A refused widget becomes a
+steering note telling the agent to abandon that change and implement another solution.
+
+### Session state
+
+A session lives at `<stateDir>/flow/<24-hex journalKey(REPO_DIR)>/<session-id>/`, keyed exactly
+like the dashboard state, so repositories sharing one harness never see each other's sessions.
+`stateDir` is the harness state directory (`<harness>/.tmp` by default, overridable with
+`STATE_DIR`); `<session-id>` is an 8-hex id chosen when the session is created. The directory is
+never committed and never written into the host.
+
+|File|Contents|
+|---|---|
+|`goal.md`|The goal text `/flow-goal` wrote, or the text the developer saved.|
+|`decisions.md`|The decision board: developer text plus appended timestamped sections.|
+|`steering.jsonl`|Append-only developer steering notes.|
+|`steering-ack.jsonl`|The ids of steering notes the implementation consumed.|
+|`checkpoints.jsonl`|One JSON line per commit: id, time, summary, files, sha, verification.|
+|`verification.json`|Latest test, lint, or build result: command, status, timestamp, output.|
+|`changes.json`|The current changed files with status, insertion and deletion counts, and diffs.|
+|`accepted.json`|The widget signatures the developer accepted.|
+|`blockers.jsonl`|Every `DEVBOARD-BLOCKED:` line an implementation printed.|
+|`session.json`|Machine state: ids, status, worktree, branch, base, widgets, checkpoints, PR.|
+|`request.json`|Analyst input: goal, decisions, changed files and diffs, previous widgets.|
+|`widgets.json`|The change analyst's complete widget list.|
+
+`goal.md`, `decisions.md`, `verification.json`, and `checkpoints.jsonl` are re-read on restore,
+so text a developer or agent changed while the server was down is the text the replacement uses.
+`session.json` is the source of truth for status, worktree, branch, widgets, accepted signatures,
+changed files, blockers, and the pull request.
+
+### Change widgets
+
+The change analyst groups every changed file into one or more widgets and writes the complete list
+to `widgets.json`. Each widget has a fixed category, a concept, a summary, a rationale, and the
+files it covers. The seven categories are:
+
+- `contract` — an interface another part of the system or an external caller depends on.
+- `entity` — the identity, lifecycle, or ownership of a domain object.
+- `naming` — a rename or terminology change with behavior otherwise unchanged.
+- `data` — a migration, schema, persistence, or stored-data shape change.
+- `dependency` — an added, removed, or changed external package, service, or tool.
+- `irreversible` — a change that is costly or impossible to undo after shipping.
+- `structure` — file layout, module boundaries, or code organization, and the fallback for a
+  file no clearer category explains.
+
+Every category has its own color token, each with a light and a dark variant:
+`--flow-contract-border` and `--flow-contract-surface` through
+`--flow-structure-border` and `--flow-structure-surface`, defined for the day theme in `:root` and
+overridden in the dark theme. A widget carries `data-category="<category>"` and always renders its
+category label as text, so the color is never the only signal.
+
+A widget's id is a signature: the first 16 hex characters of a SHA-256 over its category, its
+sorted file paths, and those files' normalized diffs. The concept, summary, and rationale are
+display metadata and never part of it. Acceptance is keyed by that signature and persisted in
+`accepted.json`; a re-analysis that finds the same category, files, and diff keeps the same
+signature and therefore stays accepted, while any edit to those files yields a new signature and
+an unaccepted widget. A widget whose files leave the diff disappears, and its stale signature is
+dropped from `accepted.json`. Every file left unnamed by the analyst is still shown, as a
+`structure` widget, so no changed file is ever hidden.
+
+### Steering and the decision board
+
+`sendFlowSteering` appends a timestamped note to `steering.jsonl`; the feed is append-only and
+never rewritten. Notes carry `new` until the implementation appends the consumed ids to
+`steering-ack.jsonl`, after which the server reports them `read`. The implementation reads only
+the lines it has not consumed, appends the ids it acted on, and applies every direction before
+its next checkpoint. Refusing a widget records the refusal as a steering note, and concluding a
+widget conversation appends its conclusion to the decision board and adds one steering note.
+
+The decision board is `<session-dir>/decisions.md`. The developer's `Save decisions` replaces
+the document and is authoritative: it is exactly the text the agent reads next. Sections the
+server appends — a widget conclusion, for example — are timestamped and source-named, and only
+ever append: they never edit, reflow, or remove the developer's text or an earlier section. An
+appended section is a record, not a vote: the developer's saved text still governs, and the
+implementation must not rewrite either form.
+
+### Worktree, pull request, and merge
+
+Starting an implementation creates the worktree `<repo>/.worktree/flow-<session-id>` on branch
+`flow/<session-id>`, based on `origin/main` when it exists and on `main` otherwise, and runs
+`/flow-implement <session-dir>` with that worktree as its working directory. The agent works and
+commits only there; the server watches the branch and records every checkpoint it finds.
+
+The first checkpoint beyond the base revision makes the server push the branch and open one draft
+pull request or merge request against `main`, using the forge named by `origin`; later checkpoints
+update its title and body with the goal and the decision board. The developer marks it ready
+manually, only after the implementation is stopped and the worktree is clean. The developer then
+merges it manually through the forge, and only as a merge commit — never squash, never rebase, and
+only after both modes' work has stopped and the worktree is clean. Flow never merges on a
+schedule, never force-pushes, and never rewrites the branch.
+
+After a successful merge the server fast-forwards the host's `main` checkout when it is on `main`
+and clean, removes the worktree, and deletes the local and remote branch once the branch tip is an
+ancestor of `origin/main`. Whatever it could not remove is reported as a leftover and as one
+`error`; the session still records the merge, and the leftover names each path or ref so nothing is
+silently abandoned.
+
+### Restart and resume
+
+A graceful stop, launcher restart, or `SIGKILL` leaves the session on disk. The replacement reads
+the session directory and re-emits its complete state. A session that was running is reported
+`stopped`, its pending question is cleared, and the server sends one `flowNotice` saying the Flow
+implementation stopped and that starting it again resumes it. It never re-spawns a Flow agent on
+its own: no goal interview, implementation turn, change analysis, or widget conversation resumes
+automatically. Selecting `Start implementation` re-spawns `/flow-implement` with the same session
+directory, and the agent reads the persisted goal, decisions, steering acks, checkpoints, and
+verification before continuing. A session that was idle stays idle. The replacement recomputes the
+diff and widgets from the worktree without spawning an analyst, so a restart can never lose review
+state or overwrite a newer widget list.
+
+### What Flow never does
+
+Flow never creates an issue or an epic, never queries the tracker, and never labels, closes, or
+comments on one. Its forge use is limited to the session's draft pull request or merge request and
+that request's branch: create, update, mark ready, view, merge, and delete the remote branch. Flow
+never writes `GOAL.md` and never writes `adrs/`; the flow goal belongs only to its session
+directory, and the decision board is never an ADR record.
+
 ## Publish a change
 
 A running dashboard keeps the server code it loaded at startup and serves whatever `dist/`
