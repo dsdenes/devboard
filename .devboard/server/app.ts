@@ -46,7 +46,7 @@ import {
   type OpenEpic,
 } from "./tracker";
 import {
-  gitRevision,
+  readHarnessVersion,
   runningHarnessDir,
   serverVersion,
   type ServerVersion,
@@ -91,6 +91,10 @@ export interface AppOptions {
   /** Replaces the process; `index.ts` re-execs the host's current harness. */
   restart?: () => void;
   versionState?: () => ServerVersion;
+  /** The harness package version this process loaded; captured at startup. */
+  runningVersion?: string | null;
+  /** The newest release the update check has seen, if it has seen one. */
+  latestVersion?: () => string | null;
   /**
    * Flow Mode's deterministic seams: an injected forge and executor for tests
    * and browser verification, and the watcher timings for focused runs.
@@ -1195,8 +1199,10 @@ export function createApp(options: AppOptions) {
     options.journal ?? openJournal({ stateDir, repoDir, port: options.port });
   const statePath = stateFile(stateDir, resolve(repoDir));
   const loadedState = readStateFile(statePath);
-  const runningRevision = gitRevision(runningHarnessDir());
-  const readVersion = options.versionState ?? (() => serverVersion(repoDir, runningRevision));
+  const runningVersion = options.runningVersion ?? readHarnessVersion(runningHarnessDir());
+  const readVersion =
+    options.versionState ??
+    (() => serverVersion(repoDir, runningVersion, options.latestVersion?.() ?? null));
 
   /**
    * Flow Mode's controller. It owns its own session files under `stateDir` and

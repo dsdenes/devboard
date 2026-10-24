@@ -3,3 +3,5 @@ dist/
 .worktree/
 .tmp/
 .env
+.devboard/.test-tmp/
+.reset-test-tmp/

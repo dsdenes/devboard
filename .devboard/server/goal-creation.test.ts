@@ -649,6 +649,7 @@ describe("guided goal creation", () => {
           expect(late.events.findIndex((message) => message.type === "goal")).toBeGreaterThan(2);
 
           const question = late.events[2];
+          if (question === undefined) throw new Error("the creation question was not replayed");
           late.send({ type: "answer", id: question.id, value: "Alpha" });
           expect(await client.waitFor((message) => message.type === "goalCreationStopped")).toEqual({
             type: "goalCreationStopped",

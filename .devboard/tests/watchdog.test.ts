@@ -170,12 +170,23 @@ describe("discovery", () => {
     await writeFile(journal, "");
     const legacy = legacyLogPath(firstHarness, firstRepo);
     await writeFile(legacy, "legacy\n");
+    const installedState = join(base, "installed-state");
+    const installedRepo = "/projects/installed";
+    await mkdir(join(installedState, "journal"), { recursive: true });
+    const installedJournal = journalFile(installedState, installedRepo);
+    await writeFile(installedJournal, "");
 
     const snapshot = (
       pid: number,
       repoDir: string,
       port: string,
-      options: { cwd?: string; staticDir?: string; ancestors?: number[]; cmdline?: string } = {},
+      options: {
+        cwd?: string;
+        staticDir?: string;
+        stateDir?: string;
+        ancestors?: number[];
+        cmdline?: string;
+      } = {},
     ): ProcessSnapshot => ({
       pid,
       cmdline: options.cmdline ?? "bun /x/server/index.ts",
@@ -184,6 +195,7 @@ describe("discovery", () => {
         ["PORT", port],
         ["HOST", "127.0.0.1"],
         ...(options.staticDir === undefined ? [] : ([["STATIC_DIR", options.staticDir]] as const)),
+        ...(options.stateDir === undefined ? [] : ([["STATE_DIR", options.stateDir]] as const)),
       ]),
       cwd: options.cwd,
       ancestors: options.ancestors ?? [],
@@ -198,6 +210,14 @@ describe("discovery", () => {
         snapshot(100, "/projects/child", "9001", { cwd: firstHarness, ancestors: [99] }),
         snapshot(13, "/projects/unknown", "not-a-port"),
         snapshot(14, "/projects/not-server", "8082", { cmdline: "bun something-else.ts" }),
+        snapshot(15, installedRepo, "8083", {
+          staticDir: join(secondHarness, "dist"),
+          stateDir: installedState,
+        }),
+        snapshot(15, installedRepo, "8083", {
+          staticDir: join(secondHarness, "dist"),
+          stateDir: installedState,
+        }),
       ],
       { selfPids: new Set([99]) },
     );
@@ -205,12 +225,15 @@ describe("discovery", () => {
     expect(instances.map((instance) => [instance.pid, instance.port, instance.repoDir])).toEqual([
       [10, 8080, firstRepo],
       [12, 8081, secondRepo],
+      [15, 8083, installedRepo],
     ]);
     expect(instances[0]?.instrumented).toBe(true);
     expect(instances[0]?.journal).toBe(journal);
     expect(instances[0]?.legacyLog).toBe(legacy);
     expect(instances[1]?.harness).toBe(secondHarness);
     expect(instances[1]?.instrumented).toBe(false);
+    expect(instances[2]?.journal).toBe(installedJournal);
+    expect(instances[2]?.instrumented).toBe(true);
   });
 });
 

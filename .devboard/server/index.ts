@@ -3,7 +3,9 @@ import type { Server } from "bun";
 import { createApp } from "./app";
 import type { ForgeTarget } from "./forge-pr";
 import { StubForge } from "./fixtures/stub-forge";
-import { hostHarnessDir } from "./version";
+import { openJournal } from "./journal";
+import { startUpdater, type Updater } from "./updates";
+import { hostHarnessDir, readHarnessVersion, runningHarnessDir } from "./version";
 
 const hostname = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? 8080);
@@ -80,6 +82,9 @@ function flowOptions() {
 }
 
 const injectedFlow = flowOptions();
+const journal = openJournal({ stateDir, repoDir, port });
+const runningVersion = readHarnessVersion(runningHarnessDir());
+let updater: Updater | undefined;
 let server: Server<unknown> | undefined;
 for (let attempt = 0; ; attempt += 1) {
   try {
@@ -92,6 +97,9 @@ for (let attempt = 0; ; attempt += 1) {
       stateDir,
       hostname,
       port,
+      journal,
+      runningVersion,
+      latestVersion: () => updater?.latest() ?? null,
       ...(injectedFlow === undefined ? {} : { flow: injectedFlow }),
       restart: () => {
         if (server !== undefined) restart(server);
@@ -104,5 +112,13 @@ for (let attempt = 0; ; attempt += 1) {
     await Bun.sleep(100);
   }
 }
+
+updater = startUpdater({
+  repoDir,
+  prefixDir: join(repoDir, ".devboard"),
+  stateDir,
+  currentVersion: runningVersion,
+  journal,
+});
 
 console.log(`ADR interface listening on http://${hostname}:${server.port}`);

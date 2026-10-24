@@ -1,0 +1,43 @@
+name: devboard-release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Install harness dependencies
+        working-directory: .devboard
+        run: bun install --frozen-lockfile
+      - name: Build the client bundle
+        working-directory: .devboard
+        run: bun run build
+      - name: Run the harness suite
+        working-directory: .devboard
+        run: bun test
+      - name: Typecheck
+        working-directory: .devboard
+        run: bunx tsc --noEmit
+      - name: Publish the harness release and launcher
+        working-directory: .devboard
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun run release

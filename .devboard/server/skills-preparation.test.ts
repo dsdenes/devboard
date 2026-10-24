@@ -45,6 +45,7 @@ interface ServerOptions {
   files?: Record<string, string>;
   agentArguments?: string;
   tracker?: EpicLookup;
+  goalFile?: string;
 }
 
 const GOAL_TEXT = "# Goal\n\nShip a documented HTTP API.\n";
@@ -53,7 +54,7 @@ async function startServer(options: ServerOptions = {}): Promise<TestServer> {
   const root = options.root ?? (await temporaryDirectory());
   const adrDir = join(root, "adrs");
   const staticDir = join(root, "static");
-  const goalFile = join(root, "GOAL.md");
+  const goalFile = options.goalFile ?? join(root, "GOAL.md");
   const skillsDir = join(root, ".omp", "skills");
   await mkdir(adrDir, { recursive: true });
   await mkdir(staticDir, { recursive: true });
@@ -679,7 +680,7 @@ describe("skills preparation", () => {
         await mkdir(join(skillsDir, "legacy-managed"), { recursive: true });
         await writeFile(
           join(skillsDir, "legacy-managed", "SKILL.md"),
-          managedSkill("legacy-managed", "architecture", "Keep the legacy policy."),
+          managedSkill("legacy-managed", "architecture"),
         );
 
         client.send({ type: "prepareSkills" });

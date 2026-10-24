@@ -1,11 +1,20 @@
-import { spawnSync } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export interface ServerVersion {
+  /** The harness package version this process loaded at startup. */
   running: string | null;
-  current: string | null;
+  /** The harness package version the host's prefix holds now. */
+  installed: string | null;
+  /** The newest release the update check has seen, when it has seen one. */
+  latest: string | null;
+  /** True when a restart would load different code. */
   stale: boolean;
+}
+
+/** The installed package a host prefix holds. */
+export function installedPackageDir(prefix: string): string {
+  return join(prefix, "node_modules", "@dsdenes", "devboard-harness");
 }
 
 /** The checkout that contains this server's source code. */
@@ -13,49 +22,59 @@ export function runningHarnessDir(): string {
   return resolve(import.meta.dir, "..");
 }
 
-/**
- * The harness the served project points at now. A host installs it as the
- * `.devboard` symlink, so resolving that link is what names the version the
- * next start would run. Without one, the running checkout is the harness.
- */
-export function hostHarnessDir(repoDir: string): string {
-  const candidate = join(resolve(repoDir), ".devboard");
+export function readHarnessVersion(directory: string): string | null {
   try {
-    if (statSync(candidate).isDirectory()) return realpathSync(candidate);
-  } catch {
-    // The host may not install the harness at that path.
-  }
-  return runningHarnessDir();
-}
-
-/** The commit a checkout names, or null when it is not a readable git worktree. */
-export function gitRevision(directory: string): string | null {
-  try {
-    const result = spawnSync("git", ["-C", directory, "rev-parse", "HEAD"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    if (result.status !== 0) return null;
-    const revision = result.stdout.trim();
-    return revision.length > 0 ? revision : null;
+    const parsed: unknown = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    if (!("version" in parsed)) return null;
+    return typeof parsed.version === "string" && parsed.version.length > 0 ? parsed.version : null;
   } catch {
     return null;
   }
 }
 
+function isHarnessSource(directory: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "name" in parsed &&
+      parsed.name === "@dsdenes/devboard-harness"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Compares the harness commit this process started from with the commit the
- * project's harness link names now. Unreadable checkouts never report a stale
- * version: the reload control only appears when a restart would change code.
+ * The harness a host would start next. An installed host keeps the package
+ * under its npm prefix; the canonical checkout keeps its source tree. Without
+ * either, the running checkout is the only code there is.
+ */
+export function hostHarnessDir(repoDir: string): string {
+  const prefix = join(resolve(repoDir), ".devboard");
+  const installed = installedPackageDir(prefix);
+  if (existsSync(join(installed, "package.json"))) return installed;
+  if (isHarnessSource(prefix)) return prefix;
+  return runningHarnessDir();
+}
+
+/**
+ * Compares the version this process started with against the version the
+ * host's prefix holds now. A missing version never reports stale: the reload
+ * control only appears when a restart would change code.
  */
 export function serverVersion(
   repoDir: string,
-  runningRevision: string | null = gitRevision(runningHarnessDir()),
+  running: string | null,
+  latest: string | null = null,
 ): ServerVersion {
-  const current = gitRevision(hostHarnessDir(repoDir));
+  const installed = readHarnessVersion(hostHarnessDir(repoDir));
   return {
-    running: runningRevision,
-    current,
-    stale: runningRevision !== null && current !== null && runningRevision !== current,
+    running,
+    installed,
+    latest,
+    stale: running !== null && installed !== null && running !== installed,
   };
 }

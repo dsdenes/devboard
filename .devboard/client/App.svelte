@@ -16,7 +16,8 @@
 
   interface VersionState {
     running: string | null;
-    current: string | null;
+    installed: string | null;
+    latest: string | null;
     stale: boolean;
   }
 
@@ -466,8 +467,10 @@
       value.type === "versionState" &&
       "running" in value &&
       (value.running === null || typeof value.running === "string") &&
-      "current" in value &&
-      (value.current === null || typeof value.current === "string") &&
+      "installed" in value &&
+      (value.installed === null || typeof value.installed === "string") &&
+      "latest" in value &&
+      (value.latest === null || typeof value.latest === "string") &&
       "stale" in value &&
       typeof value.stale === "boolean"
     );
@@ -755,7 +758,14 @@
   function requestRestart() {
     if (restarting) return;
     restarting = true;
-    if (!sendCommand({ type: "restartServer" })) restarting = false;
+    // The server may exit before its acknowledgement reaches us; waiting for
+    // the replacement starts now so a dropped message cannot turn the click
+    // into a silent reconnect.
+    awaitingRestart = true;
+    if (!sendCommand({ type: "restartServer" })) {
+      restarting = false;
+      awaitingRestart = false;
+    }
   }
 
   async function waitForRestart() {
@@ -933,7 +943,8 @@
       if (isVersionStateEvent(message)) {
         version = {
           running: message.running,
-          current: message.current,
+          installed: message.installed,
+          latest: message.latest,
           stale: message.stale,
         };
       } else if (isServerRestartingEvent(message)) {
@@ -1247,8 +1258,12 @@
             type="button"
             class="icon-button reload-button"
             data-testid="reload-devboard"
-            title="A different devboard version is installed. Restart the server and reload."
-            aria-label="Restart the devboard server and reload"
+            title={`Devboard ${version.running ?? "unknown"} is running; ${
+              version.installed ?? "unknown"
+            } is installed. Restart the server and reload.`}
+            aria-label={`Restart devboard, running ${version.running ?? "unknown"}, installed ${
+              version.installed ?? "unknown"
+            }`}
             disabled={restarting}
             onclick={requestRestart}
           >

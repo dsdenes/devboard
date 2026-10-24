@@ -75,28 +75,41 @@ the host supplies: `ADRS_DIR`, `REPO_DIR`, `GOAL_FILE`, `STATIC_DIR`, `AGENT_COM
 lifecycle prompts under `.devboard/prompts/` likewise treat the repository root as the host and
 exclude `.devboard/` and `.worktree/` from every survey and every write.
 
+## Releases and installation
+
+The harness is the private package `@dsdenes/devboard-harness`, published from GitHub Releases,
+never from a registry. The public npmjs package `@dsdenes/devboard` is a launcher only: it runs
+`install`, `update`, and `doctor`, and carries no server, client, prompt, or omp code.
+
+A host installs a real npm prefix at `<host>/.devboard` with
+`npx @dsdenes/devboard install`. `<host>/.omp/commands`, `<host>/.omp/extensions`, and
+`<host>/AGENTS.md` are real copies from the installed package; no harness path is a symlink.
+The canonical `.devboard/` in this checkout is the source tree and is never an npm install.
+
+Every running dashboard checks the newest release at startup and every 60 seconds, installs a
+newer tarball after verifying its `.sha256`, and keeps serving the version it loaded. It reports
+`versionState` (`running`, `installed`, `latest`, `stale`) and shows the reload control while
+`stale` is true. Only clicking that control restarts the server from the installed package and
+reloads the page. A failed download, checksum, authentication, or install leaves the installed
+package and the running server intact; the journal records the failure and doctor reports it.
+
 ## Publish after every change
 
-`dist/` is a local build artifact and the server serves it verbatim (`STATIC_DIR`, default
-`.devboard/dist`). The server never builds. Any change to `.devboard/client`, `index.html`,
-`vite.config.ts`, `svelte.config.js`, or an asset the client imports stays invisible until the
-bundle is rebuilt, and a running server keeps the code it loaded at startup, so a fresh `dist/`
-alone still leaves the old server answering.
+Publishing is a release, not a restart. Merging into `main` and pushing triggers the
+`devboard-release.yml` workflow, which builds, tests, packs the harness tarball with
+`templates/host-AGENTS.md`, publishes the launcher version to npmjs, and creates the GitHub
+Release with the tarball and its `.sha256`.
 
-A change is not finished on the integration line until every running dashboard that serves this
-checkout runs the published revision. Host installs symlink their `.devboard` to one checkout,
-so updating, rebuilding, and restarting that checkout updates every such host at once. Never
-copy files or `dist/` between checkouts and never edit a host project to refresh its dashboard.
-
-After the worktree commit is merged into `main` and pushed, run from the integration checkout —
-never from a worktree:
+A change is not finished until the workflow for the pushed commit succeeds, the release and
+launcher version exist, and the installed hosts have picked the release up. After the push, run
+from the integration checkout — never from a worktree:
 
 ```bash
 cd .devboard
 bun run publish
 ```
 
-`bun run publish` is the only supported refresh path. It:
+`bun run publish` is the verification path. It:
 
 1. refuses a worktree, a branch other than `main`, or a checkout ahead of or diverged from its
    canonical remote;
@@ -104,17 +117,14 @@ bun run publish
    overlapping local change stops the run and names the blocking paths;
 3. runs `bun install --frozen-lockfile` and `bun run build`, then proves `dist/index.html` is
    newer than every client source and that every referenced asset exists;
-4. finds every running dashboard whose server runs from this checkout or serves its `dist`,
-   including every symlinked host, and asks each one to restart;
-5. never interrupts work: a dashboard with an active run, lifecycle lane, creation, revision,
-   skills preparation, or reset answers `upgradePending` and restarts itself as soon as that
-   work ends; `--wait` blocks until those restarts complete;
-6. verifies every restarted dashboard reports `versionState.stale === false` and exits nonzero
-   otherwise.
+4. waits for the `devboard-release.yml` run of `HEAD` and requires a successful conclusion;
+5. verifies the GitHub Release assets and `npm view @dsdenes/devboard@<version> version`;
+6. reports every running dashboard's running and installed versions without restarting it.
 
-Options: `--no-restart` rebuilds only; `--wait` and `--wait-timeout N` (default 1800 seconds)
-wait for deferred dashboards; `--allow-worktree` is for verification only and never finds a
-live dashboard.
+Options: `--wait-timeout N` bounds the workflow and propagation wait (default 1800 seconds).
+It never restarts a dashboard, never writes into a host, and exits nonzero when the release or
+launcher version is missing. Installed dashboards update themselves; an operator clicks the
+reload control when they want the new code.
 
 The integration checkout is advanced and rebuilt after a push; it is never a place for feature
 work. If its uncommitted changes block the fast-forward, preserve them (copy or patch them
@@ -123,10 +133,13 @@ them and never bypass the fast-forward.
 
 Guardrails:
 
-- Never rebuild only the worktree or only the client and call the change done.
-- Never kill, spawn, or relaunch a dashboard server by hand; use `bun run publish`.
+- Never rebuild only a worktree or only the client and call the change done.
+- Never kill, spawn, or relaunch a dashboard server by hand; install, update, and the reload
+  control are the only paths.
+- Never copy the harness into a host or symlink a host path to this checkout; install owns the
+  host prefix.
 - Stale output is the first suspect, not the last: when the UI behaves like an older revision,
-  compare the build time of `dist/` with the sources before debugging the client code.
+  compare `versionState` and the installed package version before debugging client code.
 - A UI check against a bundle or server older than the changed source is not a passing
   verification.
 
@@ -186,18 +199,23 @@ never hand-edit them.
   verified that the upstream tip is the integrated commit. Only then are the worktree and branch
   removed. Local-only main is never done.
 - Host mode: host build/tests run; `.devboard/` unchanged.
-- Harness mode: `bun run publish` has rebuilt the integration checkout from the published
-  revision; every running dashboard reports `versionState.stale === false`, or is explicitly
-  deferred because its active work must finish first; the changed entry point runs from the repo
-  root against a supplied host path; no absolute paths or host specifics under `.devboard/`;
-  nothing created outside `.devboard/`.
+- Harness mode: the pushed commit's release workflow succeeded and `bun run publish` verified
+  the release and launcher version; installed dashboards report the release through
+  `versionState` and restart only from the reload control; the changed entry point runs from the
+  repo root against a supplied host path; no absolute paths or host specifics under
+  `.devboard/`; nothing created outside `.devboard/`.
 
 ## Map
 
 - `.devboard/` — harness root: interface, toolchain, prompts, extensions, goals, tests,
   `omp/`, `install.sh`, `scripts/publish.ts`.
-- `.devboard/scripts/publish.ts` — verifies `main`, rebuilds the bundle, and refreshes every
-  running dashboard.
+- `.devboard/scripts/publish.ts` — verifies `main`, waits for the release workflow, and reports
+  dashboards without restarting them.
+- `.devboard/scripts/release.ts` — publishes the launcher and the private harness release.
+- `.devboard/launcher/` — the public `@dsdenes/devboard` launcher package.
+- `.devboard/templates/host-AGENTS.md` — host contract copied at release time; byte-identical to
+  this file.
+- `.github/workflows/devboard-release.yml` — the only repository-root harness file GitHub needs.
 - `.devboard/omp/` — canonical agent commands and extensions.
 - `.omp/` — installed copy of `.devboard/omp/`; never edited by hand.
 - `adrs/`, `GOAL.md` — host data at the root; not harness artifacts.

@@ -1,17 +1,17 @@
 #!/usr/bin/env bun
 /**
- * Publishes the harness to every dashboard that serves this checkout.
- *
- * Run from the integration checkout on `main` after the worktree commit is
- * pushed. The script refuses to run ahead of or behind the remote, rebuilds
- * the client bundle, proves the bundle is newer than its sources, and asks
- * every running dashboard that serves this harness to restart. A dashboard
- * with live work records `upgradePending` and restarts itself when the work
- * ends instead of losing the run.
+ * Verifies a pushed `main` commit's release and reports the running
+ * dashboards. The release workflow builds, tests, publishes the launcher to
+ * npmjs, and creates the private harness release; this script waits for that
+ * run, proves the release and launcher exist, and never restarts a dashboard or
+ * writes into a host. A dashboard installs a new harness itself and shows its
+ * reload control until an operator restarts it.
  */
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { dashboardInventory, describeInventory } from "../lib/inventory";
+import { discoverInstances } from "../watchdog/discovery";
 
 interface CommandResult {
   code: number;
@@ -19,28 +19,10 @@ interface CommandResult {
   stderr: string;
 }
 
-interface Instance {
-  pid: number;
-  port: number;
-  repoDir: string;
-  host: string;
-}
-
-type RefreshResult =
-  | { status: "restarted"; instance: Instance }
-  | { status: "deferred"; instance: Instance }
-  | { status: "failed"; instance: Instance; detail: string };
-
 const harnessRoot = resolve(import.meta.dir, "..");
-const distDir = join(harnessRoot, "dist");
 const args = process.argv.slice(2);
-
-function option(name: string): boolean {
-  const index = args.indexOf(name);
-  if (index < 0) return false;
-  args.splice(index, 1);
-  return true;
-}
+const RELEASE_REPO = "dsdenes/devboard";
+const LAUNCHER_PACKAGE = "@dsdenes/devboard";
 
 function optionValue(name: string): string | undefined {
   const index = args.indexOf(name);
@@ -50,25 +32,18 @@ function optionValue(name: string): string | undefined {
   return value;
 }
 
-const noRestart = option("--no-restart");
-const waitForDeferred = option("--wait");
-const allowWorktree = option("--allow-worktree");
 const waitSeconds = Number(optionValue("--wait-timeout") ?? "1800");
-if (!Number.isFinite(waitSeconds) || waitSeconds <= 0) {
-  fail("--wait-timeout needs positive seconds");
-}
+if (!Number.isFinite(waitSeconds) || waitSeconds <= 0) fail("--wait-timeout needs positive seconds");
 const waitTimeoutMs = waitSeconds * 1000;
 
 function usage(): never {
   console.log(`Usage: bun run publish [options]
 
-Verifies main matches the remote, rebuilds the client, and refreshes every
-running dashboard that serves this checkout.
+Waits for the release workflow of the pushed main commit, verifies the private
+harness release and the public launcher version, and reports every running
+dashboard's installed and running versions without restarting it.
 
-  --no-restart        Rebuild only; leave running dashboards untouched.
-  --wait              Block until deferred dashboards restart, up to the timeout.
-  --wait-timeout N    Seconds to wait with --wait (default 1800).
-  --allow-worktree    Permit a run from a worktree; no dashboard serves one.
+  --wait-timeout N    Seconds to wait for the workflow and propagation (default 1800).
   -h, --help          Show this text.`);
   process.exit(0);
 }
@@ -130,214 +105,6 @@ function walkNewest(directory: string): number {
   return newest;
 }
 
-function readEnviron(pid: number): Map<string, string> {
-  const values = new Map<string, string>();
-  try {
-    const source = readFileSync(`/proc/${pid}/environ`, "utf8");
-    for (const entry of source.split("\0")) {
-      const split = entry.indexOf("=");
-      if (split > 0) values.set(entry.slice(0, split), entry.slice(split + 1));
-    }
-  } catch {
-    // The process exited or is not readable.
-  }
-  return values;
-}
-
-function linuxInstances(): Instance[] | undefined {
-  if (!existsSync("/proc/self/environ")) return undefined;
-  const expected = real(distDir);
-  const instances: Instance[] = [];
-  for (const entry of readdirSync("/proc")) {
-    if (!/^[0-9]+$/.test(entry)) continue;
-    const pid = Number(entry);
-    if (pid === process.pid) continue;
-    let cmdline: string;
-    try {
-      cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
-    } catch {
-      continue;
-    }
-    if (!cmdline.includes("server/index.ts")) continue;
-    const env = readEnviron(pid);
-    const port = Number(env.get("PORT") ?? "");
-    if (!Number.isInteger(port) || port <= 0) continue;
-    const harness = real(`/proc/${pid}/cwd`);
-    const staticDir = env.get("STATIC_DIR");
-    const servesThis =
-      harness === real(harnessRoot) ||
-      (staticDir !== undefined && real(staticDir) === expected);
-    if (!servesThis) continue;
-    instances.push({
-      pid,
-      port,
-      repoDir: env.get("REPO_DIR") ?? "",
-      host: env.get("HOST") ?? "127.0.0.1",
-    });
-  }
-  return instances;
-}
-
-/** Best-effort fallback for platforms without `/proc` (macOS `ps eww`). */
-function psInstances(): Instance[] {
-  const result = run(["ps", "eww", "-axo", "pid=,command="], harnessRoot);
-  if (result.code !== 0) return [];
-  const expected = real(distDir);
-  const instances: Instance[] = [];
-  for (const line of result.stdout.split("\n")) {
-    if (!line.includes("server/index.ts")) continue;
-    const match = /^\s*([0-9]+)\s/.exec(line);
-    if (match === null) continue;
-    const port = /(?:^|\s)PORT=([0-9]+)/.exec(line)?.[1];
-    const staticDir = /(?:^|\s)STATIC_DIR=(\S+)/.exec(line)?.[1];
-    if (port === undefined || staticDir === undefined) continue;
-    if (real(staticDir) !== expected) continue;
-    instances.push({
-      pid: Number(match[1]),
-      port: Number(port),
-      repoDir: /(?:^|\s)REPO_DIR=(\S+)/.exec(line)?.[1] ?? "",
-      host: /(?:^|\s)HOST=(\S+)/.exec(line)?.[1] ?? "127.0.0.1",
-    });
-  }
-  return instances;
-}
-
-function discoverInstances(): Instance[] {
-  const found = linuxInstances() ?? psInstances();
-  const byPort = new Map<number, Instance>();
-  for (const instance of found) if (!byPort.has(instance.port)) byPort.set(instance.port, instance);
-  return [...byPort.values()].sort((left, right) => left.port - right.port);
-}
-
-function address(host: string): string {
-  const normalized = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-  return normalized.includes(":") && !normalized.startsWith("[") ? `[${normalized}]` : normalized;
-}
-
-function openSocket(port: number, host: string): WebSocket {
-  return new WebSocket(`ws://${address(host)}:${port}/ws`);
-}
-
-async function requestRefresh(instance: Instance): Promise<RefreshResult> {
-  const { promise, resolve: settle } = Promise.withResolvers<RefreshResult>();
-  let done = false;
-  const finish = (result: RefreshResult) => {
-    if (done) return;
-    done = true;
-    clearTimeout(timer);
-    try {
-      socket?.close();
-    } catch {
-      // Already closed.
-    }
-    settle(result);
-  };
-  let socket: WebSocket | undefined;
-  const timer = setTimeout(
-    () => finish({ status: "restarted", instance }),
-    15_000,
-  );
-
-  try {
-    socket = openSocket(instance.port, instance.host);
-  } catch (error) {
-    return {
-      status: "failed",
-      instance,
-      detail: error instanceof Error ? error.message : String(error),
-    };
-  }
-
-  socket.onopen = () => socket?.send(JSON.stringify({ type: "restartServer", whenIdle: true }));
-  socket.onerror = () => finish({ status: "failed", instance, detail: "websocket error" });
-  // The launcher replaces the process before it can flush every reply; the
-  // readiness check after this settles is the real proof.
-  socket.onclose = () => finish({ status: "restarted", instance });
-  socket.onmessage = (event) => {
-    let message: unknown;
-    try {
-      message = JSON.parse(String(event.data));
-    } catch {
-      return;
-    }
-    if (typeof message !== "object" || message === null || !("type" in message)) return;
-    if (message.type === "serverRestarting") {
-      finish({ status: "restarted", instance });
-    } else if (message.type === "upgradePending") {
-      finish({ status: "deferred", instance });
-    } else if (message.type === "error") {
-      finish({
-        status: "failed",
-        instance,
-        detail: "message" in message ? String(message.message) : "restart refused",
-      });
-    }
-  };
-  return promise;
-}
-
-async function readVersion(instance: Instance, timeoutMs = 8000): Promise<{ stale?: boolean }> {
-  const { promise, resolve: settle } = Promise.withResolvers<{ stale?: boolean }>();
-  const socket = openSocket(instance.port, instance.host);
-  const timer = setTimeout(() => {
-    try {
-      socket.close();
-    } catch {
-      // Already closed.
-    }
-    settle({});
-  }, timeoutMs);
-  socket.onopen = () => socket.send(JSON.stringify({ type: "getVersion" }));
-  socket.onerror = () => {
-    clearTimeout(timer);
-    settle({});
-  };
-  socket.onmessage = (event) => {
-    let message: unknown;
-    try {
-      message = JSON.parse(String(event.data));
-    } catch {
-      return;
-    }
-    if (
-      typeof message === "object" &&
-      message !== null &&
-      "type" in message &&
-      message.type === "versionState" &&
-      "stale" in message
-    ) {
-      clearTimeout(timer);
-      try {
-        socket.close();
-      } catch {
-        // Already closed.
-      }
-      settle({ stale: message.stale === true });
-    }
-  };
-  return promise;
-}
-
-async function waitForRevision(instance: Instance, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const response = await fetch(`http://${address(instance.host)}:${instance.port}/`, {
-      method: "HEAD",
-      signal: AbortSignal.timeout(2000),
-    }).catch(() => undefined);
-    if (response?.ok === true) {
-      const version = await readVersion(instance);
-      if (version.stale === false) return true;
-    }
-    await Bun.sleep(250);
-  }
-  return false;
-}
-
-function describe(instance: Instance): string {
-  const repo = instance.repoDir.length > 0 ? instance.repoDir : "an unknown host";
-  return `port ${instance.port} (${repo}, pid ${instance.pid})`;
-}
 
 const top = run(["git", "-C", harnessRoot, "rev-parse", "--show-toplevel"]);
 if (top.code !== 0) fail("the harness is not inside a git checkout");
@@ -350,28 +117,22 @@ const commonDir = real(
     "could not read the common git dir",
   ),
 );
-if (gitDir !== undefined && commonDir !== undefined && gitDir !== commonDir && !allowWorktree) {
-  fail("run publish from the integration checkout, not a worktree (or pass --allow-worktree)");
+if (gitDir !== undefined && commonDir !== undefined && gitDir !== commonDir) {
+  fail("run publish from the integration checkout, not a worktree");
 }
 
 const branch = mustGit(["symbolic-ref", "--short", "HEAD"], "the checkout is not on a branch");
 if (branch !== "main") fail(`the integration line is main, not ${branch}`);
 
 const remotes = mustGit(["remote"], "could not list remotes").split("\n").filter(Boolean);
-const remote = remotes.includes("origin")
-  ? "origin"
-  : remotes.length === 1
-    ? remotes[0]
-    : undefined;
+const remote = remotes.includes("origin") ? "origin" : remotes.length === 1 ? remotes[0] : undefined;
 if (remote === undefined) {
   fail("could not determine the canonical remote (origin, or the only remote)");
 }
 
 console.log(`publish: fetching ${remote}/main`);
 const fetched = git(["fetch", "--prune", remote, `+refs/heads/main:refs/remotes/${remote}/main`]);
-if (fetched.code !== 0) {
-  fail(`could not fetch ${remote}/main: ${fetched.stderr || fetched.stdout}`);
-}
+if (fetched.code !== 0) fail(`could not fetch ${remote}/main: ${fetched.stderr || fetched.stdout}`);
 
 const head = mustGit(["rev-parse", "HEAD"], "could not read HEAD");
 const tip = mustGit(["rev-parse", `${remote}/main`], `could not read ${remote}/main`);
@@ -396,26 +157,20 @@ if (head !== tip) {
   }
   console.log(`publish: fast-forwarding main to ${tip.slice(0, 7)}`);
   const merged = git(["merge", "--ff-only", `${remote}/main`]);
-  if (merged.code !== 0) {
-    fail(`could not fast-forward main: ${merged.stderr || merged.stdout}`);
-  }
+  if (merged.code !== 0) fail(`could not fast-forward main: ${merged.stderr || merged.stdout}`);
 } else {
   console.log(`publish: main is at ${head.slice(0, 7)}`);
 }
 
 console.log("publish: installing harness dependencies");
 const install = run(["bun", "install", "--frozen-lockfile"]);
-if (install.code !== 0) {
-  fail(`bun install failed: ${install.stderr || install.stdout}`);
-}
+if (install.code !== 0) fail(`bun install failed: ${install.stderr || install.stdout}`);
 
 console.log("publish: building the client bundle");
 const built = run(["bun", "run", "build"]);
-if (built.code !== 0) {
-  fail(`bun run build failed: ${built.stderr || built.stdout}`);
-}
-console.log(built.stdout);
+if (built.code !== 0) fail(`bun run build failed: ${built.stderr || built.stdout}`);
 
+const distDir = join(harnessRoot, "dist");
 const indexPath = join(distDir, "index.html");
 if (!existsSync(indexPath)) fail("the build produced no dist/index.html");
 const builtAt = statSync(indexPath).mtimeMs;
@@ -441,53 +196,88 @@ for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)) {
   if (!existsSync(asset)) fail(`dist/index.html references a missing asset: ${asset}`);
 }
 
-if (noRestart) {
-  console.log("publish: --no-restart; running dashboards were left untouched");
-  process.exit(0);
-}
+const count = git(["rev-list", "--count", "HEAD"]);
+if (count.code !== 0) fail("could not count commits");
+const version = `0.1.${Number(count.stdout)}`;
+const tag = `v${version}`;
+console.log(`publish: waiting for the release workflow of ${head.slice(0, 7)} (${tag})`);
 
-const instances = discoverInstances();
-if (instances.length === 0) {
-  console.log("publish: no running dashboard serves this checkout; the rebuilt bundle is ready");
-  process.exit(0);
-}
-
-console.log(`publish: refreshing ${instances.length} dashboard(s)`);
-const results = await Promise.all(instances.map((instance) => requestRefresh(instance)));
-let failed = 0;
-const deferred: Instance[] = [];
-
-for (const result of results) {
-  if (result.status === "failed") {
-    failed += 1;
-    console.error(`publish: ${describe(result.instance)} failed: ${result.detail}`);
-  } else if (result.status === "deferred") {
-    deferred.push(result.instance);
-    console.log(
-      `publish: ${describe(result.instance)} has active work; it restarts when the work ends`,
-    );
+const deadline = Date.now() + waitTimeoutMs;
+let workflow: { databaseId: number; status: string; conclusion: string | null } | undefined;
+while (Date.now() < deadline) {
+  const listed = run([
+    "gh",
+    "run",
+    "list",
+    "--workflow",
+    "devboard-release.yml",
+    "--branch",
+    "main",
+    "--limit",
+    "30",
+    "--json",
+    "databaseId,headSha,status,conclusion",
+  ]);
+  if (listed.code === 0) {
+    const runs = JSON.parse(listed.stdout) as Array<{
+      databaseId: number;
+      headSha: string;
+      status: string;
+      conclusion: string | null;
+    }>;
+    const match = runs.find((candidate) => candidate.headSha === head);
+    if (match !== undefined) {
+      workflow = match;
+      if (match.status === "completed") break;
+    }
   } else {
-    const ready = await waitForRevision(result.instance, 20_000);
-    if (ready) console.log(`publish: ${describe(result.instance)} is on ${tip.slice(0, 7)}`);
-    else {
-      failed += 1;
-      console.error(`publish: ${describe(result.instance)} did not report the published revision`);
-    }
+    fail(`could not list workflow runs: ${listed.stderr || listed.stdout}`);
   }
+  await Bun.sleep(5000);
 }
 
-if (waitForDeferred && deferred.length > 0) {
-  console.log(`publish: waiting up to ${waitTimeoutMs / 1000}s for deferred dashboards`);
-  for (const instance of deferred) {
-    const ready = await waitForRevision(instance, waitTimeoutMs);
-    if (ready) console.log(`publish: ${describe(instance)} is on ${tip.slice(0, 7)}`);
-    else {
-      failed += 1;
-      console.error(`publish: ${describe(instance)} was still busy after the wait timeout`);
+if (workflow === undefined) fail(`no devboard-release run for ${head.slice(0, 7)} within the wait`);
+if (workflow.status !== "completed") fail("the release workflow did not complete within the wait");
+if (workflow.conclusion !== "success") {
+  fail(`the release workflow concluded ${workflow.conclusion ?? "unknown"}`);
+}
+console.log(`publish: release workflow ${workflow.databaseId} succeeded`);
+
+let releaseOk = false;
+let launcherOk = false;
+while (Date.now() < deadline) {
+  if (!releaseOk) {
+    const release = run([
+      "gh",
+      "release",
+      "view",
+      tag,
+      "--repo",
+      RELEASE_REPO,
+      "--json",
+      "tagName,assets",
+    ]);
+    if (release.code === 0) {
+      const assets = (JSON.parse(release.stdout) as { assets?: Array<{ name?: string }> }).assets ?? [];
+      const names = new Set(assets.map((asset) => asset.name));
+      releaseOk =
+        names.has(`devboard-harness-${version}.tgz`) &&
+        names.has(`devboard-harness-${version}.tgz.sha256`);
     }
   }
+  if (!launcherOk) {
+    const viewed = run(["npm", "view", `${LAUNCHER_PACKAGE}@${version}`, "version"]);
+    launcherOk = viewed.code === 0 && viewed.stdout === version;
+  }
+  if (releaseOk && launcherOk) break;
+  await Bun.sleep(5000);
 }
+if (!releaseOk) fail(`GitHub Release ${tag} is missing its harness tarball or checksum`);
+if (!launcherOk) fail(`${LAUNCHER_PACKAGE}@${version} is not visible on npmjs`);
 
-if (failed > 0) fail(`${failed} dashboard(s) could not be refreshed`);
-const suffix = deferred.length > 0 ? ` (${deferred.length} deferred until idle)` : "";
-console.log(`publish: complete at ${tip.slice(0, 7)}${suffix}`);
+console.log(`publish: ${tag} carries the harness tarball and checksum`);
+console.log(`publish: ${LAUNCHER_PACKAGE}@${version} is published`);
+
+const inventory = dashboardInventory(discoverInstances());
+for (const entry of inventory) console.log(describeInventory(entry));
+console.log(`publish: ${inventory.length} dashboard(s) reported; no restart was requested`);

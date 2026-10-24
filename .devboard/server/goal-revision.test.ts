@@ -515,6 +515,7 @@ describe("guided goal revision", () => {
           });
 
           const question = late.events[2];
+          if (question === undefined) throw new Error("the revision question was not replayed");
           late.send({ type: "answer", id: question.id, value: "Alpha" });
           expect(await client.waitFor((message) => message.type === "goalRevisionStopped")).toEqual({
             type: "goalRevisionStopped",

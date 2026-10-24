@@ -32,8 +32,8 @@ export interface Instance {
 }
 
 /**
- * POSIX `cksum` (CRC-32 with the length trailer) as `setup-devboard.sh`
- * computes it for the legacy log name. The checksum is only a file name.
+ * POSIX `cksum` (CRC-32 with the length trailer) as the legacy starter script
+ * computed it for the old log name. The checksum is only a file name.
  */
 export function posixCksum(data: Buffer): number {
   let crc = 0;
@@ -101,7 +101,10 @@ export function instancesFromProcesses(
     const key = `${repoDir}\0${port}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const journal = journalFile(join(harness, ".tmp"), repoDir);
+    // An installed dashboard keeps its journal beside its npm prefix, named by
+    // STATE_DIR; the serving package's own `.tmp` is read-only to it.
+    const stateDir = process.env.get("STATE_DIR") ?? join(harness, ".tmp");
+    const journal = journalFile(stateDir, repoDir);
     const legacy = legacyLogPath(harness, repoDir);
     instances.push({
       pid: process.pid,
@@ -110,7 +113,7 @@ export function instancesFromProcesses(
       host: process.env.get("HOST") ?? "127.0.0.1",
       harness,
       journal,
-      instrumented: existsSync(join(harness, ".tmp", "journal")),
+      instrumented: existsSync(join(stateDir, "journal")),
       ...(existsSync(legacy) ? { legacyLog: legacy } : {}),
     });
   }

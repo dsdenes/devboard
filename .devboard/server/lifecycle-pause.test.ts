@@ -336,7 +336,7 @@ async function exercisePausedRevision(request: string | undefined) {
       text: "# Revised goal\n\nThe agent rewrote this.",
     });
     const stoppedIndex = client.events.lastIndexOf(stopped);
-    expect(await readFile(goalFile, "utf8")).toBe(stopped.text);
+    expect(await readFile(goalFile, "utf8")).toBe(String(stopped.text));
 
     expect(
       client.events

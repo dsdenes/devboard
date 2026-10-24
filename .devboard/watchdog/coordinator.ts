@@ -767,10 +767,10 @@ async function defaultIntegrate(
 
 async function defaultPublish(context: CycleContext): Promise<PublishOutcome> {
   const published = run(["bun", "run", "publish"], join(context.root, ".devboard"), context);
-  const refreshed = Number(/refreshing (\d+) dashboard/.exec(published.stdout)?.[1] ?? "0");
-  const deferred = [...published.stdout.matchAll(/^publish: port (\d+) .* has active work/gm)].map(
-    (match) => match[1] ?? "",
-  );
+  // Publish now reports dashboards without restarting them: dashboards install
+  // a release themselves and restart only when the operator clicks reload.
+  const refreshed = Number(/(\d+) dashboard\(s\) reported/.exec(published.stdout)?.[1] ?? "0");
+  const deferred: string[] = [];
   const failure = commandFailure(published);
   if (failure !== undefined) {
     return { ok: false, refreshed, deferred, detail: failure };

@@ -26,7 +26,12 @@ async function startServer(
     goalFile?: string;
     agentCommand?: string;
     restart?: () => void;
-    versionState?: () => { running: string | null; current: string | null; stale: boolean };
+    versionState?: () => {
+      running: string | null;
+      installed: string | null;
+      latest: string | null;
+      stale: boolean;
+    };
   } = {},
 ) {
   const root = await temporaryDirectory();
@@ -174,14 +179,15 @@ describe("createApp", () => {
 
   test("answers getVersion from the supplied probe", async () => {
     const { server, url } = await startServer({
-      versionState: () => ({ running: "old", current: "new", stale: true }),
+      versionState: () => ({ running: "old", installed: "new", latest: "new", stale: true }),
     });
 
     try {
       expect(await exchange(url, { type: "getVersion" })).toEqual({
         type: "versionState",
         running: "old",
-        current: "new",
+        installed: "new",
+        latest: "new",
         stale: true,
       });
     } finally {

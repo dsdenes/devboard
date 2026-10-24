@@ -16,6 +16,7 @@ WORKDIR /app
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server ./server
+COPY --from=build /app/lib ./lib
 
 ENV HOST=0.0.0.0
 ENV PORT=8080

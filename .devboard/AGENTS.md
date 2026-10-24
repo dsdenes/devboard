@@ -1,30 +1,56 @@
 # Harness instructions
 
-## Every instance is a symlink to the canonical harness
+## The source tree is not the installed harness
 
-One harness exists per machine: the checkout at `~/devboard`. Every Devboard instance on that
-machine MUST be that same harness reached through a symlink, never a copy, clone, or installed
-snapshot:
+This checkout builds and releases the harness; hosts run an installed copy.
 
+- `<host>/.devboard` is a real npm prefix holding
+  `node_modules/@dsdenes/devboard-harness`. It is never a symlink to this checkout and never a
+  copy of these sources.
+- The public `@dsdenes/devboard` launcher at `launcher/` installs, updates, and checks hosts.
+  The harness itself is a private GitHub Release, never a registry package.
+- Fix the harness here, then release it. An installed host picks the release up on its own; do
+  not edit an installed package in a host by hand.
+
+## Install, update, and reload
+
+```bash
+npx @dsdenes/devboard install   # real prefix, real wrapper dirs, one dashboard
+npx @dsdenes/devboard update    # newest release, no restart
+npx @dsdenes/devboard doctor    # one PASS or FAIL line per check
 ```
-<repo root>/.devboard -> $HOME/devboard/.devboard
+
+A running dashboard checks for a newer release immediately and every 60 seconds, verifies the
+tarball's `.sha256`, and installs it into its own prefix without stopping. It keeps serving the
+code it loaded until someone clicks the reload control
+(`data-testid="reload-devboard"`), which restarts the server from the installed package and
+reloads the page. Never restart a dashboard by hand and never symlink a host.
+
+## Restart the source interface after every change
+
+The canonical source dashboard serves this checkout. After a change under `.devboard/`, rebuild
+and restart it so the page reflects the new code:
+
+1. `bun run build` from this directory.
+2. Stop the running source server and start it again with the same host paths it was given.
+3. Confirm it answers on its port before continuing.
+
+For an installed host, the reload control is the only restart path.
+
+## Verify and release
+
+Before a commit that changes the harness:
+
+```bash
+bun run build
+bun test
+bunx tsc --noEmit
+bun run verify:install
+bun run verify:update
+bun run verify:ui
 ```
 
-- Never copy the harness into a host, and never vendor it under another path.
-- Keep the symlink out of the host's version control: list `/.devboard` in the host's
-  `.gitignore`. The shared harness is on disk only; commits and hosts stay portable.
-- Fix the harness once in `~/devboard`; every instance sees the change immediately.
-- A second copy is a bug: delete it and replace the path with the symlink.
-
-## Restart the interface after every change
-
-After any change under `.devboard/`, restart the running Devboard interface so the page reflects
-the new code. Never leave a stale server serving the previous build.
-
-1. Rebuild the client from `.devboard/`: `bun run build`.
-2. Stop the running interface server and start it again with the same host paths it was given —
-   `ADRS_DIR`, `REPO_DIR`, `GOAL_FILE`, `STATIC_DIR`, `PORT`, `AGENT_COMMAND` — so it serves the
-   fresh `dist/`.
-3. Confirm the restarted server answers on its port before continuing.
-
-This holds for every kind of change, including documentation-only and test-only edits.
+Merge into `main` and push. The release workflow tests, packs `templates/host-AGENTS.md` with the
+harness, publishes the launcher version, and creates the GitHub Release. Then run
+`bun run publish` from the integration checkout: it waits for that workflow, verifies the release
+and launcher version, and reports each dashboard without restarting it.

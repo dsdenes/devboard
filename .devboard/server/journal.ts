@@ -26,6 +26,8 @@ export const JOURNAL_KINDS = [
   "lifecycle",
   "acp-stderr",
   "server-error",
+  "update",
+  "update-error",
 ] as const;
 
 export type JournalKind = (typeof JOURNAL_KINDS)[number];

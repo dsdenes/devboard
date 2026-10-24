@@ -1,36 +1,30 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { gitRevision, serverVersion } from "./version";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { join, resolve } from "node:path";
+import {
+  hostHarnessDir,
+  installedPackageDir,
+  readHarnessVersion,
+  runningHarnessDir,
+  serverVersion,
+} from "./version";
 
+const harnessRoot = resolve(import.meta.dir, "..");
+const testRoot = join(harnessRoot, ".tmp");
 const temporaryDirectories: string[] = [];
 
-async function temporaryDirectory() {
-  const directory = await mkdtemp(join(tmpdir(), "devboard-version-"));
+async function temporaryDirectory(): Promise<string> {
+  await mkdir(testRoot, { recursive: true });
+  const directory = join(testRoot, `version-${randomUUID()}`);
+  await mkdir(directory, { recursive: true });
   temporaryDirectories.push(directory);
   return directory;
 }
 
-function git(directory: string, ...args: string[]): string {
-  const result = spawnSync("git", ["-C", directory, ...args], { encoding: "utf8" });
-  if (result.status !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
-  }
-  return result.stdout.trim();
-}
-
-async function committedCheckout(name: string): Promise<string> {
-  const directory = join(await temporaryDirectory(), name);
+async function writePackage(directory: string, name: string, version: string): Promise<void> {
   await mkdir(directory, { recursive: true });
-  git(directory, "init", "--quiet");
-  git(directory, "config", "user.email", "devboard@example.test");
-  git(directory, "config", "user.name", "Devboard Test");
-  await writeFile(join(directory, "server.ts"), `export const version = ${JSON.stringify(name)};\n`);
-  git(directory, "add", "server.ts");
-  git(directory, "commit", "--quiet", "-m", name);
-  return directory;
+  await writeFile(join(directory, "package.json"), `${JSON.stringify({ name, version })}\n`);
 }
 
 afterAll(async () => {
@@ -40,39 +34,55 @@ afterAll(async () => {
 });
 
 describe("serverVersion", () => {
-  test("reports a stale version when the host link names another commit", async () => {
-    const running = await committedCheckout("running");
-    const installed = await committedCheckout("installed");
+  test("reports a stale version when the installed prefix holds another version", async () => {
     const host = await temporaryDirectory();
-    await symlink(installed, join(host, ".devboard"));
+    await writePackage(
+      installedPackageDir(join(host, ".devboard")),
+      "@dsdenes/devboard-harness",
+      "0.1.9",
+    );
 
-    const runningRevision = git(running, "rev-parse", "HEAD");
-    const installedRevision = git(installed, "rev-parse", "HEAD");
-
-    expect(serverVersion(host, runningRevision)).toEqual({
-      running: runningRevision,
-      current: installedRevision,
+    expect(serverVersion(host, "0.1.8", "0.1.9")).toEqual({
+      running: "0.1.8",
+      installed: "0.1.9",
+      latest: "0.1.9",
       stale: true,
     });
   });
 
-  test("reports no stale version when the link names the running commit", async () => {
-    const running = await committedCheckout("current");
+  test("reports no stale version when the prefix holds the running version", async () => {
     const host = await temporaryDirectory();
-    await symlink(running, join(host, ".devboard"));
+    await writePackage(
+      installedPackageDir(join(host, ".devboard")),
+      "@dsdenes/devboard-harness",
+      "0.1.9",
+    );
 
-    const revision = git(running, "rev-parse", "HEAD");
-
-    expect(serverVersion(host, revision)).toEqual({
-      running: revision,
-      current: revision,
+    expect(serverVersion(host, "0.1.9", "0.1.9")).toEqual({
+      running: "0.1.9",
+      installed: "0.1.9",
+      latest: "0.1.9",
       stale: false,
     });
   });
 
-  test("reports no revision for a directory that does not exist", async () => {
+  test("uses the source tree as the harness of a canonical checkout", async () => {
+    const host = await temporaryDirectory();
+    await writePackage(join(host, ".devboard"), "@dsdenes/devboard-harness", "0.1.0");
+
+    expect(hostHarnessDir(host)).toBe(join(host, ".devboard"));
+    expect(serverVersion(host, "0.1.0")).toEqual({
+      running: "0.1.0",
+      installed: "0.1.0",
+      latest: null,
+      stale: false,
+    });
+  });
+
+  test("falls back to the running checkout for a host without a harness", async () => {
     const host = await temporaryDirectory();
 
-    expect(gitRevision(join(host, "missing"))).toBeNull();
+    expect(hostHarnessDir(host)).toBe(runningHarnessDir());
+    expect(readHarnessVersion(host)).toBeNull();
   });
 });

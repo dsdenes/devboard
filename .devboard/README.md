@@ -8,9 +8,9 @@ run would take up first, and starts an agent on that record or on one the develo
 page heading names the project by its directory path relative to the user's home directory,
 falling back to the absolute path when the repository lies outside it. A pending badge appears in
 the header only while at least one record is `Proposed`, and the header `Resolve ADRs` control
-appears only then; it resolves the pending sequence. When the harness checkout named by the
-project's `.devboard` link names a commit other than the one the backend started from, the header
-shows a reload icon; selecting it restarts the backend from that checkout and reloads the page.
+appears only then; it resolves the pending sequence. When the project's installed harness version
+differs from the version the backend loaded, the header shows a reload icon; selecting it
+restarts the backend from the installed package and reloads the page.
 
 It also shows the repository's current goal in a `Current goal` section. Until a goal is set the
 editor is expanded. Once the goal document contains non-whitespace text, the editor, `Save goal`
@@ -235,38 +235,45 @@ writes no `adrs/` file.
 
 ## Install
 
-`install.sh` installs the agent wrappers under `omp/` into a host project:
+The harness ships as the private `@dsdenes/devboard-harness` GitHub Release. The public npmjs
+package `@dsdenes/devboard` is a launcher: it resolves the newest release, installs it through
+npm, copies the wrapper files, and runs diagnostics. It contains no harness code.
+
+```bash
+npx @dsdenes/devboard install    # install or refresh this host
+npx @dsdenes/devboard update     # install the newest release; do not restart
+npx @dsdenes/devboard doctor     # one PASS or FAIL line per check
+```
+
+`install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
+`.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
+package's files. It keeps `.devboard/.tmp`, copies `templates/host-AGENTS.md` to
+`<host>/AGENTS.md` when that file is a symlink or absent (an existing regular file is untouched
+and reported as drift), adds the three ignored paths to `.gitignore`, and leaves exactly one
+dashboard running from the installed package. A reinstall keeps the version and `.tmp`; `update`
+never starts, stops, or restarts the dashboard.
+
+`doctor` checks Node 20+, Bun, npm, the git root, `gh` access to the release repository, the
+release metadata and digest, the installed package, the installed version against the latest
+release, `omp` and its authenticated probe, wrapper byte-equality, `AGENTS.md`, the dashboard's
+package and HTTP response, a non-symlinked `.devboard`, and a recorded update failure. Drift in a
+regular `AGENTS.md` is reported without failing the check; every other mismatch exits nonzero.
+
+`--host <path>` targets another repository. `DEVBOARD_RELEASE_DIR` points the launcher and the
+server at a local directory of tarballs for offline verification.
+
+`install.sh` still copies the agent wrappers under `omp/` into an existing host:
 
 ```bash
 ./install.sh /path/to/host
 ./install.sh --force /path/to/host
-cd /path/to/host/.devboard && ./install.sh
 ```
 
 The host must already contain a `.devboard/` directory. Every file under `omp/` is copied to the
 same relative path under `<host>/.omp/`; matching files are left alone, unrelated host files are
-never removed, and a differing file stops the run unless `--force` is given. Without a host path,
-the script uses `git rev-parse --show-toplevel` of the working directory.
+never removed, and a differing file stops the run unless `--force` is given.
 
-### Set up a host from the canonical checkout
-
-`setup-devboard.sh` installs the harness for a host without copying it, then starts the
-interface:
-
-```bash
-~/devboard/.devboard/setup-devboard.sh [--force] [--no-ui] [--port N] [host-path]
-```
-
-The host defaults to the working directory. `<host>/.devboard`, `<host>/.omp/commands`, and
-`<host>/.omp/extensions` become symlinks to the canonical checkout at `$DEVBOARD_HOME`
-(default `~/devboard`), and the same entries are added to the host `.gitignore`. A real
-directory at a link path stops the run unless `--force` is given. `--no-ui` installs the links
-only; otherwise the script rebuilds the client and starts the interface in the background,
-picking the first free port from 8080 unless `--port` or `PORT` names one, and prints its URL.
-Rerunning it for a host that is already served reports the running URL instead of starting a
-second server.
-
-The global `/setup-devboard` command runs this script against the invoking session's working
+The global `/setup-devboard` command runs the launcher against the invoking session's working
 directory. It lives here as `omp/commands/setup-devboard.md` and is linked into the user-level
 command directory (`$HOME/.omp/agent/commands/setup-devboard.md`) so every session sees it.
 
@@ -549,32 +556,35 @@ directory, and the decision board is never an ADR record.
 
 ## Publish a change
 
-A running dashboard keeps the server code it loaded at startup and serves whatever `dist/`
-contains, so merging source is not enough. After a change is on `main` and pushed, run this from
-the integration checkout — the checkout every host's `.devboard` symlink names:
+Merging into `main` and pushing triggers `.github/workflows/devboard-release.yml`, which builds
+the client, runs the harness suite and typecheck, packs `dist/`, `server/`, `templates/`, the
+prompts and omp wrappers into the private harness tarball, publishes the launcher version to
+npmjs, and creates the GitHub Release `v<version>` with the tarball and its `.sha256`. The
+version is `0.1.<commit-count>` over the full history; a rerun on the same commit leaves the
+existing npm version and release assets untouched.
+
+After the push, verify from the integration checkout:
 
 ```bash
 cd .devboard
 bun run publish
 ```
 
-`bun run publish` verifies the checkout is the main worktree on `main`, fetches and fast-forwards
-`main` to its canonical remote without discarding uncommitted work, installs dependencies,
-rebuilds `dist/`, then finds every running dashboard whose server runs from this checkout or
-serves its `dist` and restarts it. That covers every host whose `.devboard` points at this
-checkout; nothing is written into a host. Each restarted dashboard is checked for
-`versionState.stale === false`.
+`bun run publish` refuses a worktree, a branch other than `main`, or a checkout ahead of or
+diverged from its canonical remote; fetches and fast-forwards `main` without discarding
+uncommitted work; installs dependencies and rebuilds `dist/`; waits for the release workflow of
+`HEAD`; verifies the GitHub Release assets and `npm view @dsdenes/devboard@<version> version`;
+and reports every running dashboard's running and installed versions. It never restarts a
+dashboard and never writes into a host. `--wait-timeout N` bounds the workflow and propagation
+wait (default 1800 seconds).
 
-A dashboard with active work (run, lifecycle lane, goal creation or revision, skills
-preparation, or reset) is not killed: it answers `upgradePending` and restarts itself as soon as
-that work ends, after which the browser reloads. `--wait` blocks until deferred dashboards
-restart; `--wait-timeout N` bounds that wait (default 1800 seconds). `--no-restart` rebuilds
-only, and `--allow-worktree` permits a verification build from a worktree, where no dashboard is
-served.
-
-The script refuses to run from a worktree, from a branch other than `main`, when local `main`
-is ahead of or diverged from the remote, and when uncommitted changes would be overwritten by
-the fast-forward; it names the blocking paths instead of touching them.
+Installed dashboards update themselves: each checks the newest release at startup and every
+60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), verifies the `.sha256`, installs the
+tarball through a staging prefix, and keeps serving its loaded code. `versionState` reports
+`running`, `installed`, `latest`, and `stale`; the reload control appears while `stale` is true
+and restarts the server from the installed package. A failed check, checksum, authentication, or
+npm install leaves the previous package and server intact, writes `update-error` to the journal,
+and is retried with exponential backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it).
 
 |Variable|Default|Purpose|
 |---|---|---|
@@ -585,6 +595,10 @@ the fast-forward; it names the blocking paths instead of touching them.
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
 |`STATIC_DIR`|`dist`|Built client directory.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
+|`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`.|
+|`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
+|`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
+|`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads GitHub Releases through `gh`.|
 
 ## Harness watchdog
 
@@ -595,11 +609,13 @@ It survives logout (`Linger=yes`) and never starts, stops, or restarts a dashboa
 
 Each cycle reads the ten minutes before cycle start, both ends inclusive, from:
 
-- every live dashboard's JSONL journal, `<serving harness>/.tmp/journal/<24-hex>.jsonl`, whose
-  key is the first 24 hex characters of `sha256(REPO_DIR)`. Each record carries `ts` (UTC ISO
+- every live dashboard's JSONL journal, `<STATE_DIR>/journal/<24-hex>.jsonl`, whose key is the
+  first 24 hex characters of `sha256(REPO_DIR)`. `STATE_DIR` is the dashboard's environment
+  value, `<host>/.devboard/.tmp` for an installed host. Each record carries `ts` (UTC ISO
   8601), `repo`, `port`, `pid`, `kind`, and `text`; kinds are `activity`, `question`,
-  `run-start`, `run-stop`, `lane-start`, `lane-stop`, `lifecycle`, `acp-stderr`, and
-  `server-error`. A live journal rotates at 8 MiB instead of truncating.
+  `run-start`, `run-stop`, `lane-start`, `lane-stop`, `lifecycle`, `acp-stderr`,
+  `server-error`, `update`, and `update-error`. A live journal rotates at 8 MiB instead of
+  truncating.
 - omp's own warnings and errors under `~/.omp/logs/omp.*.log`, attributed to an instance only
   through that pid's working directory or process ancestry.
 
@@ -610,9 +626,10 @@ cycle never loses evidence.
 
 Discovery scans `/proc` for every process running `server/index.ts` that supplies `REPO_DIR` and
 `PORT`, de-duplicates by `(REPO_DIR, PORT)`, resolves the serving harness from `STATIC_DIR` or
-the process working directory, and excludes the watchdog and its descendants. Instances from
-other harness checkouts are covered too; an instance whose harness has no journal is reported
-`uninstrumented` and its legacy `.tmp/devboard-<cksum>.log` is read when present.
+the process working directory, and reads the journal from the process's `STATE_DIR`. Instances
+from installed hosts and the canonical source checkout are covered alike; an instance whose
+state directory has no journal is reported `uninstrumented` and its legacy
+`.tmp/devboard-<cksum>.log` is read when present.
 
 Findings are derived from evidence, one per distinct signal: `error`, `failed-command`, `retry`,
 `blocker`, `confusion`, `question-loop`, and `stall`. A clean window reports zero findings and
@@ -719,17 +736,18 @@ The client sends:
   start disabled.
 - `getProject` answers with the page heading label. `path` is `REPO_DIR` relative to the user's
   home directory when the repository lies inside it, and the absolute path otherwise.
-- `getVersion` answers with `versionState`: `running` is the commit the backend started from,
-  `current` is the commit the project's `.devboard` link names now, and `stale` is true only
-  when both are readable and differ. A client that connects, and the page every few seconds,
-  asks for it; a stale answer makes the reload control appear.
+- `getVersion` answers with `versionState`: `running` is the harness package version the
+  backend loaded, `installed` is the version its prefix holds now, `latest` is the newest
+  release an update check has seen, and `stale` is true only when `running` and `installed` are
+  readable and differ. A client that connects, and the page every few seconds, asks for it; a
+  stale answer makes the reload control appear with both versions in its title.
 - `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
-  stops the listener, starts the current host harness, and exits. It is refused with an `error`
-  when no launcher is configured or while a restart is already in progress. A client that sees
-  `serverRestarting` waits for the replacement to answer and reloads the page. With
-  `"whenIdle": true`, a dashboard with active work answers `upgradePending` instead and
-  restarts itself as soon as that work ends; an idle dashboard restarts immediately. This is the
-  command `bun run publish` uses.
+  stops the listener, starts the installed harness package, and exits. It is refused with an
+  `error` when no launcher is configured or while a restart is already in progress. A client
+  that clicked the reload control waits for the replacement to answer and reloads the page even
+  if the acknowledgement was lost when the old process exited. With `"whenIdle": true`, a
+  dashboard with active work answers `upgradePending` instead and restarts itself as soon as
+  that work ends; an idle dashboard restarts immediately.
 - `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`. It is accepted while the lifecycle is paused and refused while the lifecycle is advancing.
 - `startRun` without `file` starts the sequence with the lowest-numbered pending record.
 - `startRun` with `file` starts that record first only when it is pending; the sequence then
@@ -1009,9 +1027,20 @@ The server answers with events:
 ```bash
 cd .devboard
 bun test
+bun run verify:install
+bun run verify:update
+bun run verify:ui
 ```
 
-`tests/install.test.ts` covers the install script: a fresh install, an idempotent rerun that
+The three `verify:` scripts build fixture releases under `.devboard/.tmp`, install them into
+throwaway hosts, and assert the launcher, update, and browser contracts end to end. They never
+touch a real host.
+
+`tests/launcher.test.ts` covers the launcher and harness package boundaries: the help output,
+the launcher's file list and size, the harness tarball's required and forbidden paths, its size,
+and template identity. `lib/inventory.test.ts` covers the publish report. `server/updates.test.ts`
+covers the startup check, the interval, backoff, single-flight, and failure journaling.
+`tests/install.test.ts` covers the wrapper script: a fresh install, an idempotent rerun that
 keeps unrelated files, a host without `.devboard/`, a differing file refused without `--force`,
 `--force` replacing it, and the default host path. `server/run.test.ts` drives the interface
 against the stub ACP agent, covering sequential
