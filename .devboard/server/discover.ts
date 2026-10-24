@@ -1715,6 +1715,17 @@ export function publishStaged(input: PublishInput): PublishResult {
   }
   merged.sort((left, right) => left.boundedContext.localeCompare(right.boundedContext));
 
+  // Discovery does not ask the operator to confirm terms one by one: every
+  // newly crawled term is published as confirmed. An invalidated term stays
+  // invalidated because it records a human decision.
+  for (const glossary of merged) {
+    for (const concept of glossary.concepts) {
+      if (concept.status === "proposed" || concept.status === "unconfirmed") {
+        concept.status = "confirmed";
+      }
+    }
+  }
+
   const freshness: Freshness = {
     project,
     commit: facts.commit,

@@ -189,14 +189,6 @@
   /** Pyramid tiers from the base (widest) to the apex (narrowest). */
   const PYRAMID_LEVELS = ["unit", "integration", "contract", "end-to-end", "other"];
 
-  const GLOSSARY_STATUSES = [
-    "proposed",
-    "confirmed",
-    "unconfirmed",
-    "invalidated",
-    "deprecated",
-  ] as const;
-
   const { send, connected }: { send: (command: unknown) => boolean; connected: boolean } =
     $props();
 
@@ -215,9 +207,6 @@
 
   let selectedTab = $state<DiscoverTabId>("overview");
   let glossarySearch = $state("");
-  let glossaryStatus = $state<string>("all");
-  let rejectingKey = $state<string | null>(null);
-  let rejectReason = $state("");
 
   let drafts = $state<Record<string, string>>({});
   let dirty = $state<Record<string, boolean>>({});
@@ -260,7 +249,7 @@
         ...context,
         concepts: (Array.isArray(context.concepts) ? context.concepts : []).filter(
           (concept) => {
-            if (glossaryStatus !== "all" && concept.status !== glossaryStatus) return false;
+            if (concept.status === "invalidated") return false;
             if (query.length === 0) return true;
             const haystack = [
               concept.id,
@@ -370,29 +359,44 @@
     );
   }
 
+  function sectionEntries(section: unknown, hidden: string[]): Array<[string, Leaf]> {
+    if (typeof section !== "object" || section === null) return [];
+    return Object.entries(section).filter(
+      (entry): entry is [string, Leaf] => isLeaf(entry[1]) && !hidden.includes(entry[0]),
+    );
+  }
+
   function unknownText(leaf: Leaf): string {
     return typeof leaf.reason === "string" && leaf.reason.length > 0
       ? `unknown — ${leaf.reason}`
       : "unknown";
   }
 
-  interface RecordField {
+  interface RecordColumn {
     key: string;
     label: string;
-    values: string[];
   }
 
-  function recordFields(record: Record<string, unknown>): RecordField[] {
-    return Object.entries(record)
-      .filter(([, value]) => value !== null && value !== undefined && value !== "")
-      .map(([key, value]) => ({
-        key,
-        label: humanize(key),
-        values: (Array.isArray(value) ? value : [value])
-          .map((item) => scalarText(item))
-          .filter((text) => text.length > 0),
-      }))
-      .filter((field) => field.values.length > 0);
+  /** One table column per field any record carries, in first-seen order. */
+  function recordColumns(records: Array<Record<string, unknown>>): RecordColumn[] {
+    const columns = new Map<string, string>();
+    for (const record of records) {
+      for (const [key, value] of Object.entries(record)) {
+        if (value === null || value === undefined || value === "") continue;
+        if (Array.isArray(value) && value.length === 0) continue;
+        if (!columns.has(key)) columns.set(key, humanize(key));
+      }
+    }
+    return [...columns].map(([key, label]) => ({ key, label }));
+  }
+
+  function recordColumnValues(record: Record<string, unknown>, key: string): string[] {
+    const value = record[key];
+    if (Array.isArray(value)) {
+      return value.map((item) => scalarText(item)).filter((text) => text.length > 0);
+    }
+    const text = scalarText(value);
+    return text.length > 0 ? [text] : [];
   }
 
   interface PyramidTier {
@@ -426,25 +430,8 @@
       );
   }
 
-  function tierWidth(indexFromBase: number): string {
-    return `${Math.max(30, 100 - indexFromBase * 17)}%`;
-  }
-
   function skillStateLabel(value: string): string {
     return value === "generated" ? "Generated" : value === "edited" ? "Edited" : "Missing";
-  }
-
-  function statusTitle(status: string): string {
-    if (status === "unconfirmed") {
-      return "Discover found this term in the project; no operator has confirmed it yet.";
-    }
-    if (status === "proposed") {
-      return "Discover suggests this term; confirm it or reject it with a reason.";
-    }
-    if (status === "confirmed") return "An operator confirmed this term.";
-    if (status === "deprecated") return "This term is deprecated.";
-    if (status === "invalidated") return "An operator rejected this term.";
-    return status;
   }
 
   function skillDraft(entry: DiscoverSkill | null, name: string): string {
@@ -481,48 +468,6 @@
       : [];
     interrupted = payload.interrupted === true;
     syncDrafts(payload);
-  }
-
-  function termKey(context: string, concept: Concept): string {
-    return `${context}\u0000${concept.id}`;
-  }
-
-  function setConceptStatus(context: string, concept: Concept, status: string): void {
-    if (state === null) return;
-    state = {
-      ...state,
-      glossaries: state.glossaries.map((entry) =>
-        entry.boundedContext !== context
-          ? entry
-          : {
-              ...entry,
-              concepts: entry.concepts.map((candidate) =>
-                candidate.id === concept.id ? { ...candidate, status } : candidate,
-              ),
-            },
-      ),
-    };
-  }
-
-  function confirmTerm(context: string, concept: Concept): void {
-    setConceptStatus(context, concept, "confirmed");
-    rejectingKey = null;
-    rejectReason = "";
-    send({ type: "confirmGlossaryTerm", context, id: concept.id });
-  }
-
-  function startReject(context: string, concept: Concept): void {
-    rejectingKey = termKey(context, concept);
-    rejectReason = "";
-  }
-
-  function submitReject(context: string, concept: Concept): void {
-    const reason = rejectReason.trim();
-    if (reason.length === 0) return;
-    setConceptStatus(context, concept, "invalidated");
-    rejectingKey = null;
-    rejectReason = "";
-    send({ type: "rejectGlossaryTerm", context, id: concept.id, reason });
   }
 
   function answer(value: string): void {
@@ -817,9 +762,9 @@
   </div>
 {/snippet}
 
-{#snippet leafValue(leaf: Leaf)}
+{#snippet tableValue(leaf: Leaf)}
   {#if leaf.confidence === "unknown"}
-    <p class="discover-value discover-value-unknown">{unknownText(leaf)}</p>
+    <span class="discover-value-unknown">{unknownText(leaf)}</span>
   {:else}
     <div class="discover-value">
       {#each leafLines(leaf.value) as line, index (index)}
@@ -829,84 +774,86 @@
   {/if}
 {/snippet}
 
-{#snippet leafView(leaf: Leaf, label: string | null = null)}
-  <div class="discover-leaf">
-    {#if label !== null}
-      <p class="discover-leaf-label">{label}</p>
-    {/if}
-    {@render leafValue(leaf)}
-  </div>
-{/snippet}
-
-{#snippet recordLeafView(leaf: Leaf, label: string | null = null)}
-  <div class="discover-leaf">
-    {#if label !== null}
-      <p class="discover-leaf-label">{label}</p>
-    {/if}
-    {#if leaf.confidence === "unknown"}
-      <p class="discover-value discover-value-unknown">{unknownText(leaf)}</p>
-    {:else if recordItems(leaf).length > 0}
-      <ul class="discover-record-list">
-        {#each recordItems(leaf) as record, index (index)}
-          <li class="discover-record">
-            {#each recordFields(record) as field (field.key)}
-              <div class="discover-record-field">
-                <span class="discover-record-name">{field.label}</span>
-                <span class="discover-record-values">
-                  {#each field.values as value, valueIndex (valueIndex)}
-                    {#if ["path", "paths", "entryPoints", "fixtures"].includes(field.key)}
-                      <code>{value}</code>
-                    {:else}
-                      <span>{value}</span>
-                    {/if}
-                  {/each}
-                </span>
-              </div>
-            {/each}
-          </li>
-        {/each}
-      </ul>
+{#snippet recordCell(record: Record<string, unknown>, column: string)}
+  {#each recordColumnValues(record, column) as value, index (index)}
+    {#if ["path", "paths", "entryPoints", "fixtures", "manifest", "manifests"].includes(column)}
+      <code>{value}</code>
     {:else}
-      {@render leafValue(leaf)}
+      <span>{value}</span>
     {/if}
-  </div>
+  {:else}
+    <span class="discover-value-unknown">—</span>
+  {/each}
 {/snippet}
 
-{#snippet contextsView(leaf: Leaf)}
-  {#if leaf.confidence === "unknown"}
-    <div class="discover-leaf">
-      <p class="discover-value discover-value-unknown">{unknownText(leaf)}</p>
-    </div>
+{#snippet recordsTable(records: Array<Record<string, unknown>>)}
+  {@const columns = recordColumns(records)}
+  {#if columns.length === 0}
+    <p class="empty">Not recorded.</p>
   {:else}
-    <div class="discover-context-cards" data-testid="discover-context-cards">
-      {#each recordItems(leaf) as context, index (index)}
-        {@const path = scalarText(context.path)}
-        {@const entryPoints = Array.isArray(context.entryPoints)
-          ? context.entryPoints.map((entry) => scalarText(entry)).filter(Boolean)
-          : []}
-        <article class="discover-context-card">
-          <h3>{scalarText(context.name) || "Context"}</h3>
-          <p class="discover-context-responsibility">
-            {scalarText(context.responsibility) || "No responsibility recorded."}
-          </p>
-          <dl class="discover-context-facts">
-            {#if path.length > 0}
-              <dt>Path</dt>
-              <dd><code>{path}</code></dd>
-            {/if}
-            {#if entryPoints.length > 0}
-              <dt>Entry points</dt>
-              <dd>
-                {#each entryPoints as entry, entryIndex (entryIndex)}
-                  <code>{entry}</code>
-                {/each}
-              </dd>
-            {/if}
-          </dl>
-        </article>
-      {/each}
-    </div>
+    <table class="discover-table discover-table-records">
+      <thead>
+        <tr>
+          {#each columns as column (column.key)}
+            <th scope="col">{column.label}</th>
+          {/each}
+        </tr>
+      </thead>
+      <tbody>
+        {#each records as record, index (index)}
+          <tr>
+            {#each columns as column (column.key)}
+              <td>{@render recordCell(record, column.key)}</td>
+            {/each}
+          </tr>
+        {/each}
+      </tbody>
+    </table>
   {/if}
+{/snippet}
+
+{#snippet singleLeafView(leaf: Leaf)}
+  {#if recordItems(leaf).length > 0}
+    {@render recordsTable(recordItems(leaf))}
+  {:else}
+    <table class="discover-table">
+      <thead>
+        <tr>
+          <th scope="col">Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>{@render tableValue(leaf)}</td>
+        </tr>
+      </tbody>
+    </table>
+  {/if}
+{/snippet}
+
+{#snippet fieldTableView(entries: Array<[string, Leaf]>)}
+  <table class="discover-table">
+    <thead>
+      <tr>
+        <th scope="col">Field</th>
+        <th scope="col">Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      {#each entries as [leafKey, leaf] (leafKey)}
+        <tr data-field={leafKey}>
+          <th scope="row">{humanize(leafKey)}</th>
+          <td>
+            {#if recordItems(leaf).length > 0}
+              {@render recordsTable(recordItems(leaf))}
+            {:else}
+              {@render tableValue(leaf)}
+            {/if}
+          </td>
+        </tr>
+      {/each}
+    </tbody>
+  </table>
 {/snippet}
 
 {#snippet testingView(
@@ -923,56 +870,81 @@
   {#if levels === undefined}
     <p class="discover-value discover-value-unknown">No test levels were detected.</p>
   {:else if levels.confidence === "unknown"}
-    {@render leafValue(levels)}
+    {@render tableValue(levels)}
   {:else if pyramidTiers(levels).length > 0}
-    <div class="discover-pyramid" data-testid="discover-pyramid">
-      {#each [...pyramidTiers(levels)].reverse() as tier, index (tier.level)}
-        <div
-          class="discover-pyramid-tier"
-          data-level={tier.level}
-          style={`--tier-width: ${tierWidth(pyramidTiers(levels).length - 1 - index)}`}
-          title={tier.detail}
-        >
-          <span class="discover-pyramid-level">{humanize(tier.level)}</span>
-          <span class="discover-pyramid-count">
-            {tier.tests === "unknown"
-              ? "count unknown"
-              : `${tier.tests} ${tier.tests === "1" ? "test" : "tests"}`}
-          </span>
-          {#if tier.command.length > 0}
-            <code class="discover-pyramid-command">{tier.command}</code>
-          {/if}
-        </div>
-      {/each}
-    </div>
+    {@const tiers = pyramidTiers(levels)}
+    <table class="discover-table" data-testid="discover-pyramid">
+      <thead>
+        <tr>
+          <th scope="col">Level</th>
+          <th scope="col">Tests</th>
+          <th scope="col">Command</th>
+          <th scope="col">Paths &amp; fixtures</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each tiers as tier (tier.level)}
+          <tr data-level={tier.level}>
+            <th scope="row">{humanize(tier.level)}</th>
+            <td>
+              {tier.tests === "unknown"
+                ? "count unknown"
+                : `${tier.tests} ${tier.tests === "1" ? "test" : "tests"}`}
+            </td>
+            <td>
+              {#if tier.command.length > 0}
+                <code>{tier.command}</code>
+              {:else}
+                <span class="discover-value-unknown">—</span>
+              {/if}
+            </td>
+            <td>{tier.detail.length > 0 ? tier.detail : "—"}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
   {:else}
-    {@render leafValue(levels)}
+    {@render tableValue(levels)}
   {/if}
   {#if pyramid !== undefined && pyramid.confidence !== "unknown" && pyramid.value !== null}
-    <p class="discover-pyramid-caption">{scalarText(pyramid.value)}</p>
+    <p class="discover-table-caption">{scalarText(pyramid.value)}</p>
   {/if}
 {/snippet}
 
 {#snippet commandsView(section: Record<string, unknown>, testCommand: string)}
-  <div class="discover-command-list" data-testid="discover-command-list">
-    {#each Object.entries(section) as [key, leaf] (key)}
-      {#if isLeaf(leaf)}
-        {#if !(key === "tryOut" && testCommand.length > 0 && scalarText(leaf.value) === testCommand)}
-          <div class="discover-command" data-command={key}>
-            <span class="discover-command-name">{COMMAND_LABELS[key] ?? humanize(key)}</span>
-            {#if leaf.confidence === "unknown"}
-              <span class="discover-command-value discover-value-unknown">unknown</span>
-            {:else}
-              <code class="discover-command-value">{scalarText(leaf.value)}</code>
-            {/if}
-            {#if COMMAND_HINTS[key] !== undefined && leaf.confidence !== "unknown"}
-              <span class="discover-command-hint">{COMMAND_HINTS[key]}</span>
-            {/if}
-          </div>
+  <table class="discover-table" data-testid="discover-command-list">
+    <thead>
+      <tr>
+        <th scope="col">Command</th>
+        <th scope="col">Line</th>
+      </tr>
+    </thead>
+    <tbody>
+      {#each Object.entries(section) as [key, leaf] (key)}
+        {#if isLeaf(leaf)}
+          {#if !(
+            key === "tryOut" &&
+            testCommand.length > 0 &&
+            scalarText(leaf.value) === testCommand
+          )}
+            <tr data-command={key}>
+              <th scope="row">{COMMAND_LABELS[key] ?? humanize(key)}</th>
+              <td>
+                {#if leaf.confidence === "unknown"}
+                  <span class="discover-value-unknown">unknown</span>
+                {:else}
+                  <code>{scalarText(leaf.value)}</code>
+                {/if}
+                {#if COMMAND_HINTS[key] !== undefined && leaf.confidence !== "unknown"}
+                  <p class="discover-command-hint">{COMMAND_HINTS[key]}</p>
+                {/if}
+              </td>
+            </tr>
+          {/if}
         {/if}
-      {/if}
-    {/each}
-  </div>
+      {/each}
+    </tbody>
+  </table>
 {/snippet}
 
 <div class="discover-mode">
@@ -1107,37 +1079,13 @@
                 {:else if key === "commands" && typeof section === "object" && section !== null}
                   {@render commandsView(section, testCommand)}
                 {:else if isLeaf(section)}
-                  {#if recordItems(section).length > 0}
-                    {@render recordLeafView(section)}
-                  {:else}
-                    {@render leafView(section)}
-                  {/if}
+                  {@render singleLeafView(section)}
                 {:else if typeof section === "object" && section !== null}
-                  {@const entries = Object.entries(section).filter(
-                    ([leafKey, leaf]) =>
-                      isLeaf(leaf) &&
-                      !(HIDDEN_LEAVES[key] ?? []).includes(leafKey),
-                  )}
+                  {@const entries = sectionEntries(section, HIDDEN_LEAVES[key] ?? [])}
                   {#if entries.length === 0}
                     <p class="empty">Not recorded.</p>
                   {:else}
-                    {#each entries as [leafKey, leaf] (leafKey)}
-                      {#if isLeaf(leaf)}
-                        {#if key === "architecture" && leafKey === "contexts"}
-                          {@render contextsView(leaf)}
-                        {:else if recordItems(leaf).length > 0}
-                          {@render recordLeafView(
-                            leaf,
-                            entries.length === 1 ? null : humanize(leafKey),
-                          )}
-                        {:else}
-                          {@render leafView(
-                            leaf,
-                            entries.length === 1 ? null : humanize(leafKey),
-                          )}
-                        {/if}
-                      {/if}
-                    {/each}
+                    {@render fieldTableView(entries)}
                   {/if}
                 {:else}
                   <p class="empty">Not recorded.</p>
@@ -1172,23 +1120,10 @@
           aria-label="Search glossary terms"
           data-testid="discover-glossary-search"
         />
-        <label class="discover-filter">
-          <span class="flow-label">Status</span>
-          <select
-            value={glossaryStatus}
-            onchange={(event) => (glossaryStatus = event.currentTarget.value)}
-            data-testid="discover-glossary-status"
-          >
-            <option value="all">All</option>
-            {#each GLOSSARY_STATUSES as status (status)}
-              <option value={status}>{humanize(status)}</option>
-            {/each}
-          </select>
-        </label>
       </div>
 
       {#if filteredContexts.length === 0}
-        <p class="empty">No glossary terms match the current filters.</p>
+        <p class="empty">No glossary terms match the current search.</p>
       {:else}
         <div class="discover-contexts">
           {#each filteredContexts as context (context.boundedContext)}
@@ -1202,7 +1137,6 @@
               </div>
               <div class="discover-terms">
                 {#each context.concepts as concept (concept.id)}
-                  {@const key = termKey(context.boundedContext, concept)}
                   <article
                     class="discover-term"
                     data-testid="discover-term"
@@ -1215,13 +1149,6 @@
                       <span class="discover-term-label">
                         {labelText(concept.prefLabels) || concept.id}
                       </span>
-                      <span
-                        class="discover-badge"
-                        data-status={concept.status}
-                        title={statusTitle(concept.status)}
-                      >
-                        {concept.status}
-                      </span>
                     </div>
                     <p
                       class="discover-term-definition"
@@ -1231,7 +1158,6 @@
                     </p>
                     <p class="discover-term-meta">
                       <span>Kind: {concept.kind}</span>
-                      <span>Status: {concept.status}</span>
                       <span>
                         Grounding:
                         {Array.isArray(concept.grounding) ? concept.grounding.length : 0}
@@ -1239,71 +1165,6 @@
                       <span>Origin: {concept.origin}</span>
                       <code>{concept.id}</code>
                     </p>
-
-                    {#if concept.status === "proposed" || concept.status === "unconfirmed"}
-                      <div class="discover-term-actions">
-                        <button
-                          type="button"
-                          class="start-button"
-                          data-testid="discover-confirm"
-                          onclick={() => confirmTerm(context.boundedContext, concept)}
-                        >
-                          Confirm
-                        </button>
-                        <button
-                          type="button"
-                          class="start-button"
-                          data-testid="discover-reject"
-                          onclick={() => startReject(context.boundedContext, concept)}
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    {:else if concept.status === "confirmed"}
-                      <div class="discover-term-actions">
-                        <button
-                          type="button"
-                          class="start-button"
-                          data-testid="discover-reject"
-                          onclick={() => startReject(context.boundedContext, concept)}
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    {/if}
-
-                    {#if rejectingKey === key}
-                      <div class="discover-reject-form">
-                        <input
-                          type="text"
-                          value={rejectReason}
-                          oninput={(event) => (rejectReason = event.currentTarget.value)}
-                          placeholder="Reason for rejection"
-                          aria-label="Reason for rejection"
-                          data-testid="discover-reject-reason"
-                        />
-                        <button
-                          type="button"
-                          class="start-button"
-                          data-testid="discover-reject-confirm"
-                          disabled={rejectReason.trim().length === 0}
-                          onclick={() => submitReject(context.boundedContext, concept)}
-                        >
-                          Confirm rejection
-                        </button>
-                        <button
-                          type="button"
-                          class="start-button"
-                          data-testid="discover-reject-cancel"
-                          onclick={() => {
-                            rejectingKey = null;
-                            rejectReason = "";
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    {/if}
                   </article>
                 {/each}
               </div>

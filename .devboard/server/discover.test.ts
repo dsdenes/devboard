@@ -509,7 +509,7 @@ describe("discover mode", () => {
           expect(id).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
           expect(ids.has(id)).toBe(false);
           ids.add(id);
-          expect(["unconfirmed", "proposed"]).toContain(String(concept.status));
+          expect(String(concept.status)).toBe("confirmed");
           expect(["owner", "standard", "llm"]).toContain(String(concept.origin));
           expect(["entity", "event", "field", "role", "actor", "value", "rule"]).toContain(
             String(concept.kind),
@@ -842,7 +842,7 @@ describe("discover mode", () => {
   );
 
   test(
-    "lets an operator confirm a grounded unconfirmed term",
+    "publishes every crawled term as confirmed without an operator confirm step",
     async () => {
       const { server, url } = startServer();
       const client = await connect(url);
@@ -850,26 +850,17 @@ describe("discover mode", () => {
         const before = await runDiscover(client);
         const initial = before.glossaries[0] as { concepts: Array<Record<string, unknown>> };
         expect(initial.concepts.find((concept) => concept.id === "order")?.status).toBe(
-          "unconfirmed",
-        );
-
-        const confirmed = await afterCommand(client, {
-          type: "confirmGlossaryTerm",
-          context: "orders",
-          id: "order",
-        });
-        const glossary = confirmed.glossaries[0] as {
-          concepts: Array<Record<string, unknown>>;
-        };
-        expect(glossary.concepts.find((concept) => concept.id === "order")?.status).toBe(
           "confirmed",
         );
-        expect(confirmed.decisions).toHaveLength(1);
-        expect(confirmed.decisions[0]).toMatchObject({
-          context: "orders",
-          id: "order",
-          action: "confirm",
-        });
+        expect(initial.concepts.find((concept) => concept.id === "order-total")?.status).toBe(
+          "confirmed",
+        );
+        expect(before.decisions).toHaveLength(0);
+
+        // Confirmation is a publication rule, not a manual step.
+        client.send({ type: "confirmGlossaryTerm", context: "orders", id: "order" });
+        const refusal = await client.waitFor((message) => message.type === "discoverError");
+        expect(String(refusal.message)).toContain("confirmed");
       } finally {
         client.close();
         server.stop(true);
@@ -879,29 +870,16 @@ describe("discover mode", () => {
   );
 
   test(
-    "records glossary confirm and reject decisions, persists them, and preserves them on a re-crawl",
+    "records a glossary rejection, persists it, and preserves it on a re-crawl",
     async () => {
       const { server, url } = startServer();
       const client = await connect(url);
       try {
-        await runDiscover(client);
-        const confirmed = await afterCommand(client, {
-          type: "confirmGlossaryTerm",
-          context: "orders",
-          id: "order-total",
-        });
-        const glossary = confirmed.glossaries[0] as {
-          concepts: Array<Record<string, unknown>>;
-        };
-        expect(glossary.concepts.find((concept) => concept.id === "order-total")?.status).toBe(
+        const before = await runDiscover(client);
+        const initial = before.glossaries[0] as { concepts: Array<Record<string, unknown>> };
+        expect(initial.concepts.find((concept) => concept.id === "order-total")?.status).toBe(
           "confirmed",
         );
-        expect(confirmed.decisions.length).toBe(1);
-        expect(confirmed.decisions[0]).toMatchObject({ context: "orders", id: "order-total", action: "confirm" });
-
-        client.send({ type: "confirmGlossaryTerm", context: "orders", id: "order-total" });
-        const twice = await client.waitFor((message) => message.type === "discoverError");
-        expect(String(twice.message)).toContain("confirmed");
 
         client.send({ type: "rejectGlossaryTerm", context: "orders", id: "order-total", reason: "  " });
         const noReason = await client.waitFor((message) => message.type === "discoverError");
@@ -919,7 +897,12 @@ describe("discover mode", () => {
         expect(
           rejectedGlossary.concepts.find((concept) => concept.id === "order-total")?.status,
         ).toBe("invalidated");
-        expect(rejected.decisions.length).toBe(2);
+        expect(rejected.decisions.length).toBe(1);
+        expect(rejected.decisions[0]).toMatchObject({
+          context: "orders",
+          id: "order-total",
+          action: "reject",
+        });
       } finally {
         client.close();
         server.stop(true);
@@ -941,7 +924,7 @@ describe("discover mode", () => {
         const preserved = merged.concepts.find((concept) => concept.id === "order-total");
         expect(preserved?.status).toBe("invalidated");
         expect(preserved?.prefLabels).toEqual([{ language: "en", text: "Order Total" }]);
-        expect(rerun.decisions.length).toBe(2);
+        expect(rerun.decisions.length).toBe(1);
         expect(rerun.warnings).toEqual([]);
       } finally {
         after.close();

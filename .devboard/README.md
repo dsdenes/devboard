@@ -596,9 +596,10 @@ byte-identical; it spawns no replacement peer.
 
 Discover uses the same WebSocket at `/ws`. The client sends `discoverProject`, `stopDiscover`,
 `answerDiscover` (with `id` and `value`), `getDiscover`, `saveDiscoverSkill` (with `name` and
-`text`), `restoreDiscoverSkill` (with `name`), `confirmGlossaryTerm` (with `context` and
-`id`), and `rejectGlossaryTerm` (with `context`, `id`, and a non-empty `reason`). `getDiscover`
-asks for the current snapshot and is answered with `discoverState`. The server
+`text`), and `restoreDiscoverSkill` (with `name`). The protocol also accepts
+`confirmGlossaryTerm` (with `context` and `id`) and `rejectGlossaryTerm` (with `context`, `id`, and
+a non-empty `reason`) for tooling, but the Glossary tab does not use them. `getDiscover` asks for
+the current snapshot and is answered with `discoverState`. The server
 broadcasts `discoverState`, `discoverStarted`, `discoverActivity`, `discoverQuestion`,
 `discoverStopped`, and `discoverError`; it never sends `activity`, `question`, `error`,
 `runStarted`, or `runStopped` for Discover. `discoverState` carries the active and interrupt flags,
@@ -632,11 +633,13 @@ secrets and no absolute path.
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint, and
 the Overview tab renders the project and discovery time plus an explicit `stale` badge
-(`data-testid="discover-freshness"`) when the fingerprint differs. Cards carry `discover-card` and
-`data-field` and are ordered with the runtime inventory first. A card whose section has one leaf
-renders the value without repeating the card title as a sub-header; a card with several leaves
-keeps one label per leaf. The view does not render confidence badges or evidence chips: the sheet
-still records both for every leaf, but they do not help an operator read the card. Every
+(`data-testid="discover-freshness"`) when the fingerprint differs. Sections carry
+`data-testid="discover-card"` and `data-field` and are stacked in one column, ordered with the
+runtime inventory first. Each section is a table whose rows pair a field label with its value; a
+record list such as environments becomes a table with one column per field and one row per record,
+and a section with a single leaf renders just that row. The view does not render confidence badges
+or evidence chips: the sheet still records both for every leaf, but they do not help an operator
+read the table. Every
 non-`unknown` leaf carries at least one sorted, unique repository-relative evidence path, symbol
 anchor, or safe git fact and a confidence of `observed`, `declared`, `inferred`, or `unknown`;
 `unknown` carries empty evidence and a short reason. The definition is exactly one sentence of at
@@ -650,15 +653,15 @@ and quality gates, and the three mandatory extra cards: runtime inventory, entry
 dependency map, and delivery and versioning. It never guesses, invents an additional environment,
 copies README prose, or records a configuration value; a claim it cannot ground is `unknown`.
 
-The Overview also renders that data for scanning: main commands as a labeled list where the test
-command is named as the whole suite and a try-out command equal to the test command is omitted;
-the test levels as a color-coded pyramid of stacked tiers with counts and commands, above its
-one-line description; architecture contexts as cards with path, responsibility, and entry points;
-record lists such as environments as labeled rows; and the dependency-map card only for facts not
-already shown by the stack, runtime, and CI cards. It omits the delivery card because its facts
-repeat deployment, CI, and runtime, and it omits the deployment pipeline sources because those
-are CI provenance rather than deployment information. A test pyramid with no observed level and a
-glossary with no matching term keep their explicit empty state.
+The Overview also renders that data for scanning: main commands as a `Command`/`Line` table where
+the test command is named as the whole suite and a try-out command equal to the test command is
+omitted; the test levels as a `Level`/`Tests`/`Command`/`Paths & fixtures` table above its one-line
+description; architecture contexts as a table with path, responsibility, and entry points; record
+lists such as environments as their own tables; and the dependency-map section only for facts not
+already shown by the stack, runtime, and CI sections. It omits the delivery section because its
+facts repeat deployment, CI, and runtime, and it omits the deployment pipeline sources because
+those are CI provenance rather than deployment information. A test table with no observed level
+and a glossary with no matching term keep their explicit empty state.
 
 The Glossary tab and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
 document per bounded context named `<bounded-context>.glossary.yaml`, top-level `boundedContext`,
@@ -669,29 +672,29 @@ standard's snake_case spellings, ids are unique kebab case, every concept has an
 label and at least one `en` definition, and every label language is `en` or `de`. No undeclared
 field is written. Every concept has at least one grounding of the form
 `code:<repository-relative path that exists>` or `model:<name that appears in the host>`; an
-ungrounded candidate is omitted. The crawl writes
+ungrounded candidate is omitted. The crawl stages
 `status: unconfirmed` with `origin: owner` or `standard` for a term found in code or documentation,
 and `status: proposed` with `origin: llm` for a name it proposes for an existing unnamed concept;
-it never writes `confirmed`, `deprecated`, or `invalidated`. The tab groups terms by context and
-offers search and a status filter; each term carries `data-testid="discover-term"`, `data-context`,
-`data-id`, `data-status`, and `data-kind`, and each context carries
-`data-testid="discover-context"`. The context heading shows its title, falling back to the context
-id only when no title exists. Term cards are color-coded by `kind` (`entity`, `event`, `field`,
-`role`, `actor`, `value`, `rule`) while the status badge always spells the status, so color is
-never the only cue.
+it never writes `confirmed`, `deprecated`, or `invalidated`. On publication the server confirms
+every newly crawled term, so the published glossary contains only confirmed terms unless an
+earlier operator decision invalidated one. The tab groups terms by context and offers search; it
+shows no status filter, status badge, or per-term control, and it hides invalidated terms. Each
+term carries `data-testid="discover-term"`, `data-context`, `data-id`, `data-status`, and
+`data-kind`, and each context carries `data-testid="discover-context"`. The context heading shows
+its title, falling back to the context id only when no title exists. Term cards are color-coded by
+`kind` (`entity`, `event`, `field`, `role`, `actor`, `value`, `rule`).
 
-A proposed or unconfirmed term offers `Confirm` and `Reject` (`data-testid="discover-confirm"` and
-`data-testid="discover-reject"`), and the status badge explains what the status means; a confirmed
-term still offers `Reject` with a reason. `confirmGlossaryTerm` changes a proposed or unconfirmed
-term to `confirmed`, and `rejectGlossaryTerm` requires a non-empty reason and changes a proposed,
-unconfirmed, or confirmed term to `invalidated`. Both append a dated
-decision to `decisions.json` with the context, id, action, reason when rejecting, and date, never
-adding a field to the YAML, and the change survives reload, reconnect, and restart. A later crawl
-preserves every confirmed or invalidated concept's labels, definitions, notes, status, origin,
-standard reference, kind, and related ids; it may refresh grounding and add proposed concepts, but
-it never resurrects an invalidated id, never overwrites a human decision, and removes an undecided
-proposal only when the new crawl no longer grounds it. A malformed or structurally invalid glossary
-fails the run atomically with one `discoverError` naming the file and rule.
+Confirmation is automatic, so the Glossary tab offers no `Confirm` or `Reject` control.
+`confirmGlossaryTerm` still succeeds only for a term that is proposed or unconfirmed, and
+`rejectGlossaryTerm` requires a non-empty reason and changes a proposed, unconfirmed, or confirmed
+term to `invalidated`; neither is reachable from the tab. Both append a dated decision to
+`decisions.json` with the context, id, action, reason when rejecting, and date, never adding a
+field to the YAML, and the change survives reload, reconnect, and restart. A later crawl preserves
+every confirmed or invalidated concept's labels, definitions, notes, status, origin, standard
+reference, kind, and related ids; it may refresh grounding and add confirmed concepts, but it never
+resurrects an invalidated id, never overwrites a human decision, and removes an undecided concept
+only when the new crawl no longer grounds it. A malformed or structurally invalid glossary fails
+the run atomically with one `discoverError` naming the file and rule.
 
 A successful run publishes exactly five skills under `.omp/skills/`: `discover-testing-strategy`,
 `discover-naming-conventions`, `discover-coding-conventions`,
