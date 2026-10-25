@@ -1,135 +1,22 @@
 <script lang="ts">
   import { html as diffHtml } from "diff2html";
   import "diff2html/bundles/css/diff2html.min.css";
+  import { flow } from "./lib/flow.svelte";
+  import { layout } from "./lib/layout.svelte";
+  import type { WorkspaceTab } from "./lib/layout.svelte";
+  import type { FlowFile, FlowWidget, RunQuestion } from "./lib/types";
+  import DetailSplit from "./lib/components/DetailSplit.svelte";
+  import MonacoEditor from "./lib/components/MonacoEditor.svelte";
+  import Terminal from "./lib/components/Terminal.svelte";
+  import Button from "./lib/components/ui/button.svelte";
 
-  type FlowStatus = "none" | "idle" | "running" | "stopped" | "merged";
-  type FlowCategory =
-    | "contract"
-    | "entity"
-    | "naming"
-    | "data"
-    | "dependency"
-    | "irreversible"
-    | "structure";
-  type AnswerTarget = "goal" | "implementation" | "conversation";
-
-  interface FlowQuestionOption {
-    label: string;
-    description?: string;
-    recommended: boolean;
+  interface Props {
+    tab: WorkspaceTab | null;
+    openTab: (tab: WorkspaceTab) => void;
+    closeTab: (tab: WorkspaceTab) => void;
   }
 
-  interface FlowQuestion {
-    id: number | string;
-    message: string;
-    options: FlowQuestionOption[];
-  }
-
-  interface FlowFile {
-    path: string;
-    status: "added" | "modified" | "deleted" | "renamed";
-    insertions: number;
-    deletions: number;
-    diff: string;
-  }
-
-  interface FlowWidget {
-    id: string;
-    category: FlowCategory;
-    concept: string;
-    summary: string;
-    rationale: string;
-    files: string[];
-    accepted: boolean;
-  }
-
-  interface FlowSteeringNote {
-    id: string;
-    timestamp: string;
-    source: string;
-    text: string;
-    status: "new" | "read";
-  }
-
-  interface FlowCheckpoint {
-    id: string;
-    timestamp: string;
-    summary: string;
-    files: number;
-    commit: string;
-    verification: "passed" | "failed" | "not-run";
-  }
-
-  interface FlowVerification {
-    command: string;
-    status: "passed" | "failed" | "not-run";
-    timestamp: string;
-    output: string;
-  }
-
-  interface FlowBlocker {
-    id: string;
-    timestamp: string;
-    text: string;
-    dismissed: boolean;
-  }
-
-  interface FlowPr {
-    forge: "github" | "gitlab";
-    number: number;
-    url: string;
-    state: "none" | "draft" | "live" | "merged" | "closed" | "error";
-  }
-
-  interface FlowConversationMessage {
-    role: "developer" | "agent";
-    text: string;
-  }
-
-  interface FlowConversation {
-    widgetId: string;
-    messages: FlowConversationMessage[];
-    activity: string[];
-    question: FlowQuestion | null;
-  }
-
-  interface FlowGoalCreation {
-    activity: string[];
-    question: FlowQuestion | null;
-  }
-
-  interface FlowHistoryEntry {
-    sessionId: string;
-    goal: string;
-    pr: FlowPr | null;
-  }
-
-  interface FlowSnapshot {
-    sessionId: string | null;
-    status: FlowStatus;
-    goal: string;
-    decisions: string;
-    worktree: string | null;
-    branch: string | null;
-    baseRevision: string | null;
-    files: FlowFile[];
-    widgets: FlowWidget[];
-    steering: FlowSteeringNote[];
-    checkpoints: FlowCheckpoint[];
-    verification: FlowVerification | null;
-    blockers: FlowBlocker[];
-    pr: FlowPr | null;
-    prError: string | null;
-    leftover: string | null;
-    question: FlowQuestion | null;
-    goalCreation: FlowGoalCreation | null;
-    conversation: FlowConversation | null;
-    activity: string[];
-    notice: string | null;
-    history: FlowHistoryEntry[];
-  }
-
-  const { send }: { send: (command: unknown) => boolean } = $props();
+  let { tab, openTab, closeTab }: Props = $props();
 
   const DIFF_OPTIONS = {
     outputFormat: "side-by-side" as const,
@@ -137,1144 +24,905 @@
     matching: "lines" as const,
   };
 
-  let sessionId = $state<string | null>(null);
-  let status = $state<FlowStatus>("none");
-  let goal = $state("");
-  let decisions = $state("");
-  let worktree = $state<string | null>(null);
-  let branch = $state<string | null>(null);
-  let baseRevision = $state<string | null>(null);
-  let files = $state<FlowFile[]>([]);
-  let widgets = $state<FlowWidget[]>([]);
-  let steering = $state<FlowSteeringNote[]>([]);
-  let checkpoints = $state<FlowCheckpoint[]>([]);
-  let verification = $state<FlowVerification | null>(null);
-  let blockers = $state<FlowBlocker[]>([]);
-  let pr = $state<FlowPr | null>(null);
-  let prError = $state<string | null>(null);
-  let leftover = $state<string | null>(null);
-  let question = $state<FlowQuestion | null>(null);
-  let goalCreation = $state<FlowGoalCreation | null>(null);
-  let conversation = $state<FlowConversation | null>(null);
-  let activity = $state<string[]>([]);
-  let notice = $state<string | null>(null);
-  let history = $state<FlowHistoryEntry[]>([]);
-  let errorMessage = $state<string | null>(null);
-  let noticeMessage = $state<string | null>(null);
-
-  let goalDraft = $state("");
-  let goalDirty = $state(false);
-  let decisionsDraft = $state("");
-  let decisionsDirty = $state(false);
-  let steeringDraft = $state("");
-  let conversationDraft = $state("");
-  let conclusionDraft = $state("");
-  let answers = $state<Record<AnswerTarget, string>>({
-    goal: "",
-    implementation: "",
-    conversation: "",
-  });
-
-  let selectedWidgetId = $state<string | null>(null);
-  let focusedFile = $state<string | null>(null);
-  let refusingId = $state<string | null>(null);
-  let refuseReason = $state("");
-
-  let selectedWidget = $derived(
-    widgets.find((widget) => widget.id === selectedWidgetId) ?? null,
+  const activeWidget = $derived(tab?.kind === "widget" ? flow.widget(tab.resourceId) : null);
+  const focusedFile = $derived(tab?.kind === "file" ? flow.file(tab.resourceId) : null);
+  const checkpoint = $derived(
+    tab?.kind === "checkpoint" ? flow.checkpoint(tab.resourceId) : null,
   );
-  let detailFiles = $derived(
-    selectedWidget === null
-      ? []
-      : selectedWidget.files
-          .map((path) => files.find((file) => file.path === path))
-          .filter((file): file is FlowFile => file !== undefined),
+  const conversationWidget = $derived(
+    flow.conversation === null ? null : flow.widget(flow.conversation.widgetId),
   );
-  let focusedFileData = $derived(
-    focusedFile === null ? null : (files.find((file) => file.path === focusedFile) ?? null),
-  );
-  let diffTargets = $derived(focusedFileData === null ? detailFiles : [focusedFileData]);
-  let showDiff = $derived(focusedFileData !== null || diffTargets.length > 0);
-  let conversationStale = $derived(
-    conversation !== null &&
-      !widgets.some((widget) => widget.id === conversation?.widgetId),
-  );
-  let startDisabled = $derived(
-    status === "merged" || status === "running" || goal.trim().length === 0,
-  );
-  let stopDisabled = $derived(status !== "running");
-  let readyDisabled = $derived(!(status === "stopped" && pr?.state === "draft"));
-  let mergeDisabled = $derived(!(status === "stopped" && pr?.state === "live"));
 
-  function appendLine(lines: string[], text: string, append: boolean): string[] {
-    if (append && lines.length > 0) {
-      return [...lines.slice(0, -1), lines[lines.length - 1] + text];
-    }
-    return [...lines, text];
+  function openWidget(entry: FlowWidget): void {
+    openTab({ id: `widget:${entry.id}`, kind: "widget", resourceId: entry.id, title: entry.concept });
   }
 
-  function applySnapshot(message: FlowSnapshot): void {
-    sessionId = message.sessionId;
-    status = message.status;
-    goal = message.goal;
-    decisions = message.decisions;
-    worktree = message.worktree;
-    branch = message.branch;
-    baseRevision = message.baseRevision;
-    files = message.files;
-    widgets = message.widgets;
-    steering = message.steering;
-    checkpoints = message.checkpoints;
-    verification = message.verification;
-    blockers = message.blockers;
-    pr = message.pr;
-    prError = message.prError;
-    leftover = message.leftover;
-    question = message.question;
-    goalCreation = message.goalCreation;
-    conversation = message.conversation;
-    activity = message.activity;
-    notice = message.notice;
-    history = message.history;
-    if (!goalDirty) goalDraft = message.goal;
-    if (!decisionsDirty) decisionsDraft = message.decisions;
+  function openFile(file: FlowFile): void {
+    openTab({
+      id: `file:${file.path}`,
+      kind: "file",
+      resourceId: file.path,
+      title: file.path.split("/").pop() ?? file.path,
+    });
   }
 
-  /** Every parsed server message, including Flow events, arrives here. */
-  export function handleEvent(message: unknown): void {
-    if (typeof message !== "object" || message === null || !("type" in message)) return;
-    const type = (message as { type: unknown }).type;
-    if (type === "flowSnapshot") {
-      applySnapshot(message as unknown as FlowSnapshot);
-      return;
-    }
-
-    if (type === "flowGoalStarted") {
-      goalCreation = { activity: [], question: null };
-      errorMessage = null;
-      return;
-    }
-    if (type === "flowGoalStopped") {
-      const value = message as { completed?: unknown; text?: unknown };
-      goalCreation = null;
-      if (value.completed === true && typeof value.text === "string") {
-        goal = value.text;
-        goalDirty = false;
-        goalDraft = value.text;
-      }
-      return;
-    }
-    if (type === "flowActivity") {
-      const value = message as { text?: unknown; append?: unknown };
-      if (typeof value.text !== "string") return;
-      const append = value.append === true;
-      if (goalCreation !== null) {
-        goalCreation = {
-          ...goalCreation,
-          activity: appendLine(goalCreation.activity, value.text, append),
-        };
-      } else {
-        activity = appendLine(activity, value.text, append);
-      }
-      return;
-    }
-    if (type === "flowQuestion") {
-      const value = message as {
-        target?: unknown;
-        id?: unknown;
-        message?: unknown;
-        options?: unknown;
-      };
-      if (
-        value.id === undefined ||
-        (typeof value.id !== "string" && typeof value.id !== "number") ||
-        typeof value.message !== "string" ||
-        !Array.isArray(value.options)
-      ) {
-        return;
-      }
-      const pending: FlowQuestion = {
-        id: value.id,
-        message: value.message,
-        options: value.options as FlowQuestionOption[],
-      };
-      if (value.target === "goal") {
-        goalCreation = {
-          activity: goalCreation?.activity ?? [],
-          question: pending,
-        };
-      } else if (value.target === "conversation") {
-        if (conversation !== null) conversation = { ...conversation, question: pending };
-      } else {
-        question = pending;
-      }
-      return;
-    }
-    if (type === "flowNotice") {
-      const value = message as { message?: unknown };
-      if (typeof value.message === "string") notice = value.message;
-      return;
-    }
-    if (type === "flowImplementationStarted") {
-      const value = message as {
-        sessionId?: unknown;
-        worktree?: unknown;
-        branch?: unknown;
-        baseRevision?: unknown;
-      };
-      status = "running";
-      activity = [];
-      if (typeof value.sessionId === "string") sessionId = value.sessionId;
-      if (typeof value.worktree === "string") worktree = value.worktree;
-      if (typeof value.branch === "string") branch = value.branch;
-      if (typeof value.baseRevision === "string") baseRevision = value.baseRevision;
-      return;
-    }
-    if (type === "flowStopped") {
-      if (status !== "merged") status = "stopped";
-      question = null;
-      return;
-    }
-    if (type === "flowError") {
-      const value = message as { message?: unknown };
-      if (typeof value.message === "string") errorMessage = value.message;
-      return;
-    }
-    if (type === "flowNotice") {
-      const value = message as { message?: unknown };
-      if (typeof value.message === "string") noticeMessage = value.message;
-      return;
-    }
-    if (type === "flowFiles") {
-      const value = message as { files?: unknown };
-      if (Array.isArray(value.files)) files = value.files as FlowFile[];
-      return;
-    }
-    if (type === "flowWidgets") {
-      const value = message as { widgets?: unknown };
-      if (Array.isArray(value.widgets)) widgets = value.widgets as FlowWidget[];
-      return;
-    }
-    if (type === "flowSteering") {
-      const value = message as { notes?: unknown };
-      if (Array.isArray(value.notes)) steering = value.notes as FlowSteeringNote[];
-      return;
-    }
-    if (type === "flowDecisions") {
-      const value = message as { text?: unknown };
-      if (typeof value.text === "string") {
-        decisions = value.text;
-        if (!decisionsDirty) decisionsDraft = value.text;
-      }
-      return;
-    }
-    if (type === "flowCheckpoints") {
-      const value = message as { checkpoints?: unknown };
-      if (Array.isArray(value.checkpoints)) {
-        checkpoints = value.checkpoints as FlowCheckpoint[];
-      }
-      return;
-    }
-    if (type === "flowVerification") {
-      const value = message as { verification?: unknown };
-      verification = (value.verification ?? null) as FlowVerification | null;
-      return;
-    }
-    if (type === "flowBlockers") {
-      const value = message as { blockers?: unknown };
-      if (Array.isArray(value.blockers)) blockers = value.blockers as FlowBlocker[];
-      return;
-    }
-    if (type === "flowPr") {
-      const value = message as { pr?: unknown };
-      pr = (value.pr ?? null) as FlowPr | null;
-      return;
-    }
-    if (type === "flowConversationStarted") {
-      const value = message as { widgetId?: unknown };
-      if (typeof value.widgetId !== "string") return;
-      conversation = { widgetId: value.widgetId, messages: [], activity: [], question: null };
-      conversationDraft = "";
-      conclusionDraft = "";
-      return;
-    }
-    if (type === "flowConversationStopped") {
-      const value = message as { widgetId?: unknown };
-      if (conversation !== null && value.widgetId === conversation.widgetId) {
-        conversation = null;
-      }
-      return;
-    }
-    if (type === "flowConversationMessage") {
-      const value = message as { role?: unknown; text?: unknown };
-      if (
-        conversation === null ||
-        (value.role !== "developer" && value.role !== "agent") ||
-        typeof value.text !== "string"
-      ) {
-        return;
-      }
-      conversation = {
-        ...conversation,
-        messages: [
-          ...conversation.messages,
-          { role: value.role, text: value.text },
-        ],
-      };
-      return;
-    }
-    if (type === "flowConversationActivity") {
-      const value = message as { text?: unknown; append?: unknown };
-      if (conversation === null || typeof value.text !== "string") return;
-      conversation = {
-        ...conversation,
-        activity: appendLine(conversation.activity, value.text, value.append === true),
-      };
-      return;
-    }
-    if (type === "flowConversationQuestion") {
-      const value = message as { id?: unknown; message?: unknown; options?: unknown };
-      if (
-        conversation === null ||
-        value.id === undefined ||
-        (typeof value.id !== "string" && typeof value.id !== "number") ||
-        typeof value.message !== "string" ||
-        !Array.isArray(value.options)
-      ) {
-        return;
-      }
-      conversation = {
-        ...conversation,
-        question: {
-          id: value.id,
-          message: value.message,
-          options: value.options as FlowQuestionOption[],
-        },
-      };
-    }
-  }
-
-  function saveGoal(): void {
-    send({ type: "saveFlowGoal", text: goalDraft });
-    goalDirty = false;
-  }
-
-  function createGoal(): void {
-    send({ type: "createFlowGoal" });
-  }
-
-  function startImplementation(): void {
-    send({ type: "startFlowImplementation" });
-  }
-
-  function stopImplementation(): void {
-    send({ type: "stopFlowImplementation" });
-  }
-
-  function toggleWidget(widget: FlowWidget): void {
-    send({ type: "acceptFlowWidget", id: widget.id, accepted: !widget.accepted });
-  }
-
-  function openWidget(widget: FlowWidget): void {
-    selectedWidgetId = widget.id;
-    focusedFile = null;
-    refusingId = null;
-    refuseReason = "";
-  }
-
-  function focusFile(path: string): void {
-    selectedWidgetId = null;
-    focusedFile = path;
-  }
-
-  function startRefuse(widget: FlowWidget): void {
-    refusingId = widget.id;
-    refuseReason = "";
-  }
-
-  function confirmRefuse(widget: FlowWidget): void {
-    send({ type: "refuseFlowWidget", id: widget.id, reason: refuseReason });
-    refusingId = null;
-    refuseReason = "";
-  }
-
-  function discuss(widget: FlowWidget): void {
-    send({ type: "openFlowWidget", id: widget.id });
-  }
-
-  function saveDecisions(): void {
-    send({ type: "saveFlowDecisions", text: decisionsDraft });
-    decisionsDirty = false;
-  }
-
-  function sendSteering(): void {
-    const text = steeringDraft;
-    if (text.trim().length === 0) return;
-    send({ type: "sendFlowSteering", text });
-    steeringDraft = "";
-  }
-
-  function dismissBlocker(blocker: FlowBlocker): void {
-    send({ type: "dismissFlowBlocker", id: blocker.id });
-  }
-
-  function answerQuestion(pending: FlowQuestion, value: string, target: AnswerTarget): void {
-    const trimmed = value.trim();
-    if (trimmed.length === 0) return;
-    send({ type: "flowAnswer", id: pending.id, value: trimmed, target });
-    answers[target] = "";
-    if (target === "goal" && goalCreation !== null) {
-      goalCreation = { ...goalCreation, question: null };
-    } else if (target === "conversation" && conversation !== null) {
-      conversation = { ...conversation, question: null };
-    } else if (target === "implementation") {
-      question = null;
-    }
-  }
-
-  function sendConversation(): void {
-    const text = conversationDraft;
-    if (text.trim().length === 0) return;
-    send({ type: "sendFlowConversation", text });
-    conversationDraft = "";
-  }
-
-  function sendConclusion(): void {
-    const text = conclusionDraft;
-    if (text.trim().length === 0) return;
-    send({ type: "sendFlowConclusion", text });
-  }
-
-  function closeConversation(): void {
-    send({ type: "closeFlowWidget" });
-  }
-
-  function retryPr(): void {
-    send({ type: "retryFlowPr" });
-  }
-
-  function markPrReady(): void {
-    send({ type: "markFlowPrReady" });
-  }
-
-  function mergePr(): void {
-    send({ type: "mergeFlowPr" });
-  }
-
-  function outputTail(output: string): string {
-    return output.length > 2000 ? `…${output.slice(-2000)}` : output;
-  }
-
-  function isHttpUrl(url: string): boolean {
-    return url.startsWith("https://") || url.startsWith("http://");
+  function submitAnswer(pending: RunQuestion, target: "goal" | "implementation" | "conversation"): void {
+    flow.answerQuestion(pending, flow.answers[target], target);
   }
 </script>
 
-{#snippet questionPanel(pending: FlowQuestion, target: AnswerTarget, testid: string)}
+{#snippet questionPanel(
+  pending: RunQuestion,
+  target: "goal" | "implementation" | "conversation",
+  testid: string,
+)}
   <div class="flow-question" data-testid={testid} data-target={target}>
-    <p class="flow-question-message">{pending.message}</p>
+    <p class="muted" style="margin: 0 0 6px;">{pending.message}</p>
     {#if pending.options.length > 0}
-      <div class="flow-choices">
+      <div class="choice-list">
         {#each pending.options as option (option.label)}
           <button
             type="button"
-            class="flow-choice"
+            class="choice"
             data-testid="flow-choice"
-            onclick={() => answerQuestion(pending, option.label, target)}
+            data-command={`flow.answer.submit.${target}`}
+            onclick={() => flow.answerQuestion(pending, option.label, target)}
           >
-            <span class="flow-choice-label">
+            <span class="choice__label">
               {option.label}
               {#if option.recommended}
-                <span class="flow-recommended">Recommended</span>
+                <span class="choice__recommended">Recommended</span>
               {/if}
             </span>
             {#if option.description}
-              <span class="flow-choice-description">{option.description}</span>
+              <span class="choice__description">{option.description}</span>
             {/if}
           </button>
         {/each}
       </div>
     {/if}
     <form
-      class="flow-answer-form"
+      class="answer-form"
+      style="margin-top: 6px;"
       onsubmit={(event) => {
         event.preventDefault();
-        answerQuestion(pending, answers[target], target);
+        submitAnswer(pending, target);
       }}
     >
       <input
+        id={`flow-answer-${target}`}
+        class="textarea"
+        style="min-height: 28px; padding: 4px 6px;"
         type="text"
-        value={answers[target]}
-        oninput={(event) => (answers[target] = event.currentTarget.value)}
+        value={flow.answers[target]}
+        oninput={(event) => (flow.answers[target] = event.currentTarget.value)}
         placeholder="Your answer"
         aria-label="Your answer"
         data-testid="flow-answer-input"
       />
-      <button
+      <Button
+        variant="default"
         type="submit"
+        data-command={`flow.answer.submit.${target}`}
         data-testid="flow-submit-answer"
-        disabled={answers[target].trim().length === 0}
+        disabled={flow.answers[target].trim().length === 0}
       >
         Submit answer
-      </button>
+      </Button>
     </form>
   </div>
 {/snippet}
 
-<div class="flow-mode" data-testid="flow-view" data-status={status}>
-  <div class="flow-banners">
-    {#if errorMessage !== null}
-      <p class="error flow-error" data-testid="flow-error" role="alert">{errorMessage}</p>
-    {/if}
-    {#if noticeMessage !== null || notice !== null}
-      <p class="flow-notice" data-testid="flow-notice" role="status">
-        {noticeMessage ?? notice}
-      </p>
-    {/if}
-  </div>
-
-  <div class="flow-layout">
-    <section class="flow-panel" data-testid="flow-goal">
-      <div class="flow-panel-heading">
-        <h2>Flow goal</h2>
-        <button
-          type="button"
-          class="start-button"
-          data-testid="create-flow-goal"
-          onclick={createGoal}
-        >
-          {goal.trim().length > 0 ? "Recreate flow goal" : "Create flow goal"}
-        </button>
-      </div>
-      <textarea
-        class="flow-textarea flow-goal-text"
-        data-testid="flow-goal-text"
-        aria-label="Flow goal"
-        bind:value={goalDraft}
-        oninput={() => (goalDirty = true)}
-      ></textarea>
-      <button
-        type="button"
-        class="start-button"
-        data-testid="save-flow-goal"
-        onclick={saveGoal}
-      >
-        Save
-      </button>
-
-      {#if goalCreation !== null}
-        <div class="flow-creation" data-testid="flow-goal-active">
-          <p class="flow-section-title">Goal interview</p>
-          <div class="flow-activity" data-testid="flow-goal-activity">
-            {#if goalCreation.activity.length === 0}
-              <p class="empty">Waiting for the agent…</p>
-            {:else}
-              <ol class="flow-activity-log">
-                {#each goalCreation.activity as line, index (index)}
-                  <li>{line}</li>
-                {/each}
-              </ol>
-            {/if}
-          </div>
-          {#if goalCreation.question !== null}
-            {@render questionPanel(goalCreation.question, "goal", "flow-goal-question")}
-          {/if}
-        </div>
-      {/if}
-    </section>
-
-    <section class="flow-panel" data-testid="flow-session">
-      <h2>Session</h2>
-      <div class="flow-meta">
-        <p class="flow-meta-row">
-          <span class="flow-label">Status</span>
-          <span class="flow-state" data-testid="flow-status" data-status={status}>{status}</span>
+{#snippet diffStack(files: FlowFile[])}
+  <div
+    class="diff-html"
+    class:d2h-dark-color-scheme={layout.theme === "dark"}
+    data-testid="flow-diff"
+    style="height: 100%; overflow: auto;"
+  >
+    {#each files as file (file.path)}
+      <div class="flow-diff-file">
+        <p class="row-sm" style="margin: 4px 6px;">
+          <code>{file.path}</code>
+          <span class="badge" data-tone={file.status === "deleted" ? "error" : "accent"}>
+            {file.status}
+          </span>
+          <span class="mono muted">+{file.insertions}/-{file.deletions}</span>
         </p>
-        {#if sessionId !== null}
-          <p class="flow-meta-row">
-            <span class="flow-label">Session</span>
-            <code>{sessionId}</code>
-          </p>
-        {/if}
-        {#if worktree !== null}
-          <p class="flow-meta-row">
-            <span class="flow-label">Worktree</span>
-            <code data-testid="flow-worktree">{worktree}</code>
-          </p>
-        {/if}
-        {#if branch !== null}
-          <p class="flow-meta-row">
-            <span class="flow-label">Branch</span>
-            <code data-testid="flow-branch">{branch}</code>
-          </p>
-        {/if}
-        {#if baseRevision !== null}
-          <p class="flow-meta-row">
-            <span class="flow-label">Base revision</span>
-            <code data-testid="flow-base-revision">{baseRevision}</code>
-          </p>
-        {/if}
+        <div>{@html diffHtml(file.diff, DIFF_OPTIONS)}</div>
       </div>
-
-      <div class="flow-actions">
-        <button
-          type="button"
-          class="start-button"
-          data-testid="start-flow-implementation"
-          disabled={startDisabled}
-          onclick={startImplementation}
-        >
-          Start implementation
-        </button>
-        <button
-          type="button"
-          class="start-button stop-button"
-          data-testid="stop-flow-implementation"
-          disabled={stopDisabled}
-          onclick={stopImplementation}
-        >
-          Stop implementation
-        </button>
-      </div>
-
-      {#if question !== null}
-        {@render questionPanel(question, "implementation", "flow-question")}
-      {/if}
-    </section>
+    {:else}
+      <p class="empty">No diff is available for this selection.</p>
+    {/each}
   </div>
+{/snippet}
 
-  <section class="flow-panel" data-testid="flow-activity-section">
-    <h2>Implementation activity</h2>
-    <div class="flow-activity" data-testid="flow-activity">
-      {#if activity.length === 0}
-        <p class="empty">No implementation activity yet.</p>
-      {:else}
-        <ol class="flow-activity-log">
-          {#each activity as line, index (index)}
-            <li>{line}</li>
-          {/each}
-        </ol>
-      {/if}
-    </div>
-  </section>
-
-  <section class="flow-panel" data-testid="flow-pr-section">
-    <div class="flow-panel-heading">
-      <h2>Pull request</h2>
-    </div>
-    {#if pr === null}
-      <p class="empty">No pull request yet.</p>
-    {:else}
-      <p class="flow-pr-summary" data-testid="flow-pr" data-state={pr.state}>
-        <span class="flow-label">Forge</span>
-        <span>{pr.forge}</span>
-        <span class="flow-label">Number</span>
-        <span>#{pr.number}</span>
-        <span class="flow-label">State</span>
-        <span>{pr.state}</span>
-        {#if isHttpUrl(pr.url)}
-          <a
-            href={pr.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-testid="flow-pr-link"
-          >
-            {pr.url}
-          </a>
-        {/if}
-      </p>
-    {/if}
-    {#if prError !== null}
-      <p class="error flow-pr-error" data-testid="flow-pr-error" role="alert">{prError}</p>
-      <button
-        type="button"
-        class="start-button"
-        data-testid="retry-flow-pr"
-        onclick={retryPr}
-      >
-        Retry PR
-      </button>
-    {/if}
-    <div class="flow-actions">
-      <button
-        type="button"
-        class="start-button"
-        data-testid="mark-flow-pr-ready"
-        disabled={readyDisabled}
-        onclick={markPrReady}
-      >
-        Mark ready
-      </button>
-      <button
-        type="button"
-        class="start-button"
-        data-testid="merge-flow-pr"
-        disabled={mergeDisabled}
-        onclick={mergePr}
-      >
-        Merge
-      </button>
-    </div>
-    {#if status === "merged" && leftover !== null}
-      <p class="flow-leftover" data-testid="flow-leftover">{leftover}</p>
-    {/if}
-  </section>
-
-  <section class="flow-panel" data-testid="flow-widgets-section">
-    <div class="flow-panel-heading">
-      <h2>Change widgets</h2>
-      <span class="flow-count">{widgets.length}</span>
-    </div>
-    {#if widgets.length === 0}
-      <p class="empty">No change widgets yet.</p>
-    {:else}
-      <div class="flow-widget-grid">
-        {#each widgets as widget (widget.id)}
-          <article
-            class="flow-widget"
-            class:accepted={widget.accepted}
-            data-testid="flow-widget"
-            data-widget-id={widget.id}
-            data-accepted={widget.accepted ? "true" : "false"}
-            data-category={widget.category}
-            onclick={() => openWidget(widget)}
-          >
-            <div class="flow-widget-header">
-              <span class="flow-widget-badge" data-category={widget.category}>
-                {widget.category}
-              </span>
-              <label class="flow-widget-accept">
-                <input
-                  type="checkbox"
-                  checked={widget.accepted}
-                  data-testid="flow-widget-accept"
-                  onclick={(event) => event.stopPropagation()}
-                  onchange={() => toggleWidget(widget)}
-                />
-                Accepted
-              </label>
-            </div>
-            <button
-              type="button"
-              class="flow-widget-body"
-              data-testid="flow-widget-open"
-              onclick={(event) => {
-                event.stopPropagation();
-                openWidget(widget);
-              }}
-            >
-              <span class="flow-widget-concept">{widget.concept}</span>
-              <span class="flow-widget-summary">{widget.summary}</span>
-              <span class="flow-widget-count">
-                {widget.files.length}
-                {widget.files.length === 1 ? "file" : "files"}
-              </span>
-            </button>
-            <div class="flow-widget-actions">
-              <button
-                type="button"
-                class="start-button"
-                data-testid="flow-widget-discuss"
-                onclick={(event) => {
-                  event.stopPropagation();
-                  discuss(widget);
-                }}
-              >
-                Discuss
-              </button>
-              <button
-                type="button"
-                class="start-button"
-                data-testid="flow-widget-refuse"
-                onclick={(event) => {
-                  event.stopPropagation();
-                  startRefuse(widget);
-                }}
-              >
-                Refuse
-              </button>
-            </div>
-            {#if refusingId === widget.id}
-              <div
-                class="flow-refuse"
-                data-testid="flow-refuse"
-                onclick={(event) => event.stopPropagation()}
-              >
-                <textarea
-                  class="flow-textarea"
-                  data-testid="refuse-widget-reason"
-                  placeholder="Optional reason"
-                  aria-label="Reason for refusing this change"
-                  bind:value={refuseReason}
-                ></textarea>
-                <div class="flow-actions">
-                  <button
-                    type="button"
-                    class="start-button stop-button"
-                    data-testid="confirm-refuse-widget"
-                    onclick={() => confirmRefuse(widget)}
-                  >
-                    Confirm refuse
-                  </button>
-                  <button
-                    type="button"
-                    class="start-button"
-                    data-testid="cancel-refuse-widget"
-                    onclick={() => (refusingId = null)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            {/if}
-          </article>
-        {/each}
-      </div>
-    {/if}
-  </section>
-
-  {#if selectedWidget !== null}
-    <section
-      class="flow-panel flow-widget-detail"
-      data-testid="flow-widget-detail"
-      data-widget-id={selectedWidget.id}
-      data-category={selectedWidget.category}
-    >
-      <div class="flow-panel-heading">
-        <h2>{selectedWidget.concept}</h2>
-        <button
-          type="button"
-          class="start-button"
+{#snippet widgetDetail(entry: FlowWidget)}
+  <section
+    class="panel"
+    data-testid="flow-widget-detail"
+    data-widget-id={entry.id}
+    data-category={entry.category}
+  >
+    <div class="panel__header">
+      <h2 class="panel__title">{entry.concept}</h2>
+      <div class="row-sm">
+        <span class="badge" data-tone="accent">{entry.category}</span>
+        <Button
+          variant="outline"
+          data-command={`tab.close.flow.${tab?.id ?? ""}`}
           data-testid="close-flow-widget-detail"
-          onclick={() => (selectedWidgetId = null)}
-        >
-          Close
-        </button>
-      </div>
-      <p class="flow-widget-badge" data-category={selectedWidget.category}>
-        {selectedWidget.category}
-      </p>
-      <p class="flow-detail-summary">{selectedWidget.summary}</p>
-      <p class="flow-detail-rationale">{selectedWidget.rationale}</p>
-      <h3>Files</h3>
-      <ul class="flow-file-list">
-        {#each detailFiles as file (file.path)}
-          <li>
-            <button
-              type="button"
-              class="flow-file-link"
-              data-testid="flow-widget-file"
-              onclick={() => focusFile(file.path)}
-            >
-              <code>{file.path}</code>
-              <span class="flow-file-status" data-status={file.status}>{file.status}</span>
-              <span class="flow-file-stats">+{file.insertions}/-{file.deletions}</span>
-            </button>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
-  {#if files.length > 0}
-    <section class="flow-panel" data-testid="flow-files-section">
-      <h2>Changed files</h2>
-      <ul class="flow-file-map">
-        {#each files as file (file.path)}
-          <li>
-            <button
-              type="button"
-              class="flow-file-row"
-              class:selected={focusedFile === file.path}
-              data-testid="flow-file"
-              data-path={file.path}
-              data-status={file.status}
-              onclick={() => focusFile(file.path)}
-            >
-              <code class="flow-file-path">{file.path}</code>
-              <span class="flow-file-status" data-status={file.status}>{file.status}</span>
-              <span class="flow-file-stats">
-                <span class="flow-insertions">+{file.insertions}</span>
-                <span class="flow-deletions">-{file.deletions}</span>
-              </span>
-            </button>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
-  {#if showDiff}
-    <section class="flow-panel flow-diff-panel">
-      <div class="flow-panel-heading">
-        <h2>Diff</h2>
-        <button
-          type="button"
-          class="start-button"
-          data-testid="close-flow-diff"
           onclick={() => {
-            focusedFile = null;
-            selectedWidgetId = null;
+            if (tab !== null) closeTab(tab);
           }}
         >
-          Close diff
-        </button>
+          Close
+        </Button>
       </div>
-      <div class="flow-diff" data-testid="flow-diff">
-        {#each diffTargets as file (file.path)}
-          <div class="flow-diff-file">
-            <p class="flow-diff-path">
-              <code>{file.path}</code>
-              <span class="flow-file-status" data-status={file.status}>{file.status}</span>
-            </p>
-            <div class="flow-diff-html">
-              {@html diffHtml(file.diff, DIFF_OPTIONS)}
-            </div>
-          </div>
-        {/each}
-      </div>
-    </section>
-  {/if}
-
-  {#if verification !== null}
-    <section
-      class="flow-panel flow-verification"
-      class:failed={verification.status === "failed"}
-      data-testid="flow-verification"
-      data-status={verification.status}
-    >
-      <div class="flow-panel-heading">
-        <h2>Verification</h2>
-        <span class="flow-verification-status" data-status={verification.status}>
-          {verification.status}
-        </span>
-      </div>
-      <p class="flow-verification-command"><code>{verification.command}</code></p>
-      <p class="flow-verification-time">{verification.timestamp}</p>
-      <pre class="flow-verification-output">{outputTail(verification.output)}</pre>
-    </section>
-  {/if}
-
-  {#if checkpoints.length > 0}
-    <section class="flow-panel" data-testid="flow-checkpoints">
-      <h2>Checkpoints</h2>
-      <ul class="flow-checkpoint-list">
-        {#each checkpoints as checkpoint (checkpoint.id)}
-          <li class="flow-checkpoint" data-testid="flow-checkpoint">
-            <span class="flow-checkpoint-time">{checkpoint.timestamp}</span>
-            <span class="flow-checkpoint-summary">{checkpoint.summary}</span>
-            <span class="flow-checkpoint-files">
-              {checkpoint.files}
-              {checkpoint.files === 1 ? "file" : "files"}
-            </span>
-            <code class="flow-checkpoint-commit">{checkpoint.commit}</code>
-            <span
-              class="flow-verification-status"
-              data-status={checkpoint.verification}
-            >
-              {checkpoint.verification}
-            </span>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
-  <div class="flow-layout">
-    <section class="flow-panel" data-testid="flow-steering">
-      <h2>Steering</h2>
-      <textarea
-        class="flow-textarea"
-        data-testid="flow-steering-text"
-        placeholder="Steer the implementation"
-        aria-label="Steering note"
-        bind:value={steeringDraft}
-      ></textarea>
-      <button
-        type="button"
-        class="start-button"
-        data-testid="send-flow-steering"
-        disabled={steeringDraft.trim().length === 0}
-        onclick={sendSteering}
-      >
-        Send
-      </button>
-      {#if steering.length > 0}
-        <ul class="flow-steering-list">
-          {#each steering as note (note.id)}
-            <li
-              class="flow-steering-note"
-              data-testid="flow-steering-note"
-              data-status={note.status}
-            >
-              <div class="flow-steering-meta">
-                <span class="flow-steering-source">{note.source}</span>
-                <span class="flow-steering-time">{note.timestamp}</span>
-                <span class="flow-steering-status">{note.status}</span>
-              </div>
-              <p class="flow-steering-text">{note.text}</p>
+    </div>
+    <div class="panel__body stack-sm">
+      <p style="margin: 0;">{entry.summary}</p>
+      <p class="muted" style="margin: 0;">{entry.rationale}</p>
+      <div>
+        <div class="field__label">Files</div>
+        <ul class="history-list">
+          {#each flow.detailFiles(entry) as file (file.path)}
+            <li>
+              <button
+                type="button"
+                class="sidebar-item"
+                data-testid="flow-widget-file"
+                data-command={`flow.file.open.${file.path}`}
+                onclick={() => openFile(file)}
+              >
+                <code class="sidebar-item__label">{file.path}</code>
+                <span class="badge" data-tone={file.status === "deleted" ? "error" : "accent"}>
+                  {file.status}
+                </span>
+                <span class="mono muted">+{file.insertions}/-{file.deletions}</span>
+              </button>
             </li>
           {/each}
         </ul>
-      {/if}
-    </section>
-
-    <section class="flow-panel" data-testid="flow-decisions-section">
-      <h2>Decision board</h2>
-      <textarea
-        class="flow-textarea flow-decisions-text"
-        data-testid="flow-decisions"
-        aria-label="Decision board"
-        bind:value={decisionsDraft}
-        oninput={() => (decisionsDirty = true)}
-      ></textarea>
-      <button
-        type="button"
-        class="start-button"
-        data-testid="save-flow-decisions"
-        onclick={saveDecisions}
-      >
-        Save
-      </button>
-    </section>
-  </div>
-
-  {#if blockers.length > 0}
-    <section class="flow-panel" data-testid="flow-blockers">
-      <h2>Blockers</h2>
-      <ul class="flow-blocker-list">
-        {#each blockers as blocker (blocker.id)}
-          <li
-            class="flow-blocker"
-            class:dismissed={blocker.dismissed}
-            data-testid="flow-blocker"
-            data-dismissed={blocker.dismissed ? "true" : "false"}
-          >
-            <span class="flow-blocker-time">{blocker.timestamp}</span>
-            <span class="flow-blocker-text">{blocker.text}</span>
-            {#if blocker.dismissed}
-              <span class="flow-blocker-dismissed">Dismissed</span>
-            {:else}
-              <button
-                type="button"
-                class="start-button"
-                data-testid="dismiss-flow-blocker"
-                onclick={() => dismissBlocker(blocker)}
-              >
-                Dismiss
-              </button>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
-  {#if conversation !== null}
-    {@const convo = conversation}
-    <section class="flow-panel flow-conversation" data-testid="flow-conversation">
-      <div class="flow-panel-heading">
-        <h2>Widget conversation</h2>
-        <button
-          type="button"
-          class="start-button"
-          data-testid="close-flow-conversation"
-          onclick={closeConversation}
+      </div>
+      <div class="row-sm">
+        <Button
+          variant="secondary"
+          data-command={`flow.widget.accept.${entry.id}`}
+          data-testid="flow-widget-accept"
+          onclick={() => flow.toggleWidget(entry)}
         >
-          Close
-        </button>
+          {entry.accepted ? "Unaccept change" : "Accept change"}
+        </Button>
+        <Button
+          variant="secondary"
+          data-command={`flow.widget.discuss.${entry.id}`}
+          data-testid="flow-widget-discuss"
+          onclick={() => flow.discuss(entry)}
+        >
+          Discuss
+        </Button>
+        <Button
+          variant="outline"
+          data-command={`flow.widget.refuse.${entry.id}`}
+          data-testid="flow-widget-refuse"
+          onclick={() => flow.startRefuse(entry)}
+        >
+          Refuse
+        </Button>
       </div>
-      <p class="flow-conversation-widget" data-testid="flow-conversation-widget">
-        Widget <code>{convo.widgetId}</code>
-      </p>
-      {#if conversationStale}
-        <p class="flow-stale" data-testid="flow-conversation-stale">
-          This change is no longer current. The conversation is read-only, but the
-          conclusion can still be sent.
-        </p>
-      {/if}
-
-      <div class="flow-messages" data-testid="flow-conversation-messages">
-        {#each convo.messages as entry, index (index)}
-          <div class="flow-message" data-role={entry.role}>
-            <span class="flow-message-role">{entry.role}</span>
-            <p class="flow-message-text">{entry.text}</p>
+      {#if flow.refusingId === entry.id}
+        <div class="flow-refuse" data-testid="flow-refuse" style="margin-top: 6px;">
+          <textarea
+            class="textarea"
+            data-testid="refuse-widget-reason"
+            placeholder="Optional reason"
+            aria-label="Reason for refusing this change"
+            bind:value={flow.refuseReason}
+          ></textarea>
+          <div class="row-sm" style="justify-content: flex-end; margin-top: 4px;">
+            <Button
+              variant="destructive"
+              data-command={`flow.widget.refuse.confirm.${entry.id}`}
+              data-testid="confirm-refuse-widget"
+              onclick={() => flow.confirmRefuse(entry)}
+            >
+              Confirm refuse
+            </Button>
+            <Button
+              variant="outline"
+              data-command={`flow.widget.refuse.cancel.${entry.id}`}
+              data-testid="cancel-refuse-widget"
+              onclick={() => flow.cancelRefuse()}
+            >
+              Cancel
+            </Button>
           </div>
-        {/each}
-      </div>
+        </div>
+      {/if}
+    </div>
+  </section>
+{/snippet}
 
-      <div class="flow-activity" data-testid="flow-conversation-activity">
-        {#if convo.activity.length > 0}
-          <ol class="flow-activity-log">
-            {#each convo.activity as line, index (index)}
-              <li>{line}</li>
-            {/each}
-          </ol>
+{#snippet widgetsSection()}
+  <section class="panel" data-testid="flow-widgets-section">
+    <div class="panel__header">
+      <h2 class="panel__title">Change widgets</h2>
+      <span class="muted">{flow.widgets.length}</span>
+    </div>
+    <div class="panel__body panel__body--flush">
+      {#each flow.widgets as widget (widget.id)}
+        <div
+          class="flow-widget"
+          data-testid="flow-widget"
+          data-widget-id={widget.id}
+          data-accepted={widget.accepted ? "true" : "false"}
+          data-category={widget.category}
+          data-command={`flow.widget.open.${widget.id}`}
+        >
+          <span class="badge" data-tone="accent" data-category={widget.category}>
+            {widget.category}
+          </span>
+          <button
+            type="button"
+            class="sidebar-item grow"
+            data-testid="flow-widget-open"
+            data-command={`flow.widget.open.${widget.id}`}
+            onclick={() => openWidget(widget)}
+          >
+            <span class="sidebar-item__label">{widget.concept}</span>
+            <span class="muted" style="max-width: 40%; overflow: hidden; text-overflow: ellipsis;">
+              {widget.summary}
+            </span>
+            <span class="mono muted">{widget.files.length} files</span>
+          </button>
+          <label class="row-sm" style="gap: 4px;">
+            <input
+              type="checkbox"
+              checked={widget.accepted}
+              data-testid="flow-widget-accept"
+              data-command={`flow.widget.accept.${widget.id}`}
+              onchange={() => flow.toggleWidget(widget)}
+            />
+            <span class="muted">accepted</span>
+          </label>
+          <Button
+            variant="secondary"
+            size="sm"
+            data-command={`flow.widget.discuss.${widget.id}`}
+            data-testid="flow-widget-discuss"
+            onclick={() => flow.discuss(widget)}
+          >
+            Discuss
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            data-command={`flow.widget.refuse.${widget.id}`}
+            data-testid="flow-widget-refuse"
+            onclick={() => flow.startRefuse(widget)}
+          >
+            Refuse
+          </Button>
+        </div>
+        {#if flow.refusingId === widget.id}
+          <div class="flow-refuse" data-testid="flow-refuse" style="padding: 6px;">
+            <textarea
+              class="textarea"
+              data-testid="refuse-widget-reason"
+              placeholder="Optional reason"
+              aria-label="Reason for refusing this change"
+              bind:value={flow.refuseReason}
+            ></textarea>
+            <div class="row-sm" style="justify-content: flex-end; margin-top: 4px;">
+              <Button
+                variant="destructive"
+                data-command={`flow.widget.refuse.confirm.${widget.id}`}
+                data-testid="confirm-refuse-widget"
+                onclick={() => flow.confirmRefuse(widget)}
+              >
+                Confirm refuse
+              </Button>
+              <Button
+                variant="outline"
+                data-command={`flow.widget.refuse.cancel.${widget.id}`}
+                data-testid="cancel-refuse-widget"
+                onclick={() => flow.cancelRefuse()}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        {/if}
+      {:else}
+        <p class="empty">No change widgets yet.</p>
+      {/each}
+    </div>
+  </section>
+{/snippet}
+
+{#snippet overview()}
+  <div class="scroll-column">
+    <section class="panel" data-testid="flow-session">
+      <div class="panel__header">
+        <h2 class="panel__title">Session</h2>
+        <div class="row-sm">
+          <span class="badge" data-testid="flow-status" data-status={flow.status}>
+            {flow.status}
+          </span>
+          <Button
+            variant="default"
+            data-command="flow.start"
+            data-testid="start-flow-implementation"
+            title={flow.startDisabled ? "A flow goal and an idle session are required." : undefined}
+            disabled={flow.startDisabled}
+            onclick={() => flow.startImplementation()}
+          >
+            Start implementation
+          </Button>
+          <Button
+            variant="destructive"
+            data-command="flow.stop"
+            data-testid="stop-flow-implementation"
+            disabled={flow.stopDisabled}
+            onclick={() => flow.stopImplementation()}
+          >
+            Stop implementation
+          </Button>
+        </div>
+      </div>
+      <div class="panel__body">
+        <dl class="kv-grid">
+          {#if flow.sessionId !== null}
+            <dt>Session</dt>
+            <dd><code>{flow.sessionId}</code></dd>
+          {/if}
+          {#if flow.worktree !== null}
+            <dt>Worktree</dt>
+            <dd><code data-testid="flow-worktree">{flow.worktree}</code></dd>
+          {/if}
+          {#if flow.branch !== null}
+            <dt>Branch</dt>
+            <dd><code data-testid="flow-branch">{flow.branch}</code></dd>
+          {/if}
+          {#if flow.baseRevision !== null}
+            <dt>Base revision</dt>
+            <dd><code data-testid="flow-base-revision">{flow.baseRevision}</code></dd>
+          {/if}
+        </dl>
+        {#if flow.question !== null}
+          {@render questionPanel(flow.question, "implementation", "flow-question")}
         {/if}
       </div>
-
-      {#if convo.question !== null}
-        {@render questionPanel(convo.question, "conversation", "flow-conversation-question")}
-      {/if}
-
-      <form
-        class="flow-answer-form"
-        onsubmit={(event) => {
-          event.preventDefault();
-          sendConversation();
-        }}
-      >
-        <input
-          type="text"
-          bind:value={conversationDraft}
-          placeholder="Message the conversation"
-          aria-label="Conversation message"
-          data-testid="flow-conversation-input"
-        />
-        <button
-          type="submit"
-          data-testid="send-flow-conversation"
-          disabled={conversationDraft.trim().length === 0}
-        >
-          Send
-        </button>
-      </form>
-
-      <label class="flow-label" for="flow-conclusion">Conclusion</label>
-      <textarea
-        id="flow-conclusion"
-        class="flow-textarea"
-        data-testid="flow-conclusion"
-        bind:value={conclusionDraft}
-      ></textarea>
-      <button
-        type="button"
-        class="start-button"
-        data-testid="send-flow-conclusion"
-        disabled={conclusionDraft.trim().length === 0}
-        onclick={sendConclusion}
-      >
-        Send conclusion to implementation
-      </button>
     </section>
-  {/if}
 
-  {#if history.length > 0}
-    <section class="flow-panel" data-testid="flow-history">
-      <h2>Past Flow sessions</h2>
-      <ul class="flow-history-list">
-        {#each history as entry (entry.sessionId)}
-          <li class="flow-history-entry" data-testid="flow-history-entry">
-            <code>{entry.sessionId}</code>
-            <span class="flow-history-goal">{entry.goal}</span>
-            {#if entry.pr !== null && isHttpUrl(entry.pr.url)}
-              <a href={entry.pr.url} target="_blank" rel="noopener noreferrer">
-                PR #{entry.pr.number}
+    <section class="panel" data-testid="flow-pr-section">
+      <div class="panel__header">
+        <h2 class="panel__title">Pull request</h2>
+        <div class="row-sm">
+          <Button
+            variant="secondary"
+            data-command="flow.pr.retry"
+            data-testid="retry-flow-pr"
+            disabled={flow.prError === null}
+            onclick={() => flow.retryPr()}
+          >
+            Retry PR
+          </Button>
+          <Button
+            variant="secondary"
+            data-command="flow.pr.ready"
+            data-testid="mark-flow-pr-ready"
+            title={flow.readyDisabled ? "Only a stopped session with a draft PR can be marked ready." : undefined}
+            disabled={flow.readyDisabled}
+            onclick={() => flow.markPrReady()}
+          >
+            Mark ready
+          </Button>
+          <Button
+            variant="default"
+            data-command="flow.pr.merge"
+            data-testid="merge-flow-pr"
+            title={flow.mergeDisabled ? "Only a stopped session with a live PR can be merged." : undefined}
+            disabled={flow.mergeDisabled}
+            onclick={() => flow.mergePr()}
+          >
+            Merge
+          </Button>
+        </div>
+      </div>
+      <div class="panel__body">
+        {#if flow.pr === null}
+          <p class="empty">No pull request yet.</p>
+        {:else}
+          <p class="row-sm" data-testid="flow-pr" data-state={flow.pr.state}>
+            <span class="muted">Forge</span><span>{flow.pr.forge}</span>
+            <span class="muted">Number</span><span class="mono">#{flow.pr.number}</span>
+            <span class="muted">State</span><span>{flow.pr.state}</span>
+            {#if flow.isHttpUrl(flow.pr.url)}
+              <a href={flow.pr.url} target="_blank" rel="noopener noreferrer" data-testid="flow-pr-link">
+                {flow.pr.url}
               </a>
             {/if}
-          </li>
-        {/each}
-      </ul>
+          </p>
+        {/if}
+        {#if flow.prError !== null}
+          <p class="message" data-severity="error" data-testid="flow-pr-error" role="alert">
+            {flow.prError}
+          </p>
+        {/if}
+        {#if flow.status === "merged" && flow.leftover !== null}
+          <p class="muted" data-testid="flow-leftover">{flow.leftover}</p>
+        {/if}
+      </div>
     </section>
+
+    {#if flow.verification !== null}
+      <section class="panel" data-testid="flow-verification" data-status={flow.verification.status}>
+        <div class="panel__header">
+          <h2 class="panel__title">Verification</h2>
+          <span class="badge" data-tone={flow.verification.status === "failed" ? "error" : "success"}>
+            {flow.verification.status}
+          </span>
+        </div>
+        <div class="panel__body stack-xs">
+          <p class="mono" style="margin: 0;">{flow.verification.command}</p>
+          <p class="muted" style="margin: 0;">{flow.verification.timestamp}</p>
+          <pre class="verification-output">{flow.outputTail(flow.verification.output)}</pre>
+        </div>
+      </section>
+    {/if}
+
+    {@render widgetsSection()}
+
+    <section class="panel" data-testid="flow-files-section">
+      <div class="panel__header">
+        <h2 class="panel__title">Changed files</h2>
+        <span class="muted">{flow.files.length}</span>
+      </div>
+      <div class="panel__body panel__body--flush">
+        {#each flow.files as file (file.path)}
+          <button
+            type="button"
+            class="sidebar-item"
+            data-testid="flow-file"
+            data-path={file.path}
+            data-status={file.status}
+            data-command={`flow.file.open.${file.path}`}
+            onclick={() => openFile(file)}
+          >
+            <code class="sidebar-item__label">{file.path}</code>
+            <span class="badge" data-tone={file.status === "deleted" ? "error" : "accent"}>
+              {file.status}
+            </span>
+            <span class="mono muted">+{file.insertions}/-{file.deletions}</span>
+          </button>
+        {:else}
+          <p class="empty">No changed files.</p>
+        {/each}
+      </div>
+    </section>
+
+    {#if flow.blockers.length > 0}
+      <section class="panel" data-testid="flow-blockers">
+        <div class="panel__header"><h2 class="panel__title">Blockers</h2></div>
+        <div class="panel__body panel__body--flush">
+          {#each flow.blockers as blocker (blocker.id)}
+            <div
+              class="flow-blocker sidebar-item"
+              data-testid="flow-blocker"
+              data-dismissed={blocker.dismissed ? "true" : "false"}
+            >
+              <span class="mono muted">{blocker.timestamp}</span>
+              <span class="sidebar-item__label">{blocker.text}</span>
+              {#if blocker.dismissed}
+                <span class="badge" data-tone="success">Dismissed</span>
+              {:else}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  data-command={`flow.blocker.dismiss.${blocker.id}`}
+                  data-testid="dismiss-flow-blocker"
+                  onclick={() => flow.dismissBlocker(blocker)}
+                >
+                  Dismiss
+                </Button>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      </section>
+    {/if}
+
+    <section class="panel" data-testid="flow-activity-section">
+      <div class="panel__header">
+        <h2 class="panel__title">Implementation activity</h2>
+        <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
+          {flow.status}
+        </span>
+      </div>
+      <div style="height: 200px;">
+        <Terminal
+          lines={flow.activity}
+          data-testid="flow-activity"
+          label="Implementation activity"
+        />
+      </div>
+    </section>
+  </div>
+{/snippet}
+
+<div class="flow-mode mode-body" data-testid="flow-view" data-status={flow.status}>
+  {#if flow.errorMessage !== null}
+    <p class="message" data-testid="flow-error" data-severity="error" role="alert">
+      {flow.errorMessage}
+    </p>
+  {/if}
+  {#if flow.noticeMessage !== null || flow.notice !== null}
+    <p class="message" data-testid="flow-notice" data-severity="notice" role="status">
+      {flow.noticeMessage ?? flow.notice}
+    </p>
+  {/if}
+
+  {#if tab === null}
+    <p class="empty">No tab is open. Choose a surface from the sidebar.</p>
+  {:else if tab.kind === "overview"}
+    {@render overview()}
+  {:else if tab.kind === "flow-goal"}
+    <div class="scroll-column">
+      <section class="panel" data-testid="flow-goal">
+        <div class="panel__header">
+          <h2 class="panel__title">Flow goal</h2>
+          <div class="row-sm">
+            <Button
+              variant="secondary"
+              data-command="flow.goal.create"
+              data-testid="create-flow-goal"
+              onclick={() => flow.createGoal()}
+            >
+              {flow.goal.trim().length > 0 ? "Recreate flow goal" : "Create flow goal"}
+            </Button>
+            <Button
+              variant="default"
+              data-command="flow.goal.save"
+              data-testid="save-flow-goal"
+              onclick={() => flow.saveGoal()}
+            >
+              Save
+            </Button>
+          </div>
+        </div>
+        <div class="panel__body" style="height: 320px;">
+          <MonacoEditor
+            value={flow.goalDraft}
+            label="Flow goal"
+            data-testid="flow-goal-text"
+            dirty={flow.goalDirty}
+            onchange={(text) => flow.setGoalDraft(text)}
+            onsave={() => flow.saveGoal()}
+          />
+        </div>
+      </section>
+
+      {#if flow.goalCreation !== null}
+        {@const creation = flow.goalCreation}
+        <section class="panel" data-testid="flow-goal-active">
+          <div class="panel__header"><h2 class="panel__title">Goal interview</h2></div>
+          <div class="panel__body stack-sm">
+            <div style="height: 180px;">
+              <Terminal
+                lines={creation.activity}
+                data-testid="flow-goal-activity"
+                label="Flow goal creation activity"
+              />
+            </div>
+            {#if creation.question !== null}
+              {@render questionPanel(creation.question, "goal", "flow-goal-question")}
+            {/if}
+          </div>
+        </section>
+      {/if}
+    </div>
+  {:else if tab.kind === "decisions"}
+    <div class="scroll-column">
+      <section class="panel" data-testid="flow-decisions-section">
+        <div class="panel__header">
+          <h2 class="panel__title">Decision board</h2>
+          <div class="row-sm">
+            <Button
+              variant="default"
+              data-command="flow.decisions.save"
+              data-testid="save-flow-decisions"
+              onclick={() => flow.saveDecisions()}
+            >
+              Save
+            </Button>
+          </div>
+        </div>
+        <div class="panel__body" style="height: 420px;">
+          <MonacoEditor
+            value={flow.decisionsDraft}
+            label="Decision board"
+            data-testid="flow-decisions"
+            dirty={flow.decisionsDirty}
+            onchange={(text) => flow.setDecisionsDraft(text)}
+            onsave={() => flow.saveDecisions()}
+          />
+        </div>
+      </section>
+    </div>
+  {:else if tab.kind === "steering"}
+    <div class="scroll-column">
+      <section class="panel" data-testid="flow-steering">
+        <div class="panel__header">
+          <h2 class="panel__title">Steering</h2>
+          <Button
+            variant="default"
+            data-command="flow.steering.send"
+            data-testid="send-flow-steering"
+            disabled={flow.steeringDraft.trim().length === 0}
+            onclick={() => flow.sendSteering()}
+          >
+            Send
+          </Button>
+        </div>
+        <div class="panel__body stack-sm">
+          <textarea
+            id="flow-steering-text"
+            class="textarea"
+            data-testid="flow-steering-text"
+            placeholder="Steer the implementation"
+            aria-label="Steering note"
+            bind:value={flow.steeringDraft}
+          ></textarea>
+          {#each flow.steering as note (note.id)}
+            <div
+              class="steering-note"
+              data-testid="flow-steering-note"
+              data-status={note.status}
+            >
+              <div class="steering-meta">
+                <span>{note.source}</span>
+                <span>{note.timestamp}</span>
+                <span>{note.status}</span>
+              </div>
+              <p style="margin: 2px 0 0;">{note.text}</p>
+            </div>
+          {:else}
+            <p class="empty">No steering notes yet.</p>
+          {/each}
+        </div>
+      </section>
+    </div>
+  {:else if tab.kind === "history"}
+    <div class="scroll-column">
+      <section class="panel" data-testid="flow-history">
+        <div class="panel__header"><h2 class="panel__title">Past Flow sessions</h2></div>
+        <div class="panel__body panel__body--flush">
+          {#each flow.history as entry (entry.sessionId)}
+            <div class="history-entry" data-testid="flow-history-entry">
+              <code>{entry.sessionId}</code>
+              <span>{entry.goal}</span>
+              {#if entry.pr !== null && flow.isHttpUrl(entry.pr.url)}
+                <a href={entry.pr.url} target="_blank" rel="noopener noreferrer">
+                  PR #{entry.pr.number}
+                </a>
+              {:else}
+                <span class="muted">no PR</span>
+              {/if}
+            </div>
+          {:else}
+            <p class="empty">No past Flow sessions.</p>
+          {/each}
+        </div>
+      </section>
+    </div>
+  {:else if tab.kind === "widget"}
+    {#if activeWidget === null}
+      <p class="empty">This change widget is no longer current.</p>
+    {:else}
+      {@const detailFiles = flow.detailFiles(activeWidget)}
+      <DetailSplit id="flow-widget" label="Widget diff">
+        {#snippet main()}
+          {@render widgetDetail(activeWidget)}
+        {/snippet}
+        {#snippet detail()}
+          <section class="panel" style="height: 100%;">
+            <div class="panel__header">
+              <h2 class="panel__title">Diff</h2>
+              <Button
+                variant="outline"
+                data-command={`tab.close.flow.${tab.id}`}
+                data-testid="close-flow-diff"
+                onclick={() => closeTab(tab)}
+              >
+                Close diff
+              </Button>
+            </div>
+            {@render diffStack(detailFiles)}
+          </section>
+        {/snippet}
+      </DetailSplit>
+    {/if}
+  {:else if tab.kind === "file"}
+    {#if focusedFile === null}
+      <p class="empty">This file is no longer part of the change.</p>
+    {:else}
+      <DetailSplit id="flow-file" label="File diff">
+        {#snippet main()}
+          <section class="panel" style="height: 100%;">
+            <div class="panel__header">
+              <h2 class="panel__title mono">{focusedFile.path}</h2>
+              <Button
+                variant="outline"
+                data-command={`tab.close.flow.${tab.id}`}
+                data-testid="close-flow-diff"
+                onclick={() => closeTab(tab)}
+              >
+                Close diff
+              </Button>
+            </div>
+            {@render diffStack([focusedFile])}
+          </section>
+        {/snippet}
+        {#snippet detail()}
+          <section class="panel" style="height: 100%;">
+            <div class="panel__header"><h2 class="panel__title">File</h2></div>
+            <div class="panel__body">
+              <dl class="kv-grid">
+                <dt>Path</dt><dd><code>{focusedFile.path}</code></dd>
+                <dt>Status</dt><dd>{focusedFile.status}</dd>
+                <dt>Insertions</dt><dd class="mono">+{focusedFile.insertions}</dd>
+                <dt>Deletions</dt><dd class="mono">-{focusedFile.deletions}</dd>
+              </dl>
+              {#if flow.verification !== null}
+                <p class="muted" style="margin-top: 8px;">
+                  Last verification
+                  <span class="badge" data-tone={flow.verification.status === "failed" ? "error" : "success"}>
+                    {flow.verification.status}
+                  </span>
+                </p>
+              {/if}
+            </div>
+          </section>
+        {/snippet}
+      </DetailSplit>
+    {/if}
+  {:else if tab.kind === "checkpoint"}
+    {#if checkpoint === null}
+      <p class="empty">This checkpoint is no longer listed.</p>
+    {:else}
+      <div class="scroll-column">
+        <section class="panel" data-testid="flow-checkpoints">
+          <div class="panel__header">
+            <h2 class="panel__title">Checkpoint</h2>
+            <span class="badge" data-tone={checkpoint.verification === "failed" ? "error" : "success"}>
+              {checkpoint.verification}
+            </span>
+          </div>
+          <div class="panel__body" data-testid="flow-checkpoint">
+            <dl class="kv-grid">
+              <dt>Summary</dt><dd>{checkpoint.summary}</dd>
+              <dt>Time</dt><dd class="mono">{checkpoint.timestamp}</dd>
+              <dt>Files</dt><dd>{checkpoint.files}</dd>
+              <dt>Commit</dt><dd><code>{checkpoint.commit}</code></dd>
+              <dt>Verification</dt><dd>{checkpoint.verification}</dd>
+            </dl>
+          </div>
+        </section>
+      </div>
+    {/if}
+  {:else if tab.kind === "conversation"}
+    {#if flow.conversation === null}
+      <p class="empty">No widget conversation is open.</p>
+    {:else}
+      {@const convo = flow.conversation}
+      <DetailSplit id="flow-conversation" label="Conversation diff">
+        {#snippet main()}
+          <section class="panel" data-testid="flow-conversation" style="height: 100%;">
+            <div class="panel__header">
+              <h2 class="panel__title">Widget conversation</h2>
+              <div class="row-sm">
+                <span class="muted" data-testid="flow-conversation-widget">
+                  Widget <code>{convo.widgetId}</code>
+                </span>
+                <Button
+                  variant="outline"
+                  data-command="flow.conversation.close"
+                  data-testid="close-flow-conversation"
+                  onclick={() => flow.closeConversation()}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+            <div class="panel__body stack-sm">
+              {#if flow.conversationStale}
+                <p class="message" data-severity="warning" data-testid="flow-conversation-stale">
+                  This change is no longer current. The conversation is read-only, but the
+                  conclusion can still be sent.
+                </p>
+              {/if}
+              <div class="stack-xs" data-testid="flow-conversation-messages">
+                {#each convo.messages as entry, index (index)}
+                  <div class="message" data-role={entry.role}>
+                    <div class="notification__meta">{entry.role}</div>
+                    <p style="margin: 0;">{entry.text}</p>
+                  </div>
+                {:else}
+                  <p class="empty">No messages yet.</p>
+                {/each}
+              </div>
+              <div style="height: 140px;">
+                <Terminal
+                  lines={convo.activity}
+                  data-testid="flow-conversation-activity"
+                  label="Conversation activity"
+                />
+              </div>
+              {#if convo.question !== null}
+                {@render questionPanel(convo.question, "conversation", "flow-conversation-question")}
+              {/if}
+              <form
+                class="answer-form"
+                onsubmit={(event) => {
+                  event.preventDefault();
+                  flow.sendConversation();
+                }}
+              >
+                <input
+                  class="textarea"
+                  style="min-height: 28px; padding: 4px 6px;"
+                  type="text"
+                  bind:value={flow.conversationDraft}
+                  placeholder="Message the conversation"
+                  aria-label="Conversation message"
+                  data-testid="flow-conversation-input"
+                />
+                <Button
+                  variant="default"
+                  type="submit"
+                  data-command="flow.conversation.send"
+                  data-testid="send-flow-conversation"
+                  disabled={flow.conversationDraft.trim().length === 0}
+                >
+                  Send
+                </Button>
+              </form>
+              <div class="field">
+                <label class="field__label" for="flow-conclusion">Conclusion</label>
+                <textarea
+                  id="flow-conclusion"
+                  class="textarea"
+                  data-testid="flow-conclusion"
+                  bind:value={flow.conclusionDraft}
+                ></textarea>
+              </div>
+              <div class="row-sm" style="justify-content: flex-end;">
+                <Button
+                  variant="secondary"
+                  data-command="flow.conclusion.send"
+                  data-testid="send-flow-conclusion"
+                  disabled={flow.conclusionDraft.trim().length === 0}
+                  onclick={() => flow.sendConclusion()}
+                >
+                  Send conclusion to implementation
+                </Button>
+              </div>
+            </div>
+          </section>
+        {/snippet}
+        {#snippet detail()}
+          <section class="panel" style="height: 100%;">
+            <div class="panel__header"><h2 class="panel__title">Widget diff</h2></div>
+            {#if conversationWidget === null}
+              <p class="empty">The widget is no longer current.</p>
+            {:else}
+              {@render diffStack(flow.detailFiles(conversationWidget))}
+            {/if}
+          </section>
+        {/snippet}
+      </DetailSplit>
+    {/if}
   {/if}
 </div>

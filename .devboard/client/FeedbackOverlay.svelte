@@ -119,7 +119,7 @@
     document.body.style.cursor = "";
   }
 
-  function startPicking(): void {
+  export function startPicking(): void {
     reset();
     phase = "picking";
     document.body.style.cursor = "crosshair";
@@ -153,6 +153,10 @@
     event.preventDefault();
     event.stopPropagation();
     openPanel(element);
+  }
+
+  export function cancelReport(): void {
+    reset();
   }
 
   function onKeyDown(event: KeyboardEvent): void {
@@ -256,7 +260,12 @@
   >
     <header>
       <strong>Report a UI issue</strong>
-      <button type="button" class="feedback-close" aria-label="Close" onclick={reset}>×</button>
+      <button
+        type="button"
+        class="feedback-close"
+        aria-label="Close"
+        data-command="app.report.cancel"
+        onclick={reset}>×</button>
     </header>
     <code class="feedback-selector" title={selector}>{selector}</code>
     <textarea
@@ -274,7 +283,13 @@
       <button type="button" onclick={send} disabled={sending || report.trim().length === 0}>
         {sending ? "Filing…" : "File issue"}
       </button>
-      <button type="button" class="feedback-secondary" onclick={reset} disabled={sending}>
+      <button
+        type="button"
+        class="feedback-secondary"
+        data-command="app.report.cancel"
+        onclick={reset}
+        disabled={sending}
+      >
         Cancel
       </button>
     </div>
@@ -288,6 +303,7 @@
   data-feedback-overlay
   title={picking ? "Cancel element selection" : "Report an issue about a UI element"}
   aria-pressed={picking ? "true" : "false"}
+  data-command="app.report"
   disabled={sending}
   onclick={toggle}
 >
@@ -307,7 +323,7 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 999px;
-    bottom: 1.25rem;
+    bottom: 2.2rem;
     box-shadow: 0 2px 8px rgb(0 0 0 / 0.15);
     color: var(--text);
     cursor: pointer;

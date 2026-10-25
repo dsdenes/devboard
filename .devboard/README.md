@@ -1,230 +1,177 @@
-# Devboard ADR interface
+# Devboard
 
-Local browser interface for the records in `adrs/`. The header `ADRs` control opens every record
-in an overlay; each record title is a dropdown that expands to the first paragraph of its
-`Decision` section, a brief summary of what was decided. The overlay distinguishes records
-awaiting a decision (`Status: Proposed`) from resolved records, marks the pending record an agent
-run would take up first, and starts an agent on that record or on one the developer selects. The
-page heading names the project by its directory path relative to the user's home directory,
-falling back to the absolute path when the repository lies outside it. A pending badge appears in
-the header only while at least one record is `Proposed`, and the header `Resolve ADRs` control
-appears only then; it resolves the pending sequence. When the project's installed harness version
-differs from the version the backend loaded, the header shows a reload icon; selecting it
-restarts the backend from the installed package and reloads the page.
+Local browser interface for a repository's goal, Flow implementation, and Discover artifacts.
+It renders one full-viewport, dark-first administration workspace with an activity bar, a
+contextual sidebar, workspace tabs, resizable split panes, Monaco editors, xterm terminals, a
+command palette, and a status bar. Every mode is a client-side view over the existing WebSocket
+contract; the server still owns all work and durable state.
 
-It also shows the repository's current goal in a `Current goal` section. Until a goal is set the
-editor is expanded. Once the goal document contains non-whitespace text, the editor, `Save goal`
-control, and revision controls collapse into a `Goal document` dropdown, while the heading keeps
-the skills control and `Recreate goal` visible. The developer can edit the text and
-select `Save goal`; the server writes the submitted text verbatim to the goal document, and every
-page load reads that file rather than browser state.
+## Interface
 
-Below the editor, a `Revision guidance` field and `Revise goal` control ask an agent to modify,
-rewrite, or recreate the goal. The guidance is optional; the agent may instead establish the
-direction through interview questions. Its ACP session updates stream into the same live
-activity log, questions use the same options, consequence explanations, recommended marker, and
-free-form answer field, and when the revision ends the textarea is replaced with the text the
-agent wrote to the goal document. A revision
-is unavailable while a run is active or the lifecycle is advancing, but remains available
-while the lifecycle is paused. ADR starts likewise remain available while the lifecycle is
-paused, and selecting one while it advances pauses the lifecycle first. Only one foreground
-agent runs at a time, so a revision and a manual ADR sequence exclude each other.
+The interface is a desktop tool. It requires a viewport of at least 1024×720 CSS pixels. Below
+either threshold the shell is not rendered: a notice carrying
+`data-testid="unsupported-viewport"` states the minimum instead, so the application never
+degrades into a clipped mobile layout.
 
-The goal section always shows a goal-creation control: `Create goal` while the document has no
-non-whitespace text and `Recreate goal` otherwise. It stays selectable whenever the connection is
-open, including while the goal document already has content and while a creation,
-revision, or run is active. Selecting it asks the server to start the installed `/goal-outcome`
-skill in one ACP peer, in the background; its activity and interview questions stream into the
-same live log and question UI, and the goal section shows `Creating the goal` while it runs. The
-developer answers the skill's questions; the skill interviews them and writes the goal document.
-The flow never starts on page load or reconnect. When the goal document is empty, whitespace-only,
-or absent, the control reads `Create goal`; otherwise it reads `Recreate goal`.
+### Application shell
 
-Selecting `Create goal` always starts a fresh creation. The server replaces an existing goal when
-the new creation writes non-empty text, and it stops whatever would contend with the new peer: an
-in-flight creation or revision is cancelled with a failed `goalCreationStopped` or
-`goalRevisionStopped`, and an advancing ADR run or lifecycle is stopped and reported idle before
-creation begins. A paused lifecycle keeps its lanes suspended in their tabs while the creation
-runs. When the peer ends, the server reads `<REPO_DIR>/GOAL.md` and the textarea shows
-those bytes, so `Recreate goal` becomes available; `Start lifecycle` becomes available once the
-goal is ready and at least one managed skill is installed. A creation that ends with no
-non-empty `GOAL.md` is reported as an error: the server sends an `error` and a failed
-`goalCreationStopped`, and the textarea and goal state keep their previous content. The server
-owns the creation run, so closing the browser does not stop it, and a client that connects during
-it receives the start, every recorded activity line, and the pending question. While a creation
-runs, starting a run or the lifecycle, resuming a paused lifecycle, and revising the goal are
-each refused; creation itself always restarts.
+`data-testid="app-shell"` fills the viewport exactly. It contains, in order:
 
-While a run is active the interface names the record being resolved, or says `Implementing` when
-the lifecycle peer is implementing an epic and `Generating` while it creates one, shows the
-agent's latest ACP session update as the current action, folds earlier updates into a collapsed
-history, and presents each interview question with its options, each labeled with the consequence
-of choosing it and with the recommended one marked, plus a free-form answer field. One start
-resolves every pending record in ascending file-name order: after each run the server re-reads
-`adrs/`, and the sequence ends when no pending record remains or when the finished record is
-still `Proposed` (or has been removed). The chain runs in the server, so it continues if the
-browser disconnects.
+|Region|Test hook|Role|
+|---|---|---|
+|Activity bar|`activity-bar`|Three mode tabs and their Lucide icons|
+|Sidebar|`sidebar`|Contextual navigation for the active mode|
+|Workspace tabs|`workspace-tabs`|Open resources in the active mode|
+|Workspace|`workspace`|The active tab's surface; absorbs all remaining space|
+|Status bar|`status-bar`|Connection, project, counts, mode status, versions, theme, notifications|
 
-The page also shows a pass number plus `Open epics` and `Running lanes` counts. It shows no
-single lifecycle stage, because epic generation can run in parallel with implementation; the
-counts and the lane tabs describe the run instead.
-The pass is part of the durable per-repository state (see
-[Durable state](#durable-state)) and is restored when the backend restarts, so an interrupted
-run's pass is still shown afterwards; an explicit reset sets it back to 1. The lifecycle starts
-only from a settled goal and a prepared skill set: `Start implementation` stays disabled until
-the goal document contains at least one non-whitespace character and at
-least one managed skill is installed in `<REPO_DIR>/.omp/skills/`, which the skills overlay lists.
-The server enforces the same rules: a start is refused with an `error` when the goal is not
-settled, when the skills directory cannot be read, or when no managed skill is installed.
-One button in the page header controls the lifecycle: it reads `Start implementation` while idle
-and turns red with `Stop implementation` while a run is active.
-Selecting `Start implementation` reports the run as active at the `epic` stage with no work as
-soon as the server accepts the command, before it queries the origin tracker; the header control
-therefore reads `Stop implementation` while that query runs. Selecting `Stop implementation`
-closes every lane peer, ends the loop, and reports the idle `goal` stage with the pass already
-reached; a stop never leaves the run suspended, and a new start is accepted only after the
-stopped loop has finished unwinding.
+The status bar stays visible while panes resize, and the document itself never scrolls
+vertically or horizontally. Each mode's panel keeps its scroll position, focus, open tabs, and
+unsaved editor text while another mode is shown.
 
-A lifecycle run is a continuously refilling parallel pipeline. The server reads every open epic,
-not only the first, and starts one implementation lane per open epic at once, with no fixed
-concurrency cap: five open epics start five peers and five worktrees. Each lane receives exactly
-one epic as `/implement-next-epic <ref>` and never selects a different one; the prompt requires
-the lane to create its own worktree and branch, implement the epic, merge that branch into `main`
-itself, push `main`, fetch and integrate the latest `main` and retry if the merge or push fails,
-never force-push, and close the epic only after the merge and worktree removal succeed. Lanes
-finish, merge, and push at independent times; the server imposes no merge schedule.
+### Activity bar
 
-When no epic is open, the run starts one `/epic-next` peer. Epic generation is a zero-or-more
-operation: one pass decides how many mutually independent epics the goal currently admits, files
-that many, and skips any candidate that duplicates or overlaps an already-open epic instead of
-halting. Every epic a pass files starts its own implementation lane immediately. When any lane
-closes its epic, the server requests a generation pass immediately, even while other lanes still
-implement; requests that arrive during an active pass coalesce into at most one follow-up pass,
-and two epic-generation peers never run at once. A pass that files nothing leaves the remaining
-work to the other lanes, to retries, or to ADR resolution.
+The bar presents exactly the three existing modes as `role="tab"` controls:
+`data-testid="mode-goal"`, `data-testid="mode-flow"`, and `data-testid="mode-discover"`. Each
+carries a Lucide icon, an accessible name, `aria-selected`, and `aria-controls` naming its
+workspace panel. A fresh profile starts on Goal. Clicking a tab or pressing Alt+1, Alt+2, or
+Alt+3 changes only which mounted view is shown; it never sends a WebSocket frame.
 
-A lane that ends with its epic still open is marked `retrying` and retried after a backoff and
-immediately when `main` advances; retrying never creates a second concurrent lane for the same
-epic. A lane whose peer prints a line beginning `DEVBOARD-BLOCKED:` is `parked`: its tab reports
-the blocker and it is retried only when `main` advances. Parking one epic never delays another
-lane. With no lane active after a generation pass that files nothing, only parked epics remaining
-means the lifecycle sends an `error` naming every parked epic, returns to the idle `goal` stage,
-and leaves those epics open; a new start clears the parked set and attempts them again. When no
-epic is open, a generation pass files nothing, and no ADR is still `Proposed`, the run reports
-`finished`; pending ADRs are resolved first with `/adr-resolve` in file-name order.
+### Sidebar
 
-The page renders one tab per active agent lane under `Open epics`/`Running lanes`: epic
-generation, each implementation epic, and ADR resolution. Each tab carries its epic or record
-identity and an attempt number when the epic was retried. Its left edge is colored by lane kind
-and state: purple for epic generation, teal for ADR resolution, green for a running
-implementation, amber while one is paused, retrying, or parked, red when it failed, and gray
-once it closed. The tab carries no status text. A closed or failed lane leaves the active list
-after 30 seconds. Selecting a tab opens a fixed-height, scrolling panel that shows only that
-lane's current action, history, status, and pending question. The status label is uppercased and
-colored like the tab; the action and every history entry render as sanitized Markdown with styled
-headings, lists, code, and links, so agent output is structured instead of one wall of text. Two
-peers streaming at once never mix their lines. The lifecycle advances while a run is active, so
-the goal editor and the lifecycle start control are disabled, but the ADR start controls remain
-available: selecting one interrupts every lane at its interrupted stage, starts the manual record
-sequence, and resumes the lifecycle when that sequence ends. A client that connects or reloads
-receives the current stage, pass, counts, tab list, and every live lane's recorded activity and
-pending question. An epic's work state carries the tracker page, and the page renders
-`Epic #<n>` as a link to that issue. Once a run reports `finished`, the server keeps
-that state for its lifetime and replays it, together with the lanes still retained, to every client
-that connects or reloads, so the interface still shows the final pass and any recent tabs until a
-new run starts; a backend restart restores the same state. An aborted run likewise replays the
-idle goal stage with
-no work, not paused, and the pass it had reached, so the goal becomes editable and another
-lifecycle run can start.
+The sidebar is contextual and can be hidden with Ctrl/Cmd+B or the control in its header.
+It is initially 300 CSS px wide, constrained to 200–600 CSS px, and resized by dragging its
+separator or pressing the arrow keys with that separator focused. Double-clicking the separator
+restores the default width. Visibility and width survive a reload.
 
-An epic is an open issue carrying the label `epic` (ignoring case) or the
-`<!-- devboard-epic -->` marker in its body; the server reads every such issue with read-only
-`gh` or `glab` queries. Every tracker operation first resolves the forge identity against the
-repository itself: it lists every account authenticated for the origin host, rejects tokens that
-are invalid or lack access to that project, and prefers a write-capable account owned by the
-repository owner, then the active account, then any other write-capable account. An ambient
-`GH_TOKEN`/`GITHUB_TOKEN` is used only when it passes the same check, so a stale or wrong-user
-token cannot shadow a usable account. The selected token travels in the child environment, never
-in an argument; the global `gh` active account is never switched, so parallel lanes and
-dashboards cannot race. Epic generation, implementation lanes, and the server's tracker reads
-call the same resolver, and the lane prompt routes its tracker writes through
-`.devboard/scripts/forge-auth.ts`. A repository with no write-capable authenticated account stops
-before an agent writes instead of surfacing a 401 or 403. Forge reads may expose a peer's tracker
-write a moment after the peer exits, so the server re-reads the tracker for a bounded settle
-window per lane before trusting an answer that still shows the pre-peer state.
+- **Goal** lists the goal workspace surfaces, every ADR record (title, status, pending or
+  resolved state, next marker, file), the lifecycle lanes, and the prepared skills.
+- **Flow** lists the session, PR state, widgets, changed files, checkpoints, steering, decision
+  board, blockers, and history.
+- **Discover** lists overview, glossary terms, the five skills, freshness, warnings, and recent
+  notices.
 
-The goal section also offers `Prepare Skills` whenever the goal document contains non-whitespace
-text. Selecting it sends one `prepareSkills` command, which starts one ACP peer with the installed
-`/prepare-skills` command and no other prompt. The harness prompt reads only `<REPO_DIR>/GOAL.md`
-as project-specific input, uses it only to select which standards and pattern families are
-relevant, and never treats it as an implementation brief; it researches relevant public
-standards, general best practices, software-architecture patterns, and testing patterns on the
-web, and authors project-agnostic Agent Skills under `<REPO_DIR>/.omp/skills/`. A prepared skill
-states policy another project could adopt and carries none of this host's names, paths, files,
-modules, symbols, packages, dependencies, technology choices, data formats, API shapes, or
-concrete design decisions. The agent decides how many skills to prepare and what each covers;
-there is no category taxonomy, no required topic, and no fixed count, and no category metadata is
-required or validated.
-Activity and interview questions stream into the existing log and question UI, and the goal
-section shows `Preparing skills` while the peer runs. The server validates the result: every
-managed skill must be a directory containing `SKILL.md` with a matching name, a non-empty
-description of at most 1024 characters, and `metadata.devboard-managed: "true"`, and the managed
-set must contain at least one skill. The final pass compares every installed skill, including
-hand-authored ones, and succeeds only when no pair gives incompatible instructions. On success
-the goal section's control reads `Show skills (<count>)` and opens an overlay that lists each
-prepared skill with its name and description, reports `No contradictions`, and offers
-`Prepare skills again`; the control reads `Prepare Skills` while no skill is installed. A later
-run, reload, reconnect, or server restart shows the set read from disk. A run replaces only the
-skills carrying the managed marker: an unmanaged skill is never
-overwritten or deleted, and a generated name that collides with one fails the run with an `error`
-naming it. Any failure sends an `error` and a failed `skillsPreparationStopped`, restores the
-previous skills directory byte for byte, and leaves the last Skills panel state visible. While
-preparation runs, starting a run or the lifecycle, resuming a paused lifecycle, revising or
-saving the goal, creating a goal, and a second preparation are each refused. The control never
-starts on page load or reconnect.
+Selecting an entry opens or focuses its workspace surface. Informational entries open the
+surface that holds the same facts.
 
-The page header holds a red `Reset implementation` control. It is
-disabled only while the WebSocket is not open or another reset is active, so it can be used at
-any time, including while a run, lifecycle run, goal creation, goal revision, or skills
-preparation is active. The first click
-only arms it: no frame is sent, and a panel under the header shows the exact keep set, notes that
-active work stops first, and offers `Confirm reset` and `Cancel` controls. A reload, a reconnect,
-a disconnect, or any other command disarms it. The second click sends exactly
-`{ "type": "resetImplementation" }`.
-The server performs the reset, so a browser disconnect does not interrupt it; a client that
-connects during one receives `implementationResetStarted`, and a second reset is refused.
+### Workspace tabs
 
-The keep set is exact: `.devboard`, `.omp`, `AGENTS.md`, `.gitignore`, `GOAL.md`, plus the direct
-child named by `GOAL_FILE` when that differs. `.git` and `.worktree` are internal: the server
-never descends into or deletes them, and they never enter the commit. Every other top-level
-entry is removed, including tracked, untracked, and ignored entries; a symlink is removed as a
-link without following it. Before deleting anything the server requires that `REPO_DIR` is the
-repository top level, that `HEAD` names a commit, that the current branch is exactly `main`,
-and that `origin` exists; any failed check is refused with one `error` and leaves the filesystem,
-git state, and active work unchanged. After those checks pass the reset takes over: an active
-run is closed and reports `runStopped`, every lifecycle lane is closed and its tab is removed, a
-lifecycle also reports the idle `goal` stage, goal creation and revision report their stopped
-events, an in-flight skills
-preparation is cancelled and restores the previous skills directory, and an in-flight lifecycle
-or preparation start is invalidated so it spawns no peer after the reset accepted. Stopped work
-is not resumed. The server stages with `git add -A`, removes `.worktree`,
-`.devboard/node_modules`, and `.devboard/dist` from the index, and commits with `git commit
---no-verify -m "chore: reset implementation"`. It never amends, rewrites history, force-pushes,
-or stages ignored files. With no staged change it reuses the current `HEAD`. Success pushes
-`origin main` with terminal prompts disabled and broadcasts `implementationResetStopped` with
-the commit, then the idle `goal` lifecycle state, an empty `records` list, and the unchanged
-goal text; the local and remote `main` then name the same commit. A push failure broadcasts the
-git stderr in an `error` and the same event with `completed: false` and the local commit, leaving
-the commit and the deleted tree in place; a commit failure reports its stderr and the failed
-event without a commit, leaving the staged deletion. `GOAL.md` may be absent, empty, or
-whitespace-only; reset preserves that state and never creates or edits the document. Reset never
-starts on load or reconnect; the reset itself spawns no ACP peer, emits no activity events, and
-writes no `adrs/` file.
+Opening an ADR, a Flow widget, changed file, or checkpoint, a Discover term, or a Discover skill
+adds one tab to the workspace strip. A tab shows its resource name, active state, close control,
+and a dirty dot when its editor has unsaved changes. Opening an already-open resource activates
+its existing tab. Each mode keeps its own open tabs and active tab across mode switches.
+
+Closing a dirty tab opens a confirmation dialog; discarding restores the last saved text. A
+reload restores the active mode, every mode's tabs and active tab, sidebar visibility and width,
+split sizes, and theme. All of that state lives in `localStorage`; none of it is sent to the
+server.
+
+### Split panes
+
+PaneForge groups provide the sidebar/workspace split and the workspace/detail split used by Flow
+widgets and diffs and by Discover term and skill detail. Separators are focusable, carry
+`role="separator"` with `aria-orientation`, `aria-valuemin`, `aria-valuemax`, and `aria-valuenow`,
+resize by drag and arrow keys, reset to their defaults on double-click, keep both panes at least
+160 CSS px wide, persist their sizes, and never cover the status bar.
+
+### Command palette
+
+Ctrl/Cmd+K opens `data-testid="command-palette"`. It has a search input
+(`command-palette-input`) and command items (`command-item`), filters as you type, moves with
+ArrowUp/ArrowDown/Home/End, runs with Enter, closes with Escape, and restores focus to the
+previously focused element. Every actionable control carries a stable `data-command`, and the
+palette exposes the same command ids; disabled commands show the same reason as their control.
+Commands that need text focus the relevant input rather than inventing a value.
+
+The palette covers navigation, opening every record, lane, widget, file, checkpoint, term, and
+skill, lifecycle start/pause/resume/stop, Goal commands, Flow goal and decision editing, Flow
+start/stop and PR actions, Discover start/stop and skill editing, sidebar and theme toggles, reset
+layout, reload when stale, and reporting a UI issue.
+
+### Keyboard shortcuts
+
+|Shortcut|Action|
+|---|---|
+|Ctrl/Cmd+K|Open the command palette|
+|Ctrl/Cmd+B|Toggle the sidebar|
+|Alt+1 / Alt+2 / Alt+3|Switch to Goal / Flow / Discover|
+|Ctrl/Cmd+S|Save the focused editor when it has unsaved changes|
+|Escape|Close the palette, dialogs, and overlays|
+
+Shortcuts are inert while text is being typed, except palette, save, and Escape. Every shortcut
+is listed in the palette or in the control's tooltip. Focus rings are always visible; dialogs
+trap focus and restore it on close.
+
+### Theme
+
+A fresh profile starts dark with `data-theme="dark"` on the root element, regardless of the OS
+preference. The status-bar control and the palette toggle between dark and light; the choice
+persists and an inline head script applies it before the first paint, so there is no wrong-theme
+flash. Both themes define every token used by the shell, tables, editors, terminals, diffs,
+status indicators, and overlays. Body text and muted text meet 4.5:1 contrast; interactive
+borders and focus rings meet 3:1; no state is conveyed by color alone. `prefers-reduced-motion:
+reduce` disables nonessential transitions.
+
+### Dense data views
+
+TanStack Table renders the ADR record list and the Discover overview, command, environment,
+architecture, testing, dependency, and glossary tables. The ADR table keeps title, status,
+pending or resolved state, next marker, file, and decision summary; selecting a row opens its
+detail tab without navigating away. Body and table text is 12–14 CSS px, paths, code, diffs,
+terminal output, and IDs are monospace, and data rows are at most 32 CSS px tall. The shell uses
+the full viewport with no application max-width.
+
+### Editors and terminals
+
+Monaco Editor provides the Goal document (`goal-text`), Flow goal (`flow-goal-text`), Flow
+decision board (`flow-decisions`), and Discover skill editor (`discover-skill-text`). Each
+supports multiline Markdown or plain-text editing, its Save control, Ctrl/Cmd+S, a dirty marker,
+and an accessible label; a save sends the editor's exact text. Flow diffs remain rendered by
+`diff2html`; the client never parses unified diff hunks.
+
+xterm.js renders read-only agent output for Goal current activity and history, lane current
+activity and history, Flow goal creation, implementation activity, conversation activity, and
+Discover activity. Terminals preserve ANSI output, are selectable and copyable, auto-scroll
+unless the developer scrolls away, keep a bounded scrollback, and expose their full buffer to
+assistive technology.
+
+### Notifications and status bar
+
+Server errors and notices appear in the notification region (`data-testid="notifications"`) with
+severity, text, and dismissal, and remain in a history opened from the status bar. Notifications
+never replace mode content or steal focus, and several arrivals are all retained. Flow blockers
+and verification results also remain in their mode context.
+
+The status bar shows the WebSocket connection, the project path, running work and lane counts,
+the active mode's status, and the running and installed versions. When `versionState.stale` is
+true it shows the existing reload control (`reload-devboard`), whose accessible name and title
+name both versions; reload behavior is unchanged. It also carries the theme toggle and the
+notification indicator.
+
+### Verifying the interface
+
+```bash
+cd .devboard
+bun run verify:interface
+```
+
+The script builds the client, seeds a fixture host under `.devboard/.tmp` with eight ADRs and
+real Discover artifacts produced by the stub ACP peer, starts a source dashboard, launches
+headless Chrome with a profile under the same tree, and asserts the shell, modes, sidebar,
+tabs, splits, palette, shortcuts, theme and first paint, layout persistence and reset, the
+1024×720 boundary, dense tables, Monaco editors, xterm terminals, contrast, reduced motion,
+notifications, status bar, preserved test hooks, and the absence of exceptions, console errors,
+failed requests, and overflow. It writes screenshots under `.devboard/.tmp/interface/`.
 
 ## Stack
 
-- Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`. Each run spawns one `omp acp` subprocess over stdio.
-- Client: Svelte built with Vite.
+- Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`. Each run
+  spawns one `omp acp` subprocess over stdio.
+- Client: Svelte 5 built with Vite, with shadcn-svelte components and its Tailwind CSS 4 setup,
+  Bits UI dialogs, tooltips, and popovers, PaneForge split panes, TanStack Table data grids,
+  Monaco Editor, xterm.js, and Lucide icons. All workers and assets are bundled locally; the
+  page makes no network request beyond its WebSocket.
+- Density: 13 px body text with 12 px tables and monospace paths, code, diffs, terminals, and IDs.
 - Records: read from `adrs/` on every `listRecords` command and after every run, so files added,
   removed, or resolved while the server runs appear without a restart. Each record carries the
   first paragraph of its `Decision` section as a short summary.
@@ -298,8 +245,13 @@ Run the interface from this directory:
 cd .devboard
 bun install
 bun run build
+bun run check
+bunx tsc --noEmit
 ADRS_DIR="<host>/adrs" bun run start
 ```
+
+`bun run check` type-checks every `.svelte` and `.ts` file under `client/` and `server/`;
+`bunx tsc --noEmit` type-checks the TypeScript sources.
 
 Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
 
@@ -324,8 +276,8 @@ activity, question, blocked/failure bookkeeping, and remaining retention; epic a
 `mainAtFailure`, status, and the parked and retrying sets; the last reported lifecycle state
 including `finished`; the manual ADR sequence; goal creation; goal revision with its guidance;
 skills preparation with the pre-run rollback snapshot; an interrupted implementation reset; and an
-accepted `whenIdle` restart. Browser-only state (selected lane, draft text, banners, overlays,
-connection status) and full ACP transcripts, raw stderr, and secrets stay out of the file.
+accepted `whenIdle` restart. Browser-only state (open tabs, active tab per mode, drafts, layout, theme,
+notifications, connection status) and full ACP transcripts, raw stderr, and secrets stay out of the file.
 
 Restored activity is bounded per foreground run and per lane at the first of 1,000 entries or
 1 MiB of UTF-8 text. Within that bound no line is lost across a kill; beyond it the newest
@@ -377,7 +329,7 @@ read-only state directory never stops the server: it keeps serving from memory a
 
 ## Flow Mode
 
-The page header carries three client-only tabs, `Goal`, `Flow`, and `Discover`
+The activity bar carries three client-only tabs, `Goal`, `Flow`, and `Discover`
 (`data-testid="mode-goal"`, `data-testid="mode-flow"`, and `data-testid="mode-discover"`).
 Switching is a view change only: it sends no WebSocket frame and
 starts, stops, pauses, or resumes no work in any mode. Goal Mode is the goal, ADR, epic,
@@ -557,16 +509,15 @@ directory, and the decision board is never an ADR record.
 
 ## Discover Mode
 
-The `Discover` tab is the third client-only mode. It exists for an existing host project: one
+The Discover mode is the third client-only view, opened from the activity bar. It exists for an existing host project: one
 read-only crawl produces an evidence-backed project sheet, a UbiLang glossary for each detected
 bounded context, and five project-specific Agent Skills that every devboard implementation agent in
-that host discovers. Switching to Discover, and switching its sub-tabs, sends no WebSocket frame
+that host discovers. Switching to Discover, and switching its tabs, sends no WebSocket frame
 and starts, stops, resets, or clears nothing; all three views stay mounted, so native details,
 scroll state, and focus survive. Discover events render only in this view and never touch Goal
 Mode's activity, question, or error state.
 
-The Discover view has its own tab list whose non-skill sub-tabs are exactly `Overview` and
-`Glossary`, followed by a second, color-coded row of skill sub-tabs:
+The Discover sidebar opens tabs for `Overview`, `Glossary`, `Warnings`, and the five skills:
 `Testing Strategy Skill`, `Naming Conventions Skill`, `Coding Conventions Skill`,
 `Architecture & Boundaries Skill`, and `Glossary Skill` (`data-testid="discover-tab"` with
 `data-tab` values `overview`, `glossary`, `testing-strategy`, `naming-conventions`,
@@ -577,7 +528,7 @@ With no published artifacts the Overview tab shows an empty state (`data-testid=
 and a `Discover project` button (`data-testid="discover-start"`); with artifacts it shows
 `Re-discover`. The button is disabled when the socket is not open, while a Discover run is active,
 or while Goal or Flow work is active, and its title names the reason. It never starts on page
-load, reconnect, mode switch, or sub-tab switch. Selecting it sends `{ "type": "discoverProject" }`;
+load, reconnect, mode switch, or tab switch. Selecting it sends `{ "type": "discoverProject" }`;
 the server broadcasts `discoverStarted` and starts exactly one ACP peer whose prompt is exactly
 `/discover <staging-dir>`, whose working directory is the repository root, and whose staging
 directory is `<host>/.omp/discover/staging/<run-id>/`. A second start while one runs is refused
@@ -585,7 +536,7 @@ with one `discoverError` and spawns no peer. A start requires no `GOAL.md`, no p
 clean tree, or a forge account; it is accepted on a host with a dirty tree and no goal document.
 
 The run is server-owned: closing the browser or switching views does not stop it. The view shows
-an active marker (`data-testid="discover-active"`) and the activity log, and a reconnect receives
+an active marker (`data-testid="discover-active"`) and the xterm activity output, and a reconnect receives
 `discoverState`, `discoverStarted`, every recorded activity line, and any pending question before
 its own command replies. The crawl is not an interview: an ambiguity is recorded as `unknown` with
 a reason, never a blocking question. `answerDiscover` with the pending id and a non-empty value
@@ -634,8 +585,8 @@ secrets and no absolute path.
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint, and
 the Overview tab renders the project and discovery time plus an explicit `stale` badge
 (`data-testid="discover-freshness"`) when the fingerprint differs. Sections carry
-`data-testid="discover-card"` and `data-field` and are stacked in one column, ordered with the
-runtime inventory first. Each section is a table whose rows pair a field label with its value; a
+`data-testid="discover-card"` and `data-field` and render as dense tables in the Overview tab,
+ordered with the runtime inventory first. Each section is a table whose rows pair a field label with its value; a
 record list such as environments becomes a table with one column per field and one row per record,
 and a section with a single leaf renders just that row. The view does not render confidence badges
 or evidence chips: the sheet still records both for every leaf, but they do not help an operator
@@ -649,7 +600,7 @@ major tools, not individual dependencies), customer-facing deployment (artifact 
 target, and pipeline sources), every environment (at least `production`, whose purpose states how
 changes reach it), exact main commands (with `unknown` for an unobserved command), branching
 strategy and model, test levels and pyramid, architecture boundaries, CI provider, triggers, jobs,
-and quality gates, and the three mandatory extra cards: runtime inventory, entry-point and
+and quality gates, and the three mandatory sections: runtime inventory, entry-point and
 dependency map, and delivery and versioning. It never guesses, invents an additional environment,
 copies README prose, or records a configuration value; a claim it cannot ground is `unknown`.
 
@@ -681,7 +632,7 @@ earlier operator decision invalidated one. The tab groups terms by context and o
 shows no status filter, status badge, or per-term control, and it hides invalidated terms. Each
 term carries `data-testid="discover-term"`, `data-context`, `data-id`, `data-status`, and
 `data-kind`, and each context carries `data-testid="discover-context"`. The context heading shows
-its title, falling back to the context id only when no title exists. Term cards are color-coded by
+its title, falling back to the context id only when no title exists. Glossary rows are color-coded by
 `kind` (`entity`, `event`, `field`, `role`, `actor`, `value`, `rule`).
 
 Confirmation is automatic, so the Glossary tab offers no `Confirm` or `Reject` control.
@@ -712,7 +663,7 @@ published glossary files, the confirmed and rejected rules, and the proposal pro
 root, a new `omp` session lists the five (`omp skill list`) and loads their bodies as skills, so
 every implementation agent in that host discovers the set with no extra configuration.
 
-Each skill has a sub-tab with a Markdown editor and a rendered preview: a
+Each skill has a tab split into a Monaco Markdown editor and a rendered preview: a
 `data-testid="discover-skill-text"` field holding the whole `SKILL.md`, a
 `data-testid="discover-skill-preview"` rendered from the draft, `discover-skill-save`, and
 `discover-skill-restore` controls, and a `discover-skill-state` badge reading `Generated`,
@@ -739,7 +690,7 @@ own family, and its contradiction review covers its family plus hand-authored un
 a project-specific Discover directive cannot fail a project-agnostic preparation. Discover's
 generated baselines must agree with each other and with the glossary; a contradiction there fails
 the run, while a contradiction introduced by a developer's skill edit is a non-blocking warning in
-the Discover view and never discards the edit.
+the skill editor and never discards the edit.
 
 The sheet and every glossary are canonicalized before publication: fixed schema key order, arrays
 sorted by stable identity, evidence sorted and de-duplicated, and enums in fixed spelling. The
@@ -767,7 +718,7 @@ URLs with user info are never copied into an artifact.
 A Discover run is active work. While it runs, `startRun`, `startLifecycle`, `resumeLifecycle`,
 `saveGoal`, `reviseGoal`, `createGoal`, `prepareSkills`, every Flow start, and a second
 `discoverProject` are refused with one error naming the active run and spawn no peer; view and
-sub-tab switching, read-only commands, and `resetImplementation` stay available. While any Goal or
+tab switching, read-only commands, and `resetImplementation` stay available. While any Goal or
 Flow work is active, `discoverProject` is refused with one `discoverError` naming the active work.
 `restartServer` with `whenIdle: true` treats a Discover run as active and answers `upgradePending`,
 and an immediate restart ends the recorded child, removes staging, publishes nothing, sends one
@@ -1252,14 +1203,16 @@ The server answers with events:
 ```bash
 cd .devboard
 bun test
+bun run verify:interface
 bun run verify:install
 bun run verify:update
 bun run verify:ui
 ```
 
-The three `verify:` scripts build fixture releases under `.devboard/.tmp`, install them into
-throwaway hosts, and assert the launcher, update, and browser contracts end to end. They never
-touch a real host.
+`verify:interface` drives the IDE shell against a seeded fixture host in headless Chrome and
+writes its screenshots under `.tmp/interface`. The other `verify:` scripts build fixture releases
+under `.devboard/.tmp`, install them into throwaway hosts, and assert the launcher, update, and
+reload contracts end to end. They never touch a real host.
 
 `tests/launcher.test.ts` covers the launcher and harness package boundaries: the help output,
 the launcher's file list and size, the harness tarball's required and forbidden paths, its size,

@@ -1,0 +1,112 @@
+<script lang="ts">
+  import Bell from "lucide-svelte/icons/bell";
+  import Moon from "lucide-svelte/icons/moon";
+  import Sun from "lucide-svelte/icons/sun";
+  import RefreshCw from "lucide-svelte/icons/refresh-cw";
+  import { connection } from "../connection.svelte";
+  import { discover } from "../discover.svelte";
+  import { flow } from "../flow.svelte";
+  import { goal } from "../goal.svelte";
+  import { layout } from "../layout.svelte";
+  import { notifications } from "../notifications.svelte";
+  import IconButton from "./ui/icon-button.svelte";
+
+  interface Props {
+    onopenhistory: () => void;
+  }
+
+  let { onopenhistory }: Props = $props();
+
+  const connectionLabel = $derived(
+    connection.state === "open"
+      ? "Connected"
+      : connection.state === "connecting"
+        ? "Connecting"
+        : "Disconnected",
+  );
+
+  const modeStatus = $derived.by(() => {
+    if (layout.mode === "goal") {
+      if (goal.lifecycleActive) {
+        return goal.lifecycle.paused
+          ? `Lifecycle paused · pass ${goal.lifecycle.pass}`
+          : `Lifecycle ${goal.lifecycle.stage} · pass ${goal.lifecycle.pass}`;
+      }
+      if (goal.running) return `Running ${goal.runTitle ?? "ADR"}`;
+      return `${goal.pendingCount} ADR${goal.pendingCount === 1 ? "" : "s"} pending`;
+    }
+    if (layout.mode === "flow") {
+      const pr = flow.pr === null ? "" : ` · PR #${flow.pr.number} ${flow.pr.state}`;
+      return `Flow ${flow.status}${pr}`;
+    }
+    if (discover.active) return `Discover running${discover.runId === null ? "" : ` · ${discover.runId}`}`;
+    if (discover.stale) return "Discover artifacts stale";
+    if (discover.busy !== null) return `Discover busy: ${discover.busy}`;
+    return discover.hasArtifacts ? "Discover artifacts ready" : "Discover not run";
+  });
+
+  const versions = $derived(
+    `running ${connection.version?.running ?? "unknown"} · installed ${
+      connection.version?.installed ?? "unknown"
+    }`,
+  );
+</script>
+
+<footer class="status-bar" data-testid="status-bar">
+  <span class="status-item" title={`WebSocket ${connection.state}`}>
+    <span class="status-dot" data-state={connection.state} aria-hidden="true"></span>
+    <span data-testid="status-connection">{connectionLabel}</span>
+  </span>
+  <span class="status-item status-item--grow" title={connection.projectPath}>
+    <span class="mono" data-testid="status-project">{connection.projectPath || "No project"}</span>
+  </span>
+  <span class="status-item" title="Running lanes and open epics">
+    <span class="mono">work {goal.runningLanes}</span>
+    <span class="mono">lanes {goal.lanes.length}</span>
+    <span class="mono">epics {goal.openEpics}</span>
+  </span>
+  <span class="status-item" title="Active mode status" data-testid="status-mode">
+    {modeStatus}
+  </span>
+  <span class="status-item status-versions" title={versions}>{versions}</span>
+  {#if connection.version?.stale === true}
+    <IconButton
+      label={`Restart devboard, running ${connection.version?.running ?? "unknown"}, installed ${
+        connection.version?.installed ?? "unknown"
+      }`}
+      command="app.reload"
+      data-testid="reload-devboard"
+      disabled={connection.restarting}
+      onclick={() => connection.requestRestart()}
+    >
+      <RefreshCw size={14} aria-hidden="true" />
+    </IconButton>
+  {/if}
+  <IconButton
+    label={layout.theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+    command="view.theme.toggle"
+    data-testid="theme-toggle"
+    onclick={() => layout.toggleTheme()}
+  >
+    {#if layout.theme === "dark"}
+      <Sun size={14} aria-hidden="true" />
+    {:else}
+      <Moon size={14} aria-hidden="true" />
+    {/if}
+  </IconButton>
+  <button
+    type="button"
+    class="status-item status-item--button"
+    data-command="app.notifications.open"
+    data-testid="notification-indicator"
+    aria-label={`Notifications, ${notifications.unread} unread`}
+    title="Notification history"
+    onclick={onopenhistory}
+  >
+    <Bell size={13} aria-hidden="true" />
+    <span class="mono">{notifications.items.length}</span>
+    {#if notifications.unread > 0}
+      <span class="badge" data-tone="error">{notifications.unread} new</span>
+    {/if}
+  </button>
+</footer>

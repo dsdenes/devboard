@@ -15,7 +15,9 @@
     "verify:ui": "bun run scripts/verify-ui.ts",
     "watchdog": "bun run watchdog/main.ts",
     "watchdog:install": "bun run watchdog/install.ts",
-    "watchdog:uninstall": "bun run watchdog/uninstall.ts"
+    "watchdog:uninstall": "bun run watchdog/uninstall.ts",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "verify:interface": "bun run scripts/verify-interface.ts"
   },
   "files": [
     "package.json",
@@ -38,10 +40,26 @@
   ],
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/bun": "^1.4.3",
+    "shadcn-svelte": "^1.7.1",
     "svelte": "^5.57.2",
-    "typescript": "^7.0.2",
-    "vite": "^8.3.4"
+    "svelte-check": "^4.7.7",
+    "tailwindcss": "^4.3.3",
+    "tw-animate-css": "^1.4.0",
+    "typescript": "^6",
+    "vite": "^8.3.4",
+    "bits-ui": "^2.20.2",
+    "paneforge": "^1.0.2",
+    "@tanstack/svelte-table": "^9.3.1",
+    "@tanstack/table-core": "^9.3.1",
+    "monaco-editor": "^0.57.0",
+    "@xterm/xterm": "^6.0.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "lucide-svelte": "^1.0.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.7.0",
+    "tailwind-variants": "^3.3.1"
   },
   "dependencies": {
     "diff2html": "^3.4.56",
