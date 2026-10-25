@@ -1201,13 +1201,6 @@ kbd {
   min-height: 0;
 }
 
-.preview-pane {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
 .verification-output {
   background: var(--background);
   border: 1px solid var(--border);
@@ -1292,4 +1285,338 @@ kbd {
 
 .flow-widget {
   border-left: 2px solid var(--flow-category-border, var(--border));
+}
+
+/* Discover: a reading surface with a page header and a card grid. */
+.discover-page {
+  gap: 14px;
+  padding: 2px 2px 24px;
+}
+
+.discover-page__header {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  justify-content: space-between;
+  padding: 4px 2px 0;
+}
+
+.discover-page__heading {
+  min-width: 0;
+}
+
+.discover-page__title {
+  color: var(--foreground);
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.discover-page__subtitle {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 4px 0 0;
+  max-width: 72ch;
+}
+
+.discover-page__actions {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.discover-grid {
+  align-items: start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+@media (min-width: 1100px) {
+  .discover-grid > [data-field="definition"],
+  .discover-grid > [data-field="commands"],
+  .discover-grid > [data-field="testing"] {
+    grid-column: span 2;
+  }
+}
+
+.discover-card {
+  min-width: 0;
+}
+
+.discover-card__header {
+  background: var(--surface-raised);
+  flex: 0 0 34px;
+  height: 34px;
+  padding: 0 10px;
+}
+
+.discover-card__header .panel__title {
+  font-size: 13px;
+}
+
+.discover-card__body {
+  overflow: visible;
+  padding: 10px;
+}
+
+.discover-page .table-wrap th {
+  background: transparent;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  padding: 4px 8px;
+}
+
+.discover-page .table-wrap td {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.discover-page .table-wrap tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.discover-page .table-wrap td[data-column="line"] {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.discover-page .table-wrap td.discover-cell--muted {
+  color: var(--muted-foreground);
+}
+
+.field-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.field-list__row {
+  align-items: start;
+  display: grid;
+  gap: 4px 14px;
+  grid-template-columns: minmax(104px, 150px) minmax(0, 1fr);
+}
+
+.field-list dt {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  padding-top: 1px;
+}
+
+.field-list dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.field-list__block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-list__block dt {
+  padding-top: 0;
+}
+
+.discover-value {
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.discover-value[data-confidence="unknown"] {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.discover-list {
+  font-size: 13px;
+  line-height: 1.5;
+  list-style: disc;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.discover-list li {
+  overflow-wrap: anywhere;
+}
+
+.discover-list li::marker {
+  color: var(--muted-foreground);
+}
+
+.discover-note {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 2px 0 0;
+}
+
+.discover-stats {
+  display: flex;
+  gap: 8px;
+}
+
+.discover-stat {
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 76px;
+  padding: 6px 10px;
+}
+
+.discover-stat__value {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.discover-stat__label {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.discover-command-line {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.discover-command-line code {
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  padding: 2px 6px;
+}
+
+.discover-search {
+  max-width: 320px;
+  min-height: 30px;
+  padding: 4px 8px;
+  width: 100%;
+}
+
+.discover-skill {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.discover-skill__heading {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.discover-skill__heading .muted {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discover-empty__body {
+  max-width: 62ch;
+  padding: 28px;
+}
+
+.discover-empty__body h2 {
+  font-size: 16px;
+  font-weight: 650;
+  margin: 0 0 6px;
+}
+
+.discover-empty__body p {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 6px;
+}
+
+.discover-warning {
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.discover-warning:last-child {
+  border-bottom: 0;
+}
+
+/* Sidebar: a nested glossary submenu under the Glossary section. */
+.sidebar-tab-row {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+}
+
+.sidebar-tab-row .sidebar-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-disclosure {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 20px;
+  height: 24px;
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar-disclosure:hover {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+
+.sidebar-disclosure__icon {
+  transition: transform 120ms ease;
+}
+
+.sidebar-disclosure__icon--open {
+  transform: rotate(90deg);
+}
+
+.sidebar-submenu {
+  border-left: 1px solid var(--border);
+  margin: 2px 0 6px 10px;
+  padding-left: 6px;
+}
+
+.sidebar-submenu__context {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 6px 6px 2px;
+  text-transform: uppercase;
+}
+
+.sidebar-item--nested {
+  padding-left: 8px;
 }

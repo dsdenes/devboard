@@ -1337,31 +1337,60 @@ try {
   const discoverTables = await page.eval<{
     cards: number;
     commands: number;
+    commandText: string[];
     pyramid: number;
+    pyramidText: string[];
+    bands: number;
     suite: boolean;
     rowHeights: number[];
     tableFont: string;
     freshness: boolean;
+    fieldHeaders: string[];
+    innerScrollers: number;
+    sectionTabs: number;
+    skillTabs: number;
+    sidebarFreshness: boolean;
   }>(`(() => {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-pyramid"] tbody tr')];
     const table = document.querySelector('[data-testid="discover-pyramid"]');
+    const commands = [...document.querySelectorAll('#workspace-discover [data-testid="discover-command-list"] tbody tr')];
+    const scopes = [...document.querySelectorAll('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] .discover-card .panel__body, #workspace-discover [data-testid="discover-panel"][data-tab="overview"] [data-testid="discover-command-list"]')];
+    const sections = document.querySelector('[data-testid="sidebar"] section[aria-label="Discover sections"]');
+    const skills = document.querySelector('[data-testid="sidebar"] section[aria-label="Skills"]');
     return {
       cards: document.querySelectorAll('#workspace-discover [data-testid="discover-card"]').length,
-      commands: document.querySelectorAll('#workspace-discover [data-testid="discover-command-list"] tbody tr').length,
+      commands: commands.length,
+      commandText: commands.map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim()).join(" | ")),
       pyramid: rows.length,
+      pyramidText: rows.map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim()).join(" | ")),
+      bands: document.querySelectorAll('[data-testid="discover-pyramid-chart"] polygon').length,
       suite: document.querySelector('[data-testid="discover-suite-command"]') !== null,
       rowHeights: rows.map((row) => Math.round(row.getBoundingClientRect().height)),
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
       freshness: document.querySelector('[data-testid="discover-freshness"]') !== null,
+      fieldHeaders: [...document.querySelectorAll('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] th')]
+        .map((header) => header.textContent.trim().toUpperCase())
+        .filter((text) => text === "FIELD" || text === "VALUE"),
+      innerScrollers: scopes.filter((scope) => scope.scrollHeight > scope.clientHeight + 1).length,
+      sectionTabs: sections === null ? -1 : sections.querySelectorAll('[data-testid="discover-tab"]').length,
+      skillTabs: skills === null ? -1 : skills.querySelectorAll('[data-testid="discover-tab"]').length,
+      sidebarFreshness: document.querySelector('[data-testid="sidebar"] section[aria-label="Freshness"]') !== null,
     };
   })()`);
   check(discoverTables.cards >= 5, "Discover sections are missing from the overview", discoverTables);
   check(discoverTables.commands > 0, "the Discover command table is empty", discoverTables);
+  check(discoverTables.commandText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover command row renders no values", discoverTables.commandText);
   check(discoverTables.pyramid > 0 && discoverTables.suite, "the Discover testing tables are empty", discoverTables);
-  check(discoverTables.rowHeights.every((height) => height > 0 && height <= 32), "a Discover table row exceeds 32px", discoverTables.rowHeights);
+  check(discoverTables.pyramidText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover pyramid row renders no values", discoverTables.pyramidText);
+  check(discoverTables.bands === discoverTables.pyramid, "the test pyramid image does not render one band per level", discoverTables);
+  check(discoverTables.rowHeights.every((height) => height > 0 && height <= 120), "a Discover table row is mis-sized", discoverTables.rowHeights);
   const discoverFont = Number.parseFloat(discoverTables.tableFont);
   check(discoverFont >= 12 && discoverFont <= 14, "Discover table text is not 12–14px", discoverTables.tableFont);
-  check(discoverTables.freshness, "Discover freshness is missing");
+  check(!discoverTables.freshness, "Discover still renders the freshness panel");
+  check(discoverTables.fieldHeaders.length === 0, "Discover still renders Field/Value table headers", discoverTables.fieldHeaders);
+  check(discoverTables.innerScrollers === 0, "a Discover panel or table scrolls inside the page", discoverTables);
+  check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
+  check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");
   await page.eval(`(() => {
     const scroller = document.querySelector('#workspace-discover .scroll-column');
     if (scroller !== null) scroller.scrollTop = 160;
@@ -1375,18 +1404,51 @@ try {
 
   await runPalette("discover.tab.glossary");
   await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the glossary term table");
-  const glossary = await page.eval<{ contexts: number; terms: number; heights: number[]; search: boolean }>(`(() => {
+  const glossary = await page.eval<{
+    contexts: number;
+    terms: number;
+    heights: number[];
+    search: boolean;
+    headers: string[];
+    termsText: string[];
+    menu: boolean;
+    menuContext: string;
+    menuBadges: number;
+    menuTerms: number;
+  }>(`(() => {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
+    const menu = document.querySelector('[data-testid="discover-glossary-menu"]');
     return {
       contexts: document.querySelectorAll('#workspace-discover [data-testid="discover-context"]').length,
       terms: rows.length,
       heights: rows.map((row) => Math.round(row.getBoundingClientRect().height)),
       search: document.querySelector('[data-testid="discover-glossary-search"]') !== null,
+      headers: [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"] thead th')].map((header) => header.textContent.trim()),
+      termsText: rows.map((row) => row.querySelector('td')?.textContent?.trim() ?? ""),
+      menu: menu !== null,
+      menuContext: menu?.querySelector('.sidebar-submenu__context')?.textContent?.trim() ?? "",
+      menuBadges: menu?.querySelectorAll('.badge').length ?? 0,
+      menuTerms: menu?.querySelectorAll('[data-command^="discover.term.open."]').length ?? 0,
     };
   })()`);
   check(glossary.contexts > 0 && glossary.terms > 0, "the glossary tables are empty", glossary);
-  check(glossary.heights.every((height) => height > 0 && height <= 32), "a glossary row exceeds 32px", glossary.heights);
+  check(glossary.heights.every((height) => height > 0 && height <= 120), "a glossary row is mis-sized", glossary.heights);
+  check(glossary.headers.join(",") === "Term,Definition,Kind", "the glossary table columns are wrong", glossary.headers);
+  check(glossary.termsText.every((text) => text.length > 0), "a glossary row has no term", glossary.termsText);
   check(glossary.search, "the glossary search is missing");
+  check(glossary.menu && glossary.menuTerms > 0, "the glossary submenu is missing its terms", glossary);
+  check(glossary.menuContext === "Orders", "the glossary submenu shows a raw context id", glossary.menuContext);
+  check(glossary.menuBadges === 0, "the glossary submenu still renders status badges");
+  await page.click('[data-testid="discover-glossary-toggle"]');
+  await page.wait(
+    `document.querySelector('[data-testid="discover-glossary-menu"]') === null`,
+    "the collapsed glossary submenu",
+  );
+  await page.click('[data-testid="discover-glossary-toggle"]');
+  await page.wait(
+    `document.querySelector('[data-testid="discover-glossary-menu"]') !== null`,
+    "the reopened glossary submenu",
+  );
   await page.fill('[data-testid="discover-glossary-search"]', "Order Total");
   await page.wait(`document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === 1`, "the filtered glossary");
   await page.fill('[data-testid="discover-glossary-search"]', "");
@@ -1413,7 +1475,7 @@ try {
   check(skillLabel.length > 0, "the skill editor has no accessible label", skillLabel);
   const originalSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
   await page.eval(`window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(`${originalSkill}\n- Verified edit.`)})`);
-  await page.wait(`document.querySelector('[data-testid="discover-skill-diff"]') !== null`, "the Discover skill diff");
+  await page.wait(`document.querySelector('[data-testid="discover-skill-dirty"]') !== null`, "the Discover skill dirty marker");
   await delay(150);
   const skillDirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-text"]').getAttribute("data-dirty") === "true"`);
   check(skillDirty, "the skill editor does not mark unsaved changes");
@@ -1457,7 +1519,7 @@ try {
         try { return JSON.parse(frame); } catch (parseError) { return null; }
       }).filter(Boolean);
       return {
-        state: document.querySelector('[data-testid="discover-skill-state"]')?.getAttribute("data-state"),
+        state: document.querySelector('[data-testid="discover-skill-dirty"]')?.textContent?.trim() ?? "",
         dirty: document.querySelector('[data-testid="discover-skill-text"]')?.getAttribute("data-dirty"),
         notices: [...document.querySelectorAll('[data-testid="notifications"] .notification')].map((entry) => entry.textContent.trim()),
         saves: frames.filter((frame) => frame.type === "saveDiscoverSkill").slice(-3),
@@ -1466,21 +1528,46 @@ try {
     })()`);
     throw new Error(`${error instanceof Error ? error.message : String(error)} ${JSON.stringify(diagnostic)}`);
   }
+  await page.wait(
+    `document.querySelector('[data-testid="discover-skill-restore"]') !== null`,
+    "the restore control after saving",
+  );
   await page.click('[data-testid="discover-skill-restore"]');
+  const skillBaseline = await readFile(
+    join(host, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md"),
+    "utf8",
+  );
   await waitFor(
     async () => {
-      if ((await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-state"]')?.getAttribute("data-state") === "generated"`)) !== true) return undefined;
       const live = await readFile(join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md"), "utf8").catch(() => "");
-      const baseline = await readFile(join(host, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md"), "utf8").catch(() => "");
-      return live === baseline ? true : undefined;
+      if (live !== skillBaseline) return undefined;
+      const restored = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
+      const dirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-dirty"]') !== null`);
+      return restored === skillBaseline && !dirty ? true : undefined;
     },
     "the restored generated skill",
     10_000,
   );
-  const skillTabSplit = await page.eval<number>(`document.querySelectorAll('#workspace-discover [data-testid="pane-handle"]').length`);
-  check(skillTabSplit >= 1, "the skill editor has no preview split");
-  const preview = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-preview"]') !== null`);
-  check(preview, "the skill preview is missing");
+  const skillLayout = await page.eval<{
+    preview: boolean;
+    split: number;
+    badge: boolean;
+    editor: number;
+    panel: number;
+  }>(`(() => {
+    const editor = document.querySelector('[data-testid="discover-skill-text"]');
+    const panel = document.querySelector('[data-testid="discover-skill"]');
+    return {
+      preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
+      split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
+      badge: document.querySelector('[data-testid="discover-skill-state"]') !== null,
+      editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
+      panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
+    };
+  })()`);
+  check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
+  check(!skillLayout.badge, "the skill tab still renders a state badge");
+  check(skillLayout.editor >= skillLayout.panel - 48, "the skill editor does not use the full pane", skillLayout);
 
   // Tabs survive mode switches, including the unsaved editor and active tab.
   const discoverTabsBefore = await page.eval<string[]>(`[...document.querySelectorAll('[data-testid="workspace-tab"]')].map((tab) => tab.textContent.trim())`);
@@ -1522,6 +1609,7 @@ try {
     theme: string;
     stored: string;
     editor: string;
+    dirty: boolean;
   }>(`(() => ({
     mode: ["goal", "flow", "discover"].find((mode) => document.querySelector('[data-testid="mode-' + mode + '"]')?.getAttribute("aria-selected") === "true") ?? "",
     tabs: [...document.querySelectorAll('[data-testid="workspace-tab"]')].map((tab) => tab.textContent.trim()),
@@ -1531,7 +1619,7 @@ try {
     theme: document.documentElement.dataset.theme,
     stored: localStorage.getItem("devboard.layout.v1") ?? "",
     editor: (window.__devboardEditors.get("discover-skill-text")?.getValue() ?? "").slice(-20),
-    state: document.querySelector('[data-testid="discover-skill-state"]')?.getAttribute("data-state") ?? "",
+    dirty: document.querySelector('[data-testid="discover-skill-dirty"]') !== null,
   }))()`);
   check(afterReload.mode === beforeReload.mode && afterReload.theme === beforeReload.theme, "mode or theme did not survive reload", { beforeReload, afterReload });
   check(JSON.stringify(afterReload.tabs) === JSON.stringify(beforeReload.tabs) && afterReload.active === beforeReload.active, "tabs or active tab did not survive reload", { before: beforeReload, after: afterReload });
@@ -1539,9 +1627,9 @@ try {
   check(afterReload.panes.length === beforeReload.panes.length && afterReload.panes.every((width, index) => Math.abs(width - (beforeReload.panes[index] ?? 0)) <= 2), "split sizes did not survive reload", { before: beforeReload.panes, after: afterReload.panes });
   const restoredBaseline = (await readFile(join(host, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md"), "utf8")).slice(-20);
   check(
-    afterReload.editor === restoredBaseline && afterReload.state === "generated",
+    afterReload.editor === restoredBaseline && !afterReload.dirty,
     "the restored skill text did not survive reload",
-    { editor: afterReload.editor, baseline: restoredBaseline, state: afterReload.state },
+    { editor: afterReload.editor, baseline: restoredBaseline, dirty: afterReload.dirty },
   );
   check(afterReload.stored.includes('"theme":"light"'), "layout localStorage lost the theme", afterReload.stored.slice(0, 120));
 

@@ -48,8 +48,8 @@ restores the default width. Visibility and width survive a reload.
   resolved state, next marker, file), the lifecycle lanes, and the prepared skills.
 - **Flow** lists the session, PR state, widgets, changed files, checkpoints, steering, decision
   board, blockers, and history.
-- **Discover** lists overview, glossary terms, the five skills, freshness, warnings, and recent
-  notices.
+- **Discover** lists the overview and glossary sections, the five skills under their own group, a
+  nested glossary submenu, warnings, and recent notices.
 
 Selecting an entry opens or focuses its workspace surface. Informational entries open the
 surface that holds the same facts.
@@ -517,12 +517,18 @@ and starts, stops, resets, or clears nothing; all three views stay mounted, so n
 scroll state, and focus survive. Discover events render only in this view and never touch Goal
 Mode's activity, question, or error state.
 
-The Discover sidebar opens tabs for `Overview`, `Glossary`, `Warnings`, and the five skills:
-`Testing Strategy Skill`, `Naming Conventions Skill`, `Coding Conventions Skill`,
-`Architecture & Boundaries Skill`, and `Glossary Skill` (`data-testid="discover-tab"` with
+The Discover sidebar opens tabs for `Overview` and `Glossary` under **Sections**, and the five
+skills `Testing Strategy`, `Naming Conventions`, `Coding Conventions`,
+`Architecture & Boundaries`, and `Glossary` under **Skills** (`data-testid="discover-tab"` with
 `data-tab` values `overview`, `glossary`, `testing-strategy`, `naming-conventions`,
 `coding-conventions`, `architecture-boundaries`, and `glossary-skill`). The active panel carries
-`data-testid="discover-panel"` and the same `data-tab`.
+`data-testid="discover-panel"` and the same `data-tab`. Warnings follows as its own group with a
+count; the sidebar keeps no freshness group.
+
+The Glossary row carries a disclosure control (`data-testid="discover-glossary-toggle"`) that opens
+a nested submenu (`data-testid="discover-glossary-menu"`) listing each bounded context by its full
+title and its terms. The submenu opens automatically while the Glossary tab or a term tab is
+active, and its entries carry no status badges.
 
 With no published artifacts the Overview tab shows an empty state (`data-testid="discover-empty"`)
 and a `Discover project` button (`data-testid="discover-start"`); with artifacts it shows
@@ -582,15 +588,17 @@ secrets and no absolute path.
 `sheet.json` is the canonical data sheet, with top-level keys in the fixed order `schemaVersion`,
 `definition`, `stack`, `deployment`, `environments`, `commands`, `branching`, `testing`,
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
-the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint, and
-the Overview tab renders the project and discovery time plus an explicit `stale` badge
-(`data-testid="discover-freshness"`) when the fingerprint differs. Sections carry
-`data-testid="discover-card"` and `data-field` and render as dense tables in the Overview tab,
-ordered with the runtime inventory first. Each section is a table whose rows pair a field label with its value; a
-record list such as environments becomes a table with one column per field and one row per record,
-and a section with a single leaf renders just that row. The view does not render confidence badges
-or evidence chips: the sheet still records both for every leaf, but they do not help an operator
-read the table. Every
+the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint. The
+Overview tab renders a page header with the project name and one card per section, ordered with the
+runtime inventory first: sections carry `data-testid="discover-card"` and `data-field` in a
+responsive grid. Each card renders its scalar fields as a `dt`/`dd` field list with no `Field` /
+`Value` table header; a record list such as environments becomes a full-width table with one column
+per field and one row per record, and a section with a single leaf renders that value as prose or a
+list. Tables grow with the page instead of scrolling inside a panel. The testing card adds a
+generated SVG test pyramid (`data-testid="discover-pyramid-chart"`) above its level table, plus the
+level and test totals and the whole-suite command. The view does not render freshness, confidence
+badges, or evidence chips: the sheet still records them for every leaf, but they do not help an
+operator read the page. Every
 non-`unknown` leaf carries at least one sorted, unique repository-relative evidence path, symbol
 anchor, or safe git fact and a confidence of `observed`, `declared`, `inferred`, or `unknown`;
 `unknown` carries empty evidence and a short reason. The definition is exactly one sentence of at
@@ -630,10 +638,11 @@ it never writes `confirmed`, `deprecated`, or `invalidated`. On publication the 
 every newly crawled term, so the published glossary contains only confirmed terms unless an
 earlier operator decision invalidated one. The tab groups terms by context and offers search; it
 shows no status filter, status badge, or per-term control, and it hides invalidated terms. Each
-term carries `data-testid="discover-term"`, `data-context`, `data-id`, `data-status`, and
-`data-kind`, and each context carries `data-testid="discover-context"`. The context heading shows
-its title, falling back to the context id only when no title exists. Glossary rows are color-coded by
-`kind` (`entity`, `event`, `field`, `role`, `actor`, `value`, `rule`).
+context card holds a three-column table — Term, Definition, Kind — that grows with the page and
+wraps long definitions; each term carries `data-testid="discover-term"`, `data-context`, `data-id`,
+`data-status`, and `data-kind`, and each context carries `data-testid="discover-context"`. The
+context heading shows its title, falling back to the context id only when no title exists. The
+Kind column is muted rather than color-coded.
 
 Confirmation is automatic, so the Glossary tab offers no `Confirm` or `Reject` control.
 `confirmGlossaryTerm` still succeeds only for a term that is proposed or unconfirmed, and
@@ -663,23 +672,21 @@ published glossary files, the confirmed and rejected rules, and the proposal pro
 root, a new `omp` session lists the five (`omp skill list`) and loads their bodies as skills, so
 every implementation agent in that host discovers the set with no extra configuration.
 
-Each skill has a tab split into a Monaco Markdown editor and a rendered preview: a
-`data-testid="discover-skill-text"` field holding the whole `SKILL.md`, a
-`data-testid="discover-skill-preview"` rendered from the draft, `discover-skill-save`, and
-`discover-skill-restore` controls, and a `discover-skill-state` badge reading `Generated`,
-`Edited`, or `Missing`. A `discover-skill-diff` view of the live text against the generated
-version appears only while the draft differs from that generated version; an untouched or
-byte-identical skill shows no diff. `saveDiscoverSkill` writes the submitted bytes verbatim and
-updates the manifest's current hash and edited state; it is refused with one `discoverError` when
-the name is not one of the five, the skill is missing, the frontmatter name no longer matches the
-directory, the description is empty or too long, or a marker was removed, and invalid text leaves
-the previous file byte-identical. `restoreDiscoverSkill` copies the current generated version over
-the live skill, recreating it when it was deleted, and returns it to `Generated`; it spawns no
-agent. A later run compares each live hash with its last baseline: an unedited skill is replaced,
-an edited skill is preserved byte for byte with its new baseline published beside it and its diff
-available, and a skill the developer deleted is not recreated but shows `Missing` with a
-`Recreate generated version` action. A generated name colliding with a prepare-family, unmanaged,
-or different Discover skill fails the run and publishes nothing.
+Each skill has a tab that is one full-height Monaco Markdown editor for the whole `SKILL.md`
+(`data-testid="discover-skill-text"`), with no rendered preview and no split pane. The header holds
+the skill name, `discover-skill-save`, and, while the live text differs from the generated version
+or the file is missing, `discover-skill-restore`. A `discover-skill-dirty` marker appears while the
+draft has unsaved changes; the tab renders no state badge. `saveDiscoverSkill` writes the submitted
+bytes verbatim and updates the manifest's current hash and edited state; it is refused with one
+`discoverError` when the name is not one of the five, the skill is missing, the frontmatter name
+no longer matches the directory, the description is empty or too long, or a marker was removed,
+and invalid text leaves the previous file byte-identical. `restoreDiscoverSkill` copies the current
+generated version over the live skill, recreating it when it was deleted; it spawns no agent. A
+later run compares each live hash with its last baseline: an unedited skill is replaced,
+an edited skill is preserved byte for byte with its new baseline published beside it, and a skill
+the developer deleted is not recreated but shows the `Recreate generated version` action. A
+generated name colliding with a prepare-family, unmanaged, or different Discover skill fails the
+run and publishes nothing.
 
 The goal lifecycle's skill prerequisite accepts a managed skill from either family: at least one
 prepare-family or Discover skill is enough for `Start implementation`. `getSkills` and `skillsState`

@@ -1,30 +1,37 @@
 import type { Concept, DiscoverTab, Glossary, Leaf, Labelled } from "./types";
 
-export const TABS: DiscoverTab[] = [
+/** Tabs that show the published sheet or glossary rather than a skill. */
+export const SECTION_TABS: DiscoverTab[] = [
   { id: "overview", label: "Overview", skill: null },
   { id: "glossary", label: "Glossary", skill: null },
+];
+
+/** The five generated skills; the sidebar groups them under Skills. */
+export const SKILL_TABS: DiscoverTab[] = [
   {
     id: "testing-strategy",
-    label: "Testing Strategy Skill",
+    label: "Testing Strategy",
     skill: "discover-testing-strategy",
   },
   {
     id: "naming-conventions",
-    label: "Naming Conventions Skill",
+    label: "Naming Conventions",
     skill: "discover-naming-conventions",
   },
   {
     id: "coding-conventions",
-    label: "Coding Conventions Skill",
+    label: "Coding Conventions",
     skill: "discover-coding-conventions",
   },
   {
     id: "architecture-boundaries",
-    label: "Architecture & Boundaries Skill",
+    label: "Architecture & Boundaries",
     skill: "discover-architecture-boundaries",
   },
-  { id: "glossary-skill", label: "Glossary Skill", skill: "discover-glossary" },
+  { id: "glossary-skill", label: "Glossary", skill: "discover-glossary" },
 ];
+
+export const TABS: DiscoverTab[] = [...SECTION_TABS, ...SKILL_TABS];
 
 export const SECTION_KEYS = [
   "definition",
@@ -242,6 +249,24 @@ export function pyramidTiers(leaf: Leaf | null | undefined): PyramidTier[] {
         (PYRAMID_LEVELS.indexOf(left.level) + 1 || PYRAMID_LEVELS.length) -
         (PYRAMID_LEVELS.indexOf(right.level) + 1 || PYRAMID_LEVELS.length),
     );
+}
+
+/** A bounded context's display name; never its raw identifier when a title exists. */
+export function contextTitle(glossary: Glossary): string {
+  return labelText(glossary.titles) || humanize(glossary.boundedContext);
+}
+
+/** Sum of the numeric test counts a pyramid declares, or null when none is known. */
+export function pyramidTestCount(tiers: PyramidTier[]): number | null {
+  let total = 0;
+  let known = false;
+  for (const tier of tiers) {
+    const count = Number.parseInt(tier.tests, 10);
+    if (!Number.isFinite(count)) continue;
+    known = true;
+    total += count;
+  }
+  return known ? total : null;
 }
 
 export function filterContexts(glossaries: Glossary[], query: string): Glossary[] {

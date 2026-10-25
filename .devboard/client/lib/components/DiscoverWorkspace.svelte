@@ -1,11 +1,9 @@
 <script lang="ts">
-  import { html as diffHtml } from "diff2html";
-  import "diff2html/bundles/css/diff2html.min.css";
-  import AgentOutput from "../../AgentOutput.svelte";
   import {
     COMMAND_HINTS,
     COMMAND_LABELS,
     conceptTitle,
+    contextTitle,
     HIDDEN_LEAVES,
     humanize,
     isLeaf,
@@ -13,6 +11,7 @@
     labelTexts,
     leafLines,
     pyramidTiers,
+    pyramidTestCount,
     recordColumnValues,
     recordColumns,
     recordItems,
@@ -25,13 +24,12 @@
     unknownText,
   } from "../discover-format";
   import { discover } from "../discover.svelte";
-  import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
-  import { DISCOVER_DIFF_OPTIONS, unifiedDiff } from "../skill-diff";
   import type { Concept, Leaf } from "../types";
   import DataTable from "./DataTable.svelte";
   import DetailSplit from "./DetailSplit.svelte";
   import MonacoEditor from "./MonacoEditor.svelte";
+  import PyramidChart from "./PyramidChart.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
 
@@ -43,31 +41,22 @@
 
   let { tab, openTab, closeTab }: Props = $props();
 
-  const FIELD_COLUMNS = [
-    { id: "label", header: "Field", accessorKey: "label" },
-    { id: "value", header: "Value", accessorKey: "value" },
-  ];
-
   const RECORD_COLUMNS = [
-    { id: "command", header: "Command", accessorKey: "label" },
-    { id: "line", header: "Line", accessorKey: "value" },
+    { id: "label", header: "Command", accessorKey: "label" },
+    { id: "value", header: "Line", accessorKey: "value" },
   ];
 
   const PYRAMID_COLUMNS = [
-    { id: "level", header: "Level", accessorKey: "label" },
+    { id: "level", header: "Level", accessorKey: "level" },
     { id: "tests", header: "Tests", accessorKey: "tests" },
     { id: "command", header: "Command", accessorKey: "command" },
     { id: "detail", header: "Paths & fixtures", accessorKey: "detail" },
   ];
 
   const GLOSSARY_COLUMNS = [
-    { id: "term", header: "Term", accessorKey: "title" },
+    { id: "title", header: "Term", accessorKey: "title" },
     { id: "definition", header: "Definition", accessorKey: "definition" },
     { id: "kind", header: "Kind", accessorKey: "kind" },
-    { id: "status", header: "Status", accessorKey: "status" },
-    { id: "origin", header: "Origin", accessorKey: "origin" },
-    { id: "grounding", header: "Grounding", accessorKey: "grounding" },
-    { id: "id", header: "ID", accessorKey: "id" },
   ];
 
   const activeSkill = $derived(tab?.kind === "skill" ? tab.resourceId : null);
@@ -91,20 +80,6 @@
   function leafText(leaf: Leaf): string {
     if (leaf.confidence === "unknown") return unknownText(leaf);
     return leafLines(leaf.value).join(" · ");
-  }
-
-  function entryText(leaf: Leaf): string {
-    const records = recordItems(leaf);
-    if (records.length > 0) return `${records.length} records`;
-    return leafText(leaf);
-  }
-
-  function fieldRows(section: unknown, hidden: string[]): Array<Record<string, unknown>> {
-    return sectionEntries(section, hidden).map(([key, leaf]) => ({
-      key,
-      label: humanize(key),
-      value: entryText(leaf),
-    }));
   }
 
   function recordRows(records: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
@@ -131,8 +106,7 @@
       if (key === "tryOut" && testCommand.length > 0 && scalarText(leaf.value) === testCommand) {
         continue;
       }
-      const value =
-        leaf.confidence === "unknown" ? "unknown" : scalarText(leaf.value);
+      const value = leaf.confidence === "unknown" ? "unknown" : scalarText(leaf.value);
       const hint = COMMAND_HINTS[key];
       rows.push({
         key,
@@ -153,8 +127,6 @@
   }
 </script>
 
-
-
 {#snippet recordsTable(records: Array<Record<string, unknown>>)}
   {#if records.length === 0}
     <p class="empty">Not recorded.</p>
@@ -163,64 +135,106 @@
       columns={recordCols(records)}
       rows={recordRows(records)}
       cellValue={recordCell}
-      compact
+      full
+      wrap
     />
   {/if}
 {/snippet}
 
-{#snippet singleLeaf(leaf: Leaf)}
+{#snippet leafValue(leaf: Leaf)}
   {#if recordItems(leaf).length > 0}
     {@render recordsTable(recordItems(leaf))}
+  {:else if leaf.confidence === "unknown"}
+    <p class="discover-value" data-confidence="unknown">{unknownText(leaf)}</p>
   {:else}
-    <DataTable
-      columns={[{ id: "value", header: "Value", accessorKey: "value" }]}
-      rows={[{ value: leafText(leaf) }]}
-      cellValue={(row) => String(row.value ?? "")}
-    />
+    {@const lines = leafLines(leaf.value)}
+    {#if lines.length === 1}
+      <p class="discover-value">{lines[0]}</p>
+    {:else}
+      <ul class="discover-list">
+        {#each lines as line, index (index)}
+          <li>{line}</li>
+        {/each}
+      </ul>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet fieldList(section: Record<string, unknown>, hidden: string[])}
+  {@const entries = sectionEntries(section, hidden)}
+  {#if entries.length === 0}
+    <p class="empty">Not recorded.</p>
+  {:else}
+    <dl class="field-list">
+      {#each entries as [leafKey, leaf] (leafKey)}
+        {#if recordItems(leaf).length > 0}
+          <div class="field-list__block" data-field={leafKey}>
+            <dt>{humanize(leafKey)}</dt>
+            <dd>{@render recordsTable(recordItems(leaf))}</dd>
+          </div>
+        {:else}
+          <div class="field-list__row" data-field={leafKey}>
+            <dt>{humanize(leafKey)}</dt>
+            <dd>
+              {@render leafValue(leaf)}
+            </dd>
+          </div>
+        {/if}
+      {/each}
+    </dl>
   {/if}
 {/snippet}
 
 {#snippet testingView(levels: Leaf | undefined, pyramid: Leaf | undefined, fullSuite: string)}
-  {#if fullSuite.length > 0}
-    <div class="row-sm" data-testid="discover-suite-command">
-      <span class="muted">Whole suite</span>
-      <code>{fullSuite}</code>
-    </div>
-  {/if}
   {#if levels === undefined}
     <p class="empty">No test levels were detected.</p>
   {:else if levels.confidence === "unknown"}
-    <DataTable
-      columns={[{ id: "value", header: "Value", accessorKey: "value" }]}
-      rows={[{ value: leafText(levels) }]}
-      cellValue={(row) => String(row.value ?? "")}
-    />
-  {:else if pyramidTiers(levels).length > 0}
-    <DataTable
-      data-testid="discover-pyramid"
-      columns={PYRAMID_COLUMNS}
-      rows={pyramidTiers(levels).map((tier) => ({
-        level: tier.level,
-        label: humanize(tier.level),
-        tests:
-          tier.tests === "unknown"
-            ? "count unknown"
-            : `${tier.tests} ${tier.tests === "1" ? "test" : "tests"}`,
-        command: tier.command,
-        detail: tier.detail.length > 0 ? tier.detail : "—",
-      }))}
-      rowAttrs={(row) => ({ "data-level": String(row.level ?? "") })}
-      cellValue={(row, columnId) => String(row[columnId] ?? "")}
-    />
+    {@render leafValue(levels)}
   {:else}
-    <DataTable
-      columns={[{ id: "value", header: "Value", accessorKey: "value" }]}
-      rows={[{ value: leafText(levels) }]}
-      cellValue={(row) => String(row.value ?? "")}
-    />
+    {@const tiers = pyramidTiers(levels)}
+    {@const total = pyramidTestCount(tiers)}
+    <div class="discover-stats" data-testid="discover-test-summary">
+      <div class="discover-stat">
+        <span class="discover-stat__value">{tiers.length}</span>
+        <span class="discover-stat__label">{tiers.length === 1 ? "level" : "levels"}</span>
+      </div>
+      <div class="discover-stat">
+        <span class="discover-stat__value">{total === null ? "—" : String(total)}</span>
+        <span class="discover-stat__label">tests</span>
+      </div>
+    </div>
+    {#if fullSuite.length > 0}
+      <div class="discover-command-line" data-testid="discover-suite-command">
+        <span class="muted">Whole suite</span>
+        <code>{fullSuite}</code>
+      </div>
+    {/if}
+    {#if tiers.length > 0}
+      <PyramidChart tiers={tiers} data-testid="discover-pyramid-chart" />
+      <DataTable
+        data-testid="discover-pyramid"
+        columns={PYRAMID_COLUMNS}
+        rows={tiers.map((tier) => ({
+          level: humanize(tier.level),
+          tests:
+            tier.tests === "unknown"
+              ? "count unknown"
+              : `${tier.tests} ${tier.tests === "1" ? "test" : "tests"}`,
+          command: tier.command,
+          detail: tier.detail.length > 0 ? tier.detail : "—",
+          rawLevel: tier.level,
+        }))}
+        rowAttrs={(row) => ({ "data-level": String(row.rawLevel ?? "") })}
+        cellValue={(row, columnId) => String(row[columnId] ?? "")}
+        full
+        wrap
+      />
+    {:else}
+      {@render leafValue(levels)}
+    {/if}
   {/if}
   {#if pyramid !== undefined && pyramid.confidence !== "unknown" && pyramid.value !== null}
-    <p class="muted" style="margin: 4px 0 0;">{scalarText(pyramid.value)}</p>
+    <p class="discover-note">{scalarText(pyramid.value)}</p>
   {/if}
 {/snippet}
 
@@ -231,6 +245,9 @@
     rows={commandRows(section, testCommand)}
     rowAttrs={(row) => ({ "data-command-key": String(row.key ?? "") })}
     cellValue={(row, columnId) => String(row[columnId] ?? "")}
+    cellAttrs={(_row, columnId) => (columnId === "value" ? { "data-column": "line" } : {})}
+    full
+    wrap
   />
 {/snippet}
 
@@ -309,7 +326,12 @@
 {/snippet}
 
 {#snippet overviewPanel()}
-  <div class="scroll-column" data-testid="discover-panel" data-tab="overview" aria-label="Discover overview">
+  <div
+    class="scroll-column discover-page"
+    data-testid="discover-panel"
+    data-tab="overview"
+    aria-label="Discover overview"
+  >
     {#if discover.active}
       <section class="panel" data-testid="discover-active">
         <div class="panel__header">
@@ -338,35 +360,35 @@
 
     {@render questionPanel()}
 
-    <div class="row-sm">
-      {@render startControl()}
-      {#if discover.busy !== null}
-        <span class="muted">{discover.busy}</span>
-      {/if}
-    </div>
+    <header class="discover-page__header">
+      <div class="discover-page__heading">
+        <h1 class="discover-page__title">Discover</h1>
+        <p class="discover-page__subtitle">
+          {#if discover.hasArtifacts}
+            Read-only current-state inventory of {discover.freshness?.project ?? "this project"}.
+          {:else}
+            Crawl this project for evidence-backed conventions, a glossary, and agent skills.
+          {/if}
+        </p>
+      </div>
+      <div class="row-sm discover-page__actions">
+        {#if discover.busy !== null}
+          <span class="muted">{discover.busy}</span>
+        {/if}
+        {@render startControl()}
+      </div>
+    </header>
 
     {#if discover.hasArtifacts}
-      {#if discover.freshness !== null}
-        <section class="panel" data-testid="discover-freshness">
-          <div class="panel__body row-sm" style="gap: 16px;">
-            <span><span class="muted">Project</span> {discover.freshness.project}</span>
-            <span><span class="muted">Discovered</span> {discover.freshness.discoveredAt}</span>
-            {#if discover.stale}
-              <span class="badge" data-tone="stale" data-testid="discover-stale">stale</span>
-            {/if}
-          </div>
-        </section>
-      {/if}
-
       {#if discover.sheet !== null}
-        <div class="discover-sheet" data-testid="discover-sheet">
+        <div class="discover-grid" data-testid="discover-sheet">
           {#each SECTION_ORDER as key (key)}
             {@const section = discover.sheet[key]}
             <section class="panel discover-card" data-testid="discover-card" data-field={key}>
-              <div class="panel__header">
+              <div class="panel__header discover-card__header">
                 <h2 class="panel__title">{SECTION_LABELS[key] ?? humanize(key)}</h2>
               </div>
-              <div class="panel__body stack-sm">
+              <div class="panel__body discover-card__body">
                 {#if key === "testing" && typeof section === "object" && section !== null}
                   {@render testingView(
                     sectionLeaf(section, "levels"),
@@ -376,31 +398,9 @@
                 {:else if key === "commands" && typeof section === "object" && section !== null}
                   {@render commandsView(section as Record<string, unknown>, discover.testCommand)}
                 {:else if isLeaf(section)}
-                  {@render singleLeaf(section)}
+                  {@render leafValue(section)}
                 {:else if typeof section === "object" && section !== null}
-                  {@const entries = sectionEntries(section, HIDDEN_LEAVES[key] ?? [])}
-                  {#if entries.length === 0}
-                    <p class="empty">Not recorded.</p>
-                  {:else}
-                    <DataTable
-                      columns={FIELD_COLUMNS}
-                      rows={entries.map(([leafKey, leaf]) => ({
-                        key: leafKey,
-                        label: humanize(leafKey),
-                        value: entryText(leaf),
-                      }))}
-                      rowAttrs={(row) => ({ "data-field": String(row.key ?? "") })}
-                      cellValue={(row, columnId) => String(row[columnId] ?? "")}
-                    />
-                    {#each entries as [leafKey, leaf] (leafKey)}
-                      {#if recordItems(leaf).length > 0}
-                        <div>
-                          <div class="field__label">{humanize(leafKey)}</div>
-                          {@render recordsTable(recordItems(leaf))}
-                        </div>
-                      {/if}
-                    {/each}
-                  {/if}
+                  {@render fieldList(section as Record<string, unknown>, HIDDEN_LEAVES[key] ?? [])}
                 {:else}
                   <p class="empty">Not recorded.</p>
                 {/if}
@@ -410,9 +410,13 @@
         </div>
       {/if}
     {:else}
-      <section class="panel" data-testid="discover-empty">
-        <div class="panel__body stack-sm">
-          <p>No Discover artifacts have been published for this project yet.</p>
+      <section class="panel discover-empty" data-testid="discover-empty">
+        <div class="discover-empty__body">
+          <h2>No Discover artifacts yet</h2>
+          <p>
+            Run Discover once to publish this project's inventory, glossary, and the five skills under
+            <code>.omp/skills/</code>.
+          </p>
           {#if discover.busy !== null}
             <p class="muted">{discover.busy}</p>
           {/if}
@@ -423,58 +427,69 @@
 {/snippet}
 
 {#snippet glossaryPanel()}
-  <div class="scroll-column" data-testid="discover-panel" data-tab="glossary" aria-label="Discover glossary">
-    <div class="row-sm">
-      <input
-        id="discover-glossary-search"
-        class="textarea"
-        style="min-height: 28px; max-width: 360px; padding: 4px 6px;"
-        type="search"
-        value={discover.glossarySearch}
-        oninput={(event) => discover.setGlossarySearch(event.currentTarget.value)}
-        placeholder="Search terms"
-        aria-label="Search glossary terms"
-        data-testid="discover-glossary-search"
-      />
-    </div>
+  <div class="scroll-column discover-page" data-testid="discover-panel" data-tab="glossary" aria-label="Discover glossary">
+    <header class="discover-page__header">
+      <div class="discover-page__heading">
+        <h1 class="discover-page__title">Glossary</h1>
+        <p class="discover-page__subtitle">
+          {discover.contexts.length}
+          {discover.contexts.length === 1 ? "bounded context" : "bounded contexts"} in the published
+          glossary.
+        </p>
+      </div>
+      <div class="discover-page__actions">
+        <input
+          id="discover-glossary-search"
+          class="textarea discover-search"
+          type="search"
+          value={discover.glossarySearch}
+          oninput={(event) => discover.setGlossarySearch(event.currentTarget.value)}
+          placeholder="Search terms"
+          aria-label="Search glossary terms"
+          data-testid="discover-glossary-search"
+        />
+      </div>
+    </header>
 
     {#if discover.filteredContexts.length === 0}
       <p class="empty">No glossary terms match the current search.</p>
     {:else}
       {#each discover.filteredContexts as context (context.boundedContext)}
-        <section class="panel" data-testid="discover-context" data-context={context.boundedContext}>
-          <div class="panel__header">
-            <h2 class="panel__title">
-              {labelText(context.titles) || context.boundedContext}
-            </h2>
-            <span class="muted">{context.concepts.length} terms</span>
+        <section class="panel discover-card" data-testid="discover-context" data-context={context.boundedContext}>
+          <div class="panel__header discover-card__header">
+            <h2 class="panel__title">{contextTitle(context)}</h2>
+            <span class="muted">
+              {context.concepts.length} {context.concepts.length === 1 ? "term" : "terms"}
+            </span>
           </div>
-          <DataTable
-            columns={GLOSSARY_COLUMNS}
-            rows={context.concepts.map((concept) => ({
-              ...concept,
-              title: conceptTitle(concept),
-              definition: labelText(concept.definitions) || "No definition recorded.",
-              grounding: String(Array.isArray(concept.grounding) ? concept.grounding.length : 0),
-            }))}
-            rowTestId="discover-term"
-            rowAttrs={(row) => ({
-              "data-context": context.boundedContext,
-              "data-id": String(row.id ?? ""),
-              "data-status": String(row.status ?? ""),
-              "data-kind": String(row.kind ?? ""),
-            })}
-            rowCommand={(row) =>
-              `discover.term.open.${context.boundedContext}.${String(row.id ?? "")}`}
-            onRowActivate={(row) => {
-              const concept = context.concepts.find((entry) => entry.id === row.id);
-              if (concept !== undefined) openTerm(context.boundedContext, concept);
-            }}
-            cellValue={(row, columnId) => {
-              if (columnId === "grounding" || columnId === "id") return String(row[columnId] ?? "");
-              return String(row[columnId] ?? "");
-            }}
-          />
+          <div class="panel__body discover-card__body">
+            <DataTable
+              columns={GLOSSARY_COLUMNS}
+              rows={context.concepts.map((concept) => ({
+                ...concept,
+                title: conceptTitle(concept),
+                definition: labelText(concept.definitions) || "No definition recorded.",
+              }))}
+              rowTestId="discover-term"
+              rowAttrs={(row) => ({
+                "data-context": context.boundedContext,
+                "data-id": String(row.id ?? ""),
+                "data-status": String(row.status ?? ""),
+                "data-kind": String(row.kind ?? ""),
+              })}
+              rowCommand={(row) =>
+                `discover.term.open.${context.boundedContext}.${String(row.id ?? "")}`}
+              onRowActivate={(row) => {
+                const concept = context.concepts.find((entry) => entry.id === row.id);
+                if (concept !== undefined) openTerm(context.boundedContext, concept);
+              }}
+              cellValue={(row, columnId) => String(row[columnId] ?? "")}
+              cellAttrs={(_row, columnId) =>
+                columnId === "kind" ? { class: "discover-cell--muted" } : {}}
+              full
+              wrap
+            />
+          </div>
         </section>
       {/each}
     {/if}
@@ -487,78 +502,50 @@
   {:else}
     <div data-testid="discover-panel" data-tab={skillTab.id} aria-label={skillTab.label} style="height: 100%;">
       <div class="discover-skill" data-testid="discover-skill" data-name={activeSkill} style="height: 100%;">
-        <DetailSplit id={`discover-skill-${activeSkill}`} label="Skill preview">
-          {#snippet main()}
-            <div class="skill-editor">
-              <div class="panel__header">
-                <h2 class="panel__title">{skillTab.label}</h2>
-                <div class="row-sm">
-                  <span
-                    class="badge"
-                    data-testid="discover-skill-state"
-                    data-state={skill?.state ?? "missing"}
-                    data-tone={skill?.state === "missing" ? "error" : "success"}
-                  >
-                    {discover.skillStateLabel(skill?.state ?? "missing")}
-                  </span>
-                  <Button
-                    variant="default"
-                    data-command={`discover.skill.save.${activeSkill}`}
-                    data-testid="discover-skill-save"
-                    onclick={() => discover.saveSkill(activeSkill)}
-                  >
-                    Save
-                  </Button>
-                  {#if (skill?.state ?? "missing") !== "generated"}
-                    <Button
-                      variant="outline"
-                      data-command={`discover.skill.restore.${activeSkill}`}
-                      data-testid="discover-skill-restore"
-                      title={skill?.state === "missing"
-                        ? "Recreate the skill from its generated version."
-                        : "Discard your edits and return to the generated version."}
-                      onclick={() => discover.restoreSkill(activeSkill)}
-                    >
-                      {skill?.state === "missing" ? "Recreate generated version" : "Discard edits"}
-                    </Button>
-                  {/if}
-                </div>
-              </div>
-              <div class="grow" style="min-height: 0;">
-                <MonacoEditor
-                  value={skillDraft}
-                  label={`${activeSkill} skill text`}
-                  data-testid="discover-skill-text"
-                  dirty={discover.skillDirty(activeSkill)}
-                  onchange={(text) => discover.updateDraft(activeSkill, text)}
-                  onsave={() => discover.saveSkill(activeSkill)}
-                />
-              </div>
+        <div class="skill-editor">
+          <div class="panel__header">
+            <div class="discover-skill__heading">
+              <h2 class="panel__title">{skillTab.label}</h2>
+              <span class="muted">{activeSkill}</span>
             </div>
-          {/snippet}
-          {#snippet detail()}
-            <div class="panel" style="height: 100%;">
-              <div class="panel__header"><h2 class="panel__title">Preview</h2></div>
-              <div class="panel__body preview-pane" data-testid="discover-skill-preview">
-                <AgentOutput text={skillDraft} />
-              </div>
-              {#if skill !== null && skill.baseline !== null && skillDraft !== skill.baseline}
-                <div class="panel__header"><h2 class="panel__title">Your changes</h2></div>
-                <div
-                  class="diff-html"
-                  class:d2h-dark-color-scheme={layout.theme === "dark"}
-                  data-testid="discover-skill-diff"
-                  style="max-height: 40%; overflow: auto;"
+            <div class="row-sm">
+              {#if discover.skillDirty(activeSkill)}
+                <span class="muted" data-testid="discover-skill-dirty">Unsaved changes</span>
+              {/if}
+              <Button
+                variant="default"
+                data-command={`discover.skill.save.${activeSkill}`}
+                data-testid="discover-skill-save"
+                onclick={() => discover.saveSkill(activeSkill)}
+              >
+                Save
+              </Button>
+              {#if (skill?.state ?? "missing") !== "generated"}
+                <Button
+                  variant="outline"
+                  data-command={`discover.skill.restore.${activeSkill}`}
+                  data-testid="discover-skill-restore"
+                  title={skill?.state === "missing"
+                    ? "Recreate the skill from its generated version."
+                    : "Discard your edits and return to the generated version."}
+                  onclick={() => discover.restoreSkill(activeSkill)}
                 >
-                  {@html diffHtml(
-                    unifiedDiff(activeSkill, skill.baseline, skillDraft),
-                    DISCOVER_DIFF_OPTIONS,
-                  )}
-                </div>
+                  {skill?.state === "missing" ? "Recreate generated version" : "Discard edits"}
+                </Button>
               {/if}
             </div>
-          {/snippet}
-        </DetailSplit>
+          </div>
+          <div class="grow" style="min-height: 0;">
+            <MonacoEditor
+              value={skillDraft}
+              label={`${activeSkill} skill text`}
+              data-testid="discover-skill-text"
+              dirty={discover.skillDirty(activeSkill)}
+              onchange={(text) => discover.updateDraft(activeSkill, text)}
+              onsave={() => discover.saveSkill(activeSkill)}
+            />
+          </div>
+        </div>
       </div>
     </div>
   {/if}
@@ -581,7 +568,10 @@
             style="height: 100%;"
           >
             <div class="panel__header">
-              <h2 class="panel__title">{conceptTitle(term.concept)}</h2>
+              <div class="discover-skill__heading">
+                <h2 class="panel__title">{conceptTitle(term.concept)}</h2>
+                <span class="muted">{contextTitle(term.glossary)}</span>
+              </div>
               <div class="row-sm">
                 <span class="badge" data-tone={term.concept.status === "confirmed" ? "confirmed" : "accent"}>
                   {term.concept.status}
@@ -603,7 +593,7 @@
               </p>
               <dl class="kv-grid">
                 <dt>Context</dt>
-                <dd>{term.glossary.boundedContext}</dd>
+                <dd>{contextTitle(term.glossary)}</dd>
                 <dt>Kind</dt>
                 <dd>{term.concept.kind}</dd>
                 <dt>Origin</dt>
@@ -657,17 +647,20 @@
 {/snippet}
 
 {#snippet warningsPanel()}
-  <div class="scroll-column" data-testid="discover-panel" data-tab="warnings" aria-label="Discover warnings">
-    <section class="panel">
-      <div class="panel__header">
-        <h2 class="panel__title">Warnings</h2>
-        <span class="muted">{discover.displayedWarnings.length}</span>
+  <div class="scroll-column discover-page" data-testid="discover-panel" data-tab="warnings" aria-label="Discover warnings">
+    <header class="discover-page__header">
+      <div class="discover-page__heading">
+        <h1 class="discover-page__title">Warnings</h1>
+        <p class="discover-page__subtitle">
+          {discover.displayedWarnings.length}
+          {discover.displayedWarnings.length === 1 ? "warning" : "warnings"} from the published artifacts.
+        </p>
       </div>
+    </header>
+    <section class="panel discover-card">
       <div class="panel__body panel__body--flush">
         {#each discover.displayedWarnings as warning, index (index)}
-          <p class="sidebar-item" data-testid="discover-warning" style="cursor: default;">
-            {warning}
-          </p>
+          <p class="discover-warning" data-testid="discover-warning">{warning}</p>
         {:else}
           <p class="empty">No warnings.</p>
         {/each}

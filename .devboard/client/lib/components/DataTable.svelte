@@ -17,6 +17,10 @@
     emptyText?: string;
     caption?: string;
     compact?: boolean;
+    /** Let cells wrap instead of truncating to one line. */
+    wrap?: boolean;
+    /** Grow with the page instead of scrolling inside the table. */
+    full?: boolean;
   }
 
   let {
@@ -34,6 +38,8 @@
     emptyText = "No records.",
     caption,
     compact = true,
+    wrap = false,
+    full = false,
   }: Props = $props();
 
   const features = tableFeatures({});
@@ -56,7 +62,7 @@
   }
 </script>
 
-<div class="table-wrap" class:compact>
+<div class="table-wrap" class:compact class:wrap class:full>
   <table data-testid={testid} aria-label={caption}>
     {#if caption !== undefined}
       <caption>{caption}</caption>
@@ -182,6 +188,26 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .wrap tbody tr {
+    height: auto;
+    max-height: none;
+  }
+
+  .wrap td {
+    line-height: 1.45;
+    max-width: none;
+    overflow: visible;
+    padding-bottom: 5px;
+    padding-top: 5px;
+    text-overflow: clip;
+    vertical-align: top;
+    white-space: normal;
+  }
+
+  .full {
+    overflow: visible;
   }
 
   .empty-row td {

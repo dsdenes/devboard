@@ -1,7 +1,12 @@
 <script lang="ts">
   import ChevronRight from "lucide-svelte/icons/chevron-right";
   import PanelLeftClose from "lucide-svelte/icons/panel-left-close";
-  import { conceptTitle, TABS } from "../discover-format";
+  import {
+    conceptTitle,
+    contextTitle,
+    SECTION_TABS,
+    SKILL_TABS,
+  } from "../discover-format";
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
@@ -18,6 +23,11 @@
   let { openTab }: Props = $props();
 
   const active = $derived(layout.activeTab[layout.mode]);
+  let glossaryOpen = $state<boolean | null>(null);
+  const glossaryVisible = $derived(
+    glossaryOpen ??
+      (typeof active === "string" && (active === "glossary" || active.startsWith("term:"))),
+  );
   const modeLabel = $derived(
     layout.mode === "goal" ? "Goal" : layout.mode === "flow" ? "Flow" : "Discover",
   );
@@ -396,7 +406,98 @@
     {:else}
       <section class="sidebar-group" aria-label="Discover sections">
         <div class="sidebar-group__title">Sections</div>
-        {#each TABS as tab (tab.id)}
+        {#each SECTION_TABS as tab (tab.id)}
+          {#if tab.id === "glossary"}
+            <div class="sidebar-tab-row">
+              <button
+                type="button"
+                class="sidebar-item"
+                aria-current={isActive(tab.id)}
+                role="tab"
+                aria-selected={isActive(tab.id)}
+                data-testid="discover-tab"
+                data-tab={tab.id}
+                data-command={`discover.tab.${tab.id}`}
+                onclick={() => open("discover", tab.id, tab.id, tab.id, tab.label)}
+              >
+                <span class="sidebar-item__label">{tab.label}</span>
+              </button>
+              <button
+                type="button"
+                class="sidebar-disclosure"
+                aria-expanded={glossaryVisible}
+                aria-controls={glossaryVisible ? "discover-glossary-menu" : undefined}
+                aria-label={`${glossaryVisible ? "Hide" : "Show"} glossary contexts`}
+                data-testid="discover-glossary-toggle"
+                onclick={() => (glossaryOpen = !glossaryVisible)}
+              >
+                <ChevronRight
+                  size={12}
+                  aria-hidden="true"
+                  class={glossaryVisible
+                    ? "sidebar-disclosure__icon sidebar-disclosure__icon--open"
+                    : "sidebar-disclosure__icon"}
+                />
+              </button>
+            </div>
+            {#if glossaryVisible}
+              <div
+                class="sidebar-submenu"
+                id="discover-glossary-menu"
+                data-testid="discover-glossary-menu"
+                role="group"
+                aria-label="Glossary contexts"
+              >
+                {#each discover.contexts as context (context.boundedContext)}
+                  <div class="sidebar-submenu__context">{contextTitle(context)}</div>
+                  {#each context.concepts.filter((concept) => concept.status !== "invalidated") as concept (concept.id)}
+                    <button
+                      type="button"
+                      class="sidebar-item sidebar-item--nested"
+                      aria-current={isActive(`term:${context.boundedContext}:${concept.id}`)}
+                      data-command={`discover.term.open.${context.boundedContext}.${concept.id}`}
+                      title={concept.id}
+                      onclick={() =>
+                        open(
+                          "discover",
+                          `term:${context.boundedContext}:${concept.id}`,
+                          "term",
+                          `${context.boundedContext}:${concept.id}`,
+                          conceptTitle(concept),
+                        )}
+                    >
+                      <span class="sidebar-item__label">{conceptTitle(concept)}</span>
+                    </button>
+                  {/each}
+                {:else}
+                  <p class="sidebar-empty">No glossary terms.</p>
+                {/each}
+              </div>
+            {/if}
+          {:else}
+            <button
+              type="button"
+              class="sidebar-item"
+              aria-current={isActive(tab.id)}
+              role="tab"
+              aria-selected={isActive(tab.id)}
+              data-testid="discover-tab"
+              data-tab={tab.id}
+              data-command={`discover.tab.${tab.id}`}
+              onclick={() => open("discover", tab.id, tab.id, tab.id, tab.label)}
+            >
+              <span class="sidebar-item__label">{tab.label}</span>
+            </button>
+          {/if}
+        {/each}
+      </section>
+
+      <section class="sidebar-group" aria-label="Skills">
+        <div class="sidebar-group__title">
+          <span>Skills</span>
+          <span>{SKILL_TABS.length}</span>
+        </div>
+        {#each SKILL_TABS as tab (tab.id)}
           <button
             type="button"
             class="sidebar-item"
@@ -407,39 +508,11 @@
             data-tab={tab.id}
             data-skill={tab.skill ?? undefined}
             data-command={`discover.tab.${tab.id}`}
-            onclick={() => open("discover", tab.id, tab.skill === null ? tab.id : "skill", tab.skill ?? tab.id, tab.label)}
+            onclick={() => open("discover", tab.id, "skill", tab.skill ?? tab.id, tab.label)}
           >
             <span class="sidebar-item__label">{tab.label}</span>
-            {#if tab.skill !== null}
-              {@const entry = discover.skill(tab.skill)}
-              <span class="badge" data-tone={entry?.state === "missing" ? "error" : "success"}>
-                {discover.skillStateLabel(entry?.state ?? "missing")}
-              </span>
-            {/if}
           </button>
         {/each}
-      </section>
-
-      <section class="sidebar-group" aria-label="Freshness">
-        <div class="sidebar-group__title">Freshness</div>
-        {#if discover.freshness !== null}
-          <button
-            type="button"
-            class="sidebar-item"
-            data-command="open.discover.overview"
-            onclick={() => open("discover", "overview", "overview", "overview", "Overview")}
-          >
-            <span class="sidebar-item__label">{discover.freshness.project}</span>
-            {#if discover.stale}
-              <span class="badge" data-tone="stale" data-testid="sidebar-discover-stale">stale</span>
-            {/if}
-          </button>
-          <div class="sidebar-item__meta" style="padding: 0 6px 4px;">
-            {discover.freshness.discoveredAt}
-          </div>
-        {:else}
-          <p class="sidebar-empty">No Discover artifacts.</p>
-        {/if}
       </section>
 
       <section class="sidebar-group" aria-label="Warnings">
@@ -458,42 +531,6 @@
           </button>
         {:else}
           <p class="sidebar-empty">No warnings.</p>
-        {/each}
-      </section>
-
-      <section class="sidebar-group" aria-label="Glossary terms">
-        <div class="sidebar-group__title">
-          <span>Glossary</span>
-          <span>{discover.contexts.length} {discover.contexts.length === 1 ? "context" : "contexts"}</span>
-        </div>
-        {#each discover.contexts as context (context.boundedContext)}
-          <div class="sidebar-item__meta" style="padding: 2px 6px;">
-            {context.boundedContext}
-          </div>
-          {#each context.concepts.filter((concept) => concept.status !== "invalidated") as concept (concept.id)}
-            <button
-              type="button"
-              class="sidebar-item"
-              aria-current={isActive(`term:${context.boundedContext}:${concept.id}`)}
-              data-command={`discover.term.open.${context.boundedContext}.${concept.id}`}
-              title={concept.id}
-              onclick={() =>
-                open(
-                  "discover",
-                  `term:${context.boundedContext}:${concept.id}`,
-                  "term",
-                  `${context.boundedContext}:${concept.id}`,
-                  conceptTitle(concept),
-                )}
-            >
-              <span class="sidebar-item__label">{conceptTitle(concept)}</span>
-              <span class="badge" data-tone={concept.status === "confirmed" ? "confirmed" : "accent"}>
-                {concept.status}
-              </span>
-            </button>
-          {/each}
-        {:else}
-          <p class="sidebar-empty">No glossary terms.</p>
         {/each}
       </section>
 

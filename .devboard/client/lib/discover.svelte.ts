@@ -1,6 +1,6 @@
 import { connection } from "./connection.svelte";
 import { notifications } from "./notifications.svelte";
-import { filterContexts, scalarText, sectionLeaf, TABS } from "./discover-format";
+import { filterContexts, scalarText, sectionLeaf } from "./discover-format";
 import type {
   DiscoverSkill,
   DiscoverStatePayload,
@@ -108,14 +108,6 @@ export class DiscoverStore {
 
   skillDirty(name: string): boolean {
     return this.dirty[name] === true;
-  }
-
-  skillStateLabel(value: string): string {
-    return value === "generated" ? "Generated" : value === "edited" ? "Edited" : "Missing";
-  }
-
-  tab(id: string) {
-    return TABS.find((tab) => tab.id === id) ?? null;
   }
 
   start(): void {
