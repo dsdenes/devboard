@@ -1594,8 +1594,15 @@ kbd {
   padding: 1px 4px;
 }
 
+.discover-page .panel .table-wrap th {
+  background: var(--surface);
+}
+
+.discover-page .discover-section .table-wrap th {
+  background: var(--background);
+}
+
 .discover-page .table-wrap th {
-  background: transparent;
   font-size: 11px;
   letter-spacing: 0.03em;
   padding: 4px 8px;
