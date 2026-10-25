@@ -1,4 +1,4 @@
-import type { Concept, DiscoverTab, Glossary, Leaf, Labelled } from "./types";
+import type { Concept, Confidence, DiscoverTab, Glossary, Leaf, Labelled } from "./types";
 
 /** Tabs that show the published sheet or glossary rather than a skill. */
 export const SECTION_TABS: DiscoverTab[] = [
@@ -185,6 +185,56 @@ export function sectionLeaf(section: unknown, key: string): Leaf | undefined {
   if (typeof section !== "object" || section === null) return undefined;
   const leaf = (section as Record<string, unknown>)[key];
   return isLeaf(leaf) ? leaf : undefined;
+}
+
+/** Every leaf below a section, minus the leaves a surface intentionally hides. */
+export function sectionLeaves(section: unknown, hidden: string[] = []): Leaf[] {
+  if (isLeaf(section)) return [section];
+  if (typeof section !== "object" || section === null || Array.isArray(section)) return [];
+  return Object.entries(section)
+    .filter(([key]) => !hidden.includes(key))
+    .flatMap(([, entry]) => sectionLeaves(entry, hidden));
+}
+
+export interface SectionProvenance {
+  counts: Record<Confidence, number>;
+  evidence: string[];
+}
+
+/** Confidence tally and de-duplicated evidence for one section, used as its provenance line. */
+export function sectionProvenance(section: unknown, hidden: string[] = []): SectionProvenance {
+  const counts: Record<Confidence, number> = {
+    observed: 0,
+    declared: 0,
+    inferred: 0,
+    unknown: 0,
+  };
+  const evidence = new Set<string>();
+  for (const leaf of sectionLeaves(section, hidden)) {
+    // Unknown leaves are listed in the unknowns ledger, not in a section's provenance line.
+    if (leaf.confidence === "unknown") continue;
+    counts[leaf.confidence] += 1;
+    for (const path of leaf.evidence) {
+      if (typeof path === "string" && path.length > 0) evidence.add(path);
+    }
+  }
+  return { counts, evidence: [...evidence].sort() };
+}
+
+/** Unknown leaves below a section, with the field key that carries each reason. */
+export function sectionUnknowns(
+  section: unknown,
+  hidden: string[] = [],
+): Array<[string, Leaf]> {
+  if (typeof section !== "object" || section === null || Array.isArray(section)) return [];
+  return Object.entries(section)
+    .filter(([key]) => !hidden.includes(key))
+    .flatMap(([key, entry]) => {
+      if (isLeaf(entry)) {
+        return entry.confidence === "unknown" ? [[key, entry] as [string, Leaf]] : [];
+      }
+      return sectionUnknowns(entry, hidden);
+    });
 }
 
 export function unknownText(leaf: Leaf): string {

@@ -1345,7 +1345,9 @@ try {
     rowHeights: number[];
     tableFont: string;
     freshness: boolean;
-    fieldHeaders: string[];
+    evidence: number;
+    confidence: number;
+    fieldHeaders: number;
     innerScrollers: number;
     sectionTabs: number;
     skillTabs: number;
@@ -1368,9 +1370,14 @@ try {
       rowHeights: rows.map((row) => Math.round(row.getBoundingClientRect().height)),
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
       freshness: document.querySelector('[data-testid="discover-freshness"]') !== null,
-      fieldHeaders: [...document.querySelectorAll('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] th')]
-        .map((header) => header.textContent.trim().toUpperCase())
-        .filter((text) => text === "FIELD" || text === "VALUE"),
+      evidence: document.querySelectorAll('[data-testid="discover-evidence"]').length,
+      confidence: document.querySelectorAll('[data-testid="discover-confidence"]').length,
+      fieldHeaders: [...document.querySelectorAll('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] table')]
+        .filter((table) => {
+          const heads = [...table.querySelectorAll('th')]
+            .map((header) => header.textContent.trim().toUpperCase());
+          return heads.includes("FIELD") && heads.includes("VALUE");
+        }).length,
       innerScrollers: scopes.filter((scope) => scope.scrollHeight > scope.clientHeight + 1).length,
       sectionTabs: sections === null ? -1 : sections.querySelectorAll('[data-testid="discover-tab"]').length,
       skillTabs: skills === null ? -1 : skills.querySelectorAll('[data-testid="discover-tab"]').length,
@@ -1386,8 +1393,10 @@ try {
   check(discoverTables.rowHeights.every((height) => height > 0 && height <= 120), "a Discover table row is mis-sized", discoverTables.rowHeights);
   const discoverFont = Number.parseFloat(discoverTables.tableFont);
   check(discoverFont >= 12 && discoverFont <= 14, "Discover table text is not 12–14px", discoverTables.tableFont);
-  check(!discoverTables.freshness, "Discover still renders the freshness panel");
-  check(discoverTables.fieldHeaders.length === 0, "Discover still renders Field/Value table headers", discoverTables.fieldHeaders);
+  check(discoverTables.freshness, "Discover does not render the freshness header");
+  check(discoverTables.evidence > 0, "Discover renders no evidence chips");
+  check(discoverTables.confidence > 0, "Discover renders no confidence badges");
+  check(discoverTables.fieldHeaders === 0, "Discover still renders Field/Value table headers", discoverTables.fieldHeaders);
   check(discoverTables.innerScrollers === 0, "a Discover panel or table scrolls inside the page", discoverTables);
   check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
   check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");

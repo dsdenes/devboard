@@ -1,36 +1,18 @@
 <script lang="ts">
   import {
-    COMMAND_HINTS,
-    COMMAND_LABELS,
     conceptTitle,
     contextTitle,
-    HIDDEN_LEAVES,
-    humanize,
-    isLeaf,
     labelText,
     labelTexts,
-    leafLines,
-    pyramidTiers,
-    pyramidTestCount,
-    recordColumnValues,
-    recordColumns,
-    recordItems,
-    scalarText,
-    SECTION_LABELS,
-    SECTION_ORDER,
-    sectionEntries,
-    sectionLeaf,
     TABS,
-    unknownText,
   } from "../discover-format";
   import { discover } from "../discover.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
-  import type { Concept, Leaf } from "../types";
+  import type { Concept } from "../types";
   import DataTable from "./DataTable.svelte";
   import DetailSplit from "./DetailSplit.svelte";
+  import DiscoverOverview from "./DiscoverOverview.svelte";
   import MonacoEditor from "./MonacoEditor.svelte";
-  import PyramidChart from "./PyramidChart.svelte";
-  import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
 
   interface Props {
@@ -40,18 +22,6 @@
   }
 
   let { tab, openTab, closeTab }: Props = $props();
-
-  const RECORD_COLUMNS = [
-    { id: "label", header: "Command", accessorKey: "label" },
-    { id: "value", header: "Line", accessorKey: "value" },
-  ];
-
-  const PYRAMID_COLUMNS = [
-    { id: "level", header: "Level", accessorKey: "level" },
-    { id: "tests", header: "Tests", accessorKey: "tests" },
-    { id: "command", header: "Command", accessorKey: "command" },
-    { id: "detail", header: "Paths & fixtures", accessorKey: "detail" },
-  ];
 
   const GLOSSARY_COLUMNS = [
     { id: "title", header: "Term", accessorKey: "title" },
@@ -77,46 +47,6 @@
     return glossary === undefined || concept === undefined ? null : { glossary, concept };
   });
 
-  function leafText(leaf: Leaf): string {
-    if (leaf.confidence === "unknown") return unknownText(leaf);
-    return leafLines(leaf.value).join(" · ");
-  }
-
-  function recordRows(records: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
-    return records;
-  }
-
-  function recordCols(records: Array<Record<string, unknown>>) {
-    return recordColumns(records).map((column) => ({
-      id: column.key,
-      header: column.label,
-      accessorKey: column.key,
-    }));
-  }
-
-  function recordCell(row: Record<string, unknown>, columnId: string): string {
-    const values = recordColumnValues(row, columnId);
-    return values.length > 0 ? values.join(" · ") : "—";
-  }
-
-  function commandRows(section: Record<string, unknown>, testCommand: string) {
-    const rows: Array<Record<string, unknown>> = [];
-    for (const [key, leaf] of Object.entries(section)) {
-      if (!isLeaf(leaf)) continue;
-      if (key === "tryOut" && testCommand.length > 0 && scalarText(leaf.value) === testCommand) {
-        continue;
-      }
-      const value = leaf.confidence === "unknown" ? "unknown" : scalarText(leaf.value);
-      const hint = COMMAND_HINTS[key];
-      rows.push({
-        key,
-        label: COMMAND_LABELS[key] ?? humanize(key),
-        value: hint !== undefined && leaf.confidence !== "unknown" ? `${value} — ${hint}` : value,
-      });
-    }
-    return rows;
-  }
-
   function openTerm(context: string, concept: Concept): void {
     openTab({
       id: `term:${context}:${concept.id}`,
@@ -126,305 +56,6 @@
     });
   }
 </script>
-
-{#snippet recordsTable(records: Array<Record<string, unknown>>)}
-  {#if records.length === 0}
-    <p class="empty">Not recorded.</p>
-  {:else}
-    <DataTable
-      columns={recordCols(records)}
-      rows={recordRows(records)}
-      cellValue={recordCell}
-      full
-      wrap
-    />
-  {/if}
-{/snippet}
-
-{#snippet leafValue(leaf: Leaf)}
-  {#if recordItems(leaf).length > 0}
-    {@render recordsTable(recordItems(leaf))}
-  {:else if leaf.confidence === "unknown"}
-    <p class="discover-value" data-confidence="unknown">{unknownText(leaf)}</p>
-  {:else}
-    {@const lines = leafLines(leaf.value)}
-    {#if lines.length === 1}
-      <p class="discover-value">{lines[0]}</p>
-    {:else}
-      <ul class="discover-list">
-        {#each lines as line, index (index)}
-          <li>{line}</li>
-        {/each}
-      </ul>
-    {/if}
-  {/if}
-{/snippet}
-
-{#snippet fieldList(section: Record<string, unknown>, hidden: string[])}
-  {@const entries = sectionEntries(section, hidden)}
-  {#if entries.length === 0}
-    <p class="empty">Not recorded.</p>
-  {:else}
-    <dl class="field-list">
-      {#each entries as [leafKey, leaf] (leafKey)}
-        {#if recordItems(leaf).length > 0}
-          <div class="field-list__block" data-field={leafKey}>
-            <dt>{humanize(leafKey)}</dt>
-            <dd>{@render recordsTable(recordItems(leaf))}</dd>
-          </div>
-        {:else}
-          <div class="field-list__row" data-field={leafKey}>
-            <dt>{humanize(leafKey)}</dt>
-            <dd>
-              {@render leafValue(leaf)}
-            </dd>
-          </div>
-        {/if}
-      {/each}
-    </dl>
-  {/if}
-{/snippet}
-
-{#snippet testingView(levels: Leaf | undefined, pyramid: Leaf | undefined, fullSuite: string)}
-  {#if levels === undefined}
-    <p class="empty">No test levels were detected.</p>
-  {:else if levels.confidence === "unknown"}
-    {@render leafValue(levels)}
-  {:else}
-    {@const tiers = pyramidTiers(levels)}
-    {@const total = pyramidTestCount(tiers)}
-    <div class="discover-stats" data-testid="discover-test-summary">
-      <div class="discover-stat">
-        <span class="discover-stat__value">{tiers.length}</span>
-        <span class="discover-stat__label">{tiers.length === 1 ? "level" : "levels"}</span>
-      </div>
-      <div class="discover-stat">
-        <span class="discover-stat__value">{total === null ? "—" : String(total)}</span>
-        <span class="discover-stat__label">tests</span>
-      </div>
-    </div>
-    {#if fullSuite.length > 0}
-      <div class="discover-command-line" data-testid="discover-suite-command">
-        <span class="muted">Whole suite</span>
-        <code>{fullSuite}</code>
-      </div>
-    {/if}
-    {#if tiers.length > 0}
-      <PyramidChart tiers={tiers} data-testid="discover-pyramid-chart" />
-      <DataTable
-        data-testid="discover-pyramid"
-        columns={PYRAMID_COLUMNS}
-        rows={tiers.map((tier) => ({
-          level: humanize(tier.level),
-          tests:
-            tier.tests === "unknown"
-              ? "count unknown"
-              : `${tier.tests} ${tier.tests === "1" ? "test" : "tests"}`,
-          command: tier.command,
-          detail: tier.detail.length > 0 ? tier.detail : "—",
-          rawLevel: tier.level,
-        }))}
-        rowAttrs={(row) => ({ "data-level": String(row.rawLevel ?? "") })}
-        cellValue={(row, columnId) => String(row[columnId] ?? "")}
-        full
-        wrap
-      />
-    {:else}
-      {@render leafValue(levels)}
-    {/if}
-  {/if}
-  {#if pyramid !== undefined && pyramid.confidence !== "unknown" && pyramid.value !== null}
-    <p class="discover-note">{scalarText(pyramid.value)}</p>
-  {/if}
-{/snippet}
-
-{#snippet commandsView(section: Record<string, unknown>, testCommand: string)}
-  <DataTable
-    data-testid="discover-command-list"
-    columns={RECORD_COLUMNS}
-    rows={commandRows(section, testCommand)}
-    rowAttrs={(row) => ({ "data-command-key": String(row.key ?? "") })}
-    cellValue={(row, columnId) => String(row[columnId] ?? "")}
-    cellAttrs={(_row, columnId) => (columnId === "value" ? { "data-column": "line" } : {})}
-    full
-    wrap
-  />
-{/snippet}
-
-{#snippet startControl()}
-  <Button
-    variant="default"
-    data-command="discover.start"
-    data-testid="discover-start"
-    disabled={discover.startDisabled}
-    title={discover.startTitle}
-    onclick={() => discover.start()}
-  >
-    {discover.hasArtifacts ? "Re-discover" : "Discover project"}
-  </Button>
-{/snippet}
-
-{#snippet questionPanel()}
-  {#if discover.question !== null}
-    <section class="panel" data-testid="discover-question">
-      <div class="panel__body stack-sm">
-        <p style="margin: 0;">{discover.question.message}</p>
-        {#if discover.question.options.length > 0}
-          <div class="choice-list">
-            {#each discover.question.options as option (option.label)}
-              <button
-                type="button"
-                class="choice"
-                data-testid="discover-choice"
-                data-command="discover.answer.submit"
-                onclick={() => discover.answer(option.label)}
-              >
-                <span class="choice__label">
-                  {option.label}
-                  {#if option.recommended}
-                    <span class="choice__recommended">Recommended</span>
-                  {/if}
-                </span>
-                {#if option.description}
-                  <span class="choice__description">{option.description}</span>
-                {/if}
-              </button>
-            {/each}
-          </div>
-        {/if}
-        <form
-          class="answer-form"
-          onsubmit={(event) => {
-            event.preventDefault();
-            discover.answer(discover.answerDraft);
-          }}
-        >
-          <input
-            id="discover-answer-input"
-            class="textarea"
-            style="min-height: 28px; padding: 4px 6px;"
-            type="text"
-            value={discover.answerDraft}
-            oninput={(event) => (discover.answerDraft = event.currentTarget.value)}
-            placeholder="Your answer"
-            aria-label="Your answer"
-            data-testid="discover-answer-input"
-          />
-          <Button
-            variant="default"
-            type="submit"
-            data-command="discover.answer.submit"
-            data-testid="discover-answer"
-            disabled={discover.answerDraft.trim().length === 0}
-          >
-            Answer
-          </Button>
-        </form>
-      </div>
-    </section>
-  {/if}
-{/snippet}
-
-{#snippet overviewPanel()}
-  <div
-    class="scroll-column discover-page"
-    data-testid="discover-panel"
-    data-tab="overview"
-    aria-label="Discover overview"
-  >
-    {#if discover.active}
-      <section class="panel" data-testid="discover-active">
-        <div class="panel__header">
-          <h2 class="panel__title">
-            Discover run active{#if discover.runId !== null} · <code>{discover.runId}</code>{/if}
-          </h2>
-          <div class="row-sm">
-            {#if discover.startedAt !== null}
-              <span class="muted">Started {discover.startedAt}</span>
-            {/if}
-            <Button
-              variant="destructive"
-              data-command="discover.stop"
-              data-testid="discover-stop"
-              onclick={() => discover.stop()}
-            >
-              Stop
-            </Button>
-          </div>
-        </div>
-        <div style="height: 180px;">
-          <Terminal lines={discover.activity} data-testid="discover-activity" label="Discover activity" />
-        </div>
-      </section>
-    {/if}
-
-    {@render questionPanel()}
-
-    <header class="discover-page__header">
-      <div class="discover-page__heading">
-        <h1 class="discover-page__title">Discover</h1>
-        <p class="discover-page__subtitle">
-          {#if discover.hasArtifacts}
-            Read-only current-state inventory of {discover.freshness?.project ?? "this project"}.
-          {:else}
-            Crawl this project for evidence-backed conventions, a glossary, and agent skills.
-          {/if}
-        </p>
-      </div>
-      <div class="row-sm discover-page__actions">
-        {#if discover.busy !== null}
-          <span class="muted">{discover.busy}</span>
-        {/if}
-        {@render startControl()}
-      </div>
-    </header>
-
-    {#if discover.hasArtifacts}
-      {#if discover.sheet !== null}
-        <div class="discover-grid" data-testid="discover-sheet">
-          {#each SECTION_ORDER as key (key)}
-            {@const section = discover.sheet[key]}
-            <section class="panel discover-card" data-testid="discover-card" data-field={key}>
-              <div class="panel__header discover-card__header">
-                <h2 class="panel__title">{SECTION_LABELS[key] ?? humanize(key)}</h2>
-              </div>
-              <div class="panel__body discover-card__body">
-                {#if key === "testing" && typeof section === "object" && section !== null}
-                  {@render testingView(
-                    sectionLeaf(section, "levels"),
-                    sectionLeaf(section, "pyramid"),
-                    discover.testCommand,
-                  )}
-                {:else if key === "commands" && typeof section === "object" && section !== null}
-                  {@render commandsView(section as Record<string, unknown>, discover.testCommand)}
-                {:else if isLeaf(section)}
-                  {@render leafValue(section)}
-                {:else if typeof section === "object" && section !== null}
-                  {@render fieldList(section as Record<string, unknown>, HIDDEN_LEAVES[key] ?? [])}
-                {:else}
-                  <p class="empty">Not recorded.</p>
-                {/if}
-              </div>
-            </section>
-          {/each}
-        </div>
-      {/if}
-    {:else}
-      <section class="panel discover-empty" data-testid="discover-empty">
-        <div class="discover-empty__body">
-          <h2>No Discover artifacts yet</h2>
-          <p>
-            Run Discover once to publish this project's inventory, glossary, and the five skills under
-            <code>.omp/skills/</code>.
-          </p>
-          {#if discover.busy !== null}
-            <p class="muted">{discover.busy}</p>
-          {/if}
-        </div>
-      </section>
-    {/if}
-  </div>
-{/snippet}
 
 {#snippet glossaryPanel()}
   <div class="scroll-column discover-page" data-testid="discover-panel" data-tab="glossary" aria-label="Discover glossary">
@@ -695,7 +326,7 @@
   {#if tab === null}
     <p class="empty">No tab is open. Choose a section from the sidebar.</p>
   {:else if tab.kind === "overview"}
-    {@render overviewPanel()}
+    <DiscoverOverview />
   {:else if tab.kind === "glossary"}
     {@render glossaryPanel()}
   {:else if tab.kind === "skill"}

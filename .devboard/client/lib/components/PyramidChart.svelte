@@ -4,16 +4,18 @@
 
   interface Props {
     tiers: PyramidTier[];
+    /** Half-size chart for a two-column surface. */
+    compact?: boolean;
     "data-testid"?: string;
   }
 
-  let { tiers, "data-testid": testid }: Props = $props();
+  let { tiers, compact = false, "data-testid": testid }: Props = $props();
 
-  const WIDTH = 400;
-  const PLOT_HEIGHT = 184;
-  const CENTER = WIDTH / 2;
-  const MIN_HALF = 58;
-  const MAX_HALF = 178;
+  const WIDTH = $derived(compact ? 220 : 400);
+  const PLOT_HEIGHT = $derived(compact ? 132 : 184);
+  const CENTER = $derived(WIDTH / 2);
+  const MIN_HALF = $derived(compact ? 34 : 58);
+  const MAX_HALF = $derived(compact ? 98 : 178);
 
   // The pyramid is drawn from the apex down, so the widest tier sits at the base.
   const bands = $derived.by(() => {
@@ -44,7 +46,7 @@
   );
 </script>
 
-<figure class="pyramid" data-testid={testid}>
+<figure class="pyramid" class:pyramid--compact={compact} data-testid={testid}>
   {#if bands.length === 0}
     <p class="empty">No test levels were detected.</p>
   {:else}
@@ -69,9 +71,11 @@
           y={band.labelY}
           text-anchor="middle"
         >
-          {humanize(band.tier.level)} · {band.tier.tests === "unknown"
-            ? "count unknown"
-            : `${band.tier.tests} ${band.tier.tests === "1" ? "test" : "tests"}`}
+          {humanize(band.tier.level)}{compact
+            ? ""
+            : ` · ${band.tier.tests === "unknown"
+              ? "count unknown"
+              : `${band.tier.tests} ${band.tier.tests === "1" ? "test" : "tests"}`}`}
         </text>
       {/each}
     </svg>
@@ -82,6 +86,10 @@
   .pyramid {
     margin: 0;
     width: 100%;
+  }
+
+  .pyramid--compact {
+    width: 220px;
   }
 
   .pyramid__svg {
@@ -102,5 +110,14 @@
     font-family: var(--font-sans);
     font-size: 12px;
     font-weight: 600;
+  }
+
+  .pyramid--compact .pyramid__label {
+    font-size: 9.5px;
+  }
+
+  .pyramid--compact .pyramid__svg {
+    max-height: 132px;
+    width: 220px;
   }
 </style>

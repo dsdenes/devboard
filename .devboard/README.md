@@ -114,11 +114,12 @@ reduce` disables nonessential transitions.
 
 ### Dense data views
 
-TanStack Table renders the ADR record list and the Discover overview, command, environment,
-architecture, testing, dependency, and glossary tables. The ADR table keeps title, status,
+TanStack Table renders the ADR record list and the Discover command, testing, architecture,
+dependency, unknown-field, and glossary tables. The ADR table keeps title, status,
 pending or resolved state, next marker, file, and decision summary; selecting a row opens its
 detail tab without navigating away. Body and table text is 12–14 CSS px, paths, code, diffs,
-terminal output, and IDs are monospace, and data rows are at most 32 CSS px tall. The shell uses
+terminal output, and IDs are monospace, one-line data rows are at most 32 CSS px tall, and wrapped
+data rows stay within 120 CSS px. The shell uses
 the full viewport with no application max-width.
 
 ### Editors and terminals
@@ -589,18 +590,21 @@ secrets and no absolute path.
 `definition`, `stack`, `deployment`, `environments`, `commands`, `branching`, `testing`,
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint. The
-Overview tab renders a page header with the project name and one card per section, ordered with the
-runtime inventory first: sections carry `data-testid="discover-card"` and `data-field` in a
-responsive grid. Each card renders its scalar fields as a `dt`/`dd` field list with no `Field` /
-`Value` table header; a record list such as environments becomes a full-width table with one column
-per field and one row per record, and a section with a single leaf renders that value as prose or a
-list. Tables grow with the page instead of scrolling inside a panel. The testing card adds a
-generated SVG test pyramid (`data-testid="discover-pyramid-chart"`) above its level table, plus the
-level and test totals and the whole-suite command. The view does not render freshness, confidence
-badges, or evidence chips: the sheet still records them for every leaf, but they do not help an
-operator read the page. Every
-non-`unknown` leaf carries at least one sorted, unique repository-relative evidence path, symbol
-anchor, or safe git fact and a confidence of `observed`, `declared`, `inferred`, or `unknown`;
+Overview tab is a project sheet, not a card grid. A masthead
+(`data-testid="discover-freshness"`) carries the project name, `dirty` and `stale` badges, the
+one-sentence definition, the short commit, the discovery time, and the definition's confidence and
+evidence. Below it, `Run and verify` holds the commands and testing panels, `Platform` and
+`Delivery` form a rail, and `Stack`, `Architecture and boundaries`, `Entry points and dependencies`,
+and `Not observed` span the page. Every section carries `data-testid="discover-card"` and
+`data-field`; the commands and testing panels are raised surfaces and the remaining sections are
+flat, separated by hairlines. Below 1240px viewport the rail collapses into the single column.
+Tables grow with the page; no panel scrolls inside the page.
+Each section ends with its provenance line: one `data-testid="discover-confidence"` per confidence
+present among the shown values and one `data-testid="discover-evidence"` per de-duplicated evidence
+path. Unknown leaves are not rendered inside sections; they are collected in a `Not observed`
+table with section, field, and reason. Every non-`unknown` leaf carries at least one sorted, unique
+repository-relative evidence path, symbol anchor, or safe git fact and a confidence of `observed`,
+`declared`, `inferred`, or `unknown`;
 `unknown` carries empty evidence and a short reason. The definition is exactly one sentence of at
 most 240 characters; every value and list entry is a single line of at most 160 characters. The
 sheet covers the short platform stack (languages, runtimes, package managers, frameworks, and
@@ -612,15 +616,18 @@ and quality gates, and the three mandatory sections: runtime inventory, entry-po
 dependency map, and delivery and versioning. It never guesses, invents an additional environment,
 copies README prose, or records a configuration value; a claim it cannot ground is `unknown`.
 
-The Overview also renders that data for scanning: main commands as a `Command`/`Line` table where
-the test command is named as the whole suite and a try-out command equal to the test command is
-omitted; the test levels as a `Level`/`Tests`/`Command`/`Paths & fixtures` table above its one-line
-description; architecture contexts as a table with path, responsibility, and entry points; record
-lists such as environments as their own tables; and the dependency-map section only for facts not
-already shown by the stack, runtime, and CI sections. It omits the delivery section because its
-facts repeat deployment, CI, and runtime, and it omits the deployment pipeline sources because
-those are CI provenance rather than deployment information. A test table with no observed level
-and a glossary with no matching term keep their explicit empty state.
+Main commands render as a `Task`/`Command` table of the observed commands, `$`-prefixed, headed
+by an `N of 8 commands found` count; a try-out command is followed by a note when it is not the test
+suite. Testing shows a compact generated SVG pyramid (`data-testid="discover-pyramid-chart"`) beside
+the known test and level totals and the whole-suite command
+(`data-testid="discover-suite-command"`), then a `Level`/`Tests`/`Paths & fixtures` table
+(`data-testid="discover-pyramid"`). Runtime, deployment, CI, and branching use compact `dt`/`dd`
+facts; the three delivery facts share one provenance line. Architecture contexts render as a table
+with path, responsibility, and entry points, followed by external-boundary and shared-kernel chips.
+The dependency map renders observed groups as chips, and `Stack` renders one full-width chip band
+after the two columns. Environments is `unknown` here, so it appears only in the ledger. The
+delivery section and the deployment pipeline sources stay hidden because they repeat other facts. A
+sheet with no observed test level and a glossary with no matching term keep an explicit empty state.
 
 The Glossary tab and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
 document per bounded context named `<bounded-context>.glossary.yaml`, top-level `boundedContext`,

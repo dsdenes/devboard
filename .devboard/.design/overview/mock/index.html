@@ -1,0 +1,898 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Discover Overview — mock</title>
+<style>
+  :root, :root[data-theme="dark"] {
+    color-scheme: dark;
+    --background: #0d1117;
+    --surface: #161b22;
+    --surface-raised: #1c2128;
+    --foreground: #e6edf3;
+    --muted-foreground: #8b949e;
+    --border: #30363d;
+    --border-subtle: #21262d;
+    --border-strong: #6e7681;
+    --ring: #58a6ff;
+    --primary: #1f6feb;
+    --primary-hover: #388bfd;
+    --primary-foreground: #ffffff;
+    --secondary: #21262d;
+    --secondary-hover: #30363d;
+    --accent: #58a6ff;
+    --accent-surface: #16233a;
+    --success: #3fb950;
+    --warning: #d29922;
+    --warning-surface: #2b2411;
+    --error: #ff7b72;
+    --error-surface: #2b1513;
+    --row-hover: #1b2129;
+    --terminal-background: #0d1117;
+    --activity-bar: #0a0d12;
+    --badge-pending: #d29922;
+    --badge-confirmed: #3fb950;
+    --badge-stale: #d29922;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  *, *::before, *::after {
+    animation: none !important;
+    box-sizing: border-box;
+    transition: none !important;
+  }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  code, .mono { font-family: var(--font-mono); font-size: 12px; }
+  .muted { color: var(--muted-foreground); }
+
+  .shell { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+  .shell-main { display: flex; flex: 1; min-height: 0; width: 100%; }
+
+  .activity-bar {
+    align-items: center;
+    background: var(--activity-bar);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex: 0 0 44px;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 0;
+    width: 44px;
+  }
+  .brand {
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    margin-bottom: 4px;
+    writing-mode: vertical-rl;
+  }
+  .activity-tab {
+    align-items: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--muted-foreground);
+    display: flex;
+    height: 36px;
+    justify-content: center;
+    position: relative;
+    width: 36px;
+  }
+  .activity-tab[aria-selected="true"] {
+    background: var(--secondary);
+    border-color: var(--border-strong);
+    color: var(--foreground);
+  }
+  .activity-tab[aria-selected="true"]::before {
+    background: var(--accent);
+    border-radius: 0 2px 2px 0;
+    content: "";
+    height: 20px;
+    left: -5px;
+    position: absolute;
+    top: 7px;
+    width: 2px;
+  }
+
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex: 0 0 300px;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+    width: 300px;
+  }
+  .sidebar__header {
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex: 0 0 34px;
+    height: 34px;
+    justify-content: space-between;
+    padding: 0 6px 0 10px;
+  }
+  .sidebar__title {
+    color: var(--muted-foreground);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .sidebar__body { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
+  .sidebar-group { margin-bottom: 10px; }
+  .sidebar-group__title {
+    align-items: center;
+    color: var(--muted-foreground);
+    display: flex;
+    font-size: 10px;
+    font-weight: 700;
+    justify-content: space-between;
+    letter-spacing: .08em;
+    padding: 2px 4px 4px;
+    text-transform: uppercase;
+  }
+  .sidebar-item {
+    align-items: center;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--foreground);
+    display: flex;
+    font-size: 12px;
+    gap: 6px;
+    min-height: 24px;
+    padding: 2px 6px;
+  }
+  .sidebar-item[aria-current="true"] {
+    background: var(--accent-surface);
+    border-color: var(--border-strong);
+  }
+  .sidebar-item__label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sidebar-empty { color: var(--muted-foreground); font-size: 11px; padding: 4px 6px; }
+  .icon { display: block; flex: 0 0 auto; }
+  .icon-sm { color: var(--muted-foreground); height: 12px; width: 12px; }
+  .icon-btn { color: var(--muted-foreground); height: 20px; width: 20px; }
+
+  .workspace { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+  .workspace-tabs {
+    align-items: stretch;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex: 0 0 34px;
+    gap: 1px;
+    height: 34px;
+  }
+  .workspace-tab {
+    align-items: center;
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-bottom: 0;
+    color: var(--foreground);
+    display: flex;
+    font-size: 12px;
+    gap: 6px;
+    padding: 0 8px;
+  }
+  .workspace-tab__close { color: var(--muted-foreground); }
+
+  .mode-body {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    padding: 8px;
+  }
+  .page {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 18px;
+    min-height: 0;
+    overflow: auto;
+    padding: 2px 2px 28px;
+  }
+
+  /* Page header: identity, definition, provenance. */
+  .sheet-head { display: flex; flex-direction: column; gap: 6px; padding: 2px 2px 0; }
+  .sheet-head__top { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+  .sheet-head__title { align-items: center; display: flex; gap: 8px; min-width: 0; }
+  h1 {
+    font-size: 20px;
+    font-weight: 650;
+    letter-spacing: -.01em;
+    line-height: 1.2;
+    margin: 0;
+  }
+  .sheet-definition {
+    font-size: 14px;
+    line-height: 1.5;
+    margin: 0;
+    max-width: 68ch;
+  }
+  .sheet-meta {
+    align-items: center;
+    color: var(--muted-foreground);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 11px;
+    gap: 6px;
+  }
+  .sheet-meta code { font-size: 11px; }
+  .dot-sep { color: var(--border-strong); }
+
+  .btn {
+    align-items: center;
+    background: var(--primary);
+    border: 1px solid var(--primary);
+    border-radius: 4px;
+    color: var(--primary-foreground);
+    display: inline-flex;
+    flex: 0 0 auto;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 500;
+    height: 28px;
+    padding: 0 10px;
+  }
+
+  .badge {
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    display: inline-flex;
+    font-size: 10px;
+    font-weight: 600;
+    gap: 3px;
+    line-height: 1;
+    padding: 2px 6px;
+    white-space: nowrap;
+  }
+  .badge[data-tone="warning"] { border-color: var(--badge-stale); color: var(--badge-stale); }
+  .badge[data-tone="success"] { border-color: var(--badge-confirmed); color: var(--badge-confirmed); }
+
+  /* Sheet composition: a main work column, a metadata rail, full-width structure. */
+  .sheet {
+    align-items: start;
+    display: grid;
+    gap: 22px 24px;
+    grid-template-columns: minmax(0, 1.62fr) minmax(0, 1fr);
+  }
+  .full { grid-column: 1 / -1; }
+  .col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+  .group { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  @media (max-width: 1240px) {
+    .sheet { grid-template-columns: minmax(0, 1fr); }
+    .col { display: contents; }
+  }
+  .group__title {
+    align-items: baseline;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted-foreground);
+    display: flex;
+    font-size: 10px;
+    font-weight: 700;
+    justify-content: space-between;
+    letter-spacing: .08em;
+    padding: 0 1px 5px;
+    text-transform: uppercase;
+  }
+  .group__title span:last-child { font-weight: 500; letter-spacing: .04em; }
+
+  .section { min-width: 0; }
+  .section__head { align-items: baseline; display: flex; gap: 8px; justify-content: space-between; }
+  .section__title { font-size: 12px; font-weight: 600; margin: 0; }
+  .section__meta { color: var(--muted-foreground); font-size: 10.5px; }
+
+  /* The only raised objects: commands and the test pyramid. */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .panel__head {
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    height: 34px;
+    justify-content: space-between;
+    padding: 0 10px;
+  }
+  .panel__head h2 { font-size: 12px; font-weight: 600; margin: 0; }
+  .panel__body { padding: 8px 10px 10px; }
+
+  /* Command block: label, command line, hint. */
+  .commands { border-collapse: collapse; table-layout: fixed; width: 100%; }
+  .commands col.c-label { width: 88px; }
+  .commands th {
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--muted-foreground);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    padding: 0 8px 5px 0;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .commands td {
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 6px 8px 6px 0;
+    vertical-align: top;
+  }
+  .commands tr:last-child td { border-bottom: 0; }
+  .cmd-label { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.5; }
+  .cmd-line { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
+  .cmd-line::before { color: var(--muted-foreground); content: "$ "; }
+  .cmd-hint { color: var(--muted-foreground); font-size: 10.5px; line-height: 1.45; margin-top: 2px; }
+
+  /* Testing: stats, suite, pyramid and level table. */
+  .test-summary { align-items: baseline; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  .test-stat { align-items: baseline; display: flex; gap: 5px; }
+  .test-stat__value { font-size: 18px; font-variant-numeric: tabular-nums; font-weight: 650; line-height: 1.2; }
+  .test-stat__label { color: var(--muted-foreground); font-size: 10.5px; letter-spacing: .03em; text-transform: uppercase; }
+  .suite { align-items: baseline; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .suite .muted { font-size: 11px; }
+  .suite code {
+    background: var(--background);
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    font-size: 11px;
+    padding: 2px 6px;
+  }
+  .test-grid { align-items: start; display: grid; gap: 12px; grid-template-columns: 200px minmax(0, 1fr); margin-top: 10px; }
+  .pyramid { display: block; height: auto; width: 200px; }
+  .levels { border-collapse: collapse; width: 100%; }
+  .levels th {
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--muted-foreground);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    padding: 0 6px 4px 0;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .levels td {
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 11.5px;
+    padding: 5px 6px 5px 0;
+    vertical-align: top;
+  }
+  .levels tr:last-child td { border-bottom: 0; }
+  .levels .mono { font-size: 11px; }
+  .test-note { color: var(--muted-foreground); font-size: 11px; margin: 8px 0 0; }
+
+  /* Flat sections: runtime, shipping, structure. */
+  .flat { border-top: 1px solid var(--border-subtle); padding-top: 9px; }
+  .flat:first-child { border-top: 0; padding-top: 0; }
+  .stack-band { border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; padding-top: 9px; }
+  .stack-band .sources { border-top: 0; margin-top: 2px; padding-top: 0; }
+  .facts { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 0; }
+  .fact { align-items: baseline; display: grid; gap: 10px; grid-template-columns: 104px minmax(0, 1fr); }
+  .fact dt { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.45; }
+  .fact dd { font-size: 12.5px; line-height: 1.45; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .fact dd.mono { font-size: 11.5px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; }
+  .chip {
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 1.4;
+    padding: 1px 5px;
+  }
+  .stack { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+
+  /* Provenance: one calm line per section, not a badge per value. */
+  .sources {
+    align-items: center;
+    border-top: 1px solid var(--border-subtle);
+    color: var(--muted-foreground);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 10px;
+    gap: 4px 8px;
+    margin-top: 10px;
+    padding-top: 6px;
+  }
+  .conf { align-items: center; display: inline-flex; gap: 4px; }
+  .conf::before { background: currentColor; border-radius: 50%; content: ""; height: 5px; width: 5px; }
+  .conf[data-confidence="observed"] { color: var(--success); }
+  .conf[data-confidence="declared"] { color: var(--accent); }
+  .conf[data-confidence="inferred"] { color: var(--warning); }
+  .conf[data-confidence="unknown"] { color: var(--muted-foreground); }
+  .source-chip {
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 1px 4px;
+  }
+
+  /* Architecture and dependencies. */
+  .lead { font-size: 12.5px; line-height: 1.5; margin: 7px 0 0; max-width: 76ch; }
+  .contexts { border-collapse: collapse; margin-top: 9px; table-layout: fixed; width: 100%; }
+  .contexts col.c-context { width: 19%; }
+  .contexts col.c-path { width: 15%; }
+  .contexts col.c-resp { width: 39%; }
+  .contexts col.c-entry { width: 27%; }
+  .contexts th {
+    border-bottom: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    padding: 0 10px 5px 0;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .contexts td {
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 11.5px;
+    line-height: 1.45;
+    padding: 6px 10px 6px 0;
+    vertical-align: top;
+  }
+  .contexts tr:last-child td { border-bottom: 0; }
+  .contexts .name { font-weight: 600; }
+  .contexts .mono { font-size: 10.5px; }
+  .contexts .muted { font-size: 10.5px; }
+  .boundaries { display: grid; gap: 8px 24px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-top: 10px; }
+  .boundary dt { color: var(--muted-foreground); font-size: 10.5px; font-weight: 600; }
+  .boundary dd { margin: 3px 0 0; }
+  .dep-grid { display: grid; gap: 12px 28px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 9px; }
+  .dep-group__title { color: var(--muted-foreground); font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+  .dep-group .chips { margin-top: 4px; }
+
+  /* Unknowns ledger. */
+  .unknowns { border-collapse: collapse; margin-top: 8px; table-layout: fixed; width: 100%; }
+  .unknowns col.c-section { width: 17%; }
+  .unknowns col.c-field { width: 21%; }
+  .unknowns th {
+    border-bottom: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    padding: 0 10px 5px 0;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .unknowns td {
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 11.5px;
+    line-height: 1.45;
+    padding: 5px 10px 5px 0;
+    vertical-align: top;
+  }
+  .unknowns tr:last-child td { border-bottom: 0; }
+  .unknowns .why { color: var(--muted-foreground); }
+  .unknowns .section-name { color: var(--muted-foreground); }
+
+  .status-bar {
+    align-items: center;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex: 0 0 26px;
+    font-size: 11px;
+    gap: 10px;
+    height: 26px;
+    padding: 0 8px;
+  }
+  .status-bar .spacer { flex: 1; }
+  .status-dot { background: var(--success); border-radius: 50%; height: 7px; width: 7px; }
+  .status-bar .muted { font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="shell-main">
+    <div class="activity-bar" role="tablist" aria-label="Devboard modes">
+      <span class="brand" aria-hidden="true">DB</span>
+      <div class="activity-tab" role="tab" aria-selected="false" aria-label="Goal">
+        <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.4"/></svg>
+      </div>
+      <div class="activity-tab" role="tab" aria-selected="false" aria-label="Flow">
+        <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M10 6.5h4a3 3 0 0 1 3 3V14"/></svg>
+      </div>
+      <div class="activity-tab" role="tab" aria-selected="true" aria-label="Discover (Alt+3)" title="Discover — Alt+3">
+        <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.1 4.9-4.9 2.1 2.1-4.9z"/></svg>
+      </div>
+    </div>
+
+    <aside class="sidebar" aria-label="Discover sidebar">
+      <div class="sidebar__header">
+        <span class="sidebar__title">Discover</span>
+        <svg class="icon icon-btn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="m16 9-3 3 3 3"/></svg>
+      </div>
+      <div class="sidebar__body">
+        <section class="sidebar-group" aria-label="Discover sections">
+          <div class="sidebar-group__title">Sections</div>
+          <div class="sidebar-item" aria-current="true">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="sidebar-item__label">Overview</span>
+          </div>
+          <div class="sidebar-item">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="sidebar-item__label">Glossary</span>
+          </div>
+        </section>
+        <section class="sidebar-group" aria-label="Skills">
+          <div class="sidebar-group__title"><span>Skills</span><span>5</span></div>
+          <div class="sidebar-item"><span class="sidebar-item__label">Testing Strategy</span></div>
+          <div class="sidebar-item"><span class="sidebar-item__label">Naming Conventions</span></div>
+          <div class="sidebar-item"><span class="sidebar-item__label">Coding Conventions</span></div>
+          <div class="sidebar-item"><span class="sidebar-item__label">Architecture &amp; Boundaries</span></div>
+          <div class="sidebar-item"><span class="sidebar-item__label">Glossary</span></div>
+        </section>
+        <section class="sidebar-group" aria-label="Warnings">
+          <div class="sidebar-group__title"><span>Warnings</span><span>0</span></div>
+          <p class="sidebar-empty">No warnings.</p>
+        </section>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <div class="workspace-tabs" role="tablist" aria-label="Workspace tabs">
+        <div class="workspace-tab" role="tab" aria-selected="true">
+          <span>Overview</span>
+          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </div>
+      </div>
+
+      <div class="mode-body">
+        <div class="page">
+          <header class="sheet-head">
+            <div class="sheet-head__top">
+              <div class="sheet-head__title">
+                <h1>vitest-turbo</h1>
+                <span class="badge" data-tone="warning" title="The working tree has uncommitted changes.">dirty</span>
+              </div>
+              <!-- control: primary button, disabled while a run is active or work is running -->
+              <button type="button" class="btn">Re-discover</button>
+            </div>
+            <p class="sheet-definition">A drop-in vitest-compatible test runner that existing projects adopt by changing only the package they depend on.</p>
+            <div class="sheet-meta">
+              <code>767205e</code>
+              <span class="dot-sep">·</span>
+              <span>Discovered 24 Oct 2026, 18:10</span>
+            </div>
+          </header>
+
+          <div class="sheet">
+            <div class="col">
+              <section class="group" aria-labelledby="group-operate">
+                <h2 class="group__title" id="group-operate"><span>Run and verify</span></h2>
+
+                <section class="section panel" data-field="commands">
+                  <div class="panel__head">
+                    <h2>Commands</h2>
+                    <span class="muted">4 of 8 commands found</span>
+                  </div>
+                  <div class="panel__body">
+                    <table class="commands">
+                      <colgroup><col class="c-label" /><col /></colgroup>
+                      <thead><tr><th scope="col">Task</th><th scope="col">Command</th></tr></thead>
+                      <tbody>
+                        <tr>
+                          <td class="cmd-label">Install</td>
+                          <td><div class="cmd-line">npm install --ignore-scripts --no-audit --no-fund</div></td>
+                        </tr>
+                        <tr>
+                          <td class="cmd-label">Test</td>
+                          <td>
+                            <div class="cmd-line">node --test test/*.test.js</div>
+                            <div class="cmd-hint">Runs the whole test suite.</div>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td class="cmd-label">Try it out</td>
+                          <td>
+                            <div class="cmd-line">npm test</div>
+                            <div class="cmd-hint">Starts the project for a hands-on try; it is not the test suite.</div>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td class="cmd-label">Release</td>
+                          <td><div class="cmd-line">npm publish --provenance --access public</div></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <div class="sources">
+                      <span class="conf" data-confidence="declared">declared 4</span>
+                      <code class="source-chip">package.json</code>
+                      <code class="source-chip">README.md</code>
+                      <code class="source-chip">.github/workflows/publish.yml</code>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="section panel" data-field="testing">
+                  <div class="panel__head">
+                    <h2>Testing</h2>
+                    <span class="muted">2 levels · 118 tests</span>
+                  </div>
+                  <div class="panel__body">
+                    <div class="test-summary">
+                      <span class="test-stat"><span class="test-stat__value">118</span><span class="test-stat__label">unit tests</span></span>
+                      <span class="test-stat"><span class="test-stat__value">2</span><span class="test-stat__label">levels</span></span>
+                    </div>
+                    <div class="suite">
+                      <span class="muted">Whole suite</span>
+                      <code>node --test test/*.test.js</code>
+                    </div>
+                    <div class="test-grid">
+                      <svg class="pyramid" viewBox="0 0 200 132" role="img" aria-label="Test pyramid: contract level at the apex with an unknown count, unit level at the base with 118 tests">
+                        <polygon points="100,8 134,60 66,60" fill="var(--accent)" fill-opacity=".24" stroke="var(--accent)" stroke-opacity=".65" />
+                        <polygon points="66,64 134,64 168,122 32,122" fill="var(--accent)" fill-opacity=".44" stroke="var(--accent)" stroke-opacity=".8" />
+                        <text x="100" y="43" text-anchor="middle" font-size="9.5" fill="var(--foreground)">Contract · ?</text>
+                        <text x="100" y="97" text-anchor="middle" font-size="10" fill="var(--foreground)">Unit · 118</text>
+                      </svg>
+                      <table class="levels">
+                        <thead><tr><th scope="col">Level</th><th scope="col">Tests</th><th scope="col">Paths</th></tr></thead>
+                        <tbody>
+                          <tr><td>Unit</td><td>118</td><td class="mono">test</td></tr>
+                          <tr><td>Contract</td><td class="muted">count unknown</td><td class="mono">verification</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p class="test-note">Broad unit suite under test with differential contract fixtures under verification.</p>
+                    <div class="sources">
+                      <span class="conf" data-confidence="observed">observed 1</span>
+                      <span class="conf" data-confidence="inferred">inferred 1</span>
+                      <code class="source-chip">package.json</code>
+                    </div>
+                  </div>
+                </section>
+              </section>
+            </div>
+
+            <aside class="col">
+              <section class="group" aria-labelledby="group-runtime">
+                <h2 class="group__title" id="group-runtime"><span>Platform</span></h2>
+                <div>
+                  <section class="section flat" data-field="runtime">
+                    <div class="section__head">
+                      <h3 class="section__title">Runtime</h3>
+                    </div>
+                    <dl class="facts">
+                      <div class="fact"><dt>Languages</dt><dd>JavaScript</dd></div>
+                      <div class="fact"><dt>Runtimes</dt><dd>Node.js &gt;=22.18.0</dd></div>
+                      <div class="fact"><dt>Package managers</dt><dd>npm</dd></div>
+                      <div class="fact"><dt>Versions</dt><dd>node-version 24</dd></div>
+                      <div class="fact"><dt>Manifests</dt><dd class="mono">package.json</dd></div>
+                    </dl>
+                    <div class="sources">
+                      <span class="conf" data-confidence="observed">observed 4</span>
+                      <span class="conf" data-confidence="declared">declared 1</span>
+                      <code class="source-chip">package.json</code>
+                      <code class="source-chip">.github/workflows/publish.yml</code>
+                    </div>
+                  </section>
+                </div>
+              </section>
+
+              <section class="group" aria-labelledby="group-ship">
+                <h2 class="group__title" id="group-ship"><span>Delivery</span></h2>
+                <div>
+                  <section class="section flat" data-field="deployment">
+                    <div class="section__head">
+                      <h3 class="section__title">Deployment</h3>
+                    </div>
+                    <dl class="facts">
+                      <div class="fact"><dt>Class</dt><dd>cli</dd></div>
+                      <div class="fact"><dt>Artifact</dt><dd class="mono">@dsdenes/vitest-turbo</dd></div>
+                      <div class="fact"><dt>Target</dt><dd>public npm registry</dd></div>
+                    </dl>
+                  </section>
+
+                  <section class="section flat" data-field="ci" style="margin-top: 12px;">
+                    <div class="section__head">
+                      <h3 class="section__title">CI</h3>
+                    </div>
+                    <dl class="facts">
+                      <div class="fact"><dt>Provider</dt><dd>GitHub Actions</dd></div>
+                      <div class="fact"><dt>Triggers</dt><dd>release published · workflow_dispatch</dd></div>
+                      <div class="fact"><dt>Jobs</dt><dd>publish</dd></div>
+                      <div class="fact"><dt>Quality gates</dt><dd>release tag matches package version</dd></div>
+                    </dl>
+                  </section>
+
+                  <section class="section flat" data-field="branching" style="margin-top: 12px;">
+                    <div class="section__head">
+                      <h3 class="section__title">Branching</h3>
+                    </div>
+                    <dl class="facts">
+                      <div class="fact"><dt>Default branch</dt><dd class="mono">main</dd></div>
+                      <div class="fact"><dt>Merge method</dt><dd>merge</dd></div>
+                    </dl>
+                  </section>
+                </div>
+                <div class="sources">
+                  <span class="conf" data-confidence="observed">observed 6</span>
+                  <span class="conf" data-confidence="declared">declared 2</span>
+                  <span class="conf" data-confidence="inferred">inferred 1</span>
+                  <code class="source-chip">package.json</code>
+                  <code class="source-chip">README.md</code>
+                  <code class="source-chip">.github/workflows/publish.yml</code>
+                  <code class="source-chip">git branch</code>
+                  <code class="source-chip">git log</code>
+                </div>
+              </section>
+            </aside>
+
+          <section class="stack-band full" data-field="stack">
+            <div class="section__head">
+              <h2 class="section__title">Stack</h2>
+              <span class="section__meta">8 entries</span>
+            </div>
+            <div class="chips">
+              <span class="chip">@babel/parser ^7.29.9</span>
+              <span class="chip">JavaScript ES modules</span>
+              <span class="chip">Node.js &gt;=22.18.0</span>
+              <span class="chip">chai ^6.3.0</span>
+              <span class="chip">happy-dom ^21.0.4</span>
+              <span class="chip">jsdom ^30.1.3</span>
+              <span class="chip">npm</span>
+              <span class="chip">typescript ^5.9.3</span>
+            </div>
+            <div class="sources">
+              <span class="conf" data-confidence="declared">declared</span>
+              <code class="source-chip">package.json</code>
+            </div>
+          </section>
+
+            <section class="section flat full" data-field="architecture">
+              <div class="section__head">
+                <h2 class="section__title">Architecture and boundaries</h2>
+                <span class="section__meta">5 bounded contexts</span>
+              </div>
+              <p class="lead">CLI and public exports depend on execution, module-loading, reporting and browser modules; the worker does not import the CLI.</p>
+              <table class="contexts">
+                <colgroup><col class="c-context" /><col class="c-path" /><col class="c-resp" /><col class="c-entry" /></colgroup>
+                <thead><tr><th scope="col">Context</th><th scope="col">Path</th><th scope="col">Responsibility</th><th scope="col">Entry points</th></tr></thead>
+                <tbody>
+                  <tr>
+                    <td class="name">browser-testing</td>
+                    <td class="mono">src/browser.js</td>
+                    <td>Serve test modules and drive a real browser page through a provider</td>
+                    <td class="mono">src/browser-provider.js<br />src/browser.js</td>
+                  </tr>
+                  <tr>
+                    <td class="name">module-loading</td>
+                    <td class="mono">src/modules.js</td>
+                    <td>Resolve specifiers, process inline dependencies and track loaded modules</td>
+                    <td class="mono">src/deps.js<br />src/modules.js</td>
+                  </tr>
+                  <tr>
+                    <td class="name">runner-cli</td>
+                    <td class="mono">src/cli.js</td>
+                    <td>Parse commands and options, select files, schedule runs and return the run status</td>
+                    <td class="mono">bin/vitest.js<br />src/cli.js</td>
+                  </tr>
+                  <tr>
+                    <td class="name">test-execution</td>
+                    <td class="mono">src/worker.js</td>
+                    <td>Execute test files in reusable lanes with hooks, retries, timers and isolation</td>
+                    <td class="mono">src/pool.js<br />src/worker.js</td>
+                  </tr>
+                  <tr>
+                    <td class="name">test-reporting</td>
+                    <td class="mono">src/reporter.js</td>
+                    <td>Collect results and write console, JSON, JUnit, TAP and HTML reports</td>
+                    <td class="mono">src/builtin-reporters.js<br />src/reporter.js</td>
+                  </tr>
+                </tbody>
+              </table>
+              <dl class="boundaries">
+                <div class="boundary">
+                  <dt>External boundaries</dt>
+                  <dd class="chips"><span class="chip">node:child_process</span><span class="chip">node:worker_threads</span></dd>
+                </div>
+                <div class="boundary">
+                  <dt>Shared kernels</dt>
+                  <dd class="chips"><span class="chip">glob in src/glob.js</span></dd>
+                </div>
+              </dl>
+              <div class="sources">
+                <span class="conf" data-confidence="observed">observed 3</span>
+                <span class="conf" data-confidence="inferred">inferred 1</span>
+                <code class="source-chip">src</code>
+                <code class="source-chip">src/cli.js</code>
+                <code class="source-chip">src/pool.js</code>
+              </div>
+            </section>
+
+            <section class="section flat full" data-field="dependencyMap">
+              <div class="section__head">
+                <h2 class="section__title">Entry points and dependencies</h2>
+                <span class="section__meta">4 observed groups</span>
+              </div>
+              <div class="dep-grid">
+                <div class="dep-group">
+                  <div class="dep-group__title">Binaries</div>
+                  <div class="chips"><span class="chip">vitest</span><span class="chip">vitest-turbo</span></div>
+                </div>
+                <div class="dep-group">
+                  <div class="dep-group__title">Packages</div>
+                  <div class="chips"><span class="chip">@dsdenes/vitest-turbo</span></div>
+                </div>
+                <div class="dep-group">
+                  <div class="dep-group__title">External services</div>
+                  <div class="chips"><span class="chip">registry.npmjs.org</span></div>
+                </div>
+                <div class="dep-group">
+                  <div class="dep-group__title">Key dependencies</div>
+                  <div class="chips"><span class="chip">@babel/parser</span><span class="chip">chai</span><span class="chip">typescript</span></div>
+                </div>
+              </div>
+              <div class="sources">
+                <span class="conf" data-confidence="observed">observed 3</span>
+                <span class="conf" data-confidence="declared">declared 1</span>
+                <code class="source-chip">package.json</code>
+                <code class="source-chip">.github/workflows/publish.yml</code>
+              </div>
+            </section>
+
+            <section class="section flat full" data-field="unknowns">
+              <div class="section__head">
+                <h2 class="section__title">Not observed</h2>
+                <span class="section__meta">10 fields · nothing here is guessed</span>
+              </div>
+              <table class="unknowns">
+                <colgroup><col class="c-section" /><col class="c-field" /><col /></colgroup>
+                <thead><tr><th scope="col">Section</th><th scope="col">Field</th><th scope="col">Why it is unknown</th></tr></thead>
+                <tbody>
+                  <tr><td class="section-name">Environments</td><td>Environment names</td><td class="why">none detected</td></tr>
+                  <tr><td class="section-name">Commands</td><td>Build</td><td class="why">no build script or build step is declared</td></tr>
+                  <tr><td class="section-name">Commands</td><td>Lint</td><td class="why">no lint script is declared</td></tr>
+                  <tr><td class="section-name">Commands</td><td>Typecheck</td><td class="why">no typecheck script is declared</td></tr>
+                  <tr><td class="section-name">Commands</td><td>Dev / run</td><td class="why">no dev script is declared</td></tr>
+                  <tr><td class="section-name">Branching</td><td>Release branches</td><td class="why">no release branch exists</td></tr>
+                  <tr><td class="section-name">Branching</td><td>Model</td><td class="why">no pull_request trigger and the default branch history contains merge commits</td></tr>
+                  <tr><td class="section-name">CI</td><td>Artifacts</td><td class="why">no workflow artifact is uploaded</td></tr>
+                  <tr><td class="section-name">Dependency map</td><td>Routes</td><td class="why">no HTTP routes outside the browser test server</td></tr>
+                  <tr><td class="section-name">Dependency map</td><td>Data stores</td><td class="why">no database or external data store detected</td></tr>
+                </tbody>
+              </table>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="status-bar">
+    <span class="status-dot" aria-hidden="true"></span>
+    <span>Connected</span>
+    <span class="muted">vitest-turbo</span>
+    <span class="spacer"></span>
+    <span class="muted">work 0 &nbsp; lanes 0 &nbsp; epics 15</span>
+    <span class="muted">Discover artifacts ready</span>
+    <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+  </footer>
+</div>
+</body>
+</html>

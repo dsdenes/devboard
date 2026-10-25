@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>Discover Overview — empty state mock</title>
+<style>
+  :root, :root[data-theme="dark"] {
+    color-scheme: dark;
+    --background: #0d1117;
+    --surface: #161b22;
+    --foreground: #e6edf3;
+    --muted-foreground: #8b949e;
+    --border: #30363d;
+    --border-subtle: #21262d;
+    --border-strong: #6e7681;
+    --primary: #1f6feb;
+    --primary-foreground: #ffffff;
+    --secondary: #21262d;
+    --accent: #58a6ff;
+    --accent-surface: #16233a;
+    --success: #3fb950;
+    --activity-bar: #0a0d12;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  *, *::before, *::after { animation: none !important; box-sizing: border-box; transition: none !important; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body { background: var(--background); color: var(--foreground); font-family: var(--font-sans); font-size: 13px; line-height: 1.45; }
+  code { font-family: var(--font-mono); font-size: 11.5px; }
+  .muted { color: var(--muted-foreground); }
+  .shell { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+  .shell-main { display: flex; flex: 1; min-height: 0; width: 100%; }
+  .activity-bar {
+    align-items: center; background: var(--activity-bar); border-right: 1px solid var(--border);
+    display: flex; flex: 0 0 44px; flex-direction: column; gap: 4px; padding: 6px 0; width: 44px;
+  }
+  .brand { color: var(--muted-foreground); font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: .08em; margin-bottom: 4px; writing-mode: vertical-rl; }
+  .activity-tab {
+    align-items: center; background: transparent; border: 1px solid transparent; border-radius: 4px;
+    color: var(--muted-foreground); display: flex; height: 36px; justify-content: center; position: relative; width: 36px;
+  }
+  .activity-tab[aria-selected="true"] { background: var(--secondary); border-color: var(--border-strong); color: var(--foreground); }
+  .activity-tab[aria-selected="true"]::before { background: var(--accent); border-radius: 0 2px 2px 0; content: ""; height: 20px; left: -5px; position: absolute; top: 7px; width: 2px; }
+  .icon { display: block; flex: 0 0 auto; }
+  .icon-sm { color: var(--muted-foreground); height: 12px; width: 12px; }
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); display: flex; flex: 0 0 300px; flex-direction: column; overflow: hidden; width: 300px; }
+  .sidebar__header { align-items: center; border-bottom: 1px solid var(--border); display: flex; flex: 0 0 34px; height: 34px; justify-content: space-between; padding: 0 6px 0 10px; }
+  .sidebar__title { color: var(--muted-foreground); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .sidebar__body { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
+  .sidebar-group { margin-bottom: 10px; }
+  .sidebar-group__title { align-items: center; color: var(--muted-foreground); display: flex; font-size: 10px; font-weight: 700; justify-content: space-between; letter-spacing: .08em; padding: 2px 4px 4px; text-transform: uppercase; }
+  .sidebar-item { align-items: center; border: 1px solid transparent; border-radius: 3px; display: flex; font-size: 12px; gap: 6px; min-height: 24px; padding: 2px 6px; }
+  .sidebar-item[aria-current="true"] { background: var(--accent-surface); border-color: var(--border-strong); }
+  .sidebar-item__label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sidebar-empty { color: var(--muted-foreground); font-size: 11px; padding: 4px 6px; }
+  .workspace { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+  .workspace-tabs { align-items: stretch; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; flex: 0 0 34px; gap: 1px; height: 34px; }
+  .workspace-tab { align-items: center; background: var(--background); border: 1px solid var(--border); border-bottom: 0; color: var(--foreground); display: flex; font-size: 12px; gap: 6px; padding: 0 8px; }
+  .mode-body { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; padding: 8px; }
+  .page { display: flex; flex: 1; flex-direction: column; gap: 18px; min-height: 0; overflow: auto; padding: 2px 2px 28px; }
+  .sheet-head { display: flex; flex-direction: column; gap: 6px; padding: 2px 2px 0; }
+  .sheet-head__top { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+  h1 { font-size: 20px; font-weight: 650; letter-spacing: -.01em; line-height: 1.2; margin: 0; }
+  .sheet-definition { font-size: 14px; line-height: 1.5; margin: 0; max-width: 68ch; }
+  .sheet-meta { color: var(--muted-foreground); font-size: 11px; }
+  .btn {
+    align-items: center; background: var(--primary); border: 1px solid var(--primary); border-radius: 4px;
+    color: var(--primary-foreground); display: inline-flex; flex: 0 0 auto; font-family: var(--font-sans);
+    font-size: 12px; font-weight: 500; height: 28px; padding: 0 10px;
+  }
+  .empty { border-top: 1px solid var(--border); display: grid; gap: 14px 32px; grid-template-columns: minmax(0, 1fr) 300px; padding-top: 16px; }
+  .empty h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+  .empty p { font-size: 12.5px; line-height: 1.55; margin: 0; max-width: 58ch; }
+  .empty .note { color: var(--muted-foreground); font-size: 11.5px; margin-top: 8px; }
+  .writes { display: flex; flex-direction: column; gap: 9px; margin: 0; padding: 0; list-style: none; }
+  .writes li { display: flex; flex-direction: column; gap: 2px; }
+  .writes .path { color: var(--foreground); }
+  .writes .what { color: var(--muted-foreground); font-size: 11px; }
+  .skill-names { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .chip { border: 1px solid var(--border-subtle); border-radius: 3px; font-family: var(--font-mono); font-size: 10px; padding: 1px 4px; }
+  .status-bar { align-items: center; background: var(--surface); border-top: 1px solid var(--border); display: flex; flex: 0 0 26px; font-size: 11px; gap: 10px; height: 26px; padding: 0 8px; }
+  .status-bar .spacer { flex: 1; }
+  .status-dot { background: var(--success); border-radius: 50%; height: 7px; width: 7px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="shell-main">
+    <div class="activity-bar" role="tablist" aria-label="Devboard modes">
+      <span class="brand" aria-hidden="true">DB</span>
+      <div class="activity-tab" role="tab" aria-selected="false" aria-label="Goal">
+        <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.4"/></svg>
+      </div>
+      <div class="activity-tab" role="tab" aria-selected="false" aria-label="Flow">
+        <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M10 6.5h4a3 3 0 0 1 3 3V14"/></svg>
+      </div>
+      <div class="activity-tab" role="tab" aria-selected="true" aria-label="Discover (Alt+3)">
+        <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.1 4.9-4.9 2.1 2.1-4.9z"/></svg>
+      </div>
+    </div>
+
+    <aside class="sidebar" aria-label="Discover sidebar">
+      <div class="sidebar__header">
+        <span class="sidebar__title">Discover</span>
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="m16 9-3 3 3 3"/></svg>
+      </div>
+      <div class="sidebar__body">
+        <section class="sidebar-group">
+          <div class="sidebar-group__title">Sections</div>
+          <div class="sidebar-item" aria-current="true">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="sidebar-item__label">Overview</span>
+          </div>
+          <div class="sidebar-item">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="sidebar-item__label">Glossary</span>
+          </div>
+        </section>
+        <section class="sidebar-group">
+          <div class="sidebar-group__title"><span>Skills</span><span>0</span></div>
+          <p class="sidebar-empty">No skills until the first run.</p>
+        </section>
+        <section class="sidebar-group">
+          <div class="sidebar-group__title"><span>Warnings</span><span>0</span></div>
+          <p class="sidebar-empty">No warnings.</p>
+        </section>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <div class="workspace-tabs" role="tablist" aria-label="Workspace tabs">
+        <div class="workspace-tab" role="tab" aria-selected="true">
+          <span>Overview</span>
+          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </div>
+      </div>
+      <div class="mode-body">
+        <div class="page">
+          <header class="sheet-head">
+            <div class="sheet-head__top">
+              <h1>Discover</h1>
+              <!-- control: primary action; disabled while the socket is closed or work is active -->
+              <button type="button" class="btn">Discover project</button>
+            </div>
+            <p class="sheet-definition">Inventory this project from repository evidence: stack, commands, testing, architecture, and the conventions an agent should follow here.</p>
+            <div class="sheet-meta">No artifacts have been published for this host.</div>
+          </header>
+
+          <section class="empty">
+            <div>
+              <h2>No project sheet yet</h2>
+              <p>
+                One Discover run reads the repository without running its commands and publishes three
+                artifacts. Nothing is written outside <code>.omp/discover/</code> and
+                <code>.omp/skills/</code>, and a field the crawl cannot ground is recorded as unknown
+                instead of guessed.
+              </p>
+              <p class="note">Switching tabs or closing the browser does not start a run.</p>
+            </div>
+            <ul class="writes">
+              <li>
+                <span class="path mono">.omp/discover/sheet.json</span>
+                <span class="what">Project sheet: stack, commands, CI, architecture, unknowns</span>
+              </li>
+              <li>
+                <span class="path mono">.omp/discover/glossary/</span>
+                <span class="what">One UbiLang glossary per bounded context</span>
+              </li>
+              <li>
+                <span class="path mono">.omp/skills/</span>
+                <span class="what">Five project-specific agent skills</span>
+                <span class="skill-names">
+                  <span class="chip">testing-strategy</span>
+                  <span class="chip">naming-conventions</span>
+                  <span class="chip">coding-conventions</span>
+                  <span class="chip">architecture-boundaries</span>
+                  <span class="chip">glossary</span>
+                </span>
+              </li>
+            </ul>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="status-bar">
+    <span class="status-dot" aria-hidden="true"></span>
+    <span>Connected</span>
+    <span class="muted">vitest-turbo</span>
+    <span class="spacer"></span>
+    <span class="muted">Discover not run</span>
+  </footer>
+</div>
+</body>
+</html>
