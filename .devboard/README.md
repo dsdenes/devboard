@@ -872,7 +872,8 @@ panel anchored beside it. `Esc` or `Cancel` leaves the mode, and a click in sele
 activates the element. The panel shows the selected element's selector path; the report text is
 free-form. `File issue` posts the report with the route, URL, selector, visible text, DOM excerpt,
 viewport and capture time to `POST /api/feedback`, and the server files a GitHub issue through
-the operator's authenticated `gh` CLI, then returns its URL.
+the operator's authenticated `gh` CLI, then returns its URL. A filed report returns to element
+selection mode, so another element can be picked without leaving and re-entering the mode.
 
 The issue title is `[ui] ` plus the first line of the report, at most 200 characters. The body is
 the verbatim report followed by the captured context, so the ticket stays authoritative without a

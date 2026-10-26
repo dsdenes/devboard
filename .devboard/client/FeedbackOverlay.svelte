@@ -211,7 +211,8 @@
         phase = "failed";
         return;
       }
-      reset();
+      // Stay in selection mode so the next report starts with one click.
+      startPicking();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : String(error);
       phase = "failed";
