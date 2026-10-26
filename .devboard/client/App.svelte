@@ -51,7 +51,7 @@
   let sidebarGroup = $state<{ setLayout: (sizes: number[]) => void }>();
   let sidebarSizes = $state<number[]>([]);
 
-  const availableWidth = $derived(Math.max(600, viewport.width - 44));
+  const availableWidth = $derived(Math.max(600, viewport.width - 64));
   const sidebarMinPercent = $derived((200 / availableWidth) * 100);
   const sidebarMaxPercent = $derived((600 / availableWidth) * 100);
   const sidebarDefaultPercent = $derived((300 / availableWidth) * 100);

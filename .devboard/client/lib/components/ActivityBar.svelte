@@ -24,6 +24,7 @@
       onclick={() => layout.setMode("goal")}
     >
       <Target size={18} strokeWidth={1.7} aria-hidden="true" />
+      <span class="activity-tab__label">Goal</span>
     </Tooltip.Trigger>
     <Tooltip.Portal>
       <Tooltip.Content sideOffset={6} class={tooltipClass}>Goal — Alt+1</Tooltip.Content>
@@ -44,6 +45,7 @@
       onclick={() => layout.setMode("flow")}
     >
       <Workflow size={18} strokeWidth={1.7} aria-hidden="true" />
+      <span class="activity-tab__label">Flow</span>
     </Tooltip.Trigger>
     <Tooltip.Portal>
       <Tooltip.Content sideOffset={6} class={tooltipClass}>Flow — Alt+2</Tooltip.Content>
@@ -64,6 +66,7 @@
       onclick={() => layout.setMode("discover")}
     >
       <Compass size={18} strokeWidth={1.7} aria-hidden="true" />
+      <span class="activity-tab__label">Discover</span>
     </Tooltip.Trigger>
     <Tooltip.Portal>
       <Tooltip.Content sideOffset={6} class={tooltipClass}>Discover — Alt+3</Tooltip.Content>

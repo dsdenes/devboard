@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Discover glossary, term, skill, warnings</title>
+<style>
+  :root { --ink:#2b2b2b; --muted:#6b6b6b; --line:#c9c9c9; --fill:#f4f4f4; --paper:#fdfdfd; --accent:#5a6b7a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:ui-sans-serif,system-ui,sans-serif; font-size:13px; line-height:1.45; }
+  .wf { max-width:1000px; margin:0 auto; padding:16px; }
+  .wf-title { font-size:15px; font-weight:700; margin:0 0 2px; }
+  .wf-note { color:var(--muted); font-size:11px; margin:0 0 16px; }
+  .page { border:1px solid var(--line); margin:0 0 20px; }
+  .page > header { background:var(--fill); border-bottom:1px solid var(--line); padding:6px 10px; font-size:11px; font-weight:700; }
+  .body { padding:12px; display:flex; flex-direction:column; gap:12px; min-width:0; }
+  .wf-ann { color:var(--accent); font-size:9px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; display:block; margin:0 0 4px; }
+  .card { border:1px solid var(--line); padding:10px; }
+  .row { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+  .col { display:flex; flex-direction:column; gap:6px; }
+  h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:0; } h3 { font-size:11px; margin:0; }
+  p { margin:0; }
+  .bar { height:8px; background:var(--fill); border:1px solid var(--line); }
+  .btn { border:1px solid var(--ink); padding:4px 10px; font-size:11px; background:var(--paper); white-space:nowrap; }
+  .btn.primary { background:var(--ink); color:var(--paper); }
+  .tag { border:1px solid var(--line); border-radius:999px; padding:1px 6px; font-size:9px; }
+  .table { width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed; }
+  .table th, .table td, .card, .side a, p { overflow-wrap:anywhere; }
+  .table th, .table td { text-align:left; border-bottom:1px solid var(--line); padding:4px 6px; }
+  .table th { color:var(--muted); font-weight:600; font-size:10px; }
+  .facts { display:grid; grid-template-columns:88px minmax(0,1fr); gap:4px 10px; font-size:12px; }
+  .facts dt { color:var(--muted); } .facts dd { margin:0; }
+  .split { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr); gap:12px; align-items:start; }
+  .editor { border:1px solid var(--line); background:var(--fill); height:180px; padding:8px; font-family:ui-monospace,monospace; font-size:11px; white-space:pre-wrap; }
+  code { font-family:ui-monospace,monospace; font-size:11px; }
+  @media (max-width:768px) { .split { grid-template-columns:1fr; } .row { flex-direction:column; } }
+</style>
+</head>
+<body>
+<div class="wf">
+  <p class="wf-title">Wireframe — Discover pages</p>
+  <p class="wf-note">Structure only. Each article is one Discover page inside the shared shell.</p>
+
+  <article class="page" id="discover-glossary">
+    <header>Glossary page</header>
+    <div class="body">
+      <section class="card">
+        <span class="wf-ann">region_glossary_header · P0 · C20 C21 C22</span>
+        <div class="row">
+          <div class="col"><h1>Glossary</h1><p>2 of 2 terms · 1 bounded context</p></div>
+          <div class="col" style="min-width:220px">
+            <span class="wf-ann">C21 search / C22 minimum uses</span>
+            <p class="bar" style="height:24px"></p>
+            <p class="bar" style="height:16px"></p>
+            <p style="font-size:11px;color:var(--muted)">≥ 0 uses</p>
+          </div>
+        </div>
+      </section>
+      <section class="card">
+        <span class="wf-ann">region_glossary_body · P0 · C20</span>
+        <div class="row"><h2>Orders</h2><span class="tag">2 terms</span></div>
+        <table class="table" style="margin-top:6px">
+          <thead><tr><th>Kind</th><th>Term</th><th>Uses</th><th>Definition</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>entity</td><td>Order</td><td>2</td><td>One customer order.</td><td><code>order</code></td></tr>
+            <tr><td>value</td><td>Order Total</td><td>2</td><td>The sum of one order's lines.</td><td><code>orderTotal</code></td></tr>
+          </tbody>
+        </table>
+        <p class="wf-ann" style="margin-top:8px">region_glossary_empty (conditional): active filters, one reset action</p>
+      </section>
+    </div>
+  </article>
+
+  <article class="page" id="discover-term">
+    <header>Term page (drill-in from a glossary row)</header>
+    <div class="body">
+      <section class="card">
+        <span class="wf-ann">region_term_header · P1 · C23</span>
+        <div class="row">
+          <div class="col"><p class="wf-ann">back to glossary</p><button class="btn" type="button">Glossary</button></div>
+          <div class="col" style="flex:1"><p class="wf-ann">Orders · entity</p><h1>Order</h1></div>
+        </div>
+      </section>
+      <div class="split">
+        <section class="card">
+          <span class="wf-ann">region_term_main · P1 · C23</span>
+          <p>One customer order.</p>
+          <dl class="facts" style="margin-top:8px">
+            <dt>Uses</dt><dd>2 in 2 files</dd>
+            <dt>Examples</dt><dd><code>order</code>, <code>orderTotal</code></dd>
+            <dt>Kind</dt><dd>entity</dd>
+            <dt>Status</dt><dd>confirmed</dd>
+          </dl>
+        </section>
+        <section class="card">
+          <span class="wf-ann">region_term_detail · P2 · C24</span>
+          <h3>Preferred labels</h3><p>Order</p>
+          <h3>Alternate labels</h3><p>Purchase</p>
+          <h3 style="margin-top:8px">Related terms</h3>
+          <div class="col"><button class="btn" type="button">Order Total</button></div>
+        </section>
+      </div>
+    </div>
+  </article>
+
+  <article class="page" id="discover-skill">
+    <header>Skill page (one per generated skill)</header>
+    <div class="body">
+      <section class="card">
+        <span class="wf-ann">region_skill_header · P0 · C27 C28 C47</span>
+        <div class="row">
+          <div class="col"><p class="wf-ann">Policy skill</p><h1>Testing Strategy</h1>
+            <p><span class="tag">Generated</span> <code>discover-testing-strategy/SKILL.md</code></p>
+            <p>Policy for how this repository tests before review.</p>
+          </div>
+          <div class="col"><button class="btn primary" type="button">Save</button><button class="btn" type="button">Discard edits</button></div>
+        </div>
+      </section>
+      <section class="card">
+        <span class="wf-ann">region_skill_editor · P0 · C25 C26</span>
+        <div class="row"><span style="font-size:11px;color:var(--muted)">SKILL.md</span><span class="tag">Unsaved changes</span></div>
+        <div class="editor"># Testing Strategy
+- Run `bun test` before review.
+- Treat test as the only observed level.</div>
+        <p class="wf-ann" style="margin-top:6px">editor fills the remaining pane height</p>
+      </section>
+    </div>
+  </article>
+
+  <article class="page" id="discover-warnings">
+    <header>Warnings page</header>
+    <div class="body">
+      <section class="card">
+        <span class="wf-ann">region_warnings_header · P1 · C29</span>
+        <h1>Warnings</h1><p>2 warnings from the published artifacts.</p>
+      </section>
+      <section class="card">
+        <span class="wf-ann">region_warnings_body · P1 · C29</span>
+        <p>1. First warning text from the artifact.</p>
+        <p style="margin-top:6px">2. Second warning text from the artifact.</p>
+      </section>
+    </div>
+  </article>
+</div>
+</body>
+</html>

@@ -19,8 +19,8 @@ degrades into a clipped mobile layout.
 
 |Region|Test hook|Role|
 |---|---|---|
-|Activity bar|`activity-bar`|Three mode tabs and their Lucide icons|
-|Sidebar|`sidebar`|Contextual navigation for the active mode|
+|Mode rail|`activity-bar`|Three labeled mode tabs and their Lucide icons|
+|Sidebar|`sidebar`|Mode name, repository, and contextual navigation for the active mode|
 |Workspace|`workspace`|The open surface; absorbs all remaining space|
 |Status bar|`status-bar`|Connection, project, counts, mode status, versions, theme, notifications|
 
@@ -28,13 +28,19 @@ The status bar stays visible while panes resize, and the document itself never s
 vertically or horizontally. Each mode's panel keeps its scroll position, focus, open page, and
 unsaved editor text while another mode is shown.
 
-### Activity bar
+### Mode rail
 
-The bar presents exactly the three existing modes as `role="tab"` controls:
-`data-testid="mode-goal"`, `data-testid="mode-flow"`, and `data-testid="mode-discover"`. Each
-carries a Lucide icon, an accessible name, `aria-selected`, and `aria-controls` naming its
-workspace panel. A fresh profile starts on Goal. Clicking a tab or pressing Alt+1, Alt+2, or
-Alt+3 changes only which mounted view is shown; it never sends a WebSocket frame.
+The 64px rail presents exactly the three existing modes as `role="tab"` controls:
+`data-testid="mode-goal"`, `data-testid="mode-flow"`, and `data-testid="mode-discover"`. Each is
+a 56×48px control with a Lucide icon above a visible 10px uppercase label (`Goal`, `Flow`,
+`Discover`), an accessible name that also names the shortcut, `aria-selected`, and
+`aria-controls` naming its workspace panel. The labels never collapse to icon-only and never
+overflow the tab at the 1024×720 boundary. A fresh profile starts on Goal. Clicking a tab or
+pressing Alt+1, Alt+2, or Alt+3 changes only which mounted view is shown; it never sends a
+WebSocket frame.
+
+The sidebar header repeats the active mode as a small overline above the repository path, so the
+checkout stays identifiable from every surface; the path keeps its full value in the `title`.
 
 ### Sidebar
 
@@ -49,8 +55,10 @@ The width survives a reload.
 - **Flow** lists the session, PR state, widgets, changed files, checkpoints, steering, decision
   board, blockers, and history.
 - **Discover** lists the overview and glossary sections, the five skills under their own group,
-  warnings only while at least one exists, and recent notices. The Glossary entry is a plain
-  section link: it has no disclosure control and no nested per-term menu.
+  and warnings only while at least one exists. The glossary entry carries the published term
+  count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
+  meta, so an exception is visible before the page opens. The Glossary entry is a plain section
+  link: it has no disclosure control and no nested per-term menu.
 
 Selecting an entry opens or focuses its workspace surface. Informational entries open the
 surface that holds the same facts.
@@ -59,9 +67,10 @@ surface that holds the same facts.
 
 Each mode shows exactly one page at a time and renders no tab strip. Opening an ADR, a Flow
 widget, changed file, or checkpoint, a Discover term, or a Discover skill replaces the visible
-page; the previous selection is reachable again from the sidebar or the palette. Close controls
-inside a page return to an empty page, and a dirty page closes only after the confirmation dialog
-restores or discards the draft.
+page; the previous selection is reachable again from the sidebar or the palette. A Discover term
+page carries a back control to the glossary at the start of its header. Close controls inside a
+page return to an empty page, and a dirty page closes only after the confirmation dialog restores
+or discards the draft.
 
 A reload restores the active mode, each mode's open page, sidebar and split sizes, and theme. All
 of that state lives in `localStorage`; none of it is sent to the server.
@@ -524,9 +533,20 @@ skills `Testing Strategy`, `Naming Conventions`, `Coding Conventions`,
 `Architecture & Boundaries`, and `Glossary` under **Skills** (`data-testid="discover-tab"` with
 `data-tab` values `overview`, `glossary`, `testing-strategy`, `naming-conventions`,
 `coding-conventions`, `architecture-boundaries`, and `glossary-skill`). The sidebar header names
-the repository, not the mode, so the checkout is identifiable from every surface. The active panel
-carries `data-testid="discover-panel"` and the same `data-tab`. Warnings appears as its own group
-with a count only while at least one warning exists; the sidebar keeps no freshness group.
+the active mode above the repository, so both the mode and the checkout are identifiable from
+every surface. The active panel carries `data-testid="discover-panel"` and the same `data-tab`.
+Warnings appears as its own group with a count only while at least one warning exists; the sidebar
+keeps no freshness group and no recent-notice list.
+
+Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
+optional meta row, and a right-aligned action group. The Overview frame holds the project name
+(the last path segment; the full path stays in the sidebar), the stale marker, the one-line
+definition, the commit and discovery time, and the single filled run action. Below it, an active
+run region (run id, start time, Stop, activity terminal) and a queued question region appear only
+while they exist. The sheet follows: Commands and Testing in the main column, Bounded contexts
+below them, and Platform, Delivery, and Stack in the rail. The manual-testing strip is the last
+region of the page, so a source checkout never pushes it above the project identity. An error,
+an interrupted-run notice, and a stop notice render above the page in one notice stack.
 
 The Glossary row is a plain section link: it has no disclosure control and no nested submenu, so
 individual terms are never repeated as sidebar menu items. A term opens from its row on the
@@ -820,18 +840,21 @@ keeps every existing field and adds `remoteAvailable`, `target` (`{ "kind": "hos
 relative and never absolute), and `cloning` (`{ "url" }` or `null`). `getDiscover` answers with the
 same snapshot, and a connecting client still receives it before its own command replies.
 
-While `remoteAvailable` is true the Overview renders a target strip: an input
-(`data-testid="discover-remote-url"`) labelled for a GitHub repository URL with the placeholder
-`https://github.com/owner/repo`, a submit control (`data-testid="discover-remote-start"`) labelled
-`Discover from URL`, a banner (`data-testid="discover-remote-target"`) naming the active URL with a
-`Manual testing` marker, and a clear control (`data-testid="discover-remote-clear"`) only while the
-target is remote. The submit control is disabled while the socket is closed, `cloning` is non-null,
-a run is active, or `discoverState.busy` is set, and its `title` names the reason; it is also
-disabled for empty or whitespace-only input. Submitting sends exactly one frame with the trimmed URL
-and starts nothing else; clearing sends exactly one `clearDiscoverRemote`. Rendering the strip on
-load, reconnect, mode switch, or page switch sends no frame. While cloning, the strip shows the
-cloning URL and the activity area shows no run; errors reach the Discover error and notification
-surfaces only.
+While `remoteAvailable` is true the Overview renders a target strip as its last region, below the
+sheet or the empty state: an input (`data-testid="discover-remote-url"`) labelled for a GitHub
+repository URL with the placeholder `https://github.com/owner/repo`, a submit control
+(`data-testid="discover-remote-start"`) labelled `Discover from URL`, a banner
+(`data-testid="discover-remote-target"`) naming the active URL with a `Manual testing` marker, and
+a clear control (`data-testid="discover-remote-clear"`) only while the target is remote. The strip
+is a secondary panel, not a primary action. A source checkout with nothing published still learns
+the gate: the server replays one `discoverState` on connect when `remoteAvailable` is true, even
+with no artifacts and no run. The submit control is disabled while the socket is closed, `cloning`
+is non-null, a run is active, or `discoverState.busy` is set, and its `title` names the reason; it
+is also disabled for empty or whitespace-only input. Submitting sends exactly one frame with the
+trimmed URL and starts nothing else; clearing sends exactly one `clearDiscoverRemote`. Rendering
+the strip on load, reconnect, mode switch, or page switch sends no frame. While cloning, the strip
+shows the cloning URL and the activity area shows no run; errors reach the Discover error and
+notification surfaces only.
 
 Operator smoke procedure, which needs network and a model endpoint and is therefore not a pass gate:
 

@@ -6,7 +6,6 @@
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
   import { layout } from "../layout.svelte";
-  import { notifications } from "../notifications.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import type { Mode } from "../types";
 
@@ -21,6 +20,17 @@
   const modeLabel = $derived(
     layout.mode === "goal" ? "Goal" : layout.mode === "flow" ? "Flow" : "Discover",
   );
+  const termCount = $derived(
+    discover.contexts.reduce(
+      (total, context) =>
+        total + context.concepts.filter((concept) => concept.status !== "invalidated").length,
+      0,
+    ),
+  );
+
+  function skillState(name: string): "generated" | "edited" | "missing" {
+    return discover.skill(name)?.state ?? "missing";
+  }
 
   function isActive(id: string): boolean {
     return active === id;
@@ -33,9 +43,12 @@
 
 <aside class="sidebar" data-testid="sidebar" aria-label={`${modeLabel} sidebar`}>
   <div class="sidebar__header">
-    <span class="sidebar__title" title={modeLabel}>
-      {connection.projectPath.trim().length > 0 ? connection.projectPath : modeLabel}
-    </span>
+    <div class="sidebar__identity">
+      <span class="sidebar__mode">{modeLabel}</span>
+      <span class="sidebar__title" title={connection.projectPath}>
+        {connection.projectPath.trim().length > 0 ? connection.projectPath : "Devboard"}
+      </span>
+    </div>
   </div>
 
   <div class="sidebar__body">
@@ -441,6 +454,11 @@
             onclick={() => open("discover", tab.id, tab.id, tab.id, tab.label)}
           >
             <span class="sidebar-item__label">{tab.label}</span>
+            {#if tab.id === "glossary"}
+              <span class="sidebar-item__meta">
+                {termCount} {termCount === 1 ? "term" : "terms"}
+              </span>
+            {/if}
           </button>
         {/each}
       </section>
@@ -448,9 +466,9 @@
       <section class="sidebar-group" aria-label="Skills">
         <div class="sidebar-group__title">
           <span>Skills</span>
-          <span>{SKILL_TABS.length}</span>
         </div>
         {#each SKILL_TABS as tab (tab.id)}
+          {@const state = tab.skill === null ? "generated" : skillState(tab.skill)}
           <button
             type="button"
             class="sidebar-item"
@@ -460,44 +478,34 @@
             data-testid="discover-tab"
             data-tab={tab.id}
             data-skill={tab.skill ?? undefined}
+            data-state={state}
             data-command={`discover.tab.${tab.id}`}
             onclick={() => open("discover", tab.id, "skill", tab.skill ?? tab.id, tab.label)}
           >
             <span class="sidebar-item__label">{tab.label}</span>
+            {#if state !== "generated"}
+              <span class="sidebar-item__meta" data-tone={state === "missing" ? "error" : "warning"}>
+                {state}
+              </span>
+            {/if}
           </button>
         {/each}
       </section>
 
       {#if discover.displayedWarnings.length > 0}
-        <section class="sidebar-group" aria-label="Warnings">
+        <section class="sidebar-group sidebar-group--separated" aria-label="Warnings">
           <div class="sidebar-group__title">
             <span>Warnings</span>
             <span>{discover.displayedWarnings.length}</span>
           </div>
-          {#each discover.displayedWarnings as warning, index (index)}
-            <button
-              type="button"
-              class="sidebar-item"
-              data-command="open.discover.warnings"
-              onclick={() => open("discover", "warnings", "warnings", "warnings", "Warnings")}
-            >
-              <span class="sidebar-item__label">{warning}</span>
-            </button>
-          {/each}
-        </section>
-      {/if}
-
-      {#if notifications.items.length > 0}
-        <section class="sidebar-group" aria-label="Recent notifications">
-          <div class="sidebar-group__title">Recent notices</div>
-          {#each notifications.items.slice(0, 3) as item (item.id)}
-            <div class="sidebar-item" style="cursor: default;">
-              <span class="sidebar-item__label">{item.text}</span>
-              <span class="badge" data-tone={item.severity === "error" ? "error" : "warning"}>
-                {item.severity}
-              </span>
-            </div>
-          {/each}
+          <button
+            type="button"
+            class="sidebar-item"
+            data-command="open.discover.warnings"
+            onclick={() => open("discover", "warnings", "warnings", "warnings", "Warnings")}
+          >
+            <span class="sidebar-item__label">Review warnings</span>
+          </button>
         </section>
       {/if}
     {/if}

@@ -13,11 +13,13 @@
     sectionLeaf,
     unknownText,
   } from "../discover-format";
+  import { connection } from "../connection.svelte";
   import { discover } from "../discover.svelte";
   import type { Leaf } from "../types";
   import DataTable from "./DataTable.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
+  import Input from "./ui/input.svelte";
 
   const COMMAND_TOTAL = Object.keys(COMMAND_LABELS).length;
   const COMMAND_COLUMNS = [
@@ -46,6 +48,10 @@
       ? unknownText(definition)
       : leafText(definition),
   );
+  const projectPath = $derived(
+    freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : ""),
+  );
+  const projectName = $derived(baseName(projectPath) || "Discover");
 
   const commandsSection = $derived(
     typeof sheet?.commands === "object" && sheet.commands !== null
@@ -77,6 +83,14 @@
   const deploymentSection = $derived(
     visibleSection(sheet?.deployment, HIDDEN_LEAVES.deployment ?? []),
   );
+  const ciSection = $derived(visibleSection(sheet?.ci, []));
+  const branchingSection = $derived(visibleSection(sheet?.branching, []));
+  const hasDelivery =
+    $derived(
+      Object.keys(deploymentSection).length > 0 ||
+        Object.keys(ciSection).length > 0 ||
+        Object.keys(branchingSection).length > 0,
+    );
 
   const stackLeaf = $derived(sectionLeaf(sheet, "stack"));
   const stackLines = $derived(
@@ -98,6 +112,12 @@
     sectionLeaf(architectureSection, "externalBoundaries"),
   );
   const sharedKernels = $derived(sectionLeaf(architectureSection, "sharedKernels"));
+
+  function baseName(value: string): string {
+    const trimmed = value.replace(/[\\/]+$/, "");
+    const parts = trimmed.split(/[\\/]+/);
+    return parts[parts.length - 1] ?? trimmed;
+  }
 
   function leafText(leaf: Leaf): string {
     return leafLines(leaf.value).join(", ");
@@ -159,9 +179,13 @@
 
 {#snippet questionPanel()}
   {#if discover.question !== null}
-    <section class="panel" data-testid="discover-question">
+    <section class="panel discover-question" data-testid="discover-question">
+      <div class="panel__header">
+        <h2 class="panel__title">The crawl needs a decision</h2>
+        <span class="panel__subtitle">Answered once</span>
+      </div>
       <div class="panel__body stack-sm">
-        <p style="margin: 0;">{discover.question.message}</p>
+        <p class="discover-question__message">{discover.question.message}</p>
         {#if discover.question.options.length > 0}
           <div class="choice-list">
             {#each discover.question.options as option (option.label)}
@@ -186,16 +210,14 @@
           </div>
         {/if}
         <form
-          class="answer-form"
+          class="discover-answer"
           onsubmit={(event) => {
             event.preventDefault();
             discover.answer(discover.answerDraft);
           }}
         >
-          <input
+          <Input
             id="discover-answer-input"
-            class="textarea"
-            style="min-height: 28px; padding: 4px 6px;"
             type="text"
             value={discover.answerDraft}
             oninput={(event) => (discover.answerDraft = event.currentTarget.value)}
@@ -261,106 +283,23 @@
   data-tab="overview"
   aria-label="Discover overview"
 >
-  {#if discover.active}
-    <section class="panel" data-testid="discover-active">
-      <div class="panel__header">
-        <h2 class="panel__title">
-          Discover run active{#if discover.runId !== null} · <code>{discover.runId}</code>{/if}
-        </h2>
-        <div class="row-sm">
-          {#if discover.startedAt !== null}
-            <span class="muted">Started {discover.startedAt}</span>
-          {/if}
-          <Button
-            variant="destructive"
-            data-command="discover.stop"
-            data-testid="discover-stop"
-            onclick={() => discover.stop()}
-          >
-            Stop
-          </Button>
-        </div>
-      </div>
-      <div style="height: 180px;">
-        <Terminal lines={discover.activity} data-testid="discover-activity" label="Discover activity" />
-      </div>
-    </section>
-  {/if}
-
-  {@render questionPanel()}
-
-  {#if discover.remoteAvailable}
-    <section class="panel" data-testid="discover-remote" aria-label="Discover remote target">
-      <div class="panel__body stack-sm">
-        {#if discover.remoteTarget !== null}
-          <p class="row-sm" data-testid="discover-remote-target">
-            <span class="badge" data-tone="warning">Manual testing</span>
-            <span>Discover reads <code>{discover.remoteTarget.url}</code>.</span>
-          </p>
-        {/if}
-        <form
-          class="row-sm"
-          onsubmit={(event) => {
-            event.preventDefault();
-            discover.startRemote();
-          }}
-        >
-          <input
-            class="textarea"
-            style="min-height: 28px; padding: 4px 6px; flex: 1;"
-            type="url"
-            aria-label="GitHub repository URL"
-            placeholder="https://github.com/owner/repo"
-            autocomplete="off"
-            spellcheck="false"
-            value={discover.remoteUrl}
-            oninput={(event) => (discover.remoteUrl = event.currentTarget.value)}
-            data-testid="discover-remote-url"
-          />
-          <Button
-            variant="default"
-            type="submit"
-            data-testid="discover-remote-start"
-            disabled={discover.remoteStartDisabled}
-            title={discover.remoteStartTitle}
-          >
-            Discover from URL
-          </Button>
-          {#if discover.remoteTarget !== null}
-            <Button
-              variant="outline"
-              data-testid="discover-remote-clear"
-              onclick={() => discover.clearRemote()}
-            >
-              Clear remote target
-            </Button>
-          {/if}
-        </form>
-        {#if discover.cloning !== null}
-          <p class="muted" data-testid="discover-remote-cloning">
-            Cloning <code>{discover.cloning.url}</code>…
-          </p>
-        {/if}
-      </div>
-    </section>
-  {/if}
-
   <header class="discover-head" data-testid="discover-card" data-field="definition">
     <div class="discover-head__top">
       <div class="discover-head__identity">
-        <h1 class="discover-head__title">
-          {discover.hasArtifacts ? (freshness?.project ?? "Discover") : "Discover"}
-        </h1>
-        {#if discover.stale}
-          <span
-            class="badge"
-            data-tone="stale"
-            data-testid="discover-stale"
-            title="The repository fingerprint changed since this sheet was published."
-          >
-            stale
-          </span>
-        {/if}
+        <span class="discover-page__eyebrow">Project sheet</span>
+        <div class="discover-head__title-row">
+          <h1 class="discover-head__title" title={projectPath}>{projectName}</h1>
+          {#if discover.stale}
+            <span
+              class="badge"
+              data-tone="stale"
+              data-testid="discover-stale"
+              title="The repository fingerprint changed since this sheet was published."
+            >
+              stale
+            </span>
+          {/if}
+        </div>
       </div>
       <div class="discover-head__actions">
         {#if discover.busy !== null}
@@ -384,214 +323,297 @@
         Inventory this project from repository evidence: stack, commands, testing, architecture, and
         the conventions an agent should follow here.
       </p>
-      <div class="discover-head__meta">No artifacts have been published for this host.</div>
+      <div class="discover-head__meta">
+        No artifacts have been published for this host. Nothing outside
+        <code>.omp/discover/</code> and <code>.omp/skills/</code> is written.
+      </div>
     {/if}
   </header>
 
+  {#if discover.active}
+    <section class="panel discover-run" data-testid="discover-active">
+      <div class="panel__header">
+        <div class="discover-run__heading">
+          <span class="discover-run__dot" aria-hidden="true"></span>
+          <h2 class="panel__title">Discover run in progress</h2>
+          {#if discover.runId !== null}<code class="discover-run__id">{discover.runId}</code>{/if}
+        </div>
+        <div class="row-sm">
+          {#if discover.startedAt !== null}
+            <span class="muted">Started {discover.startedAt}</span>
+          {/if}
+          <Button
+            variant="destructive"
+            data-command="discover.stop"
+            data-testid="discover-stop"
+            onclick={() => discover.stop()}
+          >
+            Stop
+          </Button>
+        </div>
+      </div>
+      <div class="discover-run__body">
+        <div class="discover-run__terminal">
+          <Terminal lines={discover.activity} data-testid="discover-activity" label="Discover activity" />
+        </div>
+        <p class="discover-run__note">
+          The run is owned by the server. Leaving this view or closing the browser does not stop it;
+          published artifacts stay readable until the run replaces them.
+        </p>
+      </div>
+    </section>
+  {/if}
+
+  {@render questionPanel()}
+
+{#snippet remotePanel()}
+  {#if discover.remoteAvailable}
+    <section class="panel discover-remote" data-testid="discover-remote" aria-label="Discover remote target">
+      <div class="panel__header">
+        <h2 class="panel__title">Manual testing target</h2>
+        <span class="panel__subtitle">Source checkout only</span>
+      </div>
+      <div class="panel__body stack-sm">
+        {#if discover.remoteTarget !== null}
+          <p class="row-sm" data-testid="discover-remote-target">
+            <span class="badge" data-tone="warning">Manual testing</span>
+            <span>Discover reads <code>{discover.remoteTarget.url}</code>.</span>
+          </p>
+        {/if}
+        <form
+          class="discover-remote__form"
+          onsubmit={(event) => {
+            event.preventDefault();
+            discover.startRemote();
+          }}
+        >
+          <Input
+            type="url"
+            aria-label="GitHub repository URL"
+            placeholder="https://github.com/owner/repo"
+            autocomplete="off"
+            spellcheck="false"
+            value={discover.remoteUrl}
+            oninput={(event) => (discover.remoteUrl = event.currentTarget.value)}
+            data-testid="discover-remote-url"
+          />
+          <Button
+            variant="outline"
+            type="submit"
+            data-testid="discover-remote-start"
+            disabled={discover.remoteStartDisabled}
+            title={discover.remoteStartTitle}
+          >
+            Discover from URL
+          </Button>
+          {#if discover.remoteTarget !== null}
+            <Button
+              variant="ghost"
+              data-testid="discover-remote-clear"
+              onclick={() => discover.clearRemote()}
+            >
+              Clear remote target
+            </Button>
+          {/if}
+        </form>
+        {#if discover.cloning !== null}
+          <p class="muted" data-testid="discover-remote-cloning">
+            Cloning <code>{discover.cloning.url}</code>…
+          </p>
+        {/if}
+      </div>
+    </section>
+  {/if}
+{/snippet}
+
   {#if discover.hasArtifacts && sheet !== null}
     <div class="discover-sheet" data-testid="discover-sheet">
-      <div class="discover-column">
-        <section class="discover-group" aria-labelledby="discover-group-run">
-          <h2 class="discover-group__title" id="discover-group-run">Run and verify</h2>
+      <div class="discover-col">
+        {#if commandsSection !== null}
+          <section class="panel discover-card" data-testid="discover-card" data-field="commands">
+            <div class="panel__header">
+              <h2 class="panel__title">Commands</h2>
+              <span class="panel__subtitle">
+                {commandRows.length} of {COMMAND_TOTAL} found
+              </span>
+            </div>
+            <div class="panel__body">
+              {#if isLeaf(commandsSection)}
+                <p class="empty">{unknownText(commandsSection)}</p>
+              {:else if commandRows.length === 0}
+                <p class="empty">No command was declared in the crawled files.</p>
+              {:else}
+                <DataTable
+                  data-testid="discover-command-list"
+                  columns={COMMAND_COLUMNS}
+                  rows={commandRows}
+                  rowAttrs={(row) => ({ "data-command-key": String(row.key ?? "") })}
+                  cellValue={(row, columnId) => String(row[columnId] ?? "")}
+                  cellAttrs={(_row, columnId) =>
+                    columnId === "value"
+                      ? { "data-column": "line" }
+                      : { class: "discover-command-label" }}
+                  hideHeader
+                  columnWidths={COMMAND_WIDTHS}
+                  full
+                  wrap
+                />
+              {/if}
+            </div>
+          </section>
+        {/if}
 
-          {#if commandsSection !== null}
-            <section
-              class="panel discover-card"
-              data-testid="discover-card"
-              data-field="commands"
-            >
-              <div class="panel__header">
-                <h2 class="panel__title">Commands</h2>
-                <span class="muted">{commandRows.length} of {COMMAND_TOTAL} commands found</span>
-              </div>
-              <div class="panel__body">
-                {#if isLeaf(commandsSection)}
-                  <p class="empty">{unknownText(commandsSection)}</p>
-                {:else if commandRows.length === 0}
-                  <p class="empty">No command was declared in the crawled files.</p>
-                {:else}
-                  <DataTable
-                    data-testid="discover-command-list"
-                    columns={COMMAND_COLUMNS}
-                    rows={commandRows}
-                    rowAttrs={(row) => ({ "data-command-key": String(row.key ?? "") })}
-                    cellValue={(row, columnId) => String(row[columnId] ?? "")}
-                    cellAttrs={(_row, columnId) =>
-                      columnId === "value"
-                        ? { "data-column": "line" }
-                        : { class: "discover-command-label" }}
-                    hideHeader
-                    columnWidths={COMMAND_WIDTHS}
-                    full
-                    wrap
-                  />
-                {/if}
-              </div>
-            </section>
-          {/if}
-
-          {#if testingSection !== null}
-            <section
-              class="panel discover-card"
-              data-testid="discover-card"
-              data-field="testing"
-            >
-              <div class="panel__header">
-                <h2 class="panel__title">Testing</h2>
-                <span class="muted">
-                  {tiers.length} {tiers.length === 1 ? "level" : "levels"} · {testTotal ?? 0}
-                  {(testTotal ?? 0) === 1 ? "test" : "tests"}
-                </span>
-              </div>
-              <div class="panel__body">
-                {#if isLeaf(testingSection)}
-                  <p class="empty">{unknownText(testingSection)}</p>
-                {:else if levels === undefined}
-                  <p class="empty">No test levels were detected.</p>
-                {:else if levels.confidence === "unknown"}
-                  <p class="empty">{unknownText(levels)}</p>
-                {:else}
-                  {#if tiers.length > 0}
-                    <div class="discover-test-side">
-                      <div class="discover-stats" data-testid="discover-test-summary">
-                        <div class="discover-stat">
-                          <span class="discover-stat__value">{testTotal ?? 0}</span>
-                          <span class="discover-stat__label">
-                            {(testTotal ?? 0) === 1 ? "test" : "tests"}
-                          </span>
-                        </div>
-                        <div class="discover-stat">
-                          <span class="discover-stat__value">{tiers.length}</span>
-                          <span class="discover-stat__label">
-                            {tiers.length === 1 ? "level" : "levels"}
-                          </span>
-                        </div>
-                      </div>
-                      {#if discover.testCommand.length > 0}
-                        <div class="discover-command-line" data-testid="discover-suite-command">
-                          <span class="muted">Whole suite</span>
-                          <code>{discover.testCommand}</code>
-                        </div>
-                      {/if}
+        {#if testingSection !== null}
+          <section class="panel discover-card" data-testid="discover-card" data-field="testing">
+            <div class="panel__header">
+              <h2 class="panel__title">Testing</h2>
+              <span class="panel__subtitle">
+                {tiers.length} {tiers.length === 1 ? "level" : "levels"} · {testTotal ?? 0}
+                {(testTotal ?? 0) === 1 ? "test" : "tests"}
+              </span>
+            </div>
+            <div class="panel__body">
+              {#if isLeaf(testingSection)}
+                <p class="empty">{unknownText(testingSection)}</p>
+              {:else if levels === undefined}
+                <p class="empty">No test levels were detected.</p>
+              {:else if levels.confidence === "unknown"}
+                <p class="empty">{unknownText(levels)}</p>
+              {:else if tiers.length === 0}
+                <p class="empty">No test level was recorded.</p>
+              {:else}
+                <div class="discover-test-summary">
+                  <div class="discover-stats" data-testid="discover-test-summary">
+                    <div class="discover-stat">
+                      <span class="discover-stat__value">{testTotal ?? 0}</span>
+                      <span class="discover-stat__label">
+                        {(testTotal ?? 0) === 1 ? "test" : "tests"}
+                      </span>
                     </div>
-                    <DataTable
-                      data-testid="discover-pyramid"
-                      columns={LEVEL_COLUMNS}
-                      rows={levelRows}
-                      rowAttrs={(row) => ({ "data-level": String(row.rawLevel ?? "") })}
-                      cellValue={(row, columnId) => String(row[columnId] ?? "")}
-                      cellAttrs={(_row, columnId) =>
-                        columnId === "detail" ? { class: "discover-mono" } : {}}
-                      full
-                      wrap
-                    />
-                  {:else}
-                    <p class="empty">No test level was recorded.</p>
+                    <div class="discover-stat">
+                      <span class="discover-stat__value">{tiers.length}</span>
+                      <span class="discover-stat__label">
+                        {tiers.length === 1 ? "level" : "levels"}
+                      </span>
+                    </div>
+                  </div>
+                  {#if discover.testCommand.length > 0}
+                    <div class="discover-command-line" data-testid="discover-suite-command">
+                      <span class="muted">Whole suite</span>
+                      <code>{discover.testCommand}</code>
+                    </div>
                   {/if}
-                {/if}
+                </div>
+                <DataTable
+                  data-testid="discover-pyramid"
+                  columns={LEVEL_COLUMNS}
+                  rows={levelRows}
+                  rowAttrs={(row) => ({ "data-level": String(row.rawLevel ?? "") })}
+                  cellValue={(row, columnId) => String(row[columnId] ?? "")}
+                  cellAttrs={(_row, columnId) =>
+                    columnId === "detail" ? { class: "discover-mono" } : {}}
+                  full
+                  wrap
+                />
+              {/if}
+            </div>
+          </section>
+        {/if}
+
+        {#if architectureSection !== undefined && typeof architectureSection === "object" && architectureSection !== null}
+          <section class="panel discover-card" data-testid="discover-card" data-field="architecture">
+            <div class="panel__header">
+              <h2 class="panel__title">Bounded contexts</h2>
+              <span class="panel__subtitle">
+                {contextRows.length}
+                {contextRows.length === 1 ? "context" : "contexts"}
+              </span>
+            </div>
+            <div class="panel__body">
+              {#if contextRows.length > 0}
+                <DataTable
+                  data-testid="discover-contexts"
+                  columns={CONTEXT_COLUMNS}
+                  rows={contextRows}
+                  rowAttrs={(row) => ({ "data-context": String(row.name ?? "") })}
+                  cellValue={(row, columnId) => String(row[columnId] ?? "")}
+                  cellAttrs={(_row, columnId) =>
+                    columnId === "path" || columnId === "entryPoints"
+                      ? { class: "discover-mono" }
+                      : {}}
+                  full
+                  wrap
+                />
+              {:else}
+                <p class="empty">No bounded context was detected.</p>
+              {/if}
+              <div class="discover-boundaries">
+                <div>
+                  <div class="discover-subblock__title">External boundaries</div>
+                  {#if externalBoundaries !== undefined && externalBoundaries.confidence !== "unknown"}
+                    {@render chipList(leafLines(externalBoundaries.value))}
+                  {:else}
+                    <p class="empty">Not observed.</p>
+                  {/if}
+                </div>
+                <div>
+                  <div class="discover-subblock__title">Shared kernels</div>
+                  {#if sharedKernels !== undefined && sharedKernels.confidence !== "unknown"}
+                    {@render chipList(leafLines(sharedKernels.value))}
+                  {:else}
+                    <p class="empty">Not observed.</p>
+                  {/if}
+                </div>
               </div>
-            </section>
-          {/if}
-        </section>
+            </div>
+          </section>
+        {/if}
       </div>
 
-      <aside class="discover-column discover-column--rail">
-        <section class="discover-group" aria-labelledby="discover-group-platform">
-          <h2 class="discover-group__title" id="discover-group-platform">Platform</h2>
-          <section class="discover-section" data-testid="discover-card" data-field="runtime">
-            <div class="discover-section__head">
-              <h3 class="discover-section__title">Runtime</h3>
+      <div class="discover-rail">
+        <section class="discover-block" data-testid="discover-card" data-field="runtime">
+          <div class="discover-block__head">
+            <h2 class="discover-block__title">Platform</h2>
+          </div>
+          {@render factList(runtimeSection)}
+        </section>
+
+        {#if hasDelivery}
+          <section class="discover-block" data-testid="discover-card" data-field="delivery">
+            <div class="discover-block__head">
+              <h2 class="discover-block__title">Delivery</h2>
             </div>
-            {@render factList(runtimeSection)}
+            {#if Object.keys(deploymentSection).length > 0}
+              <div class="discover-subblock">
+                <h3 class="discover-subblock__title">Deployment</h3>
+                {@render factList(deploymentSection)}
+              </div>
+            {/if}
+            {#if Object.keys(ciSection).length > 0}
+              <div class="discover-subblock">
+                <h3 class="discover-subblock__title">CI</h3>
+                {@render factList(ciSection)}
+              </div>
+            {/if}
+            {#if Object.keys(branchingSection).length > 0}
+              <div class="discover-subblock">
+                <h3 class="discover-subblock__title">Branching</h3>
+                {@render factList(branchingSection)}
+              </div>
+            {/if}
           </section>
-        </section>
+        {/if}
 
-        <section class="discover-group" aria-labelledby="discover-group-delivery">
-          <h2 class="discover-group__title" id="discover-group-delivery">Delivery</h2>
-          {#if typeof sheet.deployment === "object" && sheet.deployment !== null}
-            <section class="discover-section" data-testid="discover-card" data-field="deployment">
-              <div class="discover-section__head">
-                <h3 class="discover-section__title">Deployment</h3>
-              </div>
-              {@render factList(deploymentSection)}
-            </section>
-          {/if}
-          {#if typeof sheet.ci === "object" && sheet.ci !== null}
-            <section class="discover-section" data-testid="discover-card" data-field="ci">
-              <div class="discover-section__head">
-                <h3 class="discover-section__title">CI</h3>
-              </div>
-              {@render factList(sheet.ci as Record<string, unknown>)}
-            </section>
-          {/if}
-          {#if typeof sheet.branching === "object" && sheet.branching !== null}
-            <section class="discover-section" data-testid="discover-card" data-field="branching">
-              <div class="discover-section__head">
-                <h3 class="discover-section__title">Branching</h3>
-              </div>
-              {@render factList(sheet.branching as Record<string, unknown>)}
-            </section>
-          {/if}
-        </section>
-      </aside>
-
-      {#if stackLines.length > 0}
-        <section class="discover-band full" data-testid="discover-card" data-field="stack">
-          <div class="discover-section__head">
-            <h2 class="discover-section__title">Stack</h2>
-            <span class="discover-section__meta">{stackLines.length} entries</span>
-          </div>
-          {@render chipList(stackLines)}
-        </section>
-      {/if}
-
-      {#if architectureSection !== undefined && typeof architectureSection === "object" && architectureSection !== null}
-        <section class="discover-section full" data-testid="discover-card" data-field="architecture">
-          <div class="discover-section__head">
-            <h2 class="discover-section__title">Bounded contexts</h2>
-            <span class="discover-section__meta">
-              {contextRows.length}
-              {contextRows.length === 1 ? "bounded context" : "bounded contexts"}
-            </span>
-          </div>
-          {#if contextRows.length > 0}
-            <DataTable
-              data-testid="discover-contexts"
-              columns={CONTEXT_COLUMNS}
-              rows={contextRows}
-              rowAttrs={(row) => ({ "data-context": String(row.name ?? "") })}
-              cellValue={(row, columnId) => String(row[columnId] ?? "")}
-              cellAttrs={(_row, columnId) =>
-                columnId === "path" || columnId === "entryPoints"
-                  ? { class: "discover-mono" }
-                  : {}}
-              full
-              wrap
-            />
-          {:else}
-            <p class="empty">No bounded context was detected.</p>
-          {/if}
-          <div class="discover-boundaries">
-            <div>
-              <div class="discover-subtitle">External boundaries</div>
-              {#if externalBoundaries !== undefined && externalBoundaries.confidence !== "unknown"}
-                {@render chipList(leafLines(externalBoundaries.value))}
-              {:else}
-                <p class="empty">Not observed.</p>
-              {/if}
+        {#if stackLines.length > 0}
+          <section class="discover-block" data-testid="discover-card" data-field="stack">
+            <div class="discover-block__head">
+              <h2 class="discover-block__title">Stack</h2>
+              <span class="discover-block__meta">{stackLines.length} entries</span>
             </div>
-            <div>
-              <div class="discover-subtitle">Shared kernels</div>
-              {#if sharedKernels !== undefined && sharedKernels.confidence !== "unknown"}
-                {@render chipList(leafLines(sharedKernels.value))}
-              {:else}
-                <p class="empty">Not observed.</p>
-              {/if}
-            </div>
-          </div>
-        </section>
-      {/if}
-
+            {@render chipList(stackLines)}
+          </section>
+        {/if}
+      </div>
     </div>
   {:else}
     <section class="panel discover-empty" data-testid="discover-empty">
@@ -599,15 +621,13 @@
         <div class="discover-empty__copy">
           <h2>No project sheet yet</h2>
           <p>
-            One Discover run reads the repository without running its commands and publishes three
-            artifacts. Nothing is written outside <code>.omp/discover/</code> and
-            <code>.omp/skills/</code>, and a field the crawl cannot ground is recorded as unknown
-            instead of guessed.
+            One Discover run reads the repository without running its commands. It publishes a
+            project sheet, one UbiLang glossary per bounded context, and five Agent Skills.
           </p>
-          <p class="muted">Switching tabs or closing the browser does not start a run.</p>
-          {#if discover.busy !== null}
-            <p class="muted">{discover.busy}</p>
-          {/if}
+          <p class="muted">
+            A field the crawl cannot ground is recorded as unknown instead of guessed. Switching
+            views or closing the browser never starts a run.
+          </p>
         </div>
         <ul class="discover-writes">
           <li>
@@ -626,4 +646,6 @@
       </div>
     </section>
   {/if}
+
+  {@render remotePanel()}
 </div>

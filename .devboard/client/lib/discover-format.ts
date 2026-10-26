@@ -41,6 +41,15 @@ export const SKILL_TABS: DiscoverTab[] = [
 
 export const TABS: DiscoverTab[] = [...SECTION_TABS, ...SKILL_TABS];
 
+/** One line per generated skill: the policy question it answers for this host. */
+export const SKILL_PURPOSE: Record<string, string> = {
+  "discover-testing-strategy": "Which checks to run, at which level, before review.",
+  "discover-naming-conventions": "The names this project uses for the same ideas.",
+  "discover-coding-conventions": "The local rules an edit must follow.",
+  "discover-architecture-boundaries": "What may depend on what, and where a change belongs.",
+  "discover-glossary": "The project's vocabulary, for code and prompts.",
+};
+
 /** Leaves already shown elsewhere or too detailed for the operator's scan. */
 export const HIDDEN_LEAVES: Record<string, string[]> = {
   deployment: ["pipelineSources"],

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Discover empty</title>
+<style>
+  :root { --ink:#2b2b2b; --muted:#6b6b6b; --line:#c9c9c9; --fill:#f4f4f4; --paper:#fdfdfd; --accent:#5a6b7a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:ui-sans-serif,system-ui,sans-serif; font-size:13px; line-height:1.45; }
+  .wf { max-width:1000px; margin:0 auto; padding:16px; }
+  .wf-title { font-size:15px; font-weight:700; margin:0 0 2px; }
+  .wf-note { color:var(--muted); font-size:11px; margin:0 0 16px; }
+  .wf-ann { color:var(--accent); font-size:9px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; display:block; margin:0 0 4px; }
+  .shell { display:grid; grid-template-columns:64px 240px minmax(0,1fr); border:1px solid var(--line); }
+  nav.rail { border-right:1px solid var(--line); background:var(--fill); padding:8px 6px; display:flex; flex-direction:column; gap:4px; }
+  .rail button { height:44px; border:1px solid var(--line); background:var(--paper); font:inherit; font-size:10px; }
+  .rail button[aria-current="true"] { border-color:var(--ink); }
+  aside.side { border-right:1px solid var(--line); background:var(--fill); padding:8px; }
+  .side a { display:flex; justify-content:space-between; padding:4px 6px; color:var(--ink); text-decoration:none; font-size:12px; }
+  .side .group { color:var(--muted); font-size:9px; letter-spacing:.06em; text-transform:uppercase; margin:8px 0 4px; }
+  main { padding:12px; display:flex; flex-direction:column; gap:12px; min-width:0; }
+  .card { border:1px solid var(--line); background:var(--paper); padding:10px; }
+  .row { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+  .col { display:flex; flex-direction:column; gap:6px; }
+  h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:0; } h3 { font-size:11px; margin:0; }
+  p { margin:0; }
+  .bar { height:8px; background:var(--fill); border:1px solid var(--line); }
+  .btn { border:1px solid var(--ink); padding:4px 10px; font-size:11px; background:var(--paper); white-space:nowrap; }
+  .btn.primary { background:var(--ink); color:var(--paper); }
+  .writes { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; }
+  .writes div { border-top:1px solid var(--line); padding-top:6px; }
+  code { font-family:ui-monospace,monospace; font-size:11px; }
+  @media (max-width:768px) {
+    .shell { grid-template-columns:1fr; }
+    nav.rail { flex-direction:row; border-right:0; border-bottom:1px solid var(--line); }
+    .rail button { flex:1; }
+    aside.side { border-right:0; border-bottom:1px solid var(--line); }
+    .writes { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wf">
+  <p class="wf-title">Wireframe — Discover mode, empty state</p>
+  <p class="wf-note">Structure only. The shell is unchanged; the workspace shows the header, the conditional remote target, and the explanation.</p>
+
+  <div class="shell">
+    <nav class="rail" aria-label="Mode navigation">
+      <span class="wf-ann">region_mode_rail</span>
+      <button type="button">Goal</button><button type="button">Flow</button><button type="button" aria-current="true">Discover</button>
+    </nav>
+
+    <aside class="side">
+      <span class="wf-ann">region_sidebar</span>
+      <p><strong>Discover</strong><br><span style="color:var(--muted);font-size:10px">host</span></p>
+      <nav aria-label="Discover sections">
+        <a href="#" aria-current="page">Overview <span>—</span></a>
+        <a href="#">Glossary <span>0 terms</span></a>
+      </nav>
+      <p class="group">Skills</p>
+      <nav aria-label="Skills">
+        <a href="#">Testing Strategy <span>missing</span></a>
+        <a href="#">Naming Conventions <span>missing</span></a>
+        <a href="#">Coding Conventions <span>missing</span></a>
+        <a href="#">Architecture &amp; Boundaries <span>missing</span></a>
+        <a href="#">Glossary <span>missing</span></a>
+      </nav>
+    </aside>
+
+    <main>
+      <section class="card">
+        <span class="wf-ann">region_header · P0 · C1 C4 C5</span>
+        <div class="row">
+          <div class="col"><h1>host</h1><p>One-line inventory description.</p></div>
+          <button class="btn primary" type="button">Discover project</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <span class="wf-ann">region_empty · P1 · C35</span>
+        <h2>No project sheet yet</h2>
+        <p>One run reads the repository without running its commands and publishes three artifacts.</p>
+        <p>A field the crawl cannot ground is recorded as unknown instead of guessed. Switching views never starts a run.</p>
+        <div class="writes" style="margin-top:10px">
+          <div><p class="wf-ann">C35 writes</p><code>.omp/discover/sheet.json</code><p>Project sheet: stack, commands, CI, architecture, unknowns</p></div>
+          <div><p class="wf-ann">C35 writes</p><code>.omp/discover/glossary/</code><p>One UbiLang glossary per bounded context</p></div>
+          <div><p class="wf-ann">C35 writes</p><code>.omp/skills/</code><p>Five project-specific agent skills</p></div>
+        </div>
+      </section>
+      <section class="card">
+        <span class="wf-ann">region_remote · P2 conditional · C30 · last region</span>
+        <div class="row"><div class="col" style="flex:1"><p class="wf-ann">manual testing</p><p class="bar" style="height:24px"></p></div><button class="btn" type="button">Discover from URL</button></div>
+      </section>
+    </main>
+  </div>
+</div>
+</body>
+</html>

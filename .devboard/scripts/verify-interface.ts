@@ -954,7 +954,7 @@ try {
   // 2. Activity bar.
   const activity = await page.eval<{
     count: number;
-    entries: Array<{ testid: string; selected: string; controls: string; controlsExists: boolean; label: string; icon: boolean; command: string }>;
+    entries: Array<{ testid: string; selected: string; controls: string; controlsExists: boolean; label: string; visible: string; icon: boolean; command: string }>;
   }>(`(() => {
     const tabs = [...document.querySelectorAll('[data-testid="activity-bar"] [role="tab"]')];
     return {
@@ -965,27 +965,46 @@ try {
         controls: tab.getAttribute("aria-controls") ?? "",
         controlsExists: document.getElementById(tab.getAttribute("aria-controls") ?? "") !== null,
         label: tab.getAttribute("aria-label") ?? "",
+        visible: tab.querySelector(".activity-tab__label")?.textContent?.trim() ?? "",
         icon: tab.querySelector("svg") !== null,
         command: tab.getAttribute("data-command") ?? "",
       })),
     };
   })()`);
   check(activity.count === 3, "the activity bar does not present exactly three modes", activity);
-  const brand = await page.eval<string>(`document.querySelector('[data-testid="activity-bar"]')?.textContent?.trim() ?? ""`);
-  check(brand === "", "the activity bar still renders a brand label", brand);
+  const brand = await page.eval<string>(`document.querySelector('[data-testid="activity-bar"]')?.textContent?.replace(/\\s+/g, "") ?? ""`);
+  check(brand === "GoalFlowDiscover", "the activity bar does not name its three modes", brand);
   const expectedModes = [
-    ["mode-goal", "true"],
-    ["mode-flow", "false"],
-    ["mode-discover", "false"],
+    ["mode-goal", "true", "Goal"],
+    ["mode-flow", "false", "Flow"],
+    ["mode-discover", "false", "Discover"],
   ];
-  for (const [index, [testid, selected]] of expectedModes.entries()) {
+  for (const [index, [testid, selected, visible]] of expectedModes.entries()) {
     const entry = activity.entries[index]!;
     check(entry.testid === testid, `activity tab ${index} is ${entry.testid}`, entry);
     check(entry.selected === selected, `${testid} selection is ${entry.selected}`, entry);
     check(entry.controlsExists, `${testid} aria-controls names no panel`, entry);
     check(entry.label.length > 0 && entry.icon, `${testid} lacks a name or icon`, entry);
+    check(entry.visible === visible, `${testid} does not render its visible label`, entry);
     check(entry.command === `view.mode.${testid.replace("mode-", "")}`, `${testid} lacks its command`, entry);
   }
+  const railLabels = await page.eval<Array<{ text: string; overflow: number; inside: boolean }>>(`(() => {
+    return [...document.querySelectorAll('[data-testid="activity-bar"] .activity-tab')].map((tab) => {
+      const label = tab.querySelector('.activity-tab__label');
+      const tabRect = tab.getBoundingClientRect();
+      const labelRect = label?.getBoundingClientRect();
+      return {
+        text: label?.textContent?.trim() ?? "",
+        overflow: label === null ? 1 : label.scrollWidth - label.clientWidth,
+        inside: labelRect !== undefined && labelRect.left >= tabRect.left - 0.5 && labelRect.right <= tabRect.right + 0.5,
+      };
+    });
+  })()`);
+  check(
+    railLabels.length === 3 && railLabels.every((label) => label.overflow <= 1 && label.inside),
+    "a mode label overflows or leaves its tab",
+    railLabels,
+  );
 
   // 3. Status bar, reload control, and shortcut discoverability.
   const statusBar = await page.eval<{
@@ -1650,19 +1669,43 @@ try {
   check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
   check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
   check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");
-  const discoverScrollBefore = await page.eval<number>(`(() => {
+  // The fixture sheet fits at 1440×900; prove the page owns its scrolling and
+  // keeps the offset in a narrower supported viewport, where it overflows.
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the 1024×720 viewport for the scroll check");
+  const discoverScrollBefore = await page.eval<{ top: number; scroll: number; client: number }>(`(() => {
     const scroller = document.querySelector('#workspace-discover .scroll-column');
-    if (scroller === null) return 0;
+    if (scroller === null) return { top: 0, scroll: 0, client: 0 };
     scroller.scrollTop = 160;
-    return Math.round(scroller.scrollTop);
+    return {
+      top: Math.round(scroller.scrollTop),
+      scroll: scroller.scrollHeight,
+      client: scroller.clientHeight,
+    };
   })()`);
-  check(discoverScrollBefore > 0, "the Discover page does not scroll", discoverScrollBefore);
+  check(
+    discoverScrollBefore.top > 0,
+    "the Discover page does not scroll",
+    discoverScrollBefore,
+  );
   await page.click('[data-testid="mode-goal"]');
   await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "Goal for the scroll check");
   await page.click('[data-testid="mode-discover"]');
   await page.wait(`document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`, "Discover for the scroll check");
   const discoverScroll = await page.eval<number>(`Math.round(document.querySelector('#workspace-discover .scroll-column')?.scrollTop ?? 0)`);
-  check(discoverScroll === discoverScrollBefore, "a mode switch lost the Discover scroll position", { discoverScrollBefore, discoverScroll });
+  check(discoverScroll === discoverScrollBefore.top, "a mode switch lost the Discover scroll position", { discoverScrollBefore, discoverScroll });
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop viewport after the scroll check");
 
   await runPalette("discover.tab.glossary");
   await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the glossary term table");

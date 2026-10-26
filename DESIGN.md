@@ -207,8 +207,8 @@ components:
 
 Devboard is the local browser interface for one repository's goal, ADR records, Flow
 implementation session, and Discover artifacts. It is a desktop operator console: one
-full-viewport shell with an activity bar, a contextual sidebar, one workspace, and a status bar.
-Every mode is a client-side view over the WebSocket contract owned by the server.
+full-viewport shell with a labeled mode rail, a contextual sidebar, one workspace, and a status
+bar. Every mode is a client-side view over the WebSocket contract owned by the server.
 
 The visual intent is GitHub-dark material: flat surfaces, hairline borders, high information
 density, and no decorative weight. Depth comes from surface steps and borders, not shadows. Color
@@ -253,7 +253,7 @@ with the dark set.
 | `error` | `#ff7b72` | `#cf222e` | Failure text |
 | `error-surface` | `#2b1513` | `#fdf2f1` | Failure tint |
 | `row-hover` | `#1b2129` | `#f6f8fa` | Table row hover |
-| `activity-bar` | `#0a0d12` | `#f6f8fa` | Activity bar background |
+| `activity-bar` | `#0a0d12` | `#f6f8fa` | Mode rail background |
 | `selection-background` | `#264f78` | `#b6d7ff` | Text selection |
 
 The `flow-*` tokens are the Flow diagram categories. Each has a border color and a surface tint:
@@ -312,12 +312,13 @@ Spacing uses a **2px base unit** with a half-step grid. The approved scale is 2,
   badges `2px 6px`, icon buttons a 28px square.
 - **Layout gaps.** 2px between an icon and its inline text at micro sizes, 4px between an icon and
   a control label, 6px between header actions, 8px is the default, 12px between cards and grid
-  items, 14px between Discover page columns.
-- **Section spacing.** 8px between stacked panels, 24px between Discover page sections, 28px
-  before a page's final block.
-- **Containers and gutters.** The shell fills the viewport: activity bar 44px, sidebar 300px
+  items, 16px between Discover sheet rows, and 24px between Discover sheet columns.
+- **Section spacing.** 12px between stacked Discover cards, 24px between Discover page sections.
+- **Containers and gutters.** The shell fills the viewport: mode rail 64px, sidebar 300px
   default (resizable 200–600px), workspace flexible, status bar 26px, content padding 8px. There
   is no centered page container and no horizontal gutter; panels use their own 1px borders.
+  Inside the rail each mode tab is a 56×48px control with an 18px icon over a 10px `overline`
+  label; the label never collapses to an icon-only state.
 - **Responsive spacing.** The supported viewport is at least 1024×720. Panes resize rather than
   reflow; when a pane narrows, gaps collapse to the next lower scale step before text wraps.
   Below 1024×720 the workspace is replaced by the viewport guard, so no mobile spacing scale
@@ -329,8 +330,12 @@ Mapping to tokens: `{spacing.hairline}` 2px, `{spacing.tight}` 4px, `{spacing.sn
 `{spacing.wider}` 16px, `{spacing.section}` 24px, `{spacing.section-xl}` 28px.
 
 Documented exceptions outside the scale: Flow diagram grid gaps of 18px and 22px and the diagram's
-`14px 32px` column gap are geometry of an inline SVG map, not layout spacing; the 26px, 30px,
-34px, and 44px region heights are fixed shell dimensions, not spacing steps.
+`14px 32px` column gap are geometry of an inline SVG map, not layout spacing. The 26px, 30px,
+34px, and 44px region heights and the 64px rail are fixed shell dimensions. The 56px bottom
+padding on a Discover page reserves the fixed notification region (34px above the 26px status
+bar) so a page's last control can scroll clear of it. The 180px Discover activity terminal, the
+104px fact-label column, the 200–600px sidebar bounds, and the 160px split minimum are component
+geometry, not spacing steps.
 
 ## Elevation & Depth
 
@@ -374,6 +379,16 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   8px body padding; the table container and the sidebar reuse the same surface and border rule.
 - **Badge** (`.badge`) — full-radius outline pill, `overline` type, 2px 6px padding; tone comes
   from the matching state token and the text always states the meaning.
+- **Mode rail** (`.activity-bar`) — 64px vertical rail, `activity-bar` fill, 1px `border` on its
+  right edge. Three `role="tab"` controls, each 56×48px: an 18px icon over a 10px `overline`
+  label, 4px apart. Resting color is `muted-foreground`; hover and the selected tab use the
+  `secondary` fill, a `border-strong` outline, and `foreground` text; the selected tab also
+  carries a 2px `accent` bar on its left edge, outside the tab box. The rail never shows a brand
+  label and never collapses to icons.
+- **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
+  `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
+  action group. Drill-in pages put a ghost back control before the heading in DOM order. Page
+  sections are 24px apart; cards inside a column are 12px apart.
 
 ## Do's and Don'ts
 
@@ -382,6 +397,9 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
 - **Do** use `mono` for every path, identifier, commit, count, and command.
 - **Do** give every state badge a word, not only a color.
 - **Do** use `control` for buttons and inputs, and `overline` for uppercase micro-labels.
+- **Do** keep every primary mode named in the rail; navigation never depends on hover.
+- **Do** state a fact once per screen: a page header may repeat a mode name only when it is the
+  breadcrumb, and status appears in the region that owns the action.
 - **Don't** add shadows, gradients, blur, or glows; the tooltip shadow is the only exception.
 - **Don't** use `primary` for large fills or for body text.
 - **Don't** use radii above 6px on functional surfaces.

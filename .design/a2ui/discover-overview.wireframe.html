@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Discover overview</title>
+<style>
+  :root { --ink:#2b2b2b; --muted:#6b6b6b; --line:#c9c9c9; --fill:#f4f4f4; --paper:#fdfdfd; --accent:#5a6b7a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; font-size:13px; line-height:1.45; }
+  .wf { max-width:1200px; margin:0 auto; padding:16px; }
+  .wf-title { font-size:15px; font-weight:700; margin:0 0 2px; }
+  .wf-note { color:var(--muted); font-size:11px; margin:0 0 16px; }
+  .wf-ann { color:var(--accent); font-size:9px; font-weight:700; letter-spacing:.06em;
+    text-transform:uppercase; display:block; margin:0 0 4px; }
+  .shell { display:grid; grid-template-columns:64px 240px minmax(0,1fr); border:1px solid var(--line); }
+  nav.rail { border-right:1px solid var(--line); background:var(--fill); padding:8px 6px; display:flex; flex-direction:column; gap:4px; }
+  .rail button { height:44px; border:1px solid var(--line); background:var(--paper); font:inherit; font-size:10px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; padding:0; }
+  .rail button[aria-current="true"] { border-color:var(--ink); }
+  .glyph { width:14px; height:14px; border:1px solid var(--ink); border-radius:2px; }
+  aside.side { border-right:1px solid var(--line); background:var(--fill); padding:8px; }
+  .side-head { border-bottom:1px solid var(--line); padding-bottom:6px; margin-bottom:8px; }
+  .side-head strong { display:block; font-size:12px; }
+  .side-head span { color:var(--muted); font-size:10px; }
+  .side nav { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; }
+  .side a { display:flex; justify-content:space-between; padding:4px 6px; border:1px solid transparent;
+    color:var(--ink); text-decoration:none; font-size:12px; }
+  .side a[aria-current="page"] { border-color:var(--ink); background:var(--paper); }
+  .side .group { color:var(--muted); font-size:9px; letter-spacing:.06em; text-transform:uppercase; margin:0 0 4px; }
+  main { padding:12px; display:flex; flex-direction:column; gap:12px; min-width:0; }
+  .card { border:1px solid var(--line); background:var(--paper); padding:10px; }
+  .row { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+  .col { display:flex; flex-direction:column; gap:6px; }
+  h1 { font-size:18px; margin:0; } h2 { font-size:12px; margin:0; } h3 { font-size:11px; margin:0; }
+  p { margin:0; }
+  .bar { height:8px; background:var(--fill); border:1px solid var(--line); }
+  .btn { border:1px solid var(--ink); padding:4px 10px; font-size:11px; background:var(--paper); white-space:nowrap; }
+  .btn.primary { background:var(--ink); color:var(--paper); }
+  .tag { border:1px solid var(--line); border-radius:999px; padding:1px 6px; font-size:9px; }
+  .cols { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1fr); gap:12px; align-items:start; }
+  .facts { display:grid; grid-template-columns:88px minmax(0,1fr); gap:4px 10px; font-size:12px; }
+  .facts dt { color:var(--muted); } .facts dd { margin:0; }
+  .table { width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed; }
+  .table th, .table td, .card, .side a, p { overflow-wrap:anywhere; }
+  .table th, .table td { text-align:left; border-bottom:1px solid var(--line); padding:4px 6px; }
+  .table th { color:var(--muted); font-weight:600; font-size:10px; }
+  .chips { display:flex; gap:4px; flex-wrap:wrap; }
+  .chip { border:1px solid var(--line); padding:1px 6px; font-size:10px; font-family:ui-monospace,monospace; }
+  .stack { display:flex; flex-direction:column; gap:8px; }
+  .ann-notes { margin-top:16px; border-top:1px solid var(--line); padding-top:10px; color:var(--muted); font-size:11px; }
+  @media (max-width:768px) {
+    .shell { grid-template-columns:1fr; }
+    nav.rail { flex-direction:row; border-right:0; border-bottom:1px solid var(--line); }
+    .rail button { flex:1; }
+    aside.side { border-right:0; border-bottom:1px solid var(--line); }
+    .cols { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wf">
+  <p class="wf-title">Wireframe — Discover mode, published overview</p>
+  <p class="wf-note">Structure only. Grayscale boxes and placeholder text; no production components, tokens, fonts, or colors.</p>
+
+  <div class="shell">
+    <nav class="rail" aria-label="Mode navigation">
+      <span class="wf-ann">region_mode_rail · P0</span>
+      <button type="button"><span class="glyph"></span>Goal</button>
+      <button type="button"><span class="glyph"></span>Flow</button>
+      <button type="button" aria-current="true"><span class="glyph"></span>Discover</button>
+    </nav>
+
+    <aside class="side">
+      <span class="wf-ann">region_sidebar · P0</span>
+      <div class="side-head"><strong>Discover</strong><span>host — full path on hover</span></div>
+      <nav aria-label="Discover sections">
+        <span class="wf-ann">C33 / C12</span>
+        <a href="#" aria-current="page">Overview <span>sheet</span></a>
+        <a href="#">Glossary <span>2 terms</span></a>
+      </nav>
+      <div class="group">Skills</div>
+      <nav aria-label="Skills">
+        <a href="#">Testing Strategy <span>edited</span></a>
+        <a href="#">Naming Conventions</a>
+        <a href="#">Coding Conventions <span>missing</span></a>
+        <a href="#">Architecture &amp; Boundaries</a>
+        <a href="#">Glossary</a>
+      </nav>
+      <nav aria-label="Warnings"><a href="#">Warnings <span class="tag">2</span></a></nav>
+    </aside>
+
+    <main>
+      <section class="card">
+        <span class="wf-ann">region_header · P0 · C1 C2 C3 C4 C5</span>
+        <div class="row">
+          <div class="col">
+            <p class="wf-ann">C1 / C3</p>
+            <h1>host <span class="tag">stale</span></h1>
+            <p>One-line project definition from the sheet.</p>
+            <p class="wf-ann">C2</p>
+            <p style="font-family:ui-monospace,monospace;font-size:11px">f9938bc · Oct 26, 2026, 8:20 PM</p>
+          </div>
+          <div class="col">
+            <span class="wf-ann">C5 primary action</span>
+            <button class="btn primary" type="button">Re-discover</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <span class="wf-ann">region_run · P0 conditional · C6 C7 C8 C31</span>
+        <div class="row"><h2>Run in progress · run id</h2><button class="btn" type="button">Stop</button></div>
+        <p class="bar" style="height:72px;margin-top:8px"></p>
+        <p class="wf-ann" style="margin-top:6px">activity stream</p>
+        <div class="col" style="margin-top:8px;border:1px dashed var(--line);padding:8px">
+          <span class="wf-ann">C8 question, when elicited</span>
+          <p>Question text</p>
+          <div class="row"><button class="btn" type="button">Option A</button><button class="btn" type="button">Option B</button></div>
+          <div class="row"><span class="bar" style="width:70%"></span><button class="btn" type="button">Answer</button></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <span class="wf-ann">region_notice · C9 P0 / C10 P1 / C11 P2</span>
+        <p style="border-left:2px solid var(--ink);padding-left:6px">Error or interrupted line, when present.</p>
+      </section>
+
+      <div class="cols">
+        <div class="stack">
+          <section class="card">
+            <span class="wf-ann">region_commands · P0 · C13 C45</span>
+            <h2>Commands <span class="tag">4 of 8</span></h2>
+            <table class="table">
+              <tbody>
+                <tr><td>Install</td><td><code>$ bun install</code></td></tr>
+                <tr><td>Build</td><td><code>$ bun run build</code></td></tr>
+                <tr><td>Test</td><td><code>$ bun test</code></td></tr>
+                <tr><td>Dev / run</td><td><code>$ bun run dev</code></td></tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="card">
+            <span class="wf-ann">region_testing · P0 · C14</span>
+            <h2>Testing <span class="tag">1 level · 1 test</span></h2>
+            <div class="facts" style="margin-top:6px">
+              <dt>Tests</dt><dd>1 test</dd><dt>Levels</dt><dd>1 level</dd><dt>Whole suite</dt><dd><code>bun test</code></dd>
+            </div>
+            <table class="table" style="margin-top:8px">
+              <thead><tr><th>Level</th><th>Tests</th><th>Paths &amp; fixtures</th></tr></thead>
+              <tbody><tr><td>Unit</td><td>1 test</td><td><code>test</code></td></tr></tbody>
+            </table>
+          </section>
+
+          <section class="card">
+            <span class="wf-ann">region_architecture · P1 · C18 C19</span>
+            <h2>Bounded contexts</h2>
+            <table class="table">
+              <thead><tr><th>Bounded context</th><th>Path</th><th>Responsibility</th><th>Entry points</th></tr></thead>
+              <tbody><tr><td>Orders</td><td><code>src/orders</code></td><td>Owns one customer order</td><td><code>src/orders/index.ts</code></td></tr></tbody>
+            </table>
+            <div class="cols" style="margin-top:8px">
+              <div><h3>External boundaries</h3><div class="chips"><span class="chip">None detected</span></div></div>
+              <div><h3>Shared kernels</h3><div class="chips"><span class="chip">None detected</span></div></div>
+            </div>
+          </section>
+        </div>
+
+        <div class="stack">
+          <section class="card">
+            <span class="wf-ann">region_platform · P2 · C15</span>
+            <h2>Platform</h2>
+            <dl class="facts"><dt>Languages</dt><dd>TypeScript</dd><dt>Runtimes</dt><dd>Bun</dd><dt>Manifests</dt><dd>package.json</dd></dl>
+          </section>
+
+          <section class="card">
+            <span class="wf-ann">region_delivery · P1 · C16</span>
+            <h2>Delivery</h2>
+            <h3 style="margin-top:6px">Deployment</h3>
+            <dl class="facts"><dt>Class</dt><dd>package</dd><dt>Artifact</dt><dd>fixture-host</dd></dl>
+            <h3 style="margin-top:6px">CI</h3>
+            <dl class="facts"><dt>Provider</dt><dd>GitHub Actions</dd><dt>Triggers</dt><dd>push</dd></dl>
+            <h3 style="margin-top:6px">Branching</h3>
+            <dl class="facts"><dt>Default branch</dt><dd>main</dd></dl>
+          </section>
+
+          <section class="card">
+            <span class="wf-ann">region_stack · P2 · C17</span>
+            <h2>Stack</h2>
+            <div class="chips"><span class="chip">Bun</span><span class="chip">TypeScript</span></div>
+          </section>
+        </div>
+      </div>
+
+      <section class="card">
+        <span class="wf-ann">region_remote · P2 conditional · C30 · last region</span>
+        <div class="row">
+          <div class="col" style="flex:1">
+            <p class="wf-ann">manual testing only</p>
+            <p class="bar" style="height:24px"></p>
+          </div>
+          <button class="btn" type="button">Discover from URL</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <p class="ann-notes">Order: notices, header, active run, question, commands, testing, bounded contexts,
+  platform, delivery, stack, remote target. At 768px the rail becomes a row, the sidebar stacks above
+  the workspace, and the two columns become one in task order. The primary action stays in the first
+  screen.</p>
+</div>
+</body>
+</html>

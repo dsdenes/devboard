@@ -4,6 +4,7 @@
     contextTitle,
     labelText,
     labelTexts,
+    SKILL_PURPOSE,
     TABS,
   } from "../discover-format";
   import { discover } from "../discover.svelte";
@@ -15,6 +16,7 @@
   import DiscoverOverview from "./DiscoverOverview.svelte";
   import MonacoEditor from "./MonacoEditor.svelte";
   import Button from "./ui/button.svelte";
+  import Input from "./ui/input.svelte";
 
   interface Props {
     tab: WorkspaceTab | null;
@@ -42,6 +44,10 @@
   const skillDraft = $derived(activeSkill === null ? "" : discover.skillDraft(activeSkill));
   const skillTab = $derived(
     activeSkill === null ? null : (TABS.find((entry) => entry.skill === activeSkill) ?? null),
+  );
+  const skillState = $derived(skill?.state ?? "missing");
+  const skillStateLabel = $derived(
+    skillState === "generated" ? "Generated" : skillState === "edited" ? "Edited" : "Missing",
   );
 
   const term = $derived.by(() => {
@@ -78,6 +84,20 @@
       title: conceptTitle(concept),
     });
   }
+
+  function backToGlossary(): void {
+    openTab({
+      id: "glossary",
+      kind: "glossary",
+      resourceId: "glossary",
+      title: "Glossary",
+    });
+  }
+
+  function clearGlossaryFilters(): void {
+    discover.setGlossarySearch("");
+    discover.setGlossaryThreshold(0);
+  }
 </script>
 
 {#snippet glossaryCell(row: Record<string, unknown>, columnId: string)}
@@ -86,10 +106,7 @@
   {:else if columnId === "title"}
     <strong>{String(row.title ?? "")}</strong>
   {:else if columnId === "uses"}
-    <span
-      class="discover-uses"
-      title={`${row.uses ?? 0} uses in ${row.usageFiles ?? 0} files`}
-    >
+    <span class="discover-uses" title={`${row.uses ?? 0} uses in ${row.usageFiles ?? 0} files`}>
       {row.uses ?? 0}
     </span>
   {:else if columnId === "examples"}
@@ -111,20 +128,58 @@
   {/if}
 {/snippet}
 
+{#snippet notices()}
+  {#if discover.displayError !== null || discover.interrupted || discover.transition !== null}
+    <div class="discover-notices">
+      {#if discover.displayError !== null}
+        <p class="message" data-severity="error" data-testid="discover-error" role="alert">
+          {discover.displayError}
+        </p>
+      {/if}
+      {#if discover.interrupted}
+        <p class="message" data-severity="warning" data-testid="discover-interrupted">
+          The last Discover run was interrupted. Nothing was published; the previous artifacts are
+          unchanged.
+        </p>
+      {/if}
+      {#if discover.transition !== null && !discover.active}
+        <p class="message" data-severity="notice" data-testid="discover-transition" role="status">
+          {discover.transition}
+        </p>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet glossaryPanel()}
-  <div class="scroll-column discover-page" data-testid="discover-panel" data-tab="glossary" aria-label="Discover glossary">
+  <div
+    class="scroll-column discover-page"
+    data-testid="discover-panel"
+    data-tab="glossary"
+    aria-label="Discover glossary"
+  >
     <header class="discover-page__header">
       <div class="discover-page__heading">
         <h1 class="discover-page__title">Glossary</h1>
         <p class="discover-page__subtitle">
-          {visibleTerms} of {totalTerms} terms above significance {discover.glossaryThreshold} across
-          {discover.contexts.length}
+          {visibleTerms} of {totalTerms} terms above a minimum of {discover.glossaryThreshold}
+          {discover.glossaryThreshold === 1 ? "use" : "uses"} across {discover.contexts.length}
           {discover.contexts.length === 1 ? "bounded context" : "bounded contexts"}.
         </p>
       </div>
       <div class="discover-page__actions discover-glossary-controls">
+        <Input
+          id="discover-glossary-search"
+          class="discover-search"
+          type="search"
+          value={discover.glossarySearch}
+          oninput={(event) => discover.setGlossarySearch(event.currentTarget.value)}
+          placeholder="Search terms"
+          aria-label="Search glossary terms"
+          data-testid="discover-glossary-search"
+        />
         <label class="discover-threshold">
-          <span class="discover-threshold__label">Significance</span>
+          <span class="discover-threshold__label">Minimum uses</span>
           <input
             class="discover-threshold__input"
             type="range"
@@ -138,33 +193,33 @@
           />
           <output class="discover-threshold__value">≥ {discover.glossaryThreshold}</output>
         </label>
-        <input
-          id="discover-glossary-search"
-          class="textarea discover-search"
-          type="search"
-          value={discover.glossarySearch}
-          oninput={(event) => discover.setGlossarySearch(event.currentTarget.value)}
-          placeholder="Search terms"
-          aria-label="Search glossary terms"
-          data-testid="discover-glossary-search"
-        />
       </div>
     </header>
 
     {#if discover.filteredContexts.length === 0}
-      <p class="empty">
-        No glossary terms match the current search and significance threshold.
-      </p>
+      <section class="panel discover-filter-empty" data-testid="discover-glossary-empty">
+        <div class="panel__body discover-filter-empty__body">
+          <p class="empty">
+            No term matches the current search and minimum-use filter. The glossary is published;
+            only this view is filtered.
+          </p>
+          <Button variant="outline" onclick={clearGlossaryFilters}>Clear filters</Button>
+        </div>
+      </section>
     {:else}
       {#each discover.filteredContexts as context (context.boundedContext)}
-        <section class="panel discover-card" data-testid="discover-context" data-context={context.boundedContext}>
-          <div class="panel__header discover-card__header">
+        <section
+          class="panel discover-card"
+          data-testid="discover-context"
+          data-context={context.boundedContext}
+        >
+          <div class="panel__header">
             <h2 class="panel__title">{contextTitle(context)}</h2>
-            <span class="muted">
+            <span class="panel__subtitle">
               {context.concepts.length} {context.concepts.length === 1 ? "term" : "terms"}
             </span>
           </div>
-          <div class="panel__body discover-card__body">
+          <div class="panel__body panel__body--flush">
             <DataTable
               columns={GLOSSARY_COLUMNS}
               rows={context.concepts.map((concept) => {
@@ -209,12 +264,38 @@
   {#if activeSkill === null || skillTab === null}
     <p class="empty">No skill selected.</p>
   {:else}
-    <div data-testid="discover-panel" data-tab={skillTab.id} aria-label={skillTab.label} style="height: 100%;">
-      <div class="discover-skill" data-testid="discover-skill" data-name={activeSkill} style="height: 100%;">
-        <div class="skill-editor">
+    <div
+      class="discover-skill-page"
+      data-testid="discover-panel"
+      data-tab={skillTab.id}
+      aria-label={skillTab.label}
+    >
+      <header class="discover-page__header discover-page__header--compact">
+        <div class="discover-page__heading">
+          <span class="discover-page__eyebrow">Policy skill</span>
+          <h1 class="discover-page__title">{skillTab.label}</h1>
+          <p class="discover-skill__meta">
+            <span
+              class="badge"
+              data-tone={skillState === "generated"
+                ? "success"
+                : skillState === "edited"
+                  ? "warning"
+                  : "error"}
+            >
+              {skillStateLabel}
+            </span>
+            <code>{activeSkill}/SKILL.md</code>
+            <span class="muted">{SKILL_PURPOSE[activeSkill] ?? ""}</span>
+          </p>
+        </div>
+      </header>
+
+      <div class="discover-skill" data-testid="discover-skill" data-name={activeSkill}>
+        <div class="panel discover-skill__panel">
           <div class="panel__header">
             <div class="discover-skill__heading">
-              <h2 class="panel__title">{skillTab.label}</h2>
+              <h2 class="panel__title">SKILL.md</h2>
               <span class="muted">{activeSkill}</span>
             </div>
             <div class="row-sm">
@@ -229,22 +310,22 @@
               >
                 Save
               </Button>
-              {#if (skill?.state ?? "missing") !== "generated"}
+              {#if skillState !== "generated"}
                 <Button
                   variant="outline"
                   data-command={`discover.skill.restore.${activeSkill}`}
                   data-testid="discover-skill-restore"
-                  title={skill?.state === "missing"
+                  title={skillState === "missing"
                     ? "Recreate the skill from its generated version."
                     : "Discard your edits and return to the generated version."}
                   onclick={() => discover.restoreSkill(activeSkill)}
                 >
-                  {skill?.state === "missing" ? "Recreate generated version" : "Discard edits"}
+                  {skillState === "missing" ? "Recreate generated version" : "Discard edits"}
                 </Button>
               {/if}
             </div>
           </div>
-          <div class="grow" style="min-height: 0;">
+          <div class="grow">
             <MonacoEditor
               value={skillDraft}
               label={`${activeSkill} skill text`}
@@ -262,10 +343,36 @@
 
 {#snippet termPanel()}
   {#if term === null}
-    <p class="empty">This glossary term is no longer listed.</p>
+    <div class="scroll-column discover-page" data-testid="discover-panel" data-tab="glossary">
+      <p class="empty">This glossary term is no longer listed. Return to the glossary to choose
+        another term.</p>
+      <div><Button variant="outline" onclick={backToGlossary}>Back to glossary</Button></div>
+    </div>
   {:else}
-    <div data-testid="discover-panel" data-tab="glossary" aria-label="Glossary term" style="height: 100%;">
-      <DetailSplit id="discover-term" label="Term detail">
+    <div
+      class="discover-term-page"
+      data-testid="discover-panel"
+      data-tab="glossary"
+      aria-label="Glossary term"
+    >
+      <header class="discover-page__header discover-page__header--compact">
+        <div class="discover-page__heading">
+          <button
+            type="button"
+            class="discover-back"
+            data-command="discover.tab.glossary"
+            onclick={backToGlossary}
+          >
+            ← Glossary
+          </button>
+          <span class="discover-page__eyebrow">
+            {contextTitle(term.glossary)} · {term.concept.kind}
+          </span>
+          <h1 class="discover-page__title">{conceptTitle(term.concept)}</h1>
+        </div>
+      </header>
+
+      <DetailSplit id="discover-term" label="Term detail" defaultSplit={58}>
         {#snippet main()}
           <section
             class="panel"
@@ -274,72 +381,82 @@
             data-id={term.concept.id}
             data-status={term.concept.status}
             data-kind={term.concept.kind}
-            style="height: 100%;"
           >
             <div class="panel__header">
-              <div class="discover-skill__heading">
-                <h2 class="panel__title">{conceptTitle(term.concept)}</h2>
-                <span class="muted">{contextTitle(term.glossary)}</span>
-              </div>
+              <h2 class="panel__title">Definition</h2>
+              <span class="panel__subtitle">{term.concept.status}</span>
             </div>
             <div class="panel__body stack-sm">
-              <p style="margin: 0;">
+              <p class="discover-term-definition">
                 {labelText(term.concept.definitions) || "No definition recorded."}
               </p>
-              <dl class="kv-grid">
-                <dt>Context</dt>
-                <dd>{contextTitle(term.glossary)}</dd>
-                <dt>Kind</dt>
-                <dd>{term.concept.kind}</dd>
-                <dt>Uses</dt>
-                <dd data-testid="discover-term-uses">
-                  {termUsage?.count ?? 0} in {termUsage?.files ?? 0}
-                  {(termUsage?.files ?? 0) === 1 ? "file" : "files"}
-                </dd>
-                <dt>Examples</dt>
-                <dd>
-                  {#if termUsage !== null && termUsage.examples.length > 0}
-                    <span class="discover-examples">
-                      {#each termUsage.examples as example, index (example)}
-                        <span class="discover-examples__item">
-                          <code>{example}</code>
-                          {#if index < termUsage.examples.length - 1}<span aria-hidden="true">,</span>{/if}
-                        </span>
-                      {/each}
-                    </span>
-                  {:else}
-                    <span class="muted">—</span>
-                  {/if}
-                </dd>
-                <dt>Origin</dt>
-                <dd>{term.concept.origin}</dd>
-                <dt>Grounding</dt>
-                <dd>
-                  {Array.isArray(term.concept.grounding) ? term.concept.grounding.length : 0}
-                </dd>
-                <dt>ID</dt>
-                <dd><code>{term.concept.id}</code></dd>
+              <dl class="discover-facts">
+                <div class="discover-fact">
+                  <dt>Uses</dt>
+                  <dd data-testid="discover-term-uses">
+                    {termUsage?.count ?? 0} in {termUsage?.files ?? 0}
+                    {(termUsage?.files ?? 0) === 1 ? "file" : "files"}
+                  </dd>
+                </div>
+                <div class="discover-fact">
+                  <dt>Examples</dt>
+                  <dd>
+                    {#if termUsage !== null && termUsage.examples.length > 0}
+                      <span class="discover-examples">
+                        {#each termUsage.examples as example, index (example)}
+                          <span class="discover-examples__item">
+                            <code>{example}</code>
+                            {#if index < termUsage.examples.length - 1}<span aria-hidden="true">,</span>{/if}
+                          </span>
+                        {/each}
+                      </span>
+                    {:else}
+                      <span class="muted">—</span>
+                    {/if}
+                  </dd>
+                </div>
+                <div class="discover-fact">
+                  <dt>Kind</dt>
+                  <dd>{term.concept.kind}</dd>
+                </div>
+                <div class="discover-fact">
+                  <dt>Bounded context</dt>
+                  <dd>{contextTitle(term.glossary)}</dd>
+                </div>
               </dl>
             </div>
           </section>
         {/snippet}
         {#snippet detail()}
-          <section class="panel" style="height: 100%;">
-            <div class="panel__header"><h2 class="panel__title">Labels &amp; context</h2></div>
+          <section class="panel">
+            <div class="panel__header">
+              <h2 class="panel__title">Context &amp; usage</h2>
+            </div>
             <div class="panel__body stack-sm">
               <div>
                 <div class="field__label">Preferred labels</div>
-                <p style="margin: 2px 0 0;">{labelTexts(term.concept.prefLabels).join(" · ")}</p>
+                <p class="discover-detail-value">
+                  {labelTexts(term.concept.prefLabels).join(" · ") || "None recorded."}
+                </p>
               </div>
               {#if term.concept.altLabels !== undefined}
                 <div>
                   <div class="field__label">Alternate labels</div>
-                  <p style="margin: 2px 0 0;">{labelTexts(term.concept.altLabels).join(" · ")}</p>
+                  <p class="discover-detail-value">
+                    {labelTexts(term.concept.altLabels).join(" · ") || "None recorded."}
+                  </p>
                 </div>
               {/if}
               <div>
+                <div class="field__label">Used in</div>
+                <p class="discover-detail-value">
+                  {termUsage?.files ?? 0} {(termUsage?.files ?? 0) === 1 ? "file" : "files"} with
+                  {termUsage?.count ?? 0} {(termUsage?.count ?? 0) === 1 ? "use" : "uses"}
+                </p>
+              </div>
+              <div>
                 <div class="field__label">Related terms</div>
-                <div class="stack-xs">
+                <div class="discover-related">
                   {#each term.glossary.concepts.filter((entry) => entry.id !== term.concept.id) as concept (concept.id)}
                     <button
                       type="button"
@@ -348,7 +465,10 @@
                       onclick={() => openTerm(term.glossary.boundedContext, concept)}
                     >
                       <span class="sidebar-item__label">{conceptTitle(concept)}</span>
+                      <span class="sidebar-item__meta">{concept.kind}</span>
                     </button>
+                  {:else}
+                    <p class="discover-detail-value muted">No related terms in this context.</p>
                   {/each}
                 </div>
               </div>
@@ -361,53 +481,47 @@
 {/snippet}
 
 {#snippet warningsPanel()}
-  <div class="scroll-column discover-page" data-testid="discover-panel" data-tab="warnings" aria-label="Discover warnings">
+  <div
+    class="scroll-column discover-page"
+    data-testid="discover-panel"
+    data-tab="warnings"
+    aria-label="Discover warnings"
+  >
     <header class="discover-page__header">
       <div class="discover-page__heading">
         <h1 class="discover-page__title">Warnings</h1>
         <p class="discover-page__subtitle">
           {discover.displayedWarnings.length}
-          {discover.displayedWarnings.length === 1 ? "warning" : "warnings"} from the published artifacts.
+          {discover.displayedWarnings.length === 1 ? "warning" : "warnings"} recorded while
+          validating the published artifacts.
         </p>
       </div>
     </header>
-    <section class="panel discover-card">
+
+    <section class="panel">
+      <div class="panel__header">
+        <h2 class="panel__title">Artifact warnings</h2>
+      </div>
       <div class="panel__body panel__body--flush">
-        {#each discover.displayedWarnings as warning, index (index)}
-          <p class="discover-warning" data-testid="discover-warning">{warning}</p>
+        {#if discover.displayedWarnings.length === 0}
+          <p class="empty">No warnings. The published artifacts validated cleanly.</p>
         {:else}
-          <p class="empty">No warnings.</p>
-        {/each}
+          <ol class="discover-warning-list">
+            {#each discover.displayedWarnings as warning, index (index)}
+              <li class="discover-warning" data-testid="discover-warning">{warning}</li>
+            {/each}
+          </ol>
+        {/if}
       </div>
     </section>
   </div>
 {/snippet}
 
-<div class="mode-body" style="gap: 6px;">
-  {#if discover.displayError !== null}
-    <p class="message" data-severity="error" data-testid="discover-error" role="alert">
-      {discover.displayError}
-    </p>
-  {/if}
-  {#if discover.displayedWarnings.length > 0}
-    <div class="row-sm" data-testid="discover-warnings" style="padding: 0 2px;">
-      <span class="badge" data-tone="warning">{discover.displayedWarnings.length} warnings</span>
-      <span class="muted">{discover.displayedWarnings[0]}</span>
-    </div>
-  {/if}
-  {#if discover.interrupted}
-    <p class="message" data-severity="warning" data-testid="discover-interrupted">
-      The last Discover run was interrupted. Nothing was published.
-    </p>
-  {/if}
-  {#if discover.transition !== null}
-    <p class="message" data-severity="notice" data-testid="discover-transition" role="status">
-      {discover.transition}
-    </p>
-  {/if}
+<div class="mode-body discover-body">
+  {@render notices()}
 
   {#if tab === null}
-    <p class="empty">No tab is open. Choose a section from the sidebar.</p>
+    <p class="empty">No page is open. Choose Overview or Glossary from the sidebar.</p>
   {:else if tab.kind === "overview"}
     <DiscoverOverview />
   {:else if tab.kind === "glossary"}

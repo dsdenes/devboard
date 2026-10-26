@@ -20,7 +20,9 @@
   let groupWidth = $state(0);
 
   const available = $derived(groupWidth > 0 ? groupWidth : 960);
-  const minimumPercent = $derived((160 / available) * 100);
+  // Paneforge stores percentages and rounds down; keep a 2px buffer so the
+  // rendered pane never measures below the documented 160px minimum.
+  const minimumPercent = $derived(((160 + 2) / available) * 100);
   const mainPercent = $derived(sizes[0] ?? defaultSplit);
 
   function reset(): void {

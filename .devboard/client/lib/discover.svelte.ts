@@ -297,7 +297,7 @@ export class DiscoverStore {
       this.question = null;
       this.answerDraft = "";
       this.error = null;
-      this.transition = "Discover run started.";
+      this.transition = null;
       return;
     }
     if (type === "discoverActivity" && typeof message.text === "string") {
@@ -323,7 +323,7 @@ export class DiscoverStore {
       this.question = null;
       this.answerDraft = "";
       if (message.completed === true) {
-        this.transition = "Discover run completed.";
+        this.transition = null;
       } else if (typeof message.reason === "string" && message.reason.length > 0) {
         this.transition = `Discover run stopped: ${message.reason}`;
       } else {

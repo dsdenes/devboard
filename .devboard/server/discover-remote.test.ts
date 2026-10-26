@@ -477,6 +477,12 @@ describe("discover remote target", () => {
         const { server, url } = startServer({ fixture, clone: clones });
         const client = await connect(url);
         try {
+          if (entry.available) {
+            const replayed = stateOf(
+              await client.take((message) => message.type === "discoverState"),
+            );
+            expect(replayed.remoteAvailable).toBe(true);
+          }
           const initial = await discoverState(client);
           expect(initial.remoteAvailable).toBe(entry.available);
           expect(initial.target).toEqual({ kind: "host" });

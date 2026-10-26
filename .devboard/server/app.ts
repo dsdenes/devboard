@@ -2518,7 +2518,8 @@ export function createApp(options: AppOptions) {
   /**
    * Replays the Discover state a client needs before its own command replies.
    * A host with nothing published, no run, and no recorded interruption has
-   * nothing to replay: its Discover view starts from the same empty state.
+   * nothing to replay, except that a harness source checkout must learn the
+   * remote manual-testing gate before its empty Overview can offer it.
    */
   function replayDiscover(ws: { send(data: string): unknown }) {
     refreshDiscoverSnapshot();
@@ -2526,7 +2527,8 @@ export function createApp(options: AppOptions) {
       discoverArtifacts !== null ||
       discoverRun !== undefined ||
       discoverInterrupted ||
-      discoverReadError !== null;
+      discoverReadError !== null ||
+      remoteAvailable;
     if (!replayable) return;
     send(ws, { type: "discoverState", state: discoverStatePayload() });
     if (discoverReadError !== null) {
