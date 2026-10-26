@@ -114,6 +114,10 @@ const discoverSheetSecret = process.argv.includes("--discover-sheet-secret");
 const discoverSheetTwoSentences = process.argv.includes("--discover-sheet-two-sentences");
 const discoverGlossaryInvalid = process.argv.includes("--discover-glossary-invalid");
 const discoverGlossaryGrounding = process.argv.includes("--discover-glossary-grounding");
+/** Omits a concept from the staged glossary, so a published one is preserved unscored. */
+const discoverGlossaryDrop = process.argv.includes("--discover-glossary-drop");
+/** The staged significance sidecar defect, or "" for a valid sidecar. */
+const discoverSignificance = argument("discover-significance") ?? "";
 const discoverMissingArtifact = process.argv.includes("--discover-missing-artifact");
 const discoverExtraArtifact = process.argv.includes("--discover-extra-artifact");
 const discoverWriteOutside = process.argv.includes("--discover-write-outside");
@@ -1032,7 +1036,7 @@ function discoverConceptLines(concept: DiscoverConcept): string[] {
   ];
 }
 
-function discoverGlossaryYaml(): string {
+function discoverGlossary(): { yaml: string; concepts: DiscoverConcept[] } {
   const paths = discoverEvidencePaths();
   const available = paths.available.length > 0 ? paths.available : ["."];
   const firstGrounding = `code:${available[0] ?? "."}`;
@@ -1079,16 +1083,83 @@ function discoverGlossaryYaml(): string {
     broader: null,
     related: [],
   };
+  const option: DiscoverConcept = {
+    id: "option",
+    prefLabels: [{ language: "en", text: "Option" }],
+    altLabels: [],
+    hiddenLabels: [],
+    definitions: [
+      {
+        language: "en",
+        text: discoverOneSentence(`${seed} names an entry of a choice list`, 160),
+      },
+    ],
+    scopeNote: null,
+    example: null,
+    historyNote: null,
+    status: "unconfirmed",
+    origin: "owner",
+    standardRef: null,
+    kind: "entity",
+    grounding: [secondGrounding],
+    broader: null,
+    related: [],
+  };
+  const concepts = discoverGlossaryDrop ? [order] : [order, option, orderTotal];
   const lines = [
     "boundedContext: orders",
     "titles:",
     "  - language: en",
     `    text: ${JSON.stringify("Orders")}`,
     "concepts:",
-    ...discoverConceptLines(order),
-    ...discoverConceptLines(orderTotal),
+    ...concepts.flatMap(discoverConceptLines),
   ];
-  return `${lines.join("\n")}\n`;
+  return { yaml: `${lines.join("\n")}\n`, concepts };
+}
+
+/** Scores the fixture concepts; the generic `option` scores lowest on purpose. */
+const DISCOVER_SIGNIFICANCE: Record<string, { score: number; reason: string }> = {
+  order: { score: 80, reason: "Every fixture checkout creates one order record." },
+  option: { score: 10, reason: "A framework option token, not a domain term." },
+  "order-total": { score: 90, reason: "The order total is the domain's central summed value." },
+};
+
+function discoverSignificanceSidecar(
+  concepts: DiscoverConcept[],
+): Record<string, unknown> {
+  const ids = [...new Set(concepts.map((concept) => concept.id))];
+  const entries: Record<string, { score: number; reason: string }> = Object.fromEntries(
+    ids.map((id) => [
+      id,
+      { ...(DISCOVER_SIGNIFICANCE[id] ?? { score: 50, reason: "Observed in the fixture host." }) },
+    ]),
+  );
+  const first = ids[0];
+  if (discoverSignificance === "unknown-concept") delete entries[ids[1] ?? first ?? ""];
+  if (discoverSignificance === "extra-concept" && first !== undefined) {
+    entries["ghost-term"] = { score: 50, reason: "A concept that is not staged." };
+  }
+  if (discoverSignificance === "score") entries.option = { score: 101, reason: "Out of range." };
+  if (discoverSignificance === "reason-empty") entries.option = { score: 10, reason: "  " };
+  if (discoverSignificance === "reason-multiline") {
+    entries.option = { score: 10, reason: "One line.\nA second line." };
+  }
+  if (discoverSignificance === "reason-absolute") {
+    entries.option = { score: 10, reason: "/home/operator/secret.ts defines it." };
+  }
+  if (discoverSignificance === "reason-secret") {
+    entries.option = { score: 10, reason: `Pinned by ${DISCOVER_SECRET}` };
+  }
+  const contexts: Record<string, unknown> = { orders: entries };
+  if (discoverSignificance === "unknown-context") {
+    contexts["other-context"] = { "another-term": { score: 50, reason: "Not a staged context." } };
+  }
+  if (discoverSignificance === "extra-key") return { schemaVersion: 1, contexts, note: "extra" };
+  if (discoverSignificance === "schema") return { schemaVersion: 2, contexts };
+  if (discoverSignificance === "score-object") {
+    return { schemaVersion: 1, contexts: { orders: { order: { score: "80", reason: "Text score." } } } };
+  }
+  return { schemaVersion: 1, contexts };
 }
 
 interface DiscoverSkill {
@@ -1197,7 +1268,17 @@ async function runDiscover(staging: string) {
   writeFileSync(join(staging, "sheet.json"), `${JSON.stringify(discoverSheet(), null, 2)}\n`);
 
   mkdirSync(join(staging, "glossary"), { recursive: true });
-  writeFileSync(join(staging, "glossary", "orders.glossary.yaml"), discoverGlossaryYaml());
+  const glossary = discoverGlossary();
+  writeFileSync(join(staging, "glossary", "orders.glossary.yaml"), glossary.yaml);
+  if (discoverSignificance !== "missing") {
+    const sidecar =
+      discoverSignificance === "invalid"
+        ? "{ not json"
+        : discoverSignificance === "array"
+          ? "[]"
+          : `${JSON.stringify(discoverSignificanceSidecar(glossary.concepts), null, 2)}\n`;
+    writeFileSync(join(staging, "glossary", "significance.json"), sidecar);
+  }
 
   const skills = discoverSkills();
   for (const [index, skill] of skills.entries()) {

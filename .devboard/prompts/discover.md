@@ -61,6 +61,7 @@ Write exactly this layout under `<staging-dir>`:
 ```
 sheet.json
 glossary/<boundedContext>.glossary.yaml
+glossary/significance.json
 skills/<skill-name>/SKILL.md
 ```
 
@@ -277,6 +278,48 @@ Never give an invalidated or human-rejected term a new proposed or unconfirmed e
 resurrect an invalidated id, and never restate a human rejection. The server merges human decisions
 during publication; do not copy `confirmed` or `invalidated` statuses into the staged files.
 
+## Glossary significance
+
+A concept belongs in the glossary only when the host itself names it as part of the project's
+domain. Omit generic framework, library, language, and UI vocabulary: never include `option`,
+`hook`, `command`, or any comparable generic token unless the host defines that exact term as a
+project concept and grounds it in at least two distinct host files. A label that would read the same
+in an unrelated project is evidence of generic vocabulary, not of a project concept.
+
+Score every included concept on a scale from 0 to 100. 50 is the significance floor: a score at or
+above it means the concept is central enough to name in the project's own language, and a score
+below it means the term is incidental. Score from the crawling evidence, not from how often a word
+occurs: a term mentioned a thousand times is insignificant when the host merely passes it through,
+and a domain term named once is significant when the host's model depends on it. Every score carries
+a one-line reason of at most 160 characters that states the evidence, without a path, a secret, or a
+second sentence.
+
+Stage the scores at `glossary/significance.json`, beside the glossaries, with exactly this shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "contexts": {
+    "<boundedContext>": {
+      "<concept-id>": { "score": 0, "reason": "One line of evidence." }
+    }
+  }
+}
+```
+
+- `schemaVersion: 1` is the only schema version; write no other top-level key.
+- `contexts` names exactly the staged bounded contexts and nothing else. Each context names exactly
+  that glossary's concept ids and nothing else.
+- Each entry carries exactly `score` and `reason`. `score` is an integer from `0` to `100`; `reason`
+  is one line of at most 160 characters, is not empty, and contains no absolute path and no secret.
+- Every glossary concept has a significance score. A missing entry, an extra entry, a score outside
+  the range, or a rejected reason fails the run, so never stage a partial sidecar.
+- Exclude significance from the glossary YAML: no concept carries a score or a reason field.
+
+The five generated skills name no concept absent from the glossary and no generic label the
+glossary omits. When a skill describes a rule about a term, that term appears in the glossary with
+its score.
+
 ## Discover skills
 
 Write exactly these five directories, each with one `SKILL.md`:
@@ -395,6 +438,11 @@ Confirm all of the following:
       concept.
 - [ ] Every concept is `unconfirmed` or `proposed`; every `origin: standard` has a `standardRef`;
       no confirmed, deprecated, or invalidated status appears.
+- [ ] `glossary/significance.json` exists beside the glossaries and every staged glossary concept
+      carries a significance score in it: one integer from `0` to `100` and a one-line reason,
+      with no missing, extra, or unscored entry.
+- [ ] No generic label the glossaries omit is named by a generated skill, and every concept a
+      generated skill names appears in the glossary.
 - [ ] All five `skills/<name>/SKILL.md` files exist with matching names, non-empty descriptions of
       at most 1024 characters, and both markers; each body is a heading plus imperative bullets,
       and no bullet names a source, test, manifest, or CI path.

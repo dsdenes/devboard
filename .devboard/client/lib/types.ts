@@ -230,6 +230,15 @@ export interface ConceptUsage {
 /** Usage keyed by bounded context, then concept id. */
 export type GlossaryUsage = Record<string, Record<string, ConceptUsage>>;
 
+/** The crawl's own judgment of how much a concept matters to the project. */
+export interface ConceptSignificance {
+  score: number;
+  reason: string;
+}
+
+/** Significance keyed by bounded context, then concept id. */
+export type GlossarySignificance = Record<string, Record<string, ConceptSignificance>>;
+
 export interface DiscoverSkill {
   name: string;
   state: "generated" | "edited" | "missing";
@@ -275,6 +284,7 @@ export interface DiscoverStatePayload {
   dependencyRepositories: Record<string, string>;
   glossaries: Glossary[];
   glossaryUsage: GlossaryUsage;
+  glossarySignificance: GlossarySignificance;
   decisions: unknown[];
   skills: DiscoverSkill[];
 }

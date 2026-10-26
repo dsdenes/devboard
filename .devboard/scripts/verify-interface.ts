@@ -12,7 +12,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { journalKey } from "../server/journal";
 import { stateFile } from "../server/state";
@@ -1712,16 +1712,18 @@ try {
   const glossary = await page.eval<{
     contexts: number;
     terms: number;
+    ids: string[];
     heights: number[];
     search: boolean;
     headers: string[];
     termsText: string[];
     termLefts: number[];
-    uses: string[];
+    significance: string[];
+    significanceAttrs: string[];
     exampleCounts: number[];
-    slider: { min: string; max: string; value: string } | null;
+    slider: { min: string; max: string; value: string; disabled: boolean } | null;
+    toggle: { checked: boolean; disabled: boolean } | null;
     menu: boolean;
-    toggle: boolean;
     kindIcons: number;
     kindColors: string[];
     tableScrolls: number[];
@@ -1732,26 +1734,29 @@ try {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
     const kindCells = rows.map((row) => row.querySelector('td:nth-child(1)'));
     const termCells = rows.map((row) => row.querySelector('td:nth-child(2)'));
-    const useCells = rows.map((row) => row.querySelector('td:nth-child(3)'));
+    const significanceCells = rows.map((row) => row.querySelector('td:nth-child(3)'));
     const exampleCells = rows.map((row) => row.querySelector('td:nth-child(5)'));
     const wraps = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"] .table-wrap')];
     const cards = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"]')];
     const search = document.querySelector('[data-testid="discover-glossary-search"]');
     const searchStyle = search === null ? null : getComputedStyle(search);
     const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
+    const toggle = document.querySelector('[data-testid="discover-glossary-significant"]');
     return {
       contexts: document.querySelectorAll('#workspace-discover [data-testid="discover-context"]').length,
       terms: rows.length,
+      ids: rows.map((row) => row.getAttribute("data-id") ?? ""),
       heights: rows.map((row) => Math.round(row.getBoundingClientRect().height)),
       search: document.querySelector('[data-testid="discover-glossary-search"]') !== null,
       headers: [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"] thead th')].map((header) => header.textContent.trim()),
       termsText: termCells.map((cell) => cell?.textContent?.trim() ?? ""),
       termLefts: [...new Set(termCells.map((cell) => Math.round(cell?.getBoundingClientRect().left ?? 0)))],
-      uses: useCells.map((cell) => cell?.textContent?.trim() ?? ""),
+      significance: significanceCells.map((cell) => cell?.textContent?.trim() ?? ""),
+      significanceAttrs: rows.map((row) => row.getAttribute("data-significance") ?? ""),
       exampleCounts: exampleCells.map((cell) => cell?.querySelectorAll('code').length ?? 0),
-      slider: slider === null ? null : { min: slider.min, max: slider.max, value: slider.value },
+      slider: slider === null ? null : { min: slider.min, max: slider.max, value: slider.value, disabled: slider.disabled },
+      toggle: toggle === null ? null : { checked: toggle.checked, disabled: toggle.disabled },
       menu: document.querySelector('[data-testid="discover-glossary-menu"]') !== null,
-      toggle: document.querySelector('[data-testid="discover-glossary-toggle"]') !== null,
       kindIcons: kindCells.filter((cell) => cell?.querySelector('.discover-kind svg') !== null).length,
       kindColors: [...new Set(kindCells
         .map((cell) => cell?.querySelector('.discover-kind'))
@@ -1769,22 +1774,45 @@ try {
   check(glossary.contexts > 0 && glossary.terms > 0, "the glossary tables are empty", glossary);
   check(glossary.heights.every((height) => height > 0 && height <= 120), "a glossary row is mis-sized", glossary.heights);
   check(
-    glossary.headers.join("|") === "Kind|Term|Uses|Definition|",
-    "the glossary table does not carry the uses and unnamed example columns",
+    glossary.headers.join("|") === "Kind|Term|Significance|Definition|",
+    "the glossary table does not carry the significance and unnamed example columns",
     glossary.headers,
   );
   check(glossary.termsText.every((text) => text.length > 0), "a glossary row has no term", glossary.termsText);
   check(glossary.termLefts.length === 1, "the term column width differs between contexts", glossary.termLefts);
-  check(glossary.uses.every((value) => /^[0-9]+$/.test(value)), "a glossary row has no usage count", glossary.uses);
+  check(
+    glossary.significance.every((value) => /^[0-9]+$/.test(value)),
+    "a glossary row has no significance score",
+    glossary.significance,
+  );
+  check(
+    glossary.significanceAttrs.every((value) => /^[0-9]+$/.test(value)),
+    "a glossary row does not carry its score in data-significance",
+    glossary.significanceAttrs,
+  );
   check(glossary.exampleCounts.every((count) => count > 0), "a glossary row has no usage examples", glossary.exampleCounts);
   check(glossary.search, "the glossary search is missing");
-  check(!glossary.menu && !glossary.toggle, "the glossary sidebar still has a disclosure menu", glossary);
   check(
-    glossary.slider !== null && Number(glossary.slider.max) >= Number(glossary.slider.min),
-    "the significance slider is missing",
+    glossary.toggle !== null && glossary.toggle.checked && !glossary.toggle.disabled,
+    "the significant-only filter is missing, unchecked, or disabled",
+    glossary.toggle,
+  );
+  check(
+    glossary.slider !== null &&
+      glossary.slider.min === "0" &&
+      glossary.slider.max === "100" &&
+      glossary.slider.value === "50" &&
+      !glossary.slider.disabled,
+    "the significance slider does not span 0 to 100 at the default floor",
     glossary.slider,
   );
-  check(glossary.kindIcons === glossary.terms, "a glossary kind is not the first cell", glossary);
+  check(
+    glossary.ids.join("|") === "order-total|order" && !glossary.ids.includes("option"),
+    "the default glossary does not hide the low-score term and order the rest by score",
+    glossary.ids,
+  );
+  check(!glossary.menu, "the glossary sidebar still has a disclosure menu", glossary);
+  check(glossary.kindIcons === glossary.terms, "a glossary kind is not the first cell", glossary.kindIcons);
   check(glossary.kindColors.length >= 2, "the glossary kind icons are not color-coded", glossary.kindColors);
   check(glossary.tableScrolls.every((delta) => delta <= 1), "a glossary table clips its rows", glossary.tableScrolls);
   check(glossary.clippedCards === 0, "a glossary card clips its rows", glossary.clippedCards);
@@ -1792,19 +1820,41 @@ try {
   check(glossary.searchPadding.every((value) => value === "0px"), "the glossary search placeholder is not vertically centered", glossary.searchPadding);
   const warningsSection = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="Warnings"]') !== null`);
   check(!warningsSection, "the sidebar still shows an empty warnings section");
+
+  // Clearing the filter reveals the low-score generic term and disables the floor.
   await page.eval(`(() => {
+    const toggle = document.querySelector('[data-testid="discover-glossary-significant"]');
+    toggle.click();
+  })()`);
+  await page.wait(
+    `document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === 3`,
+    "the revealed low-score glossary term",
+  );
+  const revealed = await page.eval<{ ids: string[]; sliderDisabled: boolean }>(`(() => ({
+    ids: [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')].map((row) => row.getAttribute("data-id")),
+    sliderDisabled: document.querySelector('[data-testid="discover-glossary-threshold"]').disabled,
+  }))()`);
+  check(
+    revealed.ids.join("|") === "order-total|order|option",
+    "clearing the filter does not reveal the low-score term in score order",
+    revealed.ids,
+  );
+  check(revealed.sliderDisabled, "the significance slider stays active while the filter is off");
+
+  // The floor and the filter compose: only the highest score survives 90.
+  await page.eval(`(() => {
+    const toggle = document.querySelector('[data-testid="discover-glossary-significant"]');
+    toggle.click();
     const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
-    slider.value = slider.max;
+    slider.value = "90";
     slider.dispatchEvent(new Event("input", { bubbles: true }));
   })()`);
   await page.wait(
     `(() => {
-      const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
-      if (slider === null) return false;
-      return [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')]
-        .every((row) => row.getAttribute("data-uses") === slider.max);
+      const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
+      return rows.length === 1 && rows[0].getAttribute("data-id") === "order-total";
     })()`,
-    "the significance filter",
+    "the significance floor",
   );
   await page.eval(`(() => {
     const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
@@ -1812,13 +1862,78 @@ try {
     slider.dispatchEvent(new Event("input", { bubbles: true }));
   })()`);
   await page.wait(
-    `document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === ${glossary.terms}`,
-    "the cleared significance filter",
+    `document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === 3`,
+    "the cleared significance floor",
   );
   await page.fill('[data-testid="discover-glossary-search"]', "Order Total");
   await page.wait(`document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === 1`, "the filtered glossary");
   await page.fill('[data-testid="discover-glossary-search"]', "");
-  await page.wait(`document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === ${glossary.terms}`, "the cleared glossary search");
+  await page.wait(`document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === 3`, "the cleared glossary search");
+  await page.eval(`(() => {
+    const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
+    slider.value = "50";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await page.wait(
+    `document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === ${glossary.terms}`,
+    "the restored significance floor",
+  );
+
+  // A publication from before the sidecar shows every term, unscored.
+  const manifestPath = join(host, ".omp", "discover", "manifest.json");
+  const significancePath = join(host, ".omp", "discover", "significance.json");
+  const manifestText = await readFile(manifestPath, "utf8");
+  const significanceText = await readFile(significancePath, "utf8");
+  const legacyManifest = JSON.parse(manifestText) as { paths: Record<string, unknown> };
+  delete legacyManifest.paths.significance;
+  await writeFile(manifestPath, `${JSON.stringify(legacyManifest, null, 2)}\n`);
+  await rm(significancePath);
+  await page.reload();
+  await runPalette("discover.tab.glossary");
+  await page.wait(
+    `document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === 3`,
+    "the legacy glossary",
+  );
+  const legacy = await page.eval<{
+    significance: string[];
+    attrs: string[];
+    toggle: { checked: boolean; disabled: boolean } | null;
+    sliderDisabled: boolean;
+  }>(`(() => {
+    const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
+    const toggle = document.querySelector('[data-testid="discover-glossary-significant"]');
+    return {
+      significance: rows.map((row) => row.querySelector("td:nth-child(3)")?.textContent?.trim() ?? ""),
+      attrs: rows.map((row) => row.getAttribute("data-significance") ?? "missing"),
+      toggle: toggle === null ? null : { checked: toggle.checked, disabled: toggle.disabled },
+      sliderDisabled: document.querySelector('[data-testid="discover-glossary-threshold"]').disabled,
+    };
+  })()`);
+  check(
+    legacy.significance.every((value) => value === "—"),
+    "a legacy glossary row shows a significance score",
+    legacy.significance,
+  );
+  check(
+    legacy.attrs.every((value) => value === ""),
+    "a legacy glossary row carries data-significance",
+    legacy.attrs,
+  );
+  check(
+    legacy.toggle !== null && legacy.toggle.disabled,
+    "the significant-only control is active without scores",
+    legacy.toggle,
+  );
+  check(legacy.sliderDisabled, "the significance slider is active without scores");
+  await writeFile(manifestPath, manifestText);
+  await writeFile(significancePath, significanceText);
+  await page.reload();
+  await runPalette("discover.tab.glossary");
+  await page.wait(
+    `document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === ${glossary.terms}`,
+    "the restored scored glossary",
+  );
+
   const termCommand = await page.eval<string>(`(() => {
     const element = [...document.querySelectorAll('#workspace-discover [data-command^="discover.term.open."]')]
       .find((entry) => entry.getClientRects().length > 0);
@@ -1839,6 +1954,12 @@ try {
   check(termChrome.headerBadges === 0, "the term detail still renders a status badge", termChrome);
   check(termChrome.badges === 0 && termChrome.workspaceBadges === 0, "the term detail still renders status labels", termChrome);
   check(termChrome.closeButtons === 0, "the term detail still renders a Close control", termChrome);
+  const termSignificance = await page.eval<string>(`document.querySelector('[data-testid="discover-term-significance"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? ""`);
+  check(
+    termSignificance.includes("90") && termSignificance.includes("order total"),
+    "the term detail does not show the score and its reason",
+    termSignificance,
+  );
   const termSplit = await page.eval<{ handles: number; panes: number[]; orientation: string }>(`(() => {
     const handles = [...document.querySelectorAll('#workspace-discover [data-testid="pane-handle"]')];
     const panes = [...document.querySelectorAll('#workspace-discover [data-pane]')].map((pane) => Math.round(pane.getBoundingClientRect().width));

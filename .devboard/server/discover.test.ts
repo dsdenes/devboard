@@ -268,6 +268,7 @@ interface DiscoverState {
   sheet: Record<string, unknown> | null;
   glossaries: Record<string, unknown>[];
   glossaryUsage: Record<string, Record<string, { count: number; files: number; examples: string[] }>>;
+  glossarySignificance: Record<string, Record<string, { score: number; reason: string }>>;
   decisions: Record<string, unknown>[];
   skills: Record<string, unknown>[];
 }
@@ -428,6 +429,7 @@ describe("discover mode", () => {
           expect(value.startsWith("/")).toBe(false);
           expect(value).not.toMatch(/[A-Za-z]:\\/);
         }
+        expect(paths.significance).toBe(".omp/discover/significance.json");
 
         // The published set exists exactly where the contract puts it.
         const root = fixture.root;
@@ -435,6 +437,7 @@ describe("discover mode", () => {
           ".omp/discover/manifest.json",
           ".omp/discover/sheet.json",
           ".omp/discover/decisions.json",
+          ".omp/discover/significance.json",
           ".omp/discover/glossary/orders.glossary.yaml",
           ...DISCOVER_SKILLS.map((name) => `.omp/discover/skills/${name}/SKILL.md`),
           ...DISCOVER_SKILLS.map((name) => `.omp/skills/${name}/SKILL.md`),
@@ -442,6 +445,19 @@ describe("discover mode", () => {
           expect(existsSync(join(root, relative))).toBe(true);
         }
         expect(existsSync(join(root, ".omp", "discover", "staging"))).toBe(false);
+
+        // The sidecar carries one integer score and one reason per concept.
+        const sidecar = JSON.parse(
+          readFileSync(join(root, ".omp", "discover", "significance.json"), "utf8"),
+        ) as Record<string, unknown>;
+        expect(Object.keys(sidecar)).toEqual(["schemaVersion", "contexts"]);
+        expect(sidecar.schemaVersion).toBe(1);
+        expect(Object.keys(sidecar.contexts as Record<string, unknown>)).toEqual(["orders"]);
+        expect(state.glossarySignificance.orders?.["order-total"]).toEqual({
+          score: 90,
+          reason: "The order total is the domain's central summed value.",
+        });
+        expect(state.glossarySignificance.orders?.option?.score).toBe(10);
 
         // The sheet is data, not prose, and every non-unknown leaf is grounded.
         const sheet = state.sheet as Record<string, unknown>;
@@ -522,6 +538,13 @@ describe("discover mode", () => {
           for (const entry of grounding) expect(entry).toMatch(/^(code|model):/);
           const prefLabels = concept.prefLabels as Array<Record<string, unknown>>;
           for (const label of prefLabels) expect(["en", "de"]).toContain(String(label.language));
+          const scored = state.glossarySignificance.orders?.[id];
+          expect(scored).toBeDefined();
+          expect(Number.isInteger(scored?.score)).toBe(true);
+          expect(scored?.score).toBeGreaterThanOrEqual(0);
+          expect(scored?.score).toBeLessThanOrEqual(100);
+          expect(scored?.reason.length).toBeGreaterThan(0);
+          expect(scored?.reason).not.toContain("\n");
         }
 
         // Usage is measured from the host's documentation and source, and the
@@ -1200,6 +1223,169 @@ describe("discover mode", () => {
       }
     },
     30000,
+  );
+
+  test(
+    "rejects every invalid significance sidecar and leaves the published set byte-identical",
+    async () => {
+      const variants = [
+        "missing",
+        "invalid",
+        "array",
+        "unknown-context",
+        "unknown-concept",
+        "extra-concept",
+        "extra-key",
+        "schema",
+        "score",
+        "score-object",
+        "reason-empty",
+        "reason-multiline",
+        "reason-absolute",
+        "reason-secret",
+      ];
+      const fixture = createFixture("failure-significance");
+      const healthy = startServer({ fixture });
+      const client = await connect(healthy.url);
+      let before: Map<string, string>;
+      try {
+        await runDiscover(client);
+        before = ompBytes(fixture.root);
+        expect(before.has(".omp/discover/significance.json")).toBe(true);
+      } finally {
+        client.close();
+        healthy.server.stop(true);
+      }
+
+      for (const variant of variants) {
+        const failing = startServer({
+          fixture,
+          stub: ["--discover", `--discover-significance=${variant}`],
+        });
+        const failingClient = await connect(failing.url);
+        try {
+          failingClient.send({ type: "discoverProject" });
+          await failingClient.waitFor((message) => message.type === "discoverStarted");
+          const errored = await failingClient.waitFor((message) => message.type === "discoverError");
+          expect(String(errored.message)).toContain("significance.json");
+          const stopped = await failingClient.waitFor((message) => message.type === "discoverStopped");
+          expect(stopped.completed).toBe(false);
+          expect(
+            failingClient.events.filter((message) => message.type === "discoverError").length,
+          ).toBe(1);
+          expect(ompBytes(fixture.root)).toEqual(before);
+          const stagingRoot = join(fixture.root, ".omp", "discover", "staging");
+          expect(existsSync(stagingRoot) ? readdirSync(stagingRoot).length : 0).toBe(0);
+        } finally {
+          failingClient.close();
+          failing.server.stop(true);
+        }
+      }
+    },
+    120000,
+  );
+
+  test(
+    "serves a legacy manifest without the sidecar path as unscored",
+    async () => {
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      try {
+        await runDiscover(client);
+        const manifestPath = join(fixture.root, ".omp", "discover", "manifest.json");
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+          paths: Record<string, unknown>;
+        };
+        // A publication written before the sidecar existed carries no path.
+        delete manifest.paths.significance;
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+        rmSync(join(fixture.root, ".omp", "discover", "significance.json"));
+
+        const state = await discoverState(client);
+        expect(state.error).toBeNull();
+        expect(state.glossarySignificance).toEqual({});
+        expect(state.glossaries.length).toBe(1);
+        expect((state.glossaries[0]?.concepts as unknown[]).length).toBeGreaterThan(0);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "keeps every digest when only the significance scores change",
+    async () => {
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      try {
+        const first = await runDiscover(client);
+        const firstManifest = first.manifest as Record<string, unknown>;
+        const sidecarPath = join(fixture.root, ".omp", "discover", "significance.json");
+        const sidecar = JSON.parse(readFileSync(sidecarPath, "utf8")) as {
+          schemaVersion: number;
+          contexts: Record<string, Record<string, { score: number; reason: string }>>;
+        };
+        const orders = sidecar.contexts.orders ?? {};
+        orders["order-total"] = { score: 55, reason: "Still significant, scored lower." };
+        orders.option = { score: 5, reason: "An incidental framework option token." };
+        sidecar.contexts.orders = orders;
+        writeFileSync(sidecarPath, `${JSON.stringify(sidecar, null, 2)}\n`);
+
+        const second = await discoverState(client);
+        const secondManifest = second.manifest as Record<string, unknown>;
+        expect(secondManifest.sheetDigest).toBe(firstManifest.sheetDigest);
+        expect(secondManifest.glossaryDigests).toEqual(firstManifest.glossaryDigests);
+        expect(second.glossarySignificance.orders?.["order-total"]?.score).toBe(55);
+        expect(second.glossarySignificance.orders?.option?.score).toBe(5);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "publishes a preserved human decision unscored when the crawl stages no score for it",
+    async () => {
+      const fixture = createFixture("preserved-unscored");
+      const first = startServer({ fixture });
+      const firstClient = await connect(first.url);
+      try {
+        await runDiscover(firstClient);
+      } finally {
+        firstClient.close();
+        first.server.stop(true);
+      }
+
+      const dropped = startServer({
+        fixture,
+        stub: ["--discover", "--discover-glossary-drop"],
+      });
+      const client = await connect(dropped.url);
+      try {
+        client.send({ type: "discoverProject" });
+        await client.waitFor((message) => message.type === "discoverStarted");
+        const stopped = await client.waitFor((message) => message.type === "discoverStopped");
+        expect(stopped.completed).toBe(true);
+        const state = await discoverState(client);
+        expect(state.error).toBeNull();
+        const glossary = state.glossaries[0] as {
+          concepts: Array<{ id: string; status: string }>;
+        };
+        const preserved = glossary.concepts.find((concept) => concept.id === "order-total");
+        expect(preserved).toBeDefined();
+        expect(preserved?.status).toBe("confirmed");
+        expect(state.glossarySignificance.orders?.["order-total"]).toBeUndefined();
+        expect(state.glossarySignificance.orders?.order?.score).toBe(80);
+      } finally {
+        client.close();
+        dropped.server.stop(true);
+      }
+    },
+    60000,
   );
 });
 
