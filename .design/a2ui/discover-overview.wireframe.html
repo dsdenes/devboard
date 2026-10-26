@@ -157,14 +157,20 @@
           <section class="card">
             <span class="wf-ann">region_architecture · P1 · C18 C19</span>
             <h2>Bounded contexts</h2>
-            <table class="table">
-              <thead><tr><th>Bounded context</th><th>Path</th><th>Responsibility</th><th>Entry points</th></tr></thead>
-              <tbody><tr><td>Orders</td><td><code>src/orders</code></td><td>Owns one customer order</td><td><code>src/orders/index.ts</code></td></tr></tbody>
-            </table>
-            <div class="cols" style="margin-top:8px">
-              <div><h3>External boundaries</h3><div class="chips"><span class="chip">None detected</span></div></div>
-              <div><h3>Shared kernels</h3><div class="chips"><span class="chip">None detected</span></div></div>
+            <div class="col">
+              <div class="col">
+                <div class="row"><strong>Orders</strong><code>src/orders</code></div>
+                <p>Owns one customer order</p>
+                <div class="chips">
+                  <span style="color:var(--muted);font-size:9px;letter-spacing:.08em;text-transform:uppercase">Entry points</span>
+                  <span class="chip">src/orders/index.ts</span>
+                </div>
+              </div>
             </div>
+            <dl class="facts" style="margin-top:8px">
+              <dt>Dependency direction</dt>
+              <dd>Dependencies point inward toward the Orders domain code.</dd>
+            </dl>
           </section>
         </div>
 

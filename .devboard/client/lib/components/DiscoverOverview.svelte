@@ -32,12 +32,28 @@
     { id: "tests", header: "Tests", accessorKey: "tests" },
     { id: "detail", header: "Paths & fixtures", accessorKey: "detail" },
   ];
-  const CONTEXT_COLUMNS = [
-    { id: "name", header: "Bounded context", accessorKey: "name" },
-    { id: "path", header: "Path", accessorKey: "path" },
-    { id: "responsibility", header: "Responsibility", accessorKey: "responsibility" },
-    { id: "entryPoints", header: "Entry points", accessorKey: "entryPoints" },
-  ];
+  const BOUNDARY_GROUPS = [
+    { key: "sharedKernels", label: "Shared kernels", kind: "chips" },
+    { key: "externalBoundaries", label: "External boundaries", kind: "chips" },
+    { key: "dependencyDirection", label: "Dependency direction", kind: "sentence" },
+  ] as const;
+
+  type BoundaryGroup = (typeof BOUNDARY_GROUPS)[number];
+
+  interface ContextRow {
+    name: string;
+    path: string;
+    responsibility: string;
+    entryPoints: string[];
+  }
+
+  interface BoundaryRow {
+    key: BoundaryGroup["key"];
+    label: string;
+    kind: BoundaryGroup["kind"];
+    values: string[];
+  }
+
   const MONO_FIELDS = new Set(["artifact", "defaultBranch", "manifests"]);
 
   const sheet = $derived(discover.sheet);
@@ -98,20 +114,45 @@
   );
 
   const architectureSection = $derived(sheet?.architecture);
-  const contextRows = $derived(
-    recordItems(sectionLeaf(architectureSection, "contexts")).map((record) => ({
-      name: scalarText(record.name),
-      path: scalarText(record.path),
-      responsibility: scalarText(record.responsibility),
-      entryPoints: Array.isArray(record.entryPoints)
-        ? record.entryPoints.map((entry) => scalarText(entry)).filter(Boolean).join(" · ")
-        : "",
-    })),
+  const contextsLeaf = $derived(sectionLeaf(architectureSection, "contexts"));
+  const contextRows: ContextRow[] = $derived(
+    recordItems(contextsLeaf)
+      .map((record) => {
+        const path = scalarText(record.path);
+        const entryPoints = Array.isArray(record.entryPoints)
+          ? record.entryPoints.map((entry) => scalarText(entry).trim()).filter(Boolean)
+          : [];
+        return {
+          name: scalarText(record.name).trim(),
+          path,
+          responsibility: scalarText(record.responsibility).trim(),
+          entryPoints: [...new Set(entryPoints)].filter((entry) => entry !== path),
+        };
+      })
+      .filter((row) => row.name.length > 0 || row.path.length > 0),
   );
-  const externalBoundaries = $derived(
-    sectionLeaf(architectureSection, "externalBoundaries"),
-  );
-  const sharedKernels = $derived(sectionLeaf(architectureSection, "sharedKernels"));
+  const boundaryRows: BoundaryRow[] = $derived.by(() => {
+    const rows: BoundaryRow[] = [];
+    for (const group of BOUNDARY_GROUPS) {
+      const leaf = sectionLeaf(architectureSection, group.key);
+      if (leaf === undefined || leaf.confidence === "unknown") continue;
+      const values = boundaryValues(leaf, group.kind);
+      if (values.length === 0) continue;
+      rows.push({ key: group.key, label: group.label, kind: group.kind, values });
+    }
+    return rows;
+  });
+  const unknownBoundaryGroups = $derived.by(() => {
+    const labels: string[] = [];
+    const reasons = new Set<string>();
+    for (const group of BOUNDARY_GROUPS) {
+      const leaf = sectionLeaf(architectureSection, group.key);
+      if (leaf === undefined || leaf.confidence !== "unknown") continue;
+      labels.push(group.label.toLowerCase());
+      if (typeof leaf.reason === "string" && leaf.reason.length > 0) reasons.add(leaf.reason);
+    }
+    return { labels, reasons: [...reasons] };
+  });
 
   function baseName(value: string): string {
     const trimmed = value.replace(/[\\/]+$/, "");
@@ -121,6 +162,16 @@
 
   function leafText(leaf: Leaf): string {
     return leafLines(leaf.value).join(", ");
+  }
+
+  function boundaryValues(leaf: Leaf, kind: BoundaryGroup["kind"]): string[] {
+    if (kind === "sentence") {
+      const text = scalarText(leaf.value).trim();
+      return text.length > 0 && text.toLowerCase() !== "none detected" ? [text] : [];
+    }
+    if (!Array.isArray(leaf.value)) return [];
+    const values = leaf.value.map((value) => scalarText(value).trim()).filter(Boolean);
+    return [...new Set(values)].filter((value) => value.toLowerCase() !== "none detected");
   }
 
   function visibleSection(section: unknown, hidden: string[]): Record<string, unknown> {
@@ -273,6 +324,14 @@
           {line}
         </a>
       {/if}
+    {/each}
+  </div>
+{/snippet}
+
+{#snippet plainChips(lines: string[])}
+  <div class="discover-chips">
+    {#each lines as line (line)}
+      <code class="discover-chip">{line}</code>
     {/each}
   </div>
 {/snippet}
@@ -524,47 +583,59 @@
           <section class="panel discover-card" data-testid="discover-card" data-field="architecture">
             <div class="panel__header">
               <h2 class="panel__title">Bounded contexts</h2>
-              <span class="panel__subtitle">
-                {contextRows.length}
-                {contextRows.length === 1 ? "context" : "contexts"}
-              </span>
             </div>
             <div class="panel__body">
               {#if contextRows.length > 0}
-                <DataTable
-                  data-testid="discover-contexts"
-                  columns={CONTEXT_COLUMNS}
-                  rows={contextRows}
-                  rowAttrs={(row) => ({ "data-context": String(row.name ?? "") })}
-                  cellValue={(row, columnId) => String(row[columnId] ?? "")}
-                  cellAttrs={(_row, columnId) =>
-                    columnId === "path" || columnId === "entryPoints"
-                      ? { class: "discover-mono" }
-                      : {}}
-                  full
-                  wrap
-                />
+                <ul class="discover-contexts" data-testid="discover-contexts">
+                  {#each contextRows as context, index (index)}
+                    <li class="discover-context" data-context={context.name}>
+                      <div class="discover-context__head">
+                        <span class="discover-context__name">{context.name}</span>
+                        {#if context.path.length > 0}
+                          <code class="discover-context__path">{context.path}</code>
+                        {/if}
+                      </div>
+                      {#if context.responsibility.length > 0}
+                        <p class="discover-context__responsibility">{context.responsibility}</p>
+                      {/if}
+                      {#if context.entryPoints.length > 0}
+                        <div class="discover-context__entries">
+                          <span class="discover-context__label">Entry points</span>
+                          {@render plainChips(context.entryPoints)}
+                        </div>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              {:else if contextsLeaf !== undefined && contextsLeaf.confidence === "unknown"}
+                <p class="empty">{unknownText(contextsLeaf)}</p>
               {:else}
                 <p class="empty">No bounded context was detected.</p>
               {/if}
-              <div class="discover-boundaries">
-                <div>
-                  <div class="discover-subblock__title">External boundaries</div>
-                  {#if externalBoundaries !== undefined && externalBoundaries.confidence !== "unknown"}
-                    {@render chipList(leafLines(externalBoundaries.value))}
-                  {:else}
-                    <p class="empty">Not observed.</p>
-                  {/if}
-                </div>
-                <div>
-                  <div class="discover-subblock__title">Shared kernels</div>
-                  {#if sharedKernels !== undefined && sharedKernels.confidence !== "unknown"}
-                    {@render chipList(leafLines(sharedKernels.value))}
-                  {:else}
-                    <p class="empty">Not observed.</p>
-                  {/if}
-                </div>
-              </div>
+
+              {#if boundaryRows.length > 0}
+                <dl class="discover-boundaries">
+                  {#each boundaryRows as row (row.key)}
+                    <div class="discover-boundary" data-role={row.key}>
+                      <dt>{row.label}</dt>
+                      <dd>
+                        {#if row.kind === "chips"}
+                          {@render plainChips(row.values)}
+                        {:else}
+                          {row.values[0]}
+                        {/if}
+                      </dd>
+                    </div>
+                  {/each}
+                </dl>
+              {/if}
+
+              {#if unknownBoundaryGroups.labels.length > 0}
+                <p class="discover-boundary-note">
+                  Not observed: {unknownBoundaryGroups.labels.join(", ")}.
+                  {unknownBoundaryGroups.reasons.join(" ")}
+                </p>
+              {/if}
             </div>
           </section>
         {/if}

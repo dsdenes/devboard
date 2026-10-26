@@ -24,7 +24,7 @@ the client types. Journey numbers refer to `brief.md`.
 | C16 | Delivery facts: deployment, CI, branching | `sheet.deployment`, `sheet.ci`, `sheet.branching` | 2 | Know how a change reaches production | yes | One grouped card, not three sections |
 | C17 | Stack chips with repository links | `sheet.stack`, `discover.repositoryLink` | 2 | Inspect a dependency | yes | Supporting detail; P2 |
 | C18 | Bounded contexts: name, path, responsibility, entry points | `sheet.architecture.contexts` | 2, 5 | Find the code that owns a term | yes | Connects the sheet to the glossary |
-| C19 | External boundaries and shared kernels | `sheet.architecture` | 2 | Judge coupling | yes | Compact chip lists inside C18's card |
+| C19 | External boundaries and shared kernels | `sheet.architecture` | 2 | Judge coupling | yes | Role rows inside C18's card; the widget's own inventory owns the detail |
 | C20 | Glossary terms: kind, term, uses, definition, examples | `glossaries`, `glossaryUsage` | 5 | Choose the project's word | yes | Core glossary content |
 | C21 | Glossary search | `discover.glossarySearch` | 5 | Find a term in a large glossary | yes | Keeps the table usable |
 | C22 | Minimum-use threshold with current value | `discover.glossaryThreshold`, `glossaryMaxUses` | 5 | Hide noise terms | yes | Explicitly opt-in filter |

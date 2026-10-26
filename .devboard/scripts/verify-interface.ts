@@ -1631,6 +1631,9 @@ try {
       stackHref: stackLink?.getAttribute("href") ?? "",
       commandHeaders: document.querySelectorAll('[data-testid="discover-command-list"] thead').length,
       contextHeader: document.querySelector('#workspace-discover [data-field="architecture"] th')?.textContent?.trim() ?? "",
+      contextRows: document.querySelectorAll('#workspace-discover [data-testid="discover-contexts"] .discover-context').length,
+      contextRoles: [...document.querySelectorAll('#workspace-discover .discover-boundary dt')]
+        .map((term) => term.textContent.trim()),
       stackedSections: document.querySelectorAll('#workspace-discover [data-field="unknowns"], #workspace-discover [data-field="dependencyMap"]').length,
       staticText: document.querySelectorAll('#workspace-discover [data-tab="overview"] .discover-lead, #workspace-discover [data-tab="overview"] .discover-note').length,
       sidebarTitle: document.querySelector('[data-testid="sidebar"] .sidebar__title')?.textContent?.trim() ?? "",
@@ -1664,7 +1667,9 @@ try {
   check(discoverTables.stackedSections === 0, "Discover still renders the duplicated dependency or unknown sections", discoverTables.stackedSections);
   check(discoverTables.staticText === 0, "Discover still renders static lead or note prose", discoverTables.staticText);
   check(discoverTables.commandHeaders === 0, "the command table still renders a header row", discoverTables.commandHeaders);
-  check(discoverTables.contextHeader === "Bounded context", "the architecture table does not name bounded contexts", discoverTables.contextHeader);
+  check(discoverTables.contextHeader === "", "the bounded-context card still renders a table header", discoverTables.contextHeader);
+  check(discoverTables.contextRows > 0, "the bounded-context list is empty", discoverTables);
+  check(discoverTables.contextRoles.includes("Dependency direction"), "the boundary map does not label the dependency direction", discoverTables.contextRoles);
   check(discoverTables.sidebarTitle === discoverTables.projectTitle, "the sidebar title does not name the repository", discoverTables);
   check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
   check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);

@@ -334,8 +334,8 @@ Documented exceptions outside the scale: Flow diagram grid gaps of 18px and 22px
 34px, and 44px region heights and the 64px rail are fixed shell dimensions. The 56px bottom
 padding on a Discover page reserves the fixed notification region (34px above the 26px status
 bar) so a page's last control can scroll clear of it. The 180px Discover activity terminal, the
-104px fact-label column, the 200–600px sidebar bounds, and the 160px split minimum are component
-geometry, not spacing steps.
+104px fact-label column, the 160px Discover boundary-role column, the 200–600px sidebar bounds,
+and the 160px split minimum are component geometry, not spacing steps.
 
 ## Elevation & Depth
 
