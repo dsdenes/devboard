@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -30,6 +30,14 @@ interface Fixture {
 }
 
 const cleanup: (() => void)[] = [];
+const servers: Server<unknown>[] = [];
+
+afterEach(() => {
+  // Stop each test's servers and their ACP peers before the next test; the
+  // suite runs many peers in parallel and a leftover server starves the next
+  // fixture's interview on a small CI runner.
+  for (const server of servers.splice(0)) server.stop(true);
+});
 
 afterAll(() => {
   for (const action of cleanup.reverse()) action();
@@ -154,7 +162,7 @@ function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
       goalTimeoutMs: 10_000,
     },
   });
-  cleanup.push(() => server.stop(true));
+  servers.push(server);
   return {
     server,
     fixture,
