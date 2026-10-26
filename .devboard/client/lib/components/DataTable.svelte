@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import { createTable, FlexRender } from "@tanstack/svelte-table";
   import { tableFeatures } from "@tanstack/table-core";
 
@@ -11,6 +12,7 @@
     rowCommand?: (row: Record<string, unknown>) => string | undefined;
     onRowActivate?: (row: Record<string, unknown>) => void;
     cellValue?: (row: Record<string, unknown>, columnId: string) => string;
+    cell?: Snippet<[Record<string, unknown>, string]>;
     cellAttrs?: (row: Record<string, unknown>, columnId: string) => Record<string, string | undefined>;
     cellTestId?: (row: Record<string, unknown>, columnId: string) => string | undefined;
     getRowId?: (row: Record<string, unknown>, index: number) => string;
@@ -32,6 +34,7 @@
     rowCommand,
     onRowActivate,
     cellValue,
+    cell,
     cellAttrs,
     cellTestId,
     getRowId,
@@ -97,15 +100,17 @@
                 }
               }}
         >
-          {#each row.getAllCells() as cell (cell.id)}
+          {#each row.getAllCells() as tableCell (tableCell.id)}
             <td
-              {...cellAttrs?.(data, cell.column.id) ?? {}}
-              data-testid={cellTestId?.(data, cell.column.id)}
+              {...cellAttrs?.(data, tableCell.column.id) ?? {}}
+              data-testid={cellTestId?.(data, tableCell.column.id)}
             >
-              {#if cellValue !== undefined}
-                {cellValue(data, cell.column.id)}
+              {#if cell !== undefined}
+                {@render cell(data, tableCell.column.id)}
+              {:else if cellValue !== undefined}
+                {cellValue(data, tableCell.column.id)}
               {:else}
-                <FlexRender cell={cell} />
+                <FlexRender cell={tableCell} />
               {/if}
             </td>
           {/each}

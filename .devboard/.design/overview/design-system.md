@@ -21,7 +21,7 @@ Colors, dark theme (light theme mirrors them and is not redesigned here):
 | Token | Value | Role |
 |---|---|---|
 | `--background` | `#0d1117` | app canvas, code surfaces |
-| `--surface` | `#161b22` | panels, sidebar, tab strip |
+| `--surface` | `#161b22` | panels and sidebar |
 | `--surface-raised` | `#1c2128` | panel sub-headers |
 | `--foreground` | `#e6edf3` | body and headings |
 | `--muted-foreground` | `#8b949e` | labels, meta, secondary text |
@@ -54,7 +54,7 @@ Radius: 3px (tabs, small controls), 4px (panels, buttons, inputs), 6px (chips), 
 Shadow: none anywhere; depth is borders plus surface steps. Motion: 120ms ease for icons, 1207–1235
 lines of `app.css` honor `prefers-reduced-motion`.
 
-Layout: activity bar 44px; sidebar 300px default (Pane, 200–600px, resizable); workspace tab strip 34px;
+Layout: activity bar 44px; sidebar 300px default (Pane, 200–600px, resizable); workspace fills the rest;
 status bar 26px; content padding 8px; page scroll column gap 8px (Discover overrides 14px).
 
 ## Component inventory
@@ -68,7 +68,6 @@ status bar 26px; content padding 8px; page scroll column gap 8px (Discover overr
 | DataTable | `client/lib/components/DataTable.svelte` | TanStack; `compact` 27px rows, `wrap`, `full` (grows with page, no inner scroll), `rowAttrs`, `rowTestId`, `cellValue`, hover row, sticky-free |
 | Badge | `app.css` `.badge` | tone pending/confirmed/success/stale/warning/error/accent; text always present |
 | Sidebar | `client/lib/components/Sidebar.svelte` | groups with 10px uppercase titles, 24px items, right meta/badges, disclosures |
-| Workspace tabs | `client/lib/components/WorkspaceTabs.svelte` | 34px strip, active tab on background |
 | Terminal | `client/lib/components/Terminal.svelte` | xterm surface for activity logs |
 | MonacoEditor | `client/lib/components/MonacoEditor.svelte` | full-height SKILL.md editor, dirty marker |
 | PyramidChart | `client/lib/components/PyramidChart.svelte` | inline SVG bands, one per test level |

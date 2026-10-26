@@ -37,7 +37,7 @@ No unresolved or regressed findings. No finding was reopened without a fresh cap
 | Confidence text | observed 6.81:1, declared 6.85:1, inferred 6.85:1 on surface |
 | Primary button | 4.63:1 (`#ffffff` on `#1f6feb`) |
 | Focus | keyboard Tab to `discover-start`: 2px solid `#58a6ff`, 1px offset, ring shadow `0 0 0 3px #58a6ff` |
-| Keyboard | sidebar, tab strip, primary action reachable; no new pointer-only controls |
+| Keyboard | sidebar, primary action reachable; no new pointer-only controls |
 | Table text | 12px (`discover-pyramid`), rows 28px and 41px (limit 120) |
 | Inner scrollers | 0 across `.discover-card .panel__body` |
 | Horizontal overflow | none at 1280 or 1024 (`scrollWidth === clientWidth`) |

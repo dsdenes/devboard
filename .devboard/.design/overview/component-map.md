@@ -2,7 +2,7 @@
 
 | Mock element | Role | Existing component / token | Decision |
 |---|---|---|---|
-| Activity bar, sidebar, tab strip, status bar | workspace chrome | `ActivityBar`, `Sidebar`, `WorkspaceTabs`, `StatusBar` | reuse untouched |
+| Activity bar, sidebar, status bar | workspace chrome | `ActivityBar`, `Sidebar`, `StatusBar` | reuse; one page per mode, no tab strip |
 | Page identity (`h1`, dirty/stale badges) | project, working-tree and freshness state | `.discover-head__title`, `.badge[data-tone]` | extend: header composition; badge reuse |
 | Freshness meta line | commit, discovery time, definition provenance | `.discover-head__meta`, `.discover-conf`, `.discover-evidence`, `freshness` from `discover.svelte` | extend: restored `data-testid="discover-freshness"` |
 | Definition lead | one-sentence project definition | `.discover-head__definition` | extend: page lead type |
@@ -24,13 +24,13 @@
 | Question panel | run question and answer | `.panel`, `.choice-list`, `.answer-form`, `Button` | reuse unchanged |
 | Empty state | first-run explanation and outputs | `.panel`, `.discover-empty__body`, `.discover-writes` | extend: two-column copy/output list |
 | Error / warning / interrupted banners | run state | `.message`, `.badge` | reuse untouched |
-| Glossary, skill, term, warnings tabs | other Discover tabs | existing markup and CSS | reuse untouched |
+| Glossary, skill, term, warnings pages | other Discover pages | existing markup and CSS | reuse untouched |
 
 ## New modules
 
 | Module | Contents | Why |
 |---|---|---|
-| `client/lib/components/DiscoverOverview.svelte` | the whole Overview surface: header, sheet, active/question panels, empty state, provenance, unknowns | `DiscoverWorkspace.svelte` keeps the other tabs and delegates the sheet; the surface is ~500 lines and has its own data derivation |
+| `client/lib/components/DiscoverOverview.svelte` | the whole Overview surface: header, sheet, active/question panels, empty state, provenance, unknowns | `DiscoverWorkspace.svelte` keeps the other pages and delegates the sheet; the surface is ~500 lines and has its own data derivation |
 | `discover-format.ts` additions | `sectionLeaves`, `sectionProvenance`, `sectionUnknowns` | provenance and the ledger need the same leaf traversal; shared and typed rather than duplicated in markup |
 
 ## Token additions

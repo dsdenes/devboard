@@ -25,7 +25,6 @@ export interface CommandContext {
   connection: ConnectionStore;
   notifications: NotificationStore;
   openTab: (mode: Mode, tab: WorkspaceTab) => void;
-  activateTab: (mode: Mode, id: string) => void;
   closeTab: (mode: Mode, id: string) => void;
   focusLater: (mode: Mode, selector: string) => void;
   resetLayout: () => void;
@@ -76,13 +75,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     run: () => layout.setMode("discover"),
   });
   add({
-    id: "view.sidebar.toggle",
-    title: layout.sidebarVisible ? "Hide sidebar" : "Show sidebar",
-    group: "View",
-    shortcut: "Ctrl+B",
-    run: () => layout.toggleSidebar(),
-  });
-  add({
     id: "view.theme.toggle",
     title: layout.theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
     group: "View",
@@ -92,7 +84,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     id: "view.layout.reset",
     title: "Reset layout",
     group: "View",
-    keywords: "restore defaults tabs sidebar splits theme",
+    keywords: "restore defaults page splits theme",
     run: () => ctx.resetLayout(),
   });
   add({
@@ -187,21 +179,14 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     });
   });
 
-  // Open tabs themselves.
+  // Close commands mirror the close controls a surface renders itself.
   for (const mode of ["goal", "flow", "discover"] as Mode[]) {
     for (const tab of layout.tabs[mode]) {
       add({
-        id: `tab.activate.${mode}.${tab.id}`,
-        title: `Activate tab ${tab.title}`,
-        group: "Tabs",
-        keywords: `tab ${mode}`,
-        run: () => ctx.activateTab(mode, tab.id),
-      });
-      add({
         id: `tab.close.${mode}.${tab.id}`,
-        title: `Close tab ${tab.title}`,
-        group: "Tabs",
-        keywords: `tab ${mode}`,
+        title: `Close ${tab.title}`,
+        group: "Workspace",
+        keywords: `surface ${mode}`,
         run: () => ctx.closeTab(mode, tab.id),
       });
     }
@@ -396,7 +381,10 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
       id: `goal.skill.open.${skill.name}`,
       title: `Show skill ${skill.name}`,
       group: "Skills",
-      run: () => ctx.openTab("goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" }),
+      run: () => {
+        goal.selectSkill(skill.name);
+        ctx.openTab("goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" });
+      },
     });
   }
   for (const lane of goal.lanes) {

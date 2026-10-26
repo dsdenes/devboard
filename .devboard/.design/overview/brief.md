@@ -44,7 +44,7 @@ Real published artifacts of the vitest-turbo host, `sheet.json` schema 1:
   `discover-pyramid-chart`, `discover-suite-command`, `discover-test-summary`.
 - Provenance must stay visible: evidence chips and confidence labels, text not color alone. Unknowns are
   explicit and name the field they affect.
-- The active-run panel, question panel, warning/error banners, and all other Discover tabs are unchanged.
+- The active-run panel, question panel, warning/error banners, and all other Discover pages are unchanged.
 - Real data only; no invented proof, logos, counts, or testimonials.
 
 # Visual thesis

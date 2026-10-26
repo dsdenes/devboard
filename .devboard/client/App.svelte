@@ -13,7 +13,6 @@
   import PaneHandle from "./lib/components/PaneHandle.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
-  import WorkspaceTabs from "./lib/components/WorkspaceTabs.svelte";
   import Button from "./lib/components/ui/button.svelte";
   import { buildCommands } from "./lib/commands";
   import { connection } from "./lib/connection.svelte";
@@ -76,17 +75,15 @@
     return false;
   }
 
-  function focusTabAfterTick(mode: Mode, id: string | null): void {
-    if (id === null) return;
+  function focusModeAfterTick(mode: Mode): void {
     void tick().then(() => {
-      document.getElementById(`workspace-tab-${id}`)?.focus();
-      void mode;
+      document.getElementById(`mode-${mode}-tab`)?.focus();
     });
   }
 
   function performClose(mode: Mode, tab: WorkspaceTab): void {
-    const next = layout.closeTab(mode, tab.id);
-    focusTabAfterTick(mode, next);
+    layout.closeTab(mode, tab.id);
+    focusModeAfterTick(mode);
   }
 
   function closeTab(mode: Mode, tab: WorkspaceTab): void {
@@ -112,7 +109,7 @@
 
   function cancelDiscard(): void {
     pendingClose = null;
-    focusTabAfterTick(layout.mode, layout.activeTab[layout.mode]);
+    focusModeAfterTick(layout.mode);
   }
 
   function resetLayout(): void {
@@ -203,12 +200,6 @@
 
     if (paletteOpen || isTyping(event.target)) return;
 
-    if (command && key === "b") {
-      event.preventDefault();
-      layout.toggleSidebar();
-      return;
-    }
-
     if (event.altKey && !event.ctrlKey && !event.metaKey) {
       const target = event.key === "1" ? "goal" : event.key === "2" ? "flow" : event.key === "3" ? "discover" : null;
       if (target !== null) {
@@ -232,8 +223,8 @@
     if (message.type === "flowConversationStopped" && typeof message.widgetId === "string") {
       const id = `conversation:${message.widgetId}`;
       if (layout.tab("flow", id) !== null) {
-        const next = layout.closeTab("flow", id);
-        if (layout.mode === "flow") focusTabAfterTick("flow", next);
+        layout.closeTab("flow", id);
+        if (layout.mode === "flow") focusModeAfterTick("flow");
       }
     }
   }
@@ -246,10 +237,6 @@
     connection,
     notifications,
     openTab,
-    activateTab: (mode: Mode, id: string) => {
-      layout.setMode(mode);
-      layout.activateTab(mode, id);
-    },
     closeTab: (mode: Mode, id: string) => {
       const tab = layout.tab(mode, id);
       if (tab !== null) closeTab(mode, tab);
@@ -281,7 +268,6 @@
   $effect(() => {
     void layout.mode;
     void layout.theme;
-    void layout.sidebarVisible;
     for (const mode of MODES) {
       for (const tab of layout.tabs[mode]) {
         void tab.id;
@@ -334,11 +320,6 @@
 
   {#snippet workspaceArea()}
     <div class="workspace-region" data-testid="workspace">
-      <WorkspaceTabs
-        dirty={(tab) => tabDirty(layout.mode, tab)}
-        onactivate={(tab) => layout.activateTab(layout.mode, tab.id)}
-        onclose={(tab) => closeTab(layout.mode, tab)}
-      />
       <div class="workspace">
         {#each MODES as mode (mode)}
           <div
@@ -365,7 +346,6 @@
               <DiscoverWorkspace
                 tab={workspaceTab("discover")}
                 openTab={(tab) => openTab("discover", tab)}
-                closeTab={(tab) => closeTab("discover", tab)}
               />
             {/if}
           </div>
@@ -409,40 +389,36 @@
     <div class="app-shell" data-testid="app-shell">
       <div class="shell-main">
         <ActivityBar />
-        {#if layout.sidebarVisible}
-          <PaneGroup
-            direction="horizontal"
-            autoSaveId={`devboard.sidebar.${layout.epoch}`}
-            bind:this={sidebarGroup}
-            onLayoutChange={(sizes) => {
-              if (sizes.length === 2) sidebarSizes = sizes;
-            }}
-            class="split-fill"
+        <PaneGroup
+          direction="horizontal"
+          autoSaveId={`devboard.sidebar.${layout.epoch}`}
+          bind:this={sidebarGroup}
+          onLayoutChange={(sizes) => {
+            if (sizes.length === 2) sidebarSizes = sizes;
+          }}
+          class="split-fill"
+        >
+          <Pane
+            defaultSize={sidebarDefaultPercent}
+            minSize={sidebarMinPercent}
+            maxSize={sidebarMaxPercent}
+            class="pane-fill"
           >
-            <Pane
-              defaultSize={sidebarDefaultPercent}
-              minSize={sidebarMinPercent}
-              maxSize={sidebarMaxPercent}
-              class="pane-fill"
-            >
-              <Sidebar openTab={openTab} />
-            </Pane>
-            <PaneHandle
-              orientation="horizontal"
-              minimum={200}
-              maximum={600}
-              current={sidebarNow}
-              label="Sidebar width"
-              ondblclick={() =>
-                sidebarGroup?.setLayout([sidebarDefaultPercent, 100 - sidebarDefaultPercent])}
-            />
-            <Pane minSize={40} class="pane-fill">
-              {@render workspaceArea()}
-            </Pane>
-          </PaneGroup>
-        {:else}
-          {@render workspaceArea()}
-        {/if}
+            <Sidebar openTab={openTab} />
+          </Pane>
+          <PaneHandle
+            orientation="horizontal"
+            minimum={200}
+            maximum={600}
+            current={sidebarNow}
+            label="Sidebar width"
+            ondblclick={() =>
+              sidebarGroup?.setLayout([sidebarDefaultPercent, 100 - sidebarDefaultPercent])}
+          />
+          <Pane minSize={40} class="pane-fill">
+            {@render workspaceArea()}
+          </Pane>
+        </PaneGroup>
       </div>
       <StatusBar onopenhistory={() => notifications.openHistory()} />
     </div>

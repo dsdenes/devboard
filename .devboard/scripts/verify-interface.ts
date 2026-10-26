@@ -10,7 +10,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { journalKey } from "../server/journal";
 import { freePort, run, waitFor } from "./verification";
@@ -749,7 +749,7 @@ try {
     };
     const regions = {};
     const missing = [];
-    for (const id of ["app-shell", "activity-bar", "sidebar", "workspace-tabs", "workspace", "status-bar"]) {
+    for (const id of ["app-shell", "activity-bar", "sidebar", "workspace", "status-bar"]) {
       const element = document.querySelector('[data-testid="' + id + '"]');
       if (element === null) missing.push(id); else regions[id] = rect(element);
     }
@@ -803,6 +803,8 @@ try {
     };
   })()`);
   check(activity.count === 3, "the activity bar does not present exactly three modes", activity);
+  const brand = await page.eval<string>(`document.querySelector('[data-testid="activity-bar"]')?.textContent?.trim() ?? ""`);
+  check(brand === "", "the activity bar still renders a brand label", brand);
   const expectedModes = [
     ["mode-goal", "true"],
     ["mode-flow", "false"],
@@ -827,8 +829,6 @@ try {
     reload: { label: string; title: string } | null;
     themeLabel: string;
     notificationLabel: string;
-    sidebarLabel: string;
-    sidebarTitle: string;
     shortcuts: Array<string | null>;
   }>(`(() => {
     const text = (selector) => document.querySelector(selector)?.textContent?.replace(/\\s+/g, " ").trim() ?? "";
@@ -842,8 +842,6 @@ try {
       reload: reload === null ? null : { label: reload.getAttribute("aria-label") ?? "", title: reload.getAttribute("title") ?? "" },
       themeLabel: document.querySelector('[data-testid="theme-toggle"]')?.getAttribute("aria-label") ?? "",
       notificationLabel: document.querySelector('[data-testid="notification-indicator"]')?.getAttribute("aria-label") ?? "",
-      sidebarLabel: document.querySelector('[data-testid="sidebar-toggle"]')?.getAttribute("aria-label") ?? "",
-      sidebarTitle: document.querySelector('[data-testid="sidebar-toggle"]')?.getAttribute("title") ?? "",
       shortcuts: [...document.querySelectorAll('[data-testid="command-item"]')].map((item) => item.querySelector(".palette__shortcut")?.textContent ?? null),
     };
   })()`);
@@ -855,11 +853,12 @@ try {
   check(statusBar.reload!.label.includes("0.1.0") && statusBar.reload!.label.includes("9.9.9"), "the reload label does not name both versions", statusBar.reload);
   check(statusBar.reload!.title.includes("0.1.0") && statusBar.reload!.title.includes("9.9.9"), "the reload title does not name both versions", statusBar.reload);
   check(statusBar.themeLabel.length > 0 && statusBar.notificationLabel.includes("Notifications"), "a status-bar icon lacks a name", statusBar);
-  check(statusBar.sidebarLabel.includes("Ctrl+B") && statusBar.sidebarTitle.includes("Ctrl+B"), "the sidebar toggle does not discover its shortcut", statusBar);
+  const sidebarToggle = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar-toggle"]') !== null`);
+  check(!sidebarToggle, "the sidebar still renders a hide control");
   await page.key("k", 2);
   await page.wait(`document.querySelector('[data-testid="command-palette"]') !== null`, "the palette for shortcut labels");
   const shortcutLabels = await page.eval<string[]>(`[...document.querySelectorAll('[data-testid="command-item"]')].map((item) => item.querySelector(".palette__shortcut")?.textContent ?? "").filter(Boolean)`);
-  check(shortcutLabels.some((label) => label.includes("Alt+1")) && shortcutLabels.some((label) => label.includes("Ctrl+B")), "palette shortcuts are not discoverable", shortcutLabels);
+  check(shortcutLabels.some((label) => label.includes("Alt+1")), "palette shortcuts are not discoverable", shortcutLabels);
   await page.key("Escape");
   await page.wait(`document.querySelector('[data-testid="command-palette"]') === null`, "the shortcut-label palette to close");
 
@@ -897,7 +896,7 @@ try {
   const ids = new Set(palette.items.map((item) => item.id));
   const requiredCommands = [
     "view.mode.goal", "view.mode.flow", "view.mode.discover",
-    "view.sidebar.toggle", "view.theme.toggle", "view.layout.reset",
+    "view.theme.toggle", "view.layout.reset",
     "app.reload", "app.report", "app.notifications.open",
     "goal.save", "goal.create", "goal.revise", "goal.skills.prepare",
     "goal.adr.start-next", "goal.lifecycle.start", "goal.lifecycle.pause",
@@ -909,6 +908,7 @@ try {
   ];
   const missingCommands = requiredCommands.filter((id) => !ids.has(id));
   check(missingCommands.length === 0, "the palette misses required commands", missingCommands);
+  check(!ids.has("view.sidebar.toggle"), "the palette still offers a sidebar toggle");
   const disabledMirror = palette.items.find((item) => item.id === "flow.pr.merge");
   check(disabledMirror?.disabled === true && disabledMirror.reason.length > 0, "a disabled control is not mirrored with a reason", disabledMirror);
 
@@ -935,14 +935,14 @@ try {
   await page.wait(`document.querySelector('[data-testid="command-palette"]') === null`, "the palette to close");
 
   // Focus restoration after Escape.
-  await page.focus('[data-testid="sidebar-toggle"]');
+  await page.focus('[data-testid="theme-toggle"]');
   await page.key("k", 2);
   await page.wait(`document.querySelector('[data-testid="command-palette"]') !== null`, "the palette for Escape");
   await page.key("Escape");
   await page.wait(`document.querySelector('[data-testid="command-palette"]') === null`, "the palette to close on Escape");
   await delay(150);
   const restoredFocus = await page.eval<string>(`document.activeElement?.getAttribute("data-testid") ?? ""`);
-  check(restoredFocus === "sidebar-toggle", "Escape did not restore focus", restoredFocus);
+  check(restoredFocus === "theme-toggle", "Escape did not restore focus", restoredFocus);
 
   // 4. Mode shortcuts, no frames, focus retention.
   await page.key("1", 1);
@@ -999,9 +999,9 @@ try {
   check(sidebarWhileTyping, "Ctrl+B fired while typing");
   await page.eval(`document.activeElement?.blur()`);
   await page.key("b", 2);
-  await page.wait(`document.querySelector('[data-testid="sidebar"]') === null`, "Ctrl+B to hide the sidebar");
-  await page.key("b", 2);
-  await page.wait(`document.querySelector('[data-testid="sidebar"]') !== null`, "Ctrl+B to show the sidebar");
+  await delay(120);
+  const sidebarAfterShortcut = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"]') !== null`);
+  check(sidebarAfterShortcut, "Ctrl+B still hides the sidebar");
 
   // 6. Sidebar split: drag, keyboard, double-click reset, persistence.
   const sidebarWidth = async (): Promise<number> =>
@@ -1044,13 +1044,8 @@ try {
   await page.reload();
   const reloadWidth = await sidebarWidth();
   check(Math.abs(reloadWidth - persistedWidth) <= 2, "the sidebar width did not survive reload", { persistedWidth, reloadWidth });
-  await page.key("b", 2);
-  await page.wait(`document.querySelector('[data-testid="sidebar"]') === null`, "the sidebar to hide for persistence");
-  await page.reload();
   const sidebarAfterReload = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"]') !== null`);
-  check(!sidebarAfterReload, "the hidden sidebar did not survive reload");
-  await page.key("b", 2);
-  await page.wait(`document.querySelector('[data-testid="sidebar"]') !== null`, "the sidebar to return");
+  check(sidebarAfterReload, "the sidebar disappeared on reload");
 
   // 7. Theme toggle, persistence, and first paint on reload.
   const themeBefore = await page.eval<string>(`document.documentElement.dataset.theme`);
@@ -1081,7 +1076,7 @@ try {
     summary: string;
     next: string;
     pending: string;
-    tabCount: number;
+    tabStrips: number;
   }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="record"]')];
     const table = document.querySelector('[data-testid="adr-table"]');
@@ -1098,7 +1093,7 @@ try {
       summary: document.querySelector('[data-testid="record-summary"]')?.textContent?.trim() ?? "",
       next: document.querySelector('[data-testid="next-marker"]')?.textContent?.trim() ?? "",
       pending: document.querySelector('[data-testid="pending-summary"]')?.textContent?.trim() ?? "",
-      tabCount: document.querySelectorAll('[data-testid="workspace-tab"]').length,
+      tabStrips: document.querySelectorAll('[data-testid="workspace-tabs"]').length,
     };
   })()`);
   check(adr.rows === 8, "the fixture does not render eight ADR rows", adr);
@@ -1111,16 +1106,47 @@ try {
   check(adr.monoFile, "the file name is not monospace");
   check(adr.maxWidth >= 1440, "the shell has an application max-width", adr.maxWidth);
   check(adr.summary.length > 0 && adr.next === "Next" && adr.pending.includes("pending"), "ADR fields are not rendered", adr);
-  check(adr.tabCount === 2, "opening ADRs did not add exactly one tab", adr.tabCount);
+  check(adr.tabStrips === 0, "the workspace still renders a tab strip", adr.tabStrips);
+  const adrSidebar = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="ADR records"]') !== null`);
+  check(adrSidebar, "the sidebar hides pending ADR records");
   const framesBeforeRow = await page.eval<number>("window.__viFrames.length");
   await page.click('[data-testid="record"]');
   await page.wait(`document.querySelector('[data-testid="record-file"]') !== null && !document.querySelector('[data-testid="adr-table"]')`, "the ADR detail tab");
   const framesAfterRow = await page.eval<number>("window.__viFrames.length");
   check(framesAfterRow === framesBeforeRow, "selecting a row sent a WebSocket frame", { framesBeforeRow, framesAfterRow });
-  const tabCountAfterRow = await page.eval<number>(`document.querySelectorAll('[data-testid="workspace-tab"]').length`);
   await runPalette("goal.adr.open.0001-shell-and-layout.md");
-  const tabCountAfterReuse = await page.eval<number>(`document.querySelectorAll('[data-testid="workspace-tab"]').length`);
-  check(tabCountAfterRow === 3 && tabCountAfterReuse === 3, "opening an open resource created a second tab", { tabCountAfterRow, tabCountAfterReuse });
+  const reopenedPanel = await page.eval<{ table: boolean; detail: boolean; tabs: number }>(`({
+    table: document.querySelector('[data-testid="adr-table"]') !== null,
+    detail: document.querySelector('[data-testid="record-file"]') !== null,
+    tabs: document.querySelectorAll('[data-testid="workspace-tab"]').length,
+  })`);
+  check(!reopenedPanel.table && reopenedPanel.detail && reopenedPanel.tabs === 0, "a surface no longer replaces the open page", reopenedPanel);
+
+  // The Goal sidebar has one Skills entry that discloses the prepared skills.
+  const goalSkills = await page.eval<{ sections: number; toggle: boolean; menu: boolean }>(`(() => ({
+    sections: document.querySelectorAll('[data-testid="sidebar"] section[aria-label="Skills"]').length,
+    toggle: document.querySelector('[data-testid="goal-skills-toggle"]') !== null,
+    menu: document.querySelector('[data-testid="goal-skills-menu"]') !== null,
+  }))()`);
+  check(goalSkills.sections === 0 && goalSkills.toggle && !goalSkills.menu, "the Goal sidebar duplicates the skills list", goalSkills);
+  await page.click('[data-testid="goal-skills-disclosure"]');
+  await page.wait(`document.querySelector('[data-testid="goal-skills-menu"]') !== null`, "the prepared skills disclosure");
+  const goalSkillNames = await page.eval<string[]>(`[...document.querySelectorAll('[data-testid="goal-skill"]')].map((item) => item.getAttribute("data-name") ?? "")`);
+  check(goalSkillNames.length >= 5 && goalSkillNames.every((name) => name.length > 0), "the skills disclosure is empty", goalSkillNames);
+  const clickedSkill = await page.eval<string>(`(() => {
+    const item = document.querySelector('[data-testid="goal-skill"]');
+    item?.click();
+    return item?.getAttribute("data-name") ?? "";
+  })()`);
+  await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the disclosure");
+  const goalSkillSurface = await page.eval<{ selected: string; current: string }>(`(() => {
+    const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
+    return {
+      selected: item?.getAttribute("data-name") ?? "",
+      current: item?.getAttribute("aria-current") ?? "",
+    };
+  })()`);
+  check(goalSkillSurface.selected === clickedSkill && goalSkillSurface.current === "true", "clicking a prepared skill does not select it", { clickedSkill, goalSkillSurface });
 
   // 9. Goal editor: reset arm/cancel, dirty marker, save, unsaved survival, close prompt.
   await runPalette("open.goal.overview");
@@ -1131,17 +1157,35 @@ try {
   await page.wait(`document.querySelector('[data-testid="reset-confirmation"]') === null`, "the reset confirmation to close");
   await runPalette("goal.document.open");
   await page.wait(`document.querySelector('[data-testid="goal-text"] .monaco-editor') !== null`, "the Goal Monaco editor");
+  const goalLayout = await page.eval<{
+    editor: number;
+    panel: number;
+    revision: number;
+    panelBottom: number;
+    revisionBottom: number;
+  }>(`(() => {
+    const editor = document.querySelector('[data-testid="goal-text"]');
+    const panel = document.querySelector('[data-testid="goal-editor"]');
+    const revision = document.querySelector('[data-testid="revision-request"]');
+    return {
+      editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
+      panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
+      revision: revision === null ? 0 : Math.round(revision.getBoundingClientRect().height),
+      panelBottom: panel === null ? 0 : Math.round(panel.getBoundingClientRect().bottom),
+      revisionBottom: revision === null ? 0 : Math.round(revision.getBoundingClientRect().bottom),
+    };
+  })()`);
+  check(goalLayout.editor >= 400 && goalLayout.editor >= goalLayout.panel * 0.6, "the goal document does not fill the page", goalLayout);
+  check(goalLayout.revision >= 60 && Math.abs(goalLayout.revisionBottom - goalLayout.panelBottom) <= 24, "the revision guidance is not a tall field at the bottom", goalLayout);
+  await saveShot("goal-document");
   const goalLabel = await page.eval<string>(`document.querySelector('[data-testid="goal-text"] textarea')?.getAttribute("aria-label") ?? ""`);
   check(goalLabel.length > 0, "the Goal editor has no accessible label", goalLabel);
   await page.eval(`window.__devboardEditors.get("goal-text").focus()`);
   await page.key("End", 2);
   await page.typeText(" VerifyAppend");
   await delay(150);
-  const dirty = await page.eval<{ data: string; marker: boolean }>(`({
-    data: document.querySelector('[data-testid="goal-text"]').getAttribute("data-dirty"),
-    marker: document.querySelector('[data-testid="workspace-tab"] .workspace-tab__dirty') !== null,
-  })`);
-  check(dirty.data === "true" && dirty.marker, "the Goal editor does not mark unsaved changes", dirty);
+  const dirty = await page.eval<string>(`document.querySelector('[data-testid="goal-text"]').getAttribute("data-dirty") ?? ""`);
+  check(dirty === "true", "the Goal editor does not mark unsaved changes", dirty);
   await page.key("s", 2);
   await page.wait(`document.querySelector('[data-testid="goal-text"]').getAttribute("data-dirty") === "false"`, "the Goal save");
   const savedGoal = await readFile(join(host, "GOAL.md"), "utf8");
@@ -1161,19 +1205,16 @@ try {
   await page.click('[data-testid="mode-goal"]');
   await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "Goal for unsaved check");
   await delay(120);
-  const unsaved = await page.eval<{ value: string; marker: boolean }>(`({
-    value: window.__devboardEditors.get("goal-text")?.getValue() ?? "",
-    marker: document.querySelector('[data-testid="workspace-tab"] .workspace-tab__dirty') !== null,
-  })`);
-  check(unsaved.value.endsWith(" VerifyAppend Unsaved") && unsaved.marker, "a mode switch discarded unsaved text", unsaved);
+  const unsaved = await page.eval<string>(`window.__devboardEditors.get("goal-text")?.getValue() ?? ""`);
+  check(unsaved.endsWith(" VerifyAppend Unsaved"), "a mode switch discarded unsaved text", unsaved);
 
-  await page.eval(`document.querySelector('[aria-label="Close Goal document"]')?.click()`);
+  await runPalette("tab.close.goal.goal-document");
   await page.wait(`document.querySelector('[data-testid="confirm-close-tab"]') !== null`, "the dirty-close prompt");
   await page.key("Escape");
   await page.wait(`document.querySelector('[data-testid="confirm-close-tab"]') === null`, "the prompt to close");
   const stillOpen = await page.eval<boolean>(`document.querySelector('[data-testid="goal-text"]') !== null`);
-  check(stillOpen, "Escape closed a dirty tab");
-  await page.eval(`document.querySelector('[aria-label="Close Goal document"]')?.click()`);
+  check(stillOpen, "Escape closed a dirty page");
+  await runPalette("tab.close.goal.goal-document");
   await page.wait(`document.querySelector('[data-testid="confirm-close-tab"]') !== null`, "the dirty-close prompt again");
   const discarded = await page.eval<boolean>(`(() => {
     const button = [...document.querySelectorAll('[data-testid="confirm-close-tab"] button')]
@@ -1183,7 +1224,7 @@ try {
     return true;
   })()`);
   check(discarded, "the discard control is missing");
-  await page.wait(`document.querySelector('[data-testid="goal-text"]') === null`, "the discarded tab to close");
+  await page.wait(`document.querySelector('[data-testid="goal-text"]') === null`, "the discarded page to close");
   await runPalette("goal.document.open");
   await page.wait(`document.querySelector('[data-testid="goal-text"]') !== null`, "the reopened Goal editor");
   const reopened = await page.eval<{ value: string; data: string }>(`({
@@ -1289,8 +1330,8 @@ try {
   check(fileDiff, "the changed-file tab has no rendered diff");
   await page.click('[data-testid="close-flow-diff"]');
   await page.wait(
-    `!(document.querySelector('[data-testid="workspace-tab"][aria-selected="true"]')?.textContent ?? "").includes("order.ts")`,
-    "the diff tab to close",
+    `document.querySelector('[data-testid="flow-diff"]') === null`,
+    "the diff page to close",
   );
 
   await runPalette("flow.checkpoint.open.cp-1");
@@ -1424,9 +1465,17 @@ try {
     menuContext: string;
     menuBadges: number;
     menuTerms: number;
+    kindIcons: number;
+    kindColors: string[];
+    tableScrolls: number[];
+    searchPadding: string[];
   }>(`(() => {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
     const menu = document.querySelector('[data-testid="discover-glossary-menu"]');
+    const kindCells = rows.map((row) => row.querySelector('td:nth-child(3)'));
+    const wraps = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"] .table-wrap')];
+    const search = document.querySelector('[data-testid="discover-glossary-search"]');
+    const searchStyle = search === null ? null : getComputedStyle(search);
     return {
       contexts: document.querySelectorAll('#workspace-discover [data-testid="discover-context"]').length,
       terms: rows.length,
@@ -1438,6 +1487,13 @@ try {
       menuContext: menu?.querySelector('.sidebar-submenu__context')?.textContent?.trim() ?? "",
       menuBadges: menu?.querySelectorAll('.badge').length ?? 0,
       menuTerms: menu?.querySelectorAll('[data-command^="discover.term.open."]').length ?? 0,
+      kindIcons: kindCells.filter((cell) => cell?.querySelector('.discover-kind svg') !== null).length,
+      kindColors: [...new Set(kindCells
+        .map((cell) => cell?.querySelector('.discover-kind'))
+        .filter((kind) => kind !== null)
+        .map((kind) => getComputedStyle(kind).color))],
+      tableScrolls: wraps.map((wrap) => wrap.scrollHeight - wrap.clientHeight),
+      searchPadding: searchStyle === null ? [] : [searchStyle.paddingTop, searchStyle.paddingBottom],
     };
   })()`);
   check(glossary.contexts > 0 && glossary.terms > 0, "the glossary tables are empty", glossary);
@@ -1448,6 +1504,12 @@ try {
   check(glossary.menu && glossary.menuTerms > 0, "the glossary submenu is missing its terms", glossary);
   check(glossary.menuContext === "Orders", "the glossary submenu shows a raw context id", glossary.menuContext);
   check(glossary.menuBadges === 0, "the glossary submenu still renders status badges");
+  check(glossary.kindIcons === glossary.terms, "a glossary kind has no icon", glossary);
+  check(glossary.kindColors.length >= 2, "the glossary kind icons are not color-coded", glossary.kindColors);
+  check(glossary.tableScrolls.every((delta) => delta <= 1), "a glossary table clips its rows", glossary.tableScrolls);
+  check(glossary.searchPadding.every((value) => value === "0px"), "the glossary search placeholder is not vertically centered", glossary.searchPadding);
+  const warningsSection = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="Warnings"]') !== null`);
+  check(!warningsSection, "the sidebar still shows an empty warnings section");
   await page.click('[data-testid="discover-glossary-toggle"]');
   await page.wait(
     `document.querySelector('[data-testid="discover-glossary-menu"]') === null`,
@@ -1469,7 +1531,19 @@ try {
   })()`);
   check(termCommand.length > 0, "no glossary term entry is available");
   await runPalette(termCommand);
-  await page.wait(`document.querySelector('#workspace-discover [data-testid="discover-term"][data-id]') !== null`, "the term detail tab");
+  await page.wait(`document.querySelector('#workspace-discover [data-testid="discover-term"][data-id]') !== null`, "the term detail page");
+  const termChrome = await page.eval<{ headerBadges: number; badges: number; workspaceBadges: number; closeButtons: number }>(`(() => {
+    const panel = document.querySelector('#workspace-discover [data-testid="discover-term"][data-id]');
+    return {
+      headerBadges: panel?.querySelectorAll('.panel__header .badge').length ?? 0,
+      badges: panel?.querySelectorAll('.badge').length ?? 0,
+      workspaceBadges: document.querySelectorAll('#workspace-discover [data-testid="discover-panel"] .badge').length,
+      closeButtons: [...(panel?.querySelectorAll('button') ?? [])].filter((button) => button.textContent?.trim() === "Close").length,
+    };
+  })()`);
+  check(termChrome.headerBadges === 0, "the term detail still renders a status badge", termChrome);
+  check(termChrome.badges === 0 && termChrome.workspaceBadges === 0, "the term detail still renders status labels", termChrome);
+  check(termChrome.closeButtons === 0, "the term detail still renders a Close control", termChrome);
   const termSplit = await page.eval<{ handles: number; panes: number[]; orientation: string }>(`(() => {
     const handles = [...document.querySelectorAll('#workspace-discover [data-testid="pane-handle"]')];
     const panes = [...document.querySelectorAll('#workspace-discover [data-pane]')].map((pane) => Math.round(pane.getBoundingClientRect().width));
@@ -1578,28 +1652,29 @@ try {
   check(!skillLayout.badge, "the skill tab still renders a state badge");
   check(skillLayout.editor >= skillLayout.panel - 48, "the skill editor does not use the full pane", skillLayout);
 
-  // Tabs survive mode switches, including the unsaved editor and active tab.
-  const discoverTabsBefore = await page.eval<string[]>(`[...document.querySelectorAll('[data-testid="workspace-tab"]')].map((tab) => tab.textContent.trim())`);
+  // The open surface survives mode switches; only one page exists per mode.
+  const surfaceBefore = await page.eval<string>(`document.querySelector('#workspace-discover [data-testid="discover-skill"]')?.getAttribute("data-name") ?? ""`);
   await page.click('[data-testid="mode-goal"]');
   await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "Goal from Discover");
   await page.click('[data-testid="mode-discover"]');
   await page.wait(`document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`, "Discover return");
-  const discoverTabsAfter = await page.eval<string[]>(`[...document.querySelectorAll('[data-testid="workspace-tab"]')].map((tab) => tab.textContent.trim())`);
-  check(JSON.stringify(discoverTabsBefore) === JSON.stringify(discoverTabsAfter), "Discover tabs changed across modes", { discoverTabsBefore, discoverTabsAfter });
+  const surfaceAfter = await page.eval<{ name: string; tabs: number }>(`({
+    name: document.querySelector('#workspace-discover [data-testid="discover-skill"]')?.getAttribute("data-name") ?? "",
+    tabs: document.querySelectorAll('[data-testid="workspace-tab"]').length,
+  })`);
+  check(surfaceAfter.name === surfaceBefore && surfaceAfter.tabs === 0, "the open surface changed across modes", { surfaceBefore, surfaceAfter });
 
-  // 12. Reload restores mode, tabs, active tabs, theme, sidebar and split sizes.
+  // 12. Reload restores mode, page, theme, sidebar and split sizes.
   const beforeReload = await page.eval<{
     mode: string;
-    tabs: string[];
-    active: string;
+    surface: string;
     sidebar: number;
     panes: number[];
     theme: string;
     stored: string;
   }>(`(() => ({
     mode: ["goal", "flow", "discover"].find((mode) => document.querySelector('[data-testid="mode-' + mode + '"]')?.getAttribute("aria-selected") === "true") ?? "",
-    tabs: [...document.querySelectorAll('[data-testid="workspace-tab"]')].map((tab) => tab.textContent.trim()),
-    active: document.querySelector('[data-testid="workspace-tab"][aria-selected="true"]')?.textContent?.trim() ?? "",
+    surface: document.querySelector('#workspace-discover [data-testid="discover-skill"]')?.getAttribute("data-name") ?? "",
     sidebar: Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width),
     panes: [...document.querySelectorAll('#workspace-discover [data-pane]')].map((pane) => Math.round(pane.getBoundingClientRect().width)),
     theme: document.documentElement.dataset.theme,
@@ -1608,30 +1683,30 @@ try {
   check(beforeReload.mode === "discover", "the active mode is not Discover before reload", beforeReload);
   await page.reload();
   await page.wait(`document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`, "Discover after reload");
-  await page.wait(`document.querySelector('[data-testid="discover-skill-text"]') !== null`, "the restored skill tab");
+  await page.wait(`document.querySelector('[data-testid="discover-skill-text"]') !== null`, "the restored skill page");
   const afterReload = await page.eval<{
     mode: string;
-    tabs: string[];
-    active: string;
+    surface: string;
     sidebar: number;
     panes: number[];
     theme: string;
     stored: string;
     editor: string;
     dirty: boolean;
+    tabs: number;
   }>(`(() => ({
     mode: ["goal", "flow", "discover"].find((mode) => document.querySelector('[data-testid="mode-' + mode + '"]')?.getAttribute("aria-selected") === "true") ?? "",
-    tabs: [...document.querySelectorAll('[data-testid="workspace-tab"]')].map((tab) => tab.textContent.trim()),
-    active: document.querySelector('[data-testid="workspace-tab"][aria-selected="true"]')?.textContent?.trim() ?? "",
+    surface: document.querySelector('#workspace-discover [data-testid="discover-skill"]')?.getAttribute("data-name") ?? "",
     sidebar: Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width),
     panes: [...document.querySelectorAll('#workspace-discover [data-pane]')].map((pane) => Math.round(pane.getBoundingClientRect().width)),
     theme: document.documentElement.dataset.theme,
     stored: localStorage.getItem("devboard.layout.v1") ?? "",
     editor: (window.__devboardEditors.get("discover-skill-text")?.getValue() ?? "").slice(-20),
     dirty: document.querySelector('[data-testid="discover-skill-dirty"]') !== null,
+    tabs: document.querySelectorAll('[data-testid="workspace-tab"]').length,
   }))()`);
   check(afterReload.mode === beforeReload.mode && afterReload.theme === beforeReload.theme, "mode or theme did not survive reload", { beforeReload, afterReload });
-  check(JSON.stringify(afterReload.tabs) === JSON.stringify(beforeReload.tabs) && afterReload.active === beforeReload.active, "tabs or active tab did not survive reload", { before: beforeReload, after: afterReload });
+  check(afterReload.surface === beforeReload.surface && afterReload.tabs === 0, "the open page did not survive reload", { before: beforeReload, after: afterReload });
   check(Math.abs(afterReload.sidebar - beforeReload.sidebar) <= 2, "the sidebar width did not survive reload", { before: beforeReload.sidebar, after: afterReload.sidebar });
   check(afterReload.panes.length === beforeReload.panes.length && afterReload.panes.every((width, index) => Math.abs(width - (beforeReload.panes[index] ?? 0)) <= 2), "split sizes did not survive reload", { before: beforeReload.panes, after: afterReload.panes });
   const restoredBaseline = (await readFile(join(host, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md"), "utf8")).slice(-20);
@@ -1641,21 +1716,37 @@ try {
     { editor: afterReload.editor, baseline: restoredBaseline, dirty: afterReload.dirty },
   );
   check(afterReload.stored.includes('"theme":"light"'), "layout localStorage lost the theme", afterReload.stored.slice(0, 120));
+  check(!afterReload.stored.includes('"sidebarVisible"'), "layout localStorage still stores sidebar visibility", afterReload.stored.slice(0, 120));
 
   // 13. Reset layout restores defaults.
   await runPalette("view.layout.reset");
   await page.wait(`document.documentElement.dataset.theme === "dark"`, "the dark default after reset");
   await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "the Goal default after reset");
-  const resetLayout = await page.eval<{ tabs: string[]; sidebar: number; active: string; stored: string; panes: string }>(`(() => ({
-    tabs: [...document.querySelectorAll('[data-testid="workspace-tab"]')].map((tab) => tab.textContent.trim()),
+  const resetLayout = await page.eval<{ surface: boolean; sidebar: number; stored: string; panes: string; tabs: number }>(`(() => ({
+    surface: document.querySelector('#workspace-goal [data-testid="lifecycle"]') !== null,
     sidebar: Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width),
-    active: document.querySelector('[data-testid="workspace-tab"][aria-selected="true"]')?.textContent?.trim() ?? "",
     stored: localStorage.getItem("devboard.layout.v1") ?? "",
     panes: Object.keys(localStorage).filter((key) => key.startsWith("paneforge:")).join(","),
+    tabs: document.querySelectorAll('[data-testid="workspace-tab"]').length,
   }))()`);
-  check(JSON.stringify(resetLayout.tabs) === JSON.stringify(["Overview"]) && resetLayout.active === "Overview", "reset layout did not restore the default tab", resetLayout);
+  check(resetLayout.surface && resetLayout.tabs === 0, "reset layout did not restore the default page", resetLayout);
   check(Math.abs(resetLayout.sidebar - 300) <= 12, "reset layout did not restore the sidebar width", resetLayout);
   check(resetLayout.panes.length > 0 && !resetLayout.panes.includes("devboard.detail"), "reset layout left stale split storage", resetLayout);
+
+  // Resolved records disappear from the sidebar group entirely.
+  for (const file of await readdir(join(host, "adrs"))) {
+    const path = join(host, "adrs", file);
+    const text = await readFile(path, "utf8");
+    await writeFile(path, text.replace(/- Status: .*/, "- Status: Accepted"));
+  }
+  await page.reload();
+  await page.wait(
+    `document.querySelector('[data-testid="pending-summary"]')?.textContent?.includes("0 ADR") === true`,
+    "the resolved ADR records",
+    20_000,
+  );
+  const resolvedAdrSidebar = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="ADR records"]') !== null`);
+  check(!resolvedAdrSidebar, "the sidebar still shows resolved ADR records");
 
   // 14. The issue reporter opens and cancels with Escape.
   await runPalette("app.report");
@@ -1867,7 +1958,7 @@ try {
 
   devtools.close();
   console.log(
-    "verify:interface: shell, modes, sidebar, tabs, splits, palette, keyboard, theme, tables, editors, terminals, accessibility, notifications, status bar, persistence, and boundary passed",
+    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, editors, terminals, accessibility, notifications, status bar, persistence, and boundary passed",
   );
 } finally {
   try {

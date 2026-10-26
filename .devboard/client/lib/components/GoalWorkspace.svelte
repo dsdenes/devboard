@@ -32,6 +32,8 @@
       : undefined,
   );
 
+  let skillsList = $state<HTMLUListElement | undefined>();
+
   const lane = $derived(tab?.kind === "lane" ? goal.lane(tab.resourceId) : null);
   const record = $derived(
     tab?.kind === "adr" ? (goal.records.find((entry) => entry.file === tab?.resourceId) ?? null) : null,
@@ -63,6 +65,15 @@
   function submitAnswer(value: string): void {
     goal.submitAnswer(value);
   }
+
+  $effect(() => {
+    if (tab?.kind !== "skills" || goal.selectedSkill === null) return;
+    const selected = goal.selectedSkill;
+    const item = [...(skillsList?.querySelectorAll<HTMLElement>("[data-name]") ?? [])].find(
+      (entry) => entry.dataset.name === selected,
+    );
+    item?.scrollIntoView({ block: "nearest" });
+  });
 </script>
 
 <div class="mode-body">
@@ -344,8 +355,7 @@
       <AdrTable onopen={openAdr} onstart={(entry) => goal.startRecord(entry)} />
     </section>
   {:else if tab.kind === "goal-document"}
-    <div class="scroll-column">
-      <section class="panel" data-testid="goal-editor">
+      <section class="panel goal-document" data-testid="goal-editor">
         <div class="panel__header">
           <h2 class="panel__title">Goal document</h2>
           <div class="toolbar">
@@ -392,7 +402,7 @@
             </Button>
           </div>
         </div>
-        <div class="panel__body goal-details" data-testid="goal-details" style="height: 320px;">
+        <div class="panel__body goal-details" data-testid="goal-details">
           <MonacoEditor
             value={goal.goalDraft}
             label="Current goal"
@@ -403,39 +413,39 @@
             onsave={() => goal.saveGoal()}
           />
         </div>
-        <div class="panel__footer" style="justify-content: flex-start; flex-wrap: wrap;">
-          <div class="field grow" style="flex-direction: row; align-items: center; gap: 8px;">
+        <div class="panel__footer goal-revision">
+          <div class="goal-revision__heading">
             <label class="field__label" for="revision-request">Revision guidance</label>
-            <input
-              id="revision-request"
-              class="textarea"
-              style="min-height: 28px; padding: 4px 6px; flex: 1;"
-              type="text"
-              bind:value={goal.revisionRequest}
-              placeholder="Optional guidance for the agent"
-              data-testid="revision-request"
-              disabled={goal.revisionDisabled}
-            />
+            <div class="goal-revision__actions">
+              <Button
+                variant="secondary"
+                data-command="goal.revision.focus"
+                onclick={() => document.getElementById("revision-request")?.focus()}
+              >
+                Focus guidance
+              </Button>
+              <Button
+                variant="secondary"
+                data-command="goal.revise"
+                data-testid="revise-goal"
+                disabled={goal.revisionDisabled}
+                onclick={() => goal.reviseGoal()}
+              >
+                Revise goal
+              </Button>
+            </div>
           </div>
-          <Button
-            variant="secondary"
-            data-command="goal.revision.focus"
-            onclick={() => document.getElementById("revision-request")?.focus()}
-          >
-            Focus guidance
-          </Button>
-          <Button
-            variant="secondary"
-            data-command="goal.revise"
-            data-testid="revise-goal"
+          <textarea
+            id="revision-request"
+            class="textarea goal-revision__input"
+            rows="4"
+            bind:value={goal.revisionRequest}
+            placeholder="Optional guidance for the agent"
+            data-testid="revision-request"
             disabled={goal.revisionDisabled}
-            onclick={() => goal.reviseGoal()}
-          >
-            Revise goal
-          </Button>
+          ></textarea>
         </div>
       </section>
-    </div>
   {:else if tab.kind === "skills"}
     <section class="panel" data-testid="skills-overlay">
       <div class="panel__header">
@@ -463,11 +473,21 @@
         </div>
       </div>
       <div class="panel__body stack-sm">
-        <ul class="history-list">
+        <ul class="history-list" bind:this={skillsList}>
           {#each goal.skills as skill (skill.name)}
-            <li class="skill" data-testid="skill" data-name={skill.name}>
-              <span class="mono">{skill.name}</span>
-              <p class="muted" style="margin: 0;">{skill.description}</p>
+            <li class="skill">
+              <button
+                type="button"
+                class="skill__button"
+                data-testid="skill"
+                data-name={skill.name}
+                data-selected={goal.selectedSkill === skill.name}
+                aria-current={goal.selectedSkill === skill.name ? "true" : undefined}
+                onclick={() => goal.selectSkill(skill.name)}
+              >
+                <span class="mono skill__name">{skill.name}</span>
+                <span class="muted skill__description">{skill.description}</span>
+              </button>
             </li>
           {/each}
         </ul>

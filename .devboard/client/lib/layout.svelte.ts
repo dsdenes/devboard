@@ -11,7 +11,6 @@ interface LayoutSnapshot {
   version: 1;
   mode: Mode;
   theme: Theme;
-  sidebarVisible: boolean;
   tabs: Record<Mode, WorkspaceTab[]>;
   activeTab: Record<Mode, string | null>;
 }
@@ -70,11 +69,12 @@ function readSnapshot(): LayoutSnapshot | null {
       const list = tabs[mode];
       if (Array.isArray(list)) {
         const clean = list.filter(validTab);
-        if (clean.length > 0) nextTabs[mode] = clean;
-      }
-      const id = active[mode];
-      if (typeof id === "string" && nextTabs[mode].some((tab) => tab.id === id)) {
-        nextActive[mode] = id;
+        const id = active[mode];
+        const chosen = clean.find((tab) => tab.id === id) ?? clean[0];
+        if (chosen !== undefined) {
+          nextTabs[mode] = [chosen];
+          nextActive[mode] = chosen.id;
+        }
       }
     }
     const theme: Theme = snapshot.theme === "light" ? "light" : "dark";
@@ -82,7 +82,6 @@ function readSnapshot(): LayoutSnapshot | null {
       version: 1,
       mode: snapshot.mode,
       theme,
-      sidebarVisible: snapshot.sidebarVisible !== false,
       tabs: nextTabs,
       activeTab: nextActive,
     };
@@ -94,7 +93,6 @@ function readSnapshot(): LayoutSnapshot | null {
 export class LayoutStore {
   mode = $state<Mode>("goal");
   theme = $state<Theme>("dark");
-  sidebarVisible = $state(true);
   tabs = $state<Record<Mode, WorkspaceTab[]>>(defaultTabs());
   activeTab = $state<Record<Mode, string | null>>(defaultActive());
   /** Bumping the epoch remounts PaneForge groups so stored split sizes are gone. */
@@ -105,7 +103,6 @@ export class LayoutStore {
     if (snapshot !== null) {
       this.mode = snapshot.mode;
       this.theme = snapshot.theme;
-      this.sidebarVisible = snapshot.sidebarVisible;
       this.tabs = snapshot.tabs;
       this.activeTab = snapshot.activeTab;
     } else {
@@ -149,15 +146,9 @@ export class LayoutStore {
     this.setTheme(this.theme === "dark" ? "light" : "dark");
   }
 
-  toggleSidebar(): void {
-    this.sidebarVisible = !this.sidebarVisible;
-  }
-
+  /** One surface per mode: opening a tab replaces the visible page. */
   openTab(mode: Mode, tab: WorkspaceTab, activate = true): void {
-    const list = this.tabs[mode];
-    if (!list.some((entry) => entry.id === tab.id)) {
-      this.tabs[mode] = [...list, tab];
-    }
+    this.tabs[mode] = [tab];
     if (activate) this.activeTab[mode] = tab.id;
   }
 
@@ -190,7 +181,6 @@ export class LayoutStore {
       // Reset still resets the in-memory layout.
     }
     this.mode = "goal";
-    this.sidebarVisible = true;
     this.tabs = defaultTabs();
     this.activeTab = defaultActive();
     this.setTheme("dark");
@@ -202,7 +192,6 @@ export class LayoutStore {
       version: 1,
       mode: this.mode,
       theme: this.theme,
-      sidebarVisible: this.sidebarVisible,
       tabs: this.tabs,
       activeTab: this.activeTab,
     };

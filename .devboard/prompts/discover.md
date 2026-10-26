@@ -297,11 +297,10 @@ metadata:
 - The body is a `#` heading title followed only by imperative bullets, one directive per bullet.
   Every non-empty, non-heading line starts with `- `. No paragraphs, tables, prose introduction, or
   chat report.
-- Name a source, test, manifest, or CI path in a bullet only when the path itself helps apply the
-  rule, for example when it identifies where a convention lives, which file a command runs, or
-  which boundary to respect. Do not append a path merely to show where a claim was derived: the
-  sheet and its evidence already carry that provenance, and a path that adds nothing makes the
-  skill harder to read.
+- Do not name a source, test, manifest, or CI file or directory in a bullet. State the rule and
+  the convention it applies to directly; the sheet and its evidence already carry the provenance.
+  An exact command is allowed even when it contains a path. Never append a path in parentheses to
+  show where a claim was derived.
 - When a previously published generated baseline exists under
   `<host>/.omp/discover/skills/<name>/SKILL.md`, read it for continuity of scope and structure.
   Always regenerate from the current crawl. Never copy a developer's live edits into the baseline;
@@ -312,16 +311,15 @@ metadata:
 Content each skill must carry:
 
 - **discover-testing-strategy**: the levels actually present, the test pyramid, exact commands,
-  representative paths, fixtures, coverage expectations, and how to add a test for a change.
+  fixture roles, coverage expectations, and how to add a test for a change.
 - **discover-naming-conventions**: canonical domain terms, casing for files, modules, types,
   functions, errors, and flags, and rejected aliases.
 - **discover-coding-conventions**: observed patterns, error handling, typing, async style, logging,
   dependency use, formatting and linting, and prohibited constructs.
 - **discover-architecture-boundaries**: bounded contexts, entry points, dependency direction,
   persistence, integrations, and prohibited cross-boundary imports.
-- **discover-glossary**: the canonical glossary file paths
-  `.omp/discover/glossary/<boundedContext>.glossary.yaml`, the confirmed and rejected term rules,
-  and the proposal process.
+- **discover-glossary**: the canonical glossary directory, the confirmed and rejected term
+  rules, and the proposal process.
 
 All five baselines must be internally consistent and consistent with the glossary. Never recommend
 an invalidated concept's preferred label. If two generated bullets would contradict, rewrite them
@@ -388,7 +386,7 @@ Confirm all of the following:
       no confirmed, deprecated, or invalidated status appears.
 - [ ] All five `skills/<name>/SKILL.md` files exist with matching names, non-empty descriptions of
       at most 1024 characters, and both markers; each body is a heading plus imperative bullets,
-      and a path appears only where it helps apply the rule.
+      and no bullet names a source, test, manifest, or CI path.
 - [ ] The five baselines do not contradict each other or the glossary, and no skill recommends an
       invalidated label.
 - [ ] Nothing was written outside `<staging-dir>`; `GOAL.md`, `adrs/`, host source, `.omp/discover`,

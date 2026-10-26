@@ -2,9 +2,9 @@
 
 Local browser interface for a repository's goal, Flow implementation, and Discover artifacts.
 It renders one full-viewport, dark-first administration workspace with an activity bar, a
-contextual sidebar, workspace tabs, resizable split panes, Monaco editors, xterm terminals, a
-command palette, and a status bar. Every mode is a client-side view over the existing WebSocket
-contract; the server still owns all work and durable state.
+contextual sidebar, one workspace page per mode, resizable split panes, Monaco editors, xterm
+terminals, a command palette, and a status bar. Every mode is a client-side view over the existing
+WebSocket contract; the server still owns all work and durable state.
 
 ## Interface
 
@@ -21,12 +21,11 @@ degrades into a clipped mobile layout.
 |---|---|---|
 |Activity bar|`activity-bar`|Three mode tabs and their Lucide icons|
 |Sidebar|`sidebar`|Contextual navigation for the active mode|
-|Workspace tabs|`workspace-tabs`|Open resources in the active mode|
-|Workspace|`workspace`|The active tab's surface; absorbs all remaining space|
+|Workspace|`workspace`|The open surface; absorbs all remaining space|
 |Status bar|`status-bar`|Connection, project, counts, mode status, versions, theme, notifications|
 
 The status bar stays visible while panes resize, and the document itself never scrolls
-vertically or horizontally. Each mode's panel keeps its scroll position, focus, open tabs, and
+vertically or horizontally. Each mode's panel keeps its scroll position, focus, open page, and
 unsaved editor text while another mode is shown.
 
 ### Activity bar
@@ -39,32 +38,32 @@ Alt+3 changes only which mounted view is shown; it never sends a WebSocket frame
 
 ### Sidebar
 
-The sidebar is contextual and can be hidden with Ctrl/Cmd+B or the control in its header.
-It is initially 300 CSS px wide, constrained to 200–600 CSS px, and resized by dragging its
-separator or pressing the arrow keys with that separator focused. Double-clicking the separator
-restores the default width. Visibility and width survive a reload.
+The sidebar is always visible and has no hide control or collapse shortcut. It is initially 300
+CSS px wide, constrained to 200–600 CSS px, and resized by dragging its separator or pressing the
+arrow keys with that separator focused. Double-clicking the separator restores the default width.
+The width survives a reload.
 
-- **Goal** lists the goal workspace surfaces, every ADR record (title, status, pending or
-  resolved state, next marker, file), the lifecycle lanes, and the prepared skills.
+- **Goal** lists the goal workspace surfaces, a **Skills** entry that discloses every prepared
+  skill, the pending ADR records (title, status, next marker, file), and the lifecycle lanes. The
+  ADR records group is absent while no record is pending.
 - **Flow** lists the session, PR state, widgets, changed files, checkpoints, steering, decision
   board, blockers, and history.
 - **Discover** lists the overview and glossary sections, the five skills under their own group, a
-  nested glossary submenu, warnings, and recent notices.
+  nested glossary submenu, warnings only while at least one exists, and recent notices.
 
 Selecting an entry opens or focuses its workspace surface. Informational entries open the
 surface that holds the same facts.
 
-### Workspace tabs
+### Workspace page
 
-Opening an ADR, a Flow widget, changed file, or checkpoint, a Discover term, or a Discover skill
-adds one tab to the workspace strip. A tab shows its resource name, active state, close control,
-and a dirty dot when its editor has unsaved changes. Opening an already-open resource activates
-its existing tab. Each mode keeps its own open tabs and active tab across mode switches.
+Each mode shows exactly one page at a time and renders no tab strip. Opening an ADR, a Flow
+widget, changed file, or checkpoint, a Discover term, or a Discover skill replaces the visible
+page; the previous selection is reachable again from the sidebar or the palette. Close controls
+inside a page return to an empty page, and a dirty page closes only after the confirmation dialog
+restores or discards the draft.
 
-Closing a dirty tab opens a confirmation dialog; discarding restores the last saved text. A
-reload restores the active mode, every mode's tabs and active tab, sidebar visibility and width,
-split sizes, and theme. All of that state lives in `localStorage`; none of it is sent to the
-server.
+A reload restores the active mode, each mode's open page, sidebar and split sizes, and theme. All
+of that state lives in `localStorage`; none of it is sent to the server.
 
 ### Split panes
 
@@ -85,15 +84,14 @@ Commands that need text focus the relevant input rather than inventing a value.
 
 The palette covers navigation, opening every record, lane, widget, file, checkpoint, term, and
 skill, lifecycle start/pause/resume/stop, Goal commands, Flow goal and decision editing, Flow
-start/stop and PR actions, Discover start/stop and skill editing, sidebar and theme toggles, reset
-layout, reload when stale, and reporting a UI issue.
+start/stop and PR actions, Discover start/stop and skill editing, the theme toggle, reset layout,
+reload when stale, and reporting a UI issue.
 
 ### Keyboard shortcuts
 
 |Shortcut|Action|
 |---|---|
 |Ctrl/Cmd+K|Open the command palette|
-|Ctrl/Cmd+B|Toggle the sidebar|
 |Alt+1 / Alt+2 / Alt+3|Switch to Goal / Flow / Discover|
 |Ctrl/Cmd+S|Save the focused editor when it has unsaved changes|
 |Escape|Close the palette, dialogs, and overlays|
@@ -117,7 +115,7 @@ reduce` disables nonessential transitions.
 TanStack Table renders the ADR record list and the Discover command, testing, architecture,
 dependency, unknown-field, and glossary tables. The ADR table keeps title, status,
 pending or resolved state, next marker, file, and decision summary; selecting a row opens its
-detail tab without navigating away. Body and table text is 12–14 CSS px, paths, code, diffs,
+detail page without navigating away. Body and table text is 12–14 CSS px, paths, code, diffs,
 terminal output, and IDs are monospace, one-line data rows are at most 32 CSS px tall, and wrapped
 data rows stay within 120 CSS px. The shell uses
 the full viewport with no application max-width.
@@ -127,7 +125,9 @@ the full viewport with no application max-width.
 Monaco Editor provides the Goal document (`goal-text`), Flow goal (`flow-goal-text`), Flow
 decision board (`flow-decisions`), and Discover skill editor (`discover-skill-text`). Each
 supports multiline Markdown or plain-text editing, its Save control, Ctrl/Cmd+S, a dirty marker,
-and an accessible label; a save sends the editor's exact text. Flow diffs remain rendered by
+and an accessible label; a save sends the editor's exact text. The Goal document page fills the
+workspace: the editor takes every remaining pixel and the Revision guidance field is a tall
+multiline text area pinned to the page bottom. Flow diffs remain rendered by
 `diff2html`; the client never parses unified diff hunks.
 
 xterm.js renders read-only agent output for Goal current activity and history, lane current
@@ -159,7 +159,7 @@ bun run verify:interface
 The script builds the client, seeds a fixture host under `.devboard/.tmp` with eight ADRs and
 real Discover artifacts produced by the stub ACP peer, starts a source dashboard, launches
 headless Chrome with a profile under the same tree, and asserts the shell, modes, sidebar,
-tabs, splits, palette, shortcuts, theme and first paint, layout persistence and reset, the
+pages, splits, palette, shortcuts, theme and first paint, layout persistence and reset, the
 1024×720 boundary, dense tables, Monaco editors, xterm terminals, contrast, reduced motion,
 notifications, status bar, preserved test hooks, and the absence of exceptions, console errors,
 failed requests, and overflow. It writes screenshots under `.devboard/.tmp/interface/`.
@@ -277,7 +277,7 @@ activity, question, blocked/failure bookkeeping, and remaining retention; epic a
 `mainAtFailure`, status, and the parked and retrying sets; the last reported lifecycle state
 including `finished`; the manual ADR sequence; goal creation; goal revision with its guidance;
 skills preparation with the pre-run rollback snapshot; an interrupted implementation reset; and an
-accepted `whenIdle` restart. Browser-only state (open tabs, active tab per mode, drafts, layout, theme,
+accepted `whenIdle` restart. Browser-only state (open page per mode, drafts, layout, theme,
 notifications, connection status) and full ACP transcripts, raw stderr, and secrets stay out of the file.
 
 Restored activity is bounded per foreground run and per lane at the first of 1,000 entries or
@@ -330,7 +330,7 @@ read-only state directory never stops the server: it keeps serving from memory a
 
 ## Flow Mode
 
-The activity bar carries three client-only tabs, `Goal`, `Flow`, and `Discover`
+The activity bar carries three client-only modes, `Goal`, `Flow`, and `Discover`
 (`data-testid="mode-goal"`, `data-testid="mode-flow"`, and `data-testid="mode-discover"`).
 Switching is a view change only: it sends no WebSocket frame and
 starts, stops, pauses, or resumes no work in any mode. Goal Mode is the goal, ADR, epic,
@@ -513,29 +513,29 @@ directory, and the decision board is never an ADR record.
 The Discover mode is the third client-only view, opened from the activity bar. It exists for an existing host project: one
 read-only crawl produces an evidence-backed project sheet, a UbiLang glossary for each detected
 bounded context, and five project-specific Agent Skills that every devboard implementation agent in
-that host discovers. Switching to Discover, and switching its tabs, sends no WebSocket frame
+that host discovers. Switching to Discover, and switching its pages, sends no WebSocket frame
 and starts, stops, resets, or clears nothing; all three views stay mounted, so native details,
 scroll state, and focus survive. Discover events render only in this view and never touch Goal
 Mode's activity, question, or error state.
 
-The Discover sidebar opens tabs for `Overview` and `Glossary` under **Sections**, and the five
+The Discover sidebar opens pages for `Overview` and `Glossary` under **Sections**, and the five
 skills `Testing Strategy`, `Naming Conventions`, `Coding Conventions`,
 `Architecture & Boundaries`, and `Glossary` under **Skills** (`data-testid="discover-tab"` with
 `data-tab` values `overview`, `glossary`, `testing-strategy`, `naming-conventions`,
 `coding-conventions`, `architecture-boundaries`, and `glossary-skill`). The active panel carries
-`data-testid="discover-panel"` and the same `data-tab`. Warnings follows as its own group with a
-count; the sidebar keeps no freshness group.
+`data-testid="discover-panel"` and the same `data-tab`. Warnings appears as its own group with a
+count only while at least one warning exists; the sidebar keeps no freshness group.
 
 The Glossary row carries a disclosure control (`data-testid="discover-glossary-toggle"`) that opens
 a nested submenu (`data-testid="discover-glossary-menu"`) listing each bounded context by its full
-title and its terms. The submenu opens automatically while the Glossary tab or a term tab is
+title and its terms. The submenu opens automatically while the Glossary page or a term page is
 active, and its entries carry no status badges.
 
-With no published artifacts the Overview tab shows an empty state (`data-testid="discover-empty"`)
+With no published artifacts the Overview page shows an empty state (`data-testid="discover-empty"`)
 and a `Discover project` button (`data-testid="discover-start"`); with artifacts it shows
 `Re-discover`. The button is disabled when the socket is not open, while a Discover run is active,
 or while Goal or Flow work is active, and its title names the reason. It never starts on page
-load, reconnect, mode switch, or tab switch. Selecting it sends `{ "type": "discoverProject" }`;
+load, reconnect, mode switch, or page switch. Selecting it sends `{ "type": "discoverProject" }`;
 the server broadcasts `discoverStarted` and starts exactly one ACP peer whose prompt is exactly
 `/discover <staging-dir>`, whose working directory is the repository root, and whose staging
 directory is `<host>/.omp/discover/staging/<run-id>/`. A second start while one runs is refused
@@ -556,7 +556,7 @@ Discover uses the same WebSocket at `/ws`. The client sends `discoverProject`, `
 `answerDiscover` (with `id` and `value`), `getDiscover`, `saveDiscoverSkill` (with `name` and
 `text`), and `restoreDiscoverSkill` (with `name`). The protocol also accepts
 `confirmGlossaryTerm` (with `context` and `id`) and `rejectGlossaryTerm` (with `context`, `id`, and
-a non-empty `reason`) for tooling, but the Glossary tab does not use them. `getDiscover` asks for
+a non-empty `reason`) for tooling, but the Glossary page does not use them. `getDiscover` asks for
 the current snapshot and is answered with `discoverState`. The server
 broadcasts `discoverState`, `discoverStarted`, `discoverActivity`, `discoverQuestion`,
 `discoverStopped`, and `discoverError`; it never sends `activity`, `question`, `error`,
@@ -590,7 +590,7 @@ secrets and no absolute path.
 `definition`, `stack`, `deployment`, `environments`, `commands`, `branching`, `testing`,
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint. The
-Overview tab is a project sheet, not a card grid. A masthead
+Overview page is a project sheet, not a card grid. A masthead
 (`data-testid="discover-freshness"`) carries the project name, `dirty` and `stale` badges, the
 one-sentence definition, the short commit, the discovery time, and the definition's confidence and
 evidence. Below it, `Run and verify` holds the commands and testing panels, `Platform` and
@@ -629,7 +629,7 @@ after the two columns. Environments is `unknown` here, so it appears only in the
 delivery section and the deployment pipeline sources stay hidden because they repeat other facts. A
 sheet with no observed test level and a glossary with no matching term keep an explicit empty state.
 
-The Glossary tab and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
+The Glossary page and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
 document per bounded context named `<bounded-context>.glossary.yaml`, top-level `boundedContext`,
 `titles`, and `concepts`, and concepts carrying `id`, `prefLabels`, `altLabels`, `hiddenLabels`,
 `definitions`, `scopeNote`, `example`, `historyNote`, `status`, `origin`, `standardRef`, `kind`,
@@ -643,18 +643,21 @@ ungrounded candidate is omitted. The crawl stages
 and `status: proposed` with `origin: llm` for a name it proposes for an existing unnamed concept;
 it never writes `confirmed`, `deprecated`, or `invalidated`. On publication the server confirms
 every newly crawled term, so the published glossary contains only confirmed terms unless an
-earlier operator decision invalidated one. The tab groups terms by context and offers search; it
+earlier operator decision invalidated one. The page groups terms by context and offers search; it
 shows no status filter, status badge, or per-term control, and it hides invalidated terms. Each
-context card holds a three-column table — Term, Definition, Kind — that grows with the page and
-wraps long definitions; each term carries `data-testid="discover-term"`, `data-context`, `data-id`,
-`data-status`, and `data-kind`, and each context carries `data-testid="discover-context"`. The
-context heading shows its title, falling back to the context id only when no title exists. The
-Kind column is muted rather than color-coded.
+context card holds a three-column table — Term, Definition, Kind — that grows with the page,
+never scrolls inside a panel, and wraps long definitions; each term carries
+`data-testid="discover-term"`, `data-context`, `data-id`, `data-status`, and `data-kind`, and each
+context carries `data-testid="discover-context"`. The context heading shows its title, falling back
+to the context id only when no title exists. Every Kind value carries a Lucide icon colored by
+kind: entity, event, field, role, actor, value, and rule each use a stable token. The search field
+centers its placeholder vertically and the glossary table shows every row it holds. Selecting a
+term opens its detail page without a status badge or Close control.
 
-Confirmation is automatic, so the Glossary tab offers no `Confirm` or `Reject` control.
+Confirmation is automatic, so the Glossary page offers no `Confirm` or `Reject` control.
 `confirmGlossaryTerm` still succeeds only for a term that is proposed or unconfirmed, and
 `rejectGlossaryTerm` requires a non-empty reason and changes a proposed, unconfirmed, or confirmed
-term to `invalidated`; neither is reachable from the tab. Both append a dated decision to
+term to `invalidated`; neither is reachable from the page. Both append a dated decision to
 `decisions.json` with the context, id, action, reason when rejecting, and date, never adding a
 field to the YAML, and the change survives reload, reconnect, and restart. A later crawl preserves
 every confirmed or invalidated concept's labels, definitions, notes, status, origin, standard
@@ -669,21 +672,22 @@ A successful run publishes exactly five skills under `.omp/skills/`: `discover-t
 `SKILL.md` whose frontmatter has `name` equal to the directory, a non-empty `description` of at most
 1024 characters, `metadata.devboard-managed: "true"`, `metadata.devboard-family: "discover"`, and
 `metadata.devboard-skill` naming its role. The bodies are project-specific and directive: one
-imperative bullet per rule, naming a path only when that path helps apply the rule. Testing
-strategy states levels, pyramid, commands, paths, fixtures, coverage expectations, and how to add a
-test; naming conventions state canonical terms, casing, and rejected aliases; coding conventions
-state patterns, error handling, typing, async, logging, dependencies, formatting, and prohibited
-constructs; architecture and boundaries state contexts, entry points, dependency direction,
-persistence, integrations, and prohibited cross-boundary imports; the glossary skill names the
-published glossary files, the confirmed and rejected rules, and the proposal process. From the host
+imperative bullet per rule, and no bullet names a source, test, manifest, or CI path — an exact
+command may still contain one. Testing strategy states levels, pyramid, commands, fixture roles,
+coverage expectations, and how to add a test; naming conventions state canonical terms, casing, and
+rejected aliases; coding conventions state patterns, error handling, typing, async, logging,
+dependencies, formatting, and prohibited constructs; architecture and boundaries state contexts,
+entry points, dependency direction, persistence, integrations, and prohibited cross-boundary
+imports; the glossary skill names the canonical glossary directory, the confirmed and rejected
+rules, and the proposal process. From the host
 root, a new `omp` session lists the five (`omp skill list`) and loads their bodies as skills, so
 every implementation agent in that host discovers the set with no extra configuration.
 
-Each skill has a tab that is one full-height Monaco Markdown editor for the whole `SKILL.md`
+Each skill has a page that is one full-height Monaco Markdown editor for the whole `SKILL.md`
 (`data-testid="discover-skill-text"`), with no rendered preview and no split pane. The header holds
 the skill name, `discover-skill-save`, and, while the live text differs from the generated version
 or the file is missing, `discover-skill-restore`. A `discover-skill-dirty` marker appears while the
-draft has unsaved changes; the tab renders no state badge. `saveDiscoverSkill` writes the submitted
+draft has unsaved changes; the page renders no state badge. `saveDiscoverSkill` writes the submitted
 bytes verbatim and updates the manifest's current hash and edited state; it is refused with one
 `discoverError` when the name is not one of the five, the skill is missing, the frontmatter name
 no longer matches the directory, the description is empty or too long, or a marker was removed,

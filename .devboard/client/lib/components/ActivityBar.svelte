@@ -10,8 +10,6 @@
 </script>
 
 <div class="activity-bar" data-testid="activity-bar" aria-label="Devboard modes" role="tablist">
-  <span class="activity-bar__brand" aria-hidden="true">DB</span>
-
   <Tooltip.Root>
     <Tooltip.Trigger
       role="tab"

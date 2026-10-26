@@ -1,6 +1,5 @@
 <script lang="ts">
   import ChevronRight from "lucide-svelte/icons/chevron-right";
-  import PanelLeftClose from "lucide-svelte/icons/panel-left-close";
   import {
     conceptTitle,
     contextTitle,
@@ -14,7 +13,6 @@
   import { notifications } from "../notifications.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import type { Mode } from "../types";
-  import IconButton from "./ui/icon-button.svelte";
 
   interface Props {
     openTab: (mode: Mode, tab: WorkspaceTab) => void;
@@ -24,6 +22,7 @@
 
   const active = $derived(layout.activeTab[layout.mode]);
   let glossaryOpen = $state<boolean | null>(null);
+  let skillsOpen = $state(false);
   const glossaryVisible = $derived(
     glossaryOpen ??
       (typeof active === "string" && (active === "glossary" || active.startsWith("term:"))),
@@ -44,14 +43,6 @@
 <aside class="sidebar" data-testid="sidebar" aria-label={`${modeLabel} sidebar`}>
   <div class="sidebar__header">
     <span class="sidebar__title">{modeLabel}</span>
-    <IconButton
-      label="Hide sidebar (Ctrl+B)"
-      command="view.sidebar.toggle"
-      data-testid="sidebar-toggle"
-      onclick={() => layout.toggleSidebar()}
-    >
-      <PanelLeftClose size={14} aria-hidden="true" />
-    </IconButton>
   </div>
 
   <div class="sidebar__body">
@@ -94,52 +85,106 @@
             <span class="badge" data-tone="warning">unsaved</span>
           {/if}
         </button>
-        <button
-          type="button"
-          class="sidebar-item"
-          aria-current={isActive("skills")}
-          data-command="goal.skills.open"
-          onclick={() => open("goal", "skills", "skills", "skills", "Skills")}
-        >
-          <ChevronRight size={12} aria-hidden="true" />
-          <span class="sidebar-item__label">Skills</span>
-          <span class="sidebar-item__meta">{goal.skills.length}</span>
-        </button>
-      </section>
-
-      <section class="sidebar-group" aria-label="ADR records">
-        <div class="sidebar-group__title">
-          <span>ADR records</span>
-          <span>{goal.pendingCount} pending</span>
-        </div>
-        {#each goal.records as record (record.file)}
+        <div class="sidebar-tab-row">
           <button
             type="button"
             class="sidebar-item"
-            aria-current={isActive(`adr:${record.file}`)}
-            data-command={`goal.adr.open.${record.file}`}
-            data-testid="sidebar-adr"
-            data-file={record.file}
-            data-pending={record.pending}
-            data-next={goal.next === record.file}
-            title={`${record.title} — ${record.status || "Unknown"}`}
-            onclick={() =>
-              open("goal", `adr:${record.file}`, "adr", record.file, record.title)}
+            aria-current={isActive("skills")}
+            aria-expanded={skillsOpen}
+            aria-controls={skillsOpen ? "goal-skills-menu" : undefined}
+            data-command="goal.skills.open"
+            data-testid="goal-skills-toggle"
+            onclick={() => {
+              skillsOpen = !skillsOpen;
+              open("goal", "skills", "skills", "skills", "Skills");
+            }}
           >
-            <span class="sidebar-item__label">{record.title}</span>
-            {#if goal.next === record.file}
-              <span class="badge" data-tone="accent" data-testid="next-marker-badge">Next</span>
-            {:else}
-              <span class="badge" data-tone={record.pending ? "pending" : "resolved"}>
-                {record.pending ? "Pending" : "Resolved"}
-              </span>
-            {/if}
+            <span class="sidebar-item__label">Skills</span>
+            <span class="sidebar-item__meta">{goal.skills.length}</span>
           </button>
-          <div class="sidebar-item__meta" style="padding: 0 6px 4px 24px;">
-            {record.file} · {record.status || "Unknown"}
+          <button
+            type="button"
+            class="sidebar-disclosure"
+            aria-expanded={skillsOpen}
+            aria-controls={skillsOpen ? "goal-skills-menu" : undefined}
+            aria-label={`${skillsOpen ? "Hide" : "Show"} prepared skills`}
+            data-testid="goal-skills-disclosure"
+            onclick={() => (skillsOpen = !skillsOpen)}
+          >
+            <ChevronRight
+              size={12}
+              aria-hidden="true"
+              class={skillsOpen
+                ? "sidebar-disclosure__icon sidebar-disclosure__icon--open"
+                : "sidebar-disclosure__icon"}
+            />
+          </button>
+        </div>
+        {#if skillsOpen}
+          <div
+            class="sidebar-submenu"
+            id="goal-skills-menu"
+            data-testid="goal-skills-menu"
+            role="group"
+            aria-label="Prepared skills"
+          >
+            {#each goal.skills as skill (skill.name)}
+              <button
+                type="button"
+                class="sidebar-item sidebar-item--nested"
+                data-command={`goal.skill.open.${skill.name}`}
+                data-testid="goal-skill"
+                data-name={skill.name}
+                title={skill.description}
+                onclick={() => {
+                  goal.selectSkill(skill.name);
+                  open("goal", "skills", "skills", "skills", "Skills");
+                }}
+              >
+                <span class="sidebar-item__label">{skill.name}</span>
+              </button>
+            {:else}
+              <p class="sidebar-empty">No skills prepared.</p>
+            {/each}
           </div>
-        {/each}
+        {/if}
       </section>
+
+      {#if goal.pendingCount > 0}
+        <section class="sidebar-group" aria-label="ADR records">
+          <div class="sidebar-group__title">
+            <span>ADR records</span>
+            <span>{goal.pendingCount} pending</span>
+          </div>
+          {#each goal.records as record (record.file)}
+            <button
+              type="button"
+              class="sidebar-item"
+              aria-current={isActive(`adr:${record.file}`)}
+              data-command={`goal.adr.open.${record.file}`}
+              data-testid="sidebar-adr"
+              data-file={record.file}
+              data-pending={record.pending}
+              data-next={goal.next === record.file}
+              title={`${record.title} — ${record.status || "Unknown"}`}
+              onclick={() =>
+                open("goal", `adr:${record.file}`, "adr", record.file, record.title)}
+            >
+              <span class="sidebar-item__label">{record.title}</span>
+              {#if goal.next === record.file}
+                <span class="badge" data-tone="accent" data-testid="next-marker-badge">Next</span>
+              {:else}
+                <span class="badge" data-tone={record.pending ? "pending" : "resolved"}>
+                  {record.pending ? "Pending" : "Resolved"}
+                </span>
+              {/if}
+            </button>
+            <div class="sidebar-item__meta" style="padding: 0 6px 4px 24px;">
+              {record.file} · {record.status || "Unknown"}
+            </div>
+          {/each}
+        </section>
+      {/if}
 
       <section class="sidebar-group" aria-label="Lifecycle lanes" data-testid="lane-tabs">
         <div class="sidebar-group__title">
@@ -177,25 +222,6 @@
         {/if}
       </section>
 
-      <section class="sidebar-group" aria-label="Skills">
-        <div class="sidebar-group__title">
-          <span>Skills</span>
-          <span>{goal.skills.length}</span>
-        </div>
-        {#each goal.skills as skill (skill.name)}
-          <button
-            type="button"
-            class="sidebar-item"
-            data-command={`goal.skill.open.${skill.name}`}
-            title={skill.description}
-            onclick={() => open("goal", "skills", "skills", "skills", "Skills")}
-          >
-            <span class="sidebar-item__label">{skill.name}</span>
-          </button>
-        {:else}
-          <p class="sidebar-empty">No skills prepared.</p>
-        {/each}
-      </section>
     {:else if layout.mode === "flow"}
       <section class="sidebar-group" aria-label="Flow surfaces">
         <div class="sidebar-group__title">Workspace</div>
@@ -515,24 +541,24 @@
         {/each}
       </section>
 
-      <section class="sidebar-group" aria-label="Warnings">
-        <div class="sidebar-group__title">
-          <span>Warnings</span>
-          <span>{discover.displayedWarnings.length}</span>
-        </div>
-        {#each discover.displayedWarnings as warning, index (index)}
-          <button
-            type="button"
-            class="sidebar-item"
-            data-command="open.discover.warnings"
-            onclick={() => open("discover", "warnings", "warnings", "warnings", "Warnings")}
-          >
-            <span class="sidebar-item__label">{warning}</span>
-          </button>
-        {:else}
-          <p class="sidebar-empty">No warnings.</p>
-        {/each}
-      </section>
+      {#if discover.displayedWarnings.length > 0}
+        <section class="sidebar-group" aria-label="Warnings">
+          <div class="sidebar-group__title">
+            <span>Warnings</span>
+            <span>{discover.displayedWarnings.length}</span>
+          </div>
+          {#each discover.displayedWarnings as warning, index (index)}
+            <button
+              type="button"
+              class="sidebar-item"
+              data-command="open.discover.warnings"
+              onclick={() => open("discover", "warnings", "warnings", "warnings", "Warnings")}
+            >
+              <span class="sidebar-item__label">{warning}</span>
+            </button>
+          {/each}
+        </section>
+      {/if}
 
       {#if notifications.items.length > 0}
         <section class="sidebar-group" aria-label="Recent notifications">

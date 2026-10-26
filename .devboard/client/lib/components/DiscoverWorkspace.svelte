@@ -9,6 +9,7 @@
   import { discover } from "../discover.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import type { Concept } from "../types";
+  import ConceptKind from "./ConceptKind.svelte";
   import DataTable from "./DataTable.svelte";
   import DetailSplit from "./DetailSplit.svelte";
   import DiscoverOverview from "./DiscoverOverview.svelte";
@@ -18,10 +19,9 @@
   interface Props {
     tab: WorkspaceTab | null;
     openTab: (tab: WorkspaceTab) => void;
-    closeTab: (tab: WorkspaceTab) => void;
   }
 
-  let { tab, openTab, closeTab }: Props = $props();
+  let { tab, openTab }: Props = $props();
 
   const GLOSSARY_COLUMNS = [
     { id: "title", header: "Term", accessorKey: "title" },
@@ -56,6 +56,14 @@
     });
   }
 </script>
+
+{#snippet glossaryCell(row: Record<string, unknown>, columnId: string)}
+  {#if columnId === "kind"}
+    <ConceptKind kind={String(row.kind ?? "")} />
+  {:else}
+    {String(row[columnId] ?? "")}
+  {/if}
+{/snippet}
 
 {#snippet glossaryPanel()}
   <div class="scroll-column discover-page" data-testid="discover-panel" data-tab="glossary" aria-label="Discover glossary">
@@ -114,9 +122,7 @@
                 const concept = context.concepts.find((entry) => entry.id === row.id);
                 if (concept !== undefined) openTerm(context.boundedContext, concept);
               }}
-              cellValue={(row, columnId) => String(row[columnId] ?? "")}
-              cellAttrs={(_row, columnId) =>
-                columnId === "kind" ? { class: "discover-cell--muted" } : {}}
+              cell={glossaryCell}
               full
               wrap
             />
@@ -203,20 +209,6 @@
                 <h2 class="panel__title">{conceptTitle(term.concept)}</h2>
                 <span class="muted">{contextTitle(term.glossary)}</span>
               </div>
-              <div class="row-sm">
-                <span class="badge" data-tone={term.concept.status === "confirmed" ? "confirmed" : "accent"}>
-                  {term.concept.status}
-                </span>
-                <Button
-                  variant="outline"
-                  data-command={`tab.close.discover.${tab?.id ?? ""}`}
-                  onclick={() => {
-                    if (tab !== null) closeTab(tab);
-                  }}
-                >
-                  Close
-                </Button>
-              </div>
             </div>
             <div class="panel__body stack-sm">
               <p style="margin: 0;">
@@ -264,7 +256,6 @@
                       onclick={() => openTerm(term.glossary.boundedContext, concept)}
                     >
                       <span class="sidebar-item__label">{conceptTitle(concept)}</span>
-                      <span class="badge">{concept.status}</span>
                     </button>
                   {/each}
                 </div>

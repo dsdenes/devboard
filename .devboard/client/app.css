@@ -193,16 +193,6 @@ kbd {
   width: 44px;
 }
 
-.activity-bar__brand {
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  margin-bottom: 4px;
-  writing-mode: vertical-rl;
-}
-
 .activity-tab {
   align-items: center;
   background: transparent;
@@ -401,78 +391,6 @@ kbd {
   min-width: 0;
   overflow: hidden;
   width: 100%;
-}
-
-.workspace-tabs {
-  align-items: stretch;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  flex: 0 0 34px;
-  gap: 1px;
-  height: 34px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
-}
-
-.workspace-tab {
-  align-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-bottom: 0;
-  color: var(--muted-foreground);
-  cursor: pointer;
-  display: flex;
-  flex: 0 0 auto;
-  font-size: 12px;
-  gap: 6px;
-  max-width: 240px;
-  padding: 0 8px;
-}
-
-.workspace-tab:hover {
-  background: var(--secondary);
-  color: var(--foreground);
-}
-
-.workspace-tab[aria-selected="true"] {
-  background: var(--background);
-  border-color: var(--border);
-  color: var(--foreground);
-}
-
-.workspace-tab__label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-tab__dirty {
-  background: var(--warning);
-  border-radius: 999px;
-  flex: 0 0 auto;
-  height: 6px;
-  width: 6px;
-}
-
-.workspace-tab__close {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 3px;
-  color: var(--muted-foreground);
-  cursor: pointer;
-  display: flex;
-  height: 18px;
-  justify-content: center;
-  padding: 0;
-  width: 18px;
-}
-
-.workspace-tab__close:hover {
-  background: var(--secondary-hover);
-  color: var(--foreground);
 }
 
 .workspace {
@@ -1830,9 +1748,11 @@ kbd {
 }
 
 .discover-search {
+  height: 30px;
+  line-height: 1.45;
   max-width: 320px;
   min-height: 30px;
-  padding: 4px 8px;
+  padding: 0 8px;
   width: 100%;
 }
 
@@ -1935,4 +1855,67 @@ kbd {
 
 .sidebar-item--nested {
   padding-left: 8px;
+}
+.goal-document {
+  flex: 1;
+  min-height: 0;
+}
+
+.goal-document .goal-details {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+}
+
+.goal-revision {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.goal-revision__heading {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.goal-revision__input {
+  min-height: 96px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+.goal-revision__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.skill__button {
+  align-items: flex-start;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--foreground);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px;
+  text-align: left;
+  width: 100%;
+}
+
+.skill__button:hover {
+  background: var(--secondary);
+}
+
+.skill__button[data-selected="true"] {
+  background: var(--accent-surface);
+  border-color: var(--border-strong);
+}
+
+.skill__description {
+  font-size: 11px;
 }
