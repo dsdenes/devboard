@@ -1,0 +1,123 @@
+{
+  "$schema": "https://openuispec.org/schema/draft-01.json",
+  "name": "devboard-harness-ui",
+  "version": "0.1.0",
+  "description": "Reusable UI primitives of the devboard harness interface: a dense, dark-first operator console. All components read their colors, radii, and type from the custom properties documented in DESIGN.md.",
+  "components": {
+    "Button": {
+      "description": "The single button primitive used across every workspace. It renders a native <button type=\"button\"> and forwards any native attribute (disabled, title, aria-*, data-*, onclick) to it. variant=default is a filled primary action and must appear at most once per surface; secondary is the default; outline and ghost are low-emphasis; destructive is for irreversible actions; link is an inline text action. Focus is a 2px ring with 1px offset; disabled is 45% opacity and non-interactive. Source: .devboard/client/lib/components/ui/button.svelte.",
+      "example": "<script>\n  import { Button } from \"./lib/components/ui/button.svelte\";\n</script>\n\n<Button variant=\"default\" onclick={() => save()}>Save</Button>\n<Button variant=\"destructive\" disabled>Delete record</Button>\n<Button variant=\"ghost\" size=\"sm\">Cancel</Button>",
+      "props": {
+        "variant": {
+          "type": "string",
+          "description": "Visual emphasis. default is the filled primary action; secondary is the default resting style.",
+          "enum": ["default", "secondary", "outline", "ghost", "destructive", "link"],
+          "default": "secondary"
+        },
+        "size": {
+          "type": "string",
+          "description": "Control height. default is 28px, sm is 24px with 11px type, icon is a 28px square.",
+          "enum": ["default", "sm", "icon"],
+          "default": "default"
+        },
+        "class": {
+          "type": "string",
+          "description": "Extra classes merged after the variant classes through the project's cn() helper. Use for layout only, never to override color or radius.",
+          "default": ""
+        },
+        "children": {
+          "type": "snippet",
+          "description": "Visible button label or icon. Required for an accessible name unless aria-label is passed.",
+          "required": true
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Native disabled attribute; renders at 45% opacity and removes pointer events.",
+          "default": false
+        },
+        "type": {
+          "type": "string",
+          "description": "Native button type. Overrides the rendered default.",
+          "enum": ["button", "submit", "reset"],
+          "default": "button"
+        },
+        "onclick": {
+          "type": "function",
+          "description": "Click handler receiving the native MouseEvent."
+        }
+      }
+    },
+    "IconButton": {
+      "description": "Square 28px ghost icon button with a required accessible label and a bits-ui tooltip. It applies aria-label and title from label, aria-pressed from active, and data-command from command. Pass an SVG icon as children; it is decorative because label carries the accessible name. Source: .devboard/client/lib/components/ui/icon-button.svelte.",
+      "example": "<script>\n  import IconButton from \"./lib/components/ui/icon-button.svelte\";\n  import { RefreshCw } from \"lucide-svelte\";\n</script>\n\n<IconButton label=\"Refresh\" command=\"refresh\" onclick={() => reload()}>\n  <RefreshCw size={14} aria-hidden=\"true\" />\n</IconButton>",
+      "props": {
+        "label": {
+          "type": "string",
+          "description": "Accessible name and tooltip text. Required.",
+          "required": true
+        },
+        "command": {
+          "type": "string",
+          "description": "Command identifier written to data-command for the command palette."
+        },
+        "data-testid": {
+          "type": "string",
+          "description": "Test hook forwarded to the trigger element."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Disables the trigger.",
+          "default": false
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Renders the active fill and sets aria-pressed to true.",
+          "default": false
+        },
+        "class": {
+          "type": "string",
+          "description": "Extra classes merged after the ghost icon-button classes.",
+          "default": ""
+        },
+        "onclick": {
+          "type": "function",
+          "description": "Click handler receiving the native MouseEvent."
+        },
+        "children": {
+          "type": "snippet",
+          "description": "The icon; rendered inside the trigger. Required.",
+          "required": true
+        }
+      }
+    },
+    "Input": {
+      "description": "Text input primitive: 28px tall, background fill, strong border, 4px radius, ring on focus, muted placeholder. It renders a native <input> and forwards every native attribute except class (type, value, placeholder, disabled, oninput, aria-*, data-*), so it carries no component-level defaults. Source: .devboard/client/lib/components/ui/input.svelte.",
+      "example": "<script>\n  import Input from \"./lib/components/ui/input.svelte\";\n  let query = $state(\"\");\n</script>\n\n<Input type=\"search\" placeholder=\"Filter goals\" bind:value={query} aria-label=\"Filter goals\" />",
+      "props": {
+        "class": {
+          "type": "string",
+          "description": "Extra classes merged after the base input classes.",
+          "default": ""
+        },
+        "type": {
+          "type": "string",
+          "description": "Native input type; passed through with no component default.",
+          "default": "text"
+        },
+        "value": {
+          "type": "string",
+          "description": "Native value; bindable."
+        },
+        "placeholder": {
+          "type": "string",
+          "description": "Native placeholder, rendered in muted-foreground."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Native disabled attribute; renders at 50% opacity.",
+          "default": false
+        }
+      }
+    }
+  }
+}
