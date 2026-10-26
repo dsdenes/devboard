@@ -104,7 +104,14 @@ const EXCLUDED_ROOTS = [".devboard", ".worktree", ".omp/discover", ".omp/skills"
 /** A crawl writes only files below its staging directory; these are the only allowed paths. */
 const STAGED_SHEET = "sheet.json";
 const STAGED_GLOSSARY_DIR = "glossary";
+const STAGED_SIGNIFICANCE = "glossary/significance.json";
 const STAGED_SKILL_DIR = "skills";
+
+/** The crawl's own significance sidecar: one score and one reason per staged concept. */
+const SIGNIFICANCE_SCHEMA_VERSION = 1;
+const SIGNIFICANCE_REASON_MAX = 160;
+const SIGNIFICANCE_CONTEXT_KEYS = ["schemaVersion", "contexts"] as const;
+const SIGNIFICANCE_ENTRY_KEYS = ["score", "reason"] as const;
 
 /** Secret shapes that must never reach an artifact. */
 const SECRET_PATTERNS: RegExp[] = [
@@ -1523,6 +1530,131 @@ export function glossaryDigest(glossary: Glossary): string {
     .digest("hex");
 }
 
+// ----------------------------------------------------------- significance
+
+/** One crawl-authored significance judgment for a single concept. */
+export interface ConceptSignificance {
+  score: number;
+  reason: string;
+}
+
+/** Significance keyed by bounded context, then concept id. */
+export type GlossarySignificance = Record<string, Record<string, ConceptSignificance>>;
+
+export function significancePath(repoDir: string): string {
+  return join(discoverRoot(repoDir), "significance.json");
+}
+
+/**
+ * Validates the staged significance sidecar against the staged glossaries.
+ * Names must match exactly: a missing or extra context or concept fails, and
+ * so does an entry that is not an integer score with one line of evidence.
+ */
+export function parseSignificance(
+  raw: unknown,
+  path: string,
+  glossaries: Glossary[],
+): GlossarySignificance {
+  if (!isRecord(raw)) invalid(path, "must be an object");
+  for (const key of Object.keys(raw)) {
+    if (!(SIGNIFICANCE_CONTEXT_KEYS as readonly string[]).includes(key)) {
+      invalid(path, `carries an undeclared key ${key}`);
+    }
+  }
+  if (raw.schemaVersion !== SIGNIFICANCE_SCHEMA_VERSION) {
+    invalid(path, `schemaVersion must be ${SIGNIFICANCE_SCHEMA_VERSION}`);
+  }
+  const contexts = raw.contexts;
+  if (!isRecord(contexts)) invalid(`${path}.contexts`, "must be an object");
+
+  const staged = new Map(glossaries.map((glossary) => [glossary.boundedContext, glossary]));
+  for (const context of Object.keys(contexts)) {
+    if (!staged.has(context)) invalid(`${path}.contexts`, `names the unknown context ${context}`);
+  }
+
+  const parsed: GlossarySignificance = {};
+  for (const glossary of glossaries) {
+    const context = glossary.boundedContext;
+    const entries = contexts[context];
+    if (!isRecord(entries)) invalid(`${path}.contexts`, `has no entry for ${context}`);
+    const ids = new Set(glossary.concepts.map((concept) => concept.id));
+    for (const id of Object.keys(entries)) {
+      if (!ids.has(id)) {
+        invalid(`${path}.contexts.${context}`, `names the unknown concept ${id}`);
+      }
+    }
+    const scored: Record<string, ConceptSignificance> = {};
+    for (const id of [...ids].sort()) {
+      const entry = entries[id];
+      const trail = `${path}.contexts.${context}.${id}`;
+      if (!isRecord(entry)) invalid(trail, "must be an object");
+      for (const key of Object.keys(entry)) {
+        if (!(SIGNIFICANCE_ENTRY_KEYS as readonly string[]).includes(key)) {
+          invalid(trail, `carries an undeclared key ${key}`);
+        }
+      }
+      const score = entry.score;
+      if (typeof score !== "number" || !Number.isInteger(score) || score < 0 || score > 100) {
+        invalid(`${trail}.score`, "must be an integer from 0 to 100");
+      }
+      const reason = entry.reason;
+      if (typeof reason !== "string") invalid(`${trail}.reason`, "must be a string");
+      const text = reason.trim();
+      if (text.length === 0) invalid(`${trail}.reason`, "must not be empty");
+      if (!singleLine(text)) invalid(`${trail}.reason`, "must be one line");
+      if (text.length > SIGNIFICANCE_REASON_MAX) {
+        invalid(`${trail}.reason`, `must be at most ${SIGNIFICANCE_REASON_MAX} characters`);
+      }
+      if (ABSOLUTE_PATH_PATTERN.test(text)) {
+        invalid(`${trail}.reason`, "must not be an absolute path");
+      }
+      if (hasSecret(text)) invalid(`${trail}.reason`, "must not carry a secret");
+      scored[id] = { score, reason: text };
+    }
+    parsed[context] = scored;
+  }
+  return parsed;
+}
+
+/**
+ * Reads a published sidecar, keeping only a score and reason that apply to a
+ * published concept. A legacy manifest publishes no significance, and a
+ * concept preserved from a human decision is published unscored.
+ */
+function readSignificance(
+  repoDir: string,
+  relativePath: string,
+  glossaries: Glossary[],
+): GlossarySignificance {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(join(repoDir, relativePath), "utf8"));
+  } catch {
+    return {};
+  }
+  if (!isRecord(raw) || raw.schemaVersion !== SIGNIFICANCE_SCHEMA_VERSION) return {};
+  const contexts = isRecord(raw.contexts) ? raw.contexts : {};
+  const published: GlossarySignificance = {};
+  for (const glossary of glossaries) {
+    const entries = contexts[glossary.boundedContext];
+    if (!isRecord(entries)) continue;
+    const scored: Record<string, ConceptSignificance> = {};
+    for (const concept of glossary.concepts) {
+      const entry = entries[concept.id];
+      if (!isRecord(entry)) continue;
+      const score = entry.score;
+      const reason = entry.reason;
+      if (typeof score !== "number" || !Number.isInteger(score) || score < 0 || score > 100) {
+        continue;
+      }
+      if (typeof reason !== "string" || reason.trim().length === 0) continue;
+      scored[concept.id] = { score, reason: reason.trim() };
+    }
+    if (Object.keys(scored).length > 0) published[glossary.boundedContext] = scored;
+  }
+  return published;
+}
+
 // ---------------------------------------------------------------- skills
 
 interface SkillFrontmatter {
@@ -1690,6 +1822,7 @@ function validateSkillText(name: string, text: string, path: string): StagedSkil
 export interface StagedArtifacts {
   sheet: Sheet;
   glossaries: Glossary[];
+  significance: GlossarySignificance;
   skills: StagedSkill[];
 }
 
@@ -1722,6 +1855,7 @@ export function validateStaged(
     const parts = file.split("/");
     const allowed =
       file === STAGED_SHEET ||
+      file === STAGED_SIGNIFICANCE ||
       (parts[0] === STAGED_GLOSSARY_DIR &&
         parts.length === 2 &&
         parts[1] !== undefined &&
@@ -1751,7 +1885,9 @@ export function validateStaged(
   const sheet = normalizeSheet(rawSheet, freshness);
 
   const context = { repoDir, files: hostFiles(repoDir) };
-  const glossaryFiles = files.filter((file) => file.startsWith(`${STAGED_GLOSSARY_DIR}/`));
+  const glossaryFiles = files.filter(
+    (file) => file.startsWith(`${STAGED_GLOSSARY_DIR}/`) && file.endsWith(".glossary.yaml"),
+  );
   if (glossaryFiles.length === 0) {
     throw new DiscoverValidationError("the crawl left no glossary document");
   }
@@ -1771,6 +1907,19 @@ export function validateStaged(
     contexts.add(glossary.boundedContext);
     glossaries.push(glossary);
   }
+
+  if (!files.includes(STAGED_SIGNIFICANCE)) {
+    throw new DiscoverValidationError(`the crawl left no ${STAGED_SIGNIFICANCE}`);
+  }
+  let rawSignificance: unknown;
+  try {
+    rawSignificance = JSON.parse(readFileSync(join(stagingDir, STAGED_SIGNIFICANCE), "utf8"));
+  } catch (error) {
+    throw new DiscoverValidationError(
+      `${STAGED_SIGNIFICANCE} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const significance = parseSignificance(rawSignificance, STAGED_SIGNIFICANCE, glossaries);
 
   const skills: StagedSkill[] = [];
   for (const name of DISCOVER_SKILLS) {
@@ -1804,7 +1953,7 @@ export function validateStaged(
     }
   }
 
-  return { sheet, glossaries, skills };
+  return { sheet, glossaries, significance, skills };
 }
 
 // ------------------------------------------------------------- decisions
@@ -1883,6 +2032,8 @@ export interface Manifest {
     glossaries: string[];
     baselines: Record<string, string>;
     live: Record<string, string>;
+    /** Absent in a manifest published before the significance sidecar existed. */
+    significance?: string;
   };
 }
 
@@ -1962,6 +2113,7 @@ interface PublishedRead {
   manifest: Manifest;
   sheet: Sheet;
   glossaries: Glossary[];
+  significance: GlossarySignificance;
   decisions: Decision[];
 }
 
@@ -2004,8 +2156,12 @@ function readPublished(repoDir: string): PublishedRead | undefined {
     }
     glossaries.push(parseGlossary(text, relativePath, context, { staged: false }));
   }
+  const significance =
+    manifest.paths.significance === undefined
+      ? {}
+      : readSignificance(repoDir, manifest.paths.significance, glossaries);
   const decisions = readDecisions(repoDir);
-  return { manifest, sheet, glossaries, decisions };
+  return { manifest, sheet, glossaries, significance, decisions };
 }
 
 /** A live skill that is not this run's to replace. */
@@ -2209,6 +2365,7 @@ export function publishStaged(input: PublishInput): PublishResult {
         DISCOVER_SKILLS.map((name) => [name, `.omp/discover/skills/${name}/SKILL.md`]),
       ),
       live: Object.fromEntries(DISCOVER_SKILLS.map((name) => [name, `.omp/skills/${name}/SKILL.md`])),
+      significance: ".omp/discover/significance.json",
     },
   };
 
@@ -2217,6 +2374,13 @@ export function publishStaged(input: PublishInput): PublishResult {
     { path: join(repoDir, manifest.paths.sheet), content: renderJson(sheet) },
     { path: join(repoDir, manifest.paths.manifest), content: renderJson(manifest) },
     { path: join(repoDir, manifest.paths.decisions), content: renderJson(decisions) },
+    {
+      path: significancePath(repoDir),
+      content: renderJson({
+        schemaVersion: SIGNIFICANCE_SCHEMA_VERSION,
+        contexts: staged.significance,
+      }),
+    },
     ...merged.map((glossary) => ({
       path: glossaryPath(repoDir, glossary.boundedContext),
       content: renderGlossary(glossary),
@@ -2254,6 +2418,7 @@ export interface DiscoverArtifacts {
   sheet: Sheet;
   glossaries: Glossary[];
   usage: GlossaryUsage;
+  significance: GlossarySignificance;
   decisions: Decision[];
   skills: SkillView[];
 }
@@ -2373,6 +2538,7 @@ export function readArtifacts(repoDir: string): ArtifactsRead {
           published.glossaries,
           published.sheet.freshness.fingerprint,
         ),
+        significance: published.significance,
         decisions: published.decisions,
         skills,
       },

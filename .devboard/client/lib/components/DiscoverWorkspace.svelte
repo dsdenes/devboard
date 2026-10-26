@@ -28,14 +28,14 @@
   const GLOSSARY_COLUMNS = [
     { id: "kind", header: "Kind", accessorKey: "kind" },
     { id: "title", header: "Term", accessorKey: "title" },
-    { id: "uses", header: "Uses", accessorKey: "uses" },
+    { id: "significance", header: "Significance", accessorKey: "significance" },
     { id: "definition", header: "Definition", accessorKey: "definition" },
     { id: "examples", header: "", accessorKey: "examples" },
   ];
   const GLOSSARY_WIDTHS = {
     kind: "92px",
     title: "210px",
-    uses: "64px",
+    significance: "104px",
     examples: "240px",
   };
 
@@ -64,6 +64,11 @@
     term === null
       ? null
       : discover.usageFor(term.glossary.boundedContext, term.concept.id),
+  );
+  const termSignificance = $derived(
+    term === null
+      ? null
+      : discover.significanceFor(term.glossary.boundedContext, term.concept.id),
   );
   const totalTerms = $derived(
     discover.contexts.reduce(
@@ -95,8 +100,7 @@
   }
 
   function clearGlossaryFilters(): void {
-    discover.setGlossarySearch("");
-    discover.setGlossaryThreshold(0);
+    discover.resetGlossaryFilters();
   }
 </script>
 
@@ -105,10 +109,12 @@
     <ConceptKind kind={String(row.kind ?? "")} />
   {:else if columnId === "title"}
     <strong>{String(row.title ?? "")}</strong>
-  {:else if columnId === "uses"}
-    <span class="discover-uses" title={`${row.uses ?? 0} uses in ${row.usageFiles ?? 0} files`}>
-      {row.uses ?? 0}
-    </span>
+  {:else if columnId === "significance"}
+    {#if typeof row.significance === "number"}
+      <span title={String(row.significanceReason ?? "")}>{row.significance}</span>
+    {:else}
+      <span class="muted">—</span>
+    {/if}
   {:else if columnId === "examples"}
     {#if Array.isArray(row.examples) && row.examples.length > 0}
       {@const examples = row.examples as string[]}
@@ -162,8 +168,15 @@
       <div class="discover-page__heading">
         <h1 class="discover-page__title">Glossary</h1>
         <p class="discover-page__subtitle">
-          {visibleTerms} of {totalTerms} terms above a minimum of {discover.glossaryThreshold}
-          {discover.glossaryThreshold === 1 ? "use" : "uses"} across {discover.contexts.length}
+          {visibleTerms} of {totalTerms} terms
+          {#if discover.glossaryHasScores && discover.glossarySignificantOnly}
+            at or above a significance floor of {discover.glossaryThreshold}
+          {:else if discover.glossaryHasScores}
+            with no significance floor applied
+          {:else}
+            with no significance scores published
+          {/if}
+          across {discover.contexts.length}
           {discover.contexts.length === 1 ? "bounded context" : "bounded contexts"}.
         </p>
       </div>
@@ -179,15 +192,27 @@
           data-testid="discover-glossary-search"
         />
         <label class="discover-threshold">
-          <span class="discover-threshold__label">Minimum uses</span>
+          <input
+            type="checkbox"
+            checked={discover.glossarySignificantOnly}
+            disabled={!discover.glossaryHasScores}
+            aria-label="Significant only"
+            data-testid="discover-glossary-significant"
+            onchange={(event) => discover.setGlossarySignificantOnly(event.currentTarget.checked)}
+          />
+          <span class="discover-threshold__label">Significant only</span>
+        </label>
+        <label class="discover-threshold">
+          <span class="discover-threshold__label">Floor</span>
           <input
             class="discover-threshold__input"
             type="range"
             min="0"
-            max={discover.glossaryMaxUses}
+            max="100"
             step="1"
             value={discover.glossaryThreshold}
-            aria-label="Minimum uses a term needs to be listed"
+            disabled={!discover.glossaryHasScores || !discover.glossarySignificantOnly}
+            aria-label="Significance floor a term needs to be listed"
             data-testid="discover-glossary-threshold"
             oninput={(event) => discover.setGlossaryThreshold(event.currentTarget.valueAsNumber)}
           />
@@ -200,7 +225,7 @@
       <section class="panel discover-filter-empty" data-testid="discover-glossary-empty">
         <div class="panel__body discover-filter-empty__body">
           <p class="empty">
-            No term matches the current search and minimum-use filter. The glossary is published;
+            No term matches the current search and significance filter. The glossary is published;
             only this view is filtered.
           </p>
           <Button variant="outline" onclick={clearGlossaryFilters}>Clear filters</Button>
@@ -224,12 +249,13 @@
               columns={GLOSSARY_COLUMNS}
               rows={context.concepts.map((concept) => {
                 const usage = discover.usageFor(context.boundedContext, concept.id);
+                const score = discover.significanceFor(context.boundedContext, concept.id);
                 return {
                   ...concept,
                   title: conceptTitle(concept),
                   definition: labelText(concept.definitions) || "No definition recorded.",
-                  uses: usage.count,
-                  usageFiles: usage.files,
+                  significance: score?.score ?? null,
+                  significanceReason: score?.reason ?? "",
                   examples: usage.examples,
                 };
               })}
@@ -239,7 +265,8 @@
                 "data-id": String(row.id ?? ""),
                 "data-status": String(row.status ?? ""),
                 "data-kind": String(row.kind ?? ""),
-                "data-uses": String(row.uses ?? 0),
+                "data-significance":
+                  typeof row.significance === "number" ? String(row.significance) : "",
                 "data-examples": Array.isArray(row.examples) ? row.examples.join(",") : "",
               })}
               rowCommand={(row) =>
@@ -396,6 +423,17 @@
                   <dd data-testid="discover-term-uses">
                     {termUsage?.count ?? 0} in {termUsage?.files ?? 0}
                     {(termUsage?.files ?? 0) === 1 ? "file" : "files"}
+                  </dd>
+                </div>
+                <div class="discover-fact">
+                  <dt>Significance</dt>
+                  <dd data-testid="discover-term-significance">
+                    {#if termSignificance === null}
+                      <span class="muted">—</span>
+                    {:else}
+                      <span>{termSignificance.score}</span>
+                      <span class="muted">{termSignificance.reason}</span>
+                    {/if}
                   </dd>
                 </div>
                 <div class="discover-fact">

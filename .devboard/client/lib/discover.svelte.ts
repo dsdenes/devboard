@@ -2,19 +2,23 @@ import { connection } from "./connection.svelte";
 import { dependencyName } from "../../lib/dependencies.ts";
 import { notifications } from "./notifications.svelte";
 import {
+  conceptSignificance,
   conceptUsage,
   filterContexts,
-  glossaryMaxUses,
+  glossaryHasSignificance,
   scalarText,
   sectionLeaf,
+  SIGNIFICANCE_FLOOR,
 } from "./discover-format";
 import type {
+  ConceptSignificance,
   ConceptUsage,
   DiscoverSkill,
   DiscoverStatePayload,
   DiscoverTarget,
   Freshness,
   Glossary,
+  GlossarySignificance,
   GlossaryUsage,
   RunQuestion,
   RunQuestionOption,
@@ -48,8 +52,10 @@ export class DiscoverStore {
   glossarySearch = $state("");
   /** The URL field of the source-checkout-only remote target strip. */
   remoteUrl = $state("");
-  /** Minimum measured uses a listed term needs to stay listed; opt-in. */
-  glossaryThreshold = $state(0);
+  /** Significance floor a listed term needs to stay listed. */
+  glossaryThreshold = $state(SIGNIFICANCE_FLOOR);
+  /** Hide scored terms below the floor; on by default. */
+  glossarySignificantOnly = $state(true);
 
   drafts = $state<Record<string, string>>({});
   dirty = $state<Record<string, boolean>>({});
@@ -134,21 +140,31 @@ export class DiscoverStore {
     return typeof value === "object" && value !== null ? value : {};
   }
 
-  get glossaryMaxUses(): number {
-    return glossaryMaxUses(this.contexts, this.glossaryUsage);
+  get glossarySignificance(): GlossarySignificance {
+    const value = this.state?.glossarySignificance;
+    return typeof value === "object" && value !== null ? value : {};
+  }
+
+  /** True when the published glossary carries at least one crawl score. */
+  get glossaryHasScores(): boolean {
+    return glossaryHasSignificance(this.contexts, this.glossarySignificance);
   }
 
   usageFor(context: string, id: string): ConceptUsage {
     return conceptUsage(this.glossaryUsage, context, id);
   }
 
+  significanceFor(context: string, id: string): ConceptSignificance | null {
+    return conceptSignificance(this.glossarySignificance, context, id) ?? null;
+  }
+
   get filteredContexts(): Glossary[] {
-    return filterContexts(
-      this.contexts,
-      this.glossarySearch,
-      this.glossaryThreshold,
-      this.glossaryUsage,
-    );
+    return filterContexts(this.contexts, {
+      search: this.glossarySearch,
+      significantOnly: this.glossarySignificantOnly,
+      floor: this.glossaryThreshold,
+      significance: this.glossarySignificance,
+    });
   }
 
   get testCommand(): string {
@@ -249,7 +265,18 @@ export class DiscoverStore {
 
   setGlossaryThreshold(value: number): void {
     if (!Number.isFinite(value)) return;
-    this.glossaryThreshold = Math.min(this.glossaryMaxUses, Math.max(0, Math.round(value)));
+    this.glossaryThreshold = Math.min(100, Math.max(0, Math.round(value)));
+  }
+
+  setGlossarySignificantOnly(value: boolean): void {
+    this.glossarySignificantOnly = value;
+  }
+
+  /** Restores the default view: no search, the floor, and the filter on. */
+  resetGlossaryFilters(): void {
+    this.glossarySearch = "";
+    this.glossaryThreshold = SIGNIFICANCE_FLOOR;
+    this.glossarySignificantOnly = true;
   }
 
   private syncDrafts(payload: DiscoverStatePayload): void {
@@ -267,11 +294,7 @@ export class DiscoverStore {
 
   private applySnapshot(payload: DiscoverStatePayload): void {
     this.state = payload;
-    const max = glossaryMaxUses(
-      Array.isArray(payload.glossaries) ? payload.glossaries : [],
-      payload.glossaryUsage,
-    );
-    if (this.glossaryThreshold > max) this.glossaryThreshold = max;
+    this.glossaryThreshold = Math.min(100, Math.max(0, Math.round(this.glossaryThreshold)));
     this.active = payload.active === true;
     this.runId = typeof payload.runId === "string" ? payload.runId : null;
     this.startedAt = typeof payload.startedAt === "string" ? payload.startedAt : null;

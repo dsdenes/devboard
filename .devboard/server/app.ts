@@ -2055,6 +2055,7 @@ export function createApp(options: AppOptions) {
         artifacts === null ? {} : dependencyRepositories(root, artifacts.sheet),
       glossaries: artifacts?.glossaries ?? [],
       glossaryUsage: artifacts?.usage ?? {},
+      glossarySignificance: artifacts?.significance ?? {},
       decisions: artifacts?.decisions ?? [],
       skills: artifacts?.skills ?? [],
     };

@@ -1,8 +1,10 @@
 import type {
   Concept,
+  ConceptSignificance,
   ConceptUsage,
   DiscoverTab,
   Glossary,
+  GlossarySignificance,
   GlossaryUsage,
   Leaf,
   Labelled,
@@ -251,45 +253,90 @@ export function conceptUsage(
   return usage?.[context]?.[id] ?? { count: 0, files: 0, examples: [] };
 }
 
-/** The largest measured usage across listed terms; at least 2 for a usable slider. */
-export function glossaryMaxUses(glossaries: Glossary[], usage: GlossaryUsage | undefined): number {
-  let max = 0;
-  for (const context of glossaries) {
-    for (const concept of Array.isArray(context.concepts) ? context.concepts : []) {
-      if (concept.status === "invalidated") continue;
-      max = Math.max(max, conceptUsage(usage, context.boundedContext, concept.id).count);
-    }
-  }
-  return Math.max(2, max);
+/** The score at or above which the page calls a concept significant. */
+export const SIGNIFICANCE_FLOOR = 50;
+
+/** The crawl's judgment for one concept, or undefined when it is unscored. */
+export function conceptSignificance(
+  significance: GlossarySignificance | undefined,
+  context: string,
+  id: string,
+): ConceptSignificance | undefined {
+  return significance?.[context]?.[id];
 }
 
-/** Terms matching the search, at or above the significance threshold. */
-export function filterContexts(
+/** True when at least one listed concept carries a crawl-authored score. */
+export function glossaryHasSignificance(
   glossaries: Glossary[],
-  query: string,
-  threshold = 0,
-  usage: GlossaryUsage | undefined = undefined,
-): Glossary[] {
-  const needle = query.trim().toLowerCase();
+  significance: GlossarySignificance | undefined,
+): boolean {
+  return glossaries.some((context) =>
+    (Array.isArray(context.concepts) ? context.concepts : []).some(
+      (concept) =>
+        concept.status !== "invalidated" &&
+        conceptSignificance(significance, context.boundedContext, concept.id) !== undefined,
+    ),
+  );
+}
+
+export interface GlossaryFilter {
+  search: string;
+  /** Hide a scored concept below the floor; ignored while nothing is scored. */
+  significantOnly: boolean;
+  floor: number;
+  significance?: GlossarySignificance;
+}
+
+function matchesSearch(concept: Concept, needle: string): boolean {
+  if (needle.length === 0) return true;
+  const haystack = [
+    concept.id,
+    labelText(concept.prefLabels),
+    ...labelTexts(concept.altLabels),
+    ...labelTexts(concept.definitions),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(needle);
+}
+
+/**
+ * Terms matching the search and the significance floor, ordered by the crawl's
+ * score with unscored terms last. Usage never decides inclusion or order.
+ */
+export function filterContexts(glossaries: Glossary[], filter: GlossaryFilter): Glossary[] {
+  const needle = filter.search.trim().toLowerCase();
+  const floorActive =
+    filter.significantOnly && glossaryHasSignificance(glossaries, filter.significance);
   return glossaries
     .map((context) => ({
       ...context,
-      concepts: (Array.isArray(context.concepts) ? context.concepts : []).filter((concept) => {
-        if (concept.status === "invalidated") return false;
-        if (conceptUsage(usage, context.boundedContext, concept.id).count < threshold) {
-          return false;
-        }
-        if (needle.length === 0) return true;
-        const haystack = [
-          concept.id,
-          labelText(concept.prefLabels),
-          ...labelTexts(concept.altLabels),
-          ...labelTexts(concept.definitions),
-        ]
-          .join(" ")
-          .toLowerCase();
-        return haystack.includes(needle);
-      }),
+      concepts: (Array.isArray(context.concepts) ? context.concepts : [])
+        .filter((concept) => concept.status !== "invalidated")
+        .filter((concept) => matchesSearch(concept, needle))
+        .filter((concept) => {
+          if (!floorActive) return true;
+          const entry = conceptSignificance(filter.significance, context.boundedContext, concept.id);
+          return entry === undefined || entry.score >= filter.floor;
+        })
+        .sort((left, right) => {
+          const leftScore = conceptSignificance(
+            filter.significance,
+            context.boundedContext,
+            left.id,
+          )?.score;
+          const rightScore = conceptSignificance(
+            filter.significance,
+            context.boundedContext,
+            right.id,
+          )?.score;
+          if (leftScore !== rightScore) {
+            if (leftScore === undefined) return 1;
+            if (rightScore === undefined) return -1;
+            return rightScore - leftScore;
+          }
+          return conceptTitle(left).localeCompare(conceptTitle(right));
+        }),
     }))
     .filter((context) => context.concepts.length > 0);
 }

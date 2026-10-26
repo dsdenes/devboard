@@ -584,8 +584,9 @@ broadcasts `discoverState`, `discoverStarted`, `discoverActivity`, `discoverQues
 `runStarted`, or `runStopped` for Discover. `discoverState` carries the active and interrupt flags,
 staleness, warnings, the busy reason, the last read error, the manifest, freshness, sheet,
 repository links for installed packages, glossaries, per-concept usage and examples measured from
-the host's documentation and source, decisions, and the five skills with baseline text, live text,
-hashes, and state.
+the host's documentation and source, `glossarySignificance` keyed by bounded context and then
+concept id with `{ score, reason }` values, decisions, and the five skills with baseline text, live
+text, hashes, and state.
 `discoverQuestion` carries `id`, `message`, and `options` of `{ label, description?, recommended }`.
 
 When the peer exits, the server validates every staged artifact and the whole staged set before
@@ -600,14 +601,17 @@ required; an unreadable or invalid published artifact is reported with one `disc
 files are never overwritten.
 
 Artifacts live only under the host: `.omp/discover/manifest.json`, `.omp/discover/sheet.json`,
-`.omp/discover/decisions.json`, `.omp/discover/glossary/<bounded-context>.glossary.yaml`,
+`.omp/discover/decisions.json`, `.omp/discover/significance.json`,
+`.omp/discover/glossary/<bounded-context>.glossary.yaml`,
 `.omp/discover/skills/<skill>/SKILL.md` for the generated baselines, and the live, editable
 `.omp/skills/<skill>/SKILL.md`. Staging mirrors the crawl's relative layout without `manifest.json`
 or `decisions.json`, and the staged sheet omits freshness. The manifest carries a schema version,
 the discovery fingerprint, the publication time, the run id, the sheet's structural digest, one
 structural digest per glossary, the five skill names, each live skill's baseline and current hash,
 each skill's edited or missing state, and artifact paths relative to the host; it contains no
-secrets and no absolute path.
+secrets and no absolute path. A manifest written by this code carries
+`paths.significance: ".omp/discover/significance.json"`; a manifest without that path predates the
+significance sidecar and is read as legacy, with no error.
 
 `sheet.json` is the canonical data sheet, with top-level keys in the fixed order `schemaVersion`,
 `definition`, `stack`, `deployment`, `environments`, `commands`, `branching`, `testing`,
@@ -668,28 +672,52 @@ it never writes `confirmed`, `deprecated`, or `invalidated`. On publication the 
 every newly crawled term, so the published glossary contains only confirmed terms unless an
 earlier operator decision invalidated one. The page groups terms by context and offers search; it
 shows no status filter, status badge, or per-term control, and it hides invalidated terms. Each
-context card holds a table with `Kind`, `Term`, `Uses`, `Definition`, and an unnamed examples
-column; the Kind, Term, Uses, and examples columns have the same fixed widths in every context
-card, the term reads in bold, and the examples cell lists the identifiers that name the concept in
-the host's code. The table grows with the page, neither the card nor the table scrolls inside a
-panel, and long definitions wrap; each term carries `data-testid="discover-term"`, `data-context`,
-`data-id`, `data-status`, `data-kind`, `data-uses`, and `data-examples`, and each context carries
-`data-testid="discover-context"`. The context heading shows its title, falling back to the context
-id only when no title exists. Every Kind value carries a Lucide icon colored by kind: entity,
-event, field, role, actor, value, and rule each use a stable token. The search field centers its
-placeholder vertically.
+context card holds a table with `Kind`, `Term`, `Significance`, `Definition`, and an unnamed
+examples column; the Kind, Term, Significance, and examples columns have the same fixed widths in
+every context card, the term reads in bold, and the examples cell lists the identifiers that name
+the concept in the host's code. The table grows with the page, neither the card nor the table
+scrolls inside a panel, and long definitions wrap; each term carries `data-testid="discover-term"`,
+`data-context`, `data-id`, `data-status`, `data-kind`, `data-significance`, and `data-examples`, and
+each context carries `data-testid="discover-context"`. The context heading shows its title, falling
+back to the context id only when no title exists. Every Kind value carries a Lucide icon colored by
+kind: entity, event, field, role, actor, value, and rule each use a stable token. The search field
+centers its placeholder vertically.
 
-The server measures each concept's significance from the published glossary and the same host
-files the fingerprint covers: occurrences of the concept's preferred and alternate labels across
-documentation and source, the number of files carrying one, and representative identifiers from
-those files, with grounding paths ranked first. Generated `.omp` artifacts, `.devboard/`,
-`.worktree/`, VCS internals, dependency caches, and ignored files are excluded. The Glossary page
-shows that count in the `Uses` column and an unnamed examples column; a significance slider
-(`data-testid="discover-glossary-threshold"`) at the top of the page sets the minimum count a
-listed term needs to stay listed, and the subtitle reports how many terms remain. An invalidated
-term never appears, and the slider and search compose. Selecting a term opens its detail page
-without a status badge or Close control; the detail page also states its uses, file count, and
-examples.
+The crawl authors each concept's significance; the server never derives a score from occurrence
+counts. The crawl includes only project-significant entities in a glossary, omits generic framework,
+library, language, and UI vocabulary such as `option`, `hook`, or `command` unless the host defines
+that exact term as a project concept grounded in at least two distinct host files, and stages a
+score from `0` to `100` with a one-line reason for every included concept, where 50 is the
+significance floor and a lower score means an incidental term. `glossary/significance.json` is the
+staged sidecar; the server validates it, then publishes it atomically as
+`.omp/discover/significance.json` beside the glossary artifacts. Its shape is
+`{"schemaVersion": 1, "contexts": {"<boundedContext>": {"<concept-id>": {"score": 0, "reason":
+"One line of evidence."}}}}`. The run fails with one `discoverError` and publishes nothing when the
+sidecar is absent, is not valid JSON or not an object, carries a top-level key other than
+`schemaVersion` and `contexts`, carries a `schemaVersion` other than `1`, names a context or concept
+the staged glossaries do not stage, omits a staged context or concept, carries an entry key other
+than `score` and `reason`, carries a score that is not an integer from `0` through `100`, or carries
+a reason that is empty, multi-line, longer than 160 characters, an absolute path, or a secret. A
+rejected sidecar leaves the previously published sheet, glossaries, manifest, decisions, sidecar,
+baselines, and live skills byte-identical. A concept preserved from an earlier human decision but
+absent from the staged sidecar is published unscored rather than rejected. Scores are excluded from
+the glossary digest and the sheet digest, so changing only a score moves no digest.
+
+The Glossary page orders each context's rows by significance descending, with unscored concepts last
+and ties broken by the displayed term label, and it renders the score in the `Significance` column;
+an unscored concept reads `—`. When at least one published concept is scored, a `Significant only`
+control (`data-testid="discover-glossary-significant"`) is present and checked by default, and the
+floor slider (`data-testid="discover-glossary-threshold"`) spans `min="0"` to `max="100"` with
+`value="50"`. With the control checked, a concept is listed only when it matches the search and
+either has no score or scores at or above the slider value; clearing it lists every term matching
+the search and disables the slider. The subtitle reports the visible terms, the total terms, and the
+active floor, the sidebar glossary count stays the published term count, and the search, filter, and
+slider compose. A glossary published before the sidecar existed keeps its concepts and stays
+unfiltered: every term is visible, each Significance cell reads `—`, and the control and slider are
+disabled. An invalidated term never appears. Selecting a term opens its detail page without a
+status badge or Close control; the detail page states its uses, file count, examples, and, for a
+scored concept, its significance score and reason. The server still measures per-concept usage and
+examples for that page, but `glossaryUsage` never decides which term is listed or in which order.
 
 Confirmation is automatic, so the Glossary page offers no `Confirm` or `Reject` control.
 `confirmGlossaryTerm` still succeeds only for a term that is proposed or unconfirmed, and
