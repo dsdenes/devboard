@@ -16,7 +16,6 @@
   import { discover } from "../discover.svelte";
   import type { Leaf } from "../types";
   import DataTable from "./DataTable.svelte";
-  import PyramidChart from "./PyramidChart.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
 
@@ -62,15 +61,16 @@
   const tiers = $derived(pyramidTiers(levels));
   const testTotal = $derived(pyramidTestCount(tiers));
   const levelRows = $derived(
-    tiers.map((tier) => ({
-      level: humanize(tier.level),
-      tests:
-        tier.tests === "unknown"
-          ? "count unknown"
-          : `${tier.tests} ${tier.tests === "1" ? "test" : "tests"}`,
-      detail: tier.detail.length > 0 ? tier.detail.replaceAll(" · ", "\n") : "—",
-      rawLevel: tier.level,
-    })),
+    tiers.map((tier) => {
+      const parsed = Number.parseInt(tier.tests, 10);
+      const tests = Number.isFinite(parsed) ? parsed : 0;
+      return {
+        level: humanize(tier.level),
+        tests: `${tests} ${tests === 1 ? "test" : "tests"}`,
+        detail: tier.detail.length > 0 ? tier.detail.replaceAll(" · ", "\n") : "—",
+        rawLevel: tier.level,
+      };
+    }),
   );
 
   const runtimeSection = $derived(visibleSection(sheet?.runtime, HIDDEN_LEAVES.runtime ?? []));
@@ -439,9 +439,8 @@
               <div class="panel__header">
                 <h2 class="panel__title">Testing</h2>
                 <span class="muted">
-                  {tiers.length} {tiers.length === 1 ? "level" : "levels"}{testTotal === null
-                    ? ""
-                    : ` · ${testTotal} tests`}
+                  {tiers.length} {tiers.length === 1 ? "level" : "levels"} · {testTotal ?? 0}
+                  {(testTotal ?? 0) === 1 ? "test" : "tests"}
                 </span>
               </div>
               <div class="panel__body">
@@ -453,32 +452,27 @@
                   <p class="empty">{unknownText(levels)}</p>
                 {:else}
                   {#if tiers.length > 0}
-                    <div class="discover-test-top">
-                      <div class="discover-pyramid">
-                        <PyramidChart tiers={tiers} compact data-testid="discover-pyramid-chart" />
-                      </div>
-                      <div class="discover-test-side">
-                        <div class="discover-stats" data-testid="discover-test-summary">
-                          <div class="discover-stat">
-                            <span class="discover-stat__value">
-                              {testTotal === null ? "—" : testTotal}
-                            </span>
-                            <span class="discover-stat__label">tests</span>
-                          </div>
-                          <div class="discover-stat">
-                            <span class="discover-stat__value">{tiers.length}</span>
-                            <span class="discover-stat__label">
-                              {tiers.length === 1 ? "level" : "levels"}
-                            </span>
-                          </div>
+                    <div class="discover-test-side">
+                      <div class="discover-stats" data-testid="discover-test-summary">
+                        <div class="discover-stat">
+                          <span class="discover-stat__value">{testTotal ?? 0}</span>
+                          <span class="discover-stat__label">
+                            {(testTotal ?? 0) === 1 ? "test" : "tests"}
+                          </span>
                         </div>
-                        {#if discover.testCommand.length > 0}
-                          <div class="discover-command-line" data-testid="discover-suite-command">
-                            <span class="muted">Whole suite</span>
-                            <code>{discover.testCommand}</code>
-                          </div>
-                        {/if}
+                        <div class="discover-stat">
+                          <span class="discover-stat__value">{tiers.length}</span>
+                          <span class="discover-stat__label">
+                            {tiers.length === 1 ? "level" : "levels"}
+                          </span>
+                        </div>
                       </div>
+                      {#if discover.testCommand.length > 0}
+                        <div class="discover-command-line" data-testid="discover-suite-command">
+                          <span class="muted">Whole suite</span>
+                          <code>{discover.testCommand}</code>
+                        </div>
+                      {/if}
                     </div>
                     <DataTable
                       data-testid="discover-pyramid"
@@ -554,7 +548,7 @@
       {#if architectureSection !== undefined && typeof architectureSection === "object" && architectureSection !== null}
         <section class="discover-section full" data-testid="discover-card" data-field="architecture">
           <div class="discover-section__head">
-            <h2 class="discover-section__title">Architecture and boundaries</h2>
+            <h2 class="discover-section__title">Bounded contexts</h2>
             <span class="discover-section__meta">
               {contextRows.length}
               {contextRows.length === 1 ? "bounded context" : "bounded contexts"}

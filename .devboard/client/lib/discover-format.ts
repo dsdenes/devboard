@@ -1,4 +1,12 @@
-import type { Concept, DiscoverTab, Glossary, Leaf, Labelled } from "./types";
+import type {
+  Concept,
+  ConceptUsage,
+  DiscoverTab,
+  Glossary,
+  GlossaryUsage,
+  Leaf,
+  Labelled,
+} from "./types";
 
 /** Tabs that show the published sheet or glossary rather than a skill. */
 export const SECTION_TABS: DiscoverTab[] = [
@@ -225,13 +233,43 @@ export function pyramidTestCount(tiers: PyramidTier[]): number | null {
   return known ? total : null;
 }
 
-export function filterContexts(glossaries: Glossary[], query: string): Glossary[] {
+/** Usage for one concept; zeroes when the server has not measured it. */
+export function conceptUsage(
+  usage: GlossaryUsage | undefined,
+  context: string,
+  id: string,
+): ConceptUsage {
+  return usage?.[context]?.[id] ?? { count: 0, files: 0, examples: [] };
+}
+
+/** The largest measured usage across listed terms; at least 2 for a usable slider. */
+export function glossaryMaxUses(glossaries: Glossary[], usage: GlossaryUsage | undefined): number {
+  let max = 0;
+  for (const context of glossaries) {
+    for (const concept of Array.isArray(context.concepts) ? context.concepts : []) {
+      if (concept.status === "invalidated") continue;
+      max = Math.max(max, conceptUsage(usage, context.boundedContext, concept.id).count);
+    }
+  }
+  return Math.max(2, max);
+}
+
+/** Terms matching the search, at or above the significance threshold. */
+export function filterContexts(
+  glossaries: Glossary[],
+  query: string,
+  threshold = 0,
+  usage: GlossaryUsage | undefined = undefined,
+): Glossary[] {
   const needle = query.trim().toLowerCase();
   return glossaries
     .map((context) => ({
       ...context,
       concepts: (Array.isArray(context.concepts) ? context.concepts : []).filter((concept) => {
         if (concept.status === "invalidated") return false;
+        if (conceptUsage(usage, context.boundedContext, concept.id).count < threshold) {
+          return false;
+        }
         if (needle.length === 0) return true;
         const haystack = [
           concept.id,

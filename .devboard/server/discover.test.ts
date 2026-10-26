@@ -267,6 +267,7 @@ interface DiscoverState {
   freshness: Record<string, unknown> | null;
   sheet: Record<string, unknown> | null;
   glossaries: Record<string, unknown>[];
+  glossaryUsage: Record<string, Record<string, { count: number; files: number; examples: string[] }>>;
   decisions: Record<string, unknown>[];
   skills: Record<string, unknown>[];
 }
@@ -522,6 +523,14 @@ describe("discover mode", () => {
           const prefLabels = concept.prefLabels as Array<Record<string, unknown>>;
           for (const label of prefLabels) expect(["en", "de"]).toContain(String(label.language));
         }
+
+        // Usage is measured from the host's documentation and source, and the
+        // identifiers that name a concept become its examples.
+        const usage = state.glossaryUsage.orders?.["order-total"];
+        expect(usage).toBeDefined();
+        expect(usage?.count).toBeGreaterThanOrEqual(2);
+        expect(usage?.files).toBeGreaterThanOrEqual(2);
+        expect(usage?.examples).toContain("orderTotal");
 
         // Artifacts hold no secret value and no absolute host path.
         for (const [, bytes] of ompBytes(root)) {

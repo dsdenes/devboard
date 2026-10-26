@@ -1549,7 +1549,7 @@ try {
     commandText: string[];
     pyramid: number;
     pyramidText: string[];
-    bands: number;
+    pyramidChart: boolean;
     suite: boolean;
     rowHeights: number[];
     tableFont: string;
@@ -1589,7 +1589,7 @@ try {
       commandText: commands.map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim()).join(" | ")),
       pyramid: rows.length,
       pyramidText: rows.map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim()).join(" | ")),
-      bands: document.querySelectorAll('[data-testid="discover-pyramid-chart"] polygon').length,
+      pyramidChart: document.querySelector('[data-testid="discover-pyramid-chart"], svg.pyramid__svg') !== null,
       suite: document.querySelector('[data-testid="discover-suite-command"]') !== null,
       rowHeights: rows.map((row) => Math.round(row.getBoundingClientRect().height)),
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
@@ -1627,7 +1627,8 @@ try {
   check(discoverTables.commandText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover command row renders no values", discoverTables.commandText);
   check(discoverTables.pyramid > 0 && discoverTables.suite, "the Discover testing tables are empty", discoverTables);
   check(discoverTables.pyramidText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover pyramid row renders no values", discoverTables.pyramidText);
-  check(discoverTables.bands === discoverTables.pyramid, "the test pyramid image does not render one band per level", discoverTables);
+  check(discoverTables.pyramidText.every((text) => !text.toLowerCase().includes("unknown")), "a Discover test level still reports an unknown count", discoverTables.pyramidText);
+  check(!discoverTables.pyramidChart, "the test pyramid graphic is still rendered", discoverTables);
   check(discoverTables.rowHeights.every((height) => height > 0 && height <= 120), "a Discover table row is mis-sized", discoverTables.rowHeights);
   const discoverFont = Number.parseFloat(discoverTables.tableFont);
   check(discoverFont >= 12 && discoverFont <= 14, "Discover table text is not 12–14px", discoverTables.tableFont);
@@ -1673,10 +1674,11 @@ try {
     headers: string[];
     termsText: string[];
     termLefts: number[];
+    uses: string[];
+    exampleCounts: number[];
+    slider: { min: string; max: string; value: string } | null;
     menu: boolean;
-    menuContext: string;
-    menuBadges: number;
-    menuTerms: number;
+    toggle: boolean;
     kindIcons: number;
     kindColors: string[];
     tableScrolls: number[];
@@ -1685,13 +1687,15 @@ try {
     searchPadding: string[];
   }>(`(() => {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
-    const menu = document.querySelector('[data-testid="discover-glossary-menu"]');
     const kindCells = rows.map((row) => row.querySelector('td:nth-child(1)'));
     const termCells = rows.map((row) => row.querySelector('td:nth-child(2)'));
+    const useCells = rows.map((row) => row.querySelector('td:nth-child(3)'));
+    const exampleCells = rows.map((row) => row.querySelector('td:nth-child(5)'));
     const wraps = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"] .table-wrap')];
     const cards = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"]')];
     const search = document.querySelector('[data-testid="discover-glossary-search"]');
     const searchStyle = search === null ? null : getComputedStyle(search);
+    const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
     return {
       contexts: document.querySelectorAll('#workspace-discover [data-testid="discover-context"]').length,
       terms: rows.length,
@@ -1700,10 +1704,11 @@ try {
       headers: [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"] thead th')].map((header) => header.textContent.trim()),
       termsText: termCells.map((cell) => cell?.textContent?.trim() ?? ""),
       termLefts: [...new Set(termCells.map((cell) => Math.round(cell?.getBoundingClientRect().left ?? 0)))],
-      menu: menu !== null,
-      menuContext: menu?.querySelector('.sidebar-submenu__context')?.textContent?.trim() ?? "",
-      menuBadges: menu?.querySelectorAll('.badge').length ?? 0,
-      menuTerms: menu?.querySelectorAll('[data-command^="discover.term.open."]').length ?? 0,
+      uses: useCells.map((cell) => cell?.textContent?.trim() ?? ""),
+      exampleCounts: exampleCells.map((cell) => cell?.querySelectorAll('code').length ?? 0),
+      slider: slider === null ? null : { min: slider.min, max: slider.max, value: slider.value },
+      menu: document.querySelector('[data-testid="discover-glossary-menu"]') !== null,
+      toggle: document.querySelector('[data-testid="discover-glossary-toggle"]') !== null,
       kindIcons: kindCells.filter((cell) => cell?.querySelector('.discover-kind svg') !== null).length,
       kindColors: [...new Set(kindCells
         .map((cell) => cell?.querySelector('.discover-kind'))
@@ -1720,13 +1725,22 @@ try {
   })()`);
   check(glossary.contexts > 0 && glossary.terms > 0, "the glossary tables are empty", glossary);
   check(glossary.heights.every((height) => height > 0 && height <= 120), "a glossary row is mis-sized", glossary.heights);
-  check(glossary.headers.length === 0, "the glossary table still renders a header row", glossary.headers);
+  check(
+    glossary.headers.join("|") === "Kind|Term|Uses|Definition|",
+    "the glossary table does not carry the uses and unnamed example columns",
+    glossary.headers,
+  );
   check(glossary.termsText.every((text) => text.length > 0), "a glossary row has no term", glossary.termsText);
   check(glossary.termLefts.length === 1, "the term column width differs between contexts", glossary.termLefts);
+  check(glossary.uses.every((value) => /^[0-9]+$/.test(value)), "a glossary row has no usage count", glossary.uses);
+  check(glossary.exampleCounts.every((count) => count > 0), "a glossary row has no usage examples", glossary.exampleCounts);
   check(glossary.search, "the glossary search is missing");
-  check(glossary.menu && glossary.menuTerms > 0, "the glossary submenu is missing its terms", glossary);
-  check(glossary.menuContext === "Orders", "the glossary submenu shows a raw context id", glossary.menuContext);
-  check(glossary.menuBadges === 0, "the glossary submenu still renders status badges");
+  check(!glossary.menu && !glossary.toggle, "the glossary sidebar still has a disclosure menu", glossary);
+  check(
+    glossary.slider !== null && Number(glossary.slider.max) >= Number(glossary.slider.min),
+    "the significance slider is missing",
+    glossary.slider,
+  );
   check(glossary.kindIcons === glossary.terms, "a glossary kind is not the first cell", glossary);
   check(glossary.kindColors.length >= 2, "the glossary kind icons are not color-coded", glossary.kindColors);
   check(glossary.tableScrolls.every((delta) => delta <= 1), "a glossary table clips its rows", glossary.tableScrolls);
@@ -1735,15 +1749,28 @@ try {
   check(glossary.searchPadding.every((value) => value === "0px"), "the glossary search placeholder is not vertically centered", glossary.searchPadding);
   const warningsSection = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="Warnings"]') !== null`);
   check(!warningsSection, "the sidebar still shows an empty warnings section");
-  await page.click('[data-testid="discover-glossary-toggle"]');
+  await page.eval(`(() => {
+    const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
+    slider.value = slider.max;
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
   await page.wait(
-    `document.querySelector('[data-testid="discover-glossary-menu"]') === null`,
-    "the collapsed glossary submenu",
+    `(() => {
+      const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
+      if (slider === null) return false;
+      return [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')]
+        .every((row) => row.getAttribute("data-uses") === slider.max);
+    })()`,
+    "the significance filter",
   );
-  await page.click('[data-testid="discover-glossary-toggle"]');
+  await page.eval(`(() => {
+    const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
+    slider.value = "0";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
   await page.wait(
-    `document.querySelector('[data-testid="discover-glossary-menu"]') !== null`,
-    "the reopened glossary submenu",
+    `document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === ${glossary.terms}`,
+    "the cleared significance filter",
   );
   await page.fill('[data-testid="discover-glossary-search"]', "Order Total");
   await page.wait(`document.querySelectorAll('#workspace-discover [data-testid="discover-term"]').length === 1`, "the filtered glossary");

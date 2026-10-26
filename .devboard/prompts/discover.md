@@ -140,7 +140,7 @@ Sections and required keys:
     "model": { "value": "direct|pull-request|git-flow", "evidence": ["git log"], "confidence": "inferred" }
   },
   "testing": {
-    "levels": { "value": [{ "level": "unit|integration|end-to-end|contract|other", "tests": "count or unknown", "paths": ["path"], "command": "exact command or unknown", "fixtures": ["path"] }], "evidence": ["path"], "confidence": "observed" },
+    "levels": { "value": [{ "level": "unit|integration|end-to-end|contract|other", "tests": "exact test count", "paths": ["path"], "command": "exact command or unknown", "fixtures": ["path"] }], "evidence": ["path"], "confidence": "observed" },
     "pyramid": { "value": "short pyramid description", "evidence": ["path"], "confidence": "inferred" }
   },
   "architecture": {
@@ -206,9 +206,10 @@ Section rules:
   merge method, and one of `direct`, `pull-request`, or `git-flow`, supported by git and CI
   evidence. A model the repository does not evidence is `value: null` with `confidence: unknown`
   and a reason.
-- `testing` reports the observed test levels, their file counts (or `unknown` for a level with no
-  evidence), representative paths, commands, fixtures, and the resulting pyramid. Never run the
-  suite. A level with no evidence is omitted; an unmeasured count is `unknown`, never `0`.
+- `testing` reports the observed test levels, an exact test count for each level, representative
+  paths, commands, fixtures, and the resulting pyramid. Count the test cases you can see statically
+  in the test files; never run the suite. A level with evidence but no test case is `0`; a level
+  with no evidence is omitted. Never write `unknown` as a count.
 - `architecture` reports detected bounded contexts or modules with path and responsibility, entry
   points, allowed dependency direction, external boundaries, and shared kernels. `ci` reports
   provider, triggers, jobs, required quality gates, and artifacts; with no CI configuration use
@@ -259,6 +260,16 @@ status, origin, standardRef, kind, grounding, broader, related
 - Detect at least one bounded context, and give every glossary document at least one grounded
   concept. When the source contains a named concept, define it; when it contains an important
   unnamed concept, propose one explicitly with `status: proposed` and `origin: llm`.
+- Prefer significant, project-specific concepts over generic vocabulary. The preferred label is
+  the domain's own compound name, such as a multi-word term or a compound identifier that appears
+  in the host's code and documentation. Omit generic framework words and single generic tokens
+  (`option`, `command`, `value`, `config`, `error`, `page`, `action`, `data`, `file`, `name`,
+  `state`, `request`, `response`, `type`) unless the host defines that exact term as a
+  project-specific concept with a one-sentence definition and grounds it in at least two files.
+  The glossary maps the host's language; it is not an inventory of its framework.
+- Prefer concepts whose grounding spans more than one file, and record every code path and model
+  symbol that demonstrates the concept. A concept the operator would not recognize as part of this
+  project's domain does not belong in the glossary.
 
 Before writing glossaries, read the currently published
 `<host>/.omp/discover/glossary/` and `<host>/.omp/discover/decisions.json` when present, read-only.

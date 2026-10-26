@@ -453,6 +453,220 @@ export function hostFacts(repoDir: string): HostFacts {
   };
 }
 
+// ------------------------------------------------------- glossary usage
+
+/**
+ * How often one glossary concept is used across the crawled host, and the
+ * identifiers that name it. Derived from the published glossary and the host
+ * files; never written back into an artifact.
+ */
+export interface ConceptUsage {
+  /** Occurrences of the concept's preferred and alternate labels. */
+  count: number;
+  /** Distinct crawled files carrying at least one occurrence. */
+  files: number;
+  /** Representative identifiers from the host that name the concept. */
+  examples: string[];
+}
+
+/** Usage keyed by bounded context, then concept id. */
+export type GlossaryUsage = Record<string, Record<string, ConceptUsage>>;
+
+const USAGE_FILE_MAX = 512 * 1024;
+const USAGE_EXAMPLES_MAX = 8;
+const USAGE_CACHE_MAX = 8;
+const USAGE_IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g;
+
+const usageCache = new Map<string, GlossaryUsage>();
+
+/** Lower-case words of a label, punctuation removed, for matching code names. */
+function usageWords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter((word) => word.length > 0);
+}
+
+/** Every spelling a label takes in prose and identifiers. */
+function usageVariants(labels: string[]): string[] {
+  const variants = new Set<string>();
+  for (const label of labels) {
+    const words = usageWords(label);
+    if (words.length === 0) continue;
+    const phrase = words.join(" ");
+    if (phrase.length >= 2) variants.add(phrase);
+    if (words.length > 1) {
+      variants.add(words.join(""));
+      variants.add(words.join("_"));
+      variants.add(words.join("-"));
+    }
+  }
+  return [...variants].sort((left, right) =>
+    left.length === right.length ? left.localeCompare(right) : right.length - left.length,
+  );
+}
+
+function countOccurrences(text: string, term: string): number {
+  let count = 0;
+  let index = text.indexOf(term);
+  while (index >= 0) {
+    count += 1;
+    index = text.indexOf(term, index + term.length);
+  }
+  return count;
+}
+
+interface UsageFile {
+  path: string;
+  text: string;
+  identifiers: string[];
+}
+
+function usageFiles(repoDir: string): UsageFile[] {
+  const files: UsageFile[] = [];
+  for (const path of hostFiles(repoDir)) {
+    const absolute = join(repoDir, path);
+    let stats;
+    try {
+      stats = statSync(absolute);
+    } catch {
+      continue;
+    }
+    if (!stats.isFile() || stats.size > USAGE_FILE_MAX) continue;
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(absolute);
+    } catch {
+      continue;
+    }
+    if (bytes.includes(0)) continue;
+    const text = bytes.toString("utf8");
+    files.push({ path, text, identifiers: text.match(USAGE_IDENTIFIER) ?? [] });
+  }
+  return files;
+}
+
+function usageKey(repoDir: string, fingerprint: string, glossaries: Glossary[]): string {
+  const shape = glossaries.map((glossary) => ({
+    context: glossary.boundedContext,
+    concepts: glossary.concepts.map((concept) => ({
+      id: concept.id,
+      labels: [...concept.prefLabels, ...concept.altLabels].map((label) => label.text),
+      grounding: concept.grounding,
+    })),
+  }));
+  return createHash("sha256")
+    .update(repoDir)
+    .update("\u0000")
+    .update(fingerprint)
+    .update("\u0000")
+    .update(JSON.stringify(shape))
+    .digest("hex");
+}
+
+/**
+ * Counts each concept's usage across the host's documentation and source and
+ * collects identifiers that name it. The scan reads the same files the
+ * fingerprint covers: tracked and untracked non-ignored files, never
+ * `.devboard/`, `.worktree/`, `.git/`, dependency caches, or published
+ * Discover artifacts. Results are cached per host revision and glossary shape.
+ */
+export function glossaryUsage(
+  repoDir: string,
+  glossaries: Glossary[],
+  fingerprint: string,
+): GlossaryUsage {
+  const key = usageKey(repoDir, fingerprint, glossaries);
+  const cached = usageCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const files = usageFiles(repoDir);
+  const usage: GlossaryUsage = {};
+  for (const glossary of glossaries) {
+    const contexts: Record<string, ConceptUsage> = {};
+    for (const concept of glossary.concepts) {
+      const labels = [...concept.prefLabels, ...concept.altLabels].map((label) => label.text);
+      const variants = usageVariants(labels);
+      const wordSets = labels
+        .map(usageWords)
+        .filter((words) => words.length > 0)
+        .map((words) => ({ words, compact: words.join("") }));
+      const grounding = new Set(
+        concept.grounding
+          .filter((entry) => entry.startsWith("code:"))
+          .map((entry) => entry.slice("code:".length)),
+      );
+
+      let count = 0;
+      let occurrencesInFiles = 0;
+      const examples = new Map<string, { count: number; grounded: boolean }>();
+      for (const entry of files) {
+        const text = entry.text.toLowerCase();
+        let inFile = 0;
+        for (const variant of variants) inFile += countOccurrences(text, variant);
+        if (inFile > 0) {
+          count += inFile;
+          occurrencesInFiles += 1;
+        }
+        if (wordSets.length === 0) continue;
+        const grounded = grounding.has(entry.path);
+        for (const name of entry.identifiers) {
+          if (name.length < 3 || name.length > 80) continue;
+          const lower = name.toLowerCase();
+          const matches = wordSets.some(({ words, compact }) =>
+            words.length === 1
+              ? lower.includes(words[0] ?? "")
+              : words.every((word) => lower.includes(word)) || lower.includes(compact),
+          );
+          if (!matches) continue;
+          const previous = examples.get(name);
+          examples.set(name, {
+            count: (previous?.count ?? 0) + 1,
+            grounded: (previous?.grounded ?? false) || grounded,
+          });
+        }
+      }
+
+      for (const entry of concept.grounding) {
+        if (!entry.startsWith("model:")) continue;
+        const name = entry.slice("model:".length);
+        const previous = examples.get(name);
+        examples.set(name, { count: previous?.count ?? 0, grounded: true });
+      }
+
+      const ranked = [...examples.entries()]
+        .sort(([leftName, left], [rightName, right]) =>
+          left.grounded === right.grounded
+            ? left.count === right.count
+              ? leftName.localeCompare(rightName)
+              : right.count - left.count
+            : left.grounded
+              ? -1
+              : 1,
+        )
+        .slice(0, USAGE_EXAMPLES_MAX)
+        .map(([name]) => name);
+
+      contexts[concept.id] = {
+        count,
+        files: occurrencesInFiles,
+        examples: ranked,
+      };
+    }
+    usage[glossary.boundedContext] = contexts;
+  }
+
+  usageCache.set(key, usage);
+  while (usageCache.size > USAGE_CACHE_MAX) {
+    const oldest = usageCache.keys().next().value;
+    if (oldest === undefined) break;
+    usageCache.delete(oldest);
+  }
+  return usage;
+}
+
 /**
  * A change outside the excluded directories. The crawl's own staging and the
  * published harness artifacts are not host dirt.
@@ -2039,6 +2253,7 @@ export interface DiscoverArtifacts {
   manifest: Manifest;
   sheet: Sheet;
   glossaries: Glossary[];
+  usage: GlossaryUsage;
   decisions: Decision[];
   skills: SkillView[];
 }
@@ -2153,6 +2368,11 @@ export function readArtifacts(repoDir: string): ArtifactsRead {
         manifest: published.manifest,
         sheet: published.sheet,
         glossaries: published.glossaries,
+        usage: glossaryUsage(
+          repoDir,
+          published.glossaries,
+          published.sheet.freshness.fingerprint,
+        ),
         decisions: published.decisions,
         skills,
       },

@@ -1575,18 +1575,11 @@ a.discover-chip--link:focus-visible {
   padding: 2px 6px;
 }
 
-.discover-test-top {
-  align-items: start;
-  display: grid;
-  gap: 16px;
-  grid-template-columns: 200px minmax(0, 1fr);
-  margin-top: 4px;
-}
-
 .discover-test-side {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin-top: 4px;
   min-width: 0;
 }
 
@@ -1698,6 +1691,64 @@ a.discover-chip--link:focus-visible {
   width: 100%;
 }
 
+.discover-glossary-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.discover-threshold {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.discover-threshold__label {
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.discover-threshold__input {
+  accent-color: var(--accent);
+  width: 140px;
+}
+
+.discover-threshold__value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  min-width: 2.6em;
+}
+
+.discover-uses {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.discover-examples {
+  display: inline-flex;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  gap: 2px 4px;
+}
+
+.discover-examples__item {
+  align-items: baseline;
+  display: inline-flex;
+}
+
+.discover-examples code {
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 1px 4px;
+  white-space: nowrap;
+}
+
 .discover-skill {
   display: flex;
   flex-direction: column;
@@ -1741,7 +1792,7 @@ a.discover-chip--link:focus-visible {
   }
 }
 
-/* Sidebar: a nested glossary submenu under the Glossary section. */
+/* Sidebar: a disclosure row that opens a nested skill submenu. */
 .sidebar-tab-row {
   align-items: center;
   display: flex;

@@ -1,12 +1,7 @@
 <script lang="ts">
   import ChevronRight from "lucide-svelte/icons/chevron-right";
   import { connection } from "../connection.svelte";
-  import {
-    conceptTitle,
-    contextTitle,
-    SECTION_TABS,
-    SKILL_TABS,
-  } from "../discover-format";
+  import { SECTION_TABS, SKILL_TABS } from "../discover-format";
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
@@ -22,12 +17,7 @@
   let { openTab }: Props = $props();
 
   const active = $derived(layout.activeTab[layout.mode]);
-  let glossaryOpen = $state<boolean | null>(null);
   let skillsOpen = $state(false);
-  const glossaryVisible = $derived(
-    glossaryOpen ??
-      (typeof active === "string" && (active === "glossary" || active.startsWith("term:"))),
-  );
   const modeLabel = $derived(
     layout.mode === "goal" ? "Goal" : layout.mode === "flow" ? "Flow" : "Discover",
   );
@@ -435,88 +425,19 @@
     {:else}
       <section class="sidebar-group" aria-label="Discover sections">
         {#each SECTION_TABS as tab (tab.id)}
-          {#if tab.id === "glossary"}
-            <div class="sidebar-tab-row">
-              <button
-                type="button"
-                class="sidebar-item"
-                aria-current={isActive(tab.id)}
-                role="tab"
-                aria-selected={isActive(tab.id)}
-                data-testid="discover-tab"
-                data-tab={tab.id}
-                data-command={`discover.tab.${tab.id}`}
-                onclick={() => open("discover", tab.id, tab.id, tab.id, tab.label)}
-              >
-                <span class="sidebar-item__label">{tab.label}</span>
-              </button>
-              <button
-                type="button"
-                class="sidebar-disclosure"
-                aria-expanded={glossaryVisible}
-                aria-controls={glossaryVisible ? "discover-glossary-menu" : undefined}
-                aria-label={`${glossaryVisible ? "Hide" : "Show"} glossary contexts`}
-                data-testid="discover-glossary-toggle"
-                onclick={() => (glossaryOpen = !glossaryVisible)}
-              >
-                <ChevronRight
-                  size={12}
-                  aria-hidden="true"
-                  class={glossaryVisible
-                    ? "sidebar-disclosure__icon sidebar-disclosure__icon--open"
-                    : "sidebar-disclosure__icon"}
-                />
-              </button>
-            </div>
-            {#if glossaryVisible}
-              <div
-                class="sidebar-submenu"
-                id="discover-glossary-menu"
-                data-testid="discover-glossary-menu"
-                role="group"
-                aria-label="Glossary contexts"
-              >
-                {#each discover.contexts as context (context.boundedContext)}
-                  <div class="sidebar-submenu__context">{contextTitle(context)}</div>
-                  {#each context.concepts.filter((concept) => concept.status !== "invalidated") as concept (concept.id)}
-                    <button
-                      type="button"
-                      class="sidebar-item sidebar-item--nested"
-                      aria-current={isActive(`term:${context.boundedContext}:${concept.id}`)}
-                      data-command={`discover.term.open.${context.boundedContext}.${concept.id}`}
-                      title={concept.id}
-                      onclick={() =>
-                        open(
-                          "discover",
-                          `term:${context.boundedContext}:${concept.id}`,
-                          "term",
-                          `${context.boundedContext}:${concept.id}`,
-                          conceptTitle(concept),
-                        )}
-                    >
-                      <span class="sidebar-item__label">{conceptTitle(concept)}</span>
-                    </button>
-                  {/each}
-                {:else}
-                  <p class="sidebar-empty">No glossary terms.</p>
-                {/each}
-              </div>
-            {/if}
-          {:else}
-            <button
-              type="button"
-              class="sidebar-item"
-              aria-current={isActive(tab.id)}
-              role="tab"
-              aria-selected={isActive(tab.id)}
-              data-testid="discover-tab"
-              data-tab={tab.id}
-              data-command={`discover.tab.${tab.id}`}
-              onclick={() => open("discover", tab.id, tab.id, tab.id, tab.label)}
-            >
-              <span class="sidebar-item__label">{tab.label}</span>
-            </button>
-          {/if}
+          <button
+            type="button"
+            class="sidebar-item"
+            aria-current={isActive(tab.id)}
+            role="tab"
+            aria-selected={isActive(tab.id)}
+            data-testid="discover-tab"
+            data-tab={tab.id}
+            data-command={`discover.tab.${tab.id}`}
+            onclick={() => open("discover", tab.id, tab.id, tab.id, tab.label)}
+          >
+            <span class="sidebar-item__label">{tab.label}</span>
+          </button>
         {/each}
       </section>
 

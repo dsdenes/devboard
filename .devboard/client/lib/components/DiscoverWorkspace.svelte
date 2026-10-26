@@ -26,9 +26,16 @@
   const GLOSSARY_COLUMNS = [
     { id: "kind", header: "Kind", accessorKey: "kind" },
     { id: "title", header: "Term", accessorKey: "title" },
+    { id: "uses", header: "Uses", accessorKey: "uses" },
     { id: "definition", header: "Definition", accessorKey: "definition" },
+    { id: "examples", header: "", accessorKey: "examples" },
   ];
-  const GLOSSARY_WIDTHS = { kind: "96px", title: "240px" };
+  const GLOSSARY_WIDTHS = {
+    kind: "92px",
+    title: "210px",
+    uses: "64px",
+    examples: "240px",
+  };
 
   const activeSkill = $derived(tab?.kind === "skill" ? tab.resourceId : null);
   const skill = $derived(activeSkill === null ? null : discover.skill(activeSkill));
@@ -47,6 +54,21 @@
     const concept = glossary?.concepts.find((entry) => entry.id === id);
     return glossary === undefined || concept === undefined ? null : { glossary, concept };
   });
+  const termUsage = $derived(
+    term === null
+      ? null
+      : discover.usageFor(term.glossary.boundedContext, term.concept.id),
+  );
+  const totalTerms = $derived(
+    discover.contexts.reduce(
+      (total, context) =>
+        total + context.concepts.filter((concept) => concept.status !== "invalidated").length,
+      0,
+    ),
+  );
+  const visibleTerms = $derived(
+    discover.filteredContexts.reduce((total, context) => total + context.concepts.length, 0),
+  );
 
   function openTerm(context: string, concept: Concept): void {
     openTab({
@@ -61,6 +83,29 @@
 {#snippet glossaryCell(row: Record<string, unknown>, columnId: string)}
   {#if columnId === "kind"}
     <ConceptKind kind={String(row.kind ?? "")} />
+  {:else if columnId === "title"}
+    <strong>{String(row.title ?? "")}</strong>
+  {:else if columnId === "uses"}
+    <span
+      class="discover-uses"
+      title={`${row.uses ?? 0} uses in ${row.usageFiles ?? 0} files`}
+    >
+      {row.uses ?? 0}
+    </span>
+  {:else if columnId === "examples"}
+    {#if Array.isArray(row.examples) && row.examples.length > 0}
+      {@const examples = row.examples as string[]}
+      <span class="discover-examples">
+        {#each examples as example, index (example)}
+          <span class="discover-examples__item">
+            <code>{example}</code>
+            {#if index < examples.length - 1}<span aria-hidden="true">,</span>{/if}
+          </span>
+        {/each}
+      </span>
+    {:else}
+      <span class="muted">—</span>
+    {/if}
   {:else}
     {String(row[columnId] ?? "")}
   {/if}
@@ -72,12 +117,27 @@
       <div class="discover-page__heading">
         <h1 class="discover-page__title">Glossary</h1>
         <p class="discover-page__subtitle">
+          {visibleTerms} of {totalTerms} terms above significance {discover.glossaryThreshold} across
           {discover.contexts.length}
-          {discover.contexts.length === 1 ? "bounded context" : "bounded contexts"} in the published
-          glossary.
+          {discover.contexts.length === 1 ? "bounded context" : "bounded contexts"}.
         </p>
       </div>
-      <div class="discover-page__actions">
+      <div class="discover-page__actions discover-glossary-controls">
+        <label class="discover-threshold">
+          <span class="discover-threshold__label">Significance</span>
+          <input
+            class="discover-threshold__input"
+            type="range"
+            min="0"
+            max={discover.glossaryMaxUses}
+            step="1"
+            value={discover.glossaryThreshold}
+            aria-label="Minimum uses a term needs to be listed"
+            data-testid="discover-glossary-threshold"
+            oninput={(event) => discover.setGlossaryThreshold(event.currentTarget.valueAsNumber)}
+          />
+          <output class="discover-threshold__value">≥ {discover.glossaryThreshold}</output>
+        </label>
         <input
           id="discover-glossary-search"
           class="textarea discover-search"
@@ -92,7 +152,9 @@
     </header>
 
     {#if discover.filteredContexts.length === 0}
-      <p class="empty">No glossary terms match the current search.</p>
+      <p class="empty">
+        No glossary terms match the current search and significance threshold.
+      </p>
     {:else}
       {#each discover.filteredContexts as context (context.boundedContext)}
         <section class="panel discover-card" data-testid="discover-context" data-context={context.boundedContext}>
@@ -105,17 +167,25 @@
           <div class="panel__body discover-card__body">
             <DataTable
               columns={GLOSSARY_COLUMNS}
-              rows={context.concepts.map((concept) => ({
-                ...concept,
-                title: conceptTitle(concept),
-                definition: labelText(concept.definitions) || "No definition recorded.",
-              }))}
+              rows={context.concepts.map((concept) => {
+                const usage = discover.usageFor(context.boundedContext, concept.id);
+                return {
+                  ...concept,
+                  title: conceptTitle(concept),
+                  definition: labelText(concept.definitions) || "No definition recorded.",
+                  uses: usage.count,
+                  usageFiles: usage.files,
+                  examples: usage.examples,
+                };
+              })}
               rowTestId="discover-term"
               rowAttrs={(row) => ({
                 "data-context": context.boundedContext,
                 "data-id": String(row.id ?? ""),
                 "data-status": String(row.status ?? ""),
                 "data-kind": String(row.kind ?? ""),
+                "data-uses": String(row.uses ?? 0),
+                "data-examples": Array.isArray(row.examples) ? row.examples.join(",") : "",
               })}
               rowCommand={(row) =>
                 `discover.term.open.${context.boundedContext}.${String(row.id ?? "")}`}
@@ -124,7 +194,6 @@
                 if (concept !== undefined) openTerm(context.boundedContext, concept);
               }}
               cell={glossaryCell}
-              hideHeader
               columnWidths={GLOSSARY_WIDTHS}
               full
               wrap
@@ -222,6 +291,26 @@
                 <dd>{contextTitle(term.glossary)}</dd>
                 <dt>Kind</dt>
                 <dd>{term.concept.kind}</dd>
+                <dt>Uses</dt>
+                <dd data-testid="discover-term-uses">
+                  {termUsage?.count ?? 0} in {termUsage?.files ?? 0}
+                  {(termUsage?.files ?? 0) === 1 ? "file" : "files"}
+                </dd>
+                <dt>Examples</dt>
+                <dd>
+                  {#if termUsage !== null && termUsage.examples.length > 0}
+                    <span class="discover-examples">
+                      {#each termUsage.examples as example, index (example)}
+                        <span class="discover-examples__item">
+                          <code>{example}</code>
+                          {#if index < termUsage.examples.length - 1}<span aria-hidden="true">,</span>{/if}
+                        </span>
+                      {/each}
+                    </span>
+                  {:else}
+                    <span class="muted">—</span>
+                  {/if}
+                </dd>
                 <dt>Origin</dt>
                 <dd>{term.concept.origin}</dd>
                 <dt>Grounding</dt>

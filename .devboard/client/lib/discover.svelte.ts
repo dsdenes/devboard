@@ -1,13 +1,21 @@
 import { connection } from "./connection.svelte";
 import { dependencyName } from "../../lib/dependencies.ts";
 import { notifications } from "./notifications.svelte";
-import { filterContexts, scalarText, sectionLeaf } from "./discover-format";
+import {
+  conceptUsage,
+  filterContexts,
+  glossaryMaxUses,
+  scalarText,
+  sectionLeaf,
+} from "./discover-format";
 import type {
+  ConceptUsage,
   DiscoverSkill,
   DiscoverStatePayload,
   DiscoverTarget,
   Freshness,
   Glossary,
+  GlossaryUsage,
   RunQuestion,
   RunQuestionOption,
 } from "./types";
@@ -40,6 +48,8 @@ export class DiscoverStore {
   glossarySearch = $state("");
   /** The URL field of the source-checkout-only remote target strip. */
   remoteUrl = $state("");
+  /** Minimum measured uses a listed term needs to stay listed; opt-in. */
+  glossaryThreshold = $state(0);
 
   drafts = $state<Record<string, string>>({});
   dirty = $state<Record<string, boolean>>({});
@@ -119,8 +129,26 @@ export class DiscoverStore {
     return Array.isArray(this.state?.glossaries) ? this.state.glossaries : [];
   }
 
+  get glossaryUsage(): GlossaryUsage {
+    const value = this.state?.glossaryUsage;
+    return typeof value === "object" && value !== null ? value : {};
+  }
+
+  get glossaryMaxUses(): number {
+    return glossaryMaxUses(this.contexts, this.glossaryUsage);
+  }
+
+  usageFor(context: string, id: string): ConceptUsage {
+    return conceptUsage(this.glossaryUsage, context, id);
+  }
+
   get filteredContexts(): Glossary[] {
-    return filterContexts(this.contexts, this.glossarySearch);
+    return filterContexts(
+      this.contexts,
+      this.glossarySearch,
+      this.glossaryThreshold,
+      this.glossaryUsage,
+    );
   }
 
   get testCommand(): string {
@@ -219,6 +247,11 @@ export class DiscoverStore {
     this.glossarySearch = value;
   }
 
+  setGlossaryThreshold(value: number): void {
+    if (!Number.isFinite(value)) return;
+    this.glossaryThreshold = Math.min(this.glossaryMaxUses, Math.max(0, Math.round(value)));
+  }
+
   private syncDrafts(payload: DiscoverStatePayload): void {
     const skills = Array.isArray(payload.skills) ? payload.skills : [];
     for (const skill of skills) {
@@ -234,6 +267,11 @@ export class DiscoverStore {
 
   private applySnapshot(payload: DiscoverStatePayload): void {
     this.state = payload;
+    const max = glossaryMaxUses(
+      Array.isArray(payload.glossaries) ? payload.glossaries : [],
+      payload.glossaryUsage,
+    );
+    if (this.glossaryThreshold > max) this.glossaryThreshold = max;
     this.active = payload.active === true;
     this.runId = typeof payload.runId === "string" ? payload.runId : null;
     this.startedAt = typeof payload.startedAt === "string" ? payload.startedAt : null;

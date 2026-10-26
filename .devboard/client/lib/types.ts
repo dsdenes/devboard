@@ -220,6 +220,16 @@ export interface Glossary {
   concepts: Concept[];
 }
 
+/** How often one concept is used across the host's documentation and source. */
+export interface ConceptUsage {
+  count: number;
+  files: number;
+  examples: string[];
+}
+
+/** Usage keyed by bounded context, then concept id. */
+export type GlossaryUsage = Record<string, Record<string, ConceptUsage>>;
+
 export interface DiscoverSkill {
   name: string;
   state: "generated" | "edited" | "missing";
@@ -264,6 +274,7 @@ export interface DiscoverStatePayload {
   sheet: Record<string, unknown> | null;
   dependencyRepositories: Record<string, string>;
   glossaries: Glossary[];
+  glossaryUsage: GlossaryUsage;
   decisions: unknown[];
   skills: DiscoverSkill[];
 }

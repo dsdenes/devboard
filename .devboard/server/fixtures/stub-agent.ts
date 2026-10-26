@@ -886,7 +886,7 @@ function discoverSheet(): Record<string, unknown> {
             [
               {
                 level: "unit",
-                tests: "unknown",
+                tests: "1",
                 paths: [paths.tests],
                 command: "bun test",
                 fixtures: [],
