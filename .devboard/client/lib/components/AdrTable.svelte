@@ -5,19 +5,20 @@
   import type { AdrRecord } from "../types";
 
   interface Props {
+    /** The rows to render; the page owns filtering, the table owns density. */
+    records: AdrRecord[];
     onopen: (record: AdrRecord) => void;
     onstart: (record: AdrRecord) => void;
   }
 
-  let { onopen, onstart }: Props = $props();
+  let { records, onopen, onstart }: Props = $props();
 
   const features = tableFeatures({});
 
   const columns = [
     { id: "title", header: "Title", accessorKey: "title" },
-    { id: "status", header: "Status", accessorKey: "status" },
-    { id: "state", header: "State", accessorKey: "pending" },
-    { id: "next", header: "Next", accessorKey: "file" },
+    { id: "status", header: "Document status", accessorKey: "status" },
+    { id: "state", header: "Implementation", accessorKey: "pending" },
     { id: "file", header: "File", accessorKey: "file" },
     { id: "summary", header: "Decision summary", accessorKey: "summary" },
     { id: "actions", header: "Action", accessorKey: "file" },
@@ -26,7 +27,7 @@
   const table = createTable({
     features,
     get data() {
-      return goal.records as unknown as Array<Record<string, unknown>>;
+      return records as unknown as Array<Record<string, unknown>>;
     },
     get columns() {
       return columns as never;
@@ -69,20 +70,18 @@
             }
           }}
         >
-          <td class="adr-title" title={record.title}>{record.title}</td>
+          <td class="adr-title" title={record.title}>
+            <span class="adr-title__text">{record.title}</span>
+            {#if goal.next === record.file}
+              <span class="badge" data-tone="accent" data-testid="next-marker">Next</span>
+            {/if}
+          </td>
           <td>
             <span class="badge" data-tone={record.pending ? "pending" : "resolved"}>
               {record.status || "Unknown"}
             </span>
           </td>
           <td>{record.pending ? "Pending" : "Resolved"}</td>
-          <td>
-            {#if goal.next === record.file}
-              <span class="badge" data-tone="accent" data-testid="next-marker">Next</span>
-            {:else}
-              <span class="muted">—</span>
-            {/if}
-          </td>
           <td><code data-testid="record-file">{record.file}</code></td>
           <td class="adr-summary" data-testid="record-summary" title={record.summary}>
             {record.summary || "No decision summary recorded."}
@@ -111,7 +110,7 @@
         </tr>
       {:else}
         <tr>
-          <td colspan={columns.length} class="empty">No records found.</td>
+          <td colspan={columns.length} class="empty">No records match this filter.</td>
         </tr>
       {/each}
     </tbody>
@@ -137,7 +136,7 @@
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     color: var(--muted-foreground);
-    font-size: 12px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.06em;
     padding: 2px 8px;
@@ -175,25 +174,43 @@
   }
 
   th:nth-child(1) {
-    width: 26%;
+    width: 27%;
   }
   th:nth-child(2) {
     width: 11%;
   }
   th:nth-child(3) {
-    width: 9%;
+    width: 11%;
   }
   th:nth-child(4) {
-    width: 8%;
+    width: 19%;
   }
   th:nth-child(5) {
-    width: 18%;
+    width: 22%;
   }
   th:nth-child(6) {
-    width: 20%;
+    width: 10%;
   }
-  th:nth-child(7) {
-    width: 8%;
+
+  .adr-title {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+    max-width: none;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .adr-title__text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .adr-title .badge {
+    flex: 0 0 auto;
   }
 
   .start-button {

@@ -20,6 +20,27 @@
   const modeLabel = $derived(
     layout.mode === "goal" ? "Goal" : layout.mode === "flow" ? "Flow" : "Discover",
   );
+  const resolvedCount = $derived(goal.records.filter((record) => !record.pending).length);
+  const pendingRecords = $derived(goal.records.filter((record) => record.pending));
+  const nextRecord = $derived(
+    goal.next === null ? null : (goal.records.find((record) => record.file === goal.next) ?? null),
+  );
+  const progressPercent = $derived(
+    goal.records.length === 0 ? 0 : Math.round((resolvedCount / goal.records.length) * 100),
+  );
+  const stageWord = $derived(
+    goal.lifecycle.paused
+      ? "paused"
+      : goal.lifecycle.stage === "goal"
+        ? "idle"
+        : goal.lifecycle.stage === "epic"
+          ? "epics"
+          : goal.lifecycle.stage === "adr"
+            ? "ADRs"
+            : goal.lifecycle.stage === "implementation"
+              ? "implementation"
+              : "finished",
+  );
   const termCount = $derived(
     discover.contexts.reduce(
       (total, context) =>
@@ -53,17 +74,20 @@
 
   <div class="sidebar__body">
     {#if layout.mode === "goal"}
-      <section class="sidebar-group" aria-label="Goal surfaces">
-        <div class="sidebar-group__title">Workspace</div>
+      <section class="sidebar-group" aria-label="Plan">
+        <div class="sidebar-group__title">Plan</div>
         <button
           type="button"
           class="sidebar-item"
-          aria-current={isActive("overview")}
-          data-command="open.goal.overview"
-          onclick={() => open("goal", "overview", "overview", "overview", "Overview")}
+          aria-current={isActive("goal-document")}
+          data-command="goal.document.open"
+          onclick={() =>
+            open("goal", "goal-document", "goal-document", "goal-document", "Goal document")}
         >
-          <ChevronRight size={12} aria-hidden="true" />
-          <span class="sidebar-item__label">Overview</span>
+          <span class="sidebar-item__label">Goal document</span>
+          {#if goal.goalDirty}
+            <span class="badge" data-tone="warning">unsaved</span>
+          {/if}
         </button>
         <button
           type="button"
@@ -73,23 +97,8 @@
           data-testid="open-adrs"
           onclick={() => open("goal", "adrs", "adrs", "adrs", "ADRs")}
         >
-          <ChevronRight size={12} aria-hidden="true" />
           <span class="sidebar-item__label">ADRs</span>
-          <span class="sidebar-item__meta">{goal.records.length}</span>
-        </button>
-        <button
-          type="button"
-          class="sidebar-item"
-          aria-current={isActive("goal-document")}
-          data-command="goal.document.open"
-          onclick={() =>
-            open("goal", "goal-document", "goal-document", "goal-document", "Goal document")}
-        >
-          <ChevronRight size={12} aria-hidden="true" />
-          <span class="sidebar-item__label">Goal document</span>
-          {#if goal.goalDirty}
-            <span class="badge" data-tone="warning">unsaved</span>
-          {/if}
+          <span class="sidebar-item__meta">{goal.pendingCount} pending</span>
         </button>
         <div class="sidebar-tab-row">
           <button
@@ -156,46 +165,84 @@
         {/if}
       </section>
 
+      <section class="sidebar-group" aria-label="Run">
+        <div class="sidebar-group__title">Run</div>
+        <button
+          type="button"
+          class="sidebar-item"
+          aria-current={isActive("overview")}
+          data-command="open.goal.overview"
+          data-testid="open-implementation"
+          onclick={() => open("goal", "overview", "overview", "overview", "Implementation")}
+        >
+          <span class="sidebar-item__label">Implementation</span>
+          {#if goal.question !== null}
+            <span class="badge" data-tone="warning">answer</span>
+          {:else}
+            <span class="sidebar-item__meta">{goal.lifecycleActive ? stageWord : goal.running ? "manual" : "idle"}</span>
+          {/if}
+        </button>
+      </section>
+
       {#if goal.pendingCount > 0}
-        <section class="sidebar-group" aria-label="ADR records">
-          <div class="sidebar-group__title">
-            <span>ADR records</span>
-            <span>{goal.pendingCount} pending</span>
-          </div>
-          {#each goal.records as record (record.file)}
+      <section class="sidebar-group" aria-label="ADR records" data-testid="sidebar-records">
+        <div class="sidebar-group__title">
+          <span>ADR records</span>
+          <span>{resolvedCount}/{goal.records.length}</span>
+        </div>
+        <div
+          class="sidebar-progress"
+          role="progressbar"
+          aria-label="Resolved decision records"
+          aria-valuemin="0"
+          aria-valuemax={goal.records.length}
+          aria-valuenow={resolvedCount}
+        >
+          <span style={`width: ${progressPercent}%`}></span>
+        </div>
+        {#if goal.records.length === 0}
+          <p class="sidebar-empty">No records yet.</p>
+        {:else}
+          {#each pendingRecords as entry (entry.file)}
             <button
               type="button"
               class="sidebar-item"
-              aria-current={isActive(`adr:${record.file}`)}
-              data-command={`goal.adr.open.${record.file}`}
+              aria-current={isActive(`adr:${entry.file}`)}
+              data-command={`goal.adr.open.${entry.file}`}
               data-testid="sidebar-adr"
-              data-file={record.file}
-              data-pending={record.pending}
-              data-next={goal.next === record.file}
-              title={`${record.title} — ${record.status || "Unknown"}`}
-              onclick={() =>
-                open("goal", `adr:${record.file}`, "adr", record.file, record.title)}
+              data-file={entry.file}
+              data-pending="true"
+              title={`${entry.title} — ${entry.status || "Unknown"}`}
+              onclick={() => open("goal", `adr:${entry.file}`, "adr", entry.file, entry.title)}
             >
-              <span class="sidebar-item__label">{record.title}</span>
-              {#if goal.next === record.file}
-                <span class="badge" data-tone="accent" data-testid="next-marker-badge">Next</span>
+              <span class="sidebar-item__label">{entry.title}</span>
+              {#if goal.next === entry.file}
+                <span class="badge" data-tone="accent">Next</span>
               {:else}
-                <span class="badge" data-tone={record.pending ? "pending" : "resolved"}>
-                  {record.pending ? "Pending" : "Resolved"}
-                </span>
+                <span class="sidebar-item__meta">{entry.status || "Unknown"}</span>
               {/if}
             </button>
-            <div class="sidebar-item__meta" style="padding: 0 6px 4px 24px;">
-              {record.file} · {record.status || "Unknown"}
-            </div>
           {/each}
-        </section>
+          <button
+            type="button"
+            class="sidebar-item"
+            data-command="goal.adrs.open"
+            data-testid="sidebar-all-records"
+            onclick={() => open("goal", "adrs", "adrs", "adrs", "ADRs")}
+          >
+            <span class="sidebar-item__label">All records</span>
+            <span class="sidebar-item__meta">{goal.records.length}</span>
+          </button>
+        {/if}
+      </section>
       {/if}
 
-      <section class="sidebar-group" aria-label="Lifecycle lanes" data-testid="lane-tabs">
+      <section class="sidebar-group" aria-label="Lanes" data-testid="lane-tabs">
         <div class="sidebar-group__title">
           <span>Lanes</span>
-          <span>{goal.runningLanes} running</span>
+          {#if goal.lanes.length > 0}
+            <span>{goal.runningLanes} running · {goal.lanes.length}</span>
+          {/if}
         </div>
         <div role="tablist" aria-label="Agent lanes">
           {#each goal.lanes as lane (lane.id)}
@@ -217,7 +264,7 @@
               onclick={() => open("goal", `lane:${lane.id}`, "lane", lane.id, label)}
             >
               <span class="sidebar-item__label">{label}</span>
-              <span class="badge" data-tone={lane.status === "running" ? "accent" : "warning"}>
+              <span class="badge" data-tone={lane.status === "running" ? "accent" : lane.status === "failed" ? "error" : "warning"}>
                 {lane.status}
               </span>
             </button>

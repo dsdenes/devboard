@@ -1,21 +1,11 @@
 <script lang="ts">
-  import Bell from "lucide-svelte/icons/bell";
-  import Moon from "lucide-svelte/icons/moon";
-  import Sun from "lucide-svelte/icons/sun";
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
   import { connection } from "../connection.svelte";
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
   import { layout } from "../layout.svelte";
-  import { notifications } from "../notifications.svelte";
   import IconButton from "./ui/icon-button.svelte";
-
-  interface Props {
-    onopenhistory: () => void;
-  }
-
-  let { onopenhistory }: Props = $props();
 
   const connectionLabel = $derived(
     connection.state === "open"
@@ -60,10 +50,8 @@
   <span class="status-item status-item--grow" title={connection.projectPath}>
     <span class="mono" data-testid="status-project">{connection.projectPath || "No project"}</span>
   </span>
-  <span class="status-item" title="Running lanes and open epics">
-    <span class="mono">work {goal.runningLanes}</span>
-    <span class="mono">lanes {goal.lanes.length}</span>
-    <span class="mono">epics {goal.openEpics}</span>
+  <span class="status-item" title="Running and total agent lanes">
+    <span class="mono">lanes {goal.runningLanes}/{goal.lanes.length}</span>
   </span>
   <span class="status-item" title="Active mode status" data-testid="status-mode">
     {modeStatus}
@@ -82,31 +70,4 @@
       <RefreshCw size={14} aria-hidden="true" />
     </IconButton>
   {/if}
-  <IconButton
-    label={layout.theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-    command="view.theme.toggle"
-    data-testid="theme-toggle"
-    onclick={() => layout.toggleTheme()}
-  >
-    {#if layout.theme === "dark"}
-      <Sun size={14} aria-hidden="true" />
-    {:else}
-      <Moon size={14} aria-hidden="true" />
-    {/if}
-  </IconButton>
-  <button
-    type="button"
-    class="status-item status-item--button"
-    data-command="app.notifications.open"
-    data-testid="notification-indicator"
-    aria-label={`Notifications, ${notifications.unread} unread`}
-    title="Notification history"
-    onclick={onopenhistory}
-  >
-    <Bell size={13} aria-hidden="true" />
-    <span class="mono">{notifications.items.length}</span>
-    {#if notifications.unread > 0}
-      <span class="badge" data-tone="error">{notifications.unread} new</span>
-    {/if}
-  </button>
 </footer>

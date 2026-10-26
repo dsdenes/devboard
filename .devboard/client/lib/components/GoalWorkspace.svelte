@@ -7,6 +7,9 @@
   import MonacoEditor from "./MonacoEditor.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
+  import Input from "./ui/input.svelte";
+  import PageHeader from "./ui/page-header.svelte";
+  import StageTrack from "./ui/stage-track.svelte";
 
   interface Props {
     tab: WorkspaceTab | null;
@@ -15,6 +18,11 @@
   }
 
   let { tab, openTab, closeTab }: Props = $props();
+
+  type FilterMode = "all" | "pending" | "resolved";
+  let filterMode = $state<FilterMode>("all");
+  let filterQuery = $state("");
+  let skillsList = $state<HTMLUListElement | undefined>();
 
   const createGoalTitle = $derived(
     goal.creationActive
@@ -32,11 +40,76 @@
       : undefined,
   );
 
-  let skillsList = $state<HTMLUListElement | undefined>();
+  const resolvedCount = $derived(goal.records.filter((record) => !record.pending).length);
+  const pendingCount = $derived(goal.pendingCount);
+  const progressLine = $derived(
+    `${resolvedCount} of ${goal.records.length} resolved · ${pendingCount} ADR${
+      pendingCount === 1 ? "" : "s"
+    } pending`,
+  );
+  const nextRecord = $derived(
+    goal.next === null ? null : (goal.records.find((record) => record.file === goal.next) ?? null),
+  );
+  const nextLabel = $derived(nextRecord?.title ?? goal.next ?? "none");
+
+  const query = $derived(filterQuery.trim().toLowerCase());
+  const filteredRecords = $derived(
+    goal.records.filter((record) => {
+      if (filterMode === "pending" && !record.pending) return false;
+      if (filterMode === "resolved" && record.pending) return false;
+      if (query.length === 0) return true;
+      return [record.title, record.file, record.summary, record.status]
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    }),
+  );
 
   const lane = $derived(tab?.kind === "lane" ? goal.lane(tab.resourceId) : null);
   const record = $derived(
     tab?.kind === "adr" ? (goal.records.find((entry) => entry.file === tab?.resourceId) ?? null) : null,
+  );
+
+  const filters: Array<{ id: FilterMode; label: string }> = [
+    { id: "all", label: "All" },
+    { id: "pending", label: "Pending" },
+    { id: "resolved", label: "Resolved" },
+  ];
+
+  const operationText = $derived(
+    goal.creationActive
+      ? "Creating the goal"
+      : goal.revisionActive
+        ? "Revising the goal"
+        : goal.skillsPrepActive
+          ? "Preparing skills"
+          : goal.running
+            ? `Manual run: ${goal.runTitle ?? "ADR"}`
+            : null,
+  );
+
+  const documentState = $derived(
+    goal.goalEditingDisabled
+      ? "Read only while work runs"
+      : goal.goalDirty
+        ? "Unsaved changes"
+        : goal.goalReady
+          ? "Saved"
+          : "Not written yet",
+  );
+
+  const skillsReady = $derived(
+    goal.skills.length === 0
+      ? "No skills prepared yet"
+      : `${goal.skills.length} prepared · ready for implementation`,
+  );
+
+  const runActionLabel = $derived(
+    goal.runAction === "implementing"
+      ? "implementing"
+      : goal.runAction === "generating"
+        ? "generating an epic"
+        : "resolving",
   );
 
   function openAdr(entry: AdrRecord): void {
@@ -50,6 +123,10 @@
       resourceId: entry.id,
       title: goal.laneLabel(entry),
     });
+  }
+
+  function openOverview(): void {
+    openTab({ id: "overview", kind: "overview", resourceId: "overview", title: "Implementation" });
   }
 
   function lanePanel(entry: Lane) {
@@ -66,6 +143,11 @@
     goal.submitAnswer(value);
   }
 
+  function clearFilters(): void {
+    filterMode = "all";
+    filterQuery = "";
+  }
+
   $effect(() => {
     if (tab?.kind !== "skills" || goal.selectedSkill === null) return;
     const selected = goal.selectedSkill;
@@ -77,95 +159,269 @@
 </script>
 
 <div class="mode-body">
+{#snippet runQuestion()}
+  {#if goal.question !== null}
+    {@const pending = goal.question}
+    <section class="panel goal-question" data-testid="question">
+      <div class="panel__header">
+        <h2 class="panel__title">Waiting on you</h2>
+        <span class="badge" data-tone="accent">run blocked</span>
+      </div>
+      <div class="panel__body stack-sm">
+        <p class="muted" style="margin: 0;">{pending.message}</p>
+        {#if pending.options.length > 0}
+          <div class="choice-list">
+            {#each pending.options as option (option.label)}
+              <button
+                type="button"
+                class="choice"
+                data-testid="choice"
+                data-command="goal.answer.submit"
+                onclick={() => submitAnswer(option.label)}
+              >
+                <span class="choice__label">
+                  {option.label}
+                  {#if option.recommended}
+                    <span class="choice__recommended" data-testid="recommended">Recommended</span>
+                  {/if}
+                </span>
+                {#if option.description}
+                  <span class="choice__description">{option.description}</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+        <form
+          class="answer-form"
+          onsubmit={(event) => {
+            event.preventDefault();
+            goal.submitAnswer(goal.draft);
+          }}
+        >
+          <input
+            id="goal-answer-input"
+            class="goal-answer-input"
+            style="min-height: 28px; padding: 4px 8px;"
+            type="text"
+            bind:value={goal.draft}
+            placeholder="Your answer"
+            aria-label="Your answer"
+            data-testid="answer-input"
+          />
+          <Button
+            variant="default"
+            type="submit"
+            data-command="goal.answer.submit"
+            data-testid="submit-answer"
+            disabled={goal.draft.trim().length === 0}
+          >
+            Submit answer
+          </Button>
+        </form>
+      </div>
+    </section>
+  {/if}
+{/snippet}
+
+  {#if tab !== null && tab.kind !== "overview" && goal.question !== null}
+    <div class="goal-global-question">{@render runQuestion()}</div>
+  {/if}
+
   {#if tab === null}
-    <div class="panel panel--plain">
-      <p class="empty">No tab is open. Choose a surface from the sidebar.</p>
-    </div>
-  {:else if tab.kind === "overview"}
-    <div class="scroll-column">
-      <section class="panel" data-testid="lifecycle">
-        <div class="panel__header">
-          <h2 class="panel__title">Lifecycle</h2>
-          <div class="toolbar">
+    <div class="goal-page">
+      <section class="panel goal-empty-state" data-testid="no-open-page">
+        <div class="panel__body stack-sm">
+          <h1 class="goal-empty-state__title">No page is open</h1>
+          <p class="empty" style="padding: 0;">
+            Choose a surface from the sidebar, or return to the lifecycle console.
+          </p>
+          <div class="row-sm">
             <Button
-              variant={goal.lifecycleActive ? "destructive" : "default"}
-              data-command="goal.lifecycle.toggle"
-              data-testid="lifecycle-control"
-              title={goal.lifecycleButtonTitle}
-              disabled={goal.lifecycleButtonDisabled}
-              onclick={() => goal.toggleLifecycle()}
+              variant="default"
+              data-command="open.goal.overview"
+              onclick={openOverview}
             >
-              {goal.lifecycleActive ? "Stop implementation" : "Start implementation"}
-            </Button>
-            <Button
-              variant="secondary"
-              data-command="goal.lifecycle.pause"
-              disabled={!goal.lifecycleActive || goal.lifecycle.paused}
-              onclick={() => goal.pauseLifecycle()}
-            >
-              Pause
-            </Button>
-            <Button
-              variant="secondary"
-              data-command="goal.lifecycle.resume"
-              disabled={!goal.lifecycleActive || !goal.lifecycle.paused}
-              onclick={() => goal.resumeLifecycle()}
-            >
-              Resume
-            </Button>
-            <Button
-              variant="secondary"
-              data-command="goal.adr.start-next"
-              data-testid="start-next"
-              title={runStartTitle}
-              disabled={goal.runStartDisabled || goal.next === null}
-              onclick={() => goal.startNext()}
-            >
-              Resolve next ADR
+              Open implementation
             </Button>
           </div>
         </div>
-        <div class="panel__body">
-          <div class="row-sm" style="gap: 16px;">
-            <span class="muted">Open epics <strong class="mono" data-testid="epic-count">{goal.openEpics}</strong></span>
-            <span class="muted">Running lanes <strong class="mono" data-testid="lane-count">{goal.runningLanes}</strong></span>
-            <span class="muted">Pass <strong class="mono" data-testid="lifecycle-pass">{goal.lifecycle.pass}</strong></span>
-            <span class="muted">Stage <strong>{goal.lifecycle.paused ? "paused" : goal.lifecycle.stage}</strong></span>
-            {#if goal.lifecycleWorkTitle !== null}
-              <span class="muted" data-testid="lifecycle-work">
-                Work
-                {#if goal.lifecycleWorkUrl !== null}
-                  <a
-                    href={goal.lifecycleWorkUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    data-testid="lifecycle-work-link"
-                  >
-                    {goal.lifecycleWorkTitle}
-                  </a>
-                {:else}
-                  <strong>{goal.lifecycleWorkTitle}</strong>
-                {/if}
-              </span>
-            {/if}
-            <span class="muted" data-testid="pending-summary" aria-live="polite">
-              {goal.pendingCount} ADR{goal.pendingCount === 1 ? "" : "s"} pending
-            </span>
-          </div>
-          <div class="row-sm" style="margin-top: 8px;">
-            <Button
-              variant="outline"
-              data-command="goal.reset"
-              data-testid="reset-implementation"
-              disabled={goal.resetDisabled}
-              onclick={() => goal.armReset()}
-            >
-              Reset implementation
-            </Button>
-          </div>
+      </section>
+    </div>
+  {:else if tab.kind === "overview"}
+    <div class="goal-page goal-page--console" data-testid="goal-overview">
+      {#if connection.lastError !== null || connection.upgradePending || operationText !== null || goal.runState === "stopped"}
+        <div class="goal-notices" data-testid="goal-notices">
+          {#if connection.lastError !== null}
+            <p class="message" data-severity="error" role="alert">{connection.lastError}</p>
+          {/if}
+          {#if goal.creationActive}
+            <p class="message" data-testid="goal-creation-active" data-severity="notice" role="status">
+              Creating the goal. The document is being written by the agent.
+            </p>
+          {/if}
+          {#if goal.revisionActive}
+            <p class="message" data-testid="goal-revision-active" data-severity="notice" role="status">
+              Revising the goal with your guidance.
+            </p>
+          {/if}
+          {#if goal.skillsPrepActive}
+            <p class="message" data-testid="skills-preparation-active" data-severity="notice" role="status">
+              Preparing skills from the goal.
+            </p>
+          {/if}
+          {#if goal.runState === "stopped" && !goal.lifecycleActive}
+            <p class="message" data-testid="run-stopped" data-severity="notice" role="status">
+              Run stopped. The last action is kept below.
+            </p>
+          {/if}
+          {#if connection.upgradePending}
+            <p class="message" data-testid="upgrade-pending" data-severity="notice" role="status">
+              An update is waiting for the current work to finish. This dashboard restarts when it
+              ends.
+            </p>
+          {/if}
+        </div>
+      {/if}
 
-          {#if goal.resetArmed}
-            <div class="message" data-testid="reset-confirmation" style="margin-top: 8px;">
+      <PageHeader
+        eyebrow="Goal"
+        title="Implementation"
+        subtitle="Drive the lifecycle, or resolve a single decision record by hand."
+        testid="implementation-header"
+      >
+        {#snippet meta()}
+          <span class="muted" data-testid="pending-summary">
+            {pendingCount} ADR{pendingCount === 1 ? "" : "s"} pending
+          </span>
+          {#if nextRecord !== null && pendingCount > 0}
+            <span class="muted">Next: <span class="mono">{nextRecord.title}</span></span>
+          {/if}
+        {/snippet}
+        {#snippet actions()}
+          {#if goal.lifecycleActive}
+            <Button
+              variant="secondary"
+              data-command={goal.lifecycle.paused ? "goal.lifecycle.resume" : "goal.lifecycle.pause"}
+              onclick={() => (goal.lifecycle.paused ? goal.resumeLifecycle() : goal.pauseLifecycle())}
+            >
+              {goal.lifecycle.paused ? "Resume" : "Pause"}
+            </Button>
+          {/if}
+          <Button
+            variant="outline"
+            data-command="goal.adr.start-next"
+            data-testid="start-next"
+            title={runStartTitle}
+            disabled={goal.runStartDisabled || goal.next === null}
+            onclick={() => goal.startNext()}
+          >
+            Resolve next ADR
+          </Button>
+          <Button
+            variant={goal.lifecycleActive ? "destructive" : "default"}
+            data-command="goal.lifecycle.toggle"
+            data-testid="lifecycle-control"
+            title={goal.lifecycleButtonTitle}
+            disabled={goal.lifecycleButtonDisabled}
+            onclick={() => goal.toggleLifecycle()}
+          >
+            {goal.lifecycleActive ? "Stop implementation" : "Start implementation"}
+          </Button>
+        {/snippet}
+      </PageHeader>
+
+      {@render runQuestion()}
+
+      <section class="panel" data-testid="lifecycle">
+        <div class="panel__header">
+          <h2 class="panel__title">Lifecycle</h2>
+        </div>
+        <div class="panel__body">
+          <StageTrack
+            stage={goal.lifecycle.stage}
+            pass={goal.lifecycle.pass}
+            paused={goal.lifecycle.paused}
+            seen={goal.lifecycleSeen || goal.lifecycleActive}
+            workLabel={goal.running && !goal.lifecycleActive ? goal.runTitle : goal.lifecycleWorkTitle}
+            workUrl={goal.running && !goal.lifecycleActive ? null : goal.lifecycleWorkUrl}
+            manual={goal.running && !goal.lifecycleActive}
+            testid="lifecycle-stages"
+          />
+        </div>
+      </section>
+
+      {#if goal.running && !goal.lifecycleActive}
+        <section class="panel" data-testid="now">
+          <div class="panel__body row-sm">
+            <span class="muted">Manual run</span>
+            <strong>{goal.runTitle ?? "ADR"}</strong>
+            <span class="muted">{runActionLabel}</span>
+          </div>
+        </section>
+      {/if}
+
+      <section
+        class="panel goal-activity"
+        class:goal-activity--idle={goal.activity.length === 0 && !goal.activityActive}
+        data-testid="activity"
+      >
+        <div class="panel__header">
+          <h2 class="panel__title">Activity</h2>
+          <span class="badge" data-tone={goal.activityActive ? "accent" : "warning"}>
+            {goal.activityActive ? "live" : "idle"}
+          </span>
+        </div>
+        {#if goal.activity.length === 0 && !goal.activityActive}
+          <div class="panel__body" data-testid="activity-current-empty">
+            <p class="empty" style="padding: 0;">
+              The next action appears here. Start the lifecycle or resolve a record.
+            </p>
+          </div>
+        {:else}
+          <div class="panel__body term-split">
+            <Terminal
+              lines={[goal.currentAction]}
+              data-testid="activity-current"
+              label="Current activity"
+            />
+            {#if goal.previousActions.length > 0}
+              <details class="activity-history">
+                <summary data-testid="activity-history">{goal.previousActionsLabel}</summary>
+                <div style="height: 140px;">
+                  <Terminal
+                    lines={goal.previousActions}
+                    data-testid="activity-log"
+                    label="Activity history"
+                  />
+                </div>
+              </details>
+            {/if}
+          </div>
+        {/if}
+      </section>
+
+      <section class="panel goal-danger" data-testid="danger-zone">
+        <div class="panel__header">
+          <h2 class="panel__title">Danger zone</h2>
+          <span class="muted">Destructive</span>
+        </div>
+        <div class="panel__body stack-sm">
+          {#if !goal.resetArmed}
+            <div class="row-sm">
+              <Button
+                variant="outline"
+                data-command="goal.reset"
+                data-testid="reset-implementation"
+                disabled={goal.resetDisabled}
+                onclick={() => goal.armReset()}
+              >
+                Reset implementation
+              </Button>
+              <span class="muted">Deletes the working tree, not the goal or the records.</span>
+            </div>
+          {:else}
+            <div class="message" data-testid="reset-confirmation" data-severity="warning">
               <p class="message__text" data-testid="reset-keep-set">
                 Reset deletes every top-level entry except <code>.devboard</code>, <code>.omp</code>,
                 <code>AGENTS.md</code>, <code>.gitignore</code>, and <code>GOAL.md</code>. The
@@ -194,154 +450,27 @@
             </div>
           {/if}
           {#if goal.resetting}
-            <p class="muted" data-testid="reset-running">Resetting implementation…</p>
+            <p class="muted" data-testid="reset-running" role="status">Resetting implementation…</p>
           {/if}
           {#if goal.resetStatus !== null}
             <p data-testid="reset-status" role="status">{goal.resetStatus}</p>
           {/if}
-          {#if connection.upgradePending}
-            <p class="message" data-testid="upgrade-pending" data-severity="notice">
-              An update is waiting for the current work to finish. This dashboard restarts when it
-              ends.
-            </p>
-          {/if}
-          {#if connection.lastError !== null}
-            <p class="message" data-severity="error" role="alert">{connection.lastError}</p>
-          {/if}
         </div>
       </section>
-
-      {#if goal.creationActive}
-        <section class="panel" data-testid="goal-creation-active">
-          <div class="panel__header"><h2 class="panel__title">Creating the goal</h2></div>
-        </section>
-      {/if}
-      {#if goal.revisionActive}
-        <section class="panel" data-testid="goal-revision-active">
-          <div class="panel__header"><h2 class="panel__title">Revising the goal</h2></div>
-        </section>
-      {/if}
-      {#if goal.skillsPrepActive}
-        <section class="panel" data-testid="skills-preparation-active">
-          <div class="panel__header"><h2 class="panel__title">Preparing skills</h2></div>
-        </section>
-      {/if}
-
-      {#if goal.runState === "active" && goal.runTitle !== null}
-        <section class="panel" data-testid="active-run" data-action={goal.runAction}>
-          <div class="panel__header">
-            <h2 class="panel__title">
-              {#if goal.runAction === "implementing"}
-                Implementing <strong>{goal.runTitle}</strong>
-              {:else if goal.runAction === "generating"}
-                Generating the next epic
-              {:else}
-                Resolving <strong>{goal.runTitle}</strong>
-              {/if}
-            </h2>
-          </div>
-        </section>
-      {:else if goal.runState === "stopped"}
-        <p class="message" data-testid="run-stopped" data-severity="notice">Run stopped</p>
-      {/if}
-
-      {#if goal.question !== null}
-        {@const pending = goal.question}
-        <section class="panel" data-testid="question">
-          <div class="panel__body stack-sm">
-            <p class="muted" style="margin: 0;">{pending.message}</p>
-            {#if pending.options.length > 0}
-              <div class="choice-list">
-                {#each pending.options as option (option.label)}
-                  <button
-                    type="button"
-                    class="choice"
-                    data-testid="choice"
-                    data-command="goal.answer.submit"
-                    onclick={() => submitAnswer(option.label)}
-                  >
-                    <span class="choice__label">
-                      {option.label}
-                      {#if option.recommended}
-                        <span class="choice__recommended" data-testid="recommended">Recommended</span>
-                      {/if}
-                    </span>
-                    {#if option.description}
-                      <span class="choice__description">{option.description}</span>
-                    {/if}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-            <form
-              class="answer-form"
-              onsubmit={(event) => {
-                event.preventDefault();
-                goal.submitAnswer(goal.draft);
-              }}
-            >
-              <input
-                id="goal-answer-input"
-                class="textarea"
-                style="min-height: 28px; padding: 4px 6px;"
-                type="text"
-                bind:value={goal.draft}
-                placeholder="Your answer"
-                aria-label="Your answer"
-                data-testid="answer-input"
-              />
-              <Button
-                variant="default"
-                type="submit"
-                data-command="goal.answer.submit"
-                data-testid="submit-answer"
-                disabled={goal.draft.trim().length === 0}
-              >
-                Submit answer
-              </Button>
-            </form>
-          </div>
-        </section>
-      {/if}
-
-      {#if goal.activity.length > 0}
-        <section class="panel activity-section" data-testid="activity">
-          <div class="panel__header">
-            <h2 class="panel__title">{goal.activityActive ? "Current action" : "Last action"}</h2>
-            <span class="badge" data-tone={goal.activityActive ? "accent" : "warning"}>
-              {goal.activityActive ? "live" : "idle"}
-            </span>
-          </div>
-          <div class="panel__body term-split">
-            <Terminal
-              lines={[goal.currentAction]}
-              data-testid="activity-current"
-              label="Current activity"
-            />
-            {#if goal.previousActions.length > 0}
-              <details class="activity-history">
-                <summary data-testid="activity-history">{goal.previousActionsLabel}</summary>
-                <div style="height: 140px;">
-                  <Terminal
-                    lines={goal.previousActions}
-                    data-testid="activity-log"
-                    label="Activity history"
-                  />
-                </div>
-              </details>
-            {/if}
-          </div>
-        </section>
-      {/if}
     </div>
   {:else if tab.kind === "adrs"}
-    <section class="panel" data-testid="adrs-overlay">
-      <div class="panel__header">
-        <h2 class="panel__title">ADRs</h2>
-        <div class="row-sm">
-          <span class="muted" data-testid="pending-summary">
-            {goal.pendingCount} pending · {goal.records.length} records
-          </span>
+    <div class="goal-page">
+      <PageHeader
+        eyebrow="Plan"
+        title="Decision records"
+        subtitle="Every decision the implementation depends on."
+        testid="adrs-header"
+      >
+        {#snippet meta()}
+          <span class="muted" data-testid="pending-summary">{progressLine}</span>
+          <span class="muted">Next: <span class="mono">{nextLabel}</span></span>
+        {/snippet}
+        {#snippet actions()}
           <Button
             variant="outline"
             data-command={`tab.close.goal.${tab.id}`}
@@ -350,59 +479,122 @@
           >
             Close
           </Button>
-        </div>
-      </div>
-      <AdrTable onopen={openAdr} onstart={(entry) => goal.startRecord(entry)} />
-    </section>
-  {:else if tab.kind === "goal-document"}
-      <section class="panel goal-document" data-testid="goal-editor">
-        <div class="panel__header">
-          <h2 class="panel__title">Goal document</h2>
-          <div class="toolbar">
-            {#if goal.skills.length > 0}
-              <Button
-                variant="outline"
-                data-command="goal.skills.open"
-                data-testid="show-skills"
-                onclick={() =>
-                  openTab({ id: "skills", kind: "skills", resourceId: "skills", title: "Skills" })}
-              >
-                Show skills ({goal.skills.length})
+        {/snippet}
+      </PageHeader>
+
+      {#if goal.records.length === 0}
+        <section class="panel" data-testid="adrs-overlay">
+          <div class="panel__body stack-sm goal-empty-state">
+            <h2 class="goal-empty-state__title">No decision records yet</h2>
+            <p class="empty" style="padding: 0;">
+              Records appear under <code>adrs/</code> when goal creation or the lifecycle writes them.
+            </p>
+            <div class="row-sm">
+              <Button variant="default" data-command="open.goal.overview" onclick={openOverview}>
+                Open implementation
               </Button>
-            {:else}
-              <Button
-                variant="outline"
-                data-command="goal.skills.prepare"
-                data-testid="prepare-skills"
-                disabled={goal.prepareDisabled}
-                onclick={() => goal.prepareSkills()}
-              >
-                Prepare Skills
-              </Button>
-            {/if}
-            <Button
-              variant="secondary"
-              data-command="goal.create"
-              data-testid="create-goal"
-              title={createGoalTitle}
-              disabled={!connection.open}
-              onclick={() => goal.createGoal()}
-            >
-              {goal.goalReady ? "Recreate goal" : "Create goal"}
-            </Button>
-            <Button
-              variant="default"
-              data-command="goal.save"
-              data-testid="save-goal"
-              title={goal.goalEditingDisabled ? "The goal is read only during work." : undefined}
-              disabled={goal.goalEditingDisabled}
-              onclick={() => goal.saveGoal()}
-            >
-              Save goal
-            </Button>
+            </div>
           </div>
-        </div>
-        <div class="panel__body goal-details" data-testid="goal-details">
+        </section>
+      {:else}
+        <section class="panel goal-filters" aria-label="Record filters">
+          <div class="panel__body goal-filters__body">
+            <Input
+              type="search"
+              placeholder="Filter by title, file, or summary"
+              aria-label="Filter decision records"
+              data-testid="adr-search"
+              value={filterQuery}
+              oninput={(event) => (filterQuery = event.currentTarget.value)}
+            />
+            <div class="filter-chips" role="group" aria-label="Implementation state">
+              {#each filters as entry (entry.id)}
+                <button
+                  type="button"
+                  class="filter-chip"
+                  aria-pressed={filterMode === entry.id}
+                  data-testid={`adr-filter-${entry.id}`}
+                  onclick={() => (filterMode = entry.id)}
+                >
+                  {entry.label}
+                </button>
+              {/each}
+              {#if filterMode !== "all" || filterQuery.trim().length > 0}
+                <Button variant="ghost" size="sm" data-testid="clear-adr-filter" onclick={clearFilters}>
+                  Clear
+                </Button>
+              {/if}
+            </div>
+          </div>
+        </section>
+
+        <section class="panel goal-adrs-panel" data-testid="adrs-overlay">
+          <AdrTable
+            records={filteredRecords}
+            onopen={openAdr}
+            onstart={(entry) => goal.startRecord(entry)}
+          />
+        </section>
+      {/if}
+    </div>
+  {:else if tab.kind === "goal-document"}
+    <div class="goal-page goal-page--fill">
+      <PageHeader eyebrow="Plan" title="Goal document" subtitle={documentState} testid="document-header">
+        {#snippet meta()}
+          {#if operationText !== null}
+            <span class="badge" data-tone="accent">{operationText}</span>
+          {/if}
+          <span class="muted">
+            {goal.goalDirty ? "Save writes GOAL.md" : "GOAL.md is the source of truth"}
+          </span>
+        {/snippet}
+        {#snippet actions()}
+          {#if goal.skills.length > 0}
+            <Button
+              variant="outline"
+              data-command="goal.skills.open"
+              data-testid="show-skills"
+              onclick={() =>
+                openTab({ id: "skills", kind: "skills", resourceId: "skills", title: "Skills" })}
+            >
+              Show skills ({goal.skills.length})
+            </Button>
+          {:else}
+            <Button
+              variant="outline"
+              data-command="goal.skills.prepare"
+              data-testid="prepare-skills"
+              disabled={goal.prepareDisabled}
+              onclick={() => goal.prepareSkills()}
+            >
+              Prepare skills
+            </Button>
+          {/if}
+          <Button
+            variant="secondary"
+            data-command="goal.create"
+            data-testid="create-goal"
+            title={createGoalTitle}
+            disabled={!connection.open}
+            onclick={() => goal.createGoal()}
+          >
+            {goal.goalReady ? "Recreate goal" : "Create goal"}
+          </Button>
+          <Button
+            variant="default"
+            data-command="goal.save"
+            data-testid="save-goal"
+            title={goal.goalEditingDisabled ? "The goal is read only during work." : undefined}
+            disabled={goal.goalEditingDisabled}
+            onclick={() => goal.saveGoal()}
+          >
+            Save goal
+          </Button>
+        {/snippet}
+      </PageHeader>
+
+      <section class="panel goal-document" data-testid="goal-editor">
+        <div class="panel__body goal-details">
           <MonacoEditor
             value={goal.goalDraft}
             label="Current goal"
@@ -416,29 +608,23 @@
         <div class="panel__footer goal-revision">
           <div class="goal-revision__heading">
             <label class="field__label" for="revision-request">Revision guidance</label>
-            <div class="goal-revision__actions">
-              <Button
-                variant="secondary"
-                data-command="goal.revision.focus"
-                onclick={() => document.getElementById("revision-request")?.focus()}
-              >
-                Focus guidance
-              </Button>
-              <Button
-                variant="secondary"
-                data-command="goal.revise"
-                data-testid="revise-goal"
-                disabled={goal.revisionDisabled}
-                onclick={() => goal.reviseGoal()}
-              >
-                Revise goal
-              </Button>
-            </div>
+            <Button
+              variant="secondary"
+              data-command="goal.revise"
+              data-testid="revise-goal"
+              disabled={goal.revisionDisabled}
+              onclick={() => goal.reviseGoal()}
+            >
+              Revise goal
+            </Button>
           </div>
+          <p class="goal-revision__hint">
+            Revision writes a draft; save only when you accept it. Guidance is optional.
+          </p>
           <textarea
             id="revision-request"
             class="textarea goal-revision__input"
-            rows="4"
+            rows="3"
             bind:value={goal.revisionRequest}
             placeholder="Optional guidance for the agent"
             data-testid="revision-request"
@@ -446,13 +632,19 @@
           ></textarea>
         </div>
       </section>
+    </div>
   {:else if tab.kind === "skills"}
-    <section class="panel" data-testid="skills-overlay">
-      <div class="panel__header">
-        <h2 class="panel__title">
-          Skills <span class="mono" data-testid="skills-count">{goal.skills.length}</span>
-        </h2>
-        <div class="row-sm">
+    <div class="goal-page">
+      <PageHeader eyebrow="Plan" title="Skills" subtitle={skillsReady} testid="skills-header">
+        {#snippet meta()}
+          {#if goal.contradictions.length > 0}
+            <span class="badge" data-tone="error">
+              {goal.contradictions.length} contradiction{goal.contradictions.length === 1 ? "" : "s"}
+            </span>
+          {/if}
+          <span class="muted mono">.omp/skills/</span>
+        {/snippet}
+        {#snippet actions()}
           <Button
             variant="secondary"
             data-command="goal.skills.prepare"
@@ -470,99 +662,200 @@
           >
             Close
           </Button>
+        {/snippet}
+      </PageHeader>
+
+      <section class="panel goal-skills" data-testid="skills-overlay">
+        <div class="panel__header">
+          <h2 class="panel__title">
+            Prepared skills <span class="mono" data-testid="skills-count">{goal.skills.length}</span>
+          </h2>
+          <span class="muted">Read by implementing agents</span>
         </div>
-      </div>
-      <div class="panel__body stack-sm">
-        <ul class="history-list" bind:this={skillsList}>
-          {#each goal.skills as skill (skill.name)}
-            <li class="skill">
-              <button
-                type="button"
-                class="skill__button"
-                data-testid="skill"
-                data-name={skill.name}
-                data-selected={goal.selectedSkill === skill.name}
-                aria-current={goal.selectedSkill === skill.name ? "true" : undefined}
-                onclick={() => goal.selectSkill(skill.name)}
-              >
-                <span class="mono skill__name">{skill.name}</span>
-                <span class="muted skill__description">{skill.description}</span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-        {#if goal.contradictions.length === 0}
-          <p class="muted" data-testid="skills-no-contradictions">No contradictions</p>
-        {:else}
-          <ul class="history-list" data-testid="skills-contradictions">
-            {#each goal.contradictions as contradiction (`${contradiction.skills[0]}:${contradiction.skills[1]}`)}
-              <li class="message">
-                {contradiction.skills[0]} and {contradiction.skills[1]}:
-                “{contradiction.directives[0]}” vs “{contradiction.directives[1]}”
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </div>
-    </section>
+        <div class="panel__body stack-sm">
+          {#if goal.skills.length === 0}
+            <p class="empty" style="padding: 0;">
+              No skills prepared yet. Prepare them from the saved goal before starting implementation.
+            </p>
+          {:else}
+            <ul class="history-list" bind:this={skillsList}>
+              {#each goal.skills as skill (skill.name)}
+                <li class="skill">
+                  <button
+                    type="button"
+                    class="skill__button"
+                    data-testid="skill"
+                    data-name={skill.name}
+                    data-selected={goal.selectedSkill === skill.name}
+                    aria-current={goal.selectedSkill === skill.name ? "true" : undefined}
+                    onclick={() => goal.selectSkill(skill.name)}
+                  >
+                    <span class="mono skill__name">{skill.name}</span>
+                    <span class="muted skill__description">{skill.description}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+
+          {#if goal.contradictions.length === 0}
+            <p class="muted" data-testid="skills-no-contradictions">No contradictions</p>
+          {:else}
+            <ul class="history-list goal-contradictions" data-testid="skills-contradictions">
+              {#each goal.contradictions as contradiction (`${contradiction.skills[0]}:${contradiction.skills[1]}`)}
+                <li class="message" data-severity="warning">
+                  <strong>{contradiction.skills[0]}</strong> and
+                  <strong>{contradiction.skills[1]}</strong> state opposite policies:
+                  “{contradiction.directives[0]}” vs “{contradiction.directives[1]}”.
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      </section>
+    </div>
   {:else if tab.kind === "adr"}
     {#if record === null}
-      <p class="empty">This ADR is no longer listed.</p>
-    {:else}
-      <div class="scroll-column">
+      <div class="goal-page">
         <section class="panel">
-          <div class="panel__header">
-            <h2 class="panel__title">{record.title}</h2>
+          <div class="panel__body stack-sm">
+            <p class="empty" style="padding: 0;">This record is no longer listed.</p>
             <div class="row-sm">
-              {#if goal.next === record.file}
-                <span class="badge" data-tone="accent" data-testid="next-marker">Next</span>
-              {/if}
-              <span class="badge" data-tone={record.pending ? "pending" : "resolved"}>
-                {record.pending ? "Pending" : "Resolved"}
-              </span>
-              <span class="badge">{record.status || "Unknown"}</span>
+              <Button
+                variant="default"
+                data-command="goal.adrs.open"
+                onclick={() =>
+                  openTab({ id: "adrs", kind: "adrs", resourceId: "adrs", title: "ADRs" })}
+              >
+                Back to records
+              </Button>
             </div>
           </div>
-          <div class="panel__body stack-sm">
+        </section>
+      </div>
+    {:else}
+      <div class="goal-page">
+        <PageHeader eyebrow="Decision record" title={record.title} testid="record-header">
+          {#snippet meta()}
+            {#if goal.next === record.file}
+              <span class="badge" data-tone="accent" data-testid="next-marker">Next</span>
+            {/if}
+            <span class="badge" data-tone={record.pending ? "pending" : "resolved"}>
+              {record.pending ? "Pending" : "Resolved"}
+            </span>
+            <span class="badge">{record.status || "Unknown"}</span>
+          {/snippet}
+          {#snippet actions()}
+            <Button
+              variant="outline"
+              data-command="goal.adrs.open"
+              data-testid="back-to-records"
+              onclick={() =>
+                openTab({ id: "adrs", kind: "adrs", resourceId: "adrs", title: "ADRs" })}
+            >
+              Back to records
+            </Button>
+            <Button
+              variant="outline"
+              data-command={`tab.close.goal.${tab.id}`}
+              data-testid="close-record"
+              onclick={() => closeTab(tab)}
+            >
+              Close
+            </Button>
+          {/snippet}
+        </PageHeader>
+
+        <section class="panel" data-testid="record-meta">
+          <div class="panel__body">
             <dl class="kv-grid">
               <dt>File</dt>
               <dd><code data-testid="record-file">{record.file}</code></dd>
-              <dt>State</dt>
+              <dt>Document status</dt>
+              <dd>{record.status || "Unknown"}</dd>
+              <dt>Implementation</dt>
               <dd>{record.pending ? "Pending" : "Resolved"}</dd>
               <dt>Next</dt>
               <dd>{goal.next === record.file ? "Yes" : "No"}</dd>
             </dl>
-            <div>
-              <div class="field__label">Decision summary</div>
-              <p data-testid="record-summary" style="margin: 2px 0 0;">
-                {record.summary || "No decision summary recorded."}
-              </p>
-            </div>
-            {#if record.pending}
-              <div class="row-sm">
-                <Button
-                  variant="default"
-                  data-command={`goal.adr.start.${record.file}`}
-                  data-testid="start"
-                  data-file={record.file}
-                  title={runStartTitle}
-                  disabled={goal.runStartDisabled}
-                  onclick={() => goal.startRecord(record)}
-                >
-                  Start
-                </Button>
-              </div>
-            {/if}
           </div>
         </section>
+
+        <section class="panel">
+          <div class="panel__header">
+            <h2 class="panel__title">Decision summary</h2>
+          </div>
+          <div class="panel__body">
+            <p data-testid="record-summary" style="margin: 0;">
+              {record.summary || "No decision summary recorded."}
+            </p>
+          </div>
+        </section>
+
+        {#if record.pending}
+          <section class="panel" data-testid="record-action">
+            <div class="panel__body row-sm">
+              <Button
+                variant="default"
+                data-command={`goal.adr.start.${record.file}`}
+                data-testid="start"
+                data-file={record.file}
+                title={runStartTitle}
+                disabled={goal.runStartDisabled}
+                onclick={() => goal.startRecord(record)}
+              >
+                Start this record
+              </Button>
+              <span class="muted">
+                Runs one record outside the lifecycle. Stop the lifecycle first when it is active.
+              </span>
+            </div>
+          </section>
+        {/if}
       </div>
     {/if}
   {:else if tab.kind === "lane"}
     {#if lane === null}
-      <p class="empty">This lane is no longer active.</p>
+      <div class="goal-page">
+        <section class="panel">
+          <div class="panel__body stack-sm">
+            <p class="empty" style="padding: 0;">This lane is no longer active.</p>
+            <div class="row-sm">
+              <Button variant="default" data-command="open.goal.overview" onclick={openOverview}>
+                Back to implementation
+              </Button>
+            </div>
+          </div>
+        </section>
+      </div>
     {:else}
       {@const panel = lanePanel(lane)}
-      <div class="scroll-column">
+      <div class="goal-page">
+        <PageHeader eyebrow="Lane" title={panel.label} testid="lane-header">
+          {#snippet meta()}
+            <span
+              class="badge"
+              data-testid="lane-status"
+              data-kind={lane.kind}
+              data-status={lane.status}
+              data-tone={lane.status === "running" ? "accent" : lane.status === "failed" ? "error" : "warning"}
+            >
+              {lane.status}
+            </span>
+            <span class="muted">Attempt <span class="mono">{lane.attempt}</span></span>
+          {/snippet}
+          {#snippet actions()}
+            <Button
+              variant="outline"
+              data-command={`tab.close.goal.${tab.id}`}
+              data-testid="close-lane"
+              onclick={() => closeTab(tab)}
+            >
+              Close
+            </Button>
+          {/snippet}
+        </PageHeader>
+
         <section class="panel" data-testid="lane-panel" data-lane={lane.id}>
           <div class="panel__header">
             <p class="panel__title" data-testid="lane-identity">
@@ -577,40 +870,44 @@
                   data-testid="lane-identity-link">{panel.identity.url}</a>
               {/if}
             </p>
-            <span
-              class="badge"
-              data-testid="lane-status"
-              data-kind={lane.kind}
-              data-status={lane.status}
-              data-tone={lane.status === "running" ? "accent" : "warning"}
-            >
-              {lane.status}
-            </span>
           </div>
-          <div class="panel__body term-split">
-            <Terminal lines={panel.current} data-testid="lane-current" label="Lane current activity" />
-            {#if panel.history.length > 0}
-              <details class="activity-history">
-                <summary data-testid="lane-history">
-                  {panel.history.length === 1
-                    ? "1 previous action"
-                    : `${panel.history.length} previous actions`}
-                </summary>
-                <div style="height: 140px;">
-                  <Terminal
-                    lines={panel.history}
-                    data-testid="lane-history-log"
-                    label="Lane activity history"
-                  />
-                </div>
-              </details>
-            {/if}
+          <div class="panel__body">
+            <dl class="kv-grid">
+              <dt>Kind</dt>
+              <dd>
+                {lane.kind === "generation"
+                  ? "Epic generation"
+                  : lane.kind === "adr"
+                    ? "ADR resolution"
+                    : "Epic implementation"}
+              </dd>
+              <dt>Record</dt>
+              <dd>
+                {#if lane.record === null}
+                  <span class="muted">—</span>
+                {:else}
+                  <code>{lane.record.file}</code>
+                {/if}
+              </dd>
+              <dt>Epic</dt>
+              <dd>
+                {#if lane.epic === null}
+                  <span class="muted">—</span>
+                {:else}
+                  #{lane.epic.number} {lane.epic.title}
+                {/if}
+              </dd>
+            </dl>
           </div>
         </section>
 
         {#if lane.question !== null}
           {@const pending = lane.question}
-          <section class="panel" data-testid="lane-question" data-lane={lane.id}>
+          <section class="panel goal-question" data-testid="lane-question" data-lane={lane.id}>
+            <div class="panel__header">
+              <h2 class="panel__title">Waiting on you</h2>
+              <span class="badge" data-tone="accent">lane blocked</span>
+            </div>
             <div class="panel__body stack-sm">
               <p class="muted" style="margin: 0;">{pending.message}</p>
               {#if pending.options.length > 0}
@@ -645,8 +942,8 @@
               >
                 <input
                   id={`lane-answer-${lane.id}`}
-                  class="textarea"
-                  style="min-height: 28px; padding: 4px 6px;"
+                  class="goal-answer-input"
+                  style="min-height: 28px; padding: 4px 8px;"
                   type="text"
                   bind:value={goal.laneDraft}
                   placeholder="Your answer"
@@ -666,6 +963,38 @@
             </div>
           </section>
         {/if}
+
+        <section class="panel goal-activity" data-testid="lane-activity">
+          <div class="panel__header">
+            <h2 class="panel__title">Activity</h2>
+            <span class="badge" data-tone={lane.status === "running" ? "accent" : "warning"}>
+              {lane.status === "running" || lane.status === "retrying" ? "live" : lane.status}
+            </span>
+          </div>
+          <div class="panel__body term-split">
+            <Terminal
+              lines={panel.current.length === 0 ? ["No activity yet."] : panel.current}
+              data-testid="lane-current"
+              label="Lane current activity"
+            />
+            {#if panel.history.length > 0}
+              <details class="activity-history">
+                <summary data-testid="lane-history">
+                  {panel.history.length === 1
+                    ? "1 previous action"
+                    : `${panel.history.length} previous actions`}
+                </summary>
+                <div style="height: 140px;">
+                  <Terminal
+                    lines={panel.history}
+                    data-testid="lane-history-log"
+                    label="Lane activity history"
+                  />
+                </div>
+              </details>
+            {/if}
+          </div>
+        </section>
       </div>
     {/if}
   {/if}

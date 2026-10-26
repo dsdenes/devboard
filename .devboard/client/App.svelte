@@ -388,7 +388,7 @@
   <Tooltip.Provider>
     <div class="app-shell" data-testid="app-shell">
       <div class="shell-main">
-        <ActivityBar />
+        <ActivityBar onopenpalette={openPalette} />
         <PaneGroup
           direction="horizontal"
           autoSaveId={`devboard.sidebar.${layout.epoch}`}
@@ -420,7 +420,7 @@
           </Pane>
         </PaneGroup>
       </div>
-      <StatusBar onopenhistory={() => notifications.openHistory()} />
+      <StatusBar />
     </div>
   </Tooltip.Provider>
 {/if}

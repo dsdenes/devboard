@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Goal pages</title>
+<style>
+  :root { --ink:#222; --muted:#666; --line:#bbb; --fill:#f4f4f4; --accent:#0b5cad; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: var(--ink);
+         font: 13px/1.45 system-ui, sans-serif; }
+  .anno { color: var(--accent); font: 10px/1.2 ui-monospace, monospace; display: block; margin-bottom: 4px; }
+  header { border-bottom: 1px solid var(--line); padding: 8px 12px; }
+  header h1 { font-size: 14px; margin: 0; }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+  .pages { display: grid; gap: 16px; padding: 12px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  section.page { border: 1px solid var(--line); border-radius: 4px; padding: 8px;
+                 display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .panel { border: 1px solid var(--line); border-radius: 4px; padding: 8px; min-width: 0; }
+  .row { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+  .title { font-size: 16px; font-weight: 650; margin: 0; }
+  .eyebrow, .group-label { color: var(--muted); font-size: 10px; letter-spacing: .08em;
+                           text-transform: uppercase; margin: 0 0 4px; }
+  .subtitle, .meta { color: var(--muted); font-size: 11px; }
+  .button { border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; font-size: 12px;
+            background: #fff; white-space: nowrap; }
+  .button--primary { border-color: var(--ink); background: var(--ink); color: #fff; }
+  .button--danger { border-color: #7a1c1c; color: #7a1c1c; }
+  .meta-row { display: flex; gap: 10px; border-top: 1px solid var(--fill); padding: 4px 0; font-size: 11px; }
+  .meta-row b { color: var(--muted); font-weight: 600; min-width: 84px; }
+  .table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .table th { text-align: left; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+              border-bottom: 1px solid var(--line); padding: 2px 4px; font-size: 10px; }
+  .table td { border-bottom: 1px solid var(--fill); padding: 3px 4px; white-space: nowrap;
+              overflow: hidden; text-overflow: ellipsis; }
+  .table tr[aria-current="true"] td { background: var(--fill); }
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; }
+  .field { border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; color: var(--muted);
+           font-size: 11px; flex: 1; min-width: 110px; }
+  .skill { border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; font-size: 11px; }
+  .skill + .skill { margin-top: 4px; }
+  .skill[aria-selected="true"] { border-color: var(--ink); background: var(--fill); }
+  .terminal { border: 1px solid var(--line); border-radius: 3px; background: var(--fill); padding: 6px;
+              font: 11px/1.6 ui-monospace, monospace; color: var(--muted); min-height: 60px; }
+  .editor { border: 1px solid var(--line); border-radius: 3px; background: var(--fill); padding: 8px;
+            font: 11px/1.6 ui-monospace, monospace; color: var(--muted); min-height: 96px; }
+  .option { border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; font-size: 11px; }
+  .option + .option { margin-top: 4px; }
+  .empty { border: 1px dashed var(--line); border-radius: 4px; padding: 12px; text-align: center;
+           color: var(--muted); font-size: 11px; }
+  @media (max-width: 768px) {
+    .pages { grid-template-columns: 1fr; }
+    .row { align-items: stretch; }
+    .table { display: block; overflow-x: auto; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Goal mode — page wireframes</h1>
+  <p>Structure only: neutral primitives, no production components, tokens, fonts, or color.</p>
+</header>
+<main class="pages">
+
+  <section class="page" aria-labelledby="adrs-title">
+    <span class="anno">goal-adrs · region_adr_header / filters / table · P0/P1</span>
+    <div class="panel">
+      <div class="row">
+        <div>
+          <p class="eyebrow">Plan</p>
+          <h2 class="title" id="adrs-title">Decision records</h2>
+        </div>
+        <span class="button">Close</span>
+      </div>
+      <p class="meta" style="margin: 6px 0 0;">5 of 8 resolved · Next: 0004-event-ledger.md</p>
+    </div>
+    <div class="filters">
+      <span class="field">Filter records</span>
+      <span class="button">All 8</span><span class="button">Pending 3</span><span class="button">Resolved 5</span>
+    </div>
+    <table class="table" aria-label="Decision records">
+      <thead><tr><th>Title</th><th>Status</th><th>State</th><th>Next</th><th>File</th><th>Summary</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td>Shell and layout</td><td>Accepted</td><td>Resolved</td><td>—</td><td>0001-shell-and-layout.md</td><td>One shell with a labeled rail.</td><td>Resolved</td></tr>
+        <tr aria-current="true"><td>Ledger schema</td><td>Proposed</td><td>Pending</td><td>Next</td><td>0003-ledger-schema.md</td><td>An append-only event ledger.</td><td><span class="button">Start</span></td></tr>
+        <tr><td>Event ledger</td><td>Proposed</td><td>Pending</td><td>—</td><td>0004-event-ledger.md</td><td>Events are the source of truth.</td><td><span class="button">Start</span></td></tr>
+      </tbody>
+    </table>
+    <div class="empty">No match: “migration” · <span class="button">Clear filter</span></div>
+  </section>
+
+  <section class="page" aria-labelledby="record-title">
+    <span class="anno">goal-record · region_record_header / meta / decision / action · P0/P1</span>
+    <div class="panel">
+      <div class="row">
+        <div>
+          <p class="eyebrow">Decision record</p>
+          <h2 class="title" id="record-title">Ledger schema</h2>
+        </div>
+        <div class="row"><span class="button">Back to records</span><span class="button">Close</span></div>
+      </div>
+      <p class="meta" style="margin: 6px 0 0;">Pending · Proposed · Next</p>
+    </div>
+    <div class="panel">
+      <p class="group-label">Record</p>
+      <div class="meta-row"><b>File</b><span>0003-ledger-schema.md</span></div>
+      <div class="meta-row"><b>Document status</b><span>Proposed</span></div>
+      <div class="meta-row"><b>Implementation</b><span>Pending</span></div>
+    </div>
+    <div class="panel">
+      <p class="group-label">Decision summary</p>
+      <p class="subtitle">An append-only event ledger is the source of truth; balances are derived projections.</p>
+    </div>
+    <div class="panel row"><span class="button button--primary">Start this record</span></div>
+  </section>
+
+  <section class="page" aria-labelledby="doc-title">
+    <span class="anno">goal-document · region_doc_header / editor / revision · P0/P1</span>
+    <div class="panel">
+      <div class="row">
+        <div>
+          <p class="eyebrow">Plan</p>
+          <h2 class="title" id="doc-title">Goal document</h2>
+        </div>
+        <div class="row">
+          <span class="button">Show skills (5)</span>
+          <span class="button">Recreate goal</span>
+          <span class="button button--primary">Save goal</span>
+        </div>
+      </div>
+      <p class="meta" style="margin: 6px 0 0;">Unsaved changes · Goal saved previously · No operation running</p>
+    </div>
+    <div class="editor"># Goal<br><br>Ship a ledger that records every balance change as an event.</div>
+    <div class="panel">
+      <p class="group-label">Revision guidance</p>
+      <div class="row">
+        <span class="field">Optional guidance for the agent</span>
+        <span class="button">Revise goal</span>
+      </div>
+      <p class="meta" style="margin: 6px 0 0;">Saving is separate: revise, read, then save.</p>
+    </div>
+  </section>
+
+  <section class="page" aria-labelledby="skills-title">
+    <span class="anno">goal-skills · region_skills_header / list / contradictions · P0/P1</span>
+    <div class="panel">
+      <div class="row">
+        <div>
+          <p class="eyebrow">Plan</p>
+          <h2 class="title" id="skills-title">Skills</h2>
+        </div>
+        <div class="row"><span class="button">Prepare skills again</span><span class="button">Close</span></div>
+      </div>
+      <p class="meta" style="margin: 6px 0 0;">5 prepared · ready for implementation · read from .omp/skills/</p>
+    </div>
+    <div class="panel">
+      <p class="group-label">Prepared skills</p>
+      <div class="skill" aria-selected="true">goal-implementation — How an agent implements one ADR end to end.</div>
+      <div class="skill">adr-writing — How a decision is recorded so it can be implemented.</div>
+      <div class="skill">devboard — How the harness interface and server are built.</div>
+      <div class="skill">testing-strategy — What a change must prove before it is done.</div>
+      <div class="skill">commits — How work is split into commits and pushed.</div>
+    </div>
+    <div class="panel">
+      <p class="group-label">Contradictions · 1</p>
+      <p class="subtitle">devboard and testing-strategy: “run the suite before pushing” vs “push before the suite”.</p>
+    </div>
+  </section>
+
+  <section class="page" aria-labelledby="lane-title">
+    <span class="anno">goal-lane · region_lane_header / identity / question / activity · P0/P1</span>
+    <div class="panel">
+      <div class="row">
+        <div>
+          <p class="eyebrow">Lane</p>
+          <h2 class="title" id="lane-title">Ledger schema (attempt 2)</h2>
+        </div>
+        <span class="button">Close</span>
+      </div>
+      <p class="meta" style="margin: 6px 0 0;">Retrying · ADR resolution · Attempt 2</p>
+    </div>
+    <div class="panel">
+      <p class="group-label">Identity</p>
+      <div class="meta-row"><b>Record</b><span>Ledger schema · 0003-ledger-schema.md</span></div>
+      <div class="meta-row"><b>Epic</b><span>#12 Ledger API</span></div>
+    </div>
+    <div class="panel">
+      <p class="group-label">Waiting on you</p>
+      <p class="subtitle">The previous attempt failed on a migration conflict. Retry, or add a migration?</p>
+      <div class="option">Add a migration — recommended</div>
+      <div class="option">Retry with the new schema</div>
+      <div class="row" style="margin-top: 6px;">
+        <span class="field">Your answer</span>
+        <span class="button button--primary">Submit answer</span>
+      </div>
+    </div>
+    <div class="panel">
+      <p class="group-label">Activity · live</p>
+      <div class="terminal">waiting for an answer<br><br>6 previous actions</div>
+    </div>
+  </section>
+
+  <section class="page" aria-labelledby="empty-title">
+    <span class="anno">goal-adrs.empty · region_adr_empty · P1</span>
+    <div class="panel">
+      <p class="eyebrow">Plan</p>
+      <h2 class="title" id="empty-title">Decision records</h2>
+      <p class="meta" style="margin: 6px 0 0;">No records</p>
+    </div>
+    <div class="empty">
+      <p style="margin: 0 0 6px;">No decision records yet.</p>
+      <p style="margin: 0 0 8px;">Records appear under adrs/ when goal creation or the lifecycle writes them.</p>
+      <span class="button">Open implementation</span>
+    </div>
+  </section>
+
+</main>
+</body>
+</html>

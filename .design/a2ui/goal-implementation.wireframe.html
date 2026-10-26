@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Goal / Implementation</title>
+<style>
+  :root { --ink:#222; --muted:#666; --line:#bbb; --fill:#f4f4f4; --accent:#0b5cad; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: var(--ink); font: 13px/1.45 system-ui, sans-serif; }
+  .app { display: grid; grid-template-columns: 64px 240px 1fr; grid-template-rows: 44px 1fr 26px;
+         min-height: 100vh; }
+  .anno { color: var(--accent); font: 10px/1.2 ui-monospace, monospace; display: block; margin-bottom: 4px; }
+  .rail { grid-column: 1; grid-row: 1 / 4; border-right: 1px solid var(--line); padding: 8px 4px;
+          display: flex; flex-direction: column; gap: 6px; }
+  .mode { border: 1px solid var(--line); border-radius: 4px; padding: 8px 2px; text-align: center;
+          font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .mode[aria-current="true"] { border-color: var(--ink); color: var(--ink); font-weight: 700; }
+  .rail-actions { margin-top: auto; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .rail-actions span { width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 4px; }
+  .sidebar { grid-column: 2; grid-row: 1 / 4; border-right: 1px solid var(--line); padding: 8px;
+             display: flex; flex-direction: column; gap: 10px; }
+  .sidebar h1 { font-size: 12px; margin: 0; }
+  .sidebar .context { color: var(--muted); font-size: 11px; }
+  .group-label { color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+                 margin: 0 0 4px; }
+  .nav-row { border: 1px solid transparent; padding: 3px 4px; font-size: 12px; display: flex;
+             justify-content: space-between; gap: 6px; }
+  .nav-row + .nav-row { border-top: 1px solid var(--fill); }
+  .nav-row[aria-current="true"] { border-color: var(--line); background: var(--fill); }
+  .sidebar-empty { color: var(--muted); font-size: 11px; padding: 2px 4px; }
+  .workspace { grid-column: 3; grid-row: 1 / 3; padding: 10px; display: flex; flex-direction: column; gap: 8px;
+               min-width: 0; }
+  .panel { border: 1px solid var(--line); border-radius: 4px; padding: 8px; min-width: 0; }
+  .panel--grow { flex: 1; display: flex; flex-direction: column; }
+  .row { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+  .title { font-size: 20px; font-weight: 650; margin: 0; }
+  .subtitle { color: var(--muted); font-size: 12px; margin: 2px 0 0; }
+  .eyebrow { color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+  .button { border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font-size: 12px;
+            background: #fff; white-space: nowrap; }
+  .button--primary { border-color: var(--ink); background: var(--ink); color: #fff; }
+  .button--danger { border-color: #7a1c1c; color: #7a1c1c; }
+  .track { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+  .step { flex: 1 1 90px; border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px;
+          font-size: 11px; color: var(--muted); }
+  .step[aria-current="step"] { border-color: var(--ink); color: var(--ink); font-weight: 700; }
+  .meta { color: var(--muted); font-size: 11px; margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .field { border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; color: var(--muted);
+           font-size: 12px; flex: 1; min-width: 120px; }
+  .terminal { border: 1px solid var(--line); border-radius: 3px; background: var(--fill); padding: 6px;
+              font: 11px/1.6 ui-monospace, monospace; color: var(--muted); flex: 1; min-height: 90px; }
+  .option { border: 1px solid var(--line); border-radius: 4px; padding: 5px 7px; font-size: 12px; }
+  .option + .option { margin-top: 4px; }
+  .disclosure { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 4px; }
+  .status { grid-column: 1 / 4; grid-row: 3; border-top: 1px solid var(--line); padding: 4px 8px;
+            display: flex; gap: 16px; color: var(--muted); font-size: 10px; overflow: hidden; }
+  @media (max-width: 768px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr 26px; }
+    .rail { grid-column: 1; grid-row: 1; flex-direction: row; border-right: 0; border-bottom: 1px solid var(--line); }
+    .rail-actions { margin-top: 0; margin-left: auto; flex-direction: row; }
+    .sidebar { grid-column: 1; grid-row: 2; border-right: 0; border-bottom: 1px solid var(--line); }
+    .workspace { grid-column: 1; grid-row: 3; }
+    .status { grid-column: 1; grid-row: 4; flex-wrap: wrap; }
+    .step { flex-basis: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="Mode and app menu">
+    <span class="anno">region_mode_rail · P0</span>
+    <span class="mode" aria-current="true">Goal</span>
+    <span class="mode">Flow</span>
+    <span class="mode">Discover</span>
+    <div class="rail-actions" aria-label="App actions (commands, notifications, theme)">
+      <span title="Commands"></span><span title="Notifications"></span><span title="Theme"></span>
+    </div>
+  </nav>
+
+  <aside class="sidebar" aria-label="Goal navigation">
+    <div>
+      <span class="anno">region_sidebar · P0</span>
+      <h1>Goal</h1>
+      <p class="context">Not started · 3 pending</p>
+    </div>
+    <section aria-label="Plan">
+      <p class="group-label">Plan · P1</p>
+      <div class="nav-row"><span>Goal document</span><span>saved</span></div>
+      <div class="nav-row"><span>ADRs</span><span>3 pending</span></div>
+      <div class="nav-row"><span>Skills</span><span>5</span></div>
+    </section>
+    <section aria-label="Run">
+      <p class="group-label">Run · P0</p>
+      <div class="nav-row" aria-current="true"><span>Implementation</span><span>not started</span></div>
+    </section>
+    <section aria-label="ADR records">
+      <p class="group-label">ADR records · P1</p>
+      <div class="nav-row"><span>5 of 8 resolved</span></div>
+      <div class="nav-row"><span>Next: 0004-event-ledger.md</span></div>
+      <div class="nav-row"><span>0003-ledger-schema.md</span><span>Pending</span></div>
+      <div class="nav-row"><span>All records</span></div>
+    </section>
+    <section aria-label="Lanes">
+      <p class="group-label">Lanes · 0 running</p>
+      <p class="sidebar-empty">No lanes yet.</p>
+    </section>
+  </aside>
+
+  <main class="workspace" aria-label="Implementation page">
+    <span class="anno">region_workspace · P0</span>
+    <section class="panel" aria-labelledby="impl-title">
+      <span class="anno">region_header · P0</span>
+      <div class="row">
+        <div>
+          <p class="eyebrow">Goal</p>
+          <h1 class="title" id="impl-title">Implementation</h1>
+          <p class="subtitle">Not started · pass 1 · 3 ADRs pending</p>
+        </div>
+        <div class="row">
+          <span class="button button--primary">Start implementation</span>
+          <span class="button">Resolve next ADR</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="stage-title">
+      <span class="anno">region_stage · P0</span>
+      <h2 class="group-label" id="stage-title">Lifecycle</h2>
+      <div class="track">
+        <span class="step" aria-current="step">Goal</span>
+        <span class="step">Epics</span>
+        <span class="step">ADRs</span>
+        <span class="step">Implementation</span>
+        <span class="step">Finished</span>
+      </div>
+      <div class="meta"><span>Pass 1</span><span>No work item yet</span><span>Ready to start</span></div>
+    </section>
+
+    <section class="panel" aria-labelledby="question-title">
+      <span class="anno">region_question · P0 (when queued)</span>
+      <h2 class="group-label" id="question-title">Waiting on you</h2>
+      <p class="subtitle">The ledger ADR names two candidate schemas. Which one should implementation use?</p>
+      <div class="option">Append-only events — recommended</div>
+      <div class="option">Mutable balance rows</div>
+      <div class="row" style="margin-top: 6px;">
+        <span class="field">Your answer</span>
+        <span class="button button--primary">Submit answer</span>
+      </div>
+    </section>
+
+    <section class="panel panel--grow" aria-labelledby="activity-title">
+      <span class="anno">region_activity · P1</span>
+      <h2 class="group-label" id="activity-title">Activity · idle</h2>
+      <div class="terminal">No activity yet.<br><br>Current action and folded history render here.</div>
+    </section>
+
+    <section class="panel" aria-labelledby="danger-title">
+      <span class="anno">region_danger · P1</span>
+      <h2 class="group-label" id="danger-title">Danger zone</h2>
+      <div class="disclosure"><span class="button button--danger">Reset implementation</span></div>
+    </section>
+  </main>
+
+  <footer class="status">
+    <span class="anno" style="display:inline">region_status_bar · P2</span>
+    <span>Connected</span><span>host</span><span>Goal · 3 ADRs pending</span><span>running 0.1.0 · installed 0.1.0</span>
+  </footer>
+</div>
+</body>
+</html>
