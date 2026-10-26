@@ -347,11 +347,14 @@
       <div class="panel__header">
         <h2 class="panel__title">Session</h2>
         <div class="row-sm">
-          <span class="badge" data-testid="flow-status" data-status={flow.status}>
-            {flow.status}
-          </span>
+          {#if flow.status !== "none"}
+            <span class="badge" data-testid="flow-status" data-status={flow.status}>
+              {flow.status}
+            </span>
+          {/if}
           <Button
             variant="default"
+            class="px-4"
             data-command="flow.start"
             data-testid="start-flow-implementation"
             title={flow.startDisabled ? "A flow goal and an idle session are required." : undefined}
@@ -362,6 +365,7 @@
           </Button>
           <Button
             variant="destructive"
+            class="px-4"
             data-command="flow.stop"
             data-testid="stop-flow-implementation"
             disabled={flow.stopDisabled}
@@ -537,9 +541,11 @@
     <section class="panel" data-testid="flow-activity-section">
       <div class="panel__header">
         <h2 class="panel__title">Implementation activity</h2>
-        <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
-          {flow.status}
-        </span>
+        {#if flow.status !== "none"}
+          <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
+            {flow.status}
+          </span>
+        {/if}
       </div>
       <div style="height: 200px;">
         <Terminal

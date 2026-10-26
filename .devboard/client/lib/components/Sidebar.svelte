@@ -227,9 +227,11 @@
         >
           <ChevronRight size={12} aria-hidden="true" />
           <span class="sidebar-item__label">Overview</span>
-          <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
-            {flow.status}
-          </span>
+          {#if flow.status !== "none"}
+            <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
+              {flow.status}
+            </span>
+          {/if}
         </button>
         <button
           type="button"
@@ -290,9 +292,11 @@
           onclick={() => open("flow", "overview", "overview", "overview", "Overview")}
         >
           <span class="sidebar-item__label">Status</span>
-          <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
-            {flow.status}
-          </span>
+          {#if flow.status !== "none"}
+            <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
+              {flow.status}
+            </span>
+          {/if}
         </button>
         {#if flow.branch !== null}
           <div class="sidebar-item__meta" style="padding: 0 6px 4px;">branch {flow.branch}</div>
