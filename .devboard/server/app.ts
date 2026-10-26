@@ -31,6 +31,7 @@ import {
   DISCOVER_SKILLS,
   artifactsStale,
   confirmGlossaryTerm,
+  dependencyRepositories,
   hostFacts,
   liveWarnings,
   publishStaged,
@@ -1885,6 +1886,8 @@ export function createApp(options: AppOptions) {
       manifest: artifacts?.manifest ?? null,
       freshness: artifacts?.sheet.freshness ?? null,
       sheet: artifacts?.sheet ?? null,
+      dependencyRepositories:
+        artifacts === null ? {} : dependencyRepositories(repoDir, artifacts.sheet),
       glossaries: artifacts?.glossaries ?? [],
       decisions: artifacts?.decisions ?? [],
       skills: artifacts?.skills ?? [],

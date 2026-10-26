@@ -24,10 +24,11 @@
   let { tab, openTab }: Props = $props();
 
   const GLOSSARY_COLUMNS = [
+    { id: "kind", header: "Kind", accessorKey: "kind" },
     { id: "title", header: "Term", accessorKey: "title" },
     { id: "definition", header: "Definition", accessorKey: "definition" },
-    { id: "kind", header: "Kind", accessorKey: "kind" },
   ];
+  const GLOSSARY_WIDTHS = { kind: "96px", title: "240px" };
 
   const activeSkill = $derived(tab?.kind === "skill" ? tab.resourceId : null);
   const skill = $derived(activeSkill === null ? null : discover.skill(activeSkill));
@@ -123,6 +124,8 @@
                 if (concept !== undefined) openTerm(context.boundedContext, concept);
               }}
               cell={glossaryCell}
+              hideHeader
+              columnWidths={GLOSSARY_WIDTHS}
               full
               wrap
             />

@@ -518,13 +518,14 @@ and starts, stops, resets, or clears nothing; all three views stay mounted, so n
 scroll state, and focus survive. Discover events render only in this view and never touch Goal
 Mode's activity, question, or error state.
 
-The Discover sidebar opens pages for `Overview` and `Glossary` under **Sections**, and the five
+The Discover sidebar opens pages for `Overview` and `Glossary` without a group heading, and the five
 skills `Testing Strategy`, `Naming Conventions`, `Coding Conventions`,
 `Architecture & Boundaries`, and `Glossary` under **Skills** (`data-testid="discover-tab"` with
 `data-tab` values `overview`, `glossary`, `testing-strategy`, `naming-conventions`,
-`coding-conventions`, `architecture-boundaries`, and `glossary-skill`). The active panel carries
-`data-testid="discover-panel"` and the same `data-tab`. Warnings appears as its own group with a
-count only while at least one warning exists; the sidebar keeps no freshness group.
+`coding-conventions`, `architecture-boundaries`, and `glossary-skill`). The sidebar header names
+the repository, not the mode, so the checkout is identifiable from every surface. The active panel
+carries `data-testid="discover-panel"` and the same `data-tab`. Warnings appears as its own group
+with a count only while at least one warning exists; the sidebar keeps no freshness group.
 
 The Glossary row carries a disclosure control (`data-testid="discover-glossary-toggle"`) that opens
 a nested submenu (`data-testid="discover-glossary-menu"`) listing each bounded context by its full
@@ -562,7 +563,8 @@ broadcasts `discoverState`, `discoverStarted`, `discoverActivity`, `discoverQues
 `discoverStopped`, and `discoverError`; it never sends `activity`, `question`, `error`,
 `runStarted`, or `runStopped` for Discover. `discoverState` carries the active and interrupt flags,
 staleness, warnings, the busy reason, the last read error, the manifest, freshness, sheet,
-glossaries, decisions, and the five skills with baseline text, live text, hashes, and state.
+repository links for installed packages, glossaries, decisions, and the five skills with baseline
+text, live text, hashes, and state.
 `discoverQuestion` carries `id`, `message`, and `options` of `{ label, description?, recommended }`.
 
 When the peer exits, the server validates every staged artifact and the whole staged set before
@@ -591,21 +593,19 @@ secrets and no absolute path.
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint. The
 Overview page is a project sheet, not a card grid. A masthead
-(`data-testid="discover-freshness"`) carries the project name, `dirty` and `stale` badges, the
-one-sentence definition, the short commit, the discovery time, and the definition's confidence and
-evidence. Below it, `Run and verify` holds the commands and testing panels, `Platform` and
-`Delivery` form a rail, and `Stack`, `Architecture and boundaries`, `Entry points and dependencies`,
-and `Not observed` span the page. Every section carries `data-testid="discover-card"` and
-`data-field`; the commands and testing panels are raised surfaces and the remaining sections are
-flat, separated by hairlines. Below 1240px viewport the rail collapses into the single column.
-Tables grow with the page; no panel scrolls inside the page.
-Each section ends with its provenance line: one `data-testid="discover-confidence"` per confidence
-present among the shown values and one `data-testid="discover-evidence"` per de-duplicated evidence
-path. Unknown leaves are not rendered inside sections; they are collected in a `Not observed`
-table with section, field, and reason. Every non-`unknown` leaf carries at least one sorted, unique
-repository-relative evidence path, symbol anchor, or safe git fact and a confidence of `observed`,
-`declared`, `inferred`, or `unknown`;
-`unknown` carries empty evidence and a short reason. The definition is exactly one sentence of at
+(`data-testid="discover-freshness"`) carries the project name, a `stale` badge, the one-sentence
+definition, the short commit, and the discovery date. The dirty flag stays in the sheet but no
+longer renders a header badge. Below the masthead, `Run and verify` holds the commands and testing
+panels, `Platform` and `Delivery` form a rail, and `Stack` and `Architecture and boundaries` span the
+page. Every section carries `data-testid="discover-card"` and `data-field`; the commands and testing
+panels are raised surfaces and the remaining sections are flat, separated by hairlines. Below
+1240px viewport the rail collapses into the single column. Tables grow with the page; neither a
+panel nor a card shrinks below its rows, and none scrolls inside the page. Every non-`unknown` leaf
+carries at least one sorted, unique repository-relative evidence path, symbol anchor, or safe git
+fact and a confidence of `observed`, `declared`, `inferred`, or `unknown`; `unknown` carries empty
+evidence and a short reason. Confidence labels, evidence paths, the `Not observed` ledger, the
+repeated dependency map, and the static lead and note prose are not rendered; the stored facts and
+the sheet's confidence and evidence stay unchanged. The definition is exactly one sentence of at
 most 240 characters; every value and list entry is a single line of at most 160 characters. The
 sheet covers the short platform stack (languages, runtimes, package managers, frameworks, and
 major tools, not individual dependencies), customer-facing deployment (artifact class, artifact,
@@ -616,16 +616,17 @@ and quality gates, and the three mandatory sections: runtime inventory, entry-po
 dependency map, and delivery and versioning. It never guesses, invents an additional environment,
 copies README prose, or records a configuration value; a claim it cannot ground is `unknown`.
 
-Main commands render as a `Task`/`Command` table of the observed commands, `$`-prefixed, headed
-by an `N of 8 commands found` count; a try-out command is followed by a note when it is not the test
-suite. Testing shows a compact generated SVG pyramid (`data-testid="discover-pyramid-chart"`) beside
+Main commands render as a two-column `Task`/`Command` table of the observed commands, `$`-prefixed,
+with no header row, under an `N of 8 commands found` count; no explanatory note follows the table.
+Testing shows a compact generated SVG pyramid (`data-testid="discover-pyramid-chart"`) beside
 the known test and level totals and the whole-suite command
 (`data-testid="discover-suite-command"`), then a `Level`/`Tests`/`Paths & fixtures` table
 (`data-testid="discover-pyramid"`). Runtime, deployment, CI, and branching use compact `dt`/`dd`
-facts; the three delivery facts share one provenance line. Architecture contexts render as a table
-with path, responsibility, and entry points, followed by external-boundary and shared-kernel chips.
-The dependency map renders observed groups as chips, and `Stack` renders one full-width chip band
-after the two columns. Environments is `unknown` here, so it appears only in the ledger. The
+facts whose list values are comma-separated. Architecture contexts render as a table headed
+`Bounded context` with path, responsibility, and entry points, followed by external-boundary and
+shared-kernel chips. `Stack` renders one full-width chip band after the two columns; a chip whose
+package is installed under `node_modules/` becomes a link to the repository its manifest declares,
+and every other chip stays plain text. Environments is `unknown` here and is not listed. The
 delivery section and the deployment pipeline sources stay hidden because they repeat other facts. A
 sheet with no observed test level and a glossary with no matching term keep an explicit empty state.
 
@@ -645,8 +646,10 @@ it never writes `confirmed`, `deprecated`, or `invalidated`. On publication the 
 every newly crawled term, so the published glossary contains only confirmed terms unless an
 earlier operator decision invalidated one. The page groups terms by context and offers search; it
 shows no status filter, status badge, or per-term control, and it hides invalidated terms. Each
-context card holds a three-column table — Term, Definition, Kind — that grows with the page,
-never scrolls inside a panel, and wraps long definitions; each term carries
+context card holds a three-column table — Kind, Term, Definition — with no header row, and the
+Kind and Term columns have the same fixed widths in every context card, so definitions start at
+the same page position and the kind reads first. The table grows with the page, neither the card
+nor the table scrolls inside a panel, and long definitions wrap; each term carries
 `data-testid="discover-term"`, `data-context`, `data-id`, `data-status`, and `data-kind`, and each
 context carries `data-testid="discover-context"`. The context heading shows its title, falling back
 to the context id only when no title exists. Every Kind value carries a Lucide icon colored by

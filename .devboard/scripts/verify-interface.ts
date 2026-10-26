@@ -360,6 +360,11 @@ async function writeFixture(root: string): Promise<string> {
     join(host, "package.json"),
     `${JSON.stringify({ name: "interface-fixture", scripts: { build: "bun run build:src", test: "bun test" } }, null, 2)}\n`,
   );
+  await mkdir(join(host, "node_modules", "typescript"), { recursive: true });
+  await writeFile(
+    join(host, "node_modules", "typescript", "package.json"),
+    `${JSON.stringify({ name: "typescript", repository: "git+https://github.com/microsoft/TypeScript.git" }, null, 2)}\n`,
+  );
   await writeFile(join(host, "src", "order.ts"), "export const orderTotal = (total: number): number => total;\n");
   await writeFile(
     join(host, "test", "order.test.ts"),
@@ -1386,10 +1391,22 @@ try {
     rowHeights: number[];
     tableFont: string;
     freshness: boolean;
+    freshnessText: string;
+    dirtyBadges: number;
     evidence: number;
     confidence: number;
     fieldHeaders: number;
     innerScrollers: number;
+    clippedCards: number;
+    stackLinks: number;
+    stackHref: string;
+    commandHeaders: number;
+    contextHeader: string;
+    stackedSections: number;
+    staticText: number;
+    sidebarTitle: string;
+    projectTitle: string;
+    sectionsHeading: number;
     sectionTabs: number;
     skillTabs: number;
     sidebarFreshness: boolean;
@@ -1400,6 +1417,9 @@ try {
     const scopes = [...document.querySelectorAll('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] .discover-card .panel__body, #workspace-discover [data-testid="discover-panel"][data-tab="overview"] [data-testid="discover-command-list"]')];
     const sections = document.querySelector('[data-testid="sidebar"] section[aria-label="Discover sections"]');
     const skills = document.querySelector('[data-testid="sidebar"] section[aria-label="Skills"]');
+    const page = document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="overview"]');
+    const card = document.querySelector('#workspace-discover [data-field="stack"]');
+    const stackLink = card === null ? null : card.querySelector('a.discover-chip--link');
     return {
       cards: document.querySelectorAll('#workspace-discover [data-testid="discover-card"]').length,
       commands: commands.length,
@@ -1411,6 +1431,9 @@ try {
       rowHeights: rows.map((row) => Math.round(row.getBoundingClientRect().height)),
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
       freshness: document.querySelector('[data-testid="discover-freshness"]') !== null,
+      freshnessText: document.querySelector('[data-testid="discover-freshness"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      dirtyBadges: [...document.querySelectorAll('#workspace-discover .discover-head .badge')]
+        .filter((badge) => badge.textContent.trim() === "dirty").length,
       evidence: document.querySelectorAll('[data-testid="discover-evidence"]').length,
       confidence: document.querySelectorAll('[data-testid="discover-confidence"]').length,
       fieldHeaders: [...document.querySelectorAll('#workspace-discover [data-testid="discover-panel"][data-tab="overview"] table')]
@@ -1420,6 +1443,17 @@ try {
           return heads.includes("FIELD") && heads.includes("VALUE");
         }).length,
       innerScrollers: scopes.filter((scope) => scope.scrollHeight > scope.clientHeight + 1).length,
+      clippedCards: page === null ? -1 : [...page.children]
+        .filter((child) => child.scrollHeight > child.clientHeight + 1).length,
+      stackLinks: card === null ? -1 : card.querySelectorAll('a.discover-chip--link').length,
+      stackHref: stackLink?.getAttribute("href") ?? "",
+      commandHeaders: document.querySelectorAll('[data-testid="discover-command-list"] thead').length,
+      contextHeader: document.querySelector('#workspace-discover [data-field="architecture"] th')?.textContent?.trim() ?? "",
+      stackedSections: document.querySelectorAll('#workspace-discover [data-field="unknowns"], #workspace-discover [data-field="dependencyMap"]').length,
+      staticText: document.querySelectorAll('#workspace-discover [data-tab="overview"] .discover-lead, #workspace-discover [data-tab="overview"] .discover-note').length,
+      sidebarTitle: document.querySelector('[data-testid="sidebar"] .sidebar__title')?.textContent?.trim() ?? "",
+      projectTitle: document.title,
+      sectionsHeading: sections === null ? -1 : sections.querySelectorAll('.sidebar-group__title').length,
       sectionTabs: sections === null ? -1 : sections.querySelectorAll('[data-testid="discover-tab"]').length,
       skillTabs: skills === null ? -1 : skills.querySelectorAll('[data-testid="discover-tab"]').length,
       sidebarFreshness: document.querySelector('[data-testid="sidebar"] section[aria-label="Freshness"]') !== null,
@@ -1435,22 +1469,36 @@ try {
   const discoverFont = Number.parseFloat(discoverTables.tableFont);
   check(discoverFont >= 12 && discoverFont <= 14, "Discover table text is not 12–14px", discoverTables.tableFont);
   check(discoverTables.freshness, "Discover does not render the freshness header");
-  check(discoverTables.evidence > 0, "Discover renders no evidence chips");
-  check(discoverTables.confidence > 0, "Discover renders no confidence badges");
+  check(!discoverTables.freshnessText.includes("Discovered"), "the freshness line still carries a Discover label", discoverTables.freshnessText);
+  check(discoverTables.dirtyBadges === 0, "the Discover header still renders a dirty badge", discoverTables.dirtyBadges);
+  check(discoverTables.evidence === 0, "Discover still renders evidence file references", discoverTables.evidence);
+  check(discoverTables.confidence === 0, "Discover still renders confidence labels", discoverTables.confidence);
   check(discoverTables.fieldHeaders === 0, "Discover still renders Field/Value table headers", discoverTables.fieldHeaders);
   check(discoverTables.innerScrollers === 0, "a Discover panel or table scrolls inside the page", discoverTables);
+  check(discoverTables.clippedCards === 0, "a Discover card clips its own rows", discoverTables.clippedCards);
+  check(discoverTables.stackLinks > 0, "no library chip links to its repository", discoverTables.stackLinks);
+  check(discoverTables.stackHref.startsWith("https://github.com/"), "a library chip links outside its repository", discoverTables.stackHref);
+  check(discoverTables.stackedSections === 0, "Discover still renders the duplicated dependency or unknown sections", discoverTables.stackedSections);
+  check(discoverTables.staticText === 0, "Discover still renders static lead or note prose", discoverTables.staticText);
+  check(discoverTables.commandHeaders === 0, "the command table still renders a header row", discoverTables.commandHeaders);
+  check(discoverTables.contextHeader === "Bounded context", "the architecture table does not name bounded contexts", discoverTables.contextHeader);
+  check(discoverTables.sidebarTitle === discoverTables.projectTitle, "the sidebar title does not name the repository", discoverTables);
+  check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
   check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
   check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");
-  await page.eval(`(() => {
+  const discoverScrollBefore = await page.eval<number>(`(() => {
     const scroller = document.querySelector('#workspace-discover .scroll-column');
-    if (scroller !== null) scroller.scrollTop = 160;
+    if (scroller === null) return 0;
+    scroller.scrollTop = 160;
+    return Math.round(scroller.scrollTop);
   })()`);
+  check(discoverScrollBefore > 0, "the Discover page does not scroll", discoverScrollBefore);
   await page.click('[data-testid="mode-goal"]');
   await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "Goal for the scroll check");
   await page.click('[data-testid="mode-discover"]');
   await page.wait(`document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`, "Discover for the scroll check");
   const discoverScroll = await page.eval<number>(`Math.round(document.querySelector('#workspace-discover .scroll-column')?.scrollTop ?? 0)`);
-  check(discoverScroll >= 150, "a mode switch lost the Discover scroll position", discoverScroll);
+  check(discoverScroll === discoverScrollBefore, "a mode switch lost the Discover scroll position", { discoverScrollBefore, discoverScroll });
 
   await runPalette("discover.tab.glossary");
   await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the glossary term table");
@@ -1461,6 +1509,7 @@ try {
     search: boolean;
     headers: string[];
     termsText: string[];
+    termLefts: number[];
     menu: boolean;
     menuContext: string;
     menuBadges: number;
@@ -1468,12 +1517,16 @@ try {
     kindIcons: number;
     kindColors: string[];
     tableScrolls: number[];
+    clippedCards: number;
+    rowsOutside: number;
     searchPadding: string[];
   }>(`(() => {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
     const menu = document.querySelector('[data-testid="discover-glossary-menu"]');
-    const kindCells = rows.map((row) => row.querySelector('td:nth-child(3)'));
+    const kindCells = rows.map((row) => row.querySelector('td:nth-child(1)'));
+    const termCells = rows.map((row) => row.querySelector('td:nth-child(2)'));
     const wraps = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"] .table-wrap')];
+    const cards = [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"]')];
     const search = document.querySelector('[data-testid="discover-glossary-search"]');
     const searchStyle = search === null ? null : getComputedStyle(search);
     return {
@@ -1482,7 +1535,8 @@ try {
       heights: rows.map((row) => Math.round(row.getBoundingClientRect().height)),
       search: document.querySelector('[data-testid="discover-glossary-search"]') !== null,
       headers: [...document.querySelectorAll('#workspace-discover [data-testid="discover-context"] thead th')].map((header) => header.textContent.trim()),
-      termsText: rows.map((row) => row.querySelector('td')?.textContent?.trim() ?? ""),
+      termsText: termCells.map((cell) => cell?.textContent?.trim() ?? ""),
+      termLefts: [...new Set(termCells.map((cell) => Math.round(cell?.getBoundingClientRect().left ?? 0)))],
       menu: menu !== null,
       menuContext: menu?.querySelector('.sidebar-submenu__context')?.textContent?.trim() ?? "",
       menuBadges: menu?.querySelectorAll('.badge').length ?? 0,
@@ -1493,20 +1547,28 @@ try {
         .filter((kind) => kind !== null)
         .map((kind) => getComputedStyle(kind).color))],
       tableScrolls: wraps.map((wrap) => wrap.scrollHeight - wrap.clientHeight),
+      clippedCards: cards.filter((card) => card.scrollHeight > card.clientHeight + 1).length,
+      rowsOutside: rows.filter((row) => {
+        const card = row.closest('[data-testid="discover-context"]');
+        return card !== null && row.getBoundingClientRect().bottom > card.getBoundingClientRect().bottom + 0.5;
+      }).length,
       searchPadding: searchStyle === null ? [] : [searchStyle.paddingTop, searchStyle.paddingBottom],
     };
   })()`);
   check(glossary.contexts > 0 && glossary.terms > 0, "the glossary tables are empty", glossary);
   check(glossary.heights.every((height) => height > 0 && height <= 120), "a glossary row is mis-sized", glossary.heights);
-  check(glossary.headers.join(",") === "Term,Definition,Kind", "the glossary table columns are wrong", glossary.headers);
+  check(glossary.headers.length === 0, "the glossary table still renders a header row", glossary.headers);
   check(glossary.termsText.every((text) => text.length > 0), "a glossary row has no term", glossary.termsText);
+  check(glossary.termLefts.length === 1, "the term column width differs between contexts", glossary.termLefts);
   check(glossary.search, "the glossary search is missing");
   check(glossary.menu && glossary.menuTerms > 0, "the glossary submenu is missing its terms", glossary);
   check(glossary.menuContext === "Orders", "the glossary submenu shows a raw context id", glossary.menuContext);
   check(glossary.menuBadges === 0, "the glossary submenu still renders status badges");
-  check(glossary.kindIcons === glossary.terms, "a glossary kind has no icon", glossary);
+  check(glossary.kindIcons === glossary.terms, "a glossary kind is not the first cell", glossary);
   check(glossary.kindColors.length >= 2, "the glossary kind icons are not color-coded", glossary.kindColors);
   check(glossary.tableScrolls.every((delta) => delta <= 1), "a glossary table clips its rows", glossary.tableScrolls);
+  check(glossary.clippedCards === 0, "a glossary card clips its rows", glossary.clippedCards);
+  check(glossary.rowsOutside === 0, "a glossary term falls outside its card", glossary.rowsOutside);
   check(glossary.searchPadding.every((value) => value === "0px"), "the glossary search placeholder is not vertically centered", glossary.searchPadding);
   const warningsSection = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="Warnings"]') !== null`);
   check(!warningsSection, "the sidebar still shows an empty warnings section");

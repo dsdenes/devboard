@@ -42,9 +42,11 @@ Real published artifacts of the vitest-turbo host, `sheet.json` schema 1:
 - Keep every contract test id: `discover-panel`, `discover-card` + `data-field`, `discover-sheet`,
   `discover-start`, `discover-empty`, `discover-command-list`, `discover-pyramid`,
   `discover-pyramid-chart`, `discover-suite-command`, `discover-test-summary`.
-- Provenance must stay visible: evidence chips and confidence labels, text not color alone. Unknowns are
-  explicit and name the field they affect.
-- The active-run panel, question panel, warning/error banners, and all other Discover pages are unchanged.
+- Provenance lives in the sheet and the state payload. The operator rejected rendered evidence chips,
+  confidence labels, and the unknowns ledger as noise, so the page shows the values and their empty
+  states without that chrome.
+- The active-run panel, question panel, and warning/error banners are unchanged; the glossary table and
+  sidebar chrome follow the same operator review.
 - Real data only; no invented proof, logos, counts, or testimonials.
 
 # Visual thesis

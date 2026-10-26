@@ -1,5 +1,6 @@
 <script lang="ts">
   import ChevronRight from "lucide-svelte/icons/chevron-right";
+  import { connection } from "../connection.svelte";
   import {
     conceptTitle,
     contextTitle,
@@ -42,7 +43,9 @@
 
 <aside class="sidebar" data-testid="sidebar" aria-label={`${modeLabel} sidebar`}>
   <div class="sidebar__header">
-    <span class="sidebar__title">{modeLabel}</span>
+    <span class="sidebar__title" title={modeLabel}>
+      {connection.projectPath.trim().length > 0 ? connection.projectPath : modeLabel}
+    </span>
   </div>
 
   <div class="sidebar__body">
@@ -431,7 +434,6 @@
       </section>
     {:else}
       <section class="sidebar-group" aria-label="Discover sections">
-        <div class="sidebar-group__title">Sections</div>
         {#each SECTION_TABS as tab (tab.id)}
           {#if tab.id === "glossary"}
             <div class="sidebar-tab-row">

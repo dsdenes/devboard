@@ -1,4 +1,5 @@
 import { connection } from "./connection.svelte";
+import { dependencyName } from "../../lib/dependencies.ts";
 import { notifications } from "./notifications.svelte";
 import { filterContexts, scalarText, sectionLeaf } from "./discover-format";
 import type {
@@ -54,6 +55,18 @@ export class DiscoverStore {
 
   get sheet(): Record<string, unknown> | null {
     return this.state?.sheet ?? null;
+  }
+
+  get repositories(): Record<string, string> {
+    const value = this.state?.dependencyRepositories;
+    return typeof value === "object" && value !== null ? value : {};
+  }
+
+  /** The repository URL an installed package behind this entry declares. */
+  repositoryLink(line: string): string | null {
+    const name = dependencyName(line);
+    if (name.length === 0) return null;
+    return this.repositories[name] ?? this.repositories[name.toLowerCase()] ?? null;
   }
 
   get hasArtifacts(): boolean {

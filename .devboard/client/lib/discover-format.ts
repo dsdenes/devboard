@@ -1,4 +1,4 @@
-import type { Concept, Confidence, DiscoverTab, Glossary, Leaf, Labelled } from "./types";
+import type { Concept, DiscoverTab, Glossary, Leaf, Labelled } from "./types";
 
 /** Tabs that show the published sheet or glossary rather than a skill. */
 export const SECTION_TABS: DiscoverTab[] = [
@@ -33,48 +33,8 @@ export const SKILL_TABS: DiscoverTab[] = [
 
 export const TABS: DiscoverTab[] = [...SECTION_TABS, ...SKILL_TABS];
 
-export const SECTION_KEYS = [
-  "definition",
-  "stack",
-  "deployment",
-  "environments",
-  "commands",
-  "branching",
-  "testing",
-  "architecture",
-  "ci",
-  "runtime",
-  "dependencyMap",
-  "delivery",
-];
-
-export const SECTION_LABELS: Record<string, string> = {
-  definition: "Project definition",
-  stack: "Stack",
-  deployment: "Customer-facing deployment",
-  environments: "Environments",
-  commands: "Main commands",
-  branching: "Branching strategy",
-  testing: "Testing strategy",
-  architecture: "Architecture & boundaries",
-  ci: "CI strategy",
-  runtime: "Runtime inventory",
-  dependencyMap: "Entry points & dependency map",
-  delivery: "Delivery & versioning",
-};
-
-/** The delivery card repeats facts shown by deployment, CI, and runtime. */
-export const HIDDEN_SECTIONS = new Set(["delivery"]);
-
-/** The runtime inventory is the first thing an operator scans for. */
-export const SECTION_ORDER = [
-  "runtime",
-  ...SECTION_KEYS.filter((key) => key !== "runtime" && !HIDDEN_SECTIONS.has(key)),
-];
-
 /** Leaves already shown elsewhere or too detailed for the operator's scan. */
 export const HIDDEN_LEAVES: Record<string, string[]> = {
-  dependencyMap: ["binaries", "packages", "jobs"],
   deployment: ["pipelineSources"],
 };
 
@@ -87,11 +47,6 @@ export const COMMAND_LABELS: Record<string, string> = {
   dev: "Dev / run",
   tryOut: "Try it out",
   release: "Release",
-};
-
-export const COMMAND_HINTS: Record<string, string> = {
-  test: "Runs the whole test suite.",
-  tryOut: "Starts the project for a hands-on try; it is not the test suite.",
 };
 
 /** Pyramid tiers from the base (widest) to the apex (narrowest). */
@@ -187,56 +142,7 @@ export function sectionLeaf(section: unknown, key: string): Leaf | undefined {
   return isLeaf(leaf) ? leaf : undefined;
 }
 
-/** Every leaf below a section, minus the leaves a surface intentionally hides. */
-export function sectionLeaves(section: unknown, hidden: string[] = []): Leaf[] {
-  if (isLeaf(section)) return [section];
-  if (typeof section !== "object" || section === null || Array.isArray(section)) return [];
-  return Object.entries(section)
-    .filter(([key]) => !hidden.includes(key))
-    .flatMap(([, entry]) => sectionLeaves(entry, hidden));
-}
-
-export interface SectionProvenance {
-  counts: Record<Confidence, number>;
-  evidence: string[];
-}
-
-/** Confidence tally and de-duplicated evidence for one section, used as its provenance line. */
-export function sectionProvenance(section: unknown, hidden: string[] = []): SectionProvenance {
-  const counts: Record<Confidence, number> = {
-    observed: 0,
-    declared: 0,
-    inferred: 0,
-    unknown: 0,
-  };
-  const evidence = new Set<string>();
-  for (const leaf of sectionLeaves(section, hidden)) {
-    // Unknown leaves are listed in the unknowns ledger, not in a section's provenance line.
-    if (leaf.confidence === "unknown") continue;
-    counts[leaf.confidence] += 1;
-    for (const path of leaf.evidence) {
-      if (typeof path === "string" && path.length > 0) evidence.add(path);
-    }
-  }
-  return { counts, evidence: [...evidence].sort() };
-}
-
-/** Unknown leaves below a section, with the field key that carries each reason. */
-export function sectionUnknowns(
-  section: unknown,
-  hidden: string[] = [],
-): Array<[string, Leaf]> {
-  if (typeof section !== "object" || section === null || Array.isArray(section)) return [];
-  return Object.entries(section)
-    .filter(([key]) => !hidden.includes(key))
-    .flatMap(([key, entry]) => {
-      if (isLeaf(entry)) {
-        return entry.confidence === "unknown" ? [[key, entry] as [string, Leaf]] : [];
-      }
-      return sectionUnknowns(entry, hidden);
-    });
-}
-
+/** The text one unknown leaf carries. */
 export function unknownText(leaf: Leaf): string {
   return typeof leaf.reason === "string" && leaf.reason.length > 0
     ? `unknown — ${leaf.reason}`

@@ -1,6 +1,5 @@
 <script lang="ts">
   import {
-    COMMAND_HINTS,
     COMMAND_LABELS,
     HIDDEN_LEAVES,
     humanize,
@@ -10,15 +9,12 @@
     pyramidTestCount,
     recordItems,
     scalarText,
-    SECTION_ORDER,
     sectionEntries,
     sectionLeaf,
-    sectionProvenance,
-    sectionUnknowns,
     unknownText,
   } from "../discover-format";
   import { discover } from "../discover.svelte";
-  import type { Confidence, Leaf } from "../types";
+  import type { Leaf } from "../types";
   import DataTable from "./DataTable.svelte";
   import PyramidChart from "./PyramidChart.svelte";
   import Terminal from "./Terminal.svelte";
@@ -29,48 +25,19 @@
     { id: "label", header: "Task", accessorKey: "label" },
     { id: "value", header: "Command", accessorKey: "value" },
   ];
+  const COMMAND_WIDTHS = { label: "96px" };
   const LEVEL_COLUMNS = [
     { id: "level", header: "Level", accessorKey: "level" },
     { id: "tests", header: "Tests", accessorKey: "tests" },
     { id: "detail", header: "Paths & fixtures", accessorKey: "detail" },
   ];
   const CONTEXT_COLUMNS = [
-    { id: "name", header: "Context", accessorKey: "name" },
+    { id: "name", header: "Bounded context", accessorKey: "name" },
     { id: "path", header: "Path", accessorKey: "path" },
     { id: "responsibility", header: "Responsibility", accessorKey: "responsibility" },
     { id: "entryPoints", header: "Entry points", accessorKey: "entryPoints" },
   ];
-  const UNKNOWN_COLUMNS = [
-    { id: "section", header: "Section", accessorKey: "section" },
-    { id: "field", header: "Field", accessorKey: "field" },
-    { id: "reason", header: "Why it is unknown", accessorKey: "reason" },
-  ];
-  const CONFIDENCE_ORDER: Confidence[] = ["observed", "declared", "inferred", "unknown"];
   const MONO_FIELDS = new Set(["artifact", "defaultBranch", "manifests"]);
-  const UNKNOWN_FIELD_LABELS: Record<string, string> = {
-    environments: "Environment names",
-  };
-  const LEDGER_LABELS: Record<string, string> = {
-    definition: "Project definition",
-    stack: "Stack",
-    deployment: "Deployment",
-    environments: "Environments",
-    commands: "Commands",
-    branching: "Branching",
-    testing: "Testing",
-    architecture: "Architecture",
-    ci: "CI",
-    runtime: "Runtime",
-    dependencyMap: "Dependency map",
-  };
-  const DEPENDENCY_GROUPS = [
-    { key: "binaries", label: "Binaries" },
-    { key: "packages", label: "Packages" },
-    { key: "externalServices", label: "External services" },
-    { key: "keyDependencies", label: "Key dependencies" },
-    { key: "routes", label: "Routes" },
-    { key: "dataStores", label: "Data stores" },
-  ];
 
   const sheet = $derived(discover.sheet);
   const freshness = $derived(discover.freshness);
@@ -80,9 +47,6 @@
       ? unknownText(definition)
       : leafText(definition),
   );
-  const definitionProvenance = $derived(
-    definition === undefined ? null : sectionProvenance(definition),
-  );
 
   const commandsSection = $derived(
     typeof sheet?.commands === "object" && sheet.commands !== null
@@ -90,11 +54,6 @@
       : null,
   );
   const commandRows = $derived(commandRowsOf(commandsSection, discover.testCommand));
-  const commandNote = $derived(
-    commandRows.some((row) => row.key === "tryOut") && COMMAND_HINTS.tryOut !== undefined
-      ? `Try it out ${COMMAND_HINTS.tryOut.charAt(0).toLowerCase()}${COMMAND_HINTS.tryOut.slice(1)}`
-      : "",
-  );
 
   const testingSection = $derived(
     typeof sheet?.testing === "object" && sheet.testing !== null ? sheet.testing : null,
@@ -118,11 +77,6 @@
   const deploymentSection = $derived(
     visibleSection(sheet?.deployment, HIDDEN_LEAVES.deployment ?? []),
   );
-  const deliveryProvenanceSection = $derived({
-    deployment: deploymentSection,
-    ci: sheet?.ci,
-    branching: sheet?.branching,
-  });
 
   const stackLeaf = $derived(sectionLeaf(sheet, "stack"));
   const stackLines = $derived(
@@ -140,64 +94,13 @@
         : "",
     })),
   );
-  const dependencyDirection = $derived(
-    sectionLeaf(architectureSection, "dependencyDirection"),
-  );
   const externalBoundaries = $derived(
     sectionLeaf(architectureSection, "externalBoundaries"),
   );
   const sharedKernels = $derived(sectionLeaf(architectureSection, "sharedKernels"));
 
-  const dependencyGroups = $derived(
-    DEPENDENCY_GROUPS.map((group) => {
-      const leaf = sectionLeaf(sheet?.dependencyMap, group.key);
-      return {
-        ...group,
-        values:
-          leaf === undefined || leaf.confidence === "unknown" ? [] : leafLines(leaf.value),
-      };
-    }).filter((group) => group.values.length > 0),
-  );
-  const dependencyProvenance = $derived(
-    Object.fromEntries(
-      dependencyGroups
-        .map((group) => [group.key, sectionLeaf(sheet?.dependencyMap, group.key)])
-        .filter((entry): entry is [string, Leaf] => entry[1] !== undefined),
-    ),
-  );
-
-  const unknownRows = $derived.by(() => {
-    const rows: Array<Record<string, unknown>> = [];
-    for (const key of SECTION_ORDER) {
-      const section = sheet?.[key];
-      if (section === undefined || section === null) continue;
-      const sectionLabel = LEDGER_LABELS[key] ?? humanize(key);
-      const hidden = HIDDEN_LEAVES[key] ?? [];
-      if (isLeaf(section)) {
-        if (section.confidence === "unknown") {
-          rows.push({
-            section: sectionLabel,
-            field: UNKNOWN_FIELD_LABELS[key] ?? humanize(key),
-            reason: reasonOf(section),
-          });
-        }
-        continue;
-      }
-      for (const [field, leaf] of sectionUnknowns(section, hidden)) {
-        rows.push({ section: sectionLabel, field: humanize(field), reason: reasonOf(leaf) });
-      }
-    }
-    return rows;
-  });
-
   function leafText(leaf: Leaf): string {
-    return leafLines(leaf.value).join(" · ");
-  }
-
-  function reasonOf(leaf: Leaf): string {
-    return typeof leaf.reason === "string" && leaf.reason.length > 0
-      ? leaf.reason
-      : "not recorded";
+    return leafLines(leaf.value).join(", ");
   }
 
   function visibleSection(section: unknown, hidden: string[]): Record<string, unknown> {
@@ -315,28 +218,6 @@
   {/if}
 {/snippet}
 
-{#snippet provenance(section: unknown, hidden: string[] = [])}
-  {@const value = sectionProvenance(section, hidden)}
-  {#if value.evidence.length > 0 || value.counts.observed + value.counts.declared + value.counts.inferred + value.counts.unknown > 0}
-    <div class="discover-sources">
-      {#each CONFIDENCE_ORDER as confidence (confidence)}
-        {#if value.counts[confidence] > 0}
-          <span
-            class="discover-conf"
-            data-testid="discover-confidence"
-            data-confidence={confidence}
-          >
-            {confidence} {value.counts[confidence]}
-          </span>
-        {/if}
-      {/each}
-      {#each value.evidence as path (path)}
-        <code class="discover-evidence" data-testid="discover-evidence">{path}</code>
-      {/each}
-    </div>
-  {/if}
-{/snippet}
-
 {#snippet factList(section: Record<string, unknown>)}
   {@const facts = knownFacts(section)}
   {#if facts.length === 0}
@@ -356,7 +237,20 @@
 {#snippet chipList(lines: string[])}
   <div class="discover-chips">
     {#each lines as line, index (index)}
-      <code class="discover-chip">{line}</code>
+      {@const href = discover.repositoryLink(line)}
+      {#if href === null}
+        <code class="discover-chip">{line}</code>
+      {:else}
+        <a
+          class="discover-chip discover-chip--link"
+          href={href}
+          target="_blank"
+          rel="noreferrer noopener"
+          title="Open the repository"
+        >
+          {line}
+        </a>
+      {/if}
     {/each}
   </div>
 {/snippet}
@@ -401,11 +295,6 @@
         <h1 class="discover-head__title">
           {discover.hasArtifacts ? (freshness?.project ?? "Discover") : "Discover"}
         </h1>
-        {#if freshness?.dirty === true}
-          <span class="badge" data-tone="warning" title="The working tree has uncommitted changes.">
-            dirty
-          </span>
-        {/if}
         {#if discover.stale}
           <span
             class="badge"
@@ -431,19 +320,7 @@
         <div class="discover-head__meta" data-testid="discover-freshness">
           <code>{freshness.commit}</code>
           <span aria-hidden="true">·</span>
-          <span>Discovered {discoveredLabel(freshness.discoveredAt)}</span>
-          {#if definitionProvenance !== null}
-            {#each CONFIDENCE_ORDER as confidence (confidence)}
-              {#if definitionProvenance.counts[confidence] > 0}
-                <span class="discover-conf" data-confidence={confidence}>
-                  {confidence} {definitionProvenance.counts[confidence]}
-                </span>
-              {/if}
-            {/each}
-            {#each definitionProvenance.evidence as path (path)}
-              <code class="discover-evidence">{path}</code>
-            {/each}
-          {/if}
+          <span>{discoveredLabel(freshness.discoveredAt)}</span>
         </div>
       {/if}
     {:else}
@@ -487,14 +364,12 @@
                       columnId === "value"
                         ? { "data-column": "line" }
                         : { class: "discover-command-label" }}
+                    hideHeader
+                    columnWidths={COMMAND_WIDTHS}
                     full
                     wrap
                   />
                 {/if}
-                {#if commandNote.length > 0}
-                  <p class="discover-note">{commandNote}</p>
-                {/if}
-                {@render provenance(commandsSection)}
               </div>
             </section>
           {/if}
@@ -563,14 +438,7 @@
                   {:else}
                     <p class="empty">No test level was recorded.</p>
                   {/if}
-                  {#if sectionLeaf(testingSection, "pyramid") !== undefined &&
-                    sectionLeaf(testingSection, "pyramid")?.confidence !== "unknown"}
-                    <p class="discover-note">
-                      {leafText(sectionLeaf(testingSection, "pyramid") as Leaf)}
-                    </p>
-                  {/if}
                 {/if}
-                {@render provenance(testingSection)}
               </div>
             </section>
           {/if}
@@ -585,7 +453,6 @@
               <h3 class="discover-section__title">Runtime</h3>
             </div>
             {@render factList(runtimeSection)}
-            {@render provenance(runtimeSection)}
           </section>
         </section>
 
@@ -615,7 +482,6 @@
               {@render factList(sheet.branching as Record<string, unknown>)}
             </section>
           {/if}
-          {@render provenance(deliveryProvenanceSection)}
         </section>
       </aside>
 
@@ -626,9 +492,6 @@
             <span class="discover-section__meta">{stackLines.length} entries</span>
           </div>
           {@render chipList(stackLines)}
-          {#if stackLeaf !== undefined}
-            {@render provenance(stackLeaf)}
-          {/if}
         </section>
       {/if}
 
@@ -641,9 +504,6 @@
               {contextRows.length === 1 ? "bounded context" : "bounded contexts"}
             </span>
           </div>
-          {#if dependencyDirection !== undefined && dependencyDirection.confidence !== "unknown"}
-            <p class="discover-lead">{leafText(dependencyDirection)}</p>
-          {/if}
           {#if contextRows.length > 0}
             <DataTable
               data-testid="discover-contexts"
@@ -679,56 +539,9 @@
               {/if}
             </div>
           </div>
-          {@render provenance(architectureSection)}
         </section>
       {/if}
 
-      {#if dependencyGroups.length > 0}
-        <section class="discover-section full" data-testid="discover-card" data-field="dependencyMap">
-          <div class="discover-section__head">
-            <h2 class="discover-section__title">Entry points and dependencies</h2>
-            <span class="discover-section__meta">
-              {dependencyGroups.length} observed
-              {dependencyGroups.length === 1 ? "group" : "groups"}
-            </span>
-          </div>
-          <div class="discover-dependencies">
-            {#each dependencyGroups as group (group.key)}
-              <div>
-                <div class="discover-subtitle">{group.label}</div>
-                {@render chipList(group.values)}
-              </div>
-            {/each}
-          </div>
-          {@render provenance(dependencyProvenance)}
-        </section>
-      {/if}
-
-      <section class="discover-section full" data-testid="discover-card" data-field="unknowns">
-        <div class="discover-section__head">
-          <h2 class="discover-section__title">Not observed</h2>
-          <span class="discover-section__meta">
-            {unknownRows.length} {unknownRows.length === 1 ? "field" : "fields"} · nothing here is
-            guessed
-          </span>
-        </div>
-        {#if unknownRows.length === 0}
-          <p class="empty">Every recorded field carries repository evidence.</p>
-        {:else}
-          <DataTable
-            data-testid="discover-unknowns"
-            columns={UNKNOWN_COLUMNS}
-            rows={unknownRows}
-            cellValue={(row, columnId) => String(row[columnId] ?? "")}
-            cellAttrs={(_row, columnId) =>
-              columnId === "reason" || columnId === "section"
-                ? { class: "discover-cell--muted" }
-                : {}}
-            full
-            wrap
-          />
-        {/if}
-      </section>
     </div>
   {:else}
     <section class="panel discover-empty" data-testid="discover-empty">

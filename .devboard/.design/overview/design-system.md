@@ -91,10 +91,13 @@ status bar 26px; content padding 8px; page scroll column gap 8px (Discover overr
 - **390px mobile is not a supported composition.** Below 1024×720 the app replaces the workspace with a
   "Viewport too small" guard. The redesign targets 1280×900 and the supported minimum 1024×720; a 390
   capture proves the guard, not a layout.
-- **Delivery section is hidden** (`HIDDEN_SECTIONS` in `client/lib/discover-format.ts`) because it repeats
-  deployment, CI, and runtime facts.
-- **Freshness panel and per-leaf evidence chips were removed** in `0a975f5` from operator feedback, but
-  `discover.svelte` still exposes `freshness` and `stale`, and no current surface shows staleness. This
-  redesign restores both as one quiet header meta line and per-section provenance.
-- Table text is pinned to 12–14px and rows to ≤120px by `scripts/verify-interface.ts`; nested scrollers
-  and Field/Value header tables are rejected by the same script.
+- **Delivery section is hidden** because it repeats deployment, CI, and runtime facts.
+- **Freshness is one quiet header line.** `discover.svelte` exposes `freshness` and `stale`; the
+  masthead shows the commit, the localized discovery date, and only the `stale` badge. The operator
+  asked for the date alone, so the `Discovered` word, the `dirty` badge, and the
+  definition-confidence/evidence tail are gone.
+- **No provenance chrome and no unknown ledger.** Evidence paths (`discover-evidence`) and confidence
+  labels (`discover-confidence`) were removed after operator review; the sheet still records both. The
+  `Not observed` table is removed, and an ungrounded field simply does not render.
+- Table text is pinned to 12–14px and rows to ≤120px by `scripts/verify-interface.ts`; nested scrollers,
+  cards that clip their rows, and Field/Value header tables are rejected by the same script.

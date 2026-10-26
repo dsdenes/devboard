@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { dependencyName, normalizeRepositoryUrl } from "../lib/dependencies.ts";
 
 /**
  * Discover Mode's artifact contract: the project sheet, the UbiLang glossaries,
@@ -1897,6 +1898,76 @@ function readSkillView(repoDir: string, manifest: Manifest, name: DiscoverSkillN
   else if (entry !== undefined && entry.baselineHash === currentHash) state = "generated";
   else state = "edited";
   return { name, description, state, baseline, live, baselineHash, currentHash };
+}
+
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+
+/**
+ * The browsable repository an installed package declares in its manifest, or
+ * null when the package is absent, its name is not a package name, or it names
+ * no web repository. Installed manifests are the only source: a URL is never
+ * guessed from a package name.
+ */
+export function packageRepository(repoDir: string, name: string): string | null {
+  if (!PACKAGE_NAME.test(name) || name.includes("..")) return null;
+  const manifestPath = join(repoDir, "node_modules", ...name.split("/"), "package.json");
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isRecord(manifest)) return null;
+  const repository = manifest.repository;
+  let raw: string | undefined;
+  let directory: string | undefined;
+  if (typeof repository === "string") {
+    raw = repository;
+  } else if (isRecord(repository)) {
+    if (typeof repository.url === "string") raw = repository.url;
+    if (typeof repository.directory === "string") directory = repository.directory;
+  }
+  if (raw === undefined) return null;
+  return normalizeRepositoryUrl(raw, directory);
+}
+
+function dependencyCandidates(node: unknown, names: Set<string>): void {
+  if (typeof node === "string") {
+    const name = dependencyName(node);
+    if (name.length > 0) names.add(name);
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const entry of node) dependencyCandidates(entry, names);
+    return;
+  }
+  if (!isRecord(node)) return;
+  if ("confidence" in node && "evidence" in node) {
+    dependencyCandidates(node.value, names);
+    return;
+  }
+  for (const value of Object.values(node)) dependencyCandidates(value, names);
+}
+
+/**
+ * Repository links for every installed package the sheet's stack names, keyed
+ * by the name each entry starts with. The stack is the one place the page
+ * renders library chips; no other section is linked by name.
+ */
+export function dependencyRepositories(
+  repoDir: string,
+  sheet: Sheet | Record<string, unknown> | null,
+): Record<string, string> {
+  if (sheet === null) return {};
+  const names = new Set<string>();
+  dependencyCandidates(sheet.stack, names);
+  const links: Record<string, string> = {};
+  for (const name of [...names].sort()) {
+    const url =
+      packageRepository(repoDir, name) ?? packageRepository(repoDir, name.toLowerCase());
+    if (url !== null) links[name] = url;
+  }
+  return links;
 }
 
 /** Reads the published artifacts from disk; never writes or repairs them. */

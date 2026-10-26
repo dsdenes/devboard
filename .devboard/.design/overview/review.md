@@ -28,24 +28,45 @@ with `overflow-wrap: anywhere`; compact labels omit counts, which the table carr
 
 No unresolved or regressed findings. No finding was reopened without a fresh capture.
 
+## Round 3 — operator feedback on the published surface
+
+The operator reviewed the running page and filed one finding per element. Every finding is resolved in
+this revision; the issue numbers are the tracker records.
+
+| id | where | observation | expected | severity | verdict |
+|---|---|---|---|---|---|
+| F7 (#149) | glossary table | Kind was the last column | Kind reads first | minor | resolved — Kind, Term, Definition |
+| F8 (#150) | glossary tables | the definition column started at a different x per context card | one term width on every card | minor | resolved — `DataTable` `columnWidths` |
+| F9 (#151) | glossary table | the Term/Definition header row explained nothing | no header row | minor | resolved — `hideHeader` |
+| F10 (#152) | glossary card | only three of five terms were visible | every row shown; the card grows | major | resolved — flex children no longer shrink |
+| F11 (#147) | overview | Entry points and dependencies repeated the Stack band | remove the section | minor | resolved |
+| F12 (#148) | overview | the Not observed ledger listed unavailable facts | remove the section | minor | resolved |
+| F13 (#138, #141, #142) | header and every card | confidence labels and evidence paths were noise | remove them from the page | minor | resolved |
+| F14 (#139) | commands | the Task/Command header row carried no information | no header row | minor | resolved |
+| F15 (#140, #145) | commands, testing, architecture | static notes and the dependency-direction lead were noise | remove them | minor | resolved |
+| F16 (#143) | fact lists | values were joined by a middle dot | comma-separated | minor | resolved |
+| F17 (#146) | architecture table | the first column said `Context` | say `Bounded context` | minor | resolved |
+| F18 (#144) | Stack chips | a library could not be opened for review | link to the package repository | minor | resolved — installed manifest repository, no guessed URL |
+| F19 (#136, #137) | masthead | `dirty` badge and the word `Discovered` were noise | date only | minor | resolved |
+| F20 (#134, #135) | sidebar | `Sections` heading and the mode name did not identify the repository | repository name, no heading | minor | resolved |
+
 ## Objective checks
 
 | Check | Result |
 |---|---|
 | Body contrast | 16.02:1 (`#e6edf3` on `#0d1117`) |
 | Muted text | 6.15:1 on canvas, 5.62:1 on surface |
-| Confidence text | observed 6.81:1, declared 6.85:1, inferred 6.85:1 on surface |
 | Primary button | 4.63:1 (`#ffffff` on `#1f6feb`) |
 | Focus | keyboard Tab to `discover-start`: 2px solid `#58a6ff`, 1px offset, ring shadow `0 0 0 3px #58a6ff` |
 | Keyboard | sidebar, primary action reachable; no new pointer-only controls |
 | Table text | 12px (`discover-pyramid`), rows 28px and 41px (limit 120) |
-| Inner scrollers | 0 across `.discover-card .panel__body` |
+| Inner scrollers | 0 across `.discover-card .panel__body`; 0 cards clip their rows |
 | Horizontal overflow | none at 1280 or 1024 (`scrollWidth === clientWidth`) |
 | Console errors | 0 |
 | Stale state | `render-stale-header.png` after changing the host fingerprint; badge, title, and status bar |
 | Empty state | `render-empty-1280.png`; start action enabled, no freshness line |
 | Active state | `render-active-1280.png`; run id, Terminal, Stop, disabled Re-discover |
-| Light theme | `render-light-1280.png`; all provenance and badges legible |
+| Light theme | `render-light-1280.png`; badges and linked chips legible |
 | Reduced motion | no new animation; global `prefers-reduced-motion` block unchanged |
 
 ## Not verified

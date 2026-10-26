@@ -1211,6 +1211,18 @@ kbd {
   padding: 2px 2px 28px;
 }
 
+/* The page scrolls as one column; a panel never shrinks below its rows. */
+.discover-page > * {
+  flex: 0 0 auto;
+}
+
+/* A panel body contributes its content height; the page owns the scrolling. */
+.discover-page .panel__body {
+  flex: 0 0 auto;
+  min-height: auto;
+  overflow: visible;
+}
+
 /* Shared by the glossary, warnings, and skill tabs. */
 .discover-page__header {
   align-items: flex-start;
@@ -1407,13 +1419,6 @@ kbd {
   text-transform: uppercase;
 }
 
-.discover-lead {
-  font-size: 12.5px;
-  line-height: 1.5;
-  margin: 7px 0 0;
-  max-width: 76ch;
-}
-
 .discover-facts {
   display: flex;
   flex-direction: column;
@@ -1464,52 +1469,15 @@ kbd {
   padding: 1px 5px;
 }
 
-.discover-sources {
-  align-items: center;
-  border-top: 1px solid var(--border-subtle);
-  color: var(--muted-foreground);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 10px;
-  gap: 4px 8px;
-  margin-top: 10px;
-  padding-top: 6px;
-}
-
-.discover-conf {
-  align-items: center;
-  display: inline-flex;
-  gap: 4px;
-}
-
-.discover-conf::before {
-  background: currentColor;
-  border-radius: 50%;
-  content: "";
-  height: 5px;
-  width: 5px;
-}
-
-.discover-conf[data-confidence="observed"] {
-  color: var(--success);
-}
-.discover-conf[data-confidence="declared"] {
+a.discover-chip--link {
   color: var(--accent);
-}
-.discover-conf[data-confidence="inferred"] {
-  color: var(--warning);
-}
-.discover-conf[data-confidence="unknown"] {
-  color: var(--muted-foreground);
+  text-decoration: none;
 }
 
-.discover-evidence {
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  padding: 1px 4px;
+a.discover-chip--link:hover,
+a.discover-chip--link:focus-visible {
+  border-color: var(--border-strong);
+  text-decoration: underline;
 }
 
 .discover-page .panel .table-wrap th {
@@ -1544,10 +1512,6 @@ kbd {
 .discover-page .table-wrap td.discover-command-label {
   color: var(--muted-foreground);
   font-size: 11.5px;
-}
-
-.discover-page .table-wrap td.discover-cell--muted {
-  color: var(--muted-foreground);
 }
 
 .discover-page .table-wrap td.discover-mono {
@@ -1626,14 +1590,6 @@ kbd {
   min-width: 0;
 }
 
-.discover-card[data-field="commands"] .table-wrap table {
-  table-layout: fixed;
-}
-
-.discover-card[data-field="commands"] th:nth-child(1) {
-  width: 96px;
-}
-
 .discover-card[data-field="testing"] .table-wrap {
   margin-top: 10px;
 }
@@ -1670,28 +1626,14 @@ kbd {
   width: 27%;
 }
 
-.discover-note {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  line-height: 1.45;
-  margin: 8px 0 0;
-}
-
-.discover-boundaries,
-.discover-dependencies {
+.discover-boundaries {
   display: grid;
   gap: 10px 24px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-top: 10px;
 }
 
-.discover-dependencies {
-  gap: 12px 28px;
-  margin-top: 9px;
-}
-
-.discover-boundaries .discover-chips,
-.discover-dependencies .discover-chips {
+.discover-boundaries .discover-chips {
   margin-top: 3px;
 }
 

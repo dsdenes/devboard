@@ -246,6 +246,7 @@ export interface DiscoverStatePayload {
   manifest: unknown;
   freshness: Freshness | null;
   sheet: Record<string, unknown> | null;
+  dependencyRepositories: Record<string, string>;
   glossaries: Glossary[];
   decisions: unknown[];
   skills: DiscoverSkill[];

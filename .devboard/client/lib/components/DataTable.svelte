@@ -18,6 +18,10 @@
     getRowId?: (row: Record<string, unknown>, index: number) => string;
     emptyText?: string;
     caption?: string;
+    /** Omit the header row; the cells carry all the information. */
+    hideHeader?: boolean;
+    /** Fixed column widths keyed by column id; aligns repeated tables. */
+    columnWidths?: Record<string, string>;
     compact?: boolean;
     /** Let cells wrap instead of truncating to one line. */
     wrap?: boolean;
@@ -40,6 +44,8 @@
     getRowId,
     emptyText = "No records.",
     caption,
+    hideHeader = false,
+    columnWidths,
     compact = true,
     wrap = false,
     full = false,
@@ -65,24 +71,34 @@
   }
 </script>
 
-<div class="table-wrap" class:compact class:wrap class:full>
+<div class="table-wrap" class:compact class:wrap class:full class:widths={columnWidths !== undefined}>
   <table data-testid={testid} aria-label={caption}>
     {#if caption !== undefined}
       <caption>{caption}</caption>
     {/if}
-    <thead>
-      {#each table.getHeaderGroups() as group (group.id)}
-        <tr>
-          {#each group.headers as header (header.id)}
-            <th scope="col">
-              {#if !header.isPlaceholder}
-                <FlexRender header={header} />
-              {/if}
-            </th>
-          {/each}
-        </tr>
-      {/each}
-    </thead>
+    {#if columnWidths !== undefined}
+      <colgroup>
+        {#each columns as column, index (index)}
+          {@const id = (column as { id?: unknown }).id}
+          <col style:width={typeof id === "string" ? columnWidths[id] : undefined} />
+        {/each}
+      </colgroup>
+    {/if}
+    {#if !hideHeader}
+      <thead>
+        {#each table.getHeaderGroups() as group (group.id)}
+          <tr>
+            {#each group.headers as header (header.id)}
+              <th scope="col">
+                {#if !header.isPlaceholder}
+                  <FlexRender header={header} />
+                {/if}
+              </th>
+            {/each}
+          </tr>
+        {/each}
+      </thead>
+    {/if}
     <tbody>
       {#each table.getRowModel().rows as row (row.id)}
         {@const data = row.original as Record<string, unknown>}
@@ -136,6 +152,10 @@
     font-size: 12px;
     table-layout: auto;
     width: 100%;
+  }
+
+  .widths table {
+    table-layout: fixed;
   }
 
   caption {

@@ -3,39 +3,41 @@
 ## Composition
 
 - **A sheet, not a card grid.** Commands and Testing are the only raised `--surface` panels; runtime,
-  delivery, architecture, dependencies, and unknowns sit flat on the canvas separated by hairlines.
+  delivery, and architecture sit flat on the canvas separated by hairlines.
   The previous auto-fit grid produced 11 equal cards, two columns with 100–200px holes, and no hierarchy.
   The flat/raised split makes the two operational blocks lead and keeps the page at ~1900px instead of ~2600px.
 - **Two-column spine with full-width structure.** `Run and verify` on the left, `Platform` and `Delivery`
-  in a rail, then Stack, Architecture, Dependencies, and Not observed across the page. The rail is ~700px
+  in a rail, then Stack and Architecture across the page. The rail is ~700px
   against ~700px on the left, so the sheet ends without the old blank band. Below 1240px viewport the
   columns collapse to one in reading order.
-- **Definition is the lead.** The project name, working-tree state, definition, and provenance read as one
+- **Definition is the lead.** The project name, definition, and freshness read as one
   masthead; there is no page title repeating the tab name when artifacts exist.
-- **Freshness is a meta line, not a panel.** `discover-freshness` returned to the header (commit, localized
-  discovery time, definition confidence and evidence). The old separate freshness panel was removed from
-  the previous surface by operator feedback; putting it in the masthead restores staleness without a box.
-  The `stale` badge and its title are shown only when the fingerprint differs.
+- **Freshness is a meta line, not a panel.** `discover-freshness` carries the commit and the localized
+  discovery date. The operator asked for the date only, so the word `Discovered` and the
+  definition-confidence/evidence tail are gone. The working tree's `dirty` flag stays in the sheet but
+  no longer renders a badge. The `stale` badge and its title are shown only when the fingerprint differs.
 - **Stack is a full-width band.** Eight chips need one line; keeping Stack beside Runtime duplicated
   Node/npm and unbalanced the rail. The band sits after the spine as a quiet change of texture.
   Exact duplicate values (Node.js, npm) are kept because both are declared leaves; hiding one would make
   the stack list disagree with its manifest.
-- **Environments has no card.** The crawled value is `unknown` (`none detected`), so the section exists
-  only in the Not observed ledger instead of rendering an empty panel.
+- **Environments has no card.** The crawled value is `unknown` (`none detected`), so the section is omitted.
 
-## Provenance and unknowns
+## Removed after operator review
 
-- **Evidence and confidence are per section, not per leaf.** The first implementation rendered one badge
-  and one chip per leaf; the operator feedback that shaped `0a975f5` removed them as noise. A sheet-wide
-  footer per section lists the de-duplicated evidence paths and a confidence tally for the values shown,
-  so grounding stays visible once per block instead of 30 times. Test ids `discover-evidence`,
-  `discover-confidence` and `discover-freshness` are restored; `verify-interface.ts` now requires them.
-- **Unknowns move to one ledger.** Sections render only grounded values; every unknown leaf is listed at
-  the end with its section, field, and reason. This removes the repeated italic `unknown — reason` rows
-  and makes the gaps first-class. `sectionProvenance` excludes unknown leaves, so the two surfaces never
-  disagree.
-- **Delivery is one group with one footer.** Deployment, CI, and Branching share the group's provenance
-  line; each keeps its own `discover-card`/`data-field` element.
+The operator reported the same surfaces as noise, so these are gone from the rendered page while the
+stored sheet stays unchanged:
+
+- **Every section footer.** Confidence tallies (`discover-confidence`) and evidence paths
+  (`discover-evidence`) no longer render; the operator does not read them. The masthead carries no
+  confidence or evidence either.
+- **The unknowns ledger.** The `Not observed` section is removed in full; an ungrounded field is not
+  advertised as a table.
+- **The repeated dependency map.** `Entry points and dependencies` duplicated the Stack band, so the
+  section and its `DEPENDENCY_GROUPS` derivation are removed. Stack stays the one place libraries appear.
+- **Static lead and note prose.** The architecture dependency-direction lead, the try-out note, and the
+  pyramid note are removed; the values speak for themselves.
+- **Delivery is one group.** Deployment, CI, and Branching keep their own `discover-card`/`data-field`
+  elements and no longer share a footer.
 
 ## Tables and charts
 
@@ -45,26 +47,31 @@
 - **The chart sits beside the totals, the table below them.** Side-by-side chart and table at a 550px
   panel clipped `verification/project`; the full-width table gives paths room. This is the one mock
   divergence: the mock’s chart/table pairing was replaced after the render review.
-- **Commands keep the mock’s `$` prefix.** The table cell value is `$ <command>`; the `tryOut` warning is
-  a note under the table rather than a second line inside the cell, because `DataTable` renders plain
-  strings. The Test hint (“Runs the whole test suite.”) is redundant with the Whole suite line and is
-  dropped.
+- **Commands keep the mock’s `$` prefix, without a header row.** The operator reads the two columns
+  without labels, so commands render as `$ <command>` under the found count, and the try-out note is gone.
 - **Level table columns are Level / Tests / Paths & fixtures.** The command is already shown as the whole
   suite; repeating it per row adds width without information.
-- **Fixed column widths** are scoped in `app.css` to the commands, testing, and architecture tables;
-  auto layout squeezed `Try it out` and hyphenated context names.
+- **Fixed widths come from the table, not section CSS.** `DataTable` accepts `columnWidths` and renders a
+  `colgroup`, so the commands table and every glossary table share one mechanism. The glossary fixes Kind
+  and Term at the same widths in every context card, which puts every definition at the same page position.
+- **No card clips or scrolls.** `.discover-page` children are `flex: 0 0 auto`, so a card grows to its
+  rows instead of shrinking into the page's scroll area. The operator could see only three of five terms
+  before this.
 
 ## Copy and interaction
 
 - Group labels are short nouns and verbs: `Run and verify`, `Platform`, `Delivery`, `Stack`,
-  `Architecture and boundaries`, `Entry points and dependencies`, `Not observed`.
-- The ledger says “nothing here is guessed”, which is the contract: an ungrounded field is `unknown`,
-  never a plausible value.
+  `Architecture and boundaries`.
+- The sidebar header names the repository, and the Discover section headings carry no `Sections` label.
 - The primary action keeps one name per state: `Discover project` with no artifacts, `Re-discover` after.
   It stays disabled with a reason while a run or other mode work is active.
-- `dirty` and `stale` badges carry text and a title; color is never the only cue.
+- Only the `stale` badge remains in the masthead; color is never the only cue.
 - Dates use the browser locale via `Intl.DateTimeFormat`; the mock’s fixed `24 Oct 2026, 18:10` is the
   same time in `en-GB`.
+- The architecture table names its first column `Bounded context`, so the DDD term is explicit.
+- A fact list separates its values with commas.
+- A Stack chip becomes a link to the repository declared by the installed package's manifest; an
+  unresolvable chip stays plain text, so no URL is guessed.
 
 ## Divergences from the mock
 
@@ -72,15 +79,16 @@
 |---|---|---|
 | 390×844 mobile composition | 1024×720 minimum, 390 shows the app’s viewport guard | documented app exception (`viewport.svelte`) |
 | Chart and table side by side | chart beside totals, table full width | paths clipped at 550px panel width |
-| Section footer chips in one line | chips wrap to a second line at rail width | rail is 320–350px; wrapping beats truncation |
+| Section footer chips in one line | no footer at all | operator feedback removed confidence and evidence |
 | `24 Oct 2026, 18:10` | locale-formatted date | no hard-coded locale in product UI |
-| Command hints on two lines inside the cell | one note under the table | `DataTable` cells render plain strings |
+| Command hints on two lines inside the cell | no note | operator feedback removed the static hint |
 | Empty state output list on the left | copy left, outputs right | uses the 920px content width |
 
 ## Open questions
 
-- The section-level evidence summary trades per-leaf precision for calm. If an operator needs to know
-  which value came from which path, the next step is a per-row popover, not a return to badge-per-value.
+- Evidence and confidence remain in the sheet and the state payload but have no rendered surface. If an
+  operator later asks for grounding, the next step is an opt-in detail view, not a return to
+  badge-per-value.
 - The compact pyramid label omits counts; hosts with five levels rely on the table for numbers. A future
   variant could show counts on hover/focus.
 
