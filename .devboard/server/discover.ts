@@ -186,6 +186,176 @@ export function removeStaging(repoDir: string, runId: string): void {
   }
 }
 
+// -------------------------------------------------------- remote targets
+
+/**
+ * Discover's second target: a public GitHub repository cloned under the
+ * dashboard's state directory. The scratch root is the only place a remote
+ * clone lives; every artifact of a remote run stays inside it.
+ */
+export const REMOTE_SCRATCH_NAME = "discover-remote";
+export const REMOTE_URL_MAX_BYTES = 2048;
+export const REMOTE_CLONE_TIMEOUT_MS = 300_000;
+
+export interface RemoteRepository {
+  /** The trimmed URL as submitted. */
+  url: string;
+  owner: string;
+  repo: string;
+}
+
+export type RemoteUrlParse =
+  | { ok: true; repository: RemoteRepository }
+  | { ok: false; reason: string };
+
+const REMOTE_SEGMENT = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/;
+
+/**
+ * Accepts exactly `https://github.com/<owner>/<repo>`, with an optional
+ * trailing slash and an optional `.git` suffix. Everything else is refused
+ * with the one reason the caller reports.
+ */
+export function parseRemoteUrl(raw: string): RemoteUrlParse {
+  const url = raw.trim();
+  if (url.length === 0) return { ok: false, reason: "the URL is empty" };
+  if (Buffer.byteLength(url, "utf8") > REMOTE_URL_MAX_BYTES) {
+    return { ok: false, reason: `the URL is longer than ${REMOTE_URL_MAX_BYTES} bytes` };
+  }
+  if (!url.startsWith("https://")) {
+    return { ok: false, reason: "the URL must start with https://" };
+  }
+  const rest = url.slice("https://".length);
+  if (rest.includes("?") || rest.includes("#")) {
+    return { ok: false, reason: "the URL must not carry a query or fragment" };
+  }
+  const parts = rest.split("/");
+  if (parts.length === 4 && parts[3] === "") parts.pop();
+  if (parts.length !== 3) {
+    return { ok: false, reason: "the URL must name exactly one owner and one repository" };
+  }
+  const host = parts[0] ?? "";
+  const owner = parts[1] ?? "";
+  const rawRepo = parts[2] ?? "";
+  if (host.includes("@")) {
+    return { ok: false, reason: "the URL must not carry user information" };
+  }
+  if (host.includes(":")) {
+    return { ok: false, reason: "the URL must not carry a port" };
+  }
+  if (host.toLowerCase() !== "github.com") {
+    return { ok: false, reason: "the URL must name github.com" };
+  }
+  const repo = rawRepo.endsWith(".git") ? rawRepo.slice(0, -4) : rawRepo;
+  if (!REMOTE_SEGMENT.test(owner) || !REMOTE_SEGMENT.test(repo)) {
+    return {
+      ok: false,
+      reason:
+        "the owner and repository must be 1-100 letters, digits, dots, underscores, or hyphens",
+    };
+  }
+  return { ok: true, repository: { url, owner, repo } };
+}
+
+export function remoteScratchRoot(stateDir: string): string {
+  return join(resolve(stateDir), REMOTE_SCRATCH_NAME);
+}
+
+/** The one clone directory name a repository gets; always lowercase. */
+export function remoteCloneName(owner: string, repo: string): string {
+  return `${owner}-${repo}`.toLowerCase();
+}
+
+export function remoteCloneDirectory(
+  scratchRoot: string,
+  owner: string,
+  repo: string,
+): string {
+  return join(scratchRoot, remoteCloneName(owner, repo));
+}
+
+/** True when `path` is a strict descendant of `root`. */
+export function isInsideRepository(repoDir: string, path: string): boolean {
+  const base = resolve(repoDir);
+  const target = resolve(path);
+  return target !== base && target.startsWith(`${base}${sep}`);
+}
+
+export interface RemoteCloneRequest {
+  /** `git clone ... -- <url> .staging-<run-id>`. */
+  argv: string[];
+  /** The scratch root the child runs in. */
+  cwd: string;
+  env: Record<string, string>;
+  timeoutMs: number;
+}
+
+export interface RemoteCloneResult {
+  code: number;
+  stderr: string;
+  timedOut: boolean;
+}
+
+/** Tests inject a runner through `AppOptions`; production spawns git. */
+export type RemoteCloneRunner = (request: RemoteCloneRequest) => Promise<RemoteCloneResult>;
+
+function cloneEnvironment(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  env.GIT_TERMINAL_PROMPT = "0";
+  env.GIT_ASKPASS = "true";
+  env.NO_COLOR = "1";
+  return env;
+}
+
+export function remoteCloneRequest(
+  url: string,
+  scratchRoot: string,
+  runId: string,
+): RemoteCloneRequest {
+  return {
+    argv: [
+      "git",
+      "clone",
+      "--depth",
+      "1",
+      "--single-branch",
+      "--no-tags",
+      "--",
+      url,
+      `.staging-${runId}`,
+    ],
+    cwd: scratchRoot,
+    env: cloneEnvironment(),
+    timeoutMs: REMOTE_CLONE_TIMEOUT_MS,
+  };
+}
+
+/**
+ * Startup hygiene: the scratch root holds at most one clone, and never a
+ * half-finished staging directory. A clone is never resumed.
+ */
+export function prepareRemoteScratch(scratchRoot: string, keepName: string | null): void {
+  if (!existsSync(scratchRoot)) return;
+  let entries;
+  try {
+    entries = readdirSync(scratchRoot, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith(".staging-") || entry.name !== keepName) {
+      try {
+        rmSync(join(scratchRoot, entry.name), { recursive: true, force: true });
+      } catch {
+        // A directory that cannot be removed is left for the next start.
+      }
+    }
+  }
+}
+
 // ------------------------------------------------------------ host facts
 
 export interface HostFacts {

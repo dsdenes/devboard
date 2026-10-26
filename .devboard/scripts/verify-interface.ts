@@ -10,9 +10,12 @@
  */
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { journalKey } from "../server/journal";
+import { stateFile } from "../server/state";
 import { freePort, run, waitFor } from "./verification";
 
 const harnessRoot = resolve(import.meta.dir, "..");
@@ -306,6 +309,21 @@ class Page {
     await delay(150);
   }
 
+  async navigate(url: string): Promise<void> {
+    await this.devtools.send("Page.navigate", { url });
+    await delay(250);
+    await this.wait(
+      `document.readyState === "complete" && document.querySelector('[data-testid="app-shell"]') !== null`,
+      "the navigated shell",
+      30_000,
+    );
+    await this.wait(
+      `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+      "the navigated connection",
+      30_000,
+    );
+  }
+
   async reload(): Promise<void> {
     await this.devtools.send("Page.reload", { ignoreCache: false });
     await delay(250);
@@ -528,6 +546,140 @@ async function seedDiscover(port: number): Promise<void> {
   socket.close();
 }
 
+/** A digest of every file under `<host>/.omp`; absent trees hash the same. */
+async function ompDigest(host: string): Promise<string> {
+  const digest = createHash("sha256");
+  const walk = async (prefix: string): Promise<void> => {
+    const directory = prefix.length === 0 ? join(host, ".omp") : join(host, ".omp", prefix);
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const next = prefix.length === 0 ? entry.name : `${prefix}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await walk(next);
+      } else if (entry.isFile()) {
+        digest.update(next);
+        digest.update("\u0000");
+        digest.update(await readFile(join(host, ".omp", next)));
+        digest.update("\u0000");
+      }
+    }
+  };
+  await walk("");
+  return digest.digest("hex");
+}
+
+/** A local repository whose files the remote clone and its crawl can read. */
+async function createRemoteSource(root: string): Promise<string> {
+  const source = join(root, "remote-source");
+  await mkdir(join(source, "adrs"), { recursive: true });
+  await mkdir(join(source, "src"), { recursive: true });
+  await mkdir(join(source, "test"), { recursive: true });
+  await mkdir(join(source, ".github", "workflows"), { recursive: true });
+  await writeFile(join(source, "README.md"), "# Remote fixture\n\nA repository cloned for Discover.\n");
+  await writeFile(
+    join(source, "package.json"),
+    `${JSON.stringify({ name: "remote-fixture", scripts: { test: "bun test" } }, null, 2)}\n`,
+  );
+  await writeFile(join(source, "src", "catalog.ts"), "export const catalogSize = 3;\n");
+  await writeFile(
+    join(source, "test", "catalog.test.ts"),
+    'import { test, expect } from "bun:test";\ntest("catalog", () => expect(3).toBe(3));\n',
+  );
+  await writeFile(
+    join(source, ".github", "workflows", "ci.yml"),
+    "name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun test\n",
+  );
+  await writeFile(join(source, "adrs", "0001-remote.md"), "# Remote decision\n\n- Status: Accepted\n");
+  await writeFile(join(source, ".gitignore"), ".omp/\nnode_modules/\n");
+  await git(source, ["init", "-q"]);
+  await git(source, ["add", "-A"]);
+  await git(source, ["commit", "-q", "-m", "chore: remote fixture"]);
+  return source;
+}
+
+/**
+ * Clones a local repository into the state scratch root and crawls it through a
+ * temporary dashboard, so the restored remote target holds real artifacts.
+ */
+async function seedRemoteClone(root: string, stateDir: string): Promise<string> {
+  const source = await createRemoteSource(root);
+  const cloneDir = join(stateDir, "discover-remote", "octocat-hello-world");
+  await mkdir(dirname(cloneDir), { recursive: true });
+  // A local clone: no network, and the result is a real git work tree.
+  await git(root, ["clone", "-q", source, cloneDir]);
+  const port = await freePort();
+  const env = {
+    ...process.env,
+    HOST: "127.0.0.1",
+    PORT: String(port),
+    ADRS_DIR: join(cloneDir, "adrs"),
+    REPO_DIR: cloneDir,
+    GOAL_FILE: join(cloneDir, "GOAL.md"),
+    STATIC_DIR: join(harnessRoot, "dist"),
+    STATE_DIR: join(root, "remote-seed-state"),
+    AGENT_COMMAND: `bun ${stubAgent} --log=${join(root, "remote-seed-agent.log")} --discover`,
+    DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "true",
+  };
+  const log = join(root, "remote-seed-server.log");
+  const writer = Bun.file(log).writer();
+  const child = spawn("bun", ["run", "server/index.ts"], {
+    cwd: harnessRoot,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout?.on("data", (chunk) => writer.write(chunk));
+  child.stderr?.on("data", (chunk) => writer.write(chunk));
+  try {
+    await waitForHttp(`http://127.0.0.1:${port}/`);
+    await seedDiscover(port);
+  } finally {
+    const exited = new Promise<void>((settle) => child.once("exit", () => settle()));
+    child.kill("SIGTERM");
+    await exited;
+  }
+  check(
+    Bun.file(join(cloneDir, ".omp", "discover", "sheet.json")).size > 0,
+    "the remote clone was not seeded with Discover artifacts",
+  );
+  return cloneDir;
+}
+
+/** Writes the remote target into the stopped dashboard's durable state. */
+async function seedRemoteTarget(stateDir: string, host: string): Promise<void> {
+  const path = stateFile(stateDir, resolve(host));
+  const envelope = JSON.parse(await readFile(path, "utf8")) as {
+    state?: Record<string, unknown>;
+  };
+  check(
+    typeof envelope.state === "object" && envelope.state !== null,
+    "the dashboard state file is missing before seeding a remote target",
+    path,
+  );
+  envelope.state.discoverTarget = {
+    url: "https://github.com/octocat/Hello-World",
+    owner: "octocat",
+    repo: "Hello-World",
+  };
+  await writeFile(path, JSON.stringify(envelope));
+}
+
+async function writeGateOffHost(root: string): Promise<string> {
+  const host = join(root, "gate-off-host");
+  await mkdir(join(host, "adrs"), { recursive: true });
+  await writeFile(join(host, "GOAL.md"), "# Gate-off host\n");
+  await writeFile(join(host, "package.json"), `${JSON.stringify({ name: "gate-off-host" })}\n`);
+  await writeFile(join(host, "adrs", "0001-gate-off.md"), "# Gate off\n\n- Status: Accepted\n");
+  return host;
+}
+
 async function pageTarget(debugPort: number): Promise<string> {
   return waitFor(
     async () => {
@@ -560,6 +712,7 @@ interface Problem {
 const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
 let serverProcess: ReturnType<typeof spawn> | undefined;
+let gateOffProcess: ReturnType<typeof spawn> | undefined;
 let chromeProcess: ReturnType<typeof spawn> | undefined;
 
 try {
@@ -569,7 +722,9 @@ try {
   await mkdir(root, { recursive: true });
   await mkdir(join(harnessRoot, ".tmp", "interface"), { recursive: true });
   const host = await writeFixture(root);
-  const stateDir = join(root, "state");
+  // Discover's remote scratch root must resolve inside REPO_DIR; the harness
+  // state stays under the excluded `.devboard/` tree.
+  const stateDir = join(host, ".devboard", ".tmp", "state");
   await mkdir(stateDir, { recursive: true });
   await seedFlow(stateDir, host);
   const agentLog = join(root, "agent.log");
@@ -601,6 +756,14 @@ try {
     });
     serverProcess.stdout?.on("data", (chunk) => logWriter.write(chunk));
     serverProcess.stderr?.on("data", (chunk) => logWriter.write(chunk));
+  };
+  const stopServer = async (): Promise<void> => {
+    const child = serverProcess;
+    if (child === undefined) return;
+    serverProcess = undefined;
+    const exited = new Promise<void>((settle) => child.once("exit", () => settle()));
+    child.kill("SIGTERM");
+    await exited;
   };
   startServer();
 
@@ -1780,6 +1943,201 @@ try {
   check(afterReload.stored.includes('"theme":"light"'), "layout localStorage lost the theme", afterReload.stored.slice(0, 120));
   check(!afterReload.stored.includes('"sidebarVisible"'), "layout localStorage still stores sidebar visibility", afterReload.stored.slice(0, 120));
 
+
+  // 12b. The remote target exists only for a harness source checkout.
+  const hostOmpBefore = await ompDigest(host);
+  await stopServer();
+  const remoteClone = await seedRemoteClone(root, stateDir);
+  await seedRemoteTarget(stateDir, host);
+  startServer();
+  await waitForHttp(baseUrl);
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reconnection after the remote restart",
+    30_000,
+  );
+  await runPalette("discover.tab.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null`,
+    "the Discover overview with a remote target",
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="discover-remote-target"]') !== null`,
+    "the remote target banner",
+  );
+  const remoteStrip = await page.eval<{
+    input: boolean;
+    placeholder: string;
+    label: string;
+    start: string;
+    disabled: boolean;
+    title: string;
+    banner: string;
+    clear: boolean;
+    sheet: boolean;
+    target: string;
+  }>(`(() => {
+    const input = document.querySelector('[data-testid="discover-remote-url"]');
+    const start = document.querySelector('[data-testid="discover-remote-start"]');
+    const banner = document.querySelector('[data-testid="discover-remote-target"]');
+    return {
+      input: input !== null,
+      placeholder: input?.getAttribute("placeholder") ?? "",
+      label: input?.getAttribute("aria-label") ?? "",
+      start: start?.textContent?.trim() ?? "",
+      disabled: start?.disabled === true,
+      title: start?.getAttribute("title") ?? "",
+      banner: banner?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
+      sheet: document.querySelector('[data-testid="discover-sheet"]') !== null,
+      target: document.querySelector('[data-testid="discover-remote-target"]')?.textContent ?? "",
+    };
+  })()`);
+  check(
+    remoteStrip.input && remoteStrip.placeholder === "https://github.com/owner/repo" && remoteStrip.label.length > 0,
+    "the remote URL field is missing or unlabelled",
+    remoteStrip,
+  );
+  check(remoteStrip.start === "Discover from URL", "the remote submit control is mislabelled", remoteStrip);
+  check(
+    remoteStrip.disabled && remoteStrip.title.includes("repository URL"),
+    "an empty URL field does not disable the remote start control",
+    remoteStrip,
+  );
+  check(
+    remoteStrip.banner.includes("https://github.com/octocat/Hello-World") &&
+      remoteStrip.banner.includes("Manual testing"),
+    "the remote banner does not name the active URL with its marker",
+    remoteStrip,
+  );
+  check(remoteStrip.clear, "the clear control is missing for a remote target", remoteStrip);
+  check(remoteStrip.sheet, "the clone's sheet does not render", remoteStrip);
+
+  await runPalette("discover.tab.glossary");
+  await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the clone's glossary");
+  await runPalette("discover.tab.overview");
+
+  // An invalid URL is refused once, spawns nothing, and leaves the target.
+  await page.fill('[data-testid="discover-remote-url"]', "http://github.com/octocat/Hello-World");
+  const framesBefore = await page.eval<number>(`(window.__viFrames ?? []).length`);
+  await page.click('[data-testid="discover-remote-start"]');
+  await page.wait(
+    `document.querySelector('[data-testid="discover-error"]')?.textContent?.includes("Could not clone") === true`,
+    "the invalid remote URL refusal",
+    20_000,
+  );
+  const invalid = await page.eval<{ frames: Array<{ type?: string; url?: string } | null> }>(`(() => ({
+    frames: (window.__viFrames ?? []).slice(${framesBefore}).map((frame) => {
+      try { return JSON.parse(frame); } catch (error) { return null; }
+    }),
+  }))()`);
+  const sent = invalid.frames.filter((frame) => frame?.type === "discoverRemote");
+  check(sent.length === 1, "one invalid URL did not send exactly one discoverRemote frame", invalid);
+  check(
+    sent[0]?.url === "http://github.com/octocat/Hello-World",
+    "the invalid URL frame did not carry the trimmed value",
+    invalid,
+  );
+  const scratchAfterInvalid = await readdir(join(stateDir, "discover-remote"));
+  check(
+    scratchAfterInvalid.length === 1 && scratchAfterInvalid[0] === "octocat-hello-world",
+    "an invalid URL created a clone",
+    scratchAfterInvalid,
+  );
+
+  // One remote skill save lands in the clone, never in this checkout.
+  await runPalette("discover.tab.testing-strategy");
+  await page.wait(`document.querySelector('[data-testid="discover-skill-text"] .monaco-editor') !== null`, "the remote skill editor");
+  const remoteSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
+  await page.eval(
+    `window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(
+      `${remoteSkill}\n- Remote interface edit.\n`,
+    )})`,
+  );
+  await page.wait(`document.querySelector('[data-testid="discover-skill-dirty"]') !== null`, "the remote skill dirty marker");
+  await page.click('[data-testid="discover-skill-save"]');
+  await waitFor(
+    async () => {
+      try {
+        const text = await readFile(
+          join(remoteClone, ".omp", "skills", "discover-testing-strategy", "SKILL.md"),
+          "utf8",
+        );
+        return text.includes("Remote interface edit") ? true : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    "the remote skill save",
+    20_000,
+  );
+  check(await ompDigest(host) === hostOmpBefore, "a remote skill save changed this checkout's .omp");
+
+  // Clearing returns to this checkout's artifacts with an empty field.
+  await runPalette("discover.tab.overview");
+  await page.click('[data-testid="discover-remote-clear"]');
+  await page.wait(
+    `document.querySelector('[data-testid="discover-remote-target"]') === null`,
+    "the cleared remote banner",
+    20_000,
+  );
+  const cleared = await page.eval<{ input: string; start: string; clear: boolean }>(`(() => ({
+    input: document.querySelector('[data-testid="discover-remote-url"]')?.value ?? "missing",
+    start: document.querySelector('[data-testid="discover-start"]')?.textContent?.trim() ?? "",
+    clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
+  }))()`);
+  check(cleared.input === "", "clearing did not empty the URL field", cleared);
+  check(cleared.start === "Re-discover", "clearing did not restore the host artifacts", cleared);
+  check(!cleared.clear, "the clear control survived the host target", cleared);
+  await waitFor(
+    () => (existsSync(remoteClone) ? undefined : true),
+    "the removed remote clone",
+    20_000,
+  );
+  check(await ompDigest(host) === hostOmpBefore, "clearing changed this checkout's .omp");
+
+  // The installed gate renders none of the remote controls.
+  const gateOffHost = await writeGateOffHost(root);
+  const gateOffPort = await freePort();
+  const gateOffWriter = Bun.file(join(root, "gate-off-server.log")).writer();
+  gateOffProcess = spawn("bun", ["run", "server/index.ts"], {
+    cwd: harnessRoot,
+    env: {
+      ...serverEnv,
+      PORT: String(gateOffPort),
+      ADRS_DIR: join(gateOffHost, "adrs"),
+      REPO_DIR: gateOffHost,
+      GOAL_FILE: join(gateOffHost, "GOAL.md"),
+      STATE_DIR: join(root, "gate-off-state"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  gateOffProcess.stdout?.on("data", (chunk) => gateOffWriter.write(chunk));
+  gateOffProcess.stderr?.on("data", (chunk) => gateOffWriter.write(chunk));
+  await waitForHttp(`http://127.0.0.1:${gateOffPort}/`);
+  await page.navigate(`http://127.0.0.1:${gateOffPort}/`);
+  await runPalette("discover.tab.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`,
+    "Discover in the gate-off host",
+  );
+  const gateOff = await page.eval<Record<string, boolean>>(`({
+    url: document.querySelector('[data-testid="discover-remote-url"]') !== null,
+    start: document.querySelector('[data-testid="discover-remote-start"]') !== null,
+    banner: document.querySelector('[data-testid="discover-remote-target"]') !== null,
+    clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
+    panel: document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null,
+  })`);
+  check(gateOff.panel, "the gate-off host has no Discover overview", gateOff);
+  check(
+    !gateOff.url && !gateOff.start && !gateOff.banner && !gateOff.clear,
+    "the gate-off host renders a remote control",
+    gateOff,
+  );
+  gateOffProcess.kill("SIGTERM");
+  gateOffProcess = undefined;
+  await page.navigate(baseUrl);
+
   // 13. Reset layout restores defaults.
   await runPalette("view.layout.reset");
   await page.wait(`document.documentElement.dataset.theme === "dark"`, "the dark default after reset");
@@ -1824,6 +2182,16 @@ try {
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() !== "Connected"`,
     "the closed connection",
     20_000,
+  );
+  await runPalette("discover.tab.overview");
+  const offline = await page.eval<{ disabled: boolean; title: string }>(`(() => {
+    const start = document.querySelector('[data-testid="discover-remote-start"]');
+    return { disabled: start?.disabled === true, title: start?.getAttribute("title") ?? "" };
+  })()`);
+  check(
+    offline.disabled && offline.title === "Not connected",
+    "a closed socket does not disable the remote start control",
+    offline,
   );
   await runPalette("goal.document.open");
   await page.wait(`document.querySelector('[data-testid="goal-text"]') !== null`, "the Goal editor while disconnected");
@@ -2025,6 +2393,11 @@ try {
 } finally {
   try {
     chromeProcess?.kill("SIGKILL");
+  } catch {
+    // Already gone.
+  }
+  try {
+    gateOffProcess?.kill("SIGTERM");
   } catch {
     // Already gone.
   }

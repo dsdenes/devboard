@@ -48,6 +48,18 @@ function isHarnessSource(directory: string): boolean {
 }
 
 /**
+ * True when the host serves a harness source checkout rather than an npm
+ * prefix: `.devboard/package.json` names the harness package and no installed
+ * copy sits in its `node_modules`. The predicate reads no repository name,
+ * remote, or other host fact, so a host that installs the harness never
+ * exposes source-checkout-only tooling.
+ */
+export function isHarnessSourceCheckout(repoDir: string): boolean {
+  const prefix = join(resolve(repoDir), ".devboard");
+  return isHarnessSource(prefix) && !existsSync(installedPackageDir(prefix));
+}
+
+/**
  * The harness a host would start next. An installed host keeps the package
  * under its npm prefix; the canonical checkout keeps its source tree. Without
  * either, the running checkout is the only code there is.

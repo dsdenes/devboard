@@ -234,6 +234,18 @@ export interface Freshness {
   discoveredAt: string;
 }
 
+/** The target Discover reads and writes: this host, or a manual-testing clone. */
+export type DiscoverTarget =
+  | { kind: "host" }
+  | {
+      kind: "remote";
+      url: string;
+      owner: string;
+      repo: string;
+      /** Repo-root-relative clone directory, never absolute. */
+      cloneDir: string;
+    };
+
 export interface DiscoverStatePayload {
   active: boolean;
   runId: string | null;
@@ -243,6 +255,10 @@ export interface DiscoverStatePayload {
   warnings: string[];
   busy: string | null;
   error: string | null;
+  /** True only when the dashboard serves a harness source checkout. */
+  remoteAvailable: boolean;
+  target: DiscoverTarget;
+  cloning: { url: string } | null;
   manifest: unknown;
   freshness: Freshness | null;
   sheet: Record<string, unknown> | null;

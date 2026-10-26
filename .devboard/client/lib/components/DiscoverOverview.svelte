@@ -289,6 +289,62 @@
 
   {@render questionPanel()}
 
+  {#if discover.remoteAvailable}
+    <section class="panel" data-testid="discover-remote" aria-label="Discover remote target">
+      <div class="panel__body stack-sm">
+        {#if discover.remoteTarget !== null}
+          <p class="row-sm" data-testid="discover-remote-target">
+            <span class="badge" data-tone="warning">Manual testing</span>
+            <span>Discover reads <code>{discover.remoteTarget.url}</code>.</span>
+          </p>
+        {/if}
+        <form
+          class="row-sm"
+          onsubmit={(event) => {
+            event.preventDefault();
+            discover.startRemote();
+          }}
+        >
+          <input
+            class="textarea"
+            style="min-height: 28px; padding: 4px 6px; flex: 1;"
+            type="url"
+            aria-label="GitHub repository URL"
+            placeholder="https://github.com/owner/repo"
+            autocomplete="off"
+            spellcheck="false"
+            value={discover.remoteUrl}
+            oninput={(event) => (discover.remoteUrl = event.currentTarget.value)}
+            data-testid="discover-remote-url"
+          />
+          <Button
+            variant="default"
+            type="submit"
+            data-testid="discover-remote-start"
+            disabled={discover.remoteStartDisabled}
+            title={discover.remoteStartTitle}
+          >
+            Discover from URL
+          </Button>
+          {#if discover.remoteTarget !== null}
+            <Button
+              variant="outline"
+              data-testid="discover-remote-clear"
+              onclick={() => discover.clearRemote()}
+            >
+              Clear remote target
+            </Button>
+          {/if}
+        </form>
+        {#if discover.cloning !== null}
+          <p class="muted" data-testid="discover-remote-cloning">
+            Cloning <code>{discover.cloning.url}</code>…
+          </p>
+        {/if}
+      </div>
+    </section>
+  {/if}
+
   <header class="discover-head" data-testid="discover-card" data-field="definition">
     <div class="discover-head__top">
       <div class="discover-head__identity">

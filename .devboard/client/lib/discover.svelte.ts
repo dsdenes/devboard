@@ -5,6 +5,7 @@ import { filterContexts, scalarText, sectionLeaf } from "./discover-format";
 import type {
   DiscoverSkill,
   DiscoverStatePayload,
+  DiscoverTarget,
   Freshness,
   Glossary,
   RunQuestion,
@@ -37,9 +38,42 @@ export class DiscoverStore {
   transition = $state<string | null>(null);
   answerDraft = $state("");
   glossarySearch = $state("");
+  /** The URL field of the source-checkout-only remote target strip. */
+  remoteUrl = $state("");
 
   drafts = $state<Record<string, string>>({});
   dirty = $state<Record<string, boolean>>({});
+
+  get remoteAvailable(): boolean {
+    return this.state?.remoteAvailable === true;
+  }
+
+  get target(): DiscoverTarget {
+    return this.state?.target ?? { kind: "host" };
+  }
+
+  get remoteTarget(): Extract<DiscoverTarget, { kind: "remote" }> | null {
+    const target = this.target;
+    return target.kind === "remote" ? target : null;
+  }
+
+  get cloning(): { url: string } | null {
+    return this.state?.cloning ?? null;
+  }
+
+  /** The remote start control's disabled state; its title names the reason. */
+  get remoteStartDisabled(): boolean {
+    return this.remoteStartTitle !== undefined;
+  }
+
+  get remoteStartTitle(): string | undefined {
+    if (!connection.open) return "Not connected";
+    if (this.cloning !== null) return "A repository clone is running";
+    if (this.active) return "A Discover run is active";
+    if (this.busy !== null) return this.busy;
+    if (this.remoteUrl.trim().length === 0) return "Enter a GitHub repository URL";
+    return undefined;
+  }
 
   get busy(): string | null {
     return this.state?.busy ?? null;
@@ -125,6 +159,20 @@ export class DiscoverStore {
 
   start(): void {
     connection.send({ type: "discoverProject" });
+  }
+
+  /** Sends exactly one `discoverRemote` for the trimmed URL. */
+  startRemote(): void {
+    const url = this.remoteUrl.trim();
+    if (url.length === 0 || this.remoteStartTitle !== undefined) return;
+    this.remoteUrl = "";
+    connection.send({ type: "discoverRemote", url });
+  }
+
+  /** Returns to this checkout's own artifacts; the field stays empty. */
+  clearRemote(): void {
+    this.remoteUrl = "";
+    connection.send({ type: "clearDiscoverRemote" });
   }
 
   stop(): void {

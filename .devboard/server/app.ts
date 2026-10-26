@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -29,20 +29,32 @@ import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import {
   DISCOVER_SKILLS,
+  artifactRelative,
   artifactsStale,
   confirmGlossaryTerm,
   dependencyRepositories,
   hostFacts,
+  isInsideRepository,
   liveWarnings,
+  parseRemoteUrl,
+  prepareRemoteScratch,
   publishStaged,
   readArtifacts,
   rejectGlossaryTerm,
+  remoteCloneDirectory,
+  remoteCloneName,
+  remoteCloneRequest,
+  remoteScratchRoot,
   removeStaging,
   restoreLiveSkill,
   saveLiveSkill,
   stagingDirectory,
   validateStaged,
   type DiscoverArtifacts,
+  type RemoteCloneRequest,
+  type RemoteCloneResult,
+  type RemoteCloneRunner,
+  type RemoteRepository,
 } from "./discover";
 import { parseRecord, readRecords, type AdrRecord } from "./records";
 import {
@@ -63,6 +75,7 @@ import {
   type OpenEpic,
 } from "./tracker";
 import {
+  isHarnessSourceCheckout,
   readHarnessVersion,
   runningHarnessDir,
   serverVersion,
@@ -117,6 +130,11 @@ export interface AppOptions {
    * and browser verification, and the watcher timings for focused runs.
    */
   flow?: Pick<FlowOptions, "forge" | "forgeTarget" | "exec" | "watchMs" | "analystTimeoutMs" | "goalTimeoutMs">;
+  /**
+   * Discover's remote-clone seam: tests replace the `git clone` child, the
+   * default runner spawns it with the bounded environment and timeout.
+   */
+  discoverClone?: RemoteCloneRunner;
 }
 
 type RunAction = "resolving" | "implementing" | "generating";
@@ -308,6 +326,17 @@ interface StoredDiscover {
   question: StoredQuestion | null;
 }
 
+/**
+ * The active remote target, stored without a path: the clone directory is
+ * derived from the state directory, so a moved state never points at a stale
+ * absolute path.
+ */
+interface StoredDiscoverTarget {
+  url: string;
+  owner: string;
+  repo: string;
+}
+
 interface StoredState {
   lifecycle: LifecycleState;
   lastLifecycle: LifecycleState | null;
@@ -330,6 +359,7 @@ interface StoredState {
   restartWhenIdle: boolean;
   discover: StoredDiscover | null;
   discoverInterrupted: boolean;
+  discoverTarget: StoredDiscoverTarget | null;
   children: RecordedChild[];
 }
 
@@ -440,6 +470,8 @@ type ClientMessage =
   | { type: "flowAnswer"; id?: unknown; value?: unknown; target?: unknown }
   | { type: "answer"; id?: unknown; value?: unknown; lane?: unknown }
   | { type: "discoverProject" }
+  | { type: "discoverRemote"; url?: unknown }
+  | { type: "clearDiscoverRemote" }
   | { type: "stopDiscover" }
   | { type: "answerDiscover"; id?: unknown; value?: unknown }
   | { type: "getDiscover" }
@@ -542,6 +574,13 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       };
     case "discoverProject":
       return { type: "discoverProject" };
+    case "discoverRemote":
+      // A missing or non-string URL is a malformed payload, never a command.
+      return "url" in value && typeof value.url === "string"
+        ? { type: "discoverRemote", url: value.url }
+        : undefined;
+    case "clearDiscoverRemote":
+      return { type: "clearDiscoverRemote" };
     case "stopDiscover":
       return { type: "stopDiscover" };
     case "answerDiscover":
@@ -1195,6 +1234,20 @@ function parseStoredDiscover(value: unknown): StoredDiscover | null {
   return { runId, stagingDir, startedAt, activity, question: parseStoredQuestion(record.question) };
 }
 
+/** A stored target is usable only when its URL and its derived names agree. */
+function parseStoredDiscoverTarget(value: unknown): StoredDiscoverTarget | null {
+  const record = asObject(value);
+  if (record === undefined) return null;
+  const url = record.url;
+  const owner = record.owner;
+  const repo = record.repo;
+  if (typeof url !== "string" || typeof owner !== "string" || typeof repo !== "string") return null;
+  const parsed = parseRemoteUrl(url);
+  if (!parsed.ok) return null;
+  if (parsed.repository.owner !== owner || parsed.repository.repo !== repo) return null;
+  return { url: parsed.repository.url, owner, repo };
+}
+
 /**
  * Reads one stored state. Anything structurally unusable rejects the whole
  * state, so the caller preserves the bytes and starts from the initial state
@@ -1260,6 +1313,7 @@ function parseStoredState(value: unknown): StoredState | undefined {
     restartWhenIdle: record.restartWhenIdle === true,
     discover: parseStoredDiscover(record.discover),
     discoverInterrupted: record.discoverInterrupted === true,
+    discoverTarget: parseStoredDiscoverTarget(record.discoverTarget),
     children,
   };
 }
@@ -1297,6 +1351,44 @@ export function projectLabel(repoDir: string, home: string = homedir()): string 
   const [first] = relativePath.split(sep);
   if (first === ".." || isAbsolute(relativePath)) return root;
   return relativePath;
+}
+
+/**
+ * The production `git clone` child. It never prompts, never colors its output,
+ * and is bounded by the request's timeout; an unreadable spawn is a failure
+ * like any non-zero exit.
+ */
+async function spawnClone(request: RemoteCloneRequest): Promise<RemoteCloneResult> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, request.timeoutMs);
+  try {
+    const child = Bun.spawn({
+      cmd: request.argv,
+      cwd: request.cwd,
+      env: request.env,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+      signal: controller.signal,
+    });
+    const [stderr, code] = await Promise.all([
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { code, stderr, timedOut };
+  } catch (error) {
+    return {
+      code: -1,
+      stderr: error instanceof Error ? error.message : String(error),
+      timedOut,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function createApp(options: AppOptions) {
@@ -1343,6 +1435,8 @@ export function createApp(options: AppOptions) {
   interface DiscoverRun {
     runId: string;
     stagingDir: string;
+    /** The target root the crawl was started against. */
+    cwd: string;
     startedAt: string;
     agent: AcpConnection | undefined;
     activity: string[];
@@ -1359,6 +1453,26 @@ export function createApp(options: AppOptions) {
   let restoredDiscover: StoredDiscover | undefined;
   let lastDiscoverBusy: string | null = null;
   const DISCOVER_PROMPT = "/discover";
+
+  /**
+   * The remote target is a source-checkout-only manual-testing aid: the
+   * dashboard clones a public GitHub repository under its own state directory
+   * and crawls that clone instead of this host. Installed hosts never see it.
+   */
+  const remoteAvailable = isHarnessSourceCheckout(repoDir);
+  const remoteRoot = remoteScratchRoot(stateDir);
+  const cloneRunner = options.discoverClone ?? spawnClone;
+  let remoteTarget: RemoteRepository | undefined;
+  let discoverCloning: { url: string } | null = null;
+
+  function cloneDirectoryOf(target: RemoteRepository): string {
+    return remoteCloneDirectory(remoteRoot, target.owner, target.repo);
+  }
+
+  /** Every Discover read and write goes through the active target. */
+  function targetRoot(): string {
+    return remoteTarget === undefined ? repoDir : cloneDirectoryOf(remoteTarget);
+  }
 
   /**
    * Flow Mode's controller. It owns its own session files under `stateDir` and
@@ -1437,6 +1551,8 @@ export function createApp(options: AppOptions) {
 
   /** Events a restored process owes the first client before its own replies. */
   const startupNotices: unknown[] = [];
+  /** A stored remote target whose clone is gone; reported to the next client. */
+  let discoverTargetNotice: string | null = null;
   /** A paused lifecycle that must spawn no peer until `resumeLifecycle`. */
   let restoredPausedLifecycle = false;
   /** The guidance of a restored goal revision, replayed in its new prompt. */
@@ -1495,16 +1611,16 @@ export function createApp(options: AppOptions) {
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
     const children: RecordedChild[] = [];
-    const remember = (agent: AcpConnection | undefined) => {
+    const remember = (agent: AcpConnection | undefined, cwd = repoDir) => {
       const pid = agent?.pid;
       if (agent === undefined || pid === undefined) return;
-      children.push({ pid, argv: agent.argv, cwd: repoDir });
+      children.push({ pid, argv: agent.argv, cwd });
     };
     remember(manualRun?.agent);
     remember(goalCreation?.agent);
     remember(goalRevision?.agent);
     remember(skillsPreparation?.agent);
-    remember(discoverRun?.agent);
+    remember(discoverRun?.agent, discoverRun?.cwd);
     for (const lane of liveLanes) remember(lane.agent);
     return children;
   }
@@ -1597,6 +1713,14 @@ export function createApp(options: AppOptions) {
               question: captureQuestion(discoverRun.question),
             },
       discoverInterrupted,
+      discoverTarget:
+        remoteTarget === undefined
+          ? null
+          : {
+              url: remoteTarget.url,
+              owner: remoteTarget.owner,
+              repo: remoteTarget.repo,
+            },
       children: captureChildren(),
     };
   }
@@ -1637,6 +1761,21 @@ export function createApp(options: AppOptions) {
     lifecyclePausedForManualRun = stored.lifecyclePausedForManualRun;
     restartWhenIdle = stored.restartWhenIdle;
     discoverInterrupted = stored.discoverInterrupted;
+    // The scratch root holds at most the stored target; staging never survives.
+    // An installed host has no remote target, whatever an older state recorded.
+    const storedTarget = remoteAvailable ? stored.discoverTarget : null;
+    prepareRemoteScratch(
+      remoteRoot,
+      storedTarget === null ? null : remoteCloneName(storedTarget.owner, storedTarget.repo),
+    );
+    if (storedTarget !== null) {
+      const clone = remoteCloneDirectory(remoteRoot, storedTarget.owner, storedTarget.repo);
+      if (existsSync(join(clone, ".git"))) {
+        remoteTarget = storedTarget;
+      } else {
+        discoverTargetNotice = `The remote Discover clone for ${storedTarget.url} is missing, so the host target is active.`;
+      }
+    }
     if (stored.discover !== null) {
       // The replacement never resumes a crawl: it interrupts it and keeps the
       // last published artifacts.
@@ -1773,12 +1912,14 @@ export function createApp(options: AppOptions) {
   }
 
   if (loadedState.kind === "damaged") {
+    prepareRemoteScratch(remoteRoot, null);
     const message = `The saved dashboard state could not be restored: ${loadedState.reason}. Starting from an empty dashboard.`;
     process.stderr.write(`${message}\n`);
     startupNotices.push({ type: "error", message });
   } else if (loadedState.kind === "loaded") {
     const stored = parseStoredState(loadedState.value);
     if (stored === undefined) {
+      prepareRemoteScratch(remoteRoot, null);
       preserveStateFile(statePath);
       const message =
         "The saved dashboard state could not be restored: its contents are not a dashboard state. Starting from an empty dashboard.";
@@ -1786,6 +1927,12 @@ export function createApp(options: AppOptions) {
       startupNotices.push({ type: "error", message });
     } else {
       applyRestoredState(stored);
+      if (discoverTargetNotice !== null) {
+        const message = discoverTargetNotice;
+        discoverTargetNotice = null;
+        journal.write("server-error", message);
+        startupNotices.push({ type: "discoverError", message });
+      }
       // Ends the killed process's peers and continues its work once the
       // listener is bound; a restore failure is reported, never thrown.
       void resumeRestoredWork(stored.children).catch((error: unknown) => {
@@ -1794,6 +1941,8 @@ export function createApp(options: AppOptions) {
         process.stderr.write(`state: could not resume: ${detail}\n`);
       });
     }
+  } else {
+    prepareRemoteScratch(remoteRoot, null);
   }
 
   function sendVersion(ws: { send(data: string): unknown }) {
@@ -1816,7 +1965,8 @@ export function createApp(options: AppOptions) {
       generationActive ||
       generationQueued ||
       flow.hasActiveWork() ||
-      discoverRun !== undefined
+      discoverRun !== undefined ||
+      discoverCloning !== null
     );
   }
 
@@ -1833,6 +1983,7 @@ export function createApp(options: AppOptions) {
 
   /** Names the Goal Mode work Flow Mode would contend with, if any. */
   function activeGoalWork(): string | undefined {
+    if (discoverCloning !== null) return "a repository clone";
     return goalWorkLabel() ?? (discoverRun === undefined ? undefined : "a Discover run");
   }
 
@@ -1856,7 +2007,8 @@ export function createApp(options: AppOptions) {
   }
 
   function refreshDiscoverSnapshot(): void {
-    const read = readArtifacts(repoDir);
+    const root = targetRoot();
+    const read = readArtifacts(root);
     discoverArtifacts = read.artifacts;
     discoverReadError = read.error;
     if (read.artifacts === null) {
@@ -1865,15 +2017,16 @@ export function createApp(options: AppOptions) {
       return;
     }
     try {
-      discoverWarnings = liveWarnings(repoDir, read.artifacts);
+      discoverWarnings = liveWarnings(root, read.artifacts);
     } catch {
       discoverWarnings = [];
     }
-    discoverStale = artifactsStale(repoDir, read.artifacts);
+    discoverStale = artifactsStale(root, read.artifacts);
   }
 
   function discoverStatePayload(): Record<string, unknown> {
     const artifacts = discoverArtifacts;
+    const root = targetRoot();
     return {
       active: discoverRun !== undefined,
       runId: discoverRun?.runId ?? null,
@@ -1883,11 +2036,23 @@ export function createApp(options: AppOptions) {
       warnings: discoverWarnings,
       busy: discoverBusyReason(),
       error: discoverReadError,
+      remoteAvailable,
+      target:
+        remoteTarget === undefined
+          ? { kind: "host" }
+          : {
+              kind: "remote",
+              url: remoteTarget.url,
+              owner: remoteTarget.owner,
+              repo: remoteTarget.repo,
+              cloneDir: artifactRelative(repoDir, cloneDirectoryOf(remoteTarget)),
+            },
+      cloning: discoverCloning === null ? null : { url: discoverCloning.url },
       manifest: artifacts?.manifest ?? null,
       freshness: artifacts?.sheet.freshness ?? null,
       sheet: artifacts?.sheet ?? null,
       dependencyRepositories:
-        artifacts === null ? {} : dependencyRepositories(repoDir, artifacts.sheet),
+        artifacts === null ? {} : dependencyRepositories(root, artifacts.sheet),
       glossaries: artifacts?.glossaries ?? [],
       decisions: artifacts?.decisions ?? [],
       skills: artifacts?.skills ?? [],
@@ -1927,7 +2092,7 @@ export function createApp(options: AppOptions) {
     run.question = null;
     run.agent?.close();
     try {
-      removeStaging(repoDir, run.runId);
+      removeStaging(run.cwd, run.runId);
     } catch {
       // A staging directory that cannot be removed is reported by the next run.
     }
@@ -1937,8 +2102,15 @@ export function createApp(options: AppOptions) {
     broadcast({ type: "discoverStopped", completed: false });
   }
 
-  /** True while a Discover run is the active work; used by the refusal text. */
+  /** True while a Discover run or clone is the active work; used by the refusal text. */
   function refuseGoalWhileDiscovering(ws: { send(data: string): unknown }): boolean {
+    if (discoverCloning !== null) {
+      send(ws, {
+        type: "error",
+        message: "A repository clone is active. Wait for it before starting other work.",
+      });
+      return true;
+    }
     if (discoverRun === undefined) return false;
     send(ws, {
       type: "error",
@@ -1948,6 +2120,10 @@ export function createApp(options: AppOptions) {
   }
 
   async function startDiscoverProject(ws: { send(data: string): unknown }) {
+    if (discoverCloning !== null) {
+      discoverFailure(ws, "A repository clone is active. Wait for it to finish.");
+      return;
+    }
     if (discoverRun !== undefined) {
       discoverFailure(ws, "A Discover run is already active.");
       return;
@@ -1958,11 +2134,13 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    const root = targetRoot();
+    const projectName = remoteTarget === undefined ? project : projectLabel(root);
     let factsBefore;
     const runId = `run-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
-    const stagingDir = stagingDirectory(repoDir, runId);
+    const stagingDir = stagingDirectory(root, runId);
     try {
-      factsBefore = hostFacts(repoDir);
+      factsBefore = hostFacts(root);
       mkdirSync(stagingDir, { recursive: true });
     } catch (error) {
       discoverFailure(
@@ -1978,6 +2156,7 @@ export function createApp(options: AppOptions) {
     const run: DiscoverRun = {
       runId,
       stagingDir,
+      cwd: root,
       startedAt: new Date().toISOString(),
       agent: undefined,
       activity: [],
@@ -1993,7 +2172,7 @@ export function createApp(options: AppOptions) {
     try {
       agent = new AcpConnection({
         command: agentCommand,
-        cwd: repoDir,
+        cwd: root,
         onActivity(activity: AcpActivity) {
           if (discoverRun !== run) return;
           journal.write("activity", activity.text);
@@ -2046,18 +2225,18 @@ export function createApp(options: AppOptions) {
     if (discoverRun !== run || request !== discoverRequest) return;
 
     try {
-      const facts = hostFacts(repoDir);
+      const facts = hostFacts(root);
       if (facts.fingerprint !== factsBefore.fingerprint) {
         throw new Error("the crawl changed host files outside its staging directory");
       }
-      const staged = validateStaged(repoDir, stagingDir, {
-        project,
+      const staged = validateStaged(root, stagingDir, {
+        project: projectName,
         commit: facts.commit,
         dirty: facts.dirty,
         discoveredAt: new Date().toISOString(),
         fingerprint: facts.fingerprint,
       });
-      publishStaged({ repoDir, runId, facts, staged, project });
+      publishStaged({ repoDir: root, runId, facts, staged, project: projectName });
     } catch (error) {
       failDiscover(
         run,
@@ -2070,7 +2249,7 @@ export function createApp(options: AppOptions) {
     run.question = null;
     run.agent?.close();
     try {
-      removeStaging(repoDir, runId);
+      removeStaging(root, runId);
     } catch {
       // The run's staging is best-effort; the published set is already valid.
     }
@@ -2078,6 +2257,173 @@ export function createApp(options: AppOptions) {
     refreshDiscoverSnapshot();
     broadcast({ type: "discoverState", state: discoverStatePayload() });
     broadcast({ type: "discoverStopped", completed: true });
+  }
+
+  /** Refuses a remote command in an installed host; the control never renders there. */
+  function remoteUnavailable(ws: { send(data: string): unknown }): boolean {
+    if (remoteAvailable) return false;
+    discoverFailure(
+      ws,
+      "Discover from a repository URL is available only when the dashboard serves a harness source checkout.",
+    );
+    return true;
+  }
+
+  /**
+   * Clones a public repository under the state directory and crawls the clone.
+   * The previous target and its artifacts stay untouched when the clone fails.
+   */
+  async function startDiscoverRemote(ws: { send(data: string): unknown }, url: string) {
+    if (remoteUnavailable(ws)) return;
+    if (discoverCloning !== null) {
+      discoverFailure(ws, "A repository clone is already active.");
+      return;
+    }
+    if (discoverRun !== undefined) {
+      discoverFailure(ws, "A Discover run is already active.");
+      return;
+    }
+    const busy = discoverBusyReason();
+    if (busy !== null) {
+      discoverFailure(ws, `A repository clone cannot start: ${busy}`);
+      return;
+    }
+    if (!isInsideRepository(repoDir, remoteRoot)) {
+      discoverFailure(
+        ws,
+        "The Discover scratch root is outside the repository. STATE_DIR must name a directory inside the repository.",
+      );
+      return;
+    }
+    const parsed = parseRemoteUrl(url);
+    if (!parsed.ok) {
+      discoverFailure(ws, `Could not clone the repository: ${parsed.reason}.`);
+      return;
+    }
+
+    const target = parsed.repository;
+    const runId = `run-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const staging = join(remoteRoot, `.staging-${runId}`);
+    try {
+      mkdirSync(remoteRoot, { recursive: true });
+    } catch (error) {
+      discoverFailure(
+        ws,
+        `Could not prepare the Discover scratch root: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+
+    // The clone state leaves before the child spawns, so every client sees it.
+    discoverCloning = { url: target.url };
+    journal.write("lifecycle", "discover-remote-clone");
+    broadcastDiscoverState();
+
+    const request = remoteCloneRequest(target.url, remoteRoot, runId);
+    const requestTimeoutSeconds = Math.round(request.timeoutMs / 1000);
+    let result: RemoteCloneResult;
+    try {
+      result = await cloneRunner(request);
+    } catch (error) {
+      result = {
+        code: -1,
+        stderr: error instanceof Error ? error.message : String(error),
+        timedOut: false,
+      };
+    }
+
+    const cloneFailed = (message: string) => {
+      discoverCloning = null;
+      try {
+        rmSync(staging, { recursive: true, force: true });
+      } catch {
+        // The next start removes a staging directory that cannot be removed.
+      }
+      discoverFailure(ws, message);
+      broadcastDiscoverState();
+    };
+
+    if (result.timedOut) {
+      cloneFailed(`The repository clone timed out after ${requestTimeoutSeconds} seconds.`);
+      return;
+    }
+    if (result.code !== 0) {
+      cloneFailed(`The repository clone failed: git exited with status ${result.code}.`);
+      return;
+    }
+    let readable = false;
+    try {
+      readable = statSync(staging).isDirectory();
+    } catch {
+      readable = false;
+    }
+    if (!readable) {
+      cloneFailed("The repository clone produced no readable directory.");
+      return;
+    }
+
+    const destination = cloneDirectoryOf(target);
+    const previous =
+      remoteTarget === undefined ? undefined : cloneDirectoryOf(remoteTarget);
+    try {
+      if (existsSync(destination)) rmSync(destination, { recursive: true, force: true });
+      renameSync(staging, destination);
+      // The previous clone goes only once the new one is in place.
+      if (previous !== undefined && resolve(previous) !== resolve(destination)) {
+        rmSync(previous, { recursive: true, force: true });
+      }
+    } catch (error) {
+      cloneFailed(
+        `The repository clone could not be stored: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+
+    remoteTarget = target;
+    discoverCloning = null;
+    broadcastDiscoverState();
+    await startDiscoverProject(ws);
+  }
+
+  /** Returns the Overview to this checkout's own published artifacts. */
+  function clearDiscoverRemote(ws: { send(data: string): unknown }) {
+    if (remoteUnavailable(ws)) return;
+    if (discoverCloning !== null) {
+      discoverFailure(ws, "A repository clone is active. Wait for it to finish.");
+      return;
+    }
+    if (discoverRun !== undefined) {
+      discoverFailure(ws, "A Discover run is active. Stop it before clearing the remote target.");
+      return;
+    }
+    const busy = discoverBusyReason();
+    if (busy !== null) {
+      discoverFailure(ws, `The remote target cannot be cleared: ${busy}`);
+      return;
+    }
+    if (remoteTarget === undefined) {
+      discoverFailure(ws, "No remote Discover target is active.");
+      return;
+    }
+    try {
+      rmSync(cloneDirectoryOf(remoteTarget), { recursive: true, force: true });
+    } catch (error) {
+      discoverFailure(
+        ws,
+        `The remote clone could not be removed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+    remoteTarget = undefined;
+    journal.write("lifecycle", "discover-remote-clear");
+    refreshDiscoverSnapshot();
+    broadcastDiscoverState();
   }
 
   function stopDiscover(ws: { send(data: string): unknown }) {
@@ -2091,7 +2437,7 @@ export function createApp(options: AppOptions) {
     run.question = null;
     run.agent?.close();
     try {
-      removeStaging(repoDir, run.runId);
+      removeStaging(run.cwd, run.runId);
     } catch {
       // The staging directory may already be gone.
     }
@@ -2157,7 +2503,7 @@ export function createApp(options: AppOptions) {
       discoverFailure(ws, "Saving a Discover skill needs its name and text.");
       return;
     }
-    afterDiscoverMutation(ws, saveLiveSkill(repoDir, name, text));
+    afterDiscoverMutation(ws, saveLiveSkill(targetRoot(), name, text));
   }
 
   function restoreDiscoverSkillCommand(ws: { send(data: string): unknown }, name: unknown) {
@@ -2165,7 +2511,7 @@ export function createApp(options: AppOptions) {
       discoverFailure(ws, "Restoring a Discover skill needs its name.");
       return;
     }
-    afterDiscoverMutation(ws, restoreLiveSkill(repoDir, name));
+    afterDiscoverMutation(ws, restoreLiveSkill(targetRoot(), name));
   }
 
   /**
@@ -4335,6 +4681,8 @@ export function createApp(options: AppOptions) {
       restoredDiscover = undefined;
       try {
         rmSync(interrupted.stagingDir, { recursive: true, force: true });
+        // An interrupted run leaves no staging root behind either.
+        rmSync(dirname(interrupted.stagingDir), { recursive: true, force: true });
       } catch {
         // The staging directory may already be gone.
       }
@@ -4994,6 +5342,10 @@ export function createApp(options: AppOptions) {
             sendDiscoverState(ws);
           } else if (command.type === "discoverProject") {
             await startDiscoverProject(ws);
+          } else if (command.type === "discoverRemote") {
+            if (typeof command.url === "string") await startDiscoverRemote(ws, command.url);
+          } else if (command.type === "clearDiscoverRemote") {
+            clearDiscoverRemote(ws);
           } else if (command.type === "stopDiscover") {
             stopDiscover(ws);
           } else if (command.type === "answerDiscover") {
@@ -5007,7 +5359,7 @@ export function createApp(options: AppOptions) {
             if (term === null) {
               discoverFailure(ws, "Confirming a term needs its bounded context and id.");
             } else {
-              afterDiscoverMutation(ws, confirmGlossaryTerm(repoDir, term.context, term.id));
+              afterDiscoverMutation(ws, confirmGlossaryTerm(targetRoot(), term.context, term.id));
             }
           } else if (command.type === "rejectGlossaryTerm") {
             const term = discoverTermRequest(command.context, command.id);
@@ -5016,7 +5368,7 @@ export function createApp(options: AppOptions) {
             } else {
               afterDiscoverMutation(
                 ws,
-                rejectGlossaryTerm(repoDir, term.context, term.id, command.reason),
+                rejectGlossaryTerm(targetRoot(), term.context, term.id, command.reason),
               );
             }
           }

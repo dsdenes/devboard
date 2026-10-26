@@ -538,8 +538,8 @@ and a `Discover project` button (`data-testid="discover-start"`); with artifacts
 or while Goal or Flow work is active, and its title names the reason. It never starts on page
 load, reconnect, mode switch, or page switch. Selecting it sends `{ "type": "discoverProject" }`;
 the server broadcasts `discoverStarted` and starts exactly one ACP peer whose prompt is exactly
-`/discover <staging-dir>`, whose working directory is the repository root, and whose staging
-directory is `<host>/.omp/discover/staging/<run-id>/`. A second start while one runs is refused
+`/discover <staging-dir>`, whose working directory is the active target root, and whose staging
+directory is `<target>/.omp/discover/staging/<run-id>/`. A second start while one runs is refused
 with one `discoverError` and spawns no peer. A start requires no `GOAL.md`, no prepared skill, a
 clean tree, or a forge account; it is accepted on a host with a dirty tree and no goal document.
 
@@ -747,6 +747,90 @@ and an immediate restart ends the recorded child, removes staging, publishes not
 `resetImplementation` cancels a run the same way and leaves `.omp/discover` and the Discover skills
 untouched because reset preserves `.omp`. Only one run exists at a time; a stopped or interrupted
 run leaves the previous artifacts readable, and a later start uses a fresh staging directory.
+
+### Remote targets for manual testing
+
+When the dashboard serves a harness source checkout — `<REPO_DIR>/.devboard/package.json` names
+`@dsdenes/devboard-harness` and `<REPO_DIR>/.devboard/node_modules/@dsdenes/devboard-harness` does
+not exist — Discover's Overview offers one extra target: a public GitHub repository supplied as a
+URL. An installed host renders no such control and both new commands are refused. The predicate
+reads no repository name, remote, or other host fact.
+
+The field accepts exactly `https://github.com/<owner>/<repo>`, with an optional trailing `/` and an
+optional `.git` suffix. Owner and repository are 1–100 letters, digits, dots, underscores, or
+hyphens, and the whole URL is at most 2048 bytes. `http://`, `git@github.com:`, `ssh://`, another
+host, a port, user information, a query, a fragment, an empty or whitespace-only value, an empty
+owner or repository, `.`, `..`, more than two path segments, and absolute or Windows path shapes are
+refused with one `discoverError` naming the reason; nothing is spawned and no directory is created.
+Branch or ref selection, private repositories, credentials, and more than one stored remote target
+are out of scope.
+
+The scratch root is `<STATE_DIR>/discover-remote/` and must resolve inside `<REPO_DIR>`. A submit
+broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs exactly one
+child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with the scratch
+root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`, `NO_COLOR=1`, and a
+300-second timeout. On success the server renames the staging directory to `<owner>-<repo>`
+(lowercased), removes the previously active clone after the rename, makes the clone the target, and
+starts exactly one crawl against it. On a non-zero exit, a timeout, or an unreadable destination it
+removes staging, clears `cloning`, reports the exit status, timeout, or destination, and keeps the
+previous target and its artifacts intact. A second `discoverRemote`, a `clearDiscoverRemote`, or a
+`discoverProject` while cloning is non-null is refused with one `discoverError`. A clone is never
+resumed.
+
+With a remote target every Discover command uses the clone as the host: staging under
+`<cloneDir>/.omp/discover/staging/<run-id>/`, the ACP working directory and the prompt's staging
+path from the clone, facts before and after from the clone, staged validation against the clone, and
+publication into the clone's `.omp/discover/` and `.omp/skills/`. Snapshot, staleness, warnings,
+skill saves and restores, glossary decisions, and the manifest follow the active target only, so this
+checkout's `.omp/discover` and `.omp/skills` stay byte-identical. Only one Discover run exists at a
+time across both targets; a remote crawl is active work for Goal Mode and Flow Mode, and a clone in
+flight is refused while either is active. `clearDiscoverRemote` removes exactly
+`<STATE_DIR>/discover-remote/<owner>-<repo>` and returns the host target; it never touches
+`<REPO_DIR>/.omp`.
+
+Durable state stores the active target as URL, owner, and repository only, and `cloneDir` is derived
+from `STATE_DIR`, so moving the state directory never leaves a stale absolute path. Startup removes
+every leftover `.staging-*` and every clone that is not the stored target's, so the scratch root
+holds at most one clone. A replacement restores a remote target only while `<cloneDir>/.git` exists;
+otherwise it starts on the host target and sends one `discoverError` naming the missing clone to the
+next client. A restart during a remote crawl interrupts it as a host run does: the recorded child
+ends, the clone's staging is removed, its published artifacts stay, and nothing is published or
+resumed. After a restart with an intact clone, `getDiscover` and the Overview render the clone's
+artifacts with `target.kind === "remote"` without a re-crawl.
+
+The protocol adds `{ "type": "discoverRemote", "url": string }` and
+`{ "type": "clearDiscoverRemote" }`. A malformed payload, a missing or non-string `url`, and an
+unknown command receive the existing unknown-command treatment and change nothing. `discoverState`
+keeps every existing field and adds `remoteAvailable`, `target` (`{ "kind": "host" }` or
+`{ "kind": "remote", "url", "owner", "repo", "cloneDir" }`, where `cloneDir` is repository-root-
+relative and never absolute), and `cloning` (`{ "url" }` or `null`). `getDiscover` answers with the
+same snapshot, and a connecting client still receives it before its own command replies.
+
+While `remoteAvailable` is true the Overview renders a target strip: an input
+(`data-testid="discover-remote-url"`) labelled for a GitHub repository URL with the placeholder
+`https://github.com/owner/repo`, a submit control (`data-testid="discover-remote-start"`) labelled
+`Discover from URL`, a banner (`data-testid="discover-remote-target"`) naming the active URL with a
+`Manual testing` marker, and a clear control (`data-testid="discover-remote-clear"`) only while the
+target is remote. The submit control is disabled while the socket is closed, `cloning` is non-null,
+a run is active, or `discoverState.busy` is set, and its `title` names the reason; it is also
+disabled for empty or whitespace-only input. Submitting sends exactly one frame with the trimmed URL
+and starts nothing else; clearing sends exactly one `clearDiscoverRemote`. Rendering the strip on
+load, reconnect, mode switch, or page switch sends no frame. While cloning, the strip shows the
+cloning URL and the activity area shows no run; errors reach the Discover error and notification
+surfaces only.
+
+Operator smoke procedure, which needs network and a model endpoint and is therefore not a pass gate:
+
+```bash
+cd .devboard
+ADRS_DIR=../adrs REPO_DIR=.. bun run start
+```
+
+Open Discover, enter `https://github.com/octocat/Hello-World`, and confirm the cloning state, the
+clone at `.devboard/.tmp/discover-remote/octocat-hello-world`, a completed crawl, the clone's sheet
+and glossaries, a skill save under the clone's `.omp/skills/`, and `Clear remote target` returning
+to this checkout's artifacts. Hash `.omp` from the repository root before and after; the two hashes
+match.
 
 ## Publish a change
 
