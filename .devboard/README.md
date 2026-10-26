@@ -650,6 +650,12 @@ but no test case reads `0 tests`, never `count unknown`. No pyramid graphic is d
 deployment, CI, and branching use compact `dt`/`dd` facts whose list values are comma-separated.
 Architecture renders under the heading `Bounded contexts` as a table headed `Bounded context` with
 path, responsibility, and entry points, followed by external-boundary and shared-kernel chips.
+External boundaries name only external systems — a remote API or service, a message broker, a
+database, or an identity provider the host integrates with across its own process and artifact.
+Language and runtime built-ins describe internal architecture, so `node:child_process`,
+`node:worker_threads`, and other concurrency primitives are never boundaries; a host that integrates
+with no external system shows `None detected.` in that block instead of an invented entry or
+`unknown`.
 `Stack` renders one full-width chip band after the two columns; a chip whose package is installed
 under `node_modules/` becomes a link to the repository its manifest declares, and every other chip
 stays plain text. Environments is `unknown` here and is not listed. The

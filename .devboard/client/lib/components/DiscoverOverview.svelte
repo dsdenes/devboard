@@ -170,6 +170,7 @@
       return text.length > 0 && text.toLowerCase() !== "none detected" ? [text] : [];
     }
     if (!Array.isArray(leaf.value)) return [];
+    if (leaf.value.length === 0) return ["None detected."];
     const values = leaf.value.map((value) => scalarText(value).trim()).filter(Boolean);
     return [...new Set(values)].filter((value) => value.toLowerCase() !== "none detected");
   }

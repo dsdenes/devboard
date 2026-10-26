@@ -108,7 +108,9 @@ Every value below is a **leaf**:
   A list carries at most 64 entries.
 - Lists are sorted by their first string. A leaf whose fact does not exist is `unknown` with
   `"value": null` and a reason; it is never an empty guess. `environments` is the exception and
-  always carries at least the production entry described below.
+  always carries at least the production entry described below; `architecture.externalBoundaries`
+  is the other exception and stages an observed empty list, as the External boundaries section
+  states.
 
 Sections and required keys:
 
@@ -147,7 +149,7 @@ Sections and required keys:
   "architecture": {
     "contexts": { "value": [{ "name": "context name", "path": "repo-relative path", "responsibility": "short responsibility", "entryPoints": ["repo-relative path"] }], "evidence": ["path"], "confidence": "observed" },
     "dependencyDirection": { "value": "short direction statement", "evidence": ["path"], "confidence": "inferred" },
-    "externalBoundaries": { "value": ["boundary"], "evidence": ["path"], "confidence": "observed" },
+    "externalBoundaries": { "value": ["external system"], "evidence": ["path"], "confidence": "observed" },
     "sharedKernels": { "value": ["kernel and path"], "evidence": ["path"], "confidence": "observed" }
   },
   "ci": {
@@ -212,13 +214,46 @@ Section rules:
   in the test files; never run the suite. A level with evidence but no test case is `0`; a level
   with no evidence is omitted. Never write `unknown` as a count.
 - `architecture` reports detected bounded contexts or modules with path and responsibility, entry
-  points, allowed dependency direction, external boundaries, and shared kernels. `ci` reports
-  provider, triggers, jobs, required quality gates, and artifacts; with no CI configuration use
-  `none detected`, never invented jobs.
+  points, allowed dependency direction, shared kernels, and `externalBoundaries`, which carries
+  external systems only and never internal architecture. `ci` reports provider, triggers, jobs,
+  required quality gates, and artifacts; with no CI configuration use `none detected`, never
+  invented jobs.
 - `runtime`, `dependencyMap`, and `delivery` are mandatory cards. Report languages, runtimes,
   package managers, versions, and manifests; binaries, packages, routes, jobs, external services,
   data stores, and key dependencies; artifact target, release channels, version scheme, and
   migration policy.
+
+## External boundaries
+
+`architecture.externalBoundaries` names external systems only. It is the one architecture leaf with
+a rule of its own, and that rule overrides the general empty-list rule above.
+
+- An external boundary is an external system the host integrates with across its own process and
+  artifact: a remote API or service, a message broker, a database, an identity provider, or an
+  external tool the host does not ship. Name the external system, not the module or primitive that
+  reaches it, and stage that system's own name.
+- Language and runtime built-ins are never a boundary. `node:child_process`, `node:worker_threads`,
+  and the other concurrency primitives and standard-library modules a runtime ships describe
+  internal architecture: they start, schedule, or coordinate the host's own work inside its own
+  process and artifact. A language built-in, a standard-library type, an operating-system facility,
+  and a concurrency primitive are each never a boundary.
+- A name that is not verbatim in a cited file comes from the host's own configuration,
+  documentation, or constant: the host name or endpoint its code calls, the client library it
+  imports, or the identifier it declares. Never name a system from the usual stack of the
+  ecosystem, from habit, or by rewriting a domain out of a path. Two crawls of unchanged input
+  therefore stage the same entry.
+- `architecture.externalBoundaries is the one leaf that stages an empty observed list`: when the
+  host integrates with no external system, write `"value": []` with `confidence: observed` and at
+  least one evidence entry naming the files that prove the absence, never `unknown` and never an
+  invented entry.
+
+Examples:
+
+- A module that spawns the host's own worker script and subprocesses through `node:child_process`
+  and `node:worker_threads`: no boundary, because both are runtime built-ins.
+- A module that calls `fetch("https://api.openweathermap.org/data/2.5/weather")` for weather:
+  `api.openweathermap.org`, the external system.
+- A service that reads and writes through a Postgres driver: `PostgreSQL`, the external system.
 
 ## Glossary (UbiLang)
 
@@ -373,7 +408,9 @@ Content each skill must carry:
 - **discover-architecture-boundaries**: bounded contexts, entry points, dependency direction,
   persistence, integrations, and prohibited cross-boundary imports.
 - **discover-glossary**: the canonical glossary directory, the confirmed and rejected term
-  rules, and the proposal process.
+  rules, and the proposal process. Name every glossary file at its published path
+  `.omp/discover/glossary/<bounded-context>.glossary.yaml`, one bullet per bounded context; the
+  published glossary is a harness artifact, not a host source, so naming it is allowed.
 
 All five baselines must be internally consistent and consistent with the glossary. Never recommend
 an invalidated concept's preferred label. If two generated bullets would contradict, rewrite them
@@ -430,6 +467,9 @@ Confirm all of the following:
       every `unknown` leaf other than `environments` has a null value, empty evidence, and a
       reason; every known leaf has at least one repo-relative evidence entry; `environments`
       carries at least the production entry.
+- [ ] `architecture.externalBoundaries` names external systems only: each entry is an external
+      system, no runtime built-in, `node:` module, or concurrency primitive appears, and a host with
+      none stages `[]` with `confidence: observed` and evidence.
 - [ ] No staged file contains an absolute path, a secret value, a URL with user info, a paragraph,
       a timestamp, or a run id.
 - [ ] At least one `glossary/<boundedContext>.glossary.yaml` exists, parses as YAML, has the

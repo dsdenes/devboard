@@ -25,7 +25,7 @@ Real published artifacts of the vitest-turbo host, `sheet.json` schema 1:
 | Commands | install, test, try-out, release observed; build, lint, typecheck, dev/run not observed |
 | Branching | default `main`, merge method `merge`; release branches and model not observed |
 | Testing | 2 levels, 118 unit tests, contract level with unknown count, whole suite `node --test test/*.js`, pyramid note |
-| Architecture | 5 contexts (browser-testing, module-loading, runner-cli, test-execution, test-reporting), dependency direction, 2 external boundaries, 1 shared kernel |
+| Architecture | 5 contexts (browser-testing, module-loading, runner-cli, test-execution, test-reporting), dependency direction, no external boundaries (the worker and child-process use is a runtime built-in), 1 shared kernel |
 | CI | GitHub Actions, triggers `release published` / `workflow_dispatch`, job `publish`, gate `release tag matches package version`; artifacts not observed |
 | Dependency map | binaries `vitest`, `vitest-turbo`; package `@dsdenes/vitest-turbo`; external `registry.npmjs.org`; key deps `@babel/parser`, `chai`, `typescript`; routes and data stores not observed |
 | Environments | none detected (an unknown) |
