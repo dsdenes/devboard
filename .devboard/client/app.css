@@ -245,6 +245,63 @@ kbd {
   width: 18px;
 }
 
+.activity-bar__modes {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.activity-bar__actions {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: auto;
+  padding-top: 8px;
+  width: 100%;
+}
+
+.activity-bar__action {
+  position: relative;
+}
+
+.activity-bar__unread {
+  background: var(--error);
+  border: 1px solid var(--activity-bar);
+  border-radius: 999px;
+  height: 6px;
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  width: 6px;
+}
+
+.activity-tab__state {
+  border: 1px solid var(--activity-bar);
+  border-radius: 999px;
+  height: 6px;
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  width: 6px;
+}
+
+.activity-tab__state[data-state="running"] {
+  background: var(--accent);
+}
+
+.activity-tab__state[data-state="attention"],
+.activity-tab__state[data-state="stale"] {
+  background: var(--warning);
+}
+
+.activity-tab__state[data-state="idle"] {
+  background: var(--border-strong);
+}
+
 .pane-fill {
   display: flex;
   height: 100%;
@@ -2160,6 +2217,139 @@ a.discover-chip--link:focus-visible {
 .sidebar-item--nested {
   padding-left: 8px;
 }
+.goal-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.goal-page--console {
+  overflow: auto;
+}
+
+.goal-page--fill {
+  overflow: auto;
+  padding-bottom: 56px;
+}
+
+.goal-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.goal-empty-state {
+  gap: 8px;
+}
+
+.goal-empty-state__title {
+  font-size: 16px;
+  font-weight: 650;
+  margin: 0;
+}
+
+.goal-filters {
+  flex: 0 0 auto;
+}
+
+.goal-filters__body {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 8px;
+}
+
+.goal-filters__body > input {
+  flex: 1 1 220px;
+  max-width: 360px;
+}
+
+.filter-chips {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.filter-chip {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font-size: 11px;
+  height: 24px;
+  padding: 0 8px;
+}
+
+.filter-chip:hover {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+
+.filter-chip[aria-pressed="true"] {
+  background: var(--accent-surface);
+  border-color: var(--accent);
+  color: var(--foreground);
+}
+
+.goal-adrs-panel,
+.goal-skills {
+  flex: 1;
+  min-height: 0;
+}
+
+.goal-activity {
+  flex: 1 0 220px;
+  min-height: 220px;
+}
+
+.goal-activity--idle {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.goal-activity .panel__body {
+  overflow: hidden;
+}
+
+.goal-answer-input {
+  background: var(--background);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--foreground);
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.goal-answer-input:focus-visible {
+  border-color: var(--ring);
+  outline: 2px solid var(--ring);
+}
+
+.goal-contradictions .message {
+  font-size: 12px;
+}
+
+.sidebar-progress {
+  background: var(--border-subtle);
+  border-radius: 999px;
+  height: 4px;
+  margin: 2px 4px 6px;
+  overflow: hidden;
+}
+
+.sidebar-progress > span {
+  background: var(--success);
+  display: block;
+  height: 100%;
+}
+
 .goal-document {
   flex: 1;
   min-height: 0;
@@ -2168,13 +2358,15 @@ a.discover-chip--link:focus-visible {
 .goal-document .goal-details {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   padding: 0;
 }
 
 .goal-revision {
   align-items: stretch;
+  flex: 0 0 auto;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   padding: 8px;
 }
 
@@ -2186,9 +2378,15 @@ a.discover-chip--link:focus-visible {
 }
 
 .goal-revision__input {
-  min-height: 96px;
+  min-height: 88px;
   padding: 6px 8px;
-  resize: vertical;
+  resize: none;
+}
+
+.goal-revision__hint {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  margin: 0;
 }
 
 .goal-revision__actions {

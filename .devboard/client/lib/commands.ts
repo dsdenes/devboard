@@ -153,7 +153,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
 
   // Open workspace tabs, so the palette can reach every surface.
   const tabCommands: Array<[Mode, WorkspaceTab]> = [
-    ["goal", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
+    ["goal", { id: "overview", kind: "overview", resourceId: "overview", title: "Implementation" }],
     ["goal", { id: "adrs", kind: "adrs", resourceId: "adrs", title: "ADRs" }],
     ["goal", { id: "goal-document", kind: "goal-document", resourceId: "goal-document", title: "Goal document" }],
     ["goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" }],
@@ -346,7 +346,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     disabled: () => disabledWhen(goal.question === null, "No question is waiting."),
     run: () => {
       if (goal.question === null) {
-        ctx.openTab("goal", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" });
+        ctx.openTab("goal", { id: "overview", kind: "overview", resourceId: "overview", title: "Implementation" });
         return ctx.focusLater("goal", "#goal-answer-input");
       }
       goal.submitAnswer(goal.draft);

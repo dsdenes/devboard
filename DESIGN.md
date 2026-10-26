@@ -199,6 +199,18 @@ components:
     typography: "{typography.body}"
     rounded: "{rounded.md}"
     padding: 8px
+  page-header:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.foreground}"
+    typography: "{typography.body}"
+    rounded: "{rounded.md}"
+    padding: 10px 12px
+  stage-track:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.muted-foreground}"
+    typography: "{typography.body-small}"
+    rounded: "{rounded.sm}"
+    padding: 4px 6px
 ---
 
 # Devboard Harness Interface
@@ -333,7 +345,8 @@ Documented exceptions outside the scale: Flow diagram grid gaps of 18px and 22px
 `14px 32px` column gap are geometry of an inline SVG map, not layout spacing. The 26px, 30px,
 34px, and 44px region heights and the 64px rail are fixed shell dimensions. The 56px bottom
 padding on a Discover page reserves the fixed notification region (34px above the 26px status
-bar) so a page's last control can scroll clear of it. The 180px Discover activity terminal, the
+bar) so a page's last control can scroll clear of it; the same 56px on the Goal document page
+clears both that region and the fixed report control. The 180px Discover activity terminal, the
 104px fact-label column, the 160px Discover boundary-role column, the 200–600px sidebar bounds,
 and the 160px split minimum are component geometry, not spacing steps.
 
@@ -377,14 +390,29 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   at 12px, `muted-foreground` placeholder, `ring` focus ring. Disabled is 50% opacity.
 - **Panel** (`.panel` in `app.css`) — `surface` fill, 1px `border`, 4px radius, 30px header,
   8px body padding; the table container and the sidebar reuse the same surface and border rule.
+- **Page header** (`page-header.svelte`) — the first region of every workspace page: an optional
+  10px `overline` eyebrow, one 20px `page-title` `h1` (truncates with a tooltip, never wraps), an
+  optional 12px `body-small` subtitle, an optional meta row of badges and counts (4px rows, 12px
+  columns), and a right-aligned action group (6px gaps, one filled primary at most). It renders a
+  native `<header>`; `flat` drops the frame when a parent panel owns it. 10px 12px padding.
+- **Stage track** (`stage-track.svelte`) — five equal-width stage cells (Goal, Epics, ADRs,
+  Implementation, Finished) at 11px/600, 4px gaps, 3px radius, `border-subtle` for future stages,
+  `border` for complete stages, and `accent-surface` plus a 1px `accent` edge for the current
+  stage (`aria-current="step"`). Below it a 11px detail row states the pass, one state word
+  (Not started, Running, Paused, Finished, Manual run), and the current work item. It never
+  infers progress: `seen=false` keeps Goal current.
 - **Badge** (`.badge`) — full-radius outline pill, `overline` type, 2px 6px padding; tone comes
   from the matching state token and the text always states the meaning.
-- **Mode rail** (`.activity-bar`) — 64px vertical rail, `activity-bar` fill, 1px `border` on its
-  right edge. Three `role="tab"` controls, each 56×48px: an 18px icon over a 10px `overline`
-  label, 4px apart. Resting color is `muted-foreground`; hover and the selected tab use the
-  `secondary` fill, a `border-strong` outline, and `foreground` text; the selected tab also
-  carries a 2px `accent` bar on its left edge, outside the tab box. The rail never shows a brand
-  label and never collapses to icons.
+- **Mode rail** (`.activity-bar`) — the shared application menu: 64px vertical rail, `activity-bar`
+  fill, 1px `border` on its right edge. The three `role="tab"` controls sit in a `role="tablist"`
+  group, each 56×48px: an 18px icon over a 10px `overline` label, 4px apart. Resting color is
+  `muted-foreground`; hover and the selected tab use `secondary`, a `border-strong` outline, and
+  `foreground` text; the selected tab carries a 2px `accent` bar on its left edge, outside the tab
+  box. A 6px state dot (accent running, warning attention/stale, `border-strong` idle) sits at the
+  tab's top-right with no text; the mode's state word joins its accessible name. Below a 1px
+  divider at the rail's bottom, three 28px ghost icon buttons — commands (`Ctrl+K`),
+  notifications, theme — are the application actions. The rail never shows a brand label and never
+  collapses to icons only.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page

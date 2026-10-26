@@ -11,13 +11,24 @@
         "variant": {
           "type": "string",
           "description": "Visual emphasis. default is the filled primary action; secondary is the default resting style.",
-          "enum": ["default", "secondary", "outline", "ghost", "destructive", "link"],
+          "enum": [
+            "default",
+            "secondary",
+            "outline",
+            "ghost",
+            "destructive",
+            "link"
+          ],
           "default": "secondary"
         },
         "size": {
           "type": "string",
           "description": "Control height. default is 28px, sm is 24px with 11px type, icon is a 28px square.",
-          "enum": ["default", "sm", "icon"],
+          "enum": [
+            "default",
+            "sm",
+            "icon"
+          ],
           "default": "default"
         },
         "class": {
@@ -38,7 +49,11 @@
         "type": {
           "type": "string",
           "description": "Native button type. Overrides the rendered default.",
-          "enum": ["button", "submit", "reset"],
+          "enum": [
+            "button",
+            "submit",
+            "reset"
+          ],
           "default": "button"
         },
         "onclick": {
@@ -116,6 +131,92 @@
           "type": "boolean",
           "description": "Native disabled attribute; renders at 50% opacity.",
           "default": false
+        }
+      }
+    },
+    "PageHeader": {
+      "description": "Page identity block shared by every workspace page: an optional overline eyebrow, one h1 title, an optional subtitle, an optional meta row, and a right-aligned action group. It renders a native <header> landmark; the title is the page's only h1 and truncates with a title tooltip. flat removes the panel frame when a parent panel owns the border. Actions must contain at most one filled primary. Source: .devboard/client/lib/components/ui/page-header.svelte.",
+      "example": "<script>\n  import PageHeader from \"./lib/components/ui/page-header.svelte\";\n  import Button from \"./lib/components/ui/button.svelte\";\n</script>\n\n<PageHeader eyebrow=\"Plan\" title=\"Goal document\" subtitle={state}>\n  {#snippet meta()}<span class=\"muted\">GOAL.md</span>{/snippet}\n  {#snippet actions()}<Button variant=\"default\">Save goal</Button>{/snippet}\n</PageHeader>",
+      "props": {
+        "eyebrow": {
+          "type": "string",
+          "description": "Uppercase overline above the title, 10px label type in muted-foreground."
+        },
+        "title": {
+          "type": "string",
+          "description": "The page h1. 20px page-title type; truncates with a title tooltip and never wraps to a second line.",
+          "required": true
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "One-sentence page purpose or state, 12px body-small in muted-foreground."
+        },
+        "meta": {
+          "type": "snippet",
+          "description": "Optional inline meta row: status badges, counts, a file path. Wraps at 4px row and 12px column gaps."
+        },
+        "actions": {
+          "type": "snippet",
+          "description": "Right-aligned action group. At most one filled primary action per page; secondary and outline follow."
+        },
+        "flat": {
+          "type": "boolean",
+          "description": "Removes the surface fill, border, radius, and padding so a parent panel owns the frame.",
+          "default": false
+        },
+        "testid": {
+          "type": "string",
+          "description": "Value for data-testid on the header element."
+        }
+      }
+    },
+    "StageTrack": {
+      "description": "Five-stage lifecycle position for Goal mode: Goal, Epics, ADRs, Implementation, Finished. It marks the current stage with aria-current=\"step\", marks earlier stages complete, and prints the pass, a state word (Not started, Running, Paused, Finished, Manual run), and the work item. It never infers progress the server did not report; seen=false always renders the Goal stage as current. Source: .devboard/client/lib/components/ui/stage-track.svelte.",
+      "example": "<script>\n  import StageTrack from \"./lib/components/ui/stage-track.svelte\";\n</script>\n\n<StageTrack stage=\"adr\" pass={2} paused={false} seen workLabel=\"0003-ledger-schema.md\" workUrl={null} />",
+      "props": {
+        "stage": {
+          "type": "string",
+          "description": "Current lifecycle stage from the server.",
+          "enum": [
+            "goal",
+            "epic",
+            "adr",
+            "implementation",
+            "finished"
+          ],
+          "required": true
+        },
+        "pass": {
+          "type": "number",
+          "description": "Lifecycle pass number, printed only after the lifecycle reports a stage other than Goal.",
+          "required": true
+        },
+        "paused": {
+          "type": "boolean",
+          "description": "Whether the lifecycle is paused; renders the Paused state word.",
+          "required": true
+        },
+        "seen": {
+          "type": "boolean",
+          "description": "False until the server reports a stage other than Goal. Suppresses the pass and states Not started.",
+          "required": true
+        },
+        "workLabel": {
+          "type": "string",
+          "description": "The epic or ADR currently processed, or a manual run title. Rendered as text or a link."
+        },
+        "workUrl": {
+          "type": "string",
+          "description": "Upstream epic URL for workLabel; null renders plain text."
+        },
+        "manual": {
+          "type": "boolean",
+          "description": "A single-record run outside the lifecycle. Changes the state word and the work verb.",
+          "default": false
+        },
+        "testid": {
+          "type": "string",
+          "description": "Value for data-testid on the track root."
         }
       }
     }

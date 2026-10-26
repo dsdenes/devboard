@@ -21,15 +21,20 @@ export const PANE_KEY_PREFIX = "paneforge:";
 
 const MODES: Mode[] = ["goal", "flow", "discover"];
 
-function defaultTab(): WorkspaceTab {
-  return { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" };
+function defaultTab(mode: Mode): WorkspaceTab {
+  return {
+    id: "overview",
+    kind: "overview",
+    resourceId: "overview",
+    title: mode === "goal" ? "Implementation" : "Overview",
+  };
 }
 
 export function defaultTabs(): Record<Mode, WorkspaceTab[]> {
   return {
-    goal: [defaultTab()],
-    flow: [defaultTab()],
-    discover: [defaultTab()],
+    goal: [defaultTab("goal")],
+    flow: [defaultTab("flow")],
+    discover: [defaultTab("discover")],
   };
 }
 
@@ -72,7 +77,11 @@ function readSnapshot(): LayoutSnapshot | null {
         const id = active[mode];
         const chosen = clean.find((tab) => tab.id === id) ?? clean[0];
         if (chosen !== undefined) {
-          nextTabs[mode] = [chosen];
+          nextTabs[mode] = [
+            mode === "goal" && chosen.id === "overview"
+              ? { ...chosen, title: "Implementation" }
+              : chosen,
+          ];
           nextActive[mode] = chosen.id;
         }
       }
