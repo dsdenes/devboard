@@ -1,0 +1,390 @@
+---
+version: alpha
+name: Devboard Harness Interface
+description: Dense, dark-first operator console for repository goals, ADR records, Flow sessions, and Discover artifacts.
+colors:
+  background: "#0d1117"
+  surface: "#161b22"
+  surface-raised: "#1c2128"
+  foreground: "#e6edf3"
+  muted-foreground: "#8b949e"
+  border: "#30363d"
+  border-subtle: "#21262d"
+  border-strong: "#6e7681"
+  ring: "#58a6ff"
+  primary: "#1f6feb"
+  primary-hover: "#388bfd"
+  primary-foreground: "#ffffff"
+  secondary: "#21262d"
+  secondary-hover: "#30363d"
+  accent: "#58a6ff"
+  accent-surface: "#16233a"
+  destructive: "#da3633"
+  destructive-foreground: "#ffffff"
+  success: "#3fb950"
+  success-surface: "#16251b"
+  warning: "#d29922"
+  warning-surface: "#2b2411"
+  error: "#ff7b72"
+  error-surface: "#2b1513"
+  row-hover: "#1b2129"
+  activity-bar: "#0a0d12"
+  selection-background: "#264f78"
+  flow-contract: "#58a6ff"
+  flow-contract-surface: "#16233a"
+  flow-entity: "#bc8cff"
+  flow-entity-surface: "#241a33"
+  flow-naming: "#3fb950"
+  flow-naming-surface: "#16251b"
+  flow-data: "#e3b341"
+  flow-data-surface: "#2b2411"
+  flow-dependency: "#6cb6c8"
+  flow-dependency-surface: "#13292c"
+  flow-irreversible: "#ff7b72"
+  flow-irreversible-surface: "#2b1513"
+  flow-structure: "#9aa4ae"
+  flow-structure-surface: "#22272c"
+typography:
+  page-title:
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    fontSize: 20px
+    fontWeight: 650
+    lineHeight: 1.2
+    letterSpacing: -0.01em
+  section-title:
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    fontSize: 18px
+    fontWeight: 650
+    lineHeight: 1.2
+    letterSpacing: 0
+  panel-title:
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    fontSize: 12px
+    fontWeight: 600
+    lineHeight: 1.3
+    letterSpacing: 0
+  body:
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    fontSize: 13px
+    fontWeight: 400
+    lineHeight: 1.45
+    letterSpacing: 0
+  body-small:
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    fontSize: 12px
+    fontWeight: 400
+    lineHeight: 1.45
+    letterSpacing: 0
+  control:
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    fontSize: 12px
+    fontWeight: 500
+    lineHeight: 1.3
+    letterSpacing: 0
+  label:
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    fontSize: 11px
+    fontWeight: 600
+    lineHeight: 1.3
+    letterSpacing: 0.03em
+  overline:
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    fontSize: 10px
+    fontWeight: 700
+    lineHeight: 1.2
+    letterSpacing: 0.08em
+  mono:
+    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace'
+    fontSize: 12px
+    fontWeight: 400
+    lineHeight: 1.45
+    letterSpacing: 0
+  mono-small:
+    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace'
+    fontSize: 11.5px
+    fontWeight: 400
+    lineHeight: 1.4
+    letterSpacing: 0
+spacing:
+  hairline: 2px
+  tight: 4px
+  snug: 6px
+  base: 8px
+  relaxed: 10px
+  loose: 12px
+  wide: 14px
+  wider: 16px
+  section: 24px
+  section-xl: 28px
+rounded:
+  sm: 3px
+  md: 4px
+  lg: 6px
+  full: 999px
+components:
+  button-primary:
+    backgroundColor: "{colors.primary}"
+    textColor: "{colors.primary-foreground}"
+    typography: "{typography.control}"
+    rounded: "{rounded.md}"
+    height: 28px
+    padding: 0 10px
+  button-primary-hover:
+    backgroundColor: "{colors.primary-hover}"
+    textColor: "{colors.primary-foreground}"
+    typography: "{typography.control}"
+    rounded: "{rounded.md}"
+    height: 28px
+  button-secondary:
+    backgroundColor: "{colors.secondary}"
+    textColor: "{colors.foreground}"
+    typography: "{typography.control}"
+    rounded: "{rounded.md}"
+    height: 28px
+    padding: 0 10px
+  button-secondary-hover:
+    backgroundColor: "{colors.secondary-hover}"
+    textColor: "{colors.foreground}"
+    typography: "{typography.control}"
+    rounded: "{rounded.md}"
+    height: 28px
+  button-outline:
+    backgroundColor: transparent
+    textColor: "{colors.foreground}"
+    typography: "{typography.control}"
+    rounded: "{rounded.md}"
+    height: 28px
+    padding: 0 10px
+  button-ghost:
+    backgroundColor: transparent
+    textColor: "{colors.foreground}"
+    typography: "{typography.control}"
+    rounded: "{rounded.md}"
+    height: 28px
+    padding: 0 10px
+  button-destructive:
+    backgroundColor: "{colors.destructive}"
+    textColor: "{colors.destructive-foreground}"
+    typography: "{typography.control}"
+    rounded: "{rounded.md}"
+    height: 28px
+    padding: 0 10px
+  button-link:
+    backgroundColor: transparent
+    textColor: "{colors.accent}"
+    typography: "{typography.control}"
+    rounded: "{rounded.md}"
+    height: 28px
+  icon-button:
+    backgroundColor: transparent
+    textColor: "{colors.foreground}"
+    rounded: "{rounded.md}"
+    size: 28px
+  input:
+    backgroundColor: "{colors.background}"
+    textColor: "{colors.foreground}"
+    typography: "{typography.control}"
+    rounded: "{rounded.md}"
+    height: 28px
+    padding: 0 8px
+  badge:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.muted-foreground}"
+    typography: "{typography.overline}"
+    rounded: "{rounded.full}"
+    padding: 2px 6px
+  panel:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.foreground}"
+    typography: "{typography.body}"
+    rounded: "{rounded.md}"
+    padding: 8px
+---
+
+# Devboard Harness Interface
+
+## Overview
+
+Devboard is the local browser interface for one repository's goal, ADR records, Flow
+implementation session, and Discover artifacts. It is a desktop operator console: one
+full-viewport shell with an activity bar, a contextual sidebar, one workspace, and a status bar.
+Every mode is a client-side view over the WebSocket contract owned by the server.
+
+The visual intent is GitHub-dark material: flat surfaces, hairline borders, high information
+density, and no decorative weight. Depth comes from surface steps and borders, not shadows. Color
+carries semantic state, never decoration. Type is compact; monospace marks paths, identifiers,
+counts, and commands.
+
+These tokens are derived from the running interface and from the shipped stylesheet
+`.devboard/client/app.css`, with the measured snapshot in
+`.devboard/.design/overview/design-system.md` as corroborating evidence. No token value was
+invented for this document.
+
+## Colors
+
+Dark is the default and normative theme (`:root` in `app.css`). Light is a mirrored palette
+selected by `data-theme="light"`; it carries the same roles with its own values and is never mixed
+with the dark set.
+
+| Token | Dark (normative) | Light | Role |
+|---|---|---|---|
+| `background` | `#0d1117` | `#ffffff` | App canvas, code and terminal surfaces |
+| `surface` | `#161b22` | `#f6f8fa` | Panels, sidebar |
+| `surface-raised` | `#1c2128` | `#ffffff` | Sub-headers, tooltips, popovers |
+| `foreground` | `#e6edf3` | `#1f2328` | Body text and headings |
+| `muted-foreground` | `#8b949e` | `#57606a` | Labels, meta, secondary text |
+| `border` | `#30363d` | `#d0d7de` | Panel and section borders |
+| `border-subtle` | `#21262d` | `#eaeef2` | Row rules |
+| `border-strong` | `#6e7681` | `#6e7781` | Control outlines, badges |
+| `ring` | `#58a6ff` | `#0969da` | Focus outline |
+| `primary` | `#1f6feb` | `#0969da` | Filled primary action |
+| `primary-hover` | `#388bfd` | `#0550ae` | Primary hover |
+| `primary-foreground` | `#ffffff` | `#ffffff` | Text on primary |
+| `secondary` | `#21262d` | `#f6f8fa` | Secondary button and hover fill |
+| `secondary-hover` | `#30363d` | `#eaeef2` | Secondary hover |
+| `accent` | `#58a6ff` | `#0969da` | Links, active indicators |
+| `accent-surface` | `#16233a` | `#eef4ff` | Selected row tint |
+| `destructive` | `#da3633` | `#cf222e` | Destructive action |
+| `destructive-foreground` | `#ffffff` | `#ffffff` | Text on destructive |
+| `success` | `#3fb950` | `#1a7f37` | Pass, resolved, confirmed |
+| `success-surface` | `#16251b` | `#f0f7f2` | Success tint |
+| `warning` | `#d29922` | `#9a6700` | Pending, stale, dirty |
+| `warning-surface` | `#2b2411` | `#fff8e5` | Warning tint |
+| `error` | `#ff7b72` | `#cf222e` | Failure text |
+| `error-surface` | `#2b1513` | `#fdf2f1` | Failure tint |
+| `row-hover` | `#1b2129` | `#f6f8fa` | Table row hover |
+| `activity-bar` | `#0a0d12` | `#f6f8fa` | Activity bar background |
+| `selection-background` | `#264f78` | `#b6d7ff` | Text selection |
+
+The `flow-*` tokens are the Flow diagram categories. Each has a border color and a surface tint:
+`flow-contract` (blue), `flow-entity` (violet), `flow-naming` (green), `flow-data` (amber),
+`flow-dependency` (teal), `flow-irreversible` (red), and `flow-structure` (gray). Their values are
+listed in the front matter for both themes in `app.css`; the dark values are normative here.
+
+Rules:
+
+- `primary` is a fill for exactly one primary action per surface. It is never body text.
+- `accent` is the link and active-indicator color; `ring` is focus only.
+- A tinted surface (`*-surface`) always pairs with its own foreground token, never with a
+  different state color.
+- Status color never carries meaning alone: badges and labels always include the word.
+
+Known deviation, kept because it is the shipped value: white text on `primary-hover`
+(`#388bfd`) measures 3.34:1, while white on resting `primary` (`#1f6feb`) measures 4.63:1 and meets
+WCAG AA. `primary-hover` exists only as a transient hover fill; repairing it would change the
+product's interaction color, so the contrast review for that state belongs to the later page run,
+not to this token derivation.
+
+## Typography
+
+System stacks only; the interface requests no webfont.
+
+- **Sans** — `ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial`,
+  sans-serif. All prose, labels, and controls.
+- **Mono** — `ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono"`,
+  monospace. Paths, file names, identifiers, commands, counts, and table cells that hold them.
+
+| Token | Size / weight | Tracking / line height | Use |
+|---|---|---|---|
+| `page-title` | 20px / 650 | -0.01em / 1.2 | Discover and workspace page titles |
+| `section-title` | 18px / 650 | 0 / 1.2 | Detail-surface titles |
+| `panel-title` | 12px / 600 | 0 / 1.3 | Panel headers |
+| `body` | 13px / 400 | 0 / 1.45 | Default prose and form text |
+| `body-small` | 12px / 400 | 0 / 1.45 | Subtitles, table cells, descriptions |
+| `control` | 12px / 500 | 0 / 1.3 | Buttons, inputs |
+| `label` | 11px / 600 | 0.03em / 1.3 | Table heads, metadata rows |
+| `overline` | 10px / 700 | 0.08em / 1.2 | Sidebar group heads, badges, uppercase micro-labels |
+| `mono` | 12px / 400 | 0 / 1.45 | Code, paths, terminal text |
+| `mono-small` | 11.5px / 400 | 0 / 1.4 | Dense table identifiers and counts |
+
+Do not introduce a size between scale steps. Uppercase micro-labels always use `overline`; never
+apply tracking to sentence-case prose.
+
+## Layout
+
+Spacing uses a **2px base unit** with a half-step grid. The approved scale is 2, 4, 6, 8, 10, 12,
+14, 16, 24, and 28px; values outside it are forbidden.
+
+- **Rhythm.** 8px is the default macro rhythm: panel body padding, the default flex gap, and the
+  gap between stacked panels. 12px is the card-grid gap. 24–28px separates page-level sections.
+- **Component padding.** Buttons `0 10px` (`sm` buttons `0 8px`), inputs `0 8px`, panel bodies
+  8px, panel headers 8px horizontal, sidebar headers `6px` left and right, table cells `5px 8px`,
+  badges `2px 6px`, icon buttons a 28px square.
+- **Layout gaps.** 2px between an icon and its inline text at micro sizes, 4px between an icon and
+  a control label, 6px between header actions, 8px is the default, 12px between cards and grid
+  items, 14px between Discover page columns.
+- **Section spacing.** 8px between stacked panels, 24px between Discover page sections, 28px
+  before a page's final block.
+- **Containers and gutters.** The shell fills the viewport: activity bar 44px, sidebar 300px
+  default (resizable 200–600px), workspace flexible, status bar 26px, content padding 8px. There
+  is no centered page container and no horizontal gutter; panels use their own 1px borders.
+- **Responsive spacing.** The supported viewport is at least 1024×720. Panes resize rather than
+  reflow; when a pane narrows, gaps collapse to the next lower scale step before text wraps.
+  Below 1024×720 the workspace is replaced by the viewport guard, so no mobile spacing scale
+  exists.
+- **Scroll.** The document never scrolls; panels and tables own their scrolling.
+
+Mapping to tokens: `{spacing.hairline}` 2px, `{spacing.tight}` 4px, `{spacing.snug}` 6px,
+`{spacing.base}` 8px, `{spacing.relaxed}` 10px, `{spacing.loose}` 12px, `{spacing.wide}` 14px,
+`{spacing.wider}` 16px, `{spacing.section}` 24px, `{spacing.section-xl}` 28px.
+
+Documented exceptions outside the scale: Flow diagram grid gaps of 18px and 22px and the diagram's
+`14px 32px` column gap are geometry of an inline SVG map, not layout spacing; the 26px, 30px,
+34px, and 44px region heights are fixed shell dimensions, not spacing steps.
+
+## Elevation & Depth
+
+Depth is color layering plus 1px borders, not shadow:
+
+- level 0 `background` — canvas, editors, terminals;
+- level 1 `surface` — panels and sidebar;
+- level 2 `surface-raised` — panel sub-headers, tooltips, popovers;
+- borders: `border-subtle` for row rules, `border` for panel and section edges, `border-strong`
+  for control outlines and badges.
+
+The only shadow in the interface is the tooltip/popover `shadow-md`; it exists to lift transient
+content above a panel and is not a general elevation system. Do not add shadows, gradients, or
+backdrop blur to panels, cards, or rows.
+
+## Shapes
+
+- 3px (`sm`) — small badges, inline code, tabs and compact controls.
+- 4px (`md`) — buttons, inputs, panels, table containers, the default for functional UI.
+- 6px (`lg`) — chips and popovers.
+- 999px (`full`) — status pills and badges.
+
+Functional surfaces never exceed 6px. Circles are reserved for status dots and avatars.
+
+## Components
+
+The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.svelte`,
+`icon-button.svelte`, and `input.svelte`. All consume `app.css` custom properties through
+`var(--token)`; they hold no literal colors.
+
+- **Button** — 28px tall, 4px radius, `control` type. Variants `default` (filled `primary`),
+  `secondary` (default), `outline`, `ghost`, `destructive`, `link`; sizes `default` (28px),
+  `sm` (24px, 11px type), `icon` (28px square). Disabled is 45% opacity and non-interactive.
+  Focus is a 2px `ring` ring with a 1px offset.
+- **IconButton** — square ghost icon button built from the `Button` variant table, 28px, requires
+  an accessible `label`; `active` renders the `secondary-hover` fill and `aria-pressed="true"`.
+  Its tooltip uses `surface-raised`, `control`-sized text, and the `lg` radius.
+- **Input** — 28px tall, `background` fill, `border-strong` outline, 4px radius, `control` type
+  at 12px, `muted-foreground` placeholder, `ring` focus ring. Disabled is 50% opacity.
+- **Panel** (`.panel` in `app.css`) — `surface` fill, 1px `border`, 4px radius, 30px header,
+  8px body padding; the table container and the sidebar reuse the same surface and border rule.
+- **Badge** (`.badge`) — full-radius outline pill, `overline` type, 2px 6px padding; tone comes
+  from the matching state token and the text always states the meaning.
+
+## Do's and Don'ts
+
+- **Do** keep density: 12–13px type, 24–30px controls, 27px table rows, 8px panel padding.
+- **Do** express hierarchy with `background` → `surface` → `surface-raised` and 1px borders.
+- **Do** use `mono` for every path, identifier, commit, count, and command.
+- **Do** give every state badge a word, not only a color.
+- **Do** use `control` for buttons and inputs, and `overline` for uppercase micro-labels.
+- **Don't** add shadows, gradients, blur, or glows; the tooltip shadow is the only exception.
+- **Don't** use `primary` for large fills or for body text.
+- **Don't** use radii above 6px on functional surfaces.
+- **Don't** use spacing values outside the approved scale, including `18px` and `22px` in layout.
+- **Don't** animate longer than 150ms; honor `prefers-reduced-motion`.
+- **Don't** introduce a webfont; the interface renders with system stacks only.

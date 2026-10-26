@@ -5,3 +5,8 @@ dist/
 .env
 .devboard/.test-tmp/
 .reset-test-tmp/
+
+# ui-ux bootstrap scratch: Playwright browsers and build output stay uncommitted
+.design/tmp/
+.design/browsers/
+.devboard/.design/tmp/
