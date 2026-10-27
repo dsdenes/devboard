@@ -440,7 +440,6 @@
   <section class="issues-queue-page" aria-label="Open issues">
     <header class="issues-overview__header">
       <div>
-        <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Open issues</h1>
         <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
@@ -449,7 +448,6 @@
     <div class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Queue</h2>
-        <span class="panel__subtitle">Sorted by number</span>
       </div>
       <div class="panel__body panel__body--flush">
         <ol class="issues-queue" data-testid="issues-queue">
