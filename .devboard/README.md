@@ -920,9 +920,10 @@ match.
 
 ## Publish a change
 
-Merging into `main` and pushing triggers `.github/workflows/devboard-release.yml`, which builds
-the client, runs the harness suite and typecheck, packs `dist/`, `server/`, `templates/`, the
-prompts and omp wrappers into the private harness tarball, publishes the launcher version to
+Merging into `main` and pushing triggers `.github/workflows/devboard-release.yml`, which runs on
+the repository's self-hosted runner — never a GitHub-hosted one, and never a fallback — and
+builds the client, runs the harness suite and typecheck, packs `dist/`, `server/`, `templates/`,
+the prompts and omp wrappers into the private harness tarball, publishes the launcher version to
 npmjs, and creates the GitHub Release `v<version>` with the tarball and its `.sha256`. The
 version is `0.1.<commit-count>` over the full history; a rerun on the same commit leaves the
 existing npm version and release assets untouched.
@@ -966,6 +967,81 @@ intact, writes `update-error` to the journal, and is retried with exponential ba
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
 |`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads GitHub Releases through `gh`.|
+
+## Self-hosted runner
+
+The release workflow's only job runs on a self-hosted runner registered to one machine, selected
+by what that runner advertises: `self-hosted`, `linux`, and `x64` are automatic, and the job also
+requires the extra `devboard` label. A machine that lacks the label never picks up the job, and
+the job never falls back to a GitHub-hosted runner. The registration below is a one-time operator
+procedure; substitute the repository (`<owner>/<repo>`), the dedicated account (`<user>`), its
+home directory (`<home>`), and the runner name (`<runner-name>`) everywhere they appear.
+
+The account is separate from every human account and holds no group that grants privilege — not
+`sudo`, `docker`, or `adm` — because the runner executes repository code and every secret the
+workflow is given.
+
+```bash
+sudo useradd --create-home --shell /bin/bash --user-group <user>
+sudo passwd --lock <user>
+sudo install -d -m 700 -o <user> -g <user> <home>
+sudo install -d -m 755 -o <user> -g <user> <home>/actions-runner
+```
+
+Download the official runner release and unpack it into that directory as `<user>`. The machine
+needs `git`, `curl`, and `tar`; everything else the workflow uses is installed by its `uses:`
+steps into the runner's own tool cache.
+
+```bash
+VERSION=$(gh api repos/actions/runner/releases/latest --jq '.tag_name | ltrimstr("v")')
+sudo -u <user> curl -fsSL -o <home>/actions-runner/runner.tar.gz \
+  "https://github.com/actions/runner/releases/download/v$VERSION/actions-runner-linux-x64-$VERSION.tar.gz"
+sudo -u <user> tar -xzf <home>/actions-runner/runner.tar.gz -C <home>/actions-runner
+sudo -u <user> rm <home>/actions-runner/runner.tar.gz
+```
+
+Register with a registration token minted for the repository. The token is valid for one hour;
+never write it into a file, a commit, or a log.
+
+```bash
+TOKEN=$(gh api -X POST repos/<owner>/<repo>/actions/runners/registration-token --jq .token)
+sudo -u <user> -- bash -c "cd <home>/actions-runner && ./config.sh \
+  --url https://github.com/<owner>/<repo> --token $TOKEN \
+  --name <runner-name> --labels devboard --work _work --unattended"
+```
+
+`--labels devboard` adds to the automatic labels rather than replacing them, `--work _work` keeps
+checkouts under `<home>/actions-runner/_work`, and `--unattended` keeps the setup non-interactive.
+Install the runner as a system service owned by `<user>`, so it starts at boot and restarts after
+a failure without an operator session:
+
+```bash
+sudo bash -c "cd <home>/actions-runner && ./svc.sh install <user>"
+sudo systemctl enable --now actions.runner.<owner>-<repo>.<runner-name>.service
+systemctl status actions.runner.<owner>-<repo>.<runner-name>.service
+```
+
+Verify the registration from any machine whose `gh` is authenticated against the repository; the
+runner must be `online`, idle, and carry exactly the four labels the job asks for:
+
+```bash
+gh api repos/<owner>/<repo>/actions/runners \
+  --jq '.runners[] | {name, status, busy, labels: [.labels[].name]}'
+```
+
+Because the service restarts on failure and at boot, `systemctl is-active` and `systemctl
+is-enabled` are the ongoing health check; a restart of the unit must return `status` to `online`
+within two minutes. The job's own checkouts stay in `<home>/actions-runner/_work/<repo>/<repo>`
+and are readable evidence that a run executed here.
+
+To remove the runner, stop the service before deregistering, then delete the account:
+
+```bash
+sudo bash -c "cd <home>/actions-runner && ./svc.sh uninstall"
+TOKEN=$(gh api -X POST repos/<owner>/<repo>/actions/runners/remove-token --jq .token)
+sudo -u <user> -- bash -c "cd <home>/actions-runner && ./config.sh remove --token $TOKEN"
+sudo userdel --remove <user>
+```
 
 ## Harness watchdog
 
