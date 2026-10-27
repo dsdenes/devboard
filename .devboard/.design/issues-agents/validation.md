@@ -4,15 +4,16 @@
 - Issue: #240 (second redesign of the card surface; the first redesign is `fdda380`).
 - Worktree: `.worktree/issue-240`, branch `issue-240`. All commands ran from `.devboard` in the
   worktree; no path left the repository.
-- This run also merged the concurrent `origin/main` changes (`96b1161` dropped the per-card
-  `running` badge) and keeps the removal of the remaining `needs answer` pill.
+- This run also merged the concurrent `origin/main` changes: `96b1161` dropped the per-card
+  `running` badge, and `9e638f9` reworked the Overview rows; it keeps the removal of the remaining
+  `needs answer` pill on the fleet cards.
 
 ## Commands
 
 ```bash
 bun install --frozen-lockfile
 bun run build                 # vite build, dist rewritten
-bun test                      # 581 pass, 0 fail, 4074 expect() calls, 46 files
+bun test                      # 581 pass, 0 fail, 4070 expect() calls, 46 files
 bun run check                 # svelte-check: 1672 files, 0 errors, 0 warnings
 bun run verify:interface      # passed, including the new card geometry assertions
 bun run verify:issues         # passed on the merged tree
