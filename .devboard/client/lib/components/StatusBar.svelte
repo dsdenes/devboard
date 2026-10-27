@@ -6,6 +6,7 @@
   import { goal } from "../goal.svelte";
   import { layout } from "../layout.svelte";
   import IconButton from "./ui/icon-button.svelte";
+  import WatchdogIndicator from "./watchdog-indicator.svelte";
 
   const connectionLabel = $derived(
     connection.state === "open"
@@ -56,6 +57,7 @@
   <span class="status-item" title="Active mode status" data-testid="status-mode">
     {modeStatus}
   </span>
+  <WatchdogIndicator />
   <span class="status-item status-versions" title={versions}>{versions}</span>
   {#if connection.version?.stale === true}
     <IconButton

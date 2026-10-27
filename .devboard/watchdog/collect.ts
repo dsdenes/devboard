@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { JOURNAL_KINDS, type JournalKind } from "../server/journal";
@@ -15,11 +15,13 @@ export interface Window {
 export interface EvidenceEvent {
   /** File the evidence came from. */
   source: string;
-  /** Event kind: a journal kind, `omp-log`, or `legacy-log`. */
+  /** A journal kind, or `omp-log` for omp's own process log. */
   kind: string;
   /** ISO timestamp used for the window decision. */
   ts: string;
   text: string;
+  /** Severity token an `omp-log` record carried. */
+  level?: "error" | "warn" | "fatal";
   /** Project the evidence belongs to, when attribution resolved it. */
   instance?: Instance;
 }
@@ -41,12 +43,6 @@ export function parseTimestamp(value: unknown): number | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-export function withinWindow(value: unknown, window: Window): boolean {
-  const parsed = parseTimestamp(value);
-  if (parsed === undefined) return false;
-  return parsed >= window.start.getTime() && parsed <= window.end.getTime();
 }
 
 function normalizedPath(root: string, path: string): string {
@@ -103,36 +99,6 @@ export function readJournalEvidence(
   return { events, malformed };
 }
 
-/**
- * The starter script wrote `<harness>/.tmp/devboard-<cksum>.log` before the
- * journal existed. It has no timestamps, so its modification time is the only
- * evidence of when it happened.
- */
-export function readLegacyEvidence(instance: Instance, options: WindowOptions): EvidenceEvent[] {
-  if (instance.legacyLog === undefined || !existsSync(instance.legacyLog)) return [];
-  let modified: number;
-  let source: string;
-  try {
-    modified = statSync(instance.legacyLog).mtimeMs;
-    if (modified < options.window.start.getTime() || modified > options.window.end.getTime()) {
-      return [];
-    }
-    source = readFileSync(instance.legacyLog, "utf8");
-  } catch {
-    return [];
-  }
-  return source
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => ({
-      source: instance.legacyLog as string,
-      kind: "legacy-log",
-      ts: new Date(modified).toISOString(),
-      text: line,
-      instance,
-    }));
-}
-
 export interface ProcessInfo {
   cwd?: string;
   ancestors: number[];
@@ -143,8 +109,6 @@ export interface OmpOptions extends WindowOptions {
   instances: Instance[];
   /** Pids of the watchdog and its descendants. */
   selfPids: Set<number>;
-  /** Session ids of earlier watchdog agent runs. */
-  selfSessions: Set<string>;
   /** Injectable process lookup; defaults to `/proc`. */
   processInfo?: (pid: number) => ProcessInfo | undefined;
 }
@@ -153,7 +117,6 @@ interface OmpRecord {
   timestamp?: unknown;
   level?: unknown;
   pid?: unknown;
-  sessionId?: unknown;
   message?: unknown;
   error?: unknown;
   [key: string]: unknown;
@@ -184,7 +147,7 @@ function attribution(
 /**
  * Reads omp's own process logs. A line is evidence for an instance only when
  * its pid worked in that instance's project or descends from that instance's
- * server; the watchdog's pids and sessions never become evidence.
+ * server; the watchdog's own pids never become evidence.
  */
 export function readOmpEvidence(options: OmpOptions): {
   events: EvidenceEvent[];
@@ -247,9 +210,6 @@ export function readOmpEvidence(options: OmpOptions): {
         continue;
       }
       if (options.selfPids.has(pid)) continue;
-      if (record.sessionId !== undefined && options.selfSessions.has(String(record.sessionId))) {
-        continue;
-      }
       const ancestors = processInfo(pid)?.ancestors ?? [];
       if (ancestors.some((ancestor) => options.selfPids.has(ancestor))) continue;
       const owner = attribution(pid, options.instances, processInfo);
@@ -262,6 +222,7 @@ export function readOmpEvidence(options: OmpOptions): {
         kind: "omp-log",
         ts: new Date(ts).toISOString(),
         text: describeOmpLine(record),
+        level,
         instance: owner,
       });
     }
@@ -273,12 +234,11 @@ export interface CollectOptions extends WindowOptions {
   root: string;
   instances: Instance[];
   selfPids: Set<number>;
-  selfSessions: Set<string>;
   logsDir?: string;
   processInfo?: (pid: number) => ProcessInfo | undefined;
 }
 
-/** Collects the journal, legacy, and omp evidence for one cycle window. */
+/** Collects the journal and omp evidence for one cycle window. */
 export function collectEvidence(options: CollectOptions): Collection {
   const events: EvidenceEvent[] = [];
   let malformed = 0;
@@ -286,7 +246,6 @@ export function collectEvidence(options: CollectOptions): Collection {
     const journal = readJournalEvidence(instance, options);
     events.push(...journal.events);
     malformed += journal.malformed;
-    events.push(...readLegacyEvidence(instance, options));
   }
   const omp = readOmpEvidence(options);
   events.push(...omp.events);

@@ -1,41 +1,40 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { Instance, ProcessSnapshot } from "../watchdog/discovery";
 import {
   instancesFromProcesses,
   legacyLogPath,
   posixCksum,
+  type Instance,
+  type ProcessSnapshot,
 } from "../watchdog/discovery";
-import { journalFile } from "../server/journal";
+import { journalFile, openJournal } from "../server/journal";
 import {
   normalizeEvidenceLine,
   readJournalEvidence,
-  readLegacyEvidence,
   readOmpEvidence,
   type EvidenceEvent,
   type Window,
 } from "../watchdog/collect";
 import { analyzeEvidence } from "../watchdog/findings";
 import { acquireLock } from "../watchdog/lock";
-import { loadLedger } from "../watchdog/ledger";
+import { emptyLedger, loadLedger } from "../watchdog/ledger";
+import type { GhOutcome, GhRun } from "../watchdog/github";
 import {
   runCycle,
-  type CycleDeps,
-  type IntegrateOutcome,
+  type CycleOptions,
 } from "../watchdog/coordinator";
 
 /**
- * Every fixture lives under the repository's `.devboard/.tmp`. The tests use a
- * real git repository for the merge machinery but never touch a remote, the
- * network, or a model.
+ * Every fixture lives under the repository's `.devboard/.tmp`. Filing is
+ * proven against a stub `gh`; no test uses the network, a model, or a remote.
  */
 
 const harnessRoot = resolve(import.meta.dir, "..");
-const repositoryRoot = resolve(harnessRoot, "..");
+const v1StateFixture = join(harnessRoot, "tests", "fixtures", "watchdog-state-v1.json");
 const testRoot = join(harnessRoot, ".tmp");
 const fixedNow = new Date("2026-10-24T12:00:00.000Z");
 const window: Window = {
@@ -63,21 +62,24 @@ function git(directory: string, ...args: string[]): string {
   return result.stdout.trim();
 }
 
-async function fixtureRepository(): Promise<{ root: string; harness: string }> {
+async function fixtureRepository(): Promise<{ root: string; harness: string; origin: string }> {
   const base = await temporaryDirectory("test-watchdog-repo");
   const root = join(base, "repo");
+  const origin = join(base, "origin.git");
   const harness = join(root, ".devboard");
   await mkdir(harness, { recursive: true });
   await writeFile(join(root, "AGENTS.md"), "# Harness instructions\n");
   await writeFile(join(root, ".gitignore"), ".devboard/.tmp/\n.worktree/\n");
   await writeFile(join(harness, "README.md"), "# Harness\n");
-  await writeFile(join(harness, "marker.txt"), "baseline\n");
-  git(root, "init", "--quiet");
+  git(base, "init", "--quiet", "--bare", origin);
+  git(root, "init", "--quiet", "--initial-branch=main");
   git(root, "config", "user.email", "devboard@example.test");
   git(root, "config", "user.name", "Devboard Test");
   git(root, "add", "-A");
   git(root, "commit", "--quiet", "-m", "fixture");
-  return { root, harness };
+  git(root, "remote", "add", "origin", origin);
+  git(root, "push", "--quiet", "--set-upstream", "origin", "main");
+  return { root, harness, origin };
 }
 
 function instanceFor(root: string, port: number, harness = join(root, ".devboard")): Instance {
@@ -98,59 +100,70 @@ function event(
   text: string,
   kind: EvidenceEvent["kind"] = "activity",
   owner?: Instance,
+  level?: EvidenceEvent["level"],
 ): EvidenceEvent {
   return {
     source: join(root, ".devboard", ".tmp", "journal", "fixture.jsonl"),
     kind,
     ts: new Date(fixedNow.getTime() - minutesAgo * 60 * 1000).toISOString(),
     text,
+    ...(level === undefined ? {} : { level }),
     ...(owner === undefined ? {} : { instance: owner }),
   };
 }
 
-const SENTINELS = [
-  "synthetic error: ENOTFOUND the model endpoint",
-  "command failed: bun run build exited with code 1",
-  "retrying after a transient failure",
-  "BLOCKER: cannot proceed without the operator",
-  "I am not sure which config is correct; this is confusing",
-];
-
-function stubDeps(
-  root: string,
-  events: EvidenceEvent[],
-  overrides: Partial<CycleDeps> & {
-    onAgent?: (worktree: string) => void;
-    onIntegrate?: () => void;
-  } = {},
-): { deps: Partial<CycleDeps>; counts: { agent: number; gate: number; integrate: number } } {
-  const instance = instanceFor(root, 8080);
-  const counts = { agent: 0, gate: 0, integrate: 0, publish: 0 };
-  const deps: Partial<CycleDeps> = {
-    discover: () => [instance],
-    collect: () => ({ events, malformed: 0, unattributed: 0 }),
-    agent: async (_prompt, worktree) => {
-      counts.agent += 1;
-      overrides.onAgent?.(worktree);
-      return { code: 0, stdout: "", stderr: "" };
-    },
-    gate: async () => {
-      counts.gate += 1;
-      return { ok: true };
-    },
-    integrate: async (): Promise<IntegrateOutcome> => {
-      counts.integrate += 1;
-      overrides.onIntegrate?.();
-      return { ok: true, commit: "a".repeat(40), pushed: true, refreshed: 1, deferred: [] };
-    },
-    publish: async () => {
-      counts.publish += 1;
-      return { ok: true, refreshed: 1, deferred: [] };
-    },
-    ...overrides,
-  };
-  return { deps, counts };
+interface GhReply {
+  code?: number;
+  stdout?: string;
+  stderr?: string;
+  timedOut?: boolean;
 }
+
+interface GhCall {
+  argv: string[];
+  stdin: string;
+}
+
+function ghStub(reply: (call: GhCall, index: number) => GhReply = () => ({})): {
+  gh: GhRun;
+  calls: GhCall[];
+} {
+  const calls: GhCall[] = [];
+  const gh: GhRun = (argv, stdin) => {
+    const call = { argv, stdin };
+    const result = reply(call, calls.length);
+    calls.push(call);
+    const code = result.code ?? 0;
+    const outcome: GhOutcome = {
+      code,
+      stdout: result.stdout ?? (code === 0 ? "https://github.com/dsdenes/devboard/issues/7" : ""),
+      stderr: result.stderr ?? "",
+      ...(result.timedOut === true ? { timedOut: true } : {}),
+    };
+    return outcome;
+  };
+  return { gh, calls };
+}
+
+function cycleFor(
+  root: string,
+  options: { events: EvidenceEvent[]; gh: GhRun; now?: Date; dryRun?: boolean },
+): CycleOptions {
+  const instance = instanceFor(root, 8080);
+  return {
+    root,
+    now: options.now ?? fixedNow,
+    stateDir: join(root, ".devboard", ".tmp", "watchdog"),
+    ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
+    deps: {
+      discover: () => [instance],
+      collect: () => ({ events: options.events, malformed: 0, unattributed: 0 }),
+      gh: options.gh,
+    },
+  };
+}
+
+const SERVER_ERROR = "Synthetic error: ENOTFOUND the model endpoint";
 
 describe("discovery", () => {
   test("matches POSIX cksum", () => {
@@ -265,23 +278,6 @@ describe("window and attribution", () => {
     expect(collected.malformed).toBe(1);
   });
 
-  test("reads a legacy log only while it is inside the window", async () => {
-    const base = await temporaryDirectory("test-watchdog-legacy");
-    const harness = join(base, "harness");
-    await mkdir(join(harness, ".tmp"), { recursive: true });
-    const instance = instanceFor(base, 8080, harness);
-    const legacy = legacyLogPath(harness, base);
-    await writeFile(legacy, "legacy failure line\n");
-    await utimes(legacy, window.end, window.end);
-    const instanceWithLegacy = { ...instance, legacyLog: legacy };
-    expect(
-      readLegacyEvidence(instanceWithLegacy, { window }).map((item) => item.text),
-    ).toEqual(["legacy failure line"]);
-    const old = new Date(window.start.getTime() - 60_000);
-    await utimes(legacy, old, old);
-    expect(readLegacyEvidence(instanceWithLegacy, { window })).toEqual([]);
-  });
-
   test("includes an in-window omp error and drops self and unrelated lines", async () => {
     const base = await temporaryDirectory("test-watchdog-omp");
     const logsDir = join(base, "logs");
@@ -315,23 +311,20 @@ describe("window and attribution", () => {
       }),
       line({
         timestamp: new Date(window.end.getTime() - 4 * 60_000).toISOString(),
-        level: "error",
-        pid: 502,
-        sessionId: "self-session",
-        message: "watchdog session error",
+        level: "debug",
+        pid: 500,
+        message: "debug noise",
       }),
       "{not json",
     ];
     const logPath = join(logsDir, "omp.2026-10-24.1.log");
     await writeFile(logPath, records.join("\n"));
-    await utimes(logPath, window.end, window.end);
 
     const collected = readOmpEvidence({
       logsDir,
       window,
       instances: [instance],
       selfPids: new Set([42]),
-      selfSessions: new Set(["self-session"]),
       processInfo: (pid) =>
         pid === 500
           ? { cwd: base, ancestors: [] }
@@ -341,28 +334,99 @@ describe("window and attribution", () => {
     });
 
     expect(collected.events.map((item) => item.text)).toEqual(["connection error"]);
+    expect(collected.events[0]?.level).toBe("error");
     expect(collected.events[0]?.instance).toEqual(instance);
     expect(collected.unattributed).toBe(1);
     expect(collected.malformed).toBe(1);
   });
 });
 
-describe("findings", () => {
-  test("produces one finding per synthetic signal", async () => {
-    const root = await temporaryDirectory("test-watchdog-findings");
-    const events = SENTINELS.map((text, index) => event(root, index + 1, text));
-    const findings = analyzeEvidence(events, { root, window });
-    expect(findings.map((finding) => finding.category).sort()).toEqual([
-      "blocker",
-      "confusion",
-      "error",
-      "failed-command",
-      "retry",
+describe("evidence mapping", () => {
+  test("activity, lifecycle, update, and ordinary run text never produce a finding", async () => {
+    const root = await temporaryDirectory("test-watchdog-prose");
+    const owner = instanceFor(root, 8080);
+    const prose = "error retry ambiguous blocked crash: the operator asked a question";
+    const events = [
+      event(root, 3, prose, "activity", owner),
+      event(root, 3, "lifecycle implementation pass 2", "lifecycle", owner),
+      event(root, 3, "update checked: error state handled", "update", owner),
+      event(root, 3, "Choose an answer", "question", owner),
+      event(root, 4, "run started", "run-start", owner),
+      event(root, 3, "run finished", "run-stop", owner),
+      event(root, 4, "lane-1 implementation Fix it", "lane-start", owner),
+      event(root, 3, "lane-1 closed", "lane-stop", owner),
+      event(root, 2, "lane-2 retrying", "lane-stop", owner),
+    ];
+    expect(analyzeEvidence(events, { window })).toEqual([]);
+
+    const { root: fixture } = await fixtureRepository();
+    const { gh, calls } = ghStub();
+    const result = await runCycle(cycleFor(fixture, { events, gh }));
+    expect(result.report.findings).toEqual([]);
+    expect(result.report.action).toBe("none");
+    expect(calls).toEqual([]);
+  });
+
+  test("one server-error record is one finding whose fingerprint excludes its path", async () => {
+    const base = await temporaryDirectory("test-watchdog-journal-signal");
+    const harness = join(base, "harness");
+    await mkdir(join(harness, ".tmp", "journal"), { recursive: true });
+    const instance = instanceFor(base, 8080, harness);
+    const journal = openJournal({
+      stateDir: join(harness, ".tmp"),
+      repoDir: base,
+      port: 8080,
+      now: () => fixedNow,
+    });
+    journal.write("server-error", SERVER_ERROR);
+
+    const collected = readJournalEvidence(instance, { window, root: base });
+    const findings = analyzeEvidence(collected.events, { window });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.category).toBe("server-error");
+    expect(findings[0]?.fingerprint).toBe(
+      createHash("sha256").update(`server-error\n${SERVER_ERROR}`).digest("hex").slice(0, 32),
+    );
+    expect(findings[0]?.instances).toEqual([instance]);
+  });
+
+  test("a failed lane-stop is one finding and a closed lane is not", async () => {
+    const root = await temporaryDirectory("test-watchdog-lane");
+    const owner = instanceFor(root, 8080);
+    const failed = event(root, 2, "lane-3 implementation Fix the build failed", "lane-stop", owner);
+    const closed = event(root, 2, "lane-4 implementation Ship it closed", "lane-stop", owner);
+    expect(analyzeEvidence([closed], { window })).toEqual([]);
+    const findings = analyzeEvidence([failed], { window });
+    expect(findings.map((finding) => finding.category)).toEqual(["lane-failed"]);
+  });
+
+  test("update-error and acp-stderr are findings of their own kind", async () => {
+    const root = await temporaryDirectory("test-watchdog-kinds");
+    const owner = instanceFor(root, 8080);
+    const events = [
+      event(root, 3, "update install failed: checksum mismatch", "update-error", owner),
+      event(root, 2, "acp peer wrote to stderr: unexpected token", "acp-stderr", owner),
+    ];
+    expect(analyzeEvidence(events, { window }).map((finding) => finding.category)).toEqual([
+      "update-error",
+      "acp-stderr",
     ]);
-    expect(findings.every((finding) => finding.quote.length > 0)).toBe(true);
-    expect(
-      findings.every((finding) => finding.source === ".devboard/.tmp/journal/fixture.jsonl"),
-    ).toBe(true);
+  });
+
+  test("omp error, warn, and fatal are findings; a level-less record is not", async () => {
+    const root = await temporaryDirectory("test-watchdog-omp-levels");
+    const owner = instanceFor(root, 8080);
+    const events = [
+      event(root, 3, "acp timeout", "omp-log", owner, "error"),
+      event(root, 2, "slow response", "omp-log", owner, "warn"),
+      event(root, 1, "cannot write session", "omp-log", owner, "fatal"),
+      event(root, 1, "plain line", "omp-log", owner),
+    ];
+    expect(analyzeEvidence(events, { window }).map((finding) => finding.category)).toEqual([
+      "omp-error",
+      "omp-warn",
+      "omp-fatal",
+    ]);
   });
 
   test("detects a question loop and a stalled start", async () => {
@@ -374,271 +438,306 @@ describe("findings", () => {
       event(root, 4, "Choose an answer 3", "question", owner),
       event(root, 8, "lane-1 implementing", "lane-start", owner),
     ];
-    const findings = analyzeEvidence(events, { root, window });
+    const findings = analyzeEvidence(events, { window });
     expect(findings.map((finding) => finding.category)).toEqual(["stall", "question-loop"]);
+    expect(findings[1]?.quote).toBe("Choose an answer 3");
+    expect(analyzeEvidence(events.slice(0, 2), { window })).toEqual([]);
   });
 
-  test("invents nothing from a clean window", async () => {
-    const root = await temporaryDirectory("test-watchdog-clean");
-    const findings = analyzeEvidence([event(root, 2, "ADR 0001 resolved cleanly")], {
-      root,
-      window,
+  test("a stop at or after the start ends the stall", async () => {
+    const root = await temporaryDirectory("test-watchdog-stall-ended");
+    const owner = instanceFor(root, 8080);
+    const events = [
+      event(root, 8, "lane-1 implementing", "lane-start", owner),
+      event(root, 6, "lane-1 closed", "lane-stop", owner),
+      event(root, 2, "lane-2 implementing", "lane-start", owner),
+    ];
+    expect(analyzeEvidence(events, { window })).toEqual([]);
+  });
+
+  test("the same text on two dashboards is one fingerprint", async () => {
+    const base = await temporaryDirectory("test-watchdog-shared");
+    const first = instanceFor(base, 8080, join(base, "first"));
+    const second = instanceFor(base, 8081, join(base, "second"));
+    const journals = [first, second].map((instance) => {
+      const journal = openJournal({
+        stateDir: join(instance.harness, ".tmp"),
+        repoDir: base,
+        port: instance.port,
+        now: () => fixedNow,
+      });
+      journal.write("server-error", SERVER_ERROR);
+      return readJournalEvidence(instance, { window, root: base }).events;
     });
-    expect(findings).toEqual([]);
+    const findings = analyzeEvidence(journals.flat(), { window });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.fingerprint).toBe(
+      createHash("sha256").update(`server-error\n${SERVER_ERROR}`).digest("hex").slice(0, 32),
+    );
+    expect(findings[0]?.instances.map((instance) => instance.port).sort()).toEqual([8080, 8081]);
   });
 });
 
-describe("cycle", () => {
-  test("records a no-op for a clean window", async () => {
+describe("filing", () => {
+  test("files one issue per new fingerprint and records it in the ledger", async () => {
     const { root } = await fixtureRepository();
     const stateDir = join(root, ".devboard", ".tmp", "watchdog");
-    const before = git(root, "rev-parse", "HEAD");
-    const { deps, counts } = stubDeps(root, []);
-    const result = await runCycle({ root, now: fixedNow, stateDir, deps });
-    expect(result.report.action).toBe("none");
-    expect(result.report.reason).toBe("no actionable finding");
+    const events = [
+      event(root, 2, SERVER_ERROR, "server-error", instanceFor(root, 8080)),
+      event(root, 1, "update install failed: checksum mismatch", "update-error"),
+    ];
+    const { gh, calls } = ghStub();
+
+    const result = await runCycle(cycleFor(root, { events, gh }));
     expect(result.exitCode).toBe(0);
-    expect(counts).toEqual({ agent: 0, gate: 0, integrate: 0, publish: 0 });
-    expect(git(root, "rev-parse", "HEAD")).toBe(before);
-  });
+    expect(result.report.action).toBe("filed");
+    expect(calls).toHaveLength(2);
+    expect(result.report.issues).toHaveLength(2);
 
-  test("runs with zero dashboards", async () => {
-    const { root } = await fixtureRepository();
-    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
-    const { deps, counts } = stubDeps(root, []);
-    const result = await runCycle({
-      root,
-      now: fixedNow,
-      stateDir,
-      deps: {
-        ...deps,
-        discover: () => [],
-        collect: () => ({ events: [], malformed: 0, unattributed: 0 }),
-      },
-    });
-    expect(result.report.instances).toEqual([]);
-    expect(result.report.findings).toEqual([]);
-    expect(result.report.action).toBe("none");
-    expect(result.exitCode).toBe(0);
-    expect(counts.agent).toBe(0);
-  });
-
-  test("publishes once and reports the same window as duplicate", async () => {
-    const { root } = await fixtureRepository();
-    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
-    const events = [event(root, 1, "synthetic error: ENOTFOUND the model endpoint")];
-    const { deps, counts } = stubDeps(root, events, {
-      onAgent(worktree) {
-        writeFileSync(join(worktree, ".devboard", "healed.txt"), "fixed\n");
-      },
-    });
-
-    const first = await runCycle({ root, now: fixedNow, stateDir, deps });
-    expect(first.report.action).toBe("published");
-    expect(first.report.commit).toBe("a".repeat(40));
-    expect(first.report.dashboards).toEqual({ refreshed: 1, deferred: [] });
-    expect(counts).toEqual({ agent: 1, gate: 1, integrate: 1, publish: 0 });
-    const runDir = first.runDir as string;
-    expect(existsSync(join(runDir, "report.json"))).toBe(true);
-    expect(existsSync(join(runDir, "report.md"))).toBe(true);
-    expect(existsSync(join(runDir, "coordinator.log"))).toBe(true);
-    expect(existsSync(join(stateDir, "latest.json"))).toBe(true);
     const ledger = loadLedger(stateDir);
-    expect(Object.values(ledger.findings)[0]?.disposition).toBe(`published:${"a".repeat(40)}`);
+    for (const issue of result.report.issues) {
+      const entry = ledger.findings[issue.fingerprint];
+      expect(entry?.disposition).toBe(`filed:${issue.url}`);
+      expect(entry?.url).toBe(issue.url);
+      expect(entry?.filedAt).toBe(fixedNow.toISOString());
+      expect(calls.some((call) => call.stdin.includes(issue.fingerprint))).toBe(true);
+    }
+    expect(ledger.pendingFiling).toEqual([]);
 
-    const second = await runCycle({ root, now: fixedNow, stateDir, deps });
-    expect(second.report.action).toBe("duplicate");
-    expect(second.exitCode).toBe(0);
-    expect(counts).toEqual({ agent: 1, gate: 1, integrate: 1, publish: 0 });
-  });
-
-  test("captures the prompt, canonical cwd, and worktree path in a stub agent", async () => {
-    const { root } = await fixtureRepository();
-    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
-    const capture = join(root, "..", "capture.json");
-    const stub = join(root, "..", "stub-agent.ts");
-    await writeFile(
-      stub,
-      `const capture = Bun.argv[2] as string;
-const prompt = await Bun.stdin.text();
-await Bun.write(capture, JSON.stringify({
-  cwd: process.cwd(),
-  prompt,
-  worktree: process.env.WATCHDOG_WORKTREE ?? null,
-  start: process.env.WATCHDOG_WINDOW_START ?? null,
-}));
-`,
-    );
-    const events = SENTINELS.map((text, index) => event(root, index + 1, text));
-    const instance = instanceFor(root, 8080);
-    const previous = process.env.WATCHDOG_AGENT_COMMAND;
-    process.env.WATCHDOG_AGENT_COMMAND = `bun ${stub} ${capture}`;
-    try {
-      const result = await runCycle({
-        root,
-        now: fixedNow,
-        stateDir,
-        deps: {
-          discover: () => [
-            instance,
-            { ...instance, pid: 8081, port: 8081, repoDir: "/projects/second" },
-            { ...instance, pid: 8082, port: 8082, repoDir: "/projects/third" },
-          ],
-          collect: () => ({ events, malformed: 0, unattributed: 0 }),
-          gate: async () => {
-            throw new Error("the gate must not run after an empty worktree");
-          },
-        },
-      });
-      expect(result.report.action).toBe("blocked");
-    } finally {
-      if (previous === undefined) delete process.env.WATCHDOG_AGENT_COMMAND;
-      else process.env.WATCHDOG_AGENT_COMMAND = previous;
+    for (const call of calls) {
+      expect(call.argv.slice(0, 5)).toEqual([
+        "issue",
+        "create",
+        "--repo",
+        "dsdenes/devboard",
+        "--title",
+      ]);
+      expect(call.argv.slice(5)).toEqual([expect.any(String), "--body-file", "-"]);
+      const title = call.argv[5] ?? "";
+      expect(
+        title.startsWith("[watchdog] server-error:") ||
+          title.startsWith("[watchdog] update-error:"),
+      ).toBe(true);
+      expect(title.length).toBeLessThanOrEqual(80);
+      expect(title.includes("\n")).toBe(false);
     }
 
-    const captured = JSON.parse(readFileSync(capture, "utf8")) as {
-      cwd: string;
-      prompt: string;
-      worktree: string;
-      start: string;
-    };
-    expect(captured.cwd).toBe(root);
-    expect(captured.start).toBe(window.start.toISOString());
-    expect(captured.worktree).toContain(join(root, ".worktree", "watchdog-"));
-    for (const sentinel of SENTINELS) expect(captured.prompt).toContain(sentinel);
-    expect(captured.prompt).toContain(window.start.toISOString());
-    expect(captured.prompt).toContain(window.end.toISOString());
-    expect(captured.prompt).toContain("port 8080");
-    expect(captured.prompt).toContain("port 8081");
-    expect(captured.prompt).toContain("port 8082");
-    expect(captured.prompt).toContain(".devboard/**");
-    expect(captured.prompt).toContain(captured.worktree);
+    const serverError = calls.find((call) => call.stdin.includes(SERVER_ERROR));
+    const body = serverError?.stdin ?? "";
+    const fingerprint = result.report.issues.find(
+      (issue) => issue.category === "server-error",
+    )?.fingerprint;
+    expect(fingerprint).toBeDefined();
+    expect(body).toContain(`- Category: \`server-error\``);
+    expect(body).toContain(`- Fingerprint: \`${fingerprint}\``);
+    expect(body).toContain(SERVER_ERROR);
+    expect(body).toContain(`- First seen: ${fixedNow.toISOString()}`);
+    expect(body).toContain(`- Last seen: ${fixedNow.toISOString()}`);
+    expect(body).toContain("- Count: 1");
+    expect(body).toContain(window.start.toISOString());
+    expect(body).toContain(window.end.toISOString());
+    expect(body).toContain(join(root, ".devboard", ".tmp", "watchdog", "runs"));
+    expect(body).toContain(root);
+    expect(body).toContain("port 8080");
+    expect(body).toContain(`pid ${instanceFor(root, 8080).pid}`);
+    expect(body).toContain(`journal \`${instanceFor(root, 8080).journal}\``);
+
+    expect(existsSync(join(stateDir, "latest.json"))).toBe(true);
+    const latest = JSON.parse(readFileSync(join(stateDir, "latest.json"), "utf8"));
+    expect(latest.action).toBe("filed");
+    expect(latest.issues).toHaveLength(2);
+    expect(result.runDir).toBeDefined();
+    expect(existsSync(join(result.runDir as string, "report.json"))).toBe(true);
+    expect(existsSync(join(result.runDir as string, "report.md"))).toBe(true);
+    expect(existsSync(join(result.runDir as string, "coordinator.log"))).toBe(true);
   });
 
-  test("stops before merging when a gate fails and keeps the worktree", async () => {
+  test("an unchanged window is a duplicate and makes no gh call", async () => {
     const { root } = await fixtureRepository();
-    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
-    const events = [event(root, 1, "synthetic error: ENOTFOUND the model endpoint")];
-    let integrated = 0;
-    const { deps } = stubDeps(root, events, {
-      onAgent(worktree) {
-        writeFileSync(join(worktree, ".devboard", "healed.txt"), "fixed\n");
-      },
-      gate: async () => ({ ok: false, failed: "bun test", detail: "a test failed" }),
-      integrate: async () => {
-        integrated += 1;
-        return { ok: true, refreshed: 0, deferred: [] };
-      },
-    });
-    const result = await runCycle({ root, now: fixedNow, stateDir, deps });
-    expect(result.report.action).toBe("failed");
-    expect(result.report.reason).toContain("bun test");
-    expect(result.exitCode).toBe(1);
-    expect(integrated).toBe(0);
-    expect(result.report.worktree).toBeDefined();
-    expect(existsSync(result.report.worktree as string)).toBe(true);
-  });
+    const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
+    const { gh, calls } = ghStub();
+    const first = await runCycle(cycleFor(root, { events, gh }));
+    expect(first.report.action).toBe("filed");
+    expect(calls).toHaveLength(1);
 
-  test("blocks a change outside .devboard and keeps the worktree", async () => {
-    const { root } = await fixtureRepository();
-    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
-    const events = [event(root, 1, "synthetic error: ENOTFOUND the model endpoint")];
-    let integrated = 0;
-    const { deps } = stubDeps(root, events, {
-      onAgent(worktree) {
-        writeFileSync(join(worktree, "host-file.txt"), "not allowed\n");
-      },
-      integrate: async () => {
-        integrated += 1;
-        return { ok: true, refreshed: 0, deferred: [] };
-      },
-    });
-    const result = await runCycle({ root, now: fixedNow, stateDir, deps });
-    expect(result.report.action).toBe("blocked");
-    expect(result.report.blocked).toContain("host-file.txt");
-    expect(integrated).toBe(0);
-    expect(existsSync(result.report.worktree as string)).toBe(true);
-  });
-
-  test("exits nonzero when the agent session fails and keeps the worktree", async () => {
-    const { root } = await fixtureRepository();
-    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
-    const events = [event(root, 1, "synthetic error: ENOTFOUND the model endpoint")];
-    const { deps, counts } = stubDeps(root, events, {
-      agent: async () => ({ code: 7, stdout: "", stderr: "model unavailable" }),
-    });
-    const result = await runCycle({ root, now: fixedNow, stateDir, deps });
-    expect(result.report.action).toBe("failed");
-    expect(result.report.reason).toContain("exit 7");
-    expect(result.exitCode).toBe(1);
-    expect(counts.gate).toBe(0);
-    expect(counts.integrate).toBe(0);
-    expect(existsSync(result.report.worktree as string)).toBe(true);
-  });
-
-  test("blocks while operator work is uncommitted and never starts an agent", async () => {
-    const { root } = await fixtureRepository();
-    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
-    writeFileSync(join(root, "operator.txt"), "mine\n");
-    const events = [event(root, 1, "synthetic error: ENOTFOUND the model endpoint")];
-    const { deps, counts } = stubDeps(root, events);
-    const result = await runCycle({ root, now: fixedNow, stateDir, deps });
-    expect(result.report.action).toBe("blocked");
-    expect(result.report.blocked).toContain("operator.txt");
-    expect(result.report.reason).toContain("uncommitted operator work");
-    expect(result.exitCode).toBe(0);
-    expect(counts.agent).toBe(0);
-  });
-
-  test("retries publish on the next cycle after a successful push", async () => {
-    const { root } = await fixtureRepository();
-    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
-    const events = [event(root, 1, "synthetic error: ENOTFOUND the model endpoint")];
-    let publishCalls = 0;
-    const { deps, counts } = stubDeps(root, events, {
-      onAgent(worktree) {
-        writeFileSync(join(worktree, ".devboard", "healed.txt"), "fixed\n");
-      },
-      integrate: async () => ({
-        ok: false,
-        commit: "b".repeat(40),
-        pushed: true,
-        refreshed: 0,
-        deferred: [],
-        detail: "publish: unreachable remote",
-      }),
-      publish: async () => {
-        publishCalls += 1;
-        return { ok: true, refreshed: 2, deferred: ["8080"] };
-      },
-    });
-    const first = await runCycle({ root, now: fixedNow, stateDir, deps });
-    expect(first.report.action).toBe("failed");
-    expect(first.report.commit).toBe("b".repeat(40));
-    expect(first.exitCode).toBe(1);
-    expect(loadLedger(stateDir).pendingPublish?.commit).toBe("b".repeat(40));
-
-    const second = await runCycle({ root, now: fixedNow, stateDir, deps });
-    expect(second.report.action).toBe("published");
-    expect(second.report.reason).toContain("on retry");
-    expect(second.report.dashboards).toEqual({ refreshed: 2, deferred: ["8080"] });
+    const second = await runCycle(cycleFor(root, { events, gh }));
+    expect(second.report.action).toBe("duplicate");
+    expect(second.report.issues).toEqual([]);
     expect(second.exitCode).toBe(0);
-    expect(publishCalls).toBe(1);
-    expect(counts).toEqual({ agent: 1, gate: 1, integrate: 0, publish: 0 });
-    expect(loadLedger(stateDir).pendingPublish).toBeUndefined();
+    expect(calls).toHaveLength(1);
   });
 
-  test("dry run writes no run directory and invokes no agent", async () => {
+  test("a recurrence comments once after 24 hours and never closes", async () => {
+    const { root } = await fixtureRepository();
+    const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
+    const { gh, calls } = ghStub();
+    const first = await runCycle(cycleFor(root, { events, gh }));
+    const url = first.report.issues[0]?.url as string;
+    const fingerprint = first.report.issues[0]?.fingerprint as string;
+
+    const soon = await runCycle(
+      cycleFor(root, { events, gh, now: new Date(fixedNow.getTime() + 23 * 60 * 60 * 1000) }),
+    );
+    expect(soon.report.action).toBe("duplicate");
+    expect(calls).toHaveLength(1);
+
+    const later = await runCycle(
+      cycleFor(root, { events, gh, now: new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000) }),
+    );
+    expect(later.report.action).toBe("commented");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.argv).toEqual(["issue", "comment", url, "--body", "-"]);
+    expect(calls[1]?.stdin).toContain(fingerprint);
+    expect(later.report.issues).toEqual([]);
+    const ledger = loadLedger(join(root, ".devboard", ".tmp", "watchdog"));
+    expect(ledger.findings[fingerprint]?.lastCommentAt).toBe(
+      new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000).toISOString(),
+    );
+    expect(calls.some((call) => call.argv.includes("close"))).toBe(false);
+    expect(calls.some((call) => call.argv.includes("create"))).toBe(true);
+    expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(1);
+  });
+
+  test("a failed gh call retries the pending fingerprint before new ones", async () => {
     const { root } = await fixtureRepository();
     const stateDir = join(root, ".devboard", ".tmp", "watchdog");
-    const events = [event(root, 1, "synthetic error: ENOTFOUND the model endpoint")];
-    const { deps, counts } = stubDeps(root, events);
-    const result = await runCycle({ root, now: fixedNow, stateDir, dryRun: true, deps });
-    expect(result.report.action).toBe("blocked");
+    const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
+    const { gh, calls } = ghStub((_call, index) =>
+      index === 0
+        ? { code: 1, stderr: "HTTP 403: Resource not accessible by integration\nsecond line" }
+        : {},
+    );
+
+    const first = await runCycle(cycleFor(root, { events, gh }));
+    expect(first.report.action).toBe("failed");
+    expect(first.report.reason).toBe("HTTP 403: Resource not accessible by integration");
+    expect(first.exitCode).toBe(1);
+    expect(first.report.issues).toEqual([]);
+    expect(loadLedger(stateDir).pendingFiling).toHaveLength(1);
+
+    const second = await runCycle(cycleFor(root, { events, gh }));
+    expect(second.report.action).toBe("filed");
+    expect(second.report.issues).toHaveLength(1);
+    expect(calls).toHaveLength(2);
+    expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(2);
+    const ledger = loadLedger(stateDir);
+    expect(ledger.pendingFiling).toEqual([]);
+    expect(Object.values(ledger.findings)[0]?.disposition).toBe(
+      `filed:${second.report.issues[0]?.url}`,
+    );
+  });
+
+  test("a timed-out gh call is a failure with a bounded reason", async () => {
+    const { root } = await fixtureRepository();
+    const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
+    const timedOut = await runCycle(
+      cycleFor(root, {
+        events,
+        gh: ghStub(() => ({ code: 1, timedOut: true, stderr: "the command timed out\n" })).gh,
+      }),
+    );
+    expect(timedOut.report.action).toBe("failed");
+    expect(timedOut.report.reason).toBe("the command timed out");
+
+    const { root: silent } = await fixtureRepository();
+    const noDiagnostic = await runCycle(
+      cycleFor(silent, {
+        events,
+        gh: ghStub(() => ({ code: 1, timedOut: true, stderr: "" })).gh,
+      }),
+    );
+    expect(noDiagnostic.report.reason).toBe("gh timed out");
+
+    const { root: long } = await fixtureRepository();
+    const truncated = await runCycle(
+      cycleFor(long, {
+        events,
+        gh: ghStub(() => ({ code: 1, stderr: `${"y".repeat(400)}\nnext line` })).gh,
+      }),
+    );
+    expect(truncated.report.reason?.length).toBe(300);
+    expect(truncated.report.reason?.endsWith("…")).toBe(true);
+  });
+
+  test("dry run files nothing and leaves the state directory untouched", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
+    const { gh, calls } = ghStub();
+    const result = await runCycle(cycleFor(root, { events, gh, dryRun: true }));
+    expect(result.exitCode).toBe(0);
+    expect(result.report.action).toBe("none");
+    expect(result.report.issues).toEqual([]);
     expect(result.runDir).toBeUndefined();
+    expect(calls).toEqual([]);
     expect(existsSync(join(stateDir, "runs"))).toBe(false);
     expect(existsSync(join(stateDir, "state.json"))).toBe(false);
-    expect(counts.agent).toBe(0);
+  });
+});
+
+describe("fix pipeline removal", () => {
+  test("a filing cycle leaves HEAD, the remote tip, worktrees, and status unchanged", async () => {
+    const { root, origin } = await fixtureRepository();
+    const before = {
+      head: git(root, "rev-parse", "HEAD"),
+      remote: git(origin, "rev-parse", "main"),
+      worktrees: git(root, "worktree", "list"),
+      status: git(root, "status", "--porcelain"),
+      commits: git(root, "rev-list", "--count", "HEAD"),
+    };
+    const { gh, calls } = ghStub();
+    const result = await runCycle(
+      cycleFor(root, {
+        events: [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))],
+        gh,
+      }),
+    );
+    expect(result.report.action).toBe("filed");
+    expect(calls).toHaveLength(1);
+    expect(git(root, "rev-parse", "HEAD")).toBe(before.head);
+    expect(git(origin, "rev-parse", "main")).toBe(before.remote);
+    expect(git(root, "worktree", "list")).toBe(before.worktrees);
+    expect(git(root, "status", "--porcelain")).toBe(before.status);
+    expect(git(root, "rev-list", "--count", "HEAD")).toBe(before.commits);
+  });
+});
+
+describe("ledger migration", () => {
+  test("a version 1 file is discarded and files nothing", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, "state.json"), readFileSync(v1StateFixture, "utf8"));
+    const versionOne = JSON.parse(readFileSync(v1StateFixture, "utf8")) as {
+      version: number;
+      findings: Record<string, { disposition: string }>;
+    };
+    expect(versionOne.version).toBe(1);
+    expect(Object.values(versionOne.findings).every((entry) => entry.disposition.startsWith("blocked:")))
+      .toBe(true);
+    expect(loadLedger(stateDir)).toEqual(emptyLedger());
+
+    const { gh, calls } = ghStub();
+    const result = await runCycle(
+      cycleFor(root, {
+        events: [event(root, 2, "ADR 0001 resolved cleanly", "activity")],
+        gh,
+      }),
+    );
+    expect(calls).toEqual([]);
+    expect(result.report.action).toBe("none");
+    expect(result.report.findings).toEqual([]);
+
+    const saved = JSON.parse(readFileSync(join(stateDir, "state.json"), "utf8")) as {
+      version: number;
+      findings: Record<string, unknown>;
+      pendingFiling: string[];
+      pendingPublish?: unknown;
+    };
+    expect(saved.version).toBe(2);
+    expect(saved.findings).toEqual({});
+    expect(saved.pendingFiling).toEqual([]);
+    expect("pendingPublish" in saved).toBe(false);
   });
 });
 

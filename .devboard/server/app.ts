@@ -11,6 +11,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
+import { readWatchdogStatus } from "../watchdog/status";
 import {
   AcpConnection,
   agentPrompt,
@@ -5124,6 +5125,13 @@ export function createApp(options: AppOptions) {
 
       if (url.pathname === "/api/feedback") {
         return handleFeedbackRequest(request, url);
+      }
+
+      if (url.pathname === "/api/watchdog") {
+        if (request.method !== "GET") {
+          return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
+        }
+        return Response.json(readWatchdogStatus(join(stateDir, "watchdog")));
       }
 
       if (url.pathname === "/ws") {

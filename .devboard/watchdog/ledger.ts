@@ -3,77 +3,124 @@ import { join } from "node:path";
 import type { Finding } from "./findings";
 
 /**
- * The ledger remembers what the watchdog already did about each distinct
- * signal. It is harness state under `.tmp`, never committed, and it survives
- * cycles so an unchanged window does not publish the same fix twice.
+ * The ledger remembers every distinct signal and the GitHub issue it owns. It
+ * is harness state under `.tmp`, never committed, and it survives cycles so a
+ * recurrence comments on the existing issue instead of filing another one.
  */
+
+export const LEDGER_VERSION = 2;
+
+export interface LedgerInstance {
+  repoDir: string;
+  port: number;
+  pid: number;
+  journal: string;
+}
 
 export interface LedgerEntry {
   category: string;
-  source: string;
-  /** Normalized evidence line the disposition was decided on. */
+  /** Last observed normalized evidence line. */
   line: string;
   firstSeen: string;
   lastSeen: string;
   count: number;
-  /** `published:<sha>`, `blocked:<reason>`, or `none`. */
+  /** `filed:<url>` once the issue exists, `none` before the first filing. */
   disposition: string;
-  /** HEAD when a block was recorded; a new HEAD permits a retry. */
-  head?: string;
-}
-
-export interface PendingPublish {
-  /** The pushed commit whose publish failed. */
-  commit: string;
-  /** The findings that commit fixes. */
-  findings: string[];
+  url?: string;
+  filedAt?: string;
+  lastCommentAt?: string;
+  /** Every dashboard that has produced this signal. */
+  instances: LedgerInstance[];
 }
 
 export interface Ledger {
-  version: 1;
+  version: typeof LEDGER_VERSION;
   findings: Record<string, LedgerEntry>;
-  /** Session ids of earlier watchdog agent runs, excluded from evidence. */
-  selfSessions: string[];
-  /** A pushed revision whose publish has not succeeded yet. */
-  pendingPublish?: PendingPublish;
+  /** Fingerprints whose `gh issue create` failed and are retried first. */
+  pendingFiling: string[];
 }
 
+/** The version 2 ledger, used when no file exists or the file is unusable. */
+export function emptyLedger(): Ledger {
+  return { version: LEDGER_VERSION, findings: {}, pendingFiling: [] };
+}
+
+function text(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function instances(value: unknown): LedgerInstance[] {
+  if (!Array.isArray(value)) return [];
+  const parsed: LedgerInstance[] = [];
+  for (const candidate of value) {
+    if (typeof candidate !== "object" || candidate === null) continue;
+    const record = candidate as Record<string, unknown>;
+    if (typeof record.repoDir !== "string" || typeof record.journal !== "string") continue;
+    const port = Number(record.port);
+    const pid = Number(record.pid);
+    if (!Number.isInteger(port) || !Number.isInteger(pid)) continue;
+    parsed.push({ repoDir: record.repoDir, port, pid, journal: record.journal });
+  }
+  return parsed;
+}
+
+/** One entry, or undefined when the record cannot be trusted. */
+function parseEntry(fingerprint: string, value: unknown): LedgerEntry | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const disposition = text(record.disposition, "");
+  if (disposition !== "none" && !disposition.startsWith("filed:")) return undefined;
+  const url =
+    typeof record.url === "string"
+      ? record.url
+      : disposition.startsWith("filed:")
+        ? disposition.slice("filed:".length)
+        : undefined;
+  if (disposition.startsWith("filed:") && (url === undefined || url.length === 0)) return undefined;
+  if (typeof record.category !== "string" || typeof record.line !== "string") return undefined;
+  if (typeof record.firstSeen !== "string" || typeof record.lastSeen !== "string") return undefined;
+  const count = Number(record.count);
+  return {
+    category: record.category,
+    line: record.line,
+    firstSeen: record.firstSeen,
+    lastSeen: record.lastSeen,
+    count: Number.isFinite(count) && count > 0 ? count : 1,
+    disposition,
+    ...(url === undefined ? {} : { url }),
+    ...(typeof record.filedAt === "string" ? { filedAt: record.filedAt } : {}),
+    ...(typeof record.lastCommentAt === "string" ? { lastCommentAt: record.lastCommentAt } : {}),
+    instances: instances(record.instances),
+  };
+}
+
+/**
+ * Reads the ledger. A version 1 file recorded `blocked:*` and `published:<sha>`
+ * dispositions from the retired fix pipeline: those entries describe prose, not
+ * issues, so they are discarded instead of migrated.
+ */
 export function loadLedger(stateDir: string): Ledger {
   try {
     const parsed: unknown = JSON.parse(readFileSync(join(stateDir, "state.json"), "utf8"));
-    if (typeof parsed !== "object" || parsed === null) throw new Error("not an object");
-    const record = parsed as Partial<Ledger> & { findings?: unknown };
+    if (typeof parsed !== "object" || parsed === null) return emptyLedger();
+    const record = parsed as Record<string, unknown>;
+    if (record.version !== LEDGER_VERSION) return emptyLedger();
     const findings: Record<string, LedgerEntry> = {};
-    if (typeof record.findings === "object" && record.findings !== null) {
-      for (const [key, value] of Object.entries(record.findings)) {
-        if (typeof value !== "object" || value === null) continue;
-        findings[key] = value as LedgerEntry;
+    const source = record.findings;
+    if (typeof source === "object" && source !== null) {
+      for (const [fingerprint, value] of Object.entries(source)) {
+        const entry = parseEntry(fingerprint, value);
+        if (entry !== undefined) findings[fingerprint] = entry;
       }
     }
-    const selfSessions = Array.isArray(record.selfSessions)
-      ? record.selfSessions.filter((entry): entry is string => typeof entry === "string")
+    const pending = Array.isArray(record.pendingFiling)
+      ? record.pendingFiling.filter(
+          (value): value is string => typeof value === "string" && findings[value] !== undefined,
+        )
       : [];
-    const pending = record.pendingPublish;
-    const pendingPublish =
-      typeof pending === "object" &&
-      pending !== null &&
-      typeof (pending as PendingPublish).commit === "string" &&
-      Array.isArray((pending as PendingPublish).findings)
-        ? {
-            commit: (pending as PendingPublish).commit,
-            findings: (pending as PendingPublish).findings.filter(
-              (entry): entry is string => typeof entry === "string",
-            ),
-          }
-        : undefined;
-    return {
-      version: 1,
-      findings,
-      selfSessions,
-      ...(pendingPublish === undefined ? {} : { pendingPublish }),
-    };
+    return { version: LEDGER_VERSION, findings, pendingFiling: [...new Set(pending)] };
   } catch {
-    return { version: 1, findings: {}, selfSessions: [] };
+    return emptyLedger();
   }
 }
 
@@ -90,63 +137,52 @@ export function recordFindings(ledger: Ledger, findings: Finding[], now: Date): 
   const stamp = now.toISOString();
   for (const finding of findings) {
     const entry = ledger.findings[finding.fingerprint];
+    const contributed = finding.instances.map((instance) => ({
+      repoDir: instance.repoDir,
+      port: instance.port,
+      pid: instance.pid,
+      journal: instance.journal,
+    }));
     if (entry === undefined) {
       ledger.findings[finding.fingerprint] = {
         category: finding.category,
-        source: finding.source,
         line: finding.quote,
         firstSeen: stamp,
         lastSeen: stamp,
         count: 1,
         disposition: "none",
+        instances: contributed,
       };
       continue;
     }
     entry.category = finding.category;
-    entry.source = finding.source;
+    entry.line = finding.quote;
     entry.lastSeen = stamp;
     entry.count += 1;
+    for (const instance of contributed) {
+      if (!entry.instances.some((known) => known.journal === instance.journal)) {
+        entry.instances.push(instance);
+      }
+    }
   }
 }
 
-/** Marks an entry published at a commit. */
-export function markPublished(ledger: Ledger, findings: Finding[], commit: string): void {
-  for (const finding of findings) {
-    const entry = ledger.findings[finding.fingerprint];
-    if (entry === undefined) continue;
-    entry.disposition = `published:${commit}`;
-    entry.line = finding.quote;
-    entry.head = commit;
-  }
+export function markFiled(ledger: Ledger, fingerprint: string, url: string, now: Date): void {
+  const entry = ledger.findings[fingerprint];
+  if (entry === undefined) return;
+  entry.disposition = `filed:${url}`;
+  entry.url = url;
+  entry.filedAt = now.toISOString();
+  ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
 }
 
-/** Marks an entry blocked for the current HEAD so the next cycle can retry it. */
-export function markBlocked(
-  ledger: Ledger,
-  findings: Finding[],
-  reason: string,
-  head: string | null,
-): void {
-  for (const finding of findings) {
-    const entry = ledger.findings[finding.fingerprint];
-    if (entry === undefined) continue;
-    entry.disposition = `blocked:${reason}`;
-    entry.line = finding.quote;
-    if (head !== null) entry.head = head;
-  }
+export function markCommented(ledger: Ledger, fingerprint: string, now: Date): void {
+  const entry = ledger.findings[fingerprint];
+  if (entry === undefined) return;
+  entry.lastCommentAt = now.toISOString();
 }
 
-/** True when this exact evidence was already published or blocked at this HEAD. */
-export function isSettled(
-  entry: LedgerEntry | undefined,
-  finding: Finding,
-  head: string | null,
-): boolean {
-  if (entry === undefined) return false;
-  if (entry.line !== finding.quote) return false;
-  if (entry.disposition.startsWith("published:")) return true;
-  if (entry.disposition.startsWith("blocked:")) {
-    return head !== null && entry.head === head;
-  }
-  return false;
+/** The fingerprint is waiting for a retry until its filing succeeds. */
+export function markPending(ledger: Ledger, fingerprint: string): void {
+  if (!ledger.pendingFiling.includes(fingerprint)) ledger.pendingFiling.push(fingerprint);
 }

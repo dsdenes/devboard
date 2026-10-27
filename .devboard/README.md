@@ -959,7 +959,8 @@ minutes 0, 10, 20, 30, 40, and 50 of every hour (`OnCalendar=*:0/10`, `Persisten
 `devboard-watchdog.service` oneshot runs `bun run watchdog -- --once` from the canonical harness.
 It survives logout (`Linger=yes`) and never starts, stops, or restarts a dashboard itself.
 
-Each cycle reads the ten minutes before cycle start, both ends inclusive, from:
+Each cycle detects and reports; it never fixes. It reads the ten minutes before cycle start, both
+ends inclusive, from:
 
 - every live dashboard's JSONL journal, `<STATE_DIR>/journal/<24-hex>.jsonl`, whose key is the
   first 24 hex characters of `sha256(REPO_DIR)`. `STATE_DIR` is the dashboard's environment
@@ -980,35 +981,50 @@ Discovery scans `/proc` for every process running `server/index.ts` that supplie
 `PORT`, de-duplicates by `(REPO_DIR, PORT)`, resolves the serving harness from `STATIC_DIR` or
 the process working directory, and reads the journal from the process's `STATE_DIR`. Instances
 from installed hosts and the canonical source checkout are covered alike; an instance whose
-state directory has no journal is reported `uninstrumented` and its legacy
-`.tmp/devboard-<cksum>.log` is read when present.
+state directory has no journal is reported `uninstrumented`.
 
-Findings are derived from evidence, one per distinct signal: `error`, `failed-command`, `retry`,
-`blocker`, `confusion`, `question-loop`, and `stall`. A clean window reports zero findings and
-changes nothing.
+Findings derive only from machine-checkable evidence: a `server-error`, `update-error`, or
+`acp-stderr` journal record; a `lane-stop` whose status token is `failed`; an omp log record at
+`error`, `warn`, or `fatal`; a `run-start` or `lane-start` at least five minutes before window end
+with no `run-stop` or `lane-stop` at or after it for the same instance (a stall); and three or
+more `question` records for one instance in one window (a question loop, quoting the last).
+`activity`, `lifecycle`, `update`, ordinary run and lane text, and questions below the loop
+threshold never produce a finding, whatever words they contain.
+
+A fingerprint is the first 32 hex characters of `sha256(category + "\n" + normalized line)`. The
+normalized line drops a leading ISO timestamp and collapses whitespace, and the source path is
+excluded, so the same error on two dashboards is one fingerprint and one issue.
+
+Each cycle files one issue per new fingerprint through the operator's authenticated `gh`:
+`gh issue create --repo dsdenes/devboard --title "[watchdog] <category>: <line>" --body-file -`.
+The title is one line of at most 80 characters. The body carries the category, fingerprint,
+quote, first and last sighting, count, window, every contributing instance (repository, port,
+pid, journal path), and the cycle report path. There is no per-cycle cap. A failing `gh` call
+reports `failed` with its first stderr line and leaves the fingerprint in `pendingFiling`; the
+next cycle retries pending fingerprints before new ones, so a transient failure never loses
+evidence. A fingerprint already `filed:<url>` is never filed again: when it recurs at least 24
+hours after the last comment (or after the filing when no comment exists), the cycle comments
+once on the existing issue with the new window, sighting, and count. No cycle closes an issue.
 
 Each cycle writes one run directory, `<harness>/.tmp/watchdog/runs/<UTC timestamp>/`, containing
 `report.json`, `report.md`, and `coordinator.log`; the newest report is also
-`.tmp/watchdog/latest.json`. A persistent ledger at `.tmp/watchdog/state.json` records each
-finding's first and last sighting, count, and disposition; an unchanged window reports
-`action: "duplicate"` and publishes nothing.
+`.tmp/watchdog/latest.json`. A version 2 ledger at `.tmp/watchdog/state.json` records each
+finding's first and last sighting, count, contributing instances, and `filed:<url>`; an unchanged
+window reports `action: "duplicate"` and makes no `gh` call. A version 1 ledger's prose
+`blocked:*` and `published:<sha>` dispositions are discarded on load, never migrated into issues.
 
 A singleton lock at `.tmp/watchdog/lock` serializes every invocation: a second manual run or a
 `systemctl --user start devboard-watchdog.service` while a cycle is live prints `already running`
-and exits without invoking an agent. A stale lock whose pid is gone is reclaimed.
+and exits without filing. A stale lock whose pid is gone is reclaimed.
 
-An actionable cycle starts a headless `omp` from the canonical repository root with auto-approval,
-so `AGENTS.md` and `.omp/config.yml` apply. The prompt carries the evidence, the exact window,
-the instance list, and this change policy. The agent works only in a fresh `.worktree/<name>`
-worktree. Before merging, the coordinator requires `bun install --frozen-lockfile` when the
-worktree has no `node_modules`, then `bun test`, `bun run build`, and
-`bun run watchdog -- --collect --dry-run` to pass, and it rejects any diff outside
-`.devboard/**`. It then fast-forwards `main`, pushes the canonical remote, and runs
-`bun run publish`. A gate, scope, or merge failure leaves `main` unchanged and preserves the
-worktree; a push or publish failure leaves the pushed revision in place and exits nonzero, and
-a failed publish after a successful push is retried by the next cycle without another agent run.
-A pre-existing uncommitted change is recorded and blocks merge, push, and publish; it is never
-discarded, stashed, or committed.
+The cycle never spawns an agent, creates a worktree, commits, merges, pushes, or publishes; it
+leaves `HEAD`, `origin/main`, the worktree list, and the working tree exactly as it found them.
+
+`GET /api/watchdog` reports the newest cycle as JSON: `cycle` (ISO 8601 or null), `action`, the
+optional `reason`, the `findings` count, `issues` as `{url, category, line, filedAt}` newest
+first, and the `pending` count. The status bar's watchdog indicator shows the last action and its
+age; activating it opens a popover listing up to ten filed issues, each link opening in a new tab,
+and Escape closes it.
 
 Operate it from the canonical `.devboard`:
 
@@ -1023,8 +1039,9 @@ bun run watchdog:uninstall   # stop, disable, and remove the units
 the absolute Bun executable plus the `omp` and `git` directories for the unit's `PATH`, and is
 idempotent. `watchdog:uninstall` changes no repository file. To pause the watchdog without
 uninstalling, `systemctl --user stop devboard-watchdog.timer`; `systemctl --user start
-devboard-watchdog.timer` resumes it. `WATCHDOG_AGENT_COMMAND` replaces the agent command for a
-manual run, which is how the tests inject a stub.
+devboard-watchdog.timer` resumes it. `bun run verify:watchdog` proves the indicator, popover, and
+issue links against a freshly built bundle; `bun run verify:watchdog-live` starts a seeded
+dashboard, waits for the installed timer to file a real issue, and closes it as not planned.
 
 ## Report a UI issue
 
@@ -1476,8 +1493,9 @@ and the post-reset empty records, goal text, `getGoal`, and `saveGoal` behavior.
 failure is reported without interrupting the run; rotation keeps every record; and pruning
 applies the seven-day limit and the size bound without deleting the live window.
 `tests/watchdog.test.ts` covers discovery (de-duplication, harness resolution, self-exclusion,
-legacy logs), the inclusive ten-minute window, omp-log attribution and self-exclusion, one
-finding per signal, the no-op and zero-instance paths, the duplicate ledger, the stub-agent
-prompt (sentinels, window bounds, instances, canonical cwd, worktree), the failed-gate and
-scope-block paths with a preserved worktree, dry-run purity, and the singleton lock. All new
+legacy logs), the inclusive ten-minute window, omp-log attribution and self-exclusion, the exact
+evidence mapping (prose never produces a finding), host-independent fingerprints, filing and
+commenting against a stub `gh`, pending retries after a failed call, duplicate windows, the
+version 1 ledger migration, and the absence of any commit, merge, push, or publish.
+`tests/watchdog-api.test.ts` covers the read-only endpoint and its status projection. All new
 fixtures live under `.devboard/.tmp`; no test uses the network or a real model.

@@ -11,11 +11,12 @@ import { acquireLock } from "./lock";
 
 const usage = `Usage: bun run watchdog [options]
 
-Runs one watchdog cycle over the last ten minutes of dashboard evidence.
+Runs one watchdog cycle over the last ten minutes of dashboard evidence and
+files one GitHub issue per distinct signal.
 
-  --once             Discover, collect, and act. The default.
+  --once             Discover, collect, and file. The default.
   --collect          Collect and print the report; requires --dry-run.
-  --dry-run          Do not write a run directory, change a worktree, or publish.
+  --dry-run          Print the report without filing, writing, or changing anything.
   --root <path>      Explicit canonical repository root.
   -h, --help         Show this text.
 `;
