@@ -44,6 +44,12 @@
   );
   const runCount = $derived(issues.runs.length);
   const agents = $derived(issues.agents);
+  let selectedRunId = $state<string | null>(null);
+  // The newest selection wins; when that run ends, the first live agent takes
+  // the output pane so it never shows a stale stream.
+  const selectedAgent = $derived(
+    agents.find((agent) => agent.runId === selectedRunId) ?? agents[0] ?? null,
+  );
 
   let now = $state(Date.now());
   $effect(() => {
@@ -122,6 +128,7 @@
     </header>
 
     <div class="issues-overview__body">
+      <div class="issues-overview__side" data-testid="issues-overview-side">
       <section class="panel">
         <div class="panel__header">
           <h2 class="panel__title">Automation</h2>
@@ -233,7 +240,8 @@
                   data-run={agent.runId}
                   data-issue={agent.issueNumber}
                   title={issueTitle(agent.issueNumber)}
-                  onclick={() => openAgent(agent.runId, agent.issueNumber)}
+                  aria-current={selectedAgent?.runId === agent.runId}
+                  onclick={() => (selectedRunId = agent.runId)}
                 >
                   <span class="issues-agent-row__issue mono">#{agent.issueNumber}</span>
                   <span class="issues-agent-row__title">{issueTitle(agent.issueNumber)}</span>
@@ -251,6 +259,49 @@
           </ol>
         </div>
       </section>
+      </div>
+
+      {#if selectedAgent !== null}
+        <section
+          class="panel issues-agent-output"
+          data-testid="issues-overview-output"
+          data-run={selectedAgent.runId}
+          data-issue={selectedAgent.issueNumber}
+        >
+          <div class="panel__header">
+            <h2 class="panel__title" data-testid="issues-overview-output-title">
+              #{selectedAgent.issueNumber} · {issueTitle(selectedAgent.issueNumber)}
+            </h2>
+            <span class="badge" data-tone="accent" data-testid="issues-overview-output-status">
+              running
+            </span>
+          </div>
+          <div class="panel__body stack-sm">
+            <IssuesAgentLog
+              lines={issues.activityFor(selectedAgent.runId)}
+              testid="issues-overview-activity"
+              runId={selectedAgent.runId}
+            />
+            {#if selectedAgent.question}
+              <IssuesAgentQuestion
+                runId={selectedAgent.runId}
+                question={selectedAgent.question}
+                testid="issues-overview-question"
+              />
+            {/if}
+          </div>
+        </section>
+      {:else}
+        <section class="panel" data-testid="issues-overview-output">
+          <div class="panel__header">
+            <h2 class="panel__title">Agent output</h2>
+            <span class="panel__subtitle">No active run</span>
+          </div>
+          <div class="panel__body">
+            <p class="muted">No issue is running.</p>
+          </div>
+        </section>
+      {/if}
     </div>
   </section>
 {:else if page === "agents"}
