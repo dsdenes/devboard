@@ -963,6 +963,8 @@ that staging directory, and the dashboard starts from the host root rather than 
 package directory, so replacing the package never leaves a child with a deleted working
 directory. `versionState` reports `running`, `installed`, `latest`, and `stale`; the reload
 control appears while `stale` is true and restarts the server from the installed package. A
+dashboard serving the canonical source checkout reports `0.1.<commit-count>` on both sides, the
+version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder. A
 failed check, checksum, authentication, or npm install leaves the previous package and server
 intact, writes `update-error` to the journal, and is retried with exponential backoff
 (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it).
@@ -1402,8 +1404,11 @@ The client sends:
 - `getVersion` answers with `versionState`: `running` is the harness package version the
   backend loaded, `installed` is the version its prefix holds now, `latest` is the newest
   release an update check has seen, and `stale` is true only when `running` and `installed` are
-  readable and differ. A client that connects, and the page every few seconds, asks for it; a
-  stale answer makes the reload control appear with both versions in its title.
+  readable and differ. A dashboard that serves the canonical source checkout reads neither side
+  from the checked-in manifest: it reports `0.1.<commit-count>` over the full history, the same
+  version a release packs, so an unpacked checkout never claims `0.1.0`. A client that connects,
+  and the page every few seconds, asks for it; a stale answer makes the reload control appear
+  with both versions in its title.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
   lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
   next attempt, errors, and the harness version the worker loaded. A missing state and no live
@@ -1586,7 +1591,7 @@ The server answers with events:
 { "type": "runStopped", "lane": "lane-2", "file": "", "title": "Add export", "resolved": true, "status": "closed" }
 { "type": "records", "records": [ { "file": "0001-example.md", "title": "Example", "status": "Accepted", "pending": false, "summary": "Use the simplest runtime." } ], "next": null }
 { "type": "project", "path": "projects/devboard" }
-{ "type": "versionState", "running": "0123456789abcdef0123456789abcdef01234567", "current": "fedcba9876543210fedcba9876543210fedcba98", "stale": true }
+{ "type": "versionState", "running": "0.1.200", "installed": "0.1.201", "latest": "0.1.201", "stale": true }
 { "type": "serverRestarting" }
 { "type": "upgradePending" }
 { "type": "goal", "text": "# Goal\n\nThe complete goal text." }
