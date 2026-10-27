@@ -9,6 +9,7 @@
   import FeedbackOverlay from "./FeedbackOverlay.svelte";
   import FlowMode from "./FlowMode.svelte";
   import GoalWorkspace from "./lib/components/GoalWorkspace.svelte";
+  import IssuesWorkspace from "./lib/components/IssuesWorkspace.svelte";
   import NotificationRegion from "./lib/components/NotificationRegion.svelte";
   import PaneHandle from "./lib/components/PaneHandle.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
@@ -19,6 +20,7 @@
   import { discover } from "./lib/discover.svelte";
   import { flow } from "./lib/flow.svelte";
   import { goal } from "./lib/goal.svelte";
+  import { issues } from "./lib/issues.svelte";
   import { applyTheme, layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
   import { notifications } from "./lib/notifications.svelte";
@@ -39,7 +41,7 @@
     cancelReport: () => void;
   }
 
-  const MODES: Mode[] = ["goal", "flow", "discover"];
+  const MODES: Mode[] = ["goal", "issues", "flow", "discover"];
 
   let paletteOpen = $state(false);
   let paletteReturnFocus: HTMLElement | null = null;
@@ -50,6 +52,7 @@
 
   const savedFocus: Record<Mode, HTMLElement | null> = {
     goal: null,
+    issues: null,
     flow: null,
     discover: null,
   };
@@ -213,7 +216,16 @@
     if (paletteOpen || isTyping(event.target)) return;
 
     if (event.altKey && !event.ctrlKey && !event.metaKey) {
-      const target = event.key === "1" ? "goal" : event.key === "2" ? "flow" : event.key === "3" ? "discover" : null;
+      const target =
+        event.key === "1"
+          ? "goal"
+          : event.key === "2"
+            ? "issues"
+            : event.key === "3"
+              ? "flow"
+              : event.key === "4"
+                ? "discover"
+                : null;
       if (target !== null) {
         event.preventDefault();
         layout.setMode(target);
@@ -245,6 +257,7 @@
     goal,
     flow,
     discover,
+    issues,
     layout,
     connection,
     notifications,
@@ -317,6 +330,7 @@
     connection.onMessage((message) => {
       const record = message as Record<string, unknown>;
       goal.handleEvent(record);
+      issues.handleEvent(record);
       flow.handleEvent(record);
       discover.handleEvent(record);
       handleFlowTabEvents(record);
@@ -350,6 +364,8 @@
                 openTab={(tab) => openTab("goal", tab)}
                 closeTab={(tab) => closeTab("goal", tab)}
               />
+            {:else if mode === "issues"}
+              <IssuesWorkspace tab={workspaceTab("issues")} />
             {:else if mode === "flow"}
               <FlowMode
                 tab={workspaceTab("flow")}

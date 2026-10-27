@@ -19,12 +19,9 @@
     "watchdog:install": "bun run watchdog/install.ts",
     "watchdog:uninstall": "bun run watchdog/uninstall.ts",
     "cleanup": "bun run watchdog/cleanup-main.ts",
-    "orchestrator": "bun run orchestrator/main.ts",
-    "orchestrator:install": "bun run orchestrator/install.ts",
-    "orchestrator:uninstall": "bun run orchestrator/uninstall.ts",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "verify:interface": "bun run scripts/verify-interface.ts",
-    "verify:orchestrator": "bun run scripts/verify-orchestrator.ts"
+    "verify:issues": "bun run scripts/verify-issues.ts"
   },
   "files": [
     "package.json",
@@ -36,7 +33,7 @@
     "client/",
     "lib/",
     "watchdog/",
-    "orchestrator/",
+    "issues/",
     "prompts/",
     "omp/",
     "extensions/",

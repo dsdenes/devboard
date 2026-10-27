@@ -24,7 +24,7 @@ const FILE_ALLOWLIST = [
   "client",
   "lib",
   "watchdog",
-  "orchestrator",
+  "issues",
   "prompts",
   "omp",
   "extensions",

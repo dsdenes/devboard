@@ -197,7 +197,7 @@ describe("sweepStateDir", () => {
     expect(existsSync(join(target, "keep.txt"))).toBe(true);
   });
 
-  test("protects state, journal, automation state, active runs, and live locks", async () => {
+  test("protects state, journal, repo-scoped issues records, and live locks", async () => {
     const base = await temporaryDirectory();
     const stateDir = join(base, ".tmp");
     await mkdir(stateDir, { recursive: true });
@@ -235,6 +235,12 @@ describe("sweepStateDir", () => {
     );
     writeAt(join(stateDir, "orchestrator", "ledger.json"), "{}", old);
     writeAt(join(stateDir, "orchestrator", "lock"), "{}", old);
+    const issuesState = join(stateDir, "issues", "a".repeat(24), "state.json");
+    writeAt(issuesState, "{}", old);
+    const issuesRun = join(stateDir, "issues", "a".repeat(24), "runs", "2026-10-01T00-00-00-000Z");
+    writeAt(join(issuesRun, "activity.json"), "[]", old);
+    utimesSync(issuesRun, old, old);
+    writeAt(join(stateDir, "issues", "lock"), "{}", old);
     const currentRun = join(stateDir, "watchdog", "runs", "2026-10-25T00-00-00-000Z");
     writeAt(join(currentRun, "coordinator.log"), "current", old);
     utimesSync(currentRun, old, old);
@@ -259,8 +265,10 @@ describe("sweepStateDir", () => {
       join(stateDir, "watchdog", "state.json"),
       join(stateDir, "watchdog", "latest.json"),
       join(stateDir, "watchdog", "lock"),
-      join(activeRun, "stdout.log"),
       join(stateDir, "orchestrator", "state.json"),
+      issuesState,
+      join(issuesRun, "activity.json"),
+      join(stateDir, "issues", "lock"),
       join(stateDir, "orchestrator", "ledger.json"),
       join(stateDir, "orchestrator", "lock"),
       join(currentRun, "coordinator.log"),
@@ -268,13 +276,14 @@ describe("sweepStateDir", () => {
     ]) {
       expect(existsSync(protectedPath)).toBe(true);
     }
+    expect(existsSync(join(activeRun, "stdout.log"))).toBe(false);
     expect(existsSync(join(inactiveRun, "stdout.log"))).toBe(false);
     expect(existsSync(join(oldWatchdogRun, "coordinator.log"))).toBe(false);
     expect(existsSync(deadLock)).toBe(false);
     expect(removed).not.toContain(join(stateDir, "state"));
     expect(removed).not.toContain(join(stateDir, "journal"));
     expect(removed).not.toContain(currentRun);
-    expect(removed).not.toContain(activeRun);
+    expect(removed).not.toContain(join(stateDir, "issues"));
   });
 
   test("a dry run reports candidates and changes nothing", async () => {

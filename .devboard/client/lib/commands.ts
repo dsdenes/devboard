@@ -2,6 +2,7 @@ import { conceptTitle, TABS } from "./discover-format";
 import type { GoalStore } from "./goal.svelte";
 import type { FlowStore } from "./flow.svelte";
 import type { DiscoverStore } from "./discover.svelte";
+import type { IssuesStore } from "./issues.svelte";
 import type { LayoutStore, WorkspaceTab } from "./layout.svelte";
 import type { ConnectionStore } from "./connection.svelte";
 import type { NotificationStore } from "./notifications.svelte";
@@ -21,6 +22,7 @@ export interface CommandContext {
   goal: GoalStore;
   flow: FlowStore;
   discover: DiscoverStore;
+  issues: IssuesStore;
   layout: LayoutStore;
   connection: ConnectionStore;
   notifications: NotificationStore;
@@ -47,7 +49,7 @@ function tabId(kind: string, resourceId: string): string {
 
 /** Every palette entry; buttons use the same ids through `data-command`. */
 export function buildCommands(ctx: CommandContext): CommandDef[] {
-  const { goal, flow, discover, layout, connection, notifications } = ctx;
+  const { goal, flow, discover, issues, layout, connection, notifications } = ctx;
   const commands: CommandDef[] = [];
 
   const add = (command: CommandDef): void => {
@@ -63,17 +65,24 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     run: () => layout.setMode("goal"),
   });
   add({
+    id: "view.mode.issues",
+    title: "Switch to Issues",
+    group: "View",
+    shortcut: "Alt+2",
+    run: () => layout.setMode("issues"),
+  });
+  add({
     id: "view.mode.flow",
     title: "Switch to Flow",
     group: "View",
-    shortcut: "Alt+2",
+    shortcut: "Alt+3",
     run: () => layout.setMode("flow"),
   });
   add({
     id: "view.mode.discover",
     title: "Switch to Discover",
     group: "View",
-    shortcut: "Alt+3",
+    shortcut: "Alt+4",
     run: () => layout.setMode("discover"),
   });
   add({
@@ -174,6 +183,9 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     ["goal", { id: "adrs", kind: "adrs", resourceId: "adrs", title: "ADRs" }],
     ["goal", { id: "goal-document", kind: "goal-document", resourceId: "goal-document", title: "Goal document" }],
     ["goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" }],
+    ["issues", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
+    ["issues", { id: "issues", kind: "queue", resourceId: "issues", title: "Issues" }],
+    ["issues", { id: "runs", kind: "runs", resourceId: "runs", title: "Runs" }],
     ["flow", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
     ["flow", { id: "decisions", kind: "decisions", resourceId: "decisions", title: "Decision board" }],
     ["flow", { id: "steering", kind: "steering", resourceId: "steering", title: "Steering" }],
@@ -196,7 +208,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
   });
 
   // Close commands mirror the close controls a surface renders itself.
-  for (const mode of ["goal", "flow", "discover"] as Mode[]) {
+  for (const mode of ["goal", "issues", "flow", "discover"] as Mode[]) {
     for (const tab of layout.tabs[mode]) {
       add({
         id: `tab.close.${mode}.${tab.id}`,
@@ -207,6 +219,68 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
       });
     }
   }
+
+  // Issues mode.
+  add({
+    id: "issues.start",
+    title: "Start issue automation",
+    group: "Issues",
+    keywords: "worker begin poll implement all issues",
+    disabled: () => disabledWhen(!issues.canStart, "Start is unavailable while the worker is enabled."),
+    run: () => issues.start(),
+  });
+  add({
+    id: "issues.pause",
+    title: "Pause issue automation",
+    group: "Issues",
+    keywords: "drain active run stop polling",
+    disabled: () => disabledWhen(!issues.canPause, "Pause is unavailable."),
+    run: () => issues.pause(),
+  });
+  add({
+    id: "issues.resume",
+    title: "Resume issue automation",
+    group: "Issues",
+    keywords: "continue poll",
+    disabled: () => disabledWhen(!issues.canResume, "Resume is unavailable."),
+    run: () => issues.resume(),
+  });
+  add({
+    id: "issues.stop",
+    title: "Stop issue automation",
+    group: "Issues",
+    keywords: "kill peer release lock",
+    disabled: () => disabledWhen(!issues.canStop, "Stop is unavailable."),
+    run: () => issues.stop(),
+  });
+  add({
+    id: "issues.check",
+    title: "Check issues now",
+    group: "Issues",
+    keywords: "poll immediately bypass cooldown",
+    disabled: () => disabledWhen(!issues.canCheck, "Check now is unavailable while paused or stopped."),
+    run: () => issues.check(),
+  });
+  add({
+    id: "issues.answer",
+    title: "Answer the issues question",
+    group: "Issues",
+    disabled: () => disabledWhen(issues.question === null, "No question is waiting."),
+    run: () => {
+      if (issues.question !== null) {
+        ctx.openTab("issues", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" });
+      }
+    },
+  });
+  add({
+    id: "issues.run.open",
+    title: "Open the selected issues run",
+    group: "Issues",
+    disabled: () => disabledWhen(issues.selectedRun === null, "No run is selected."),
+    run: () => {
+      if (issues.selectedRun !== null) issues.openRun(issues.selectedRun);
+    },
+  });
 
   // Goal mode.
   add({

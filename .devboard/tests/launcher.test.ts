@@ -143,8 +143,8 @@ describe("harness package", () => {
       "templates/host-AGENTS.md",
       "server/index.ts",
       "server/updates.ts",
-      "orchestrator/main.ts",
-      "orchestrator/units/devboard-orchestrator.service",
+      "issues/worker.ts",
+      "issues/paths.ts",
       "dist/index.html",
       "install.sh",
     ]) {

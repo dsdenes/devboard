@@ -135,13 +135,13 @@ const askFail = process.argv.includes("--ask-fail");
 const askExit = process.argv.includes("--ask-exit");
 const ASK_INSTRUCTION = "This conversation is read-only.";
 const ASK_ANSWER_ONE =
-  "The issues label shows the open issue count the orchestrator published for this repository. " +
+  "The issues indicator shows the lifecycle the detached worker published for this repository. " +
   "It turns amber while a run is working and shows failed when the last run failed. " +
-  "It sits in the status bar beside the connection state.";
+  "It sits in the status bar and opens the Issues mode.";
 const ASK_ANSWER_TWO =
-  "The status bar renders that label in StatusBar.svelte from the orchestrator snapshot the server sends. " +
+  "The status bar renders that label in StatusBar.svelte from the issues snapshot the server sends. " +
   "The count is the open issues the tracker returned for the host repository. " +
-  "No other page shows the label.";
+  "No other status item opens a mode.";
 let askTurns = 0;
 const DISCOVER_SECRET = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
 const CREATED_GOAL = "# Created goal\n\nThe agent wrote this.";

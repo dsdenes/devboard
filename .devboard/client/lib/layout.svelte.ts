@@ -19,7 +19,7 @@ export const LAYOUT_KEY = "devboard.layout.v1";
 export const THEME_KEY = "devboard.theme";
 export const PANE_KEY_PREFIX = "paneforge:";
 
-const MODES: Mode[] = ["goal", "flow", "discover"];
+const MODES: Mode[] = ["goal", "issues", "flow", "discover"];
 
 function defaultTab(mode: Mode): WorkspaceTab {
   return {
@@ -33,17 +33,18 @@ function defaultTab(mode: Mode): WorkspaceTab {
 export function defaultTabs(): Record<Mode, WorkspaceTab[]> {
   return {
     goal: [defaultTab("goal")],
+    issues: [defaultTab("issues")],
     flow: [defaultTab("flow")],
     discover: [defaultTab("discover")],
   };
 }
 
 function defaultActive(): Record<Mode, string | null> {
-  return { goal: "overview", flow: "overview", discover: "overview" };
+  return { goal: "overview", issues: "overview", flow: "overview", discover: "overview" };
 }
 
 function isMode(value: unknown): value is Mode {
-  return value === "goal" || value === "flow" || value === "discover";
+  return value === "goal" || value === "issues" || value === "flow" || value === "discover";
 }
 
 function validTab(value: unknown): value is WorkspaceTab {
@@ -60,6 +61,9 @@ function validTab(value: unknown): value is WorkspaceTab {
 /** A tab a previous revision could persist but this one no longer renders. */
 function normalizeTab(mode: Mode, tab: WorkspaceTab): WorkspaceTab {
   if (mode === "flow" && tab.id === "flow-goal") return defaultTab("flow");
+  if (mode === "issues" && tab.kind === "issues") {
+    return { ...tab, kind: "queue", id: "issues" };
+  }
   if (mode === "goal" && tab.id === "overview") return { ...tab, title: "Implementation" };
   return tab;
 }

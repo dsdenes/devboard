@@ -15,6 +15,7 @@
     "client/**/*.d.ts",
     "client/**/*.svelte",
     "server/**/*.ts",
+    "issues/**/*.ts",
     "vite.config.ts"
   ]
 }

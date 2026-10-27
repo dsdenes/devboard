@@ -22,7 +22,7 @@ degrades into a clipped mobile layout.
 |Mode rail|`activity-bar`|Three labeled mode tabs and their Lucide icons|
 |Sidebar|`sidebar`|Contextual navigation for the active mode|
 |Workspace|`workspace`|The open surface; absorbs all remaining space|
-|Status bar|`status-bar`|Connection, project name, counts, versions, theme, notifications|
+|Status bar|`status-bar`|Connection, project name, counts, issues state, versions, theme, notifications|
 
 The status bar stays visible while panes resize, and the document itself never scrolls
 vertically or horizontally. Each mode's panel keeps its scroll position, focus, open page, and
@@ -30,14 +30,14 @@ unsaved editor text while another mode is shown.
 
 ### Mode rail
 
-The 64px rail presents exactly the three existing modes as `role="tab"` controls:
-`data-testid="mode-goal"`, `data-testid="mode-flow"`, and `data-testid="mode-discover"`. Each is
-a 56×48px control with a Lucide icon above a visible 10px uppercase label (`Goal`, `Flow`,
-`Discover`), an accessible name that also names the shortcut, `aria-selected`, and
-`aria-controls` naming its workspace panel. The labels never collapse to icon-only and never
-overflow the tab at the 1024×720 boundary. A fresh profile starts on Goal. Clicking a tab or
-pressing Alt+1, Alt+2, or Alt+3 changes only which mounted view is shown; it never sends a
-WebSocket frame.
+The 64px rail presents exactly four modes in this order as `role="tab"` controls:
+`data-testid="mode-goal"`, `data-testid="mode-issues"`, `data-testid="mode-flow"`, and
+`data-testid="mode-discover"`. Each is a 56×48px control with a Lucide icon above a visible 10px
+uppercase label (`Goal`, `Issues`, `Flow`, `Discover`), an accessible name that also names the
+shortcut, `aria-selected`, and `aria-controls` naming its workspace panel. The labels never
+collapse to icon-only and never overflow the tab at the 1024×720 boundary. A fresh profile starts
+on Goal. Clicking a tab or pressing Alt+1, Alt+2, Alt+3, or Alt+4 changes only which mounted view
+is shown; it never sends a WebSocket frame.
 
 The sidebar header repeats the active mode as a small overline above the repository path, so the
 checkout stays identifiable from every surface; the path keeps its full value in the `title`.
@@ -107,7 +107,7 @@ reload when stale, and the `Report UI issue`, `Remove element`, and `Redesign el
 |Shortcut|Action|
 |---|---|
 |Ctrl/Cmd+K|Open the command palette|
-|Alt+1 / Alt+2 / Alt+3|Switch to Goal / Flow / Discover|
+|Alt+1 / Alt+2 / Alt+3 / Alt+4|Switch to Goal / Issues / Flow / Discover|
 |Ctrl/Cmd+S|Save the focused editor when it has unsaved changes|
 |Escape|Close the palette, dialogs, and overlays|
 
@@ -159,9 +159,11 @@ never replace mode content or steal focus, and several arrivals are all retained
 and verification results also remain in their mode context.
 
 The status bar shows the WebSocket connection, the project's own name (the last path segment,
-with a folder mark and the full path in its tooltip), running work and lane counts, and the
-running and installed versions. A mode states its status in its sidebar and workspace, never a
-second time in the status bar. When `versionState.stale` is true it shows the existing reload
+with a folder mark and the full path in its tooltip), running lane counts, the issues worker
+state, and the running and installed versions. A mode states its status in its sidebar and
+workspace, never a second time in the status bar, except the issues worker, which is detached
+from every dashboard and reports through `issues-indicator`. When `versionState.stale` is true it
+shows the existing reload
 control (`reload-devboard`), whose accessible name and title name both versions; reload behavior
 is unchanged. It also carries the theme toggle and the notification indicator.
 
@@ -346,7 +348,7 @@ read-only state directory never stops the server: it keeps serving from memory a
 
 ## Flow Mode
 
-The activity bar carries three client-only modes, `Goal`, `Flow`, and `Discover`
+The activity bar carries four client-only modes, `Goal`, `Issues`, `Flow`, and `Discover`
 (`data-testid="mode-goal"`, `data-testid="mode-flow"`, and `data-testid="mode-discover"`).
 Switching is a view change only: it sends no WebSocket frame and
 starts, stops, pauses, or resumes no work in any mode. Goal Mode is the goal, ADR, epic,
@@ -526,7 +528,7 @@ directory, and the decision board is never an ADR record.
 
 ## Discover Mode
 
-The Discover mode is the third client-only view, opened from the activity bar. It exists for an existing host project: one
+The Discover mode is the fourth client-only view, opened from the activity bar. It exists for an existing host project: one
 read-only crawl produces an evidence-backed project sheet, a UbiLang glossary for each detected
 bounded context, and five project-specific Agent Skills that every devboard implementation agent in
 that host discovers. Switching to Discover, and switching its pages, sends no WebSocket frame
@@ -1093,16 +1095,18 @@ real path. A symlinked `.tmp` is never followed, and a missing directory is skip
 An entry is deleted when its last-modified time is older than seven days: files and symlinks
 individually, and a directory only when it is empty after that deletion and its own mtime, read
 before the sweep, is older than the cutoff. A fresh file inside an old directory survives and
-keeps its ancestors. Old watchdog and orchestrator run directories, `orchestrator.log`, legacy
-`devboard-*.{log,state,lock}` files, verification scratch, and stray stale files are therefore
-removed after a week. These entries are never deleted at any age:
+keeps its ancestors. Old watchdog run directories, legacy orchestrator run files and
+`orchestrator.log`, legacy `devboard-*.{log,state,lock}` files, verification scratch, and stray
+stale files are therefore removed after a week. These entries are never deleted at any age:
 
 - `.tmp/state/` and everything below it.
 - `.tmp/journal/`, which the journal rule above governs.
 - `.tmp/watchdog/state.json`, `.tmp/watchdog/latest.json`, and `.tmp/watchdog/lock`.
-- `.tmp/orchestrator/state.json`, `.tmp/orchestrator/ledger.json`, and `.tmp/orchestrator/lock`.
-- the run directory of the cycle performing the sweep and the orchestrator run directory named by
-  a `running` `state.json`.
+- `.tmp/orchestrator/state.json`, `.tmp/orchestrator/ledger.json`, and `.tmp/orchestrator/lock`,
+  which the first Issues Start still reads to migrate handled issue numbers.
+- `.tmp/issues/` in full: every repo-scoped state, ledger, run, activity journal, control file,
+  and the repo-anchored worker lock, including the run directory a running worker names.
+- the run directory of the cycle performing the sweep.
 - a `devboard-<pid>.lock` whose pid is still alive.
 
 Run it by hand from `.devboard`:
@@ -1184,78 +1188,76 @@ devboard-watchdog.timer` resumes it. `bun run verify:watchdog` proves the indica
 issue links against a freshly built bundle; `bun run verify:watchdog-live` starts a seeded
 dashboard, waits for the installed timer to file a real issue, and closes it as not planned.
 
-## Issue orchestrator
+## Issues mode
 
-A second machine-level systemd user service runs one issue orchestrator per repository, also
-independently of every dashboard. `devboard-orchestrator.service` is `Type=simple`,
-`Restart=always`, `RestartSec=10`, and runs `bun run orchestrator/main.ts --root <root> --repo
-<owner>/<repo> --interval 60` from `<root>/.devboard`; it survives logout (`Linger=yes`). The
-repository is pinned at install: the installer reads the canonical checkout's `origin` and
-refuses a `--root` that is a linked worktree, is not a checkout root, or lacks `.devboard/`, and a
-`--repo` that is not that origin.
+Issues is the fourth mode in the activity rail, below Goal. Each dashboard controls exactly one
+repository: its own `REPO_DIR`. Starting Issues in one checkout's dashboard polls that checkout's
+origin open issues and drives the installed `/implement-all-issues` command over ACP with that
+checkout as its working directory. A detached worker owns the poll loop, the agent peer, the
+ledger, the lock, and the activity for one repository, so it survives a dashboard restart and two
+repositories never share a worker. No systemd unit, timer, or machine-level scheduler is involved,
+and neither starting nor restarting a dashboard starts a worker.
 
-Each poll is plain CLI polling of the paginated GitHub issues endpoint
-(`gh api --paginate repos/<owner>/<repo>/issues?state=open`) every 60 seconds. No model, agent,
-or dashboard process decides anything. When an open non-pull-request issue number has not been
-handled, the service spawns the operator's `/implement-all-issues` omp command exactly once,
-unscoped: `omp --print --auto-approve /implement-all-issues` with the repository root as its
-working directory. The first start therefore runs the entire currently open backlog. Issues
-appearing while a run is live spawn nothing; they earn exactly one follow-up run when the active
-run exits. An issue recorded as handled is never retriggered while it stays open, and a closed
-issue that reopens is new again.
+Start first proves the facts it needs: a canonical checkout root that is not a linked worktree,
+a GitHub `origin`, `omp` and `gh` on `PATH`, the `/implement-all-issues` command installed for the
+operator's omp (`~/.omp/agent/commands/implement-all-issues.md` or
+`~/.omp/commands/implement-all-issues.md`), and
+`gh api repos/<owner>/<repo> --jq .permissions.push` returning `true`. A refusal names the missing
+fact, spawns no peer, and writes no run. A live legacy `devboard-orchestrator` lock is refused
+too; the harness never stops that process.
 
-`ORCHESTRATOR_AGENT_COMMAND` replaces the whole argv, split on whitespace with no shell, so a
-scope is never appended and a different command can be swapped in. `/implement-all-issues` must
-be installed for the operator's own omp (`~/.omp/agent/commands/implement-all-issues.md`); the
-installer fails with that path when it is missing.
+The worker is spawned detached in its own session from the harness package the server loaded,
+with `REPO_DIR` as its working directory. It holds `<REPO_DIR>/.devboard/.tmp/issues/lock`, which
+records its pid, argv, state directory, and harness version. A lock whose owner is gone is
+reclaimed before a new worker starts; a lock with a live owner is never taken over. A second
+dashboard with the same `REPO_DIR` and `STATE_DIR` attaches to that worker. A second dashboard
+with the same `REPO_DIR` and another `STATE_DIR` cannot attach and is refused, because the
+repo-anchored lock names the live worker. Different repositories get independent workers.
 
-A singleton lock at `<state-dir>/orchestrator/lock` records the owner pid and start time shared
-by the service and every manual invocation that uses the default state directory, which is
-`<root>/.devboard/.tmp`. A second invocation while that pid is alive prints `already running` and
-exits 0 without polling, spawning, or writing anything; a lock whose owner is gone is reclaimed.
-The orchestrator itself runs no `git worktree`, `commit`, `merge`, or `push` and creates no
-issue, label, or comment: only the spawned command may do those.
+The poll is the GitHub issues endpoint through the operator's `gh` credential every 2 seconds,
+conditional on the previous `ETag` (`If-None-Match`). A `304` is no change; `403`/`429` honor
+`Retry-After` or `X-RateLimit-Reset`. Pull requests returned by the endpoint are excluded. When
+an open issue is not in the ledger, one ACP peer is spawned in `REPO_DIR`, one session is opened,
+and exactly `/implement-all-issues` is sent with no appended scope. Session updates stream into
+the mode, permission requests are auto-approved by the ACP client, elicitation questions are
+answered from the mode, and the peer closes when the run ends or Stop is clicked. The agent owns
+every worktree, commit, push, issue closure, and repository mutation.
 
-`<state-dir>/orchestrator/state.json` is written atomically, by temporary file and rename, at
-startup and on every transition. It carries `version: 1`, `root`, `repo`, `status` (`idle`,
-`running`, or `failed`), `startedAt`, `finishedAt`, `open`, `issues`, `lastExitCode`,
-`lastError`, `nextAttemptAt`, and `updatedAt`. A file of another version or with unparseable
-bytes is renamed aside, preserved, and ignored. A nonzero agent exit publishes `status: "failed"`
-with the first stderr line in `lastError`, leaves that run's issues unhandled, and sets
-`nextAttemptAt` five minutes ahead; the cooldown survives a restart. Streamed stdout and stderr,
-the exit code, and the invoked argv land in `<state-dir>/orchestrator/runs/<UTC timestamp>/` as
-`stdout.log`, `stderr.log`, `result.json`, and `command.json`, never buffered in memory. A
-versioned, atomic `<state-dir>/orchestrator/ledger.json` records each handled issue number with
-its run id and timestamp; it controls triggers only and never scopes the command.
-`<state-dir>/orchestrator/orchestrator.log` carries the loop's own lines.
+The trigger policy is unchanged. One run covers every open issue not in the ledger, an issue
+created during a run earns exactly one follow-up run, a handled issue is never retriggered while
+it stays open, a closed issue that reopens is new again, and a failed run publishes `failed`
+with the first stderr line and a five-minute cooldown. Pause lets the active run finish and stops
+new polls and triggers, reporting `pausing` until the run ends and then `paused`; it never kills
+the peer. Resume polls immediately, but an unexpired cooldown still delays a new run. Check now
+is accepted only while the worker is enabled and not paused, forces a poll, and clears the
+cooldown; while paused it writes a notice and polls nothing. Stop ends the peer and the worker,
+records the run as `stopped`, releases the lock, leaves captured issues unhandled, and never
+records a cooldown. No two ACP peers run concurrently for one repository.
 
-The status bar shows one compact, read-only item when `state.json` names the served checkout:
-`issues idle`, `issues working (N)` with N equal to `open`, or `issues failed`. Its title names
-the repository and, while working, the start time. It is a plain text item, not a button: it has
-no click handler, popover, or command, and it disappears when there is no state. The client asks
-the `getOrchestrator` WebSocket command on connect and every three seconds, so a state change
-shows within five seconds; the reply is `{type: "orchestratorState", present: false}` for a
-missing, damaged, foreign, or other-checkout file, and the summary fields only when it matches.
+State, ledger, runs, and activity live under `<STATE_DIR>/issues/<journalKey(REPO_DIR)>/`:
+`state.json` is atomic and carries the worker record, lifecycle, poll state, queue, run
+summaries, active run, question, and cooldown; `ledger.json` records handled numbers with the run
+id; `runs/<runId>/run.json` and `runs/<runId>/activity.json` keep the newest 50 runs; `control/`
+carries dashboard commands as atomically renamed files. Activity is persisted before a dashboard
+can read it, bounded at the first of 1,000 entries or 1 MiB with the trimmed marker, and replayed
+with the active run after a reconnect. A damaged state file is renamed aside and never prevents
+the mode from opening. The worker records the harness version it loaded, its pid, and its argv;
+a mismatched dashboard shows a notice and never kills the worker, and the state also records the
+ACP child's pid, argv, and cwd so Stop or a fresh Start can terminate a proven orphan.
 
-Operate it from the canonical `.devboard`:
+The first worker to find no repo-keyed ledger imports handled numbers from
+`<STATE_DIR>/orchestrator/state.json` and `ledger.json` when the legacy state parses and its
+`root` resolves to this `REPO_DIR`. A missing, damaged, or mismatched legacy file is ignored. The
+legacy files are otherwise left untouched.
+
+An already-installed legacy unit is removed by hand, once:
 
 ```bash
-bun run orchestrator:install    # write the unit, enable and start the service
-bun run orchestrator -- --once --dry-run --root <root> --repo <owner>/<repo>   # report; change nothing
-bun run orchestrator -- --once  # poll once and run once (plus any follow-up)
-bun run orchestrator:uninstall  # stop, disable, and remove the unit and its symlink
-bun run verify:orchestrator     # the stub-tracker gate; no GitHub write
-bun run verify:orchestrator -- --live   # seed one issue, prove the chain, close it
+systemctl --user disable --now devboard-orchestrator.service
+rm -f ~/.config/systemd/user/devboard-orchestrator.service
+rm -f ~/.config/systemd/user/default.target.wants/devboard-orchestrator.service
+systemctl --user daemon-reload
 ```
-
-The unit template is `orchestrator/units/devboard-orchestrator.service` and contains no absolute
-path, user, or repository name; only the installer substitutes them. It writes
-`$HOME/.config/systemd/user/devboard-orchestrator.service`, runs `daemon-reload`, and enables and
-starts the service, verifying `Linger=yes`, `bun`, `omp`, `gh`, `git`, the installed command, and
-`gh api repos/<owner>/<repo> --jq '.permissions.push'` inside a transient systemd user unit.
-Installing twice leaves one unit and one MainPID and does not restart an active run.
-`orchestrator:uninstall` changes no repository file; the unit and its `default.target.wants`
-symlink are the only paths outside the repository.
 
 ## Report, remove, or redesign a UI element
 
@@ -1348,7 +1350,14 @@ The client sends:
 { "type": "getGoal" }
 { "type": "getProject" }
 { "type": "getVersion" }
-{ "type": "getOrchestrator" }
+{ "type": "getIssues" }
+{ "type": "getIssuesRun", "runId": "2026-10-27T10-00-00-000Z" }
+{ "type": "startIssues" }
+{ "type": "pauseIssues" }
+{ "type": "resumeIssues" }
+{ "type": "stopIssues" }
+{ "type": "checkIssues" }
+{ "type": "answerIssues", "id": 7, "value": "all" }
 { "type": "restartServer" }
 { "type": "restartServer", "whenIdle": true }
 { "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
@@ -1378,12 +1387,14 @@ The client sends:
   release an update check has seen, and `stale` is true only when `running` and `installed` are
   readable and differ. A client that connects, and the page every few seconds, asks for it; a
   stale answer makes the reload control appear with both versions in its title.
-- `getOrchestrator` answers with `orchestratorState`: `present: false` when
-  `<STATE_DIR>/orchestrator/state.json` is missing, damaged, of another version, or names another
-  `root`, and otherwise `present: true` with `repo`, `status`, `open`, `startedAt`, `finishedAt`,
-  `lastExitCode`, `lastError`, `nextAttemptAt`, and `updatedAt`. It never carries the issue list,
-  a token, or an environment value, and an absent state is not an error. The client asks on
-  connect and every three seconds.
+- `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
+  lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
+  next attempt, errors, and the harness version the worker loaded. A missing state and no live
+  lock answer `present: false`, `attached: false`, and `lifecycle: "stopped"`. A live worker from
+  another harness version adds a non-blocking `notice` naming both versions. A connect also
+  replays the active run's whole activity as one `issuesActivity` with `replay: true`;
+  `getIssuesRun` answers `issuesRun` with one run's metadata and activity. The client never
+  polls: state and activity arrive as events, so switching modes and reconnecting send no frame.
 - `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
   stops the listener, starts the installed harness package, and exits. It is refused with an
   `error` when no launcher is configured or while a restart is already in progress. A client
@@ -1468,7 +1479,7 @@ The client sends:
   failure is preceded by one `error` carrying git's stderr where git failed. While a reset
   runs, `saveGoal`, `startRun`, `startLifecycle`, `pauseLifecycle`, `resumeLifecycle`,
   `reviseGoal`, `createGoal`, `prepareSkills`, `answer`, and a second `resetImplementation`
-  are each refused with an `error`; `listRecords`, `getGoal`, `getProject`, `getOrchestrator`,
+  are each refused with an `error`; `listRecords`, `getGoal`, `getProject`, `getIssues`, `getIssuesRun`,
   and `getSkills` still answer. A client that connects during a reset receives `implementationResetStarted` before its own
   command replies. On success the server follows the stopped event, in order, with
   `lifecycleState` at `goal` with pass `1`, `work: null`, and `paused: false`, `records` with
@@ -1682,7 +1693,7 @@ bun run verify:interface
 bun run verify:install
 bun run verify:update
 bun run verify:ui
-bun run verify:orchestrator
+bun run verify:issues
 ```
 
 `verify:interface` drives the IDE shell against a seeded fixture host in headless Chrome and
@@ -1690,16 +1701,18 @@ writes its screenshots under `.tmp/interface`. The other `verify:` scripts build
 under `.devboard/.tmp`, install them into throwaway hosts, and assert the launcher, update, and
 reload contracts end to end. They never touch a real host.
 
-`bun run verify:orchestrator` drives the orchestrator's command line over a stub tracker and a
-stub agent in a throwaway checkout and makes no GitHub write; with `--live` it seeds one
-throwaway issue in the canonical repository, runs a source dashboard and the orchestrator over
-it, proves the first run captures the backlog and that the issue created during it earns exactly
-one follow-up, and closes the issue as not planned in a finally path.
-`tests/orchestrator.test.ts` covers the trigger policy: the fresh backlog, the no-op poll, the
-new and already-handled issue, the single follow-up for an issue created during a run, the
-failure cooldown with a successful retry, atomic state and ledger writes, a damaged state file,
-the ledger's pruning and persistence, and the singleton lock. Every fixture stays under
-`.devboard/.tmp`.
+`bun run verify:issues` is the deterministic end-to-end gate. It starts a source dashboard
+against a throwaway checkout with stub `gh` and ACP commands, starts the worker, proves the 2-second
+pickup, live activity, pause drain, resume, stop, server-restart reattachment, per-repository
+isolation, same-repository attach, refusal with another `STATE_DIR`, legacy-lock refusal, and that
+no systemd unit or timer is written and no `systemctl`/`loginctl` stub is invoked. It writes only
+under `.devboard/.tmp`.
+`tests/issues.test.ts` covers the trigger policy (fresh backlog, no-op poll, new and handled
+issue, one follow-up, failure cooldown with a successful retry), lifecycle transitions, question
+answers, repo-scoped state and lock isolation, atomic and damaged state, ledger migration, the
+activity bounds, and the conditional tracker. `tests/cleanup.test.ts` proves the watchdog
+preserves repo-scoped issues state and the repo-anchored lock while sweeping legacy orchestrator
+run files. Every fixture stays under `.devboard/.tmp`.
 `tests/launcher.test.ts` covers the launcher and harness package boundaries: the help output,
 the launcher's file list and size, the harness tarball's required and forbidden paths, its size,
 and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`

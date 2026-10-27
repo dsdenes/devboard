@@ -2,12 +2,12 @@ import {
   existsSync,
   lstatSync,
   readdirSync,
-  readFileSync,
   realpathSync,
   rmdirSync,
   unlinkSync,
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { ISSUES_DIRECTORY } from "../issues/paths";
 import { JOURNAL_RETENTION_MS } from "../server/journal";
 
 /**
@@ -125,24 +125,6 @@ function liveLegacyLock(path: string): boolean {
   return existsSync(`/proc/${match[1]}`);
 }
 
-/** The run directory the orchestrator names as active, when it is running. */
-function activeOrchestratorRunDir(stateDir: string): string | undefined {
-  try {
-    const text = readFileSync(join(stateDir, "orchestrator", "state.json"), "utf8");
-    const state = JSON.parse(text) as { status?: unknown; startedAt?: unknown };
-    if (state.status !== "running" || typeof state.startedAt !== "string") return undefined;
-    if (!Number.isFinite(Date.parse(state.startedAt))) return undefined;
-    return join(
-      stateDir,
-      "orchestrator",
-      "runs",
-      state.startedAt.replace(/[:.]/g, "-"),
-    );
-  } catch {
-    return undefined;
-  }
-}
-
 function inside(directory: string, path: string): boolean {
   const rest = relative(directory, path);
   return rest.length > 0 && rest !== ".." && !rest.startsWith(`..${sep}`) && !rest.startsWith(sep);
@@ -183,12 +165,14 @@ export function sweepStateDir(
     return report;
   }
   const directory = info;
-  const activeRun = activeOrchestratorRunDir(directory);
   const protectedPrefixes = [
     join(directory, "state"),
     join(directory, "journal"),
+    // Every repo-scoped issues record: state, ledger, runs, activity, control,
+    // and the repo-anchored lock a worker holds. A running worker's run
+    // directory is therefore never swept.
+    join(directory, ISSUES_DIRECTORY),
     ...(options.watchdogRunDir === undefined ? [] : [resolve(options.watchdogRunDir)]),
-    ...(activeRun === undefined ? [] : [activeRun]),
   ];
   const protectedExact = new Set([
     join(directory, "watchdog", "state.json"),

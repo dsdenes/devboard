@@ -1,4 +1,4 @@
-export type Mode = "goal" | "flow" | "discover";
+export type Mode = "goal" | "issues" | "flow" | "discover";
 export type Theme = "dark" | "light";
 
 export interface AdrRecord {
@@ -16,23 +16,87 @@ export interface VersionState {
   stale: boolean;
 }
 
-export type OrchestratorStatus = "idle" | "running" | "failed";
+export type IssuesLifecycle = "stopped" | "idle" | "running" | "pausing" | "paused" | "failed";
+export type IssuesRunStatus = "running" | "succeeded" | "failed" | "stopped";
 
-/** The orchestrator's published summary; `present` is false when no run state exists. */
-export type OrchestratorState =
-  | { present: false }
-  | {
-      present: true;
-      repo: string;
-      status: OrchestratorStatus;
-      open: number;
-      startedAt: string | null;
-      finishedAt: string | null;
-      lastExitCode: number | null;
-      lastError: string | null;
-      nextAttemptAt: string | null;
-      updatedAt: string;
-    };
+export interface IssuesIssue {
+  number: number;
+  title: string;
+  url: string;
+  createdAt: string;
+}
+
+export interface QueuedIssue extends IssuesIssue {
+  handled: boolean;
+  runId: string | null;
+}
+
+export interface IssuesPollState {
+  intervalMs: number;
+  lastPollAt: string | null;
+  nextPollAt: string | null;
+  etag: string | null;
+  notModified: boolean;
+  rateLimitedUntil: string | null;
+  error: string | null;
+}
+
+export interface IssuesWorkerRecord {
+  pid: number;
+  startedAt: string;
+  stateDir: string;
+  harnessVersion: string | null;
+  argv: string[];
+}
+
+export interface IssuesRunSummary {
+  runId: string;
+  status: IssuesRunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  exitCode: number | null;
+  issueNumbers: number[];
+  activity: number;
+  firstStderrLine: string | null;
+}
+
+export interface IssuesRunDetail extends IssuesRunSummary {
+  repo: string;
+  argv: string[];
+  cwd: string;
+  issues: IssuesIssue[];
+  workerPid: number;
+  harnessVersion: string | null;
+  activityLines: string[];
+}
+
+/** The worker's published snapshot, as the dashboard is allowed to see it. */
+export interface IssuesSnapshot {
+  present: boolean;
+  repo: string | null;
+  root: string;
+  lifecycle: IssuesLifecycle;
+  enabled: boolean;
+  paused: boolean;
+  attached: boolean;
+  worker: IssuesWorkerRecord | null;
+  poll: IssuesPollState | null;
+  queue: QueuedIssue[];
+  runs: IssuesRunSummary[];
+  activeRun: { runId: string; startedAt: string; issueNumbers: number[] } | null;
+  question: RunQuestion | null;
+  nextAttemptAt: string | null;
+  lastError: string | null;
+  lastExitCode: number | null;
+  finishedAt: string | null;
+  notice: string | null;
+  updatedAt: string | null;
+}
+
+export interface IssuesActivityEntry {
+  text: string;
+  append: boolean;
+}
 
 export interface RunQuestionOption {
   label: string;

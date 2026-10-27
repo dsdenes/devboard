@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createApp, projectLabel } from "./app";
-import { journalFile } from "./journal";
+import { journalFile, journalKey } from "./journal";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -33,6 +33,7 @@ async function startServer(
       latest: string | null;
       stale: boolean;
     };
+    runningVersion?: string | null;
   } = {},
 ) {
   const root = await temporaryDirectory();
@@ -57,6 +58,7 @@ async function startServer(
     agentCommand: options.agentCommand,
     restart: options.restart,
     versionState: options.versionState,
+    runningVersion: options.runningVersion,
   });
   return { server, adrDir, root, url: `127.0.0.1:${server.port}` };
 }
@@ -66,13 +68,21 @@ function exchange(url: string, command: unknown): Promise<unknown> {
   const socket = new WebSocket(`ws://${url}/ws`);
 
   socket.onopen = () => socket.send(JSON.stringify(command));
+  const answer = (command as { type?: unknown }).type === "getIssues";
   socket.onmessage = (event) => {
-    socket.close();
+    let message: unknown;
     try {
-      resolve(JSON.parse(String(event.data)));
+      message = JSON.parse(String(event.data));
     } catch (error) {
+      socket.close();
       reject(error);
+      return;
     }
+    const type = (message as { type?: unknown }).type;
+    // A connection-level issues replay precedes this client's own reply.
+    if (!answer && (type === "issuesState" || type === "issuesActivity")) return;
+    socket.close();
+    resolve(message);
   };
   socket.onerror = () => reject(new Error("websocket failed"));
 
@@ -286,36 +296,100 @@ describe("createApp", () => {
   });
 });
 
-/** One state document as the orchestrator writes it, with the root it serves. */
-function orchestratorDocument(root: string, overrides: Record<string, unknown> = {}) {
+/** One issues state document as the worker writes it, scoped to `repoDir`. */
+function issuesDocument(repoDir: string, overrides: Record<string, unknown> = {}) {
   return {
     version: 1,
-    root,
     repo: "acme/fixture",
-    status: "running",
-    startedAt: "2026-10-27T10:00:00.000Z",
-    finishedAt: null,
-    open: 2,
-    issues: [
+    root: resolve(repoDir),
+    lifecycle: "running",
+    enabled: true,
+    paused: false,
+    worker: {
+      pid: process.pid,
+      startedAt: "2026-10-27T10:00:00.000Z",
+      stateDir: "",
+      harnessVersion: "0.1.0",
+      argv: ["bun", "issues/worker.ts"],
+    },
+    poll: {
+      intervalMs: 2000,
+      lastPollAt: "2026-10-27T10:00:00.000Z",
+      nextPollAt: "2026-10-27T10:00:02.000Z",
+      etag: '"etag"',
+      notModified: false,
+      rateLimitedUntil: null,
+      error: null,
+    },
+    queue: [
       {
         number: 7,
         title: "First issue",
-        url: "https://example.test/issues/7",
+        url: "https://github.com/acme/fixture/issues/7",
         createdAt: "2026-10-26T00:00:00Z",
+        handled: false,
+        runId: null,
       },
       {
         number: 8,
         title: "Second issue",
-        url: "https://example.test/issues/8",
+        url: "https://github.com/acme/fixture/issues/8",
         createdAt: "2026-10-26T01:00:00Z",
+        handled: true,
+        runId: "2026-10-27T09-00-00-000Z",
       },
     ],
-    lastExitCode: null,
-    lastError: null,
+    runs: [
+      {
+        runId: "2026-10-27T09-00-00-000Z",
+        status: "succeeded",
+        startedAt: "2026-10-27T09:00:00.000Z",
+        finishedAt: "2026-10-27T09:01:00.000Z",
+        exitCode: 0,
+        issueNumbers: [8],
+        activity: 1,
+        firstStderrLine: null,
+      },
+    ],
+    activeRun: {
+      runId: "2026-10-27T10-00-00-000Z",
+      startedAt: "2026-10-27T10:00:00.000Z",
+      issueNumbers: [7],
+    },
+    question: null,
+    acp: null,
     nextAttemptAt: null,
+    lastError: null,
+    lastExitCode: null,
+    finishedAt: null,
+    notice: null,
     updatedAt: "2026-10-27T10:00:01.000Z",
     ...overrides,
   };
+}
+
+/** Seeds the repo-scoped state and the repo-anchored lock, as a worker would. */
+async function seedIssues(root: string, overrides: Record<string, unknown> = {}) {
+  const stateDir = join(root, "state");
+  const directory = join(stateDir, "issues", journalKey(resolve(root)));
+  await mkdir(directory, { recursive: true });
+  await mkdir(join(root, ".devboard", ".tmp", "issues"), { recursive: true });
+  const document = issuesDocument(root, overrides);
+  const worker = document.worker as Record<string, unknown>;
+  worker.stateDir = stateDir;
+  await writeFile(join(directory, "state.json"), JSON.stringify(document));
+  await writeFile(
+    join(root, ".devboard", ".tmp", "issues", "lock"),
+    JSON.stringify({
+      pid: process.pid,
+      startedAt: "2026-10-27T10:00:00.000Z",
+      repo: resolve(root),
+      stateDir,
+      harnessVersion: "0.1.0",
+      argv: ["bun", "issues/worker.ts"],
+    }),
+  );
+  return { stateDir, directory, document };
 }
 
 function serverErrors(stateDir: string, root: string): string[] {
@@ -329,102 +403,145 @@ function serverErrors(stateDir: string, root: string): string[] {
     .map((record) => record.text ?? "");
 }
 
-describe("getOrchestrator", () => {
-  test("reports absence, not an error, when the state file is missing", async () => {
+describe("issues protocol", () => {
+  test("opens stopped, not an error, when no worker state exists", async () => {
     const { server, root, url } = await startServer();
 
     try {
-      expect(await exchange(url, { type: "getOrchestrator" })).toEqual({
-        type: "orchestratorState",
-        present: false,
-      });
+      const message = (await exchange(url, { type: "getIssues" })) as Record<string, unknown>;
+      expect(message.type).toBe("issuesState");
+      expect(message.present).toBe(false);
+      expect(message.lifecycle).toBe("stopped");
+      expect(message.enabled).toBe(false);
+      expect(message.attached).toBe(false);
+      expect(message.repo).toBeNull();
       expect(serverErrors(join(root, "state"), root)).toEqual([]);
     } finally {
       server.stop(true);
     }
   });
 
-  test("reports absence for damaged bytes without a journal error", async () => {
+  test("opens stopped for damaged bytes without a journal error", async () => {
     const { server, root, url } = await startServer();
     const stateDir = join(root, "state");
-    await mkdir(join(stateDir, "orchestrator"), { recursive: true });
-    await writeFile(join(stateDir, "orchestrator", "state.json"), '{"version": 1, "root":');
+    const directory = join(stateDir, "issues", journalKey(resolve(root)));
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "state.json"), '{"version": 1, "root":');
 
     try {
-      expect(await exchange(url, { type: "getOrchestrator" })).toEqual({
-        type: "orchestratorState",
-        present: false,
-      });
+      const message = (await exchange(url, { type: "getIssues" })) as Record<string, unknown>;
+      expect(message.present).toBe(false);
+      expect(message.lifecycle).toBe("stopped");
       expect(serverErrors(stateDir, root)).toEqual([]);
     } finally {
       server.stop(true);
     }
   });
 
-  test("reports absence for an unsupported version", async () => {
+  test("replays a seeded worker snapshot and its active run", async () => {
     const { server, root, url } = await startServer();
-    const stateDir = join(root, "state");
-    await mkdir(join(stateDir, "orchestrator"), { recursive: true });
+    const { directory } = await seedIssues(root);
+    await mkdir(join(directory, "runs", "2026-10-27T10-00-00-000Z"), { recursive: true });
     await writeFile(
-      join(stateDir, "orchestrator", "state.json"),
-      JSON.stringify(orchestratorDocument(root, { version: 2 })),
+      join(directory, "runs", "2026-10-27T10-00-00-000Z", "activity.json"),
+      JSON.stringify(["first line", "second line"]),
     );
 
     try {
-      expect(await exchange(url, { type: "getOrchestrator" })).toEqual({
-        type: "orchestratorState",
-        present: false,
-      });
+      const message = (await exchange(url, { type: "getIssues" })) as Record<string, unknown>;
+      expect(message.type).toBe("issuesState");
+      expect(message.present).toBe(true);
+      expect(message.attached).toBe(true);
+      expect(message.lifecycle).toBe("running");
+      expect(message.repo).toBe("acme/fixture");
+      expect((message.queue as Array<{ number: number }>).map((entry) => entry.number)).toEqual([7, 8]);
+      expect((message.activeRun as { issueNumbers: number[] }).issueNumbers).toEqual([7]);
     } finally {
       server.stop(true);
     }
   });
 
-  test("reports absence for a state file from another checkout", async () => {
+  test("serves a run detail from the repo-scoped history", async () => {
     const { server, root, url } = await startServer();
-    const stateDir = join(root, "state");
-    await mkdir(join(stateDir, "orchestrator"), { recursive: true });
+    const { directory } = await seedIssues(root);
+    const runId = "2026-10-27T09-00-00-000Z";
+    const runDirectory = join(directory, "runs", runId);
+    await mkdir(runDirectory, { recursive: true });
     await writeFile(
-      join(stateDir, "orchestrator", "state.json"),
-      JSON.stringify(orchestratorDocument(join(root, "elsewhere"))),
-    );
-
-    try {
-      expect(await exchange(url, { type: "getOrchestrator" })).toEqual({
-        type: "orchestratorState",
-        present: false,
-      });
-    } finally {
-      server.stop(true);
-    }
-  });
-
-  test("reports the summary and never the issue list for a matching file", async () => {
-    const { server, root, url } = await startServer();
-    const stateDir = join(root, "state");
-    await mkdir(join(stateDir, "orchestrator"), { recursive: true });
-    await writeFile(
-      join(stateDir, "orchestrator", "state.json"),
-      JSON.stringify(orchestratorDocument(resolve(root))),
-    );
-
-    try {
-      const message = await exchange(url, { type: "getOrchestrator" });
-
-      expect(message).toEqual({
-        type: "orchestratorState",
-        present: true,
+      join(runDirectory, "run.json"),
+      JSON.stringify({
+        version: 1,
+        runId,
         repo: "acme/fixture",
-        status: "running",
-        open: 2,
+        status: "succeeded",
+        argv: ["omp", "acp"],
+        cwd: resolve(root),
+        startedAt: "2026-10-27T09:00:00.000Z",
+        finishedAt: "2026-10-27T09:01:00.000Z",
+        exitCode: 0,
+        issues: [
+          {
+            number: 8,
+            title: "Second issue",
+            url: "https://github.com/acme/fixture/issues/8",
+            createdAt: "2026-10-26T01:00:00Z",
+          },
+        ],
+        firstStderrLine: null,
+        workerPid: process.pid,
+        harnessVersion: "0.1.0",
+      }),
+    );
+    await writeFile(join(runDirectory, "activity.json"), JSON.stringify(["handled #8"]));
+
+    try {
+      const message = (await exchange(url, { type: "getIssuesRun", runId })) as Record<string, unknown>;
+      expect(message.type).toBe("issuesRun");
+      expect((message.run as { runId: string }).runId).toBe(runId);
+      expect((message.run as { activityLines: string[] }).activityLines).toEqual(["handled #8"]);
+      const missing = (await exchange(url, { type: "getIssuesRun", runId: "../../etc/passwd" })) as Record<string, unknown>;
+      expect(missing.type).toBe("error");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses Start when this checkout's worker uses another state directory", async () => {
+    const { server, root, url } = await startServer();
+    const { stateDir } = await seedIssues(root);
+    const lock = join(root, ".devboard", ".tmp", "issues", "lock");
+    await writeFile(
+      lock,
+      JSON.stringify({
+        pid: process.pid,
         startedAt: "2026-10-27T10:00:00.000Z",
-        finishedAt: null,
-        lastExitCode: null,
-        lastError: null,
-        nextAttemptAt: null,
-        updatedAt: "2026-10-27T10:00:01.000Z",
-      });
-      expect(message).not.toHaveProperty("issues");
+        repo: resolve(root),
+        stateDir: join(root, "other-state"),
+        harnessVersion: "0.1.0",
+        argv: ["bun", "issues/worker.ts"],
+      }),
+    );
+
+    try {
+      const message = (await exchange(url, { type: "startIssues" })) as Record<string, unknown>;
+      expect(message.type).toBe("error");
+      expect(String(message.message)).toContain(String(join(root, "other-state")));
+      expect(String(message.message)).toContain(String(stateDir));
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("names both harness versions when the worker loaded another one", async () => {
+    const { server, root, url } = await startServer({ runningVersion: "0.2.0" });
+    await seedIssues(root);
+
+    try {
+      const message = (await exchange(url, { type: "getIssues" })) as Record<string, unknown>;
+      expect(message.notice).toBe(
+        "Issues worker 0.1.0 is running; this dashboard loaded 0.2.0. " +
+          "It is left running; Stop it to launch the current harness on the next Start.",
+      );
     } finally {
       server.stop(true);
     }

@@ -4,6 +4,7 @@
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
+  import { issues } from "../issues.svelte";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import type { Mode } from "../types";
@@ -18,7 +19,13 @@
   const active = $derived(layout.activeTab[layout.mode]);
   let skillsOpen = $state(false);
   const modeLabel = $derived(
-    layout.mode === "goal" ? "Goal" : layout.mode === "flow" ? "Flow" : "Discover",
+    layout.mode === "goal"
+      ? "Goal"
+      : layout.mode === "issues"
+        ? "Issues"
+        : layout.mode === "flow"
+          ? "Flow"
+          : "Discover",
   );
   const resolvedCount = $derived(goal.records.filter((record) => !record.pending).length);
   const pendingRecords = $derived(goal.records.filter((record) => record.pending));
@@ -266,6 +273,45 @@
         {/if}
       </section>
 
+    {:else if layout.mode === "issues"}
+      <section class="sidebar-group" aria-label="Issues surfaces">
+        <div class="sidebar-group__title">Workspace</div>
+        <button
+          type="button"
+          class="sidebar-item"
+          aria-current={isActive("overview")}
+          data-command="open.issues.overview"
+          data-testid="open-issues-overview"
+          onclick={() => open("issues", "overview", "overview", "overview", "Overview")}
+        >
+          <span class="sidebar-item__label">Overview</span>
+          <span class="badge" data-tone={issues.lifecycle === "failed" ? "error" : "warning"}>
+            {issues.lifecycle}
+          </span>
+        </button>
+        <button
+          type="button"
+          class="sidebar-item"
+          aria-current={isActive("issues")}
+          data-command="open.issues.issues"
+          data-testid="open-issues-queue"
+          onclick={() => open("issues", "issues", "queue", "issues", "Issues")}
+        >
+          <span class="sidebar-item__label">Issues</span>
+          <span class="sidebar-item__meta">{issues.pending} pending</span>
+        </button>
+        <button
+          type="button"
+          class="sidebar-item"
+          aria-current={isActive("runs")}
+          data-command="open.issues.runs"
+          data-testid="open-issues-runs"
+          onclick={() => open("issues", "runs", "runs", "runs", "Runs")}
+        >
+          <span class="sidebar-item__label">Runs</span>
+          <span class="sidebar-item__meta">{issues.runs.length}</span>
+        </button>
+      </section>
     {:else if layout.mode === "flow"}
       <section class="sidebar-group" aria-label="Flow surfaces">
         <div class="sidebar-group__title">Workspace</div>

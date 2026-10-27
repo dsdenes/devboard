@@ -528,48 +528,138 @@ async function seedFlow(stateDir: string, host: string): Promise<void> {
 }
 
 /**
- * Publishes one orchestrator state for the fixture host, atomically, the way
- * the runner does. The dashboard reads it through the `getOrchestrator`
- * command, so this is the only seed the status item needs.
+ * Publishes one repo-scoped issues state for the fixture host and holds its
+ * repo-anchored lock with this process's live pid, exactly the shape a worker
+ * leaves. The dashboard reads it through `getIssues` and its events.
  */
-async function seedOrchestrator(
+async function seedIssuesState(
   stateDir: string,
   host: string,
-  status: "idle" | "running" | "failed",
+  lifecycle: "stopped" | "idle" | "running" | "paused" | "failed",
 ): Promise<void> {
-  const directory = join(stateDir, "orchestrator");
-  await mkdir(directory, { recursive: true });
-  const issues =
-    status === "running"
-      ? [17, 18, 19].map((number) => ({
-          number,
-          title: `Fixture issue ${number}`,
-          url: `https://example.test/issues/${number}`,
-          createdAt: "2026-10-26T00:00:00Z",
-        }))
-      : [];
+  const directory = join(stateDir, "issues", journalKey(host));
+  await mkdir(join(directory, "runs", "2026-10-27T10-00-00-000Z"), { recursive: true });
+  const enabled = lifecycle !== "stopped";
+  const running = lifecycle === "running";
+  const queue = running
+    ? [17, 18, 19].map((number) => ({
+        number,
+        title: `Fixture issue ${number}`,
+        url: `https://github.com/fixture/host/issues/${number}`,
+        createdAt: "2026-10-26T00:00:00Z",
+        handled: false,
+        runId: null,
+      }))
+    : [];
+  const runs = enabled
+    ? [
+        {
+          runId: "2026-10-27T10-00-00-000Z",
+          status: running ? "running" : lifecycle === "failed" ? "failed" : "succeeded",
+          startedAt: "2026-10-27T10:00:00.000Z",
+          finishedAt: running ? null : "2026-10-27T10:01:00.000Z",
+          exitCode: running ? null : lifecycle === "failed" ? 1 : 0,
+          issueNumbers: running ? [17, 18, 19] : [16],
+          activity: 2,
+          firstStderrLine: lifecycle === "failed" ? "the agent exited with code 1" : null,
+        },
+      ]
+    : [];
   const state = {
     version: 1,
-    root: resolve(host),
     repo: "fixture/host",
-    status,
-    startedAt: status === "running" ? "2026-10-27T10:00:00.000Z" : null,
-    finishedAt: status === "idle" ? "2026-10-27T09:59:00.000Z" : null,
-    open: issues.length,
-    issues,
-    lastExitCode: status === "failed" ? 1 : null,
-    lastError: status === "failed" ? "the agent exited with code 1" : null,
-    nextAttemptAt: status === "failed" ? "2026-10-27T10:05:00.000Z" : null,
+    root: resolve(host),
+    lifecycle,
+    enabled,
+    paused: lifecycle === "paused",
+    worker: enabled
+      ? {
+          pid: process.pid,
+          startedAt: "2026-10-27T10:00:00.000Z",
+          stateDir,
+          harnessVersion: "0.1.0",
+          argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
+        }
+      : null,
+    poll: {
+      intervalMs: 2000,
+      lastPollAt: enabled ? "2026-10-27T10:00:00.000Z" : null,
+      nextPollAt: enabled ? "2026-10-27T10:00:02.000Z" : null,
+      etag: enabled ? '"etag"' : null,
+      notModified: false,
+      rateLimitedUntil: null,
+      error: null,
+    },
+    queue,
+    runs,
+    activeRun: running
+      ? { runId: "2026-10-27T10-00-00-000Z", startedAt: "2026-10-27T10:00:00.000Z", issueNumbers: [17, 18, 19] }
+      : null,
+    question: running
+      ? {
+          id: 1,
+          message: "Which issue scope should the agent take?",
+          options: [{ label: "Every open issue", description: "The whole backlog", recommended: true }],
+        }
+      : null,
+    acp: running ? { pid: process.pid, argv: ["omp", "acp"], cwd: resolve(host) } : null,
+    nextAttemptAt: lifecycle === "failed" ? "2026-10-27T10:05:00.000Z" : null,
+    lastError: lifecycle === "failed" ? "the agent exited with code 1" : null,
+    lastExitCode: lifecycle === "failed" ? 1 : running ? null : 0,
+    finishedAt: running ? null : "2026-10-27T10:01:00.000Z",
+    notice: null,
     updatedAt: new Date().toISOString(),
   };
   const path = join(directory, "state.json");
   const temporary = `${path}.${process.pid}.tmp`;
   await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`);
   await rename(temporary, path);
+  const runId = "2026-10-27T10-00-00-000Z";
+  await writeFile(
+    join(directory, "runs", runId, "activity.json"),
+    JSON.stringify(["Reading the open issues", "Implementing issue 17"]),
+  );
+  await writeFile(
+    join(directory, "runs", runId, "run.json"),
+    JSON.stringify({
+      version: 1,
+      runId,
+      repo: "fixture/host",
+      status: running ? "running" : lifecycle === "failed" ? "failed" : "succeeded",
+      argv: ["omp", "acp"],
+      cwd: resolve(host),
+      startedAt: "2026-10-27T10:00:00.000Z",
+      finishedAt: running ? null : "2026-10-27T10:01:00.000Z",
+      exitCode: running ? null : lifecycle === "failed" ? 1 : 0,
+      issues: (running ? [17, 18, 19] : [16]).map((number) => ({
+        number,
+        title: `Fixture issue ${number}`,
+        url: `https://github.com/fixture/host/issues/${number}`,
+        createdAt: "2026-10-26T00:00:00Z",
+      })),
+      firstStderrLine: null,
+      workerPid: process.pid,
+      harnessVersion: "0.1.0",
+    }),
+  );
+  const lockDirectory = join(host, ".devboard", ".tmp", "issues");
+  await mkdir(lockDirectory, { recursive: true });
+  await writeFile(
+    join(lockDirectory, "lock"),
+    JSON.stringify({
+      pid: process.pid,
+      startedAt: "2026-10-27T10:00:00.000Z",
+      repo: resolve(host),
+      stateDir,
+      harnessVersion: "0.1.0",
+      argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
+    }),
+  );
 }
 
-async function clearOrchestratorState(stateDir: string): Promise<void> {
-  await rm(join(stateDir, "orchestrator"), { recursive: true, force: true });
+async function clearIssuesState(stateDir: string, host: string): Promise<void> {
+  await rm(join(stateDir, "issues", journalKey(host)), { recursive: true, force: true });
+  await rm(join(host, ".devboard", ".tmp", "issues", "lock"), { force: true });
 }
 
 async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
@@ -1152,11 +1242,12 @@ try {
       })),
     };
   })()`);
-  check(activity.count === 3, "the activity bar does not present exactly three modes", activity);
+  check(activity.count === 4, "the activity bar does not present exactly four modes", activity);
   const brand = await page.eval<string>(`document.querySelector('[data-testid="activity-bar"]')?.textContent?.replace(/\\s+/g, "") ?? ""`);
-  check(brand === "GoalFlowDiscover", "the activity bar does not name its three modes", brand);
+  check(brand === "GoalIssuesFlowDiscover", "the activity bar does not name its four modes", brand);
   const expectedModes = [
     ["mode-goal", "true", "Goal"],
+    ["mode-issues", "false", "Issues"],
     ["mode-flow", "false", "Flow"],
     ["mode-discover", "false", "Discover"],
   ];
@@ -1184,7 +1275,7 @@ try {
     });
   })()`);
   check(
-    railLabels.length === 3 && railLabels.every((label) => label.overflow <= 1 && label.inside),
+    railLabels.length === 4 && railLabels.every((label) => label.overflow <= 1 && label.inside),
     "a mode label overflows or leaves its tab",
     railLabels,
   );
@@ -1290,7 +1381,9 @@ try {
   check(endIndex > 0 && homeIndex === 0, "Home and End do not move the palette selection", { endIndex, homeIndex });
   const ids = new Set(palette.items.map((item) => item.id));
   const requiredCommands = [
-    "view.mode.goal", "view.mode.flow", "view.mode.discover",
+    "view.mode.goal", "view.mode.issues", "view.mode.flow", "view.mode.discover",
+    "issues.start", "issues.pause", "issues.resume", "issues.stop", "issues.check",
+    "open.issues.overview", "open.issues.issues", "open.issues.runs",
     "view.theme.toggle", "view.layout.reset",
     "app.reload", "app.report", "app.notifications.open",
     "goal.save", "goal.create", "goal.revise", "goal.skills.prepare",
@@ -1344,9 +1437,11 @@ try {
   await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "Alt+1");
   const framesBeforeSwitch = await page.eval<number>("window.__viFrames.length");
   await page.key("2", 1);
-  await page.wait(`document.querySelector('[data-testid="mode-flow"]')?.getAttribute("aria-selected") === "true"`, "Alt+2");
+  await page.wait(`document.querySelector('[data-testid="mode-issues"]')?.getAttribute("aria-selected") === "true"`, "Alt+2");
   await page.key("3", 1);
-  await page.wait(`document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`, "Alt+3");
+  await page.wait(`document.querySelector('[data-testid="mode-flow"]')?.getAttribute("aria-selected") === "true"`, "Alt+3");
+  await page.key("4", 1);
+  await page.wait(`document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`, "Alt+4");
   await page.key("1", 1);
   await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "Alt+1 return");
   const framesAfterSwitch = await page.eval<number>("window.__viFrames.length");
@@ -1354,7 +1449,7 @@ try {
 
   await page.focus('[data-testid="start-next"]');
   await page.key("2", 1);
-  await page.wait(`document.querySelector('[data-testid="mode-flow"]')?.getAttribute("aria-selected") === "true"`, "Alt+2 focus test");
+  await page.wait(`document.querySelector('[data-testid="mode-issues"]')?.getAttribute("aria-selected") === "true"`, "Alt+2 focus test");
   await page.key("1", 1);
   await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "Alt+1 focus test");
   await delay(150);
@@ -3329,7 +3424,7 @@ try {
       value: document.querySelector('.feedback-panel textarea')?.value ?? "",
     };
   })()`, "the completed first answer", 20_000);
-  check(firstAnswer.turns[1]!.includes("The issues label shows"), "the first answer text is wrong", firstAnswer);
+  check(firstAnswer.turns[1]!.includes("The issues indicator shows"), "the first answer text is wrong", firstAnswer);
   check(
     !firstAnswer.turns[1]!.includes("Considering the captured element") &&
       !firstAnswer.turns[1]!.includes("Reading the captured element"),
@@ -3350,7 +3445,7 @@ try {
   })()`, "the follow-up answer", 20_000);
   check(followUp.turns[2] === "Which file renders it?", "the follow-up question bubble is wrong", followUp);
   check(followUp.turns[3]!.includes("StatusBar.svelte"), "the follow-up answer is wrong", followUp);
-  check(followUp.turns[1]!.includes("The issues label shows"), "the first answer disappeared", followUp);
+  check(followUp.turns[1]!.includes("The issues indicator shows"), "the first answer disappeared", followUp);
   check(followUp.value === "", "the follow-up composer did not clear", followUp);
 
   await page.focus(composer);
@@ -3450,91 +3545,170 @@ try {
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-panel') === null`, "the ask panel to close");
 
-  // 15. Orchestrator status item: idle, working, failed, hidden, and live update.
-  await seedOrchestrator(stateDir, host, "idle");
-  const idleIssues = await page.wait<{
-    count: number;
-    text: string;
-    title: string;
-    tag: string;
-    interactive: boolean;
-  }>(
+  // 15. Issues mode: the console, queue, runs, status indicator, and live state.
+  await seedIssuesState(stateDir, host, "stopped");
+  const stoppedIndicator = await page.wait<{ text: string; title: string; command: string; tag: string }>(
     `(() => {
-      const items = [...document.querySelectorAll('[data-testid="status-issues"]')];
-      if (items.length === 0) return null;
-      const item = items[0];
-      const text = item.textContent?.trim() ?? "";
-      if (text !== "issues idle") return null;
-      return {
-        count: items.length,
-        text,
-        title: item.getAttribute("title") ?? "",
-        tag: item.tagName,
-        interactive:
-          item.querySelector("button, a, [role=button], [role=dialog]") !== null ||
-          item.hasAttribute("aria-expanded") ||
-          item.hasAttribute("aria-haspopup") ||
-          item.hasAttribute("onclick"),
-      };
-    })()`,
-    "the idle orchestrator item",
-    8_000,
-  );
-  check(idleIssues.count === 1, "the status bar does not show exactly one issue item", idleIssues);
-  check(idleIssues.text === "issues idle", "the idle item text is wrong", idleIssues);
-  check(idleIssues.tag === "SPAN" && !idleIssues.interactive, "the issue item is interactive", idleIssues);
-  check(idleIssues.title.includes("fixture/host"), "the idle title does not name the repository", idleIssues);
-
-  const workingSeededAt = Date.now();
-  await seedOrchestrator(stateDir, host, "running");
-  const workingItems = await page.wait<{ text: string; title: string }>(
-    `(() => {
-      const item = document.querySelector('[data-testid="status-issues"]');
+      const item = document.querySelector('[data-testid="issues-indicator"]');
       if (item === null) return null;
       const text = item.textContent?.trim() ?? "";
-      if (!/^issues working \\(\\d+\\)$/.test(text)) return null;
-      return { text, title: item.getAttribute("title") ?? "" };
+      const title = item.getAttribute("title") ?? "";
+      if (text !== "issues stopped" || !title.includes("fixture/host")) return null;
+      return {
+        text,
+        title,
+        command: item.getAttribute("data-command") ?? "",
+        tag: item.tagName,
+      };
     })()`,
-    "the working orchestrator item",
+    "the stopped issues indicator",
     8_000,
   );
-  const workingDelay = Date.now() - workingSeededAt;
-  check(workingDelay <= 5_000, `the issue item took ${workingDelay}ms to show the change`);
-  check(workingItems.text === "issues working (3)", "the working count is wrong", workingItems);
+  check(stoppedIndicator.command === "view.mode.issues", "the issues indicator has no command", stoppedIndicator);
+  check(stoppedIndicator.tag === "BUTTON", "the issues indicator is not a control", stoppedIndicator);
+  check(stoppedIndicator.title.includes("fixture/host"), "the issues title does not name the repository", stoppedIndicator);
+
+  await page.click('[data-testid="issues-indicator"]');
+  await page.wait(
+    `document.querySelector('[data-testid="mode-issues"]')?.getAttribute("aria-selected") === "true"`,
+    "Issues from the status indicator",
+    8_000,
+  );
+  const stoppedConsole = await page.eval<{
+    visible: boolean;
+    overview: boolean;
+    state: string;
+    repo: string;
+    start: boolean;
+    pause: boolean;
+    resume: boolean;
+    stop: boolean;
+    check: boolean;
+  }>(`(() => {
+    const workspace = document.getElementById("workspace-issues");
+    const button = (testid) => document.querySelector('[data-testid="' + testid + '"]');
+    return {
+      visible: workspace !== null && !workspace.hasAttribute("hidden"),
+      overview: button("issues-overview") !== null,
+      state: button("issues-state")?.textContent?.trim() ?? "",
+      repo: button("issues-repo")?.textContent?.trim() ?? "",
+      start: button("issues-start")?.disabled === true,
+      pause: button("issues-pause")?.disabled === true,
+      resume: button("issues-resume")?.disabled === true,
+      stop: button("issues-stop")?.disabled === true,
+      check: button("issues-check-now")?.disabled === true,
+    };
+  })()`);
+  check(stoppedConsole.visible && stoppedConsole.overview, "the Issues pane or overview is missing", stoppedConsole);
+  check(stoppedConsole.state === "stopped", "the Issues mode does not open stopped", stoppedConsole);
+  check(stoppedConsole.repo === "fixture/host", "the Issues overview does not name the repository", stoppedConsole);
   check(
-    workingItems.title.includes("fixture/host") && workingItems.title.includes("2026-10-27T10:00:00.000Z"),
-    "the working title does not name the repository and the start",
-    workingItems,
+    !stoppedConsole.start && stoppedConsole.pause && stoppedConsole.resume && stoppedConsole.stop && stoppedConsole.check,
+    "the stopped controls are not in their exact states",
+    stoppedConsole,
   );
 
-  await seedOrchestrator(stateDir, host, "failed");
-  const failedText = await page.wait<string>(
-    `(() => {
-      const item = document.querySelector('[data-testid="status-issues"]');
-      const text = item?.textContent?.trim() ?? "";
-      return text === "issues failed" ? text : null;
-    })()`,
-    "the failed orchestrator item",
+  await seedIssuesState(stateDir, host, "idle");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues idle"`,
+    "the idle issues indicator",
     8_000,
   );
-  check(failedText === "issues failed", "the failed item text is wrong", failedText);
+  const idleControls = await page.eval<{ state: string; start: boolean; check: boolean }>(`(() => ({
+    state: document.querySelector('[data-testid="issues-state"]')?.textContent?.trim() ?? "",
+    start: document.querySelector('[data-testid="issues-start"]')?.disabled === true,
+    check: document.querySelector('[data-testid="issues-check-now"]')?.disabled === true,
+  }))()`);
+  check(idleControls.state === "idle" && idleControls.start && !idleControls.check, "the idle controls are wrong", idleControls);
 
-  await clearOrchestratorState(stateDir);
+  const runningSeededAt = Date.now();
+  await seedIssuesState(stateDir, host, "running");
   await page.wait(
-    `document.querySelector('[data-testid="status-issues"]') === null`,
-    "the issue item to disappear",
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues working (3)"`,
+    "the working issues indicator",
     8_000,
   );
-  const hiddenItems = await page.eval<number>(
-    `document.querySelectorAll('[data-testid="status-issues"]').length`,
-  );
-  check(hiddenItems === 0, "the issue item stayed after the state file was removed", hiddenItems);
-
-  // Leave a seeded state so the 1024×720 clipping check sees the item.
-  await seedOrchestrator(stateDir, host, "running");
+  const runningDelay = Date.now() - runningSeededAt;
+  check(runningDelay <= 2_000, `the issues indicator took ${runningDelay}ms to update`);
   await page.wait(
-    `document.querySelector('[data-testid="status-issues"]')?.textContent?.trim() === "issues working (3)"`,
-    "the seeded issue item before the viewport check",
+    `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Reading the open issues")`,
+    "the replayed issues activity",
+    8_000,
+  );
+  const question = await page.eval<{ message: string; options: number }>(`(() => {
+    const panel = document.querySelector('[data-testid="issues-question"]');
+    return {
+      message: panel?.textContent?.includes("Which issue scope should the agent take?") ?? false,
+      options: document.querySelectorAll('[data-testid="issues-choice"]').length,
+    };
+  })()`);
+  check(question.message && question.options === 1, "the ACP question is not surfaced", question);
+
+  // A persisted activity delta reaches the live terminal within one second.
+  const activityPath = join(stateDir, "issues", journalKey(host), "runs", "2026-10-27T10-00-00-000Z", "activity.json");
+  const activitySeededAt = Date.now();
+  await writeFile(
+    activityPath,
+    JSON.stringify(["Reading the open issues", "Implementing issue 17", "Implementing issue 18"]),
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Implementing issue 18")`,
+    "the live activity delta",
+    8_000,
+  );
+  const activityDelay = Date.now() - activitySeededAt;
+  check(activityDelay <= 1_500, `the activity delta took ${activityDelay}ms`);
+
+  await page.click('[data-testid="open-issues-queue"]');
+  await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the issues queue");
+  const queue = await page.eval<Array<{ number: string; handled: string }>>(
+    `[...document.querySelectorAll('[data-testid="issues-queue-item"]')].map((item) => ({
+      number: item.getAttribute("data-number") ?? "",
+      handled: item.getAttribute("data-handled") ?? "",
+    }))`,
+  );
+  check(queue.length === 3, "the queue does not list every open issue", queue);
+  check(queue.map((entry) => entry.number).join(",") === "17,18,19", "the queue is not sorted by number", queue);
+  check(queue.every((entry) => entry.handled === "false"), "a pending issue is not marked pending", queue);
+
+  await page.click('[data-testid="open-issues-runs"]');
+  await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the runs page");
+  const runCount = await page.eval<number>(`document.querySelectorAll('[data-testid="issues-run"]').length`);
+  check(runCount === 1, "the runs page does not list the run history", runCount);
+  await page.click('[data-testid="issues-run"]');
+  await page.wait(`document.querySelector('[data-testid="issues-run-detail"]') !== null`, "the run detail");
+  const runActivity = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-run-activity"]')?.textContent ?? ""`,
+  );
+  check(runActivity.includes("Implementing issue 17"), "the run detail does not show its activity", runActivity);
+  await page.click('[data-testid="open-issues-overview"]');
+  await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview again");
+
+  await seedIssuesState(stateDir, host, "failed");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-state"]')?.textContent?.trim() === "failed"`,
+    "the failed issues state",
+    8_000,
+  );
+  const failed = await page.eval<{ indicator: string; error: string }>(`(() => ({
+    indicator: document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() ?? "",
+    error: document.querySelector('[data-testid="issues-error"]')?.textContent?.trim() ?? "",
+  }))()`);
+  check(failed.indicator === "issues failed", "the failed indicator is wrong", failed);
+  check(failed.error.includes("the agent exited with code 1"), "the failure is not shown", failed);
+
+  await clearIssuesState(stateDir, host);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues stopped"`,
+    "the stopped indicator after the state was removed",
+    8_000,
+  );
+
+  // Leave a running state so the 1024×720 clipping check sees the item.
+  await seedIssuesState(stateDir, host, "running");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues working (3)"`,
+    "the seeded issues indicator before the viewport check",
     8_000,
   );
 
@@ -3750,7 +3924,7 @@ try {
 
   devtools.close();
   console.log(
-    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, editors, terminals, accessibility, notifications, status bar, orchestrator status, ask transcript, persistence, and boundary passed",
+    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, editors, terminals, accessibility, notifications, status bar, issues mode, ask transcript, persistence, and boundary passed",
   );
 } finally {
   try {
