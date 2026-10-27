@@ -3,8 +3,8 @@
 ## Page identity
 
 - Route: Issues mode → Agents tab (`#workspace-issues > section.issues-agents-page`).
-- Entry points: sidebar `Agents`, the Overview `Open Agents` control, the status bar issues
-  indicator, and a restored `agents` tab after reload.
+- Entry points: sidebar `Agents`, the status bar issues indicator, and a restored `agents` tab
+  after reload.
 - Audience: the repository operator watching a running issues fleet.
 
 ## Primary goal

@@ -109,10 +109,6 @@
     openTab?.({ id: "runs", kind: "runs", resourceId: "runs", title: "Runs" });
   }
 
-  function openAgents(): void {
-    openTab?.({ id: "agents", kind: "agents", resourceId: "agents", title: "Agents" });
-  }
-
   function openOverview(): void {
     openTab?.({ id: "overview", kind: "overview", resourceId: "overview", title: "Overview" });
   }
@@ -234,9 +230,6 @@
               {issues.snapshot?.poll?.error ?? issues.snapshot?.lastError}
             </p>
           {/if}
-          <Button variant="outline" data-testid="issues-agents-link" data-command="open.issues.agents" onclick={openAgents}>
-            Open Agents
-          </Button>
         </div>
       </section>
 
