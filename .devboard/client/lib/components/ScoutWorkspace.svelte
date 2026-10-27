@@ -22,7 +22,7 @@
     <div>
       <h1 class="issues-overview__title">Auto Scout</h1>
       <p class="issues-overview__repo mono" data-testid="scout-repo">
-        {scout.repo ?? "No GitHub origin"}
+        {scout.repoLabel}
       </p>
     </div>
     <span class="badge" data-tone={lifecycleTone} data-testid="scout-lifecycle">
@@ -33,9 +33,6 @@
   <section class="panel">
     <div class="panel__header">
       <h2 class="panel__title">Scout worker</h2>
-      <span class="panel__subtitle">
-        {scout.scanning ? "One scan is running" : scout.count === 9 ? "Board full" : "Up to nine recommendations"}
-      </span>
     </div>
     <div class="panel__body stack-sm">
       <div class="toolbar">
