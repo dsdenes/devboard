@@ -440,7 +440,6 @@
   <section class="issues-queue-page" aria-label="Open issues">
     <header class="issues-overview__header">
       <div>
-        <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Open issues</h1>
         <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
