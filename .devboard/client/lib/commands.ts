@@ -184,6 +184,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     ["goal", { id: "goal-document", kind: "goal-document", resourceId: "goal-document", title: "Goal document" }],
     ["goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" }],
     ["issues", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
+    ["issues", { id: "scout", kind: "scout", resourceId: "scout", title: "Auto Scout" }],
     ["issues", { id: "issues", kind: "queue", resourceId: "issues", title: "Issues" }],
     ["issues", { id: "runs", kind: "runs", resourceId: "runs", title: "Runs" }],
     ["issues", { id: "drafts", kind: "drafts", resourceId: "drafts", title: "Drafts" }],

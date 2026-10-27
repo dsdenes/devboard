@@ -4,6 +4,7 @@
   import Button from "./ui/button.svelte";
   import DraftsPage from "./DraftsPage.svelte";
   import Input from "./ui/input.svelte";
+  import ScoutWorkspace from "./ScoutWorkspace.svelte";
 
   interface Props {
     tab: WorkspaceTab | null;
@@ -18,7 +19,9 @@
         ? "queue"
         : tab?.kind === "runs"
           ? "runs"
-          : "overview",
+          : tab?.kind === "scout"
+            ? "scout"
+            : "overview",
   );
 
   const stateWord = $derived(issues.lifecycle);
@@ -72,7 +75,9 @@
   }
 </script>
 
-{#if page === "overview"}
+{#if page === "scout"}
+  <ScoutWorkspace />
+{:else if page === "overview"}
   <section class="issues-overview" data-testid="issues-overview" aria-label="Issues overview">
     <header class="issues-overview__header">
       <div>

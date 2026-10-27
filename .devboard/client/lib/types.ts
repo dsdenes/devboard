@@ -142,6 +142,81 @@ export interface GoalDraftRun {
   question: RunQuestion | null;
 }
 
+export type ScoutLifecycle = "stopped" | "idle" | "scanning" | "failed";
+export type ScoutCategory =
+  | "clarity"
+  | "structure"
+  | "naming"
+  | "tests"
+  | "robustness"
+  | "correctness";
+
+export interface ScoutEvidence {
+  path: string;
+  lines: string;
+  quote?: string;
+}
+
+export interface ScoutRecommendation {
+  id: string;
+  category: ScoutCategory;
+  title: string;
+  summary: string;
+  impact: string;
+  evidence: ScoutEvidence[];
+  proposedChange: string;
+  files: string[];
+  acceptanceCriteria: string[];
+  stagedAt: string;
+}
+
+export interface ScoutDecision {
+  id: string;
+  kind: "approve" | "draft" | "reject";
+  title: string;
+  at: string;
+  url: string | null;
+  path: string | null;
+}
+
+export interface ScoutScanRecord {
+  scanId: string;
+  startedAt: string;
+  requested: number;
+}
+
+export interface ScoutShortfall {
+  staged: number;
+  missing: number;
+  reason: string;
+  at: string;
+}
+
+/** The scout worker's published board, as the dashboard is allowed to see it. */
+export interface ScoutSnapshot {
+  present: boolean;
+  repo: string | null;
+  root: string;
+  lifecycle: ScoutLifecycle;
+  enabled: boolean;
+  attached: boolean;
+  worker: IssuesWorkerRecord | null;
+  staged: ScoutRecommendation[];
+  scan: ScoutScanRecord | null;
+  newestScanId: string | null;
+  shortfall: ScoutShortfall | null;
+  nextAttemptAt: string | null;
+  lastError: string | null;
+  notice: string | null;
+  decisions: ScoutDecision[];
+  updatedAt: string | null;
+}
+
+export interface ScoutActivityEntry {
+  text: string;
+  append: boolean;
+}
+
 export interface SkillSummary {
   name: string;
   description: string;

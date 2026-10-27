@@ -37,6 +37,7 @@ import {
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { originRepository } from "../issues/repository";
 import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
+import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import {
   DISCOVER_SKILLS,
@@ -149,6 +150,8 @@ export interface AppOptions {
   discoverClone?: RemoteCloneRunner;
   /** Issues mode's test seams; production uses the detached worker itself. */
   issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
+  /** Auto Scout's test seams; production uses the detached worker itself. */
+  scout?: Pick<ScoutBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
 }
 
 type RunAction = "resolving" | "implementing" | "generating";
@@ -467,6 +470,13 @@ type ClientMessage =
   | { type: "startGoalDraft"; path?: unknown }
   | { type: "stopGoalDraft" }
   | { type: "answerGoalDraft"; id?: unknown; value?: unknown }
+  | { type: "getScout" }
+  | { type: "startScout" }
+  | { type: "stopScout" }
+  | { type: "scanScout" }
+  | { type: "approveScout"; id?: unknown }
+  | { type: "draftScoutGoal"; id?: unknown }
+  | { type: "rejectScout"; id?: unknown }
   | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
@@ -551,6 +561,20 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
         id: "id" in value ? value.id : undefined,
         value: "value" in value ? value.value : undefined,
       };
+    case "getScout":
+      return { type: "getScout" };
+    case "startScout":
+      return { type: "startScout" };
+    case "stopScout":
+      return { type: "stopScout" };
+    case "scanScout":
+      return { type: "scanScout" };
+    case "approveScout":
+      return { type: "approveScout", id: "id" in value ? value.id : undefined };
+    case "draftScoutGoal":
+      return { type: "draftScoutGoal", id: "id" in value ? value.id : undefined };
+    case "rejectScout":
+      return { type: "rejectScout", id: "id" in value ? value.id : undefined };
     case "restartServer":
       return {
         type: "restartServer",
@@ -1790,6 +1814,25 @@ export function createApp(options: AppOptions) {
     send: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });
+
+  /**
+   * Auto Scout reads and commands the detached scout worker for this
+   * checkout. It owns no scan loop: starting one is detached, stopping this
+   * server leaves it alive, and a replacement attaches to the same board.
+   */
+  const scout = new ScoutBridge({
+    repoDir,
+    stateDir,
+    agentCommand,
+    runningVersion,
+    harnessDir: runningHarnessDir(),
+    send: (event) => sendAll(event),
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.scout?.pollMs === undefined ? {} : { pollMs: options.scout.pollMs }),
+    ...(options.scout?.preflight === undefined ? {} : { preflight: options.scout.preflight }),
+    ...(options.scout?.spawnWorker === undefined ? {} : { spawnWorker: options.scout.spawnWorker }),
+  });
+  scout.begin();
 
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
@@ -5483,6 +5526,7 @@ export function createApp(options: AppOptions) {
         // landed in, before any reply to this client's own commands.
         replayDiscover(ws);
         if (issues.present) issues.replay(ws);
+        if (scout.present) scout.replay(ws);
       },
 
       close(ws) {
@@ -5513,6 +5557,7 @@ export function createApp(options: AppOptions) {
           command.type === "getIssuesRun" ||
           command.type === "getGoalDrafts" ||
           command.type === "getGoalDraft" ||
+          command.type === "getScout" ||
           command.type === "getSkills" ||
           command.type === "getDiscover";
         if (implementationReset !== undefined && !readOnly) {
@@ -5600,6 +5645,34 @@ export function createApp(options: AppOptions) {
                 message: "That question is no longer waiting for an answer.",
               });
             }
+          } else if (command.type === "getScout") {
+            scout.replay(ws);
+          } else if (command.type === "startScout") {
+            const started = await scout.start();
+            if (!started.ok) {
+              send(ws, { type: "error", message: started.message });
+            } else {
+              scout.replay(ws);
+            }
+          } else if (command.type === "stopScout") {
+            const result = scout.stop();
+            if (!result.ok) send(ws, { type: "error", message: result.message });
+          } else if (command.type === "scanScout") {
+            const result = scout.scan();
+            if (!result.ok) send(ws, { type: "error", message: result.message });
+          } else if (
+            command.type === "approveScout" ||
+            command.type === "draftScoutGoal" ||
+            command.type === "rejectScout"
+          ) {
+            const kind =
+              command.type === "approveScout"
+                ? "approve"
+                : command.type === "draftScoutGoal"
+                  ? "draft"
+                  : "reject";
+            const result = scout.decide(kind, command.id);
+            if (!result.ok) send(ws, { type: "error", message: result.message });
           } else if (command.type === "restartServer") {
             restartServer(ws, command.whenIdle === true);
           } else if (command.type === "saveGoal") {
@@ -5717,6 +5790,7 @@ export function createApp(options: AppOptions) {
     flow.dispose();
     issues.dispose();
     goalDrafts.dispose();
+    scout.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);
       restartWhenIdleTimer = undefined;

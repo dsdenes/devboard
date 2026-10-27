@@ -21,6 +21,7 @@
   import { flow } from "./lib/flow.svelte";
   import { goal } from "./lib/goal.svelte";
   import { draftsPageWasOpen, issues } from "./lib/issues.svelte";
+  import { scout } from "./lib/scout.svelte";
   import { applyTheme, layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
   import { notifications } from "./lib/notifications.svelte";
@@ -354,6 +355,7 @@
       const record = message as Record<string, unknown>;
       goal.handleEvent(record);
       issues.handleEvent(record);
+      scout.handleEvent(record);
       flow.handleEvent(record);
       discover.handleEvent(record);
       handleFlowTabEvents(record);
