@@ -16,6 +16,24 @@ export interface VersionState {
   stale: boolean;
 }
 
+export type OrchestratorStatus = "idle" | "running" | "failed";
+
+/** The orchestrator's published summary; `present` is false when no run state exists. */
+export type OrchestratorState =
+  | { present: false }
+  | {
+      present: true;
+      repo: string;
+      status: OrchestratorStatus;
+      open: number;
+      startedAt: string | null;
+      finishedAt: string | null;
+      lastExitCode: number | null;
+      lastError: string | null;
+      nextAttemptAt: string | null;
+      updatedAt: string;
+    };
+
 export interface RunQuestionOption {
   label: string;
   description?: string;

@@ -11,6 +11,10 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
+import {
+  readStateFile as readOrchestratorState,
+  statePath as orchestratorStatePath,
+} from "../orchestrator/state";
 import { readWatchdogStatus } from "../watchdog/status";
 import {
   AcpConnection,
@@ -440,6 +444,7 @@ type ClientMessage =
   | { type: "getGoal" }
   | { type: "getProject" }
   | { type: "getVersion" }
+  | { type: "getOrchestrator" }
   | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
@@ -492,6 +497,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "getProject" };
     case "getVersion":
       return { type: "getVersion" };
+    case "getOrchestrator":
+      return { type: "getOrchestrator" };
     case "restartServer":
       return {
         type: "restartServer",
@@ -1948,6 +1955,32 @@ export function createApp(options: AppOptions) {
 
   function sendVersion(ws: { send(data: string): unknown }) {
     send(ws, { type: "versionState", ...readVersion() });
+  }
+
+  /**
+   * The orchestrator's read-only summary. A missing, damaged, foreign, or
+   * other-checkout state file is simply not present: it is never an error, and
+   * it never reaches the journal. The full issue list stays out of the reply.
+   */
+  function sendOrchestratorState(ws: { send(data: string): unknown }) {
+    const state = readOrchestratorState(orchestratorStatePath(stateDir));
+    if (state === undefined || resolve(state.root) !== resolve(repoDir)) {
+      send(ws, { type: "orchestratorState", present: false });
+      return;
+    }
+    send(ws, {
+      type: "orchestratorState",
+      present: true,
+      repo: state.repo,
+      status: state.status,
+      open: state.open,
+      startedAt: state.startedAt,
+      finishedAt: state.finishedAt,
+      lastExitCode: state.lastExitCode,
+      lastError: state.lastError,
+      nextAttemptAt: state.nextAttemptAt,
+      updatedAt: state.updatedAt,
+    });
   }
 
   /** True while any run, lifecycle lane, creation, revision, reset, or Flow work is live. */
@@ -5272,6 +5305,7 @@ export function createApp(options: AppOptions) {
           command.type === "getGoal" ||
           command.type === "getProject" ||
           command.type === "getVersion" ||
+          command.type === "getOrchestrator" ||
           command.type === "getSkills" ||
           command.type === "getDiscover";
         if (implementationReset !== undefined && !readOnly) {
@@ -5289,6 +5323,8 @@ export function createApp(options: AppOptions) {
             send(ws, { type: "project", path: project });
           } else if (command.type === "getVersion") {
             sendVersion(ws);
+          } else if (command.type === "getOrchestrator") {
+            sendOrchestratorState(ws);
           } else if (command.type === "restartServer") {
             restartServer(ws, command.whenIdle === true);
           } else if (command.type === "saveGoal") {

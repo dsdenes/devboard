@@ -1043,6 +1043,79 @@ devboard-watchdog.timer` resumes it. `bun run verify:watchdog` proves the indica
 issue links against a freshly built bundle; `bun run verify:watchdog-live` starts a seeded
 dashboard, waits for the installed timer to file a real issue, and closes it as not planned.
 
+## Issue orchestrator
+
+A second machine-level systemd user service runs one issue orchestrator per repository, also
+independently of every dashboard. `devboard-orchestrator.service` is `Type=simple`,
+`Restart=always`, `RestartSec=10`, and runs `bun run orchestrator/main.ts --root <root> --repo
+<owner>/<repo> --interval 60` from `<root>/.devboard`; it survives logout (`Linger=yes`). The
+repository is pinned at install: the installer reads the canonical checkout's `origin` and
+refuses a `--root` that is a linked worktree, is not a checkout root, or lacks `.devboard/`, and a
+`--repo` that is not that origin.
+
+Each poll is plain CLI polling of the paginated GitHub issues endpoint
+(`gh api --paginate repos/<owner>/<repo>/issues?state=open`) every 60 seconds. No model, agent,
+or dashboard process decides anything. When an open non-pull-request issue number has not been
+handled, the service spawns the operator's `/implement-all-issues` omp command exactly once,
+unscoped: `omp --print --auto-approve /implement-all-issues` with the repository root as its
+working directory. The first start therefore runs the entire currently open backlog. Issues
+appearing while a run is live spawn nothing; they earn exactly one follow-up run when the active
+run exits. An issue recorded as handled is never retriggered while it stays open, and a closed
+issue that reopens is new again.
+
+`ORCHESTRATOR_AGENT_COMMAND` replaces the whole argv, split on whitespace with no shell, so a
+scope is never appended and a different command can be swapped in. `/implement-all-issues` must
+be installed for the operator's own omp (`~/.omp/agent/commands/implement-all-issues.md`); the
+installer fails with that path when it is missing.
+
+A singleton lock at `<state-dir>/orchestrator/lock` records the owner pid and start time shared
+by the service and every manual invocation that uses the default state directory, which is
+`<root>/.devboard/.tmp`. A second invocation while that pid is alive prints `already running` and
+exits 0 without polling, spawning, or writing anything; a lock whose owner is gone is reclaimed.
+The orchestrator itself runs no `git worktree`, `commit`, `merge`, or `push` and creates no
+issue, label, or comment: only the spawned command may do those.
+
+`<state-dir>/orchestrator/state.json` is written atomically, by temporary file and rename, at
+startup and on every transition. It carries `version: 1`, `root`, `repo`, `status` (`idle`,
+`running`, or `failed`), `startedAt`, `finishedAt`, `open`, `issues`, `lastExitCode`,
+`lastError`, `nextAttemptAt`, and `updatedAt`. A file of another version or with unparseable
+bytes is renamed aside, preserved, and ignored. A nonzero agent exit publishes `status: "failed"`
+with the first stderr line in `lastError`, leaves that run's issues unhandled, and sets
+`nextAttemptAt` five minutes ahead; the cooldown survives a restart. Streamed stdout and stderr,
+the exit code, and the invoked argv land in `<state-dir>/orchestrator/runs/<UTC timestamp>/` as
+`stdout.log`, `stderr.log`, `result.json`, and `command.json`, never buffered in memory. A
+versioned, atomic `<state-dir>/orchestrator/ledger.json` records each handled issue number with
+its run id and timestamp; it controls triggers only and never scopes the command.
+`<state-dir>/orchestrator/orchestrator.log` carries the loop's own lines.
+
+The status bar shows one compact, read-only item when `state.json` names the served checkout:
+`issues idle`, `issues working (N)` with N equal to `open`, or `issues failed`. Its title names
+the repository and, while working, the start time. It is a plain text item, not a button: it has
+no click handler, popover, or command, and it disappears when there is no state. The client asks
+the `getOrchestrator` WebSocket command on connect and every three seconds, so a state change
+shows within five seconds; the reply is `{type: "orchestratorState", present: false}` for a
+missing, damaged, foreign, or other-checkout file, and the summary fields only when it matches.
+
+Operate it from the canonical `.devboard`:
+
+```bash
+bun run orchestrator:install    # write the unit, enable and start the service
+bun run orchestrator -- --once --dry-run --root <root> --repo <owner>/<repo>   # report; change nothing
+bun run orchestrator -- --once  # poll once and run once (plus any follow-up)
+bun run orchestrator:uninstall  # stop, disable, and remove the unit and its symlink
+bun run verify:orchestrator     # the stub-tracker gate; no GitHub write
+bun run verify:orchestrator -- --live   # seed one issue, prove the chain, close it
+```
+
+The unit template is `orchestrator/units/devboard-orchestrator.service` and contains no absolute
+path, user, or repository name; only the installer substitutes them. It writes
+`$HOME/.config/systemd/user/devboard-orchestrator.service`, runs `daemon-reload`, and enables and
+starts the service, verifying `Linger=yes`, `bun`, `omp`, `gh`, `git`, the installed command, and
+`gh api repos/<owner>/<repo> --jq '.permissions.push'` inside a transient systemd user unit.
+Installing twice leaves one unit and one MainPID and does not restart an active run.
+`orchestrator:uninstall` changes no repository file; the unit and its `default.target.wants`
+symlink are the only paths outside the repository.
+
 ## Report a UI issue
 
 Every page carries a `Report UI issue` button in the lower-right corner. Selecting it enters
@@ -1084,6 +1157,7 @@ The client sends:
 { "type": "getGoal" }
 { "type": "getProject" }
 { "type": "getVersion" }
+{ "type": "getOrchestrator" }
 { "type": "restartServer" }
 { "type": "restartServer", "whenIdle": true }
 { "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
@@ -1111,6 +1185,12 @@ The client sends:
   release an update check has seen, and `stale` is true only when `running` and `installed` are
   readable and differ. A client that connects, and the page every few seconds, asks for it; a
   stale answer makes the reload control appear with both versions in its title.
+- `getOrchestrator` answers with `orchestratorState`: `present: false` when
+  `<STATE_DIR>/orchestrator/state.json` is missing, damaged, of another version, or names another
+  `root`, and otherwise `present: true` with `repo`, `status`, `open`, `startedAt`, `finishedAt`,
+  `lastExitCode`, `lastError`, `nextAttemptAt`, and `updatedAt`. It never carries the issue list,
+  a token, or an environment value, and an absent state is not an error. The client asks on
+  connect and every three seconds.
 - `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
   stops the listener, starts the installed harness package, and exits. It is refused with an
   `error` when no launcher is configured or while a restart is already in progress. A client
@@ -1187,8 +1267,8 @@ The client sends:
   failure is preceded by one `error` carrying git's stderr where git failed. While a reset
   runs, `saveGoal`, `startRun`, `startLifecycle`, `pauseLifecycle`, `resumeLifecycle`,
   `reviseGoal`, `createGoal`, `prepareSkills`, `answer`, and a second `resetImplementation`
-  are each refused with an `error`; `listRecords`, `getGoal`, `getProject`, and `getSkills` still
-  answer. A client that connects during a reset receives `implementationResetStarted` before its own
+  are each refused with an `error`; `listRecords`, `getGoal`, `getProject`, `getOrchestrator`,
+  and `getSkills` still answer. A client that connects during a reset receives `implementationResetStarted` before its own
   command replies. On success the server follows the stopped event, in order, with
   `lifecycleState` at `goal` with pass `1`, `work: null`, and `paused: false`, `records` with
   an empty list and `next: null`, and `goal` with the unchanged text (empty when the document
@@ -1401,6 +1481,7 @@ bun run verify:interface
 bun run verify:install
 bun run verify:update
 bun run verify:ui
+bun run verify:orchestrator
 ```
 
 `verify:interface` drives the IDE shell against a seeded fixture host in headless Chrome and
@@ -1408,6 +1489,16 @@ writes its screenshots under `.tmp/interface`. The other `verify:` scripts build
 under `.devboard/.tmp`, install them into throwaway hosts, and assert the launcher, update, and
 reload contracts end to end. They never touch a real host.
 
+`bun run verify:orchestrator` drives the orchestrator's command line over a stub tracker and a
+stub agent in a throwaway checkout and makes no GitHub write; with `--live` it seeds one
+throwaway issue in the canonical repository, runs a source dashboard and the orchestrator over
+it, proves the first run captures the backlog and that the issue created during it earns exactly
+one follow-up, and closes the issue as not planned in a finally path.
+`tests/orchestrator.test.ts` covers the trigger policy: the fresh backlog, the no-op poll, the
+new and already-handled issue, the single follow-up for an issue created during a run, the
+failure cooldown with a successful retry, atomic state and ledger writes, a damaged state file,
+the ledger's pruning and persistence, and the singleton lock. Every fixture stays under
+`.devboard/.tmp`.
 `tests/launcher.test.ts` covers the launcher and harness package boundaries: the help output,
 the launcher's file list and size, the harness tarball's required and forbidden paths, its size,
 and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`

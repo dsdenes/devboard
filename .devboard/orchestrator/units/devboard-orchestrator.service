@@ -1,0 +1,14 @@
+[Unit]
+Description=Devboard issue orchestrator: poll open issues and run the implement-all-issues command
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@HARNESS@
+ExecStart=@BUN@ run orchestrator/main.ts --root @ROOT@ --repo @REPO@ --interval 60
+Environment=PATH=@PATH@
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

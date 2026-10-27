@@ -36,6 +36,28 @@
     return discover.hasArtifacts ? "Discover artifacts ready" : "Discover not run";
   });
 
+  const issuesLabel = $derived.by(() => {
+    const state = connection.orchestrator;
+    if (state === null || state.present === false) return "";
+    if (state.status === "running") return `issues working (${state.open})`;
+    if (state.status === "failed") return "issues failed";
+    return "issues idle";
+  });
+
+  const issuesTitle = $derived.by(() => {
+    const state = connection.orchestrator;
+    if (state === null || state.present === false) return "";
+    if (state.status === "running") {
+      const since = state.startedAt === null ? "" : ` · working since ${state.startedAt}`;
+      return `Issue orchestrator for ${state.repo}${since}`;
+    }
+    if (state.status === "failed") {
+      const reason = state.lastError === null ? "" : ` · ${state.lastError}`;
+      return `Issue orchestrator for ${state.repo} · last run failed${reason}`;
+    }
+    return `Issue orchestrator for ${state.repo} · idle`;
+  });
+
   const versions = $derived(
     `running ${connection.version?.running ?? "unknown"} · installed ${
       connection.version?.installed ?? "unknown"
@@ -57,6 +79,9 @@
   <span class="status-item" title="Active mode status" data-testid="status-mode">
     {modeStatus}
   </span>
+  {#if connection.orchestrator?.present === true}
+    <span class="status-item" data-testid="status-issues" title={issuesTitle}>{issuesLabel}</span>
+  {/if}
   <WatchdogIndicator />
   <span class="status-item status-versions" title={versions}>{versions}</span>
   {#if connection.version?.stale === true}

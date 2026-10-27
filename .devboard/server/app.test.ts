@@ -1,9 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createApp, projectLabel } from "./app";
+import { journalFile } from "./journal";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -279,6 +280,151 @@ describe("createApp", () => {
       await exchange(url, { type: "saveGoal", text: "Edited goal" });
 
       expect(existsSync(logPath)).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+/** One state document as the orchestrator writes it, with the root it serves. */
+function orchestratorDocument(root: string, overrides: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    root,
+    repo: "acme/fixture",
+    status: "running",
+    startedAt: "2026-10-27T10:00:00.000Z",
+    finishedAt: null,
+    open: 2,
+    issues: [
+      {
+        number: 7,
+        title: "First issue",
+        url: "https://example.test/issues/7",
+        createdAt: "2026-10-26T00:00:00Z",
+      },
+      {
+        number: 8,
+        title: "Second issue",
+        url: "https://example.test/issues/8",
+        createdAt: "2026-10-26T01:00:00Z",
+      },
+    ],
+    lastExitCode: null,
+    lastError: null,
+    nextAttemptAt: null,
+    updatedAt: "2026-10-27T10:00:01.000Z",
+    ...overrides,
+  };
+}
+
+function serverErrors(stateDir: string, root: string): string[] {
+  const path = journalFile(stateDir, resolve(root));
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as { kind?: string; text?: string })
+    .filter((record) => record.kind === "server-error")
+    .map((record) => record.text ?? "");
+}
+
+describe("getOrchestrator", () => {
+  test("reports absence, not an error, when the state file is missing", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      expect(await exchange(url, { type: "getOrchestrator" })).toEqual({
+        type: "orchestratorState",
+        present: false,
+      });
+      expect(serverErrors(join(root, "state"), root)).toEqual([]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("reports absence for damaged bytes without a journal error", async () => {
+    const { server, root, url } = await startServer();
+    const stateDir = join(root, "state");
+    await mkdir(join(stateDir, "orchestrator"), { recursive: true });
+    await writeFile(join(stateDir, "orchestrator", "state.json"), '{"version": 1, "root":');
+
+    try {
+      expect(await exchange(url, { type: "getOrchestrator" })).toEqual({
+        type: "orchestratorState",
+        present: false,
+      });
+      expect(serverErrors(stateDir, root)).toEqual([]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("reports absence for an unsupported version", async () => {
+    const { server, root, url } = await startServer();
+    const stateDir = join(root, "state");
+    await mkdir(join(stateDir, "orchestrator"), { recursive: true });
+    await writeFile(
+      join(stateDir, "orchestrator", "state.json"),
+      JSON.stringify(orchestratorDocument(root, { version: 2 })),
+    );
+
+    try {
+      expect(await exchange(url, { type: "getOrchestrator" })).toEqual({
+        type: "orchestratorState",
+        present: false,
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("reports absence for a state file from another checkout", async () => {
+    const { server, root, url } = await startServer();
+    const stateDir = join(root, "state");
+    await mkdir(join(stateDir, "orchestrator"), { recursive: true });
+    await writeFile(
+      join(stateDir, "orchestrator", "state.json"),
+      JSON.stringify(orchestratorDocument(join(root, "elsewhere"))),
+    );
+
+    try {
+      expect(await exchange(url, { type: "getOrchestrator" })).toEqual({
+        type: "orchestratorState",
+        present: false,
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("reports the summary and never the issue list for a matching file", async () => {
+    const { server, root, url } = await startServer();
+    const stateDir = join(root, "state");
+    await mkdir(join(stateDir, "orchestrator"), { recursive: true });
+    await writeFile(
+      join(stateDir, "orchestrator", "state.json"),
+      JSON.stringify(orchestratorDocument(resolve(root))),
+    );
+
+    try {
+      const message = await exchange(url, { type: "getOrchestrator" });
+
+      expect(message).toEqual({
+        type: "orchestratorState",
+        present: true,
+        repo: "acme/fixture",
+        status: "running",
+        open: 2,
+        startedAt: "2026-10-27T10:00:00.000Z",
+        finishedAt: null,
+        lastExitCode: null,
+        lastError: null,
+        nextAttemptAt: null,
+        updatedAt: "2026-10-27T10:00:01.000Z",
+      });
+      expect(message).not.toHaveProperty("issues");
     } finally {
       server.stop(true);
     }

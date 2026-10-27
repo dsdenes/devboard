@@ -12,7 +12,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { journalKey } from "../server/journal";
 import { stateFile } from "../server/state";
@@ -499,6 +499,51 @@ async function seedFlow(stateDir: string, host: string): Promise<void> {
     createdAt: now,
   };
   await writeFile(join(sessionDir, "session.json"), `${JSON.stringify(session, null, 2)}\n`);
+}
+
+/**
+ * Publishes one orchestrator state for the fixture host, atomically, the way
+ * the runner does. The dashboard reads it through the `getOrchestrator`
+ * command, so this is the only seed the status item needs.
+ */
+async function seedOrchestrator(
+  stateDir: string,
+  host: string,
+  status: "idle" | "running" | "failed",
+): Promise<void> {
+  const directory = join(stateDir, "orchestrator");
+  await mkdir(directory, { recursive: true });
+  const issues =
+    status === "running"
+      ? [17, 18, 19].map((number) => ({
+          number,
+          title: `Fixture issue ${number}`,
+          url: `https://example.test/issues/${number}`,
+          createdAt: "2026-10-26T00:00:00Z",
+        }))
+      : [];
+  const state = {
+    version: 1,
+    root: resolve(host),
+    repo: "fixture/host",
+    status,
+    startedAt: status === "running" ? "2026-10-27T10:00:00.000Z" : null,
+    finishedAt: status === "idle" ? "2026-10-27T09:59:00.000Z" : null,
+    open: issues.length,
+    issues,
+    lastExitCode: status === "failed" ? 1 : null,
+    lastError: status === "failed" ? "the agent exited with code 1" : null,
+    nextAttemptAt: status === "failed" ? "2026-10-27T10:05:00.000Z" : null,
+    updatedAt: new Date().toISOString(),
+  };
+  const path = join(directory, "state.json");
+  const temporary = `${path}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`);
+  await rename(temporary, path);
+}
+
+async function clearOrchestratorState(stateDir: string): Promise<void> {
+  await rm(join(stateDir, "orchestrator"), { recursive: true, force: true });
 }
 
 async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
@@ -2381,7 +2426,95 @@ try {
   const reporterFocus = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="notifications"]') === null`);
   check(reporterFocus, "the issue reporter stole focus into the notification region");
 
-  // 15. Notifications and history: stop the server, attempt a command, restart.
+  // 15. Orchestrator status item: idle, working, failed, hidden, and live update.
+  await seedOrchestrator(stateDir, host, "idle");
+  const idleIssues = await page.wait<{
+    count: number;
+    text: string;
+    title: string;
+    tag: string;
+    interactive: boolean;
+  }>(
+    `(() => {
+      const items = [...document.querySelectorAll('[data-testid="status-issues"]')];
+      if (items.length === 0) return null;
+      const item = items[0];
+      const text = item.textContent?.trim() ?? "";
+      if (text !== "issues idle") return null;
+      return {
+        count: items.length,
+        text,
+        title: item.getAttribute("title") ?? "",
+        tag: item.tagName,
+        interactive:
+          item.querySelector("button, a, [role=button], [role=dialog]") !== null ||
+          item.hasAttribute("aria-expanded") ||
+          item.hasAttribute("aria-haspopup") ||
+          item.hasAttribute("onclick"),
+      };
+    })()`,
+    "the idle orchestrator item",
+    8_000,
+  );
+  check(idleIssues.count === 1, "the status bar does not show exactly one issue item", idleIssues);
+  check(idleIssues.text === "issues idle", "the idle item text is wrong", idleIssues);
+  check(idleIssues.tag === "SPAN" && !idleIssues.interactive, "the issue item is interactive", idleIssues);
+  check(idleIssues.title.includes("fixture/host"), "the idle title does not name the repository", idleIssues);
+
+  const workingSeededAt = Date.now();
+  await seedOrchestrator(stateDir, host, "running");
+  const workingItems = await page.wait<{ text: string; title: string }>(
+    `(() => {
+      const item = document.querySelector('[data-testid="status-issues"]');
+      if (item === null) return null;
+      const text = item.textContent?.trim() ?? "";
+      if (!/^issues working \\(\\d+\\)$/.test(text)) return null;
+      return { text, title: item.getAttribute("title") ?? "" };
+    })()`,
+    "the working orchestrator item",
+    8_000,
+  );
+  const workingDelay = Date.now() - workingSeededAt;
+  check(workingDelay <= 5_000, `the issue item took ${workingDelay}ms to show the change`);
+  check(workingItems.text === "issues working (3)", "the working count is wrong", workingItems);
+  check(
+    workingItems.title.includes("fixture/host") && workingItems.title.includes("2026-10-27T10:00:00.000Z"),
+    "the working title does not name the repository and the start",
+    workingItems,
+  );
+
+  await seedOrchestrator(stateDir, host, "failed");
+  const failedText = await page.wait<string>(
+    `(() => {
+      const item = document.querySelector('[data-testid="status-issues"]');
+      const text = item?.textContent?.trim() ?? "";
+      return text === "issues failed" ? text : null;
+    })()`,
+    "the failed orchestrator item",
+    8_000,
+  );
+  check(failedText === "issues failed", "the failed item text is wrong", failedText);
+
+  await clearOrchestratorState(stateDir);
+  await page.wait(
+    `document.querySelector('[data-testid="status-issues"]') === null`,
+    "the issue item to disappear",
+    8_000,
+  );
+  const hiddenItems = await page.eval<number>(
+    `document.querySelectorAll('[data-testid="status-issues"]').length`,
+  );
+  check(hiddenItems === 0, "the issue item stayed after the state file was removed", hiddenItems);
+
+  // Leave a seeded state so the 1024×720 clipping check sees the item.
+  await seedOrchestrator(stateDir, host, "running");
+  await page.wait(
+    `document.querySelector('[data-testid="status-issues"]')?.textContent?.trim() === "issues working (3)"`,
+    "the seeded issue item before the viewport check",
+    8_000,
+  );
+
+  // 16. Notifications and history: stop the server, attempt a command, restart.
   serverProcess?.kill("SIGTERM");
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() !== "Connected"`,
@@ -2435,7 +2568,7 @@ try {
   })()`);
   check(dismiss, "the notification region has no dismissal control");
 
-  // 15. Viewport boundary.
+  // 17. Viewport boundary.
   await devtools.send("Emulation.setDeviceMetricsOverride", {
     width: 1023,
     height: 900,
@@ -2489,7 +2622,7 @@ try {
   });
   await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the 1440×900 viewport");
 
-  // 16. Contrast and reduced motion in both themes.
+  // 18. Contrast and reduced motion in both themes.
   const contrast = async (): Promise<Record<string, number>> =>
     page.eval<Record<string, number>>(`(() => {
       const root = getComputedStyle(document.documentElement);
@@ -2538,7 +2671,7 @@ try {
     features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
   });
 
-  // 17. Palette mirroring after many tabs opened, then screenshots.
+  // 19. Palette mirroring after many tabs opened, then screenshots.
   await page.key("k", 2);
   await page.wait(`document.querySelector('[data-testid="command-palette"]') !== null`, "the final palette");
   const finalMirror = await page.eval<{ missing: string[]; palette: number }>(`(() => {
@@ -2571,7 +2704,7 @@ try {
   await page.key("1", 1);
   await saveShot("goal-final");
 
-  // 18. No runtime failures or overflow.
+  // 20. No runtime failures or overflow.
   const runtime = await page.eval<{ exceptions: string[]; overflow: number[] }>(`(() => {
     const doc = document.documentElement;
     return {
@@ -2593,7 +2726,7 @@ try {
 
   devtools.close();
   console.log(
-    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, editors, terminals, accessibility, notifications, status bar, persistence, and boundary passed",
+    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, editors, terminals, accessibility, notifications, status bar, orchestrator status, persistence, and boundary passed",
   );
 } finally {
   try {
