@@ -67,7 +67,7 @@
 - `bun run verify:interface`: pass on the final merged tree (includes the new empty, header,
   marker, and clipping checks).
 - `bun run verify:issues`: pass on the final merged tree.
-- `bun test`: 554 pass, 0 fail on the final merged tree.
+- `bun test`: 567 pass, 0 fail on the final merged tree.
 
 ## Findings
 
