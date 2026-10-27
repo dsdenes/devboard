@@ -2,7 +2,7 @@
 /**
  * The deterministic Auto Scout gate. It drives the built dashboard in headless
  * Chrome against a fixture checkout, a stub ACP peer, and a stub `gh`: sidebar
- * order and palette entry, the first scan's shortfall and Scan now, Approve's
+ * order and palette entry, the first scan's shortfall and the Start/Stop toggle, Approve's
  * single issue with the `scout` label, Draft goal's single file, Reject, a
  * refill back to nine, a second dashboard attaching instead of spawning, Stop,
  * and a reload that preserves the board and the open tab.
@@ -599,7 +599,7 @@ try {
   check(workerPids(fixture.repo).length === 0, "opening the page started a worker");
 
   /* ---------------------------------------------------------------- */
-  /* 2. Start, the shortfall, and Scan now                             */
+  /* 2. Start, the shortfall, and the Start/Stop toggle                */
   /* ---------------------------------------------------------------- */
   await click(devtools, "scout-start");
   await waitWidgets(devtools, 3, "the first scan's three findings");
@@ -641,8 +641,25 @@ try {
     firstActivity,
   );
 
-  await click(devtools, "scout-scan-now");
-  await waitWidgets(devtools, 9, "the forced scan's nine findings");
+  check(
+    (await devtools.evaluate(`document.querySelector('[data-testid="scout-scan-now"]') === null`)) ===
+      true,
+    "the page still offers a separate Scan now control",
+  );
+  check(
+    (await devtools.evaluate(`document.querySelector('[data-testid="scout-stop"]') !== null`)) ===
+      true,
+    "a running scout does not offer Stop",
+  );
+  await click(devtools, "scout-stop");
+  await waitState(fixture, "the stopped scout", (state) => state.lifecycle === "stopped");
+  check(
+    (await devtools.evaluate(`document.querySelector('[data-testid="scout-start"]') !== null`)) ===
+      true,
+    "a stopped scout does not offer Start",
+  );
+  await click(devtools, "scout-start");
+  await waitWidgets(devtools, 9, "the restarted scan's nine findings");
   const fullCount = await devtools.evaluate(
     `document.querySelector('[data-testid="scout-count"]')?.textContent?.trim() ?? ''`,
   );
@@ -894,7 +911,7 @@ try {
   );
 
   console.log(
-    "verify:scout: sidebar order, palette entry, shortfall, Scan now, Approve with the scout " +
+    "verify:scout: sidebar order, palette entry, shortfall, the Start/Stop toggle, Approve with the scout " +
       "label, Draft goal, Reject, refill to nine, second-dashboard attach and decision, Stop, and " +
       "reload passed",
   );

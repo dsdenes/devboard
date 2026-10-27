@@ -476,7 +476,6 @@ type ClientMessage =
   | { type: "getScout" }
   | { type: "startScout" }
   | { type: "stopScout" }
-  | { type: "scanScout" }
   | { type: "approveScout"; id?: unknown }
   | { type: "draftScoutGoal"; id?: unknown }
   | { type: "rejectScout"; id?: unknown }
@@ -576,8 +575,6 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "startScout" };
     case "stopScout":
       return { type: "stopScout" };
-    case "scanScout":
-      return { type: "scanScout" };
     case "approveScout":
       return { type: "approveScout", id: "id" in value ? value.id : undefined };
     case "draftScoutGoal":
@@ -5681,9 +5678,6 @@ export function createApp(options: AppOptions) {
             }
           } else if (command.type === "stopScout") {
             const result = scout.stop();
-            if (!result.ok) send(ws, { type: "error", message: result.message });
-          } else if (command.type === "scanScout") {
-            const result = scout.scan();
             if (!result.ok) send(ws, { type: "error", message: result.message });
           } else if (
             command.type === "approveScout" ||
