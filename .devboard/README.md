@@ -99,7 +99,8 @@ Commands that need text focus the relevant input rather than inventing a value.
 The palette covers navigation, opening every record, lane, widget, file, checkpoint, term, and
 skill, lifecycle start/pause/resume/stop, Goal commands, Flow goal and decision editing, Flow
 start/stop and PR actions, Discover start/stop and skill editing, the theme toggle, reset layout,
-reload when stale, and reporting a UI issue.
+reload when stale, and the `Report UI issue`, `Remove element`, and `Redesign element` actions
+(`app.report`, `app.remove`, `app.redesign`, and `app.report.cancel`).
 
 ### Keyboard shortcuts
 
@@ -1133,23 +1134,53 @@ Installing twice leaves one unit and one MainPID and does not restart an active 
 `orchestrator:uninstall` changes no repository file; the unit and its `default.target.wants`
 symlink are the only paths outside the repository.
 
-## Report a UI issue
+## Report, remove, or redesign a UI element
 
-Every page carries a `Report UI issue` button in the lower-right corner. Selecting it enters
-element-selection mode: the element under the pointer is outlined, and a click opens a report
-panel anchored beside it. `Esc` or `Cancel` leaves the mode, and a click in selection mode never
-activates the element. The panel shows the selected element's selector path; the report text is
-free-form. `File issue` posts the report with the route, URL, selector, visible text, DOM excerpt,
-viewport and capture time to `POST /api/feedback`, and the server files a GitHub issue through
-the operator's authenticated `gh` CLI, then returns its URL. A filed report returns to element
-selection mode, so another element can be picked without leaving and re-entering the mode.
+Every page carries one action group in the lower-right corner with three controls: `Report UI
+issue`, `Remove element`, and `Redesign element`. The group has an accessible name, the active
+control carries `aria-pressed="true"`, and the dock, its status line, and its error line stay out
+of element picking. `Esc` cancels a mode that is not filing, and `app.report.cancel` cancels any
+active mode from the palette. While one request is in flight all three controls are disabled and
+the active one reads `Filing…`, so one click or one double-click files at most one issue.
 
-The issue title is `[ui] ` plus the first line of the report, at most 200 characters. The body is
-the verbatim report followed by the captured context, so the ticket stays authoritative without a
-model in the loop. Every issue is filed in `dsdenes/devboard`, the harness repository, whatever
+`Report UI issue` enters element-selection mode: the element under the pointer is outlined, and a
+click opens a report panel anchored beside it, without filing anything yet. The panel shows the
+selected element's selector path; the report text is free-form. `File issue` posts the report and
+the captured context to `POST /api/feedback`, the server files the GitHub issue through the
+operator's authenticated `gh` CLI, and the panel closes back into report selection mode so another
+element can be picked without leaving and re-entering the mode. `Esc` or `Cancel` leaves the
+mode, a failed report stays in the panel with its error, and a click in selection mode never
+activates the element.
+
+`Remove element` and `Redesign element` are one-click shortcuts. Selecting one arms it and shows a
+shortcut-specific hint; the next click on any element files the issue immediately, with no panel
+and no text field. Filing does not use client-supplied report text. A successful filing shows
+`Removal issue filed.` or `Redesign issue filed.` with the issue URL and keeps the mode armed, so
+the next element is one click away; a failure shows `Removal issue failed: <message>` or
+`Redesign issue failed: <message>`, creates no issue, and keeps the mode armed with the controls
+re-enabled. The active control, `Esc`, or `app.report.cancel` returns to idle.
+
+Both shortcuts use a fixed title and body, so the implementation agent starts from the captured
+context rather than operator prose. The title is `[ui] Remove element: <selector>` or
+`[ui] Redesign element: <selector>`, with the selector's whitespace collapsed and the whole title
+clamped to 200 characters; an empty selector leaves `[ui] Remove element`. A removal body starts
+with `## Removal request` and the instruction `Remove the selected UI element from the
+interface.`. A redesign body starts with `## Redesign request` and the instruction `Check the
+selected UI element and redesign it because it does not look good. Use the global OMP UI/UX
+standard (the ui-ux skill) and this repository's DESIGN.md and design/tokens.json as the normative
+design system.` Both bodies end with the same `## Captured UI context` block: route, URL, selected
+element, viewport, capture time, visible text, and DOM excerpt.
+
+The report title is `[ui] ` plus the first line of the report, at most 200 characters; its body is
+the verbatim report followed by the same captured context, so the ticket stays authoritative
+without a model in the loop.
+
+Every request carries an `action` of `report`, `remove`, or `redesign`; an absent `action` means
+`report`, the only action that requires report text, and any other value is refused with HTTP 400
+before `gh` runs. Every issue is filed in `dsdenes/devboard`, the harness repository, whatever
 host project the interface is serving; nothing is created in the host's own tracker. `gh` runs in
 `REPO_DIR` and must be authenticated with permission to create issues in `dsdenes/devboard`. A
-missing, unauthenticated, or failing `gh` is reported in the panel and still creates nothing. The
+missing, unauthenticated, or failing `gh` is reported in the dock and still creates nothing. The
 endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and gives `gh` 60
 seconds.
 

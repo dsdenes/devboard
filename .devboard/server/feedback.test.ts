@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createApp } from "./app";
+import { REDESIGN_INSTRUCTION } from "./feedback";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
@@ -214,6 +215,151 @@ describe("feedback endpoint", () => {
       expect(response.status).toBe(201);
       expect(body.title.startsWith("[ui] long")).toBe(true);
       expect(body.title.length).toBeLessThanOrEqual(200);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("defaults a missing action to the free-text report", async () => {
+    const { server, url, recordPath } = await startServer();
+
+    try {
+      const payload = report();
+      delete payload.action;
+      const response = await submit(url, payload);
+
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({
+        url: "https://github.com/example/host/issues/42",
+        title: "[ui] The Start button is clipped on narrow windows.",
+      });
+      const call = await recorded(recordPath);
+      expect(call.body).toContain("## Operator report");
+      expect(call.body).toContain("The Start button is clipped on narrow windows.");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("files a removal request without report text", async () => {
+    const { server, url, root, recordPath } = await startServer();
+
+    try {
+      const response = await submit(
+        url,
+        report({ action: "remove", report: undefined, selector: "main > section.run" }),
+      );
+
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({
+        url: "https://github.com/example/host/issues/42",
+        title: "[ui] Remove element: main > section.run",
+      });
+
+      const call = await recorded(recordPath);
+      expect(call.cwd).toBe(root);
+      const repoIndex = call.args.indexOf("--repo");
+      expect(call.args[repoIndex + 1]).toBe("dsdenes/devboard");
+      expect(call.args).toContain("--body-file");
+      // The request and the captured context travel through stdin, never argv.
+      expect(call.args.join(" ")).not.toContain("## Removal request");
+      expect(call.args.join(" ")).not.toContain('<button class="start-button">');
+      expect(call.body.startsWith("## Removal request\n\n")).toBe(true);
+      expect(call.body).toContain(
+        "\nRemove the selected UI element from the interface.\n",
+      );
+      expect(call.body).toContain("## Captured UI context");
+      expect(call.body).toContain("- Selected element: `main > section.run`");
+      expect(call.body).toContain("- Route: `/`");
+      expect(call.body).toContain("### Visible text");
+      expect(call.body).toContain("### DOM excerpt");
+      expect(call.body).not.toContain("## Operator report");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("files a redesign request with the normative design instruction", async () => {
+    const { server, url, recordPath } = await startServer();
+
+    try {
+      const response = await submit(
+        url,
+        report({ action: "redesign", report: "ignored operator text" }),
+      );
+
+      expect(response.status).toBe(201);
+      const body = (await response.json()) as { title: string };
+      expect(body.title).toBe(
+        "[ui] Redesign element: main > section.run > button.start-button",
+      );
+
+      const call = await recorded(recordPath);
+      const repoIndex = call.args.indexOf("--repo");
+      expect(call.args[repoIndex + 1]).toBe("dsdenes/devboard");
+      expect(call.body.startsWith("## Redesign request\n\n")).toBe(true);
+      expect(call.body).toContain(REDESIGN_INSTRUCTION);
+      expect(call.body).toContain("ui-ux skill");
+      expect(call.body).toContain("DESIGN.md");
+      expect(call.body).toContain("design/tokens.json");
+      expect(call.body).toContain("## Captured UI context");
+      expect(call.body).toContain(
+        "- Selected element: `main > section.run > button.start-button`",
+      );
+      // Supplied report text is ignored, not filed.
+      expect(call.body).not.toContain("ignored operator text");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("clamps a long selector to the title limit", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const response = await submit(
+        url,
+        report({ action: "remove", report: undefined, selector: "a ".repeat(300) }),
+      );
+
+      expect(response.status).toBe(201);
+      const body = (await response.json()) as { title: string };
+      expect(body.title.startsWith("[ui] Remove element: a a a")).toBe(true);
+      expect(body.title.length).toBeLessThanOrEqual(200);
+      expect(body.title).not.toContain("  ");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("names a removal without a selector", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const response = await submit(
+        url,
+        report({ action: "remove", report: undefined, selector: "" }),
+      );
+
+      expect(response.status).toBe(201);
+      const body = (await response.json()) as { title: string };
+      expect(body.title).toBe("[ui] Remove element");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses an unknown action before running gh", async () => {
+    const { server, url, recordPath } = await startServer();
+
+    try {
+      const response = await submit(url, report({ action: "delete" }));
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "action must be one of report, remove, redesign.",
+      });
+      expect(existsSync(recordPath)).toBe(false);
     } finally {
       server.stop(true);
     }

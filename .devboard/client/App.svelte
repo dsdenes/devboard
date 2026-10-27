@@ -32,6 +32,8 @@
 
   interface FeedbackHandle {
     startPicking: () => void;
+    startRemoving: () => void;
+    startRedesigning: () => void;
     cancelReport: () => void;
   }
 
@@ -119,6 +121,14 @@
 
   function reportIssue(): void {
     feedbackOverlay?.startPicking();
+  }
+
+  function removeElement(): void {
+    feedbackOverlay?.startRemoving();
+  }
+
+  function redesignElement(): void {
+    feedbackOverlay?.startRedesigning();
   }
 
   async function focusLater(mode: Mode, selector: string): Promise<void> {
@@ -242,6 +252,8 @@
     focusLater,
     resetLayout,
     reportIssue,
+    removeElement,
+    redesignElement,
     cancelReport: () => feedbackOverlay?.cancelReport(),
     canCloseTab: () => pendingClose !== null,
     confirmCloseTab: () => confirmDiscard(),

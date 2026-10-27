@@ -29,6 +29,8 @@ export interface CommandContext {
   focusLater: (mode: Mode, selector: string) => void;
   resetLayout: () => void;
   reportIssue: () => void;
+  removeElement: () => void;
+  redesignElement: () => void;
   cancelReport: () => void;
   canCloseTab: () => boolean;
   confirmCloseTab: () => void;
@@ -104,11 +106,26 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     id: "app.report",
     title: "Report a UI issue",
     group: "Application",
+    keywords: "element selection feedback panel",
     run: () => ctx.reportIssue(),
   });
   add({
+    id: "app.remove",
+    title: "Remove a UI element",
+    group: "Application",
+    keywords: "delete element issue one click",
+    run: () => ctx.removeElement(),
+  });
+  add({
+    id: "app.redesign",
+    title: "Redesign a UI element",
+    group: "Application",
+    keywords: "restyle element issue design system one click",
+    run: () => ctx.redesignElement(),
+  });
+  add({
     id: "app.report.cancel",
-    title: "Cancel the UI issue report",
+    title: "Cancel the UI issue action",
     group: "Application",
     run: () => ctx.cancelReport(),
   });

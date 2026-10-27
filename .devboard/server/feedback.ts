@@ -1,10 +1,11 @@
 /**
  * Operator issue reporting for the local interface.
  *
- * The client sends one free-text report plus the DOM context of the element
- * the report is about. This module validates that payload, renders it as a
- * GitHub issue for an implementation agent, and files the issue through the
- * operator's authenticated `gh` command.
+ * The client sends one action plus the DOM context of the element it is about.
+ * A report also carries the operator's free text; the removal and redesign
+ * shortcuts carry only the context and use a fixed instruction. This module
+ * validates that payload, renders it as a GitHub issue for an implementation
+ * agent, and files the issue through the operator's authenticated `gh` command.
  *
  * Reports describe the harness interface itself, so the issue always lands in
  * the harness repository, never in the host project that embeds the harness.
@@ -22,7 +23,28 @@ const MAX_TITLE = 200;
 const TITLE_PREFIX = "[ui] ";
 const BODY_VISIBLE_TEXT = 1500;
 
+/** What the operator asked for when they picked an element. */
+export type FeedbackAction = "report" | "remove" | "redesign";
+
+/**
+ * The instruction a removal issue carries. It is fixed, so the implementation
+ * agent never has to interpret operator text for the one-click shortcuts.
+ */
+export const REMOVAL_INSTRUCTION = "Remove the selected UI element from the interface.";
+
+/**
+ * The instruction a redesign issue carries. It names the normative design
+ * sources so the agent checks the element against the project's own system.
+ */
+export const REDESIGN_INSTRUCTION =
+  "Check the selected UI element and redesign it because it does not look good. " +
+  "Use the global OMP UI/UX standard (the ui-ux skill) and this repository's " +
+  "DESIGN.md and design/tokens.json as the normative design system.";
+
+const ACTION_ERROR = "action must be one of report, remove, redesign.";
+
 export interface FeedbackSubmission {
+  action: FeedbackAction;
   report: string;
   route: string;
   url: string;
@@ -105,14 +127,26 @@ function field(
   return value;
 }
 
+function feedbackAction(value: unknown): FeedbackAction {
+  // An absent action keeps the original free-text report contract.
+  if (value === undefined || value === null) return "report";
+  if (value === "report" || value === "remove" || value === "redesign") return value;
+  throw new FeedbackRequestError(400, ACTION_ERROR);
+}
+
 /** Validates one JSON body. Unknown fields are ignored for forwards compatibility. */
 export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new FeedbackRequestError(400, "The report must be a JSON object.");
   }
   const source = value as Record<string, unknown>;
+  const action = feedbackAction(source.action);
   return {
-    report: field(source.report, "report", MAX_REPORT, true),
+    action,
+    // The one-click shortcuts use a fixed instruction, so any text the client
+    // still sends is ignored rather than validated or filed.
+    report:
+      action === "report" ? field(source.report, "report", MAX_REPORT, true) : "",
     route: field(source.route, "route", MAX_CONTEXT_FIELD, false),
     url: field(source.url, "url", MAX_CONTEXT_FIELD, false),
     selector: field(source.selector, "selector", MAX_CONTEXT_FIELD, false),
@@ -134,19 +168,40 @@ function truncate(value: string, limit: number): string {
   return `${value.slice(0, limit - 1).trimEnd()}…`;
 }
 
-/** One-line title from the report's first meaningful line. */
-export function feedbackTitle(report: string): string {
+function firstLine(value: string): string {
   const line =
-    report
+    value
+      .split("\n")
+      .map((entry) => entry.trim())
+      .find((entry) => entry.length > 0) ?? "no diagnostic";
+  return truncate(line, 300);
+}
+
+/** One-line issue title for the submission's action. */
+export function feedbackTitle(submission: FeedbackSubmission): string {
+  if (submission.action !== "report") {
+    const label = submission.action === "remove" ? "Remove element" : "Redesign element";
+    const selector = submission.selector.replace(/\s+/g, " ").trim();
+    if (selector.length === 0) return `${TITLE_PREFIX}${label}`;
+    return truncate(`${TITLE_PREFIX}${label}: ${selector}`, MAX_TITLE);
+  }
+  const line =
+    submission.report
       .split("\n")
       .map((value) => value.trim())
       .find((value) => value.length > 0) ?? "operator report";
   return truncate(`${TITLE_PREFIX}${line.replace(/\s+/g, " ")}`, MAX_TITLE);
 }
 
-/** The ticket body: the operator's words first, then the captured context. */
+/** The ticket body: the request first, then the captured context. */
 export function feedbackBody(submission: FeedbackSubmission): string {
-  const lines = ["## Operator report", "", submission.report.trim(), ""];
+  const request =
+    submission.action === "remove"
+      ? ["## Removal request", "", REMOVAL_INSTRUCTION]
+      : submission.action === "redesign"
+        ? ["## Redesign request", "", REDESIGN_INSTRUCTION]
+        : ["## Operator report", "", submission.report.trim()];
+  const lines = [...request, ""];
 
   const context: string[] = [];
   for (const [label, value] of [
@@ -178,21 +233,12 @@ export function feedbackBody(submission: FeedbackSubmission): string {
   return lines.join("\n");
 }
 
-function firstLine(value: string): string {
-  const line =
-    value
-      .split("\n")
-      .map((entry) => entry.trim())
-      .find((entry) => entry.length > 0) ?? "no diagnostic";
-  return truncate(line, 300);
-}
-
 /** Files one report and returns the created issue. */
 export async function fileFeedbackIssue(
   submission: FeedbackSubmission,
   options: FeedbackIssueOptions,
 ): Promise<FeedbackIssue> {
-  const title = feedbackTitle(submission.report);
+  const title = feedbackTitle(submission);
   const body = feedbackBody(submission);
   const args = [
     ...options.command,

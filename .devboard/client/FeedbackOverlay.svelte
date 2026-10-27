@@ -2,16 +2,21 @@
   import { onMount } from "svelte";
 
   /**
-   * Operator issue reporter. The floating button starts a selection mode that
-   * highlights whatever is under the pointer; picking an element opens a
-   * free-text panel anchored beside it. Sending posts the report and the
-   * captured DOM context to the server, which files a GitHub issue for an
-   * implementation agent and returns its URL.
+   * Operator issue reporter. A dock of three actions sits in the lower-right
+   * corner. The report action starts a selection mode that opens a free-text
+   * panel anchored beside the picked element. The removal and redesign actions
+   * are one-click shortcuts: they file a fixed-instruction issue for the picked
+   * element immediately and stay armed, so several elements can be filed in a
+   * row. Every request carries the captured DOM context to the server, which
+   * files a GitHub issue for an implementation agent and returns its URL.
    */
 
+  type Action = "report" | "remove" | "redesign";
   type Phase = "idle" | "picking" | "composing" | "sending" | "failed";
-
   type Rect = { top: number; left: number; width: number; height: number };
+  type Status =
+    | { ok: true; text: string; url: string }
+    | { ok: false; text: string };
 
   const PANEL_WIDTH = 380;
   const PANEL_ESTIMATED_HEIGHT = 390;
@@ -20,6 +25,19 @@
   const MAX_DOM_EXCERPT = 4000;
   const MAX_VISIBLE_TEXT = 1500;
 
+  const ACTIONS: { action: Action; label: string; command: string }[] = [
+    { action: "report", label: "Report UI issue", command: "app.report" },
+    { action: "remove", label: "Remove element", command: "app.remove" },
+    { action: "redesign", label: "Redesign element", command: "app.redesign" },
+  ];
+
+  const HINTS: Record<Action, string> = {
+    report: "Click an element · Esc cancels",
+    remove: "Click an element to remove · Esc cancels",
+    redesign: "Click an element to redesign · Esc cancels",
+  };
+
+  let action = $state<Action | null>(null);
   let phase = $state<Phase>("idle");
   let target = $state<Element | null>(null);
   let selector = $state("");
@@ -31,12 +49,20 @@
   let dragging = $state(false);
   let report = $state("");
   let errorMessage = $state<string | null>(null);
+  let status = $state<Status | null>(null);
   let textarea = $state<HTMLTextAreaElement | null>(null);
 
   const drag = { pointerId: -1, offsetX: 0, offsetY: 0 };
 
-  let picking = $derived(phase === "picking");
   let sending = $derived(phase === "sending");
+  // Every selection mode intercepts clicks; a filing in flight keeps doing so
+  // so the click that started it never activates the element it selected.
+  let selecting = $derived(
+    action !== null && panel === null && (phase === "picking" || phase === "sending"),
+  );
+  let picking = $derived(selecting && !sending);
+  let hint =
+    $derived(action !== null && selecting && panel === null ? HINTS[action] : null);
 
   function viewportRect(element: Element): Rect {
     const box = element.getBoundingClientRect();
@@ -106,11 +132,23 @@
     moved = true;
   }
 
+  /**
+   * The overlays and dialogs that keep working while an action is armed: the
+   * dock, the report panel, the command palette, and any dialog must never be
+   * picked as a page element, and a click inside them must reach them.
+   */
   function ownOverlay(node: Element | null): boolean {
-    return node !== null && node.closest("[data-feedback-overlay]") !== null;
+    return (
+      node !== null &&
+      (node.closest("[data-feedback-overlay]") !== null ||
+        node.closest('[role="dialog"], [role="alertdialog"], dialog') !== null)
+    );
   }
 
   function elementAt(event: MouseEvent): Element | null {
+    // Both the event target and the element under the pointer count: a
+    // keyboard or scripted activation has no meaningful point.
+    if (event.target instanceof Element && ownOverlay(event.target)) return null;
     const node = document.elementFromPoint(event.clientX, event.clientY);
     if (node === null || ownOverlay(node)) return null;
     return node;
@@ -160,12 +198,15 @@
     dragging = false;
     report = "";
     errorMessage = null;
+    status = null;
+    action = "report";
     phase = "composing";
     document.body.style.cursor = "";
     queueMicrotask(() => textarea?.focus());
   }
 
   function reset(): void {
+    action = null;
     phase = "idle";
     target = null;
     selector = "";
@@ -175,22 +216,37 @@
     dragging = false;
     report = "";
     errorMessage = null;
+    status = null;
     document.body.style.cursor = "";
   }
 
-  export function startPicking(): void {
+  /** Arms one action: the next click on an element uses it. */
+  function arm(next: Action): void {
     reset();
+    action = next;
     phase = "picking";
     document.body.style.cursor = "crosshair";
   }
 
-  function toggle(): void {
-    if (phase === "sending") return;
-    if (phase === "idle") {
-      startPicking();
+  export function startPicking(): void {
+    arm("report");
+  }
+
+  export function startRemoving(): void {
+    arm("remove");
+  }
+
+  export function startRedesigning(): void {
+    arm("redesign");
+  }
+
+  function toggle(next: Action): void {
+    if (sending) return;
+    if (action === next) {
+      reset();
       return;
     }
-    reset();
+    arm(next);
   }
 
   function onPointerMove(event: MouseEvent): void {
@@ -200,18 +256,25 @@
   }
 
   function onPointerDown(event: MouseEvent): void {
-    if (!picking) return;
+    if (!selecting) return;
     if (elementAt(event) !== null) event.preventDefault();
   }
 
   function onClick(event: MouseEvent): void {
-    if (!picking) return;
+    if (!selecting) return;
     const element = elementAt(event);
     if (element === null) return;
     // Swallow the click so picking an element never activates it.
     event.preventDefault();
     event.stopPropagation();
-    openPanel(element);
+    if (sending) return;
+    if (action === "report") {
+      openPanel(element);
+      return;
+    }
+    if (action === "remove" || action === "redesign") {
+      void fileShortcut(action, element);
+    }
   }
 
   export function cancelReport(): void {
@@ -219,7 +282,7 @@
   }
 
   function onKeyDown(event: KeyboardEvent): void {
-    if (event.key !== "Escape" || phase === "sending") return;
+    if (event.key !== "Escape" || sending) return;
     reset();
   }
 
@@ -236,13 +299,8 @@
       : anchorFor(rect);
   }
 
-  async function send(): Promise<void> {
-    if (target === null || report.trim().length === 0 || sending) return;
-    const element = target;
-    phase = "sending";
-    errorMessage = null;
-    const payload = {
-      report,
+  function captured(element: Element): Record<string, string> {
+    return {
       route: window.location.pathname,
       url: window.location.href,
       selector,
@@ -254,6 +312,12 @@
       viewport: `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
       captured_at: new Date().toISOString(),
     };
+  }
+
+  /** Posts one submission and returns the filed issue URL, or the error text. */
+  async function post(payload: Record<string, string>): Promise<
+    { ok: true; url: string } | { ok: false; error: string }
+  > {
     try {
       const response = await fetch("/api/feedback", {
         method: "POST",
@@ -265,19 +329,51 @@
         error?: unknown;
       } | null;
       if (!response.ok || typeof body?.url !== "string") {
-        errorMessage =
-          typeof body?.error === "string"
-            ? body.error
-            : `The server refused the report (${response.status}).`;
-        phase = "failed";
-        return;
+        return {
+          ok: false,
+          error:
+            typeof body?.error === "string"
+              ? body.error
+              : `The server refused the report (${response.status}).`,
+        };
       }
-      // Stay in selection mode so the next report starts with one click.
-      startPicking();
+      return { ok: true, url: body.url };
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : String(error);
-      phase = "failed";
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /** Files a removal or redesign issue for one element and stays armed. */
+  async function fileShortcut(kind: "remove" | "redesign", element: Element): Promise<void> {
+    const known = describeTarget(element);
+    selector = known;
+    marker = null;
+    status = null;
+    phase = "sending";
+    const result = await post({ action: kind, report: "", ...captured(element) });
+    const noun = kind === "remove" ? "Removal" : "Redesign";
+    status = result.ok
+      ? { ok: true, text: `${noun} issue filed.`, url: result.url }
+      : { ok: false, text: `${noun} issue failed: ${result.error}` };
+    // The shortcut stays armed so the next element is one click away.
+    phase = "picking";
+    selector = "";
+    document.body.style.cursor = "crosshair";
+  }
+
+  async function send(): Promise<void> {
+    if (target === null || report.trim().length === 0 || sending) return;
+    const element = target;
+    phase = "sending";
+    errorMessage = null;
+    const result = await post({ action: "report", report, ...captured(element) });
+    if (!result.ok) {
+      errorMessage = result.error;
+      phase = "failed";
+      return;
+    }
+    // Stay in selection mode so the next report starts with one click.
+    arm("report");
   }
 
   onMount(() => {
@@ -308,8 +404,8 @@
   ></div>
 {/if}
 
-{#if picking}
-  <div class="feedback-hint" data-feedback-overlay>Click an element · Esc cancels</div>
+{#if hint !== null}
+  <div class="feedback-hint" data-feedback-overlay>{hint}</div>
 {/if}
 
 {#if panel !== null && (phase === "composing" || phase === "sending" || phase === "failed")}
@@ -372,55 +468,121 @@
   </div>
 {/if}
 
-<button
-  type="button"
-  class="feedback-button"
-  class:feedback-active={phase !== "idle"}
+<div
+  class="feedback-dock"
   data-feedback-overlay
-  title={picking ? "Cancel element selection" : "Report an issue about a UI element"}
-  aria-pressed={picking ? "true" : "false"}
-  data-command="app.report"
-  disabled={sending}
-  onclick={toggle}
+  role="group"
+  aria-label="UI issue actions"
 >
-  {#if picking}
-    Cancel selection
-  {:else if phase === "composing" || phase === "failed"}
-    Cancel report
-  {:else if sending}
-    Filing…
-  {:else}
-    Report UI issue
+  {#if status !== null}
+    <div
+      class="feedback-status"
+      role={status.ok ? "status" : "alert"}
+      class:feedback-status--error={!status.ok}
+    >
+      <span>{status.text}</span>
+      {#if status.ok}
+        <a href={status.url} target="_blank" rel="noreferrer">{status.url}</a>
+      {/if}
+    </div>
   {/if}
-</button>
+  <div class="feedback-dock__actions">
+    {#each ACTIONS as entry (entry.action)}
+      <button
+        type="button"
+        class="feedback-action"
+        class:feedback-action--active={action === entry.action}
+        title={action === entry.action
+          ? `Cancel the ${entry.label.toLowerCase()} selection`
+          : entry.label}
+        aria-pressed={action === entry.action ? "true" : "false"}
+        data-command={entry.command}
+        disabled={sending || (entry.action !== "report" && panel !== null)}
+        onclick={() => toggle(entry.action)}
+      >
+        {sending && action === entry.action ? "Filing…" : entry.label}
+      </button>
+    {/each}
+  </div>
+</div>
 
 <style>
-  .feedback-button {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    bottom: 2.2rem;
-    box-shadow: 0 2px 8px rgb(0 0 0 / 0.15);
-    color: var(--text);
-    cursor: pointer;
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    padding: 0.55rem 1rem;
+  .feedback-dock {
+    align-items: flex-end;
+    bottom: 34px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
     position: fixed;
-    right: 1.25rem;
+    right: var(--issue-dock-inset);
     z-index: 2147483647;
   }
 
-  .feedback-button:hover:not(:disabled),
-  .feedback-active {
-    border-color: var(--accent);
-    color: var(--accent);
+  .feedback-dock__actions {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    display: flex;
+    gap: 4px;
+    padding: 4px;
   }
 
-  .feedback-button:disabled {
+  .feedback-action {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    height: 28px;
+    padding: 0 10px;
+    white-space: nowrap;
+  }
+
+  .feedback-action:hover:not(:disabled),
+  .feedback-action--active {
+    background: var(--secondary);
+    border-color: var(--border-strong);
+    color: var(--foreground);
+  }
+
+  .feedback-action--active {
+    border-color: var(--accent);
+  }
+
+  .feedback-action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .feedback-action:disabled {
     cursor: progress;
-    opacity: 0.7;
+    opacity: 0.45;
+  }
+
+  .feedback-status {
+    background: var(--surface-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    font-size: 12px;
+    gap: 2px;
+    max-width: 380px;
+    padding: 6px 8px;
+  }
+
+  .feedback-status--error {
+    border-color: var(--error);
+    color: var(--error);
+  }
+
+  .feedback-status a {
+    color: var(--accent);
+    overflow-wrap: anywhere;
   }
 
   .feedback-marker {

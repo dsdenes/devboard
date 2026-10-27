@@ -344,11 +344,12 @@ Mapping to tokens: `{spacing.hairline}` 2px, `{spacing.tight}` 4px, `{spacing.sn
 Documented exceptions outside the scale: Flow diagram grid gaps of 18px and 22px and the diagram's
 `14px 32px` column gap are geometry of an inline SVG map, not layout spacing. The 26px, 30px,
 34px, and 44px region heights and the 64px rail are fixed shell dimensions. The 56px bottom
-padding on a Discover page reserves the fixed notification region (34px above the 26px status
-bar) so a page's last control can scroll clear of it; the same 56px on the Goal document page
-clears both that region and the fixed report control. The 180px Discover activity terminal, the
-104px fact-label column, the 160px Discover boundary-role column, the 200–600px sidebar bounds,
-and the 160px split minimum are component geometry, not spacing steps.
+padding on a Discover page reserves the fixed notification region and the issue dock (both 34px
+above the 26px status bar) so a page's last control can scroll clear of them; the same 56px on the
+Goal document page clears both overlays. The issue dock reserves 372px of the lower-right corner
+with an 8px inset, and the notification region starts 8px to its left. The 180px Discover activity
+terminal, the 104px fact-label column, the 160px Discover boundary-role column, the 200–600px
+sidebar bounds, and the 160px split minimum are component geometry, not spacing steps.
 
 ## Elevation & Depth
 
@@ -413,6 +414,15 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   divider at the rail's bottom, three 28px ghost icon buttons — commands (`Ctrl+K`),
   notifications, theme — are the application actions. The rail never shows a brand label and never
   collapses to icons only.
+- **Issue actions dock** (`.feedback-dock` in `FeedbackOverlay.svelte`) — the fixed operator
+  control in the lower-right corner, 8px inset: one `surface` frame with 1px `border`, 4px radius,
+  and 4px padding holding three 28px controls (`Report UI issue`, `Remove element`,
+  `Redesign element`) 4px apart. Each control is `control` type with a 1px `border`; the active
+  action takes the `secondary` fill, a `border-strong` outline, and `aria-pressed="true"`, and
+  the group carries an accessible name. Results appear above the dock in a `surface-raised`
+  `role="status"` line with the issue link, or a `role="alert"` line with the same border and
+  `error` text. The notification region is anchored 8px to the dock's left so the two fixed
+  surfaces never overlap.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page

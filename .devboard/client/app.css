@@ -42,6 +42,11 @@
   --font-mono:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --selection-background: #264f78;
+  /* The issue dock's fixed footprint in the lower-right corner. The
+     notification region is placed beside it, never under it. */
+  --issue-dock-inset: 8px;
+  --issue-dock-width: 372px;
+  --issue-dock-gap: 8px;
 }
 
 :root[data-theme="light"] {
@@ -797,6 +802,9 @@ kbd {
 }
 
 .notification-region {
+  /* The issue dock owns the lower-right corner; this region sits beside it,
+     never under it. */
+  right: calc(var(--issue-dock-inset) + var(--issue-dock-width) + var(--issue-dock-gap));
   bottom: 34px;
   display: flex;
   flex-direction: column;
@@ -805,7 +813,6 @@ kbd {
   max-width: 380px;
   overflow: hidden;
   position: fixed;
-  right: 8px;
   width: min(380px, calc(100vw - 16px));
   z-index: 80;
 }
@@ -1338,8 +1345,9 @@ kbd {
 /* Discover: one page frame, a two-column sheet, and plain rail blocks. */
 .discover-page {
   gap: 24px;
-  /* The notification region is fixed 34px above the status bar; reserve its
-     height so the last control of a page can scroll clear of it. */
+  /* The notification region is fixed 34px above the status bar and the issue
+     dock sits beside it; reserve their height so the last control of a page
+     can scroll clear of both. */
   padding: 0 2px 56px;
 }
 

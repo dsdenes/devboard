@@ -1,6 +1,6 @@
 import { dirname, join, resolve } from "node:path";
 import type { Server } from "bun";
-import { createApp } from "./app";
+import { createApp, type FeedbackOptions } from "./app";
 import type { ForgeTarget } from "./forge-pr";
 import { StubForge } from "./fixtures/stub-forge";
 import { openJournal } from "./journal";
@@ -83,7 +83,28 @@ function flowOptions() {
   };
 }
 
+/**
+ * A deterministic issue store for browser verification:
+ * `DEVBOARD_FEEDBACK_STUB=stub` replaces `gh` with the recording stub, so no
+ * automated test creates a real GitHub issue.
+ */
+function feedbackOptions(): FeedbackOptions | undefined {
+  if (process.env.DEVBOARD_FEEDBACK_STUB !== "stub") return undefined;
+  const recordDir = process.env.DEVBOARD_FEEDBACK_RECORD_DIR;
+  const modeFile = process.env.DEVBOARD_FEEDBACK_MODE_FILE;
+  const timeoutMs = Number(process.env.DEVBOARD_FEEDBACK_TIMEOUT_MS ?? "");
+  return {
+    ghCommand: ["bun", join(import.meta.dir, "fixtures", "stub-gh.ts")],
+    ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
+    env: {
+      ...(recordDir === undefined ? {} : { STUB_GH_RECORD_DIR: recordDir }),
+      ...(modeFile === undefined ? {} : { STUB_GH_MODE_FILE: modeFile }),
+    },
+  };
+}
+
 const injectedFlow = flowOptions();
+const injectedFeedback = feedbackOptions();
 const journal = openJournal({ stateDir, repoDir, port });
 const runningVersion = readHarnessVersion(runningHarnessDir());
 let updater: Updater | undefined;
@@ -103,6 +124,7 @@ for (let attempt = 0; ; attempt += 1) {
       runningVersion,
       latestVersion: () => updater?.latest() ?? null,
       ...(injectedFlow === undefined ? {} : { flow: injectedFlow }),
+      ...(injectedFeedback === undefined ? {} : { feedback: injectedFeedback }),
       restart: () => {
         if (server !== undefined) restart(server);
       },

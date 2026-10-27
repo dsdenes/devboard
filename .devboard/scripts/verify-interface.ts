@@ -15,11 +15,14 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { journalKey } from "../server/journal";
+import { REDESIGN_INSTRUCTION as redesignInstruction, REMOVAL_INSTRUCTION as removalInstruction } from "../server/feedback";
 import { stateFile } from "../server/state";
 import { freePort, run, waitFor } from "./verification";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const stubAgent = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
+// The deterministic `gh` stub always answers with this issue URL.
+const stubIssueUrl = "https://github.com/example/host/issues/42";
 const chromeCandidates = [
   "/usr/bin/google-chrome",
   "/usr/bin/google-chrome-stable",
@@ -754,6 +757,13 @@ interface Problem {
   text: string;
 }
 
+/** One recorded call of the deterministic `gh` stub. */
+interface FeedbackCall {
+  args: string[];
+  cwd: string;
+  body: string;
+}
+
 const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
 let serverProcess: ReturnType<typeof spawn> | undefined;
@@ -789,6 +799,11 @@ try {
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
     AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover`,
+    // Every feedback action is filed through the recording stub, never through
+    // the operator's real `gh`, and the recorded requests stay under `.tmp`.
+    DEVBOARD_FEEDBACK_STUB: "stub",
+    DEVBOARD_FEEDBACK_RECORD_DIR: join(root, "feedback"),
+    DEVBOARD_FEEDBACK_MODE_FILE: join(root, "feedback-mode"),
     DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
     GIT_TERMINAL_PROMPT: "0",
     GIT_ASKPASS: "true",
@@ -849,6 +864,7 @@ try {
   const pageProblems: Problem[] = [];
   const networkProblems: Problem[] = [];
   const requestUrls = new Map<string, string>();
+  const feedbackRequests: Array<Record<string, unknown>> = [];
 
   devtools.on("Runtime.exceptionThrown", (params) => {
     const details = params.exceptionDetails as Record<string, unknown> | undefined;
@@ -870,9 +886,23 @@ try {
   });
   devtools.on("Network.requestWillBeSent", (params) => {
     const requestId = params.requestId;
-    const request = params.request as { url?: string } | undefined;
+    const request = params.request as { url?: string; method?: string; postData?: string } | undefined;
     if (typeof requestId === "string" && typeof request?.url === "string") {
       requestUrls.set(requestId, request.url);
+    }
+    if (
+      request?.method === "POST" &&
+      (request.url ?? "").endsWith("/api/feedback") &&
+      typeof request.postData === "string"
+    ) {
+      try {
+        const parsed = JSON.parse(request.postData) as unknown;
+        if (typeof parsed === "object" && parsed !== null) {
+          feedbackRequests.push(parsed as Record<string, unknown>);
+        }
+      } catch {
+        feedbackRequests.push({ unparsed: request.postData });
+      }
     }
   });
   devtools.on("Network.loadingFailed", (params) => {
@@ -889,7 +919,10 @@ try {
     const response = params.response as { url?: string; status?: number } | undefined;
     if (response === undefined) return;
     if (typeof response.status === "number" && response.status >= 400) {
-      if (String(response.url ?? "").includes("favicon")) return;
+      const url = String(response.url ?? "");
+      if (url.includes("favicon")) return;
+      // The feedback failure case is asserted directly below.
+      if (url.endsWith("/api/feedback")) return;
       networkProblems.push({
         kind: "response",
         text: `${String(response.url ?? "")}: HTTP ${response.status}`,
@@ -945,6 +978,74 @@ try {
   const saveShot = async (name: string): Promise<void> => {
     await page.screenshot(join(harnessRoot, ".tmp", "interface", `${name}.png`));
   };
+
+  // The deterministic feedback store: the stub appends every filing to
+  // `calls.jsonl`, and a mode file switches its answer between calls.
+  const feedbackRecordDir = join(root, "feedback");
+  const feedbackModePath = join(root, "feedback-mode");
+  const feedbackCalls = async (): Promise<FeedbackCall[]> => {
+    const file = Bun.file(join(feedbackRecordDir, "calls.jsonl"));
+    if (!(await file.exists())) return [];
+    const calls: FeedbackCall[] = [];
+    for (const line of (await file.text()).split("\n")) {
+      if (line.trim().length === 0) continue;
+      try {
+        calls.push(JSON.parse(line) as FeedbackCall);
+      } catch {
+        // A call still being written; the next read sees it whole.
+      }
+    }
+    return calls;
+  };
+  const clearFeedback = async (): Promise<void> => {
+    await rm(feedbackRecordDir, { recursive: true, force: true });
+    await mkdir(feedbackRecordDir, { recursive: true });
+    feedbackRequests.length = 0;
+  };
+  const setFeedbackMode = async (mode: string): Promise<void> => {
+    await writeFile(feedbackModePath, `${mode}\n`);
+  };
+  const waitForFeedbackCalls = async (count: number): Promise<void> => {
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      const recorded = await feedbackCalls();
+      if (recorded.length >= count) return;
+      if (Date.now() > deadline) {
+        throw new Error(
+          `verify:interface: the feedback stub recorded ${recorded.length} of ${count} calls`,
+        );
+      }
+      await delay(50);
+    }
+  };
+  const dockState = async (): Promise<{
+    docks: number;
+    labels: string[];
+    commands: string[];
+    pressed: boolean[];
+    disabled: boolean[];
+    group: string | null;
+    overlay: boolean;
+    inside: boolean;
+  }> =>
+    page.eval(`(() => {
+      const docks = [...document.querySelectorAll(".feedback-dock")];
+      const dock = docks[0];
+      const buttons = [...document.querySelectorAll(".feedback-dock__actions button")];
+      const rects = buttons.map((button) => button.getBoundingClientRect());
+      return {
+        docks: docks.length,
+        labels: buttons.map((button) => button.textContent.trim()),
+        commands: buttons.map((button) => button.getAttribute("data-command") ?? ""),
+        pressed: buttons.map((button) => button.getAttribute("aria-pressed") === "true"),
+        disabled: buttons.map((button) => button.disabled === true),
+        group: dock?.getAttribute("role") === "group" ? (dock.getAttribute("aria-label") ?? "") : null,
+        overlay: dock?.closest("[data-feedback-overlay]") !== null,
+        inside: rects.every(
+          (rect) => rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+        ),
+      };
+    })()`);
 
   // 1. Shell regions, density, theme default.
   const shell = await page.eval<{
@@ -1129,7 +1230,8 @@ try {
   const requiredCommands = [
     "view.mode.goal", "view.mode.flow", "view.mode.discover",
     "view.theme.toggle", "view.layout.reset",
-    "app.reload", "app.report", "app.notifications.open",
+    "app.reload", "app.report", "app.remove", "app.redesign", "app.report.cancel",
+    "app.notifications.open",
     "goal.save", "goal.create", "goal.revise", "goal.skills.prepare",
     "goal.adr.start-next", "goal.lifecycle.start", "goal.lifecycle.pause",
     "goal.lifecycle.resume", "goal.lifecycle.stop", "goal.reset",
@@ -2519,9 +2621,35 @@ try {
   const resolvedAdrSidebar = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="ADR records"]') !== null`);
   check(!resolvedAdrSidebar, "the sidebar still shows resolved ADR records");
 
-  // 14. The issue reporter opens and cancels with Escape.
+  // 14. The UI issue dock: three actions, the unchanged report panel, and the
+  // one-click removal and redesign shortcuts, all filed through the stub.
+  const issueCommands = "app.report,app.remove,app.redesign";
+  const issueLabels = "Report UI issue|Remove element|Redesign element";
+  for (const mode of ["goal", "flow", "discover"]) {
+    await runPalette(`view.mode.${mode}`);
+    await page.wait(
+      `document.querySelector('[data-testid="mode-${mode}"]')?.getAttribute("aria-selected") === "true"`,
+      `the ${mode} mode for the issue dock`,
+    );
+    const dock = await dockState();
+    check(dock.docks === 1, `the ${mode} route has ${dock.docks} issue docks`, dock);
+    check(dock.labels.join("|") === issueLabels, `the ${mode} route mislabels the issue dock`, dock);
+    check(dock.commands.join(",") === issueCommands, `the ${mode} route exposes the wrong issue commands`, dock);
+    check(
+      dock.group === "UI issue actions" && dock.overlay,
+      `the ${mode} issue dock is not an accessible overlay group`,
+      dock,
+    );
+    check(dock.inside, `the ${mode} issue dock leaves the viewport`, dock);
+  }
+
+  // The report path is unchanged: selection, panel, filing, and back to selection.
+  await runPalette("view.mode.goal");
+  await clearFeedback();
   await runPalette("app.report");
   await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter picking mode");
+  const reportArmed = await dockState();
+  check(reportArmed.pressed.join(",") === "true,false,false", "the report action is not pressed in selection mode", reportArmed);
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the issue reporter to cancel");
   const reporterFocus = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="notifications"]') === null`);
@@ -2531,6 +2659,22 @@ try {
   await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter picking mode for the drag");
   await page.click('[data-testid="status-bar"]');
   await page.wait(`document.querySelector('.feedback-panel') !== null`, "the report panel");
+  const panelChrome = await page.eval<{ title: string; placeholder: string; buttons: string[]; selector: string }>(`(() => ({
+    title: document.querySelector('.feedback-drag')?.textContent?.trim() ?? "",
+    placeholder: document.querySelector('.feedback-panel textarea')?.getAttribute("placeholder") ?? "",
+    buttons: [...document.querySelectorAll('.feedback-actions button')].map((button) => button.textContent.trim()),
+    selector: document.querySelector('.feedback-selector')?.textContent?.trim() ?? "",
+  }))()`);
+  check(panelChrome.title === "Report a UI issue", "the report panel title changed", panelChrome);
+  check(panelChrome.placeholder === "What is wrong with this element?", "the report panel placeholder changed", panelChrome);
+  check(panelChrome.buttons.join("|") === "File issue|Cancel", "the report panel actions changed", panelChrome);
+  check(panelChrome.selector.length > 0, "the report panel shows no selector", panelChrome);
+  const composing = await dockState();
+  check(composing.disabled.join(",") === "false,true,true", "the quick actions are not disabled while composing", composing);
+  check(
+    (await feedbackCalls()).length === 0 && feedbackRequests.length === 0,
+    "a report request was sent before File issue",
+  );
   const panelBefore = await page.eval<{ top: number; left: number }>(`(() => {
     const rect = document.querySelector('.feedback-panel').getBoundingClientRect();
     return { top: Math.round(rect.top), left: Math.round(rect.left) };
@@ -2552,6 +2696,352 @@ try {
   check(panelAfter.inside, "a moved report panel leaves the viewport", panelAfter);
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-panel') === null`, "the report panel to close");
+
+  await runPalette("app.report");
+  await page.click('[data-testid="status-bar"]');
+  await page.wait(`document.querySelector('.feedback-panel') !== null`, "the report panel for a filing");
+  await page.fill('.feedback-panel textarea', "The status bar is clipped at the boundary.");
+  await page.click('.feedback-actions button');
+  await page.wait(
+    `document.querySelector('.feedback-panel') === null && document.querySelector('.feedback-hint') !== null`,
+    "the report selection mode after filing",
+  );
+  await waitForFeedbackCalls(1);
+  await delay(150);
+  const reportCall = (await feedbackCalls())[0]!;
+  check(
+    reportCall.args.join(" ").includes("[ui] The status bar is clipped at the boundary."),
+    "the report title is wrong",
+    reportCall.args,
+  );
+  check(reportCall.body.startsWith("## Operator report"), "the report body lost its heading", reportCall.body);
+  check(
+    reportCall.args.includes("--repo") &&
+      reportCall.args[reportCall.args.indexOf("--repo") + 1] === "dsdenes/devboard",
+    "the report was filed in another repository",
+    reportCall.args,
+  );
+  check(
+    feedbackRequests.length === 1 &&
+      feedbackRequests[0]?.action === "report" &&
+      String(feedbackRequests[0]?.report).includes("status bar is clipped"),
+    "the report request is wrong",
+    feedbackRequests,
+  );
+  const backToPicking = await dockState();
+  check(backToPicking.pressed.join(",") === "true,false,false", "a filed report did not return to report selection", backToPicking);
+  await page.key("Escape");
+  await page.wait(`document.querySelector('.feedback-hint') === null`, "the report mode to close after filing");
+
+  // A failed report stays in its panel with the server's message.
+  await setFeedbackMode("fail");
+  await runPalette("app.report");
+  await page.click('[data-testid="status-bar"]');
+  await page.wait(
+    `document.querySelector('.feedback-panel') !== null`,
+    "the report panel for a failed filing",
+  );
+  await page.fill('.feedback-panel textarea', "The status bar is clipped at the boundary.");
+  await page.click('.feedback-actions button');
+  await page.wait(`document.querySelector('.feedback-error') !== null`, "the failed report message");
+  const failedReport = await page.eval<{ panel: boolean; error: string; disabled: boolean[] }>(`(() => ({
+    panel: document.querySelector('.feedback-panel') !== null,
+    error: document.querySelector('.feedback-error')?.textContent?.trim() ?? "",
+    disabled: [...document.querySelectorAll('.feedback-dock__actions button')].map((button) => button.disabled),
+  }))()`);
+  check(
+    failedReport.panel && failedReport.error.includes("Issue creation failed"),
+    "a failed report left its panel",
+    failedReport,
+  );
+  check(
+    failedReport.disabled.length === 3 &&
+      !failedReport.disabled[0] &&
+      failedReport.disabled[1] &&
+      failedReport.disabled[2],
+    "a failed report left the dock in the wrong state",
+    failedReport,
+  );
+  await setFeedbackMode("ok");
+  await page.key("Escape");
+  await page.wait(`document.querySelector('.feedback-panel') === null`, "the failed report panel to close");
+
+  await runPalette("app.report");
+  await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter for the palette cancel");
+  await runPalette("app.report.cancel");
+  await page.wait(`document.querySelector('.feedback-hint') === null`, "the palette to cancel the issue reporter");
+  check((await dockState()).pressed.every((value) => !value), "a canceled mode is still pressed");
+  check((await dockState()).pressed.every((value) => !value), "a canceled mode is still pressed");
+
+  // Two removals from one uninterrupted mode, the second on a control whose
+  // activation the selection mode must swallow.
+  await clearFeedback();
+  await runPalette("app.remove");
+  await page.wait(`document.querySelector('.feedback-hint')?.textContent?.includes("to remove") === true`, "the removal hint");
+  const removalArmed = await dockState();
+  check(removalArmed.pressed.join(",") === "false,true,false", "the removal action is not armed", removalArmed);
+  await page.click('[data-testid="status-connection"]');
+  await waitForFeedbackCalls(1);
+  await delay(150);
+  await page.wait(`document.querySelector('.feedback-status[role="status"] a') !== null`, "the removal success link");
+  const removalStatus = await page.eval<{ role: string; text: string; href: string }>(`(() => {
+    const status = document.querySelector('.feedback-status');
+    return {
+      role: status?.getAttribute("role") ?? "",
+      text: (status?.textContent ?? "").split("\\n").map((value) => value.trim()).filter((value) => value.length > 0).join(" "),
+      href: status?.querySelector("a")?.getAttribute("href") ?? "",
+    };
+  })()`);
+  check(removalStatus.role === "status", "a removal success is not a status surface", removalStatus);
+  check(removalStatus.text.startsWith("Removal issue filed."), "the removal success text is wrong", removalStatus);
+  check(removalStatus.href === stubIssueUrl, "the removal success carries no stub issue URL", removalStatus);
+  const removalStillArmed = await dockState();
+  check(
+    removalStillArmed.pressed.join(",") === "false,true,false" &&
+      removalStillArmed.disabled.every((value) => !value),
+    "a filed removal did not stay armed",
+    removalStillArmed,
+  );
+  check(
+    await page.eval<boolean>(`document.querySelector('.feedback-hint')?.textContent?.includes("to remove") === true`),
+    "the removal hint disappeared after filing",
+  );
+
+  const selectionTheme = await page.eval<string>(`document.documentElement.dataset.theme`);
+  await page.click('[data-testid="theme-toggle"]');
+  await waitForFeedbackCalls(2);
+  await delay(150);
+  const themeAfterSelection = await page.eval<string>(`document.documentElement.dataset.theme`);
+  check(
+    themeAfterSelection === selectionTheme,
+    "selecting an element in removal mode activated it",
+    { selectionTheme, themeAfterSelection },
+  );
+  const removalCalls = await feedbackCalls();
+  check(removalCalls.length === 2, "the second removal was not filed", removalCalls.length);
+  for (const call of removalCalls) {
+    const repoIndex = call.args.indexOf("--repo");
+    check(repoIndex > -1 && call.args[repoIndex + 1] === "dsdenes/devboard", "a removal was filed in another repository", call.args);
+    check(call.args.join(" ").includes("[ui] Remove element: "), "a removal title is wrong", call.args);
+    check(!call.args.join(" ").includes("## Removal request"), "a removal body leaked into argv", call.args);
+    check(call.body.startsWith("## Removal request\n\n"), "a removal body lost its heading", call.body);
+    check(call.body.includes(`\n${removalInstruction}\n`), "a removal body lost its instruction", call.body);
+    check(call.body.includes("## Captured UI context"), "a removal body lost the captured context", call.body);
+    check(call.body.includes("### DOM excerpt"), "a removal body lost the DOM excerpt", call.body);
+  }
+  const removalRequests = feedbackRequests.filter((entry) => entry.action === "remove");
+  check(removalRequests.length === 2, "the dock did not send two removal requests", feedbackRequests);
+  check(
+    removalRequests.every(
+      (entry) =>
+        typeof entry.selector === "string" &&
+        entry.selector.length > 0 &&
+        entry.report === "" &&
+        String(entry.dom_excerpt ?? "").length > 0 &&
+        String(entry.captured_at ?? "").length > 0,
+    ),
+    "a removal request lacks its captured context",
+    removalRequests,
+  );
+  check(
+    removalCalls[1]!.args.join(" ").includes(String(removalRequests[1]?.selector ?? "\u0000")),
+    "the second removal names the wrong selector",
+    removalCalls[1]!.args,
+  );
+
+  // A different action switches modes without filing; two redesigns then file
+  // from the same uninterrupted mode.
+  await clearFeedback();
+  await runPalette("app.redesign");
+  await page.wait(`document.querySelector('.feedback-hint')?.textContent?.includes("to redesign") === true`, "the redesign hint");
+  const redesignArmed = await dockState();
+  check(redesignArmed.pressed.join(",") === "false,false,true", "switching the action did not arm the redesign", redesignArmed);
+  check((await feedbackCalls()).length === 0, "switching actions filed an issue");
+  await page.click('[data-testid="status-connection"]');
+  await waitForFeedbackCalls(1);
+  await delay(150);
+  await page.click('[data-testid="status-bar"]');
+  await waitForFeedbackCalls(2);
+  await delay(150);
+  const redesignCalls = await feedbackCalls();
+  check(redesignCalls.length === 2, "the second redesign was not filed", redesignCalls.length);
+  for (const call of redesignCalls) {
+    const repoIndex = call.args.indexOf("--repo");
+    check(repoIndex > -1 && call.args[repoIndex + 1] === "dsdenes/devboard", "a redesign was filed in another repository", call.args);
+    check(call.args.join(" ").includes("[ui] Redesign element: "), "a redesign title is wrong", call.args);
+    check(!call.args.join(" ").includes("## Redesign request"), "a redesign body leaked into argv", call.args);
+    check(call.body.startsWith("## Redesign request\n\n"), "a redesign body lost its heading", call.body);
+    check(call.body.includes(redesignInstruction), "a redesign body lost its instruction", call.body);
+    check(call.body.includes("## Captured UI context"), "a redesign body lost the captured context", call.body);
+  }
+  const redesignRequests = feedbackRequests.filter((entry) => entry.action === "redesign");
+  check(redesignRequests.length === 2, "the dock did not send two redesign requests", feedbackRequests);
+  const redesignStatus = await page.eval<{ text: string; href: string }>(`(() => {
+    const status = document.querySelector('.feedback-status');
+    return {
+      text: (status?.textContent ?? "").split("\\n").map((value) => value.trim()).filter((value) => value.length > 0).join(" "),
+      href: status?.querySelector("a")?.getAttribute("href") ?? "",
+    };
+  })()`);
+  check(redesignStatus.text.startsWith("Redesign issue filed."), "the redesign success text is wrong", redesignStatus);
+  check(redesignStatus.href === stubIssueUrl, "the redesign success carries no stub issue URL", redesignStatus);
+  check((await dockState()).pressed.join(",") === "false,false,true", "a filed redesign did not stay armed");
+
+  // A delayed filing disables every action and a double-click files once.
+  await setFeedbackMode("delay");
+  await page.doubleClick('[data-testid="status-connection"]');
+  await page.wait(
+    `[...document.querySelectorAll('.feedback-dock__actions button')].every((button) => button.disabled)`,
+    "the dock disabled during a delayed filing",
+  );
+  const filing = await page.eval<{ labels: string[]; active: number }>(`(() => {
+    const buttons = [...document.querySelectorAll('.feedback-dock__actions button')];
+    return {
+      labels: buttons.map((button) => button.textContent.trim()),
+      active: buttons.findIndex((button) => button.getAttribute("aria-pressed") === "true"),
+    };
+  })()`);
+  check(
+    filing.active === 2 && filing.labels[filing.active] === "Filing…",
+    "the active action does not read Filing… while filing",
+    filing,
+  );
+  await waitForFeedbackCalls(3);
+  await delay(200);
+  const delayedCalls = await feedbackCalls();
+  check(delayedCalls.length === 3, "a double-click filed more than one issue", delayedCalls.length);
+  await page.wait(`document.querySelector('.feedback-status[role="status"]') !== null`, "the delayed filing status");
+
+  // A failing filing keeps the mode armed, re-enables the dock, and files nothing.
+  await setFeedbackMode("fail");
+  await page.click('[data-testid="status-connection"]');
+  await page.wait(`document.querySelector('.feedback-status[role="alert"]') !== null`, "the redesign failure alert");
+  const failure = await page.eval<{
+    text: string;
+    link: boolean;
+    hint: string;
+    pressed: string[];
+    disabled: boolean[];
+  }>(`(() => {
+    const alert = document.querySelector('.feedback-status[role="alert"]');
+    const buttons = [...document.querySelectorAll('.feedback-dock__actions button')];
+    return {
+      text: (alert?.textContent ?? "").split("\\n").map((value) => value.trim()).filter((value) => value.length > 0).join(" "),
+      link: alert?.querySelector("a") !== null,
+      hint: document.querySelector('.feedback-hint')?.textContent ?? "",
+      pressed: buttons.map((button) => button.getAttribute("aria-pressed") ?? ""),
+      disabled: buttons.map((button) => button.disabled),
+    };
+  })()`);
+  check(
+    failure.text.startsWith("Redesign issue failed: Issue creation failed: boom"),
+    "the redesign failure alert is wrong",
+    failure,
+  );
+  check(!failure.link, "a failed redesign rendered an issue link", failure);
+  check(failure.hint.includes("to redesign"), "a failed redesign left the mode", failure);
+  check(failure.pressed.join(",") === "false,false,true", "a failed redesign lost its pressed state", failure);
+  check(failure.disabled.every((value) => !value), "a failed redesign left the dock disabled", failure);
+  await setFeedbackMode("ok");
+  await page.key("Escape");
+  await page.wait(`document.querySelector('.feedback-hint') === null`, "Escape to cancel the shortcut mode");
+  check((await dockState()).pressed.every((value) => !value), "Escape left an action pressed");
+
+  // The dock clears the status bar, the notification region, and the page's
+  // lowest control at the narrowest supported viewport.
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the 1024×720 viewport for the issue dock");
+  await runPalette("discover.tab.overview");
+  await page.wait(`document.querySelector('#workspace-discover .scroll-column') !== null`, "the Discover page for the dock check");
+  const dockLayout = await page.eval<{
+    inside: boolean;
+    aboveStatus: boolean;
+    besideRegion: boolean;
+    reserved: boolean;
+    controlClear: boolean;
+    controlHit: boolean;
+  }>(`(() => {
+    const dock = document.querySelector(".feedback-dock")?.getBoundingClientRect();
+    const status = document.querySelector('[data-testid="status-bar"]')?.getBoundingClientRect();
+    const region = document.querySelector('[data-testid="notifications"]')?.getBoundingClientRect();
+    if (dock === undefined || status === undefined || region === undefined) {
+      return {
+        inside: false,
+        aboveStatus: false,
+        besideRegion: false,
+        reserved: false,
+        controlClear: false,
+        controlHit: false,
+      };
+    }
+    const scroller = document.querySelector("#workspace-discover .scroll-column");
+    let controlClear = false;
+    let controlHit = false;
+    if (scroller !== null) {
+      scroller.scrollTop = scroller.scrollHeight;
+      const entries = [...scroller.querySelectorAll("*")]
+        .filter((element) => element.getClientRects().length > 0)
+        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+        .filter((entry) => entry.rect.width > 0 && entry.rect.height > 0);
+      if (entries.length > 0) {
+        const lowest = entries.reduce((best, entry) => (entry.rect.bottom > best.rect.bottom ? entry : best));
+        const hit = document.elementFromPoint(
+          lowest.rect.left + lowest.rect.width / 2,
+          lowest.rect.top + lowest.rect.height / 2,
+        );
+        controlClear = lowest.rect.bottom <= dock.top;
+        controlHit = hit !== null && lowest.element.contains(hit);
+      }
+    }
+    const reserved = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--issue-dock-width"),
+    );
+    return {
+      inside: dock.left >= 0 && dock.top >= 0 && dock.right <= innerWidth && dock.bottom <= innerHeight,
+      aboveStatus: dock.bottom <= status.top + 0.5,
+      besideRegion: region.right <= dock.left + 0.5,
+      reserved: dock.width <= reserved + 0.5,
+      controlClear,
+      controlHit,
+    };
+  })()`);
+  check(dockLayout.inside, "the issue dock leaves the 1024×720 viewport", dockLayout);
+  check(dockLayout.aboveStatus, "the issue dock overlaps the status bar", dockLayout);
+  check(dockLayout.besideRegion, "the issue dock overlaps the notification region", dockLayout);
+  check(dockLayout.reserved, "the issue dock is wider than its reserved footprint", dockLayout);
+  check(dockLayout.controlClear && dockLayout.controlHit, "the issue dock hides or covers the last Discover control", dockLayout);
+  await page.screenshot(join(harnessRoot, ".tmp", "interface", "issue-dock-1024x720.png"));
+
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the 1440×900 viewport after the dock check");
+  await runPalette("view.mode.goal");
+  await clearFeedback();
+  await runPalette("app.remove");
+  await page.click('[data-testid="status-connection"]');
+  await waitForFeedbackCalls(1);
+  await page.wait(`document.querySelector('.feedback-status[role="status"]') !== null`, "the dock status for the screenshots");
+  await saveShot("ui-issue-dock-dark");
+  await page.key("Escape");
+  await page.wait(`document.querySelector('.feedback-hint') === null`, "the dock screenshots to leave selection mode");
+  await page.click('[data-testid="theme-toggle"]');
+  await page.wait(`document.documentElement.dataset.theme === "light"`, "the light theme for the dock screenshot");
+  await runPalette("app.redesign");
+  await page.wait(`document.querySelector('.feedback-hint') !== null`, "the redesign mode for the light dock screenshot");
+  await saveShot("ui-issue-dock-light");
+  await page.key("Escape");
+  await page.wait(`document.querySelector('.feedback-hint') === null`, "the light dock screenshot to leave selection mode");
+  await page.click('[data-testid="theme-toggle"]');
+  await page.wait(`document.documentElement.dataset.theme === "dark"`, "the dark theme after the dock screenshots");
 
   // 15. Orchestrator status item: idle, working, failed, hidden, and live update.
   await seedOrchestrator(stateDir, host, "idle");
