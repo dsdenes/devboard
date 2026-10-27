@@ -3,7 +3,8 @@
  *
  * The operator's report panel can turn one pick and one sentence into a raw
  * goal draft. A draft is not a goal spec: it carries the operator's text
- * verbatim plus the same captured element context an issue report carries,
+ * verbatim, the Ask conversation when the panel has one, plus the same
+ * captured element context an issue report carries,
  * and lives under `.devboard/goal-proposals/` until someone elaborates it with
  * `/goal-spec`. The server never files an issue, starts a conversation, or
  * writes a final goal.
@@ -13,9 +14,12 @@ import { link, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   FeedbackRequestError,
+  conversationSection,
   parseCapturedFields,
+  parseConversation,
   parseReportText,
   type CapturedFields,
+  type FeedbackTurn,
 } from "./feedback";
 
 /** Repository-relative directory holding every draft. */
@@ -32,6 +36,8 @@ export const DRAFT_NOTICE = "> Unprocessed draft. Refine it with `/goal-spec` be
 
 export interface GoalProposalSubmission extends CapturedFields {
   report: string;
+  /** The Ask conversation the operator had about this element, if any. */
+  conversation: FeedbackTurn[];
 }
 
 export interface GoalProposal {
@@ -45,7 +51,11 @@ export function parseGoalProposalSubmission(value: unknown): GoalProposalSubmiss
     throw new FeedbackRequestError(400, "The proposal must be a JSON object.");
   }
   const source = value as Record<string, unknown>;
-  return { report: parseReportText(source.report), ...parseCapturedFields(source) };
+  return {
+    report: parseReportText(source.report),
+    conversation: parseConversation(source.conversation),
+    ...parseCapturedFields(source),
+  };
 }
 
 /** The report's first non-empty line, trimmed, or the empty string. */
@@ -116,10 +126,12 @@ function capturedContext(submission: GoalProposalSubmission): string[] {
 
 /**
  * The draft body: the proposed goal, the draft notice, the operator's text
- * verbatim, then the captured context. It carries no success criteria,
- * verification, boundaries, or stop conditions; elaboration does that.
+ * verbatim, the Ask conversation, then the captured context. It carries no
+ * success criteria, verification, boundaries, or stop conditions; elaboration
+ * does that.
  */
 export function goalProposalBody(submission: GoalProposalSubmission): string {
+  const conversation = conversationSection(submission.conversation);
   return [
     `# Proposed goal: ${goalProposalHeading(submission.report)}`,
     "",
@@ -127,6 +139,7 @@ export function goalProposalBody(submission: GoalProposalSubmission): string {
     "",
     submission.report,
     "",
+    ...(conversation.length === 0 ? [] : [...conversation, ""]),
     "## Captured UI context",
     "",
     ...capturedContext(submission),

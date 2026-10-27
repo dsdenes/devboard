@@ -41,6 +41,10 @@
   const MAX_URL = 2000;
   const MAX_VIEWPORT = 500;
   const MAX_CAPTURED_AT = 100;
+  /** Bounds shared with the server's Ask conversation capture. */
+  const MAX_CONVERSATION_TURNS = 40;
+  const MAX_CONVERSATION_TURN = 4000;
+  const MAX_CONVERSATION_TEXT = 12_000;
   /** How long a successful filing toast stays before it dismisses itself. */
   const TOAST_TIMEOUT = 8000;
 
@@ -248,6 +252,20 @@
       ),
       dom_excerpt: truncate(element.outerHTML ?? "", MAX_DOM_EXCERPT),
     };
+  }
+
+  /** The Ask conversation bounded to the server's limits; the newest turns win. */
+  function conversationPayload(): Array<{ role: AskTurn["role"]; text: string }> {
+    const turns = transcript
+      .slice(-MAX_CONVERSATION_TURNS)
+      .map((turn) => ({ role: turn.role, text: truncate(turn.text, MAX_CONVERSATION_TURN) }));
+    let total = turns.reduce((sum, turn) => sum + turn.text.length, 0);
+    let start = 0;
+    while (total > MAX_CONVERSATION_TEXT && start < turns.length - 1) {
+      total -= turns[start].text.length;
+      start += 1;
+    }
+    return turns.slice(start);
   }
 
   /** Keeps the panel fully inside the viewport after the transcript grows. */
@@ -487,7 +505,7 @@
   }
 
   /** Posts one submission and returns the filed issue URL, or the error text. */
-  async function post(payload: Record<string, string>): Promise<
+  async function post(payload: Record<string, unknown>): Promise<
     { ok: true; url: string } | { ok: false; error: string }
   > {
     try {
@@ -536,7 +554,7 @@
 
   /** Writes one proposed-goal draft and returns the draft path, or the error. */
   async function postGoal(
-    payload: Record<string, string>,
+    payload: Record<string, unknown>,
   ): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
     try {
       const response = await fetch("/api/goal-proposals", {
@@ -578,7 +596,11 @@
     goalPending = true;
     errorMessage = null;
     dismissToast();
-    const response = await postGoal({ report, ...captured(element) });
+    const response = await postGoal({
+      report,
+      conversation: conversationPayload(),
+      ...captured(element),
+    });
     goalPending = false;
     if (!response.ok) {
       errorMessage = response.error;
@@ -598,7 +620,12 @@
     dismissToast();
     phase = "sending";
     errorMessage = null;
-    const response = await post({ action: "report", report, ...captured(element) });
+    const response = await post({
+      action: "report",
+      report,
+      conversation: conversationPayload(),
+      ...captured(element),
+    });
     if (!response.ok) {
       errorMessage = response.error;
       phase = "failed";

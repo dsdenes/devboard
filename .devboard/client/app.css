@@ -3258,9 +3258,3 @@ a.code-chip--link:focus-visible {
 .scout-widget__staged {
   font-size: 10.5px;
 }
-
-.scout-empty {
-  padding: 18px;
-  font-size: 12px;
-  color: var(--muted);
-}

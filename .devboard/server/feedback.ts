@@ -2,8 +2,9 @@
  * Operator issue reporting for the local interface.
  *
  * The client sends one action plus the DOM context of the element it is about.
- * A report also carries the operator's free text; the removal and redesign
- * shortcuts carry only the context and use a fixed instruction. This module
+ * A report also carries the operator's free text and, when the panel answered
+ * questions, the Ask conversation; the removal and redesign shortcuts carry
+ * only the context and use a fixed instruction. This module
  * validates that payload, renders it as a GitHub issue for an implementation
  * agent, and files the issue through the operator's authenticated `gh` command.
  *
@@ -22,6 +23,10 @@ const MAX_VIEWPORT = 500;
 const MAX_TITLE = 200;
 const TITLE_PREFIX = "[ui] ";
 const BODY_VISIBLE_TEXT = 1500;
+/** Bounds shared with the client's Ask transcript capture. */
+const MAX_CONVERSATION_TURNS = 40;
+const MAX_CONVERSATION_TURN = 4000;
+const MAX_CONVERSATION_TEXT = 12_000;
 
 /** What the operator asked for when they picked an element. */
 export type FeedbackAction = "report" | "remove" | "redesign";
@@ -43,9 +48,17 @@ export const REDESIGN_INSTRUCTION =
 
 const ACTION_ERROR = "action must be one of report, remove, redesign.";
 
+/** One visible turn of the element-scoped Ask conversation. */
+export interface FeedbackTurn {
+  role: "developer" | "agent";
+  text: string;
+}
+
 export interface FeedbackSubmission {
   action: FeedbackAction;
   report: string;
+  /** The Ask conversation the operator had about this element, if any. */
+  conversation: FeedbackTurn[];
   route: string;
   url: string;
   selector: string;
@@ -163,6 +176,48 @@ export function parseReportText(value: unknown): string {
   return field(value, "report", MAX_REPORT, true);
 }
 
+/**
+ * Validates the Ask conversation. A submission without one carries no turns,
+ * so an older client keeps filing reports unchanged.
+ */
+export function parseConversation(value: unknown): FeedbackTurn[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new FeedbackRequestError(400, "conversation must be an array.");
+  }
+  if (value.length > MAX_CONVERSATION_TURNS) {
+    throw new FeedbackRequestError(
+      400,
+      `conversation has more than ${MAX_CONVERSATION_TURNS} turns.`,
+    );
+  }
+  const turns: FeedbackTurn[] = [];
+  let total = 0;
+  for (const [index, entry] of value.entries()) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new FeedbackRequestError(400, `conversation[${index}] must be an object.`);
+    }
+    const source = entry as Record<string, unknown>;
+    const role = source.role;
+    if (role !== "developer" && role !== "agent") {
+      throw new FeedbackRequestError(
+        400,
+        `conversation[${index}].role must be developer or agent.`,
+      );
+    }
+    const text = field(source.text, `conversation[${index}].text`, MAX_CONVERSATION_TURN, true);
+    total += text.length;
+    turns.push({ role, text });
+  }
+  if (total > MAX_CONVERSATION_TEXT) {
+    throw new FeedbackRequestError(
+      400,
+      `conversation is longer than ${MAX_CONVERSATION_TEXT} characters.`,
+    );
+  }
+  return turns;
+}
+
 /** Validates one JSON body. Unknown fields are ignored for forwards compatibility. */
 export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -175,6 +230,7 @@ export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
     // The one-click shortcuts use a fixed instruction, so any text the client
     // still sends is ignored rather than validated or filed.
     report: action === "report" ? parseReportText(source.report) : "",
+    conversation: parseConversation(source.conversation),
     ...parseCapturedFields(source),
   };
 }
@@ -215,7 +271,20 @@ export function feedbackTitle(submission: FeedbackSubmission): string {
   return truncate(`${TITLE_PREFIX}${line.replace(/\s+/g, " ")}`, MAX_TITLE);
 }
 
-/** The ticket body: the request first, then the captured context. */
+/**
+ * The Ask conversation as Markdown: one labelled block per visible turn. It is
+ * empty when the operator filed without asking the agent anything.
+ */
+export function conversationSection(conversation: FeedbackTurn[]): string[] {
+  const lines: string[] = [];
+  for (const turn of conversation) {
+    lines.push("", `**${turn.role === "developer" ? "You" : "Agent"}:**`, "", turn.text.trim());
+  }
+  if (lines.length === 0) return [];
+  return ["## Ask conversation", ...lines];
+}
+
+/** The ticket body: the request first, then the conversation and captured context. */
 export function feedbackBody(submission: FeedbackSubmission): string {
   const request =
     submission.action === "remove"
@@ -249,6 +318,9 @@ export function feedbackBody(submission: FeedbackSubmission): string {
     const fence = dom.includes("```") ? "````" : "```";
     context.push("", "### DOM excerpt", "", `${fence}html`, dom, fence);
   }
+
+  const conversation = conversationSection(submission.conversation);
+  if (conversation.length > 0) lines.push(...conversation, "");
 
   lines.push("## Captured UI context", "");
   lines.push(...(context.length === 0 ? ["No page context was captured."] : context));

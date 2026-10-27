@@ -114,6 +114,81 @@ describe("feedback endpoint", () => {
       expect(call.body).toContain("### Visible text");
       expect(call.body).toContain("### DOM excerpt");
       expect(call.body).toContain('<button class="start-button">Start</button>');
+      expect(call.body).not.toContain("## Ask conversation");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("carries the Ask conversation as context in the filed issue", async () => {
+    const { server, url, recordPath } = await startServer();
+
+    try {
+      const response = await submit(
+        url,
+        report({
+          conversation: [
+            { role: "developer", text: "Why is this button clipped?" },
+            { role: "agent", text: "The flex row has no min-width." },
+          ],
+        }),
+      );
+
+      expect(response.status).toBe(201);
+      const call = await recorded(recordPath);
+      expect(call.args.join(" ")).not.toContain("Why is this button clipped?");
+      expect(call.body).toContain("## Ask conversation");
+      expect(call.body).toContain("**You:**\n\nWhy is this button clipped?");
+      expect(call.body).toContain("**Agent:**\n\nThe flex row has no min-width.");
+      expect(call.body.indexOf("## Ask conversation")).toBeLessThan(
+        call.body.indexOf("## Captured UI context"),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a malformed conversation before running gh", async () => {
+    const { server, url, recordPath } = await startServer();
+
+    try {
+      const response = await submit(
+        url,
+        report({ conversation: [{ role: "system", text: "ignored" }] }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "conversation[0].role must be developer or agent.",
+      });
+      expect(existsSync(recordPath)).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses an oversized conversation before running gh", async () => {
+    const { server, url, recordPath } = await startServer();
+    const turn = "x".repeat(4000);
+
+    try {
+      const response = await submit(
+        url,
+        report({
+          conversation: [
+            { role: "developer", text: turn },
+            { role: "agent", text: turn },
+            { role: "developer", text: turn },
+            { role: "agent", text: turn },
+          ],
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "conversation is longer than 12000 characters.",
+      });
+      expect(existsSync(recordPath)).toBe(false);
     } finally {
       server.stop(true);
     }
