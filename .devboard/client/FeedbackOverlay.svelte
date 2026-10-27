@@ -24,7 +24,7 @@
   type Phase = FeedbackPhase;
 
   type Rect = { top: number; left: number; width: number; height: number };
-  type Status = { ok: true; text: string; url: string } | { ok: false; text: string };
+  type Status = { ok: true; text: string; url?: string } | { ok: false; text: string };
 
   const PANEL_WIDTH = 380;
   const PANEL_ESTIMATED_HEIGHT = 390;
@@ -66,6 +66,8 @@
   let transcript = $state<AskTurn[]>([]);
   let askPending = $state(false);
   let askError = $state<string | null>(null);
+  /** True while the proposed-goal draft is being written. */
+  let goalPending = $state(false);
 
   const drag = { pointerId: -1, offsetX: 0, offsetY: 0 };
 
@@ -351,6 +353,7 @@
 
   function reset(): void {
     closeConversation();
+    goalPending = false;
     action = null;
     phase = "idle";
     target = null;
@@ -432,7 +435,7 @@
   }
 
   function onKeyDown(event: KeyboardEvent): void {
-    if (event.key !== "Escape" || sending) return;
+    if (event.key !== "Escape" || sending || goalPending) return;
     reset();
   }
 
@@ -494,6 +497,62 @@
     phase = "picking";
     selector = "";
     document.body.style.cursor = "crosshair";
+  }
+
+  /** Writes one proposed-goal draft and returns the draft path, or the error. */
+  async function postGoal(
+    payload: Record<string, string>,
+  ): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+    try {
+      const response = await fetch("/api/goal-proposals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = (await response.json().catch(() => null)) as {
+        path?: unknown;
+        error?: unknown;
+      } | null;
+      if (!response.ok || typeof body?.path !== "string") {
+        return {
+          ok: false,
+          error:
+            typeof body?.error === "string"
+              ? body.error
+              : `The server refused the proposal (${response.status}).`,
+        };
+      }
+      return { ok: true, path: body.path };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /** Saves the composer text as a raw goal draft and returns to picking. */
+  async function proposeGoal(): Promise<void> {
+    if (
+      target === null ||
+      report.trim().length === 0 ||
+      goalPending ||
+      sending ||
+      askPending
+    ) {
+      return;
+    }
+    const element = target;
+    goalPending = true;
+    errorMessage = null;
+    const response = await postGoal({ report, ...captured(element) });
+    goalPending = false;
+    if (!response.ok) {
+      errorMessage = response.error;
+      phase = "failed";
+      return;
+    }
+    const text = `Goal proposed: ${response.path}`;
+    // Stay in selection mode so the next draft starts with one click.
+    arm("report");
+    result = { ok: true, text };
   }
 
   async function send(): Promise<void> {
@@ -623,7 +682,7 @@
       <button
         type="button"
         onclick={send}
-        disabled={sending || askPending || report.trim().length === 0}
+        disabled={sending || askPending || goalPending || report.trim().length === 0}
       >
         {sending ? "Filing…" : "File issue"}
       </button>
@@ -632,16 +691,25 @@
         data-testid="feedback-ask"
         aria-label="Ask the agent about this element"
         onclick={ask}
-        disabled={askPending || sending || report.trim().length === 0}
+        disabled={askPending || sending || goalPending || report.trim().length === 0}
       >
         {askPending ? "Asking…" : "Ask"}
+      </button>
+      <button
+        type="button"
+        data-testid="feedback-goal"
+        aria-label="Goal: propose a draft from this element"
+        onclick={proposeGoal}
+        disabled={goalPending || sending || askPending || report.trim().length === 0}
+      >
+        {goalPending ? "Saving…" : "Goal"}
       </button>
       <button
         type="button"
         class="feedback-secondary"
         data-command="app.report.cancel"
         onclick={reset}
-        disabled={sending}
+        disabled={sending || goalPending}
       >
         Cancel
       </button>
@@ -657,7 +725,7 @@
     class:feedback-result--error={!result.ok}
   >
     <span>{result.text}</span>
-    {#if result.ok}
+    {#if result.ok && result.url !== undefined}
       <a href={result.url} target="_blank" rel="noreferrer">{result.url}</a>
     {/if}
   </div>

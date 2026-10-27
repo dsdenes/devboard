@@ -426,9 +426,10 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   never collapses to icons only.
 - **Issue result line** (`.feedback-result` in `FeedbackOverlay.svelte`) — a fixed
   `surface-raised` line 40px above the status bar, centered, with 1px `border-strong`, 4px radius,
-  6px 8px padding, 12px text, and the issue URL as an `accent` link; `role="status"` on success
-  and `role="alert"` with `error` text on failure. It clears the notification region, which stays
-  in the lower-right corner.
+  6px 8px padding, 12px text, and, when the request produced one, the issue URL as an `accent`
+  link; `role="status"` on success and `role="alert"` with `error` text on failure. A proposed
+  goal's `Goal proposed: .devboard/goal-proposals/<file>.md` result carries no link. It clears the
+  notification region, which stays in the lower-right corner.
 - **Danger zone** (`.goal-danger`) — the destructive panel reuses the error pair: `error` border,
   `error-surface` header, `error` title, and a `Destructive` badge; the action inside stays the
   `destructive` button variant.
