@@ -250,7 +250,7 @@
         <div class="panel__body panel__body--flush">
           <ol class="issues-agent-summary" data-testid="issues-agent-summary">
             {#each agents as agent (agent.runId)}
-              <li>
+              <li class="issues-agent-summary__item">
                 <button
                   type="button"
                   class="issues-agent-row"
@@ -270,6 +270,18 @@
                     <span class="issues-agent-row__elapsed mono">{elapsedShort(agent.startedAt)}</span>
                   </span>
                 </button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  data-testid="issues-close-issue"
+                  data-issue={agent.issueNumber}
+                  title={`Close issue #${agent.issueNumber} as not planned`}
+                  aria-label={`Close issue #${agent.issueNumber}`}
+                  disabled={!issues.canClose(agent.issueNumber)}
+                  onclick={() => issues.closeIssue(agent.issueNumber)}
+                >
+                  Close
+                </Button>
               </li>
             {:else}
               <li class="issues-agent-summary__empty muted">No issue is running.</li>

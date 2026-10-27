@@ -4370,6 +4370,30 @@ try {
     switched,
   );
 
+  const closeControls = await page.eval<
+    Array<{ issue: string; label: string; title: string; disabled: boolean }>
+  >(`[...document.querySelectorAll('[data-testid="issues-close-issue"]')].map((button) => ({
+    issue: button.getAttribute("data-issue") ?? "",
+    label: button.getAttribute("aria-label") ?? "",
+    title: button.getAttribute("title") ?? "",
+    disabled: button.disabled === true,
+  }))`);
+  check(
+    closeControls.map((control) => control.issue).join(",") === "17,18,19",
+    "the running-agent rows lack a close control for every agent",
+    closeControls,
+  );
+  check(
+    closeControls.every(
+      (control) =>
+        control.label === `Close issue #${control.issue}` &&
+        control.title.includes("not planned") &&
+        !control.disabled,
+    ),
+    "a close control is mislabeled or disabled",
+    closeControls,
+  );
+
   // The sidebar lists Agents directly after Overview and counts the fleet.
   const agentsEntry = await page.eval<{
     label: string;
