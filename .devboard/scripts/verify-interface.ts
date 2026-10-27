@@ -414,7 +414,12 @@ async function writeFixture(root: string): Promise<string> {
     join(host, "node_modules", "typescript", "package.json"),
     `${JSON.stringify({ name: "typescript", repository: "git+https://github.com/microsoft/TypeScript.git" }, null, 2)}\n`,
   );
+  await mkdir(join(host, "src", "checkout"), { recursive: true });
   await writeFile(join(host, "src", "order.ts"), "export const orderTotal = (total: number): number => total;\n");
+  await writeFile(
+    join(host, "src", "checkout", "flow.ts"),
+    'export { orderTotal } from "../order";\n',
+  );
   await writeFile(
     join(host, "test", "order.test.ts"),
     'import { test, expect } from "bun:test";\ntest("order total", () => expect(1).toBe(1));\n',
@@ -2357,6 +2362,25 @@ try {
       sidebarFreshness: document.querySelector('[data-testid="sidebar"] section[aria-label="Freshness"]') !== null,
     };
   })()`);
+  await page.wait(
+    `document.querySelector('[data-testid="discover-dependency-diagram"] svg') !== null`,
+    "the dependency diagram",
+  );
+  const dependencyDiagram = await page.eval<{ nodes: number; edges: number; text: string }>(`(() => {
+    const root = document.querySelector('[data-testid="discover-dependency-diagram"]');
+    return {
+      nodes: root === null ? 0 : root.querySelectorAll('g.node').length,
+      edges: root === null ? 0 : root.querySelectorAll('path.flowchart-link, g.edgePath').length,
+      text: root?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+    };
+  })()`);
+  check(dependencyDiagram.nodes >= 2, "the dependency diagram does not draw every bounded context", dependencyDiagram);
+  check(dependencyDiagram.edges >= 1, "the dependency diagram draws no recorded edge", dependencyDiagram);
+  check(
+    dependencyDiagram.text.includes("Checkout") && dependencyDiagram.text.includes("Orders"),
+    "the dependency diagram does not label its contexts",
+    dependencyDiagram,
+  );
   check(discoverTables.cards >= 5, "Discover sections are missing from the overview", discoverTables);
   check(discoverTables.commands > 0, "the Discover command table is empty", discoverTables);
   check(discoverTables.commandText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover command row renders no values", discoverTables.commandText);
@@ -4279,7 +4303,7 @@ try {
     return {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
       link: link?.getAttribute("data-command") ?? "",
-      summaryIssues: [...(summary?.querySelectorAll("button[data-run]") ?? [])].map(
+      summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
       ),
       sideBeforeOutput: side !== null && output !== null && side.nextElementSibling === output,

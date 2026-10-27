@@ -2121,6 +2121,33 @@ a.code-chip--link:focus-visible {
   margin: 10px 0 0;
 }
 
+.discover-diagram {
+  min-height: 96px;
+  overflow: visible;
+  width: 100%;
+}
+
+.discover-diagram svg {
+  display: block;
+  height: auto;
+  margin: 0 auto;
+  max-width: 100%;
+}
+
+.discover-diagram .node rect,
+.discover-diagram .node polygon,
+.discover-diagram .node circle {
+  stroke-width: 1px;
+}
+
+.discover-diagram .edgePath .path {
+  stroke-width: 1.25px;
+}
+
+.discover-diagram text {
+  fill: var(--foreground);
+}
+
 .discover-empty__body {
   align-items: start;
   display: grid;
@@ -2754,14 +2781,41 @@ a.code-chip--link:focus-visible {
 
 .issues-activity {
   margin: 0;
-  padding: 10px 12px;
+  padding: 8px 10px;
   overflow: auto;
-  background: var(--surface-raised);
-  border-top: 1px solid var(--border);
-  font-size: 11.5px;
-  line-height: 1.5;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  tab-size: 2;
+  overscroll-behavior: contain;
+}
+
+.issues-activity__line[data-kind="command"] {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--accent-surface);
+  color: var(--foreground);
+  font-weight: 500;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.issues-activity__prompt {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.issues-activity__empty {
+  color: var(--muted-foreground);
+}
+
+.panel > .issues-activity {
+  border: 0;
+  border-radius: 0;
 }
 
 .issues-activity-panel {
@@ -2923,6 +2977,9 @@ a.code-chip--link:focus-visible {
 
 .issues-agent > .issues-activity {
   max-height: 220px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
 }
 
 .issues-agents-page {

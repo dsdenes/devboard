@@ -1004,6 +1004,12 @@ function discoverSheet(): Record<string, unknown> {
         ? discoverLeaf(
             [
               {
+                name: "Checkout",
+                path: "src/checkout",
+                responsibility: "Turns a cart into a placed order.",
+                entryPoints: ["src/checkout/flow.ts"],
+              },
+              {
                 name: "Orders",
                 path: "src",
                 responsibility: "Owns order records and order totals.",
@@ -1013,6 +1019,9 @@ function discoverSheet(): Record<string, unknown> {
             ["src"],
             "observed",
           )
+        : discoverUnknown("No source directory was found in the crawled files."),
+      dependencies: paths.hasSource
+        ? discoverLeaf([{ from: "Checkout", to: "Orders" }], ["src"], "observed")
         : discoverUnknown("No source directory was found in the crawled files."),
       dependencyDirection: paths.hasSource
         ? discoverLeaf(
