@@ -1489,8 +1489,9 @@ reloading the dashboard never starts a worker: only `data-testid="scout-start"` 
 shows
 `data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`),
 `data-testid="scout-activity"` for the current or newest scan, `data-testid="scout-error"` for the
-last error, `data-testid="scout-shortfall"` while fewer than nine are staged, and
-`data-testid="scout-empty"` with the next action when nothing is staged.
+last error, and `data-testid="scout-shortfall"` while fewer than nine are staged. The staging
+board renders only while at least one recommendation is staged; a page with nothing staged shows
+no board and no placeholder text.
 `data-testid="scout-stop"` appears only while a worker is attached, and
 `data-testid="scout-scan-now"` clears a pending retry and starts one scan; while a scan runs or the
 board already holds nine it is refused with a notice.

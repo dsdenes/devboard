@@ -124,97 +124,91 @@
       >{activityText}</pre>
   </section>
 
-  <section class="scout-board" aria-label="Staged recommendations">
-    {#each scout.staged as item (item.id)}
-      <article
-        class="panel scout-widget"
-        data-testid="scout-widget"
-        data-id={item.id}
-        data-category={item.category}
-      >
-        <div class="panel__header">
-          <h2 class="panel__title">{item.title}</h2>
-          <span class="badge" data-tone="accent">{item.category}</span>
-        </div>
-        <div class="panel__body stack-sm">
-          <p class="scout-widget__summary">{item.summary}</p>
-          <p class="scout-widget__impact">
-            <strong>Impact.</strong>
-            {item.impact.length === 0 ? "Not stated." : item.impact}
-          </p>
-          <div class="scout-widget__section">
-            <h3>Evidence</h3>
-            <ul class="scout-widget__list">
-              {#each item.evidence as entry (entry.path + entry.lines)}
-                <li>
-                  <code class="mono">{entry.path}:{entry.lines}</code>
-                  {#if entry.quote}
-                    <q class="scout-widget__quote">{entry.quote}</q>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
+  {#if scout.staged.length > 0}
+    <section class="scout-board" aria-label="Staged recommendations">
+      {#each scout.staged as item (item.id)}
+        <article
+          class="panel scout-widget"
+          data-testid="scout-widget"
+          data-id={item.id}
+          data-category={item.category}
+        >
+          <div class="panel__header">
+            <h2 class="panel__title">{item.title}</h2>
+            <span class="badge" data-tone="accent">{item.category}</span>
           </div>
-          <div class="scout-widget__section">
-            <h3>Proposed change</h3>
-            <p>{item.proposedChange}</p>
+          <div class="panel__body stack-sm">
+            <p class="scout-widget__summary">{item.summary}</p>
+            <p class="scout-widget__impact">
+              <strong>Impact.</strong>
+              {item.impact.length === 0 ? "Not stated." : item.impact}
+            </p>
+            <div class="scout-widget__section">
+              <h3>Evidence</h3>
+              <ul class="scout-widget__list">
+                {#each item.evidence as entry (entry.path + entry.lines)}
+                  <li>
+                    <code class="mono">{entry.path}:{entry.lines}</code>
+                    {#if entry.quote}
+                      <q class="scout-widget__quote">{entry.quote}</q>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+            <div class="scout-widget__section">
+              <h3>Proposed change</h3>
+              <p>{item.proposedChange}</p>
+            </div>
+            <div class="scout-widget__section">
+              <h3>Files</h3>
+              <ul class="scout-widget__list">
+                {#each item.files as file (file)}
+                  <li><code class="mono">{file}</code></li>
+                {/each}
+              </ul>
+            </div>
+            <div class="scout-widget__section">
+              <h3>Acceptance criteria</h3>
+              <ul class="scout-widget__list">
+                {#each item.acceptanceCriteria as criterion (criterion)}
+                  <li>{criterion}</li>
+                {/each}
+              </ul>
+            </div>
+            <p class="muted scout-widget__staged mono">Staged {item.stagedAt}</p>
+            <div class="toolbar">
+              <Button
+                variant="default"
+                data-testid="scout-approve"
+                data-command={`issues.scout.approve.${item.id}`}
+                disabled={scout.inFlight(item.id)}
+                onclick={() => scout.approve(item.id)}
+              >
+                Approve
+              </Button>
+              <Button
+                variant="outline"
+                data-testid="scout-draft-goal"
+                data-command={`issues.scout.draft-goal.${item.id}`}
+                disabled={scout.inFlight(item.id)}
+                onclick={() => scout.draftGoal(item.id)}
+              >
+                Draft goal
+              </Button>
+              <Button
+                variant="destructive"
+                data-testid="scout-reject"
+                data-command={`issues.scout.reject.${item.id}`}
+                disabled={scout.inFlight(item.id)}
+                onclick={() => scout.reject(item.id)}
+              >
+                Reject
+              </Button>
+            </div>
           </div>
-          <div class="scout-widget__section">
-            <h3>Files</h3>
-            <ul class="scout-widget__list">
-              {#each item.files as file (file)}
-                <li><code class="mono">{file}</code></li>
-              {/each}
-            </ul>
-          </div>
-          <div class="scout-widget__section">
-            <h3>Acceptance criteria</h3>
-            <ul class="scout-widget__list">
-              {#each item.acceptanceCriteria as criterion (criterion)}
-                <li>{criterion}</li>
-              {/each}
-            </ul>
-          </div>
-          <p class="muted scout-widget__staged mono">Staged {item.stagedAt}</p>
-          <div class="toolbar">
-            <Button
-              variant="default"
-              data-testid="scout-approve"
-              data-command={`issues.scout.approve.${item.id}`}
-              disabled={scout.inFlight(item.id)}
-              onclick={() => scout.approve(item.id)}
-            >
-              Approve
-            </Button>
-            <Button
-              variant="outline"
-              data-testid="scout-draft-goal"
-              data-command={`issues.scout.draft-goal.${item.id}`}
-              disabled={scout.inFlight(item.id)}
-              onclick={() => scout.draftGoal(item.id)}
-            >
-              Draft goal
-            </Button>
-            <Button
-              variant="destructive"
-              data-testid="scout-reject"
-              data-command={`issues.scout.reject.${item.id}`}
-              disabled={scout.inFlight(item.id)}
-              onclick={() => scout.reject(item.id)}
-            >
-              Reject
-            </Button>
-          </div>
-        </div>
-      </article>
-    {:else}
-      <div class="panel scout-empty" data-testid="scout-empty">
-        <p>
-          {scout.attached
-            ? "Nothing is staged. Scan now starts one scan."
-            : "Nothing is staged. Start Auto Scout to survey the repository."}
-        </p>
-      </div>
-    {/each}
-  </section>
+        </article>
+      {/each}
+    </section>
+  {/if}
 </section>
