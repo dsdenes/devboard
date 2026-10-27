@@ -418,6 +418,17 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   while the agent is waiting on a question. Rows are 28px tall with 6px 10px padding, separated by
   a `border-subtle` rule; hover takes `secondary`. The per-row state word is omitted because the
   panel is the running list, so color never repeats the header.
+- **Agent fleet card** (`.issues-agent`) — one card per running agent in the Agents page grid: a
+  360px-minimum `surface` card with 1px `border`, 4px radius, 10px padding, and an 8px internal
+  rhythm. Its head holds the mono `accent` issue-number link to the tracker and one outline
+  `Focus` control, both on a 28px line. The title reserves exactly two lines at 13px/600 so the
+  meta row aligns across a row of cards. The meta row carries the elapsed time and the absolute
+  start clock in `mono-small`, muted, tabular figures. A labeled `Latest activity` `overline`
+  sits above the shared `.issues-activity` block, which fills the remaining card body and follows
+  the newest line. A card waiting on a question takes a `warning` border, and its question block
+  takes a 2px `warning` left edge on `warning-surface`; it carries no `running` or `needs answer`
+  pill because the page header counts the fleet and the question text names the state. Grid rows
+  stretch and the activity absorbs the slack, so cards in one row share a height.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The four `role="tab"` controls sit in a `role="tablist"`
   group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px

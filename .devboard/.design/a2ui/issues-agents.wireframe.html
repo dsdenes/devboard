@@ -3,157 +3,137 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wireframe — Issues / Agents</title>
+<title>Wireframe — Issues Agents fleet page</title>
+
 <style>
-  :root { color-scheme: light; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: #f4f4f4;
-    color: #222;
-    font: 14px/1.45 system-ui, sans-serif;
-  }
-  main { max-width: 1200px; margin: 0 auto; padding: 24px; }
-  header.region {
-    border: 1px solid #999;
-    background: #fff;
-    padding: 12px;
-    position: relative;
-  }
-  .annotation {
-    display: block;
-    color: #666;
-    font: 10px/1.2 ui-monospace, monospace;
-    margin-bottom: 6px;
-    text-transform: uppercase;
-  }
-  .eyebrow { color: #666; font-size: 10px; letter-spacing: .08em; }
-  h1 { font-size: 20px; margin: 2px 0; }
-  .repo { color: #666; font: 12px ui-monospace, monospace; }
-  .meta { display: flex; gap: 12px; margin-top: 6px; }
-  .pill {
-    border: 1px solid #888;
-    border-radius: 999px;
-    font-size: 10px;
-    padding: 2px 6px;
-  }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 12px;
-    margin-top: 12px;
-  }
-  article.card {
-    border: 1px solid #999;
-    background: #fff;
-    padding: 10px;
-    min-width: 0;
-    position: relative;
-  }
-  article.card[data-state="question"] { border-color: #555; border-left: 4px solid #555; }
-  .card-top {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    justify-content: space-between;
-  }
-  .card-id { display: flex; gap: 6px; min-width: 0; }
-  .issue { font: 12px ui-monospace, monospace; white-space: nowrap; }
-  .title {
-    font-weight: 600;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow: hidden;
-  }
-  .status { border: 1px solid #888; border-radius: 999px; font-size: 10px; padding: 2px 6px; }
-  .focus { border: 1px solid #888; background: #fff; border-radius: 4px; height: 28px; padding: 0 10px; }
-  .elapsed { color: #555; font-size: 12px; margin-top: 6px; }
-  .log {
-    border: 1px solid #ccc;
-    background: #fafafa;
-    margin-top: 8px;
-    height: 96px;
-    overflow: auto;
-    padding: 6px 8px;
-    font: 11.5px/1.4 ui-monospace, monospace;
-    color: #444;
-  }
-  .question { border-top: 1px solid #aaa; margin-top: 8px; padding-top: 8px; }
-  .question p { margin: 0 0 6px; font-weight: 600; }
-  .choices { display: flex; flex-wrap: wrap; gap: 6px; }
-  .empty {
-    border: 1px dashed #999;
-    background: #fff;
-    padding: 16px;
-    margin-top: 12px;
-    text-align: center;
-  }
-  .empty h2 { font-size: 16px; margin: 0 0 4px; }
-  .empty p { color: #555; margin: 0 0 8px; }
-  @media (max-width: 760px) {
-    main { padding: 12px; }
-    .grid { grid-template-columns: 1fr; }
-    .card-top { flex-wrap: wrap; }
-  }
+  :root { --ink:#2b2b2b; --muted:#6b6b6b; --line:#c9c9c9; --fill:#f4f4f4; --paper:#fdfdfd; --ann:#5a6b7a; --warn:#8a6d1f; --warn-fill:#faf5e6; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; font-size:13px; line-height:1.45; }
+  .wf { max-width:1180px; margin:0 auto; padding:16px; }
+  .wf-title { font-size:15px; font-weight:700; margin:0 0 2px; }
+  .wf-note { color:var(--muted); font-size:11px; margin:0 0 16px; }
+  .wf-ann { color:var(--ann); font-size:9px; font-weight:700; letter-spacing:.06em;
+    text-transform:uppercase; display:block; margin:0 0 4px; }
+  .shell { display:grid; grid-template-columns:64px minmax(0,1fr); border:1px solid var(--line); }
+  .rail { border-right:1px solid var(--line); background:var(--fill); padding:8px 6px; display:flex; flex-direction:column; gap:4px; }
+  .rail button { height:44px; border:1px solid var(--line); background:var(--paper); font:inherit; font-size:10px; }
+  .rail button[aria-current="true"] { border-color:var(--ink); font-weight:700; }
+  .workspace { padding:12px; display:flex; flex-direction:column; gap:12px; }
+  .page-head { display:flex; justify-content:space-between; gap:12px; }
+  .eyebrow { color:var(--muted); font-size:10px; margin:0; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+  h1 { font-size:20px; margin:2px 0; }
+  .repo { color:var(--muted); font-size:11px; margin:0; }
+  .counts { display:flex; gap:8px; align-items:flex-start; }
+  .badge { border:1px solid var(--line); border-radius:999px; padding:1px 7px; font-size:10px; font-weight:600; white-space:nowrap; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:12px; align-items:stretch; }
+  .card { border:1px solid var(--line); border-radius:3px; background:var(--paper); padding:10px;
+    display:flex; flex-direction:column; gap:8px; min-width:0; }
+  .card.is-asked { border-color:var(--warn); }
+  .card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .num { color:var(--ink); font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; font-weight:600; }
+  .focus { border:1px solid var(--line); background:transparent; border-radius:3px; padding:3px 10px; font:inherit; font-size:11px; }
+  .title { margin:0; font-size:13px; font-weight:600; min-height:2.9em; overflow:hidden; }
+  .meta { margin:0; color:var(--muted); font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; }
+  .activity { display:flex; flex-direction:column; gap:4px; flex:1; }
+  .activity .wf-ann { margin:0; }
+  .log { border:1px solid var(--line); border-radius:3px; background:var(--fill); padding:6px 8px;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; white-space:pre-wrap; overflow:auto;
+    flex:1; min-height:58px; margin:0; }
+  .question { border:1px solid var(--warn); background:var(--warn-fill); border-radius:3px; padding:8px;
+    display:flex; flex-direction:column; gap:6px; }
+  .question p { margin:0; font-size:12px; }
+  .option { border:1px solid var(--line); border-radius:3px; background:var(--paper); padding:4px 8px; font-size:11px; }
+  .answer { display:flex; gap:6px; }
+  .field { flex:1; border:1px solid var(--line); border-radius:3px; padding:3px 8px; color:var(--muted); font-size:11px; }
+  .submit { border:1px solid var(--ink); border-radius:3px; background:var(--fill); padding:3px 10px; font:inherit; font-size:11px; }
+  .status { border-top:1px solid var(--line); background:var(--fill); padding:4px 8px; font-size:10px; color:var(--muted); }
+  .notes { margin-top:16px; display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; }
+  .note { border:1px solid var(--line); padding:8px 10px; font-size:11px; }
 </style>
 </head>
 <body>
-<main>
-  <header class="region">
-    <span class="annotation">region_header · P0/P1</span>
-    <div class="eyebrow">ISSUES</div>
-    <h1>Agents</h1>
-    <div class="repo">dsdenes/devboard</div>
-    <div class="meta">
-      <span class="pill">18 running · C11 P1</span>
-      <span class="pill">2 need answer · C12 P0</span>
+<div class="wf">
+  <h1 class="wf-title">Wireframe — Issues · Agents fleet page</h1>
+  <p class="wf-note">Grayscale structure only. No production components, tokens, brand colours, or
+    icons. The selected report (#240) is the whole page; the rail and status bar are context.</p>
+
+  <div class="shell">
+    <nav class="rail" aria-label="Mode rail">
+      <button type="button">Goal</button>
+      <button type="button" aria-current="true">Issues</button>
+      <button type="button">Flow</button>
+      <button type="button">Discover</button>
+    </nav>
+    <div class="workspace">
+      <header class="page-head">
+        <div>
+          <p class="eyebrow">Issues</p>
+          <h1>Agents</h1>
+          <p class="repo">owner/repo</p>
+        </div>
+        <div class="counts">
+          <span class="badge">3 running</span>
+          <span class="badge">3 need an answer</span>
+        </div>
+      </header>
+
+      <div class="grid">
+        <article class="card is-asked">
+          <div class="card-head"><span class="num">#225</span><button class="focus" type="button">Focus</button></div>
+          <h2 class="title">[ui] Redesign the running agents page so the fleet is scannable</h2>
+          <p class="meta">440m 10s elapsed · started 11:00:01</p>
+          <div class="activity">
+            <span class="wf-ann">Latest activity</span>
+            <pre class="log">Reading issue 225
+Implementing issue 225</pre>
+          </div>
+          <div class="question">
+            <p>Which scope should issue 225 take?</p>
+            <div class="option">The whole issue · Recommended · Every criterion</div>
+            <div class="answer"><span class="field">Your answer</span><button class="submit" type="button">Answer</button></div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-head"><span class="num">#226</span><button class="focus" type="button">Focus</button></div>
+          <h2 class="title">[ui] Remove the duplicated agent status badge</h2>
+          <p class="meta">12m 5s elapsed · started 18:13:57</p>
+          <div class="activity">
+            <span class="wf-ann">Latest activity</span>
+            <pre class="log">No activity yet.</pre>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-head"><span class="num">#227</span><button class="focus" type="button">Focus</button></div>
+          <h2 class="title">[ui] Keep the two-line title slot stable while the log grows</h2>
+          <p class="meta">2h 4m elapsed · started 16:21:02</p>
+          <div class="activity">
+            <span class="wf-ann">Latest activity</span>
+            <pre class="log">$ bun run verify:interface
+verify:interface: issues mode passed</pre>
+          </div>
+        </article>
+      </div>
+      <div class="status">Connected · host</div>
     </div>
-  </header>
+  </div>
 
-  <section class="grid" aria-label="Agent cards">
-    <article class="card" data-state="question">
-      <span class="annotation">card · P0</span>
-      <div class="card-top">
-        <div class="card-id">
-          <a class="issue" href="#">#240</a>
-          <span class="title">[ui] Redesign element: section.issues-agents-page · C2 P1</span>
-        </div>
-        <span class="status">running</span>
-        <button class="focus" type="button">Focus</button>
-      </div>
-      <div class="elapsed">5m 15s elapsed · started 15:49:35 (tooltip) · C6/C7</div>
-      <div class="log">agent activity stream, bounded 96px scroll · C8 P1</div>
-      <div class="question">
-        <span class="annotation">card_question · P0</span>
-        <p>Which scope should issue 240 take?</p>
-        <div class="choices">
-          <button type="button">The whole issue</button>
-          <button type="button">One criterion</button>
-        </div>
-      </div>
-    </article>
-
-    <article class="card">
-      <div class="card-top">
-        <div class="card-id">
-          <a class="issue" href="#">#239</a>
-          <span class="title">[ui] Put running agents to the left of the workspace</span>
-        </div>
-        <span class="status">running</span>
-        <button class="focus" type="button">Focus</button>
-      </div>
-      <div class="elapsed">2m 08s elapsed · started 15:52:35</div>
-      <div class="log">agent activity stream, bounded 96px scroll</div>
-    </article>
-  </section>
-
-  <section class="empty" aria-label="Empty state">
-    <span class="annotation">region_empty · P1</span>
-    <h2>No agents running</h2>
-    <p>Start the issues worker from Overview to see agents here.</p>
-    <button type="button">Open Overview</button>
-  </section>
-</main>
+  <div class="notes">
+    <div class="note"><span class="wf-ann">Identity</span>Mono issue number links to the tracker.
+      The title owns the width and reserves two lines, so every card's meta row aligns.</div>
+    <div class="note"><span class="wf-ann">State</span>The page header counts the fleet and the
+      waiting questions. A card carries no second `running` or `needs answer` pill.</div>
+    <div class="note"><span class="wf-ann">Evidence</span>`Latest activity` labels a monospace block
+      that follows the newest line and fills the card's remaining height.</div>
+    <div class="note"><span class="wf-ann">Action</span>`Focus` sits in the card head at the same
+      height across the row. Answering happens inline in the warning-surface question block.</div>
+    <div class="note"><span class="wf-ann">Height</span>Grid items stretch within a row; the
+      activity block absorbs a taller question neighbour instead of leaving a ragged card.</div>
+    <div class="note"><span class="wf-ann">Narrow</span>At 1024px the grid is one column; at the
+      2101px capture it is four. The card head never wraps its link and button apart.</div>
+  </div>
+</div>
 </body>
 </html>

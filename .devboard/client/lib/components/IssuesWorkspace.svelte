@@ -385,21 +385,15 @@
             aria-labelledby={`issues-agent-title-${agent.issueNumber}`}
           >
             <header class="issues-agent__head">
-              <div class="issues-agent__identity">
-                <a
-                  class="issues-agent__issue mono"
-                  href={issueUrl(agent.issueNumber)}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label={`Open issue #${agent.issueNumber}: ${title}`}
-                >
-                  #{agent.issueNumber}
-                </a>
-                <span class="badge" data-tone={statusTone(status)}>{status}</span>
-                {#if agent.question}
-                  <span class="badge" data-tone="warning">needs answer</span>
-                {/if}
-              </div>
+              <a
+                class="issues-agent__issue mono"
+                href={issueUrl(agent.issueNumber)}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Open issue #${agent.issueNumber}: ${title}`}
+              >
+                #{agent.issueNumber}
+              </a>
               <Button
                 variant="outline"
                 data-testid="issues-agent-open"
@@ -418,11 +412,14 @@
               <span aria-hidden="true">·</span>
               <span>started {startedClock(agent.startedAt)}</span>
             </p>
-            <IssuesAgentLog
-              lines={issues.activityFor(agent.runId)}
-              testid="issues-agent-activity"
-              runId={agent.runId}
-            />
+            <div class="issues-agent__activity">
+              <p class="issues-agent__activity-label">Latest activity</p>
+              <IssuesAgentLog
+                lines={issues.activityFor(agent.runId)}
+                testid="issues-agent-activity"
+                runId={agent.runId}
+              />
+            </div>
             {#if agent.question}
               <IssuesAgentQuestion
                 runId={agent.runId}

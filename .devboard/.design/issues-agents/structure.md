@@ -1,67 +1,84 @@
-# Structure — Issues / Agents
+# Issues — Agents fleet page structure
 
-## Regions and order
+## Region
 
-| A2UI ID | Region | Content | Journey / significance |
-|---|---|---|---|
-| `region_header` | Page header | eyebrow `Issues`, title `Agents`, repo subtitle, badges `N running` and `M need answer` | C10, C11, C12; scan |
-| `region_grid` | Fleet grid | one card per active agent, sorted by issue; scrolls inside the workspace | scan |
-| `card_identity` | Card header | linked `#N`, issue title (2-line clamp), status badge, Focus control | C1, C2, C4, C13 |
-| `card_meta` | Card meta line | elapsed time with exact start in its tooltip | C6, C7 |
-| `card_activity` | Card log | full activity stream in a 96px scroll surface, newest line followed | C8 |
-| `card_question` | Card question | question message, option buttons, free-text answer | C5 |
-| `region_empty` | Empty state | `No agents running`, instruction, `Open Overview` control | C14, C15 |
+The page keeps the existing frame: the Issues workspace scroller, a page header, and the fleet
+body. No sidebar, rail, status bar, or page-level container moves.
 
-Order: header, then grid (or empty state), no footer. Cards are two-up to four-up by available
-width, with `12px` gap, fixed maximum row content height, and `align-items: start` so a question
-card grows without stretching its neighbours.
+```
+section.issues-agents-page (scrolls)
+├─ PageHeader                                    (C13)
+│  ├─ eyebrow "Issues" · h1 "Agents" · repo
+│  └─ meta: "N running" accent badge · "N need an answer" warning badge   (C11/C12)
+├─ empty panel (only with zero agents)            (C14)
+└─ div.issues-agent-grid (auto-fill, 12px gap, stretch)
+   └─ article.issues-agent                        (one card per agent, issue order)
+      ├─ header.issues-agent__head
+      │  ├─ a.issues-agent__issue  "#225" mono accent link               (C1/C9, P0)
+      │  └─ Button "Focus" outline, right-aligned                        (C10, P1)
+      ├─ h2.issues-agent__title  2-line reserved slot, ellipsis           (C2, P0)
+      ├─ p.issues-agent__meta  "5m 12s elapsed · started 18:13:57"       (C6/C7, P1/P2)
+      ├─ div.issues-agent__activity                                      (C8, P1)
+      │  ├─ p overline "Latest activity"
+      │  └─ pre.issues-activity (fills the remaining card body)
+      └─ IssuesAgentQuestion (warning surface, only while waiting)       (C5, P0)
+```
 
-## Journey mapping
+## Order and hierarchy
 
-- Scan: `region_header` states the fleet size and how many need attention; `card_identity` and
-  `card_meta` make 18 cards comparable at one glance; `card_question` stands out on exactly the
-  blocked card.
-- Answer: `card_question` remains inside the card, so the answer does not lose context.
-- Inspect: `Focus` in `card_identity` opens the existing Focus tab; the card log is a preview, not
-  a second detail page.
-- Empty: `region_empty` explains that the worker is the next step and links to Overview.
+- Identity first: the mono issue number is the landmark, the title is the content. Both are in
+  the first third of the card, above any scrolling log.
+- The action lives in the card head, at the same height across the row so the operator can move
+  between cards without hunting.
+- The live evidence follows the identity: elapsed/start time, then the newest activity. Activity
+  is the only flexible region and fills a stretched card; it never pushes the question or the
+  head around.
+- The question block is last because it grows with its options. It is the only warning-tinted
+  area, and it owns the answer.
+- Cards keep issue order and are never re-sorted by attention. The header count plus the warning
+  surface make a blocked card visible during a left-to-right scan.
+- Grid: `repeat(auto-fill, minmax(360px, 1fr))` with 12px gaps. Rows are `max-content` and items
+  stretch, so every card in a row has the same height and activity absorbs the slack.
+- Cards are 1px `border`, 4px radius, `surface` fill, 10px padding, 8px internal rhythm. No
+  shadow, gradient, or large fill.
 
-## Significance mapping
+## States
 
-- P0: C1, C4, C5, C12, C13 on every card or in the header.
-- P1: C2, C6, C8, C11, C14 in the main flow.
-- P2: C10 in the header subtitle, C7 in the elapsed tooltip.
-- Dropped: C9.
+| State | Rendering |
+|---|---|
+| Default card | Issue link, title, elapsed/start, labeled activity, `Focus` |
+| Long title | Exactly two lines with ellipsis; full title in the `title` attribute and heading |
+| Short title | The slot reserves two lines so the meta line aligns with the other cards |
+| Waiting on a question | `warning` card border and the warning-surface question block; no extra pill |
+| Question answered | Question block disappears on the next state push; card border returns to `border` |
+| No activity | `No activity yet.` from the shared log component, inside the labeled region |
+| Many agents | The page scrolls; cards keep their anatomy and the header scrolls away with them |
+| No agents | Empty panel: `No agents running`, one sentence, `Open Overview` |
+| Malformed `startedAt` | The raw string renders in the elapsed and start slots; no invalid date |
+| Narrow card (360px) | Title, meta, and question wrap; the head keeps the link and `Focus` on one row |
+| Wide viewport (2101px) | Four cards per row; no horizontal overflow, no card wider than 1fr |
 
-## Primary action
+## Responsive priority
 
-One primary task: open the agent that needs attention. Every card exposes `Focus` as its only
-action; the question block's answer controls are the same journey's blocking sub-action. No filled
-`primary` control competes with them.
+- The supported floor is 1024×720. The grid auto-fills from 360px: one column at the 1024 floor,
+  two at 1440, four at 2101.
+- The title absorbs horizontal change first; the issue link and `Focus` never shrink.
+- The meta line wraps only after the title; activity fills vertical space instead of growing a
+  card beyond its row.
 
-## State coverage
+## Accessibility
 
-- Default: grid of active agents.
-- Loading: the existing issues socket owns loading; the page renders the last snapshot and the
-  header count. No skeleton (a new skeleton would be a second loading convention).
-- Empty: `No agents running` plus `Open Overview`.
-- Failed run: error-tone status badge and error edge; card stays readable.
-- Question: warning edge, `needs answer` badge, question block.
-- Long title: two-line clamp, full value in the tooltip.
-- Many agents: grid scrolls; header remains in the page frame.
-- Narrow viewport: 1024×720 floor; one column at ≤ 720px of workspace width, two at wider.
-- Errors are not owned by this page; the issues socket keeps the last snapshot. The header and
-  cards never claim a state they do not have.
+- Each card is a labeled `article` (`aria-labelledby` → its heading).
+- The issue number is a real link with an accessible name naming the issue and title; it opens a
+  new tab. `Focus` is a native button; the answer input and submit are native controls.
+- The warning surface always contains the question text, so colour is never the only signal.
+- Focus follows issue order: issue link, `Focus`, answer option, answer field, submit. The global
+  2px `ring` and 1px offset stay visible.
+- The activity block is a `<pre>` with real text; it is not the only source of the issue identity.
+- Header counts use words (`3 running`, `3 need an answer`), never colour alone.
 
-## Responsive order
+## Out of scope
 
-Cards keep identity → meta → activity → question at every width. Columns collapse from four to
-one; no region is reordered or hidden. The supported minimum is the app's 1024×720 viewport.
-
-## Rationale
-
-The current equal-height grid shrinks every card to 167px, so the status badge and activity are
-clipped below the card's own `overflow: hidden`. Making the card a content-sized column with a
-bounded log restores the information the page promises while keeping 18 cards scannable. A table
-would be denser, but the pending-question form and per-agent log belong together; a card keeps
-them in one place without a second detail surface.
+The sidebar, the page header copy and counts, the empty-state panel, the Overview output pane, and
+the agent focus page keep their current structure. No token, OpenUI entry, or Storybook story
+changes.
