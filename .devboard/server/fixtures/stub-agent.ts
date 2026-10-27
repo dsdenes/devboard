@@ -112,6 +112,10 @@ const discoverSheetAbsolute = process.argv.includes("--discover-sheet-absolute")
 const discoverSheetNoEvidence = process.argv.includes("--discover-sheet-no-evidence");
 const discoverSheetSecret = process.argv.includes("--discover-sheet-secret");
 const discoverSheetTwoSentences = process.argv.includes("--discover-sheet-two-sentences");
+/** Stages a level without `happyPath`, the shape an older prompt wrote. */
+const discoverSheetNoHappyPath = process.argv.includes("--discover-sheet-no-happy-path");
+/** Stages a happy-path count larger than the level's test count. */
+const discoverSheetHappyOverflow = process.argv.includes("--discover-sheet-happy-overflow");
 const discoverGlossaryInvalid = process.argv.includes("--discover-glossary-invalid");
 const discoverGlossaryGrounding = process.argv.includes("--discover-glossary-grounding");
 /** Omits a concept from the staged glossary, so a published one is preserved unscored. */
@@ -904,13 +908,22 @@ function discoverSheet(): Record<string, unknown> {
       levels: paths.hasTests
         ? discoverLeaf(
             [
-              {
-                level: "unit",
-                tests: "1",
-                paths: [paths.tests],
-                command: "bun test",
-                fixtures: [],
-              },
+              discoverSheetNoHappyPath
+                ? {
+                    level: "unit",
+                    tests: "1",
+                    paths: [paths.tests],
+                    command: "npm test",
+                    fixtures: [],
+                  }
+                : {
+                    level: "unit",
+                    tests: "1",
+                    happyPath: discoverSheetHappyOverflow ? "2" : "1",
+                    paths: [paths.tests],
+                    command: "npm run test:unit",
+                    fixtures: [],
+                  },
             ],
             [paths.tests],
             "observed",

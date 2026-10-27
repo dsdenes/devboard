@@ -1,14 +1,15 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { connection } from "./lib/connection.svelte";
-  import type { AskContext, AskTurn } from "./lib/types";
+  import type { AskContext, AskTurn, FeedbackPhase } from "./lib/types";
 
   /**
-   * Operator issue reporter. The floating button starts a selection mode that
+   * Operator issue reporter. The activity bar starts a selection mode that
    * highlights whatever is under the pointer; picking an element opens a
    * free-text panel anchored beside it. Sending posts the report and the
    * captured DOM context to the server, which files a GitHub issue for an
-   * implementation agent and returns its URL.
+   * implementation agent and returns its URL. The component owns the overlay
+   * and the phase; the shell owns the control that toggles it.
    *
    * The same panel answers questions: `Ask`, or Enter in the composer, sends
    * the question and the captured context over the WebSocket to a background
@@ -17,7 +18,7 @@
    * is open.
    */
 
-  type Phase = "idle" | "picking" | "composing" | "sending" | "failed";
+  type Phase = FeedbackPhase;
 
   type Rect = { top: number; left: number; width: number; height: number };
 
@@ -33,7 +34,7 @@
   const MAX_VIEWPORT = 500;
   const MAX_CAPTURED_AT = 100;
 
-  let phase = $state<Phase>("idle");
+  let { phase = $bindable("idle") }: { phase?: Phase } = $props();
   let target = $state<Element | null>(null);
   let selector = $state("");
   let marker = $state<Rect | null>(null);
@@ -125,7 +126,13 @@
   }
 
   function ownOverlay(node: Element | null): boolean {
-    return node !== null && node.closest("[data-feedback-overlay]") !== null;
+    if (node === null) return false;
+    // The overlay's own parts, and the activity-bar control that toggles it:
+    // clicking that control while picking must cancel, never select it.
+    return (
+      node.closest("[data-feedback-overlay]") !== null ||
+      node.closest('[data-command="app.report"]') !== null
+    );
   }
 
   function elementAt(event: MouseEvent): Element | null {
@@ -314,7 +321,7 @@
     document.body.style.cursor = "crosshair";
   }
 
-  function toggle(): void {
+  export function toggleReport(): void {
     if (phase === "sending") return;
     if (phase === "idle") {
       startPicking();
@@ -549,57 +556,7 @@
   </div>
 {/if}
 
-<button
-  type="button"
-  class="feedback-button"
-  class:feedback-active={phase !== "idle"}
-  data-feedback-overlay
-  title={picking ? "Cancel element selection" : "Report an issue about a UI element"}
-  aria-pressed={picking ? "true" : "false"}
-  data-command="app.report"
-  disabled={sending}
-  onclick={toggle}
->
-  {#if picking}
-    Cancel selection
-  {:else if phase === "composing" || phase === "failed"}
-    Cancel report
-  {:else if sending}
-    Filing…
-  {:else}
-    Report UI issue
-  {/if}
-</button>
-
 <style>
-  .feedback-button {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    bottom: 2.2rem;
-    box-shadow: 0 2px 8px rgb(0 0 0 / 0.15);
-    color: var(--text);
-    cursor: pointer;
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    padding: 0.55rem 1rem;
-    position: fixed;
-    right: 1.25rem;
-    z-index: 2147483647;
-  }
-
-  .feedback-button:hover:not(:disabled),
-  .feedback-active {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .feedback-button:disabled {
-    cursor: progress;
-    opacity: 0.7;
-  }
-
   .feedback-marker {
     border: 2px solid var(--accent);
     border-radius: 3px;

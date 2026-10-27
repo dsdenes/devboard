@@ -143,7 +143,7 @@ Sections and required keys:
     "model": { "value": "direct|pull-request|git-flow", "evidence": ["git log"], "confidence": "inferred" }
   },
   "testing": {
-    "levels": { "value": [{ "level": "unit|integration|end-to-end|contract|other", "tests": "exact test count", "paths": ["path"], "command": "exact command or unknown", "fixtures": ["path"] }], "evidence": ["path"], "confidence": "observed" },
+    "levels": { "value": [{ "level": "unit|integration|end-to-end|contract|other", "tests": "exact test count", "happyPath": "exact happy-path test count", "paths": ["path"], "command": "declared command", "fixtures": ["path"] }], "evidence": ["path"], "confidence": "observed" },
     "pyramid": { "value": "short pyramid description", "evidence": ["path"], "confidence": "inferred" }
   },
   "architecture": {
@@ -213,6 +213,11 @@ Section rules:
   candidate is an alias, or the crawl cannot tell whether it is one, stage `tryOut` as `unknown`
   with a reason; never guess a try-out command from a test runner, a demo script name, or the
   ecosystem's habit.
+  Record the invocation a developer would type, not the program a script expands to. When
+  `package.json` declares `scripts.test`, `commands.test` is `npm test` and `evidence` names
+  `package.json`; when it declares a script for one level (`test:unit`, `test:contract`), that
+  level's `command` is `npm run <script>`. Only without a declared script does the command become
+  the program the manifest or CI file invokes.
 - `branching` reports the observed default branch and release branches, the observed or inferred
   merge method, and one of `direct`, `pull-request`, or `git-flow`, supported by git and CI
   evidence. A model the repository does not evidence is `value: null` with `confidence: unknown`
@@ -221,6 +226,13 @@ Section rules:
   paths, commands, fixtures, and the resulting pyramid. Count the test cases you can see statically
   in the test files; never run the suite. A level with evidence but no test case is `0`; a level
   with no evidence is omitted. Never write `unknown` as a count.
+  `happyPath` is the part of that level's count that exercises the primary success path — the
+  expected input reaching the expected outcome with no error or edge branch — judged from test
+  names, fixtures, and assertions. It is an exact count from `0` to `tests`, never a percentage
+  and never `unknown`. A level whose tests are all error, negative, or boundary cases records `0`.
+  `command` is the narrowest declared invocation that runs only that level, such as
+  `npm run test:unit`, `pytest tests/unit`, or `cargo test --test contract`; when the level has no
+  separate entry point, it is the whole-suite invocation.
 - `architecture` reports detected bounded contexts or modules with path and responsibility, entry
   points, allowed dependency direction, shared kernels, and `externalBoundaries`, which carries
   external systems only and never internal architecture. `ci` reports provider, triggers, jobs,

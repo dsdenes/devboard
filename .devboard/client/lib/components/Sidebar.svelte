@@ -286,7 +286,6 @@
           data-command="open.flow.overview"
           onclick={() => open("flow", "overview", "overview", "overview", "Overview")}
         >
-          <ChevronRight size={12} aria-hidden="true" />
           <span class="sidebar-item__label">Overview</span>
           {#if flow.goalDirty}
             <span class="badge" data-tone="warning">unsaved</span>
@@ -304,7 +303,6 @@
           data-command="open.flow.decisions"
           onclick={() => open("flow", "decisions", "decisions", "decisions", "Decision board")}
         >
-          <ChevronRight size={12} aria-hidden="true" />
           <span class="sidebar-item__label">Decision board</span>
           {#if flow.decisionsDirty}
             <span class="badge" data-tone="warning">unsaved</span>
@@ -317,7 +315,6 @@
           data-command="open.flow.steering"
           onclick={() => open("flow", "steering", "steering", "steering", "Steering")}
         >
-          <ChevronRight size={12} aria-hidden="true" />
           <span class="sidebar-item__label">Steering</span>
           <span class="sidebar-item__meta">{flow.steering.length}</span>
         </button>
@@ -328,7 +325,6 @@
           data-command="open.flow.history"
           onclick={() => open("flow", "history", "history", "history", "History")}
         >
-          <ChevronRight size={12} aria-hidden="true" />
           <span class="sidebar-item__label">History</span>
           <span class="sidebar-item__meta">{flow.history.length}</span>
         </button>

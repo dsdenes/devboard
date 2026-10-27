@@ -650,12 +650,17 @@ copies README prose, or records a configuration value; a claim it cannot ground 
 Main commands render as a two-column `Task`/`Command` table of the observed commands, `$`-prefixed,
 with no header row, under an `N of 8 commands found` count; no explanatory note follows the table.
 A `tryOut` command is listed only when it is a hands-on entry point that no other recorded command
-aliases. Testing shows the test and level totals and the whole-suite command
-(`data-testid="discover-suite-command"`), then a `Level`/`Tests` table
-(`data-testid="discover-pyramid"`). Only a level that carries a test is listed and counted; a
-recorded level with no test case is omitted, so a sheet cannot claim a second level while its table
-holds none. Every listed level states an exact test count, never `count unknown`. No pyramid
-graphic is drawn. Runtime,
+aliases. A command the host manifest declares as a script is shown as its invocation — `npm test`
+for `scripts.test`, `npm run <name>` for any other script — instead of the program the script
+expands to; the recorded program is the row's tooltip. Testing shows the test, level, and
+happy-path totals and the whole-suite command (`data-testid="discover-suite-command"`), then a
+`Level`/`Tests`/`Happy path`/`Command` table (`data-testid="discover-pyramid"`). Happy path is the
+part of a level's count that exercises the primary success path, recorded as an exact count from
+`0` to the level's total; the summary percentage appears only when every listed level reports one.
+`Command` is the narrowest declared invocation for that level. Only a level that carries a test is
+listed and counted; a recorded level with no test case is omitted, so a sheet cannot claim a
+second level while its table holds none. Every listed level states an exact test count, never
+`count unknown`. No pyramid graphic is drawn. Runtime,
 deployment, CI, and branching use compact `dt`/`dd` facts whose list values are comma-separated.
 Architecture renders under the heading `Bounded contexts` as a table headed `Bounded context` with
 path, responsibility, and entry points, followed by external-boundary and shared-kernel chips.
@@ -1248,10 +1253,11 @@ symlink are the only paths outside the repository.
 
 ## Report a UI issue
 
-Every page carries a `Report UI issue` button in the lower-right corner. Selecting it enters
-element-selection mode: the element under the pointer is outlined, and a click opens a report
-panel anchored beside it. `Esc` or `Cancel` leaves the mode, and a click in selection mode never
-activates the element. The panel shows the selected element's selector path; the report text is
+Every page carries a `Report UI issue` control in the activity bar's application actions, beside
+commands, notifications, and theme. Activating it enters element-selection mode: the element
+under the pointer is outlined, and a click opens a report panel anchored beside it. `Esc`, the
+control again, or `Cancel` leaves the mode, and a click in selection mode never activates the
+element. The panel shows the selected element's selector path; the report text is
 free-form. `File issue` posts the report with the route, URL, selector, visible text, DOM excerpt,
 viewport and capture time to `POST /api/feedback`, and the server files a GitHub issue through
 the operator's authenticated `gh` CLI, then returns its URL. A filed report returns to element

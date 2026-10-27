@@ -49,7 +49,12 @@ export interface RunQuestion {
 export interface SkillSummary {
   name: string;
   description: string;
+  /** The SKILL.md text; absent from an older server. */
+  content?: string;
 }
+
+/** The issue reporter's overlay phase, shared between the shell and the overlay. */
+export type FeedbackPhase = "idle" | "picking" | "composing" | "sending" | "failed";
 
 export interface SkillContradiction {
   skills: [string, string];
@@ -299,6 +304,8 @@ export interface DiscoverStatePayload {
   manifest: unknown;
   freshness: Freshness | null;
   sheet: Record<string, unknown> | null;
+  /** The manifest's invocations for the commands the sheet recorded. */
+  commandAliases?: Array<{ command: string; alias: string }>;
   dependencyRepositories: Record<string, string>;
   glossaries: Glossary[];
   glossaryUsage: GlossaryUsage;

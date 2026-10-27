@@ -2,6 +2,7 @@ import { connection } from "./connection.svelte";
 import { dependencyName } from "../../lib/dependencies.ts";
 import { notifications } from "./notifications.svelte";
 import {
+  commandAlias,
   conceptSignificance,
   conceptUsage,
   filterContexts,
@@ -167,9 +168,16 @@ export class DiscoverStore {
     });
   }
 
+  /** The invocation that runs the whole suite, preferring the manifest's own alias. */
   get testCommand(): string {
     const leaf = sectionLeaf(this.sheet?.commands, "test");
-    return leaf === undefined || leaf.confidence === "unknown" ? "" : scalarText(leaf.value);
+    if (leaf === undefined || leaf.confidence === "unknown") return "";
+    return this.aliasFor(scalarText(leaf.value));
+  }
+
+  /** The command to show for a recorded command: its declared alias when one exists. */
+  aliasFor(command: string): string {
+    return commandAlias(this.state?.commandAliases, command);
   }
 
   get startDisabled(): boolean {

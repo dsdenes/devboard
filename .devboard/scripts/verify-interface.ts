@@ -399,7 +399,7 @@ async function writeFixture(root: string): Promise<string> {
   await writeFile(join(host, "README.md"), "# Fixture\n\nA small fixture host for the interface check.\n");
   await writeFile(
     join(host, "package.json"),
-    `${JSON.stringify({ name: "interface-fixture", scripts: { build: "bun run build:src", test: "bun test" } }, null, 2)}\n`,
+    `${JSON.stringify({ name: "interface-fixture", scripts: { build: "bun run build:src", test: "bun test", "test:unit": "bun test" } }, null, 2)}\n`,
   );
   await mkdir(join(host, "node_modules", "typescript"), { recursive: true });
   await writeFile(
@@ -652,7 +652,7 @@ async function createRemoteSource(root: string): Promise<string> {
   await writeFile(join(source, "README.md"), "# Remote fixture\n\nA repository cloned for Discover.\n");
   await writeFile(
     join(source, "package.json"),
-    `${JSON.stringify({ name: "remote-fixture", scripts: { test: "bun test" } }, null, 2)}\n`,
+    `${JSON.stringify({ name: "remote-fixture", scripts: { test: "bun test", "test:unit": "bun test" } }, null, 2)}\n`,
   );
   await writeFile(join(source, "src", "catalog.ts"), "export const catalogSize = 3;\n");
   await writeFile(
@@ -1060,7 +1060,7 @@ try {
     check(entry.visible === visible, `${testid} does not render its visible label`, entry);
     check(entry.command === `view.mode.${testid.replace("mode-", "")}`, `${testid} lacks its command`, entry);
   }
-  const railLabels = await page.eval<Array<{ text: string; overflow: number; inside: boolean }>>(`(() => {
+  const railLabels = await page.eval<Array<{ text: string; overflow: number; inside: boolean; height: number; width: number }>>(`(() => {
     return [...document.querySelectorAll('[data-testid="activity-bar"] .activity-tab')].map((tab) => {
       const label = tab.querySelector('.activity-tab__label');
       const tabRect = tab.getBoundingClientRect();
@@ -1069,12 +1069,19 @@ try {
         text: label?.textContent?.trim() ?? "",
         overflow: label === null ? 1 : label.scrollWidth - label.clientWidth,
         inside: labelRect !== undefined && labelRect.left >= tabRect.left - 0.5 && labelRect.right <= tabRect.right + 0.5,
+        height: Math.round(tabRect.height),
+        width: Math.round(tabRect.width),
       };
     });
   })()`);
   check(
     railLabels.length === 3 && railLabels.every((label) => label.overflow <= 1 && label.inside),
     "a mode label overflows or leaves its tab",
+    railLabels,
+  );
+  check(
+    railLabels.every((label) => label.height === 52 && label.width === 64),
+    "a mode tab does not keep its padded 64×52 box",
     railLabels,
   );
 
@@ -1371,6 +1378,32 @@ try {
   const framesBeforeRow = await page.eval<number>("window.__viFrames.length");
   await page.click('[data-testid="record"]');
   await page.wait(`document.querySelector('[data-testid="record-file"]') !== null && !document.querySelector('[data-testid="adr-table"]')`, "the ADR detail tab");
+  const recordSurface = await page.eval<{
+    close: boolean;
+    status: string;
+    tone: string;
+    resolved: number;
+    nextFact: number;
+  }>(`(() => {
+    const header = document.querySelector('[data-testid="record-header"]');
+    const badges = [...(header?.querySelectorAll('.badge') ?? [])].map((badge) => badge.textContent?.trim() ?? "");
+    const status = document.querySelector('[data-testid="record-status"]');
+    const facts = [...document.querySelectorAll('[data-testid="record-meta"] dt')].map((term) => term.textContent?.trim() ?? "");
+    return {
+      close: document.querySelector('[data-testid="close-adrs"]') !== null,
+      status: status?.textContent?.trim() ?? "",
+      tone: status?.getAttribute("data-tone") ?? "",
+      resolved: badges.filter((text) => text === "Resolved" || text === "Pending").length,
+      nextFact: facts.filter((text) => text === "Next").length,
+    };
+  })()`);
+  check(!recordSurface.close, "the decision-records header still carries its own close button", recordSurface);
+  check(
+    recordSurface.status === "Accepted" && recordSurface.tone === "success" && recordSurface.resolved === 0,
+    "the record header repeats its status instead of coloring it",
+    recordSurface,
+  );
+  check(recordSurface.nextFact === 0, "the record facts still repeat the next marker", recordSurface);
   const framesAfterRow = await page.eval<number>("window.__viFrames.length");
   check(framesAfterRow === framesBeforeRow, "selecting a row sent a WebSocket frame", { framesBeforeRow, framesAfterRow });
   await runPalette("goal.adr.open.0001-shell-and-layout.md");
@@ -1406,10 +1439,34 @@ try {
     };
   })()`);
   check(goalSkillSurface.selected === clickedSkill && goalSkillSurface.current === "true", "clicking a prepared skill does not select it", { clickedSkill, goalSkillSurface });
+  const skillDocument = await page.eval<{ name: string; text: string }>(`(() => ({
+    name: document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() ?? "",
+    text: document.querySelector('[data-testid="skill-content-text"]')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    skillDocument.name === clickedSkill && skillDocument.text.length > 0,
+    "selecting a prepared skill does not open its document",
+    { clickedSkill, skillDocument },
+  );
 
   // 9. Goal editor: reset arm/cancel, dirty marker, save, unsaved survival, close prompt.
   await runPalette("open.goal.overview");
   await page.wait(`document.querySelector('[data-testid="reset-implementation"]') !== null`, "the reset control");
+  const dangerZone = await page.eval<{ tone: string; border: string; tint: string }>(`(() => {
+    const zone = document.querySelector('[data-testid="danger-zone"]');
+    const label = document.querySelector('[data-testid="danger-zone-label"]');
+    const header = zone?.querySelector('.panel__header');
+    return {
+      tone: label?.getAttribute("data-tone") ?? "",
+      border: zone === null || zone === undefined ? "" : getComputedStyle(zone).borderTopColor,
+      tint: header === null || header === undefined ? "" : getComputedStyle(header).backgroundColor,
+    };
+  })()`);
+  check(
+    dangerZone.tone === "error" && dangerZone.border !== dangerZone.tint,
+    "the danger zone is not colour-coded",
+    dangerZone,
+  );
   await page.click('[data-testid="reset-implementation"]');
   await page.wait(`document.querySelector('[data-testid="reset-confirmation"]') !== null`, "the reset confirmation");
   await page.click('[data-testid="cancel-reset"]');
@@ -1512,6 +1569,16 @@ try {
     flowSurfaces,
   );
   check(flowSurfaces.terminal, "the Flow activity is not rendered by xterm", flowSurfaces);
+  const flowMenu = await page.eval<{ items: number; icons: number }>(`(() => {
+    const group = document.querySelector('[data-testid="sidebar"] section[aria-label="Flow surfaces"]');
+    const items = [...(group?.querySelectorAll('button.sidebar-item') ?? [])];
+    return { items: items.length, icons: items.filter((item) => item.querySelector('svg') !== null).length };
+  })()`);
+  check(
+    flowMenu.items >= 4 && flowMenu.icons === 0,
+    "the Flow menu still carries decorative icons",
+    flowMenu,
+  );
   const terminalBuffer = await page.eval<string>(`window.__devboardTerminals.get("flow-activity")?.getBuffer() ?? "missing"`);
   check(terminalBuffer !== "missing", "the Flow terminal has no buffer", terminalBuffer);
   const flowData = await page.eval<{
@@ -1802,22 +1869,32 @@ try {
     stale: boolean;
     commit: boolean;
     railLeft: number;
+    railWidth: number;
     columnLeft: number;
     headers: string[];
     subtitle: string;
     rows: number;
     versions: boolean;
+    suite: string;
+    levelCommand: string;
+    happyPath: string;
   }>(`(() => {
     const head = document.querySelector('#workspace-discover .discover-head');
     const sheet = document.querySelector('[data-testid="discover-sheet"]');
     const rail = sheet?.querySelector('.discover-rail');
     const column = sheet?.querySelector('.discover-col');
     const testing = document.querySelector('#workspace-discover [data-field="testing"]');
+    const stats = [...(testing?.querySelectorAll('.discover-stat') ?? [])].map((stat) => ({
+      value: stat.querySelector('.discover-stat__value')?.textContent?.trim() ?? "",
+      label: stat.querySelector('.discover-stat__label')?.textContent?.trim() ?? "",
+    }));
+    const commandCell = testing?.querySelector('[data-testid="discover-pyramid"] tbody td.discover-mono');
     return {
       eyebrow: head?.querySelector('.discover-page__eyebrow') !== null,
       stale: document.querySelector('[data-testid="discover-stale"]') !== null,
       commit: head?.querySelector('.discover-head__meta code') !== null,
       railLeft: Math.round(rail?.getBoundingClientRect().left ?? -1),
+      railWidth: Math.round(rail?.getBoundingClientRect().width ?? -1),
       columnLeft: Math.round(column?.getBoundingClientRect().left ?? -1),
       headers: [...document.querySelectorAll('[data-testid="discover-pyramid"] thead th')]
         .map((header) => header.textContent.trim()),
@@ -1825,14 +1902,37 @@ try {
       rows: document.querySelectorAll('[data-testid="discover-pyramid"] tbody tr').length,
       versions: [...document.querySelectorAll('#workspace-discover [data-field="runtime"] dt')]
         .some((term) => term.textContent.trim() === "Versions"),
+      suite: testing?.querySelector('[data-testid="discover-suite-command"] code')?.textContent?.trim() ?? "",
+      levelCommand: commandCell?.textContent?.trim() ?? "",
+      happyPath: stats.find((stat) => stat.label === "happy path")?.value ?? "",
     };
   })()`);
   check(!discoverChrome.eyebrow && !discoverChrome.stale && !discoverChrome.commit, "the sheet still renders removed masthead chrome", discoverChrome);
   check(discoverChrome.railLeft < discoverChrome.columnLeft, "the sheet column is not to the right of the facts rail", discoverChrome);
   check(
-    discoverChrome.headers.join("|") === "Level|Tests",
-    "the test level table still renders a paths column",
+    discoverChrome.railWidth >= 260,
+    "the Discover facts rail is narrower than its approved track",
+    discoverChrome,
+  );
+  check(
+    discoverChrome.headers.join("|") === "Level|Tests|Happy path|Command",
+    "the test level table does not carry its happy-path and command columns",
     discoverChrome.headers,
+  );
+  check(
+    discoverChrome.suite === "npm test",
+    "the whole-suite line does not show the manifest's own invocation",
+    discoverChrome,
+  );
+  check(
+    discoverChrome.levelCommand === "$ npm run test:unit",
+    "a test level does not show the declared command that runs it",
+    discoverChrome,
+  );
+  check(
+    discoverChrome.happyPath === "100%",
+    "the testing summary does not carry the happy-path share",
+    discoverChrome,
   );
   check(
     discoverChrome.subtitle.startsWith(`${discoverChrome.rows} level`) &&
@@ -2545,6 +2645,22 @@ try {
   );
   const resolvedAdrSidebar = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="ADR records"]') !== null`);
   check(!resolvedAdrSidebar, "the sidebar still shows resolved ADR records");
+
+  // 14. The issue reporter lives in the activity bar and toggles itself.
+  await page.click('[data-testid="activity-report"]');
+  await page.wait(
+    `document.querySelector('.feedback-hint') !== null`,
+    "the activity-bar report control picking mode",
+  );
+  const reportActive = await page.eval<boolean>(
+    `document.querySelector('[data-testid="activity-report"]')?.getAttribute("aria-pressed") === "true"`,
+  );
+  check(reportActive, "the activity-bar report control does not show its active state");
+  await page.click('[data-testid="activity-report"]');
+  await page.wait(
+    `document.querySelector('.feedback-hint') === null`,
+    "the activity-bar report control to cancel",
+  );
 
   // 14. The issue reporter opens and cancels with Escape.
   await runPalette("app.report");

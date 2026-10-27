@@ -6,6 +6,7 @@
     implementedTiers,
     isLeaf,
     leafLines,
+    pyramidHappyPathCount,
     pyramidTiers,
     pyramidTestCount,
     recordItems,
@@ -33,6 +34,8 @@
   const LEVEL_COLUMNS = [
     { id: "level", header: "Level", accessorKey: "level" },
     { id: "tests", header: "Tests", accessorKey: "tests" },
+    { id: "happyPath", header: "Happy path", accessorKey: "happyPath" },
+    { id: "command", header: "Command", accessorKey: "command" },
   ];
   const BOUNDARY_GROUPS = [
     { key: "sharedKernels", label: "Shared kernels", kind: "chips" },
@@ -77,6 +80,10 @@
       : null,
   );
   const commandRows = $derived(commandRowsOf(commandsSection, discover.testCommand));
+  const recordedTestCommand = $derived.by(() => {
+    const leaf = sectionLeaf(commandsSection, "test");
+    return leaf === undefined || leaf.confidence === "unknown" ? "" : scalarText(leaf.value);
+  });
 
   const testingSection = $derived(
     typeof sheet?.testing === "object" && sheet.testing !== null ? sheet.testing : null,
@@ -85,13 +92,18 @@
   const recordedTiers = $derived(pyramidTiers(levels));
   const tiers = $derived(implementedTiers(recordedTiers));
   const testTotal = $derived(pyramidTestCount(tiers));
+  const happyPath = $derived(pyramidHappyPathCount(tiers));
   const levelRows = $derived(
     tiers.map((tier) => {
       const parsed = Number.parseInt(tier.tests, 10);
       const tests = Number.isFinite(parsed) ? parsed : 0;
+      const parsedHappy = Number.parseInt(tier.happyPath, 10);
+      const happyLabel = Number.isFinite(parsedHappy) ? `${parsedHappy}` : "—";
       return {
         level: humanize(tier.level),
         tests: `${tests} ${tests === 1 ? "test" : "tests"}`,
+        happyPath: happyLabel,
+        command: tier.command.length > 0 ? `$ ${discover.aliasFor(tier.command)}` : "—",
         rawLevel: tier.level,
       };
     }),
@@ -202,13 +214,14 @@
     const rows: Array<Record<string, unknown>> = [];
     for (const [key, leaf] of Object.entries(section)) {
       if (!isLeaf(leaf) || leaf.confidence === "unknown") continue;
-      if (key === "tryOut" && testCommand.length > 0 && scalarText(leaf.value) === testCommand) {
+      const command = discover.aliasFor(scalarText(leaf.value));
+      if (key === "tryOut" && testCommand.length > 0 && command === testCommand) {
         continue;
       }
       rows.push({
         key,
         label: COMMAND_LABELS[key] ?? humanize(key),
-        value: `$ ${scalarText(leaf.value)}`,
+        value: `$ ${command}`,
       });
     }
     return rows;
@@ -605,11 +618,21 @@
                         {tiers.length === 1 ? "level" : "levels"}
                       </span>
                     </div>
+                    {#if happyPath !== null}
+                      <div class="discover-stat">
+                        <span class="discover-stat__value">
+                          {Math.round((happyPath.happy / happyPath.tests) * 100)}%
+                        </span>
+                        <span class="discover-stat__label">happy path</span>
+                      </div>
+                    {/if}
                   </div>
                   {#if discover.testCommand.length > 0}
                     <div class="discover-command-line" data-testid="discover-suite-command">
                       <span class="muted">Whole suite</span>
-                      <code>{discover.testCommand}</code>
+                      <code title={recordedTestCommand === discover.testCommand
+                        ? undefined
+                        : recordedTestCommand}>{discover.testCommand}</code>
                     </div>
                   {/if}
                 </div>
@@ -619,6 +642,8 @@
                   rows={levelRows}
                   rowAttrs={(row) => ({ "data-level": String(row.rawLevel ?? "") })}
                   cellValue={(row, columnId) => String(row[columnId] ?? "")}
+                  cellAttrs={(_row, columnId) =>
+                    columnId === "command" ? { class: "discover-mono" } : {}}
                   full
                   wrap
                 />

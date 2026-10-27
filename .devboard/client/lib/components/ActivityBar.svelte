@@ -2,6 +2,7 @@
   import { Tooltip } from "bits-ui";
   import Bell from "lucide-svelte/icons/bell";
   import Compass from "lucide-svelte/icons/compass";
+  import Flag from "lucide-svelte/icons/flag";
   import Moon from "lucide-svelte/icons/moon";
   import Search from "lucide-svelte/icons/search";
   import Sun from "lucide-svelte/icons/sun";
@@ -12,13 +13,16 @@
   import { goal } from "../goal.svelte";
   import { layout } from "../layout.svelte";
   import { notifications } from "../notifications.svelte";
+  import type { FeedbackPhase } from "../types";
   import IconButton from "./ui/icon-button.svelte";
 
   interface Props {
     onopenpalette: () => void;
+    onreportissue: () => void;
+    reportphase: FeedbackPhase;
   }
 
-  let { onopenpalette }: Props = $props();
+  let { onopenpalette, onreportissue, reportphase }: Props = $props();
 
   const tooltipClass =
     "z-50 rounded-sm border border-[var(--border-strong)] bg-[var(--surface-raised)] px-2 py-1 text-[11px] text-[var(--foreground)] shadow-md";
@@ -65,6 +69,15 @@
   );
   const themeLabel = $derived(
     layout.theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
+  );
+  const reportLabel = $derived(
+    reportphase === "picking"
+      ? "Cancel element selection"
+      : reportphase === "composing" || reportphase === "failed"
+        ? "Cancel UI issue report"
+        : reportphase === "sending"
+          ? "Filing the UI issue"
+          : "Report a UI issue",
   );
 </script>
 
@@ -175,6 +188,17 @@
       {:else}
         <Moon size={15} aria-hidden="true" />
       {/if}
+    </IconButton>
+    <IconButton
+      label={reportLabel}
+      command="app.report"
+      data-testid="activity-report"
+      class="activity-bar__action"
+      active={reportphase !== "idle"}
+      disabled={reportphase === "sending"}
+      onclick={onreportissue}
+    >
+      <Flag size={15} aria-hidden="true" />
     </IconButton>
   </div>
 </div>

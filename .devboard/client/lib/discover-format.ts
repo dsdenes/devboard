@@ -214,6 +214,10 @@ export function recordColumnValues(record: Record<string, unknown>, key: string)
 export interface PyramidTier {
   level: string;
   tests: string;
+  /** Test cases that exercise the level's primary success path. */
+  happyPath: string;
+  /** The recorded command that runs this level. */
+  command: string;
 }
 
 /** Pyramid tiers ordered from the base to the apex. */
@@ -222,6 +226,8 @@ export function pyramidTiers(leaf: Leaf | null | undefined): PyramidTier[] {
     .map((record) => ({
       level: scalarText(record.level) || "other",
       tests: scalarText(record.tests) || "unknown",
+      happyPath: scalarText(record.happyPath) || "unknown",
+      command: scalarText(record.command),
     }))
     .sort(
       (left, right) =>
@@ -233,6 +239,38 @@ export function pyramidTiers(leaf: Leaf | null | undefined): PyramidTier[] {
 /** Tiers that actually carry tests; a recorded level with zero tests is not implemented. */
 export function implementedTiers(tiers: PyramidTier[]): PyramidTier[] {
   return tiers.filter((tier) => (Number.parseInt(tier.tests, 10) || 0) > 0);
+}
+
+/**
+ * Happy-path and total test counts, but only when every tier reports both: a
+ * partial sum would read as coverage the crawl never observed.
+ */
+export function pyramidHappyPathCount(tiers: PyramidTier[]): { happy: number; tests: number } | null {
+  let happy = 0;
+  let tests = 0;
+  for (const tier of tiers) {
+    const tierHappy = Number.parseInt(tier.happyPath, 10);
+    const tierTests = Number.parseInt(tier.tests, 10);
+    if (!Number.isFinite(tierHappy) || !Number.isFinite(tierTests)) return null;
+    happy += tierHappy;
+    tests += tierTests;
+  }
+  return tests > 0 ? { happy, tests } : null;
+}
+
+export interface CommandAlias {
+  command: string;
+  alias: string;
+}
+
+/** The installed invocation for a recorded command, when the manifest declares one. */
+export function commandAlias(
+  aliases: readonly CommandAlias[] | undefined,
+  command: string,
+): string {
+  if (aliases === undefined) return command;
+  const target = command.replace(/\s+/g, " ").trim();
+  return aliases.find((entry) => entry.command === target)?.alias ?? command;
 }
 
 /** A bounded context's display name; never its raw identifier when a title exists. */
