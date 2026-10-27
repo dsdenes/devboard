@@ -7,6 +7,7 @@
   import IssuesAgentFocus from "./IssuesAgentFocus.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
   import IssuesAgentQuestion from "./IssuesAgentQuestion.svelte";
+  import PageHeader from "./ui/page-header.svelte";
   import ScoutWorkspace from "./ScoutWorkspace.svelte";
 
   interface Props {
@@ -43,6 +44,8 @@
   );
   const runCount = $derived(issues.runs.length);
   const agents = $derived(issues.agents);
+  const asking = $derived(agents.filter((agent) => agent.question !== null).length);
+
   let selectedRunId = $state<string | null>(null);
   // The newest selection wins; when that run ends, the first live agent takes
   // the output pane so it never shows a stale stream.
@@ -71,6 +74,17 @@
     const seconds = Math.max(0, Math.round((now - start) / 1000));
     const minutes = Math.floor(seconds / 60);
     return minutes === 0 ? `${seconds}s` : `${minutes}m ${seconds % 60}s`;
+  }
+
+  function startedClock(startedAt: string): string {
+    const start = new Date(startedAt);
+    if (Number.isNaN(start.getTime())) return startedAt;
+    return start.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
   }
 
   /** One glanceable duration for a summary row: `12s`, `7m`, `2h 5m`. */
@@ -103,6 +117,10 @@
 
   function openAgents(): void {
     openTab?.({ id: "agents", kind: "agents", resourceId: "agents", title: "Agents" });
+  }
+
+  function openOverview(): void {
+    openTab?.({ id: "overview", kind: "overview", resourceId: "overview", title: "Overview" });
   }
 
   function runStatus(runId: string): string {
@@ -314,65 +332,104 @@
   </section>
 {:else if page === "agents"}
   <section class="issues-agents-page" data-testid="issues-agents-page" aria-label="Running agents">
-    <header class="issues-overview__header">
-      <div>
-        <p class="muted">Issues</p>
-        <h1 class="issues-overview__title">Agents</h1>
-        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
-      </div>
-      <span class="badge" data-tone="accent" data-testid="issues-agents-count">{agents.length} running</span>
-    </header>
-    <div class="issues-agent-grid" data-testid="issues-agents">
-      {#each agents as agent (agent.runId)}
-        <article
-          class="issues-agent"
-          data-testid="issues-agent"
-          data-issue={agent.issueNumber}
-          data-run={agent.runId}
-          data-status={issues.statusFor(agent.runId)}
-        >
-          <header class="toolbar toolbar--between">
-            <a class="mono" href={issueUrl(agent.issueNumber)} target="_blank" rel="noreferrer">
-              #{agent.issueNumber}
-            </a>
-            <span class="issues-agent__title">{issueTitle(agent.issueNumber)}</span>
+    <PageHeader
+      eyebrow="Issues"
+      title="Agents"
+      subtitle={issues.repoLabel}
+      testid="issues-agents-header"
+    >
+      {#snippet meta()}
+        <span class="badge" data-tone="accent" data-testid="issues-agents-count">
+          {agents.length} running
+        </span>
+        {#if asking > 0}
+          <span class="badge" data-tone="warning" data-testid="issues-agents-asking">
+            {asking} {asking === 1 ? "needs an answer" : "need an answer"}
+          </span>
+        {/if}
+      {/snippet}
+    </PageHeader>
+    {#if agents.length === 0}
+      <section class="panel issues-agents-empty" data-testid="issues-agents-empty">
+        <div class="panel__body stack-sm">
+          <h2 class="issues-agents-empty__title">No agents running</h2>
+          <p class="muted">Start the issues worker from Overview to see agents here.</p>
+          <div class="toolbar">
             <Button
               variant="outline"
-              data-testid="issues-agent-open"
-              data-run={agent.runId}
-              data-command="issues.agent.open"
-              onclick={() => openAgent(agent.runId, agent.issueNumber)}
+              data-testid="issues-agents-overview"
+              data-command="open.issues.overview"
+              onclick={openOverview}
             >
-              Focus
+              Open Overview
             </Button>
-          </header>
-          <dl class="issues-facts">
-            <div>
-              <dt>Run</dt>
-              <dd class="mono">{agent.runId}</dd>
-            </div>
-            <div>
-              <dt>Started</dt>
-              <dd class="mono">{agent.startedAt} · {elapsed(agent.startedAt)}</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd>
-                <span class="badge" data-tone={statusTone(issues.statusFor(agent.runId))}>
-                  {issues.statusFor(agent.runId)}
-                </span>
-              </dd>
-            </div>
-          </dl>
-          <IssuesAgentLog lines={issues.activityFor(agent.runId)} testid="issues-agent-activity" runId={agent.runId} />
-          {#if agent.question}
-            <IssuesAgentQuestion runId={agent.runId} question={agent.question} testid="issues-agent-question" />
-          {/if}
-        </article>
-      {:else}
-        <p class="muted">No issue is running.</p>
-      {/each}
-    </div>
+          </div>
+        </div>
+      </section>
+    {:else}
+      <div class="issues-agent-grid" data-testid="issues-agents">
+        {#each agents as agent (agent.runId)}
+          {@const status = issues.statusFor(agent.runId)}
+          {@const title = issueTitle(agent.issueNumber)}
+          <article
+            class="issues-agent"
+            data-testid="issues-agent"
+            data-issue={agent.issueNumber}
+            data-run={agent.runId}
+            data-status={status}
+            data-asked={agent.question ? "true" : undefined}
+            aria-labelledby={`issues-agent-title-${agent.issueNumber}`}
+          >
+            <header class="issues-agent__head">
+              <div class="issues-agent__identity">
+                <a
+                  class="issues-agent__issue mono"
+                  href={issueUrl(agent.issueNumber)}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`Open issue #${agent.issueNumber}: ${title}`}
+                >
+                  #{agent.issueNumber}
+                </a>
+                <span class="badge" data-tone={statusTone(status)}>{status}</span>
+                {#if agent.question}
+                  <span class="badge" data-tone="warning">needs answer</span>
+                {/if}
+              </div>
+              <Button
+                variant="outline"
+                data-testid="issues-agent-open"
+                data-run={agent.runId}
+                data-command="issues.agent.open"
+                onclick={() => openAgent(agent.runId, agent.issueNumber)}
+              >
+                Focus
+              </Button>
+            </header>
+            <h2 class="issues-agent__title" id={`issues-agent-title-${agent.issueNumber}`} title={title}>
+              {title}
+            </h2>
+            <p class="issues-agent__meta mono" title={`Started ${agent.startedAt}`}>
+              <span>{elapsed(agent.startedAt)} elapsed</span>
+              <span aria-hidden="true">·</span>
+              <span>started {startedClock(agent.startedAt)}</span>
+            </p>
+            <IssuesAgentLog
+              lines={issues.activityFor(agent.runId)}
+              testid="issues-agent-activity"
+              runId={agent.runId}
+            />
+            {#if agent.question}
+              <IssuesAgentQuestion
+                runId={agent.runId}
+                question={agent.question}
+                testid="issues-agent-question"
+              />
+            {/if}
+          </article>
+        {/each}
+      </div>
+    {/if}
   </section>
 {:else if page === "agent" && tab !== null}
   <IssuesAgentFocus {tab} close={() => closeFocus(tab)} openRuns={openRuns} />

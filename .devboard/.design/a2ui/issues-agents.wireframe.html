@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Issues / Agents</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #f4f4f4;
+    color: #222;
+    font: 14px/1.45 system-ui, sans-serif;
+  }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  header.region {
+    border: 1px solid #999;
+    background: #fff;
+    padding: 12px;
+    position: relative;
+  }
+  .annotation {
+    display: block;
+    color: #666;
+    font: 10px/1.2 ui-monospace, monospace;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+  }
+  .eyebrow { color: #666; font-size: 10px; letter-spacing: .08em; }
+  h1 { font-size: 20px; margin: 2px 0; }
+  .repo { color: #666; font: 12px ui-monospace, monospace; }
+  .meta { display: flex; gap: 12px; margin-top: 6px; }
+  .pill {
+    border: 1px solid #888;
+    border-radius: 999px;
+    font-size: 10px;
+    padding: 2px 6px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }
+  article.card {
+    border: 1px solid #999;
+    background: #fff;
+    padding: 10px;
+    min-width: 0;
+    position: relative;
+  }
+  article.card[data-state="question"] { border-color: #555; border-left: 4px solid #555; }
+  .card-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    justify-content: space-between;
+  }
+  .card-id { display: flex; gap: 6px; min-width: 0; }
+  .issue { font: 12px ui-monospace, monospace; white-space: nowrap; }
+  .title {
+    font-weight: 600;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+  .status { border: 1px solid #888; border-radius: 999px; font-size: 10px; padding: 2px 6px; }
+  .focus { border: 1px solid #888; background: #fff; border-radius: 4px; height: 28px; padding: 0 10px; }
+  .elapsed { color: #555; font-size: 12px; margin-top: 6px; }
+  .log {
+    border: 1px solid #ccc;
+    background: #fafafa;
+    margin-top: 8px;
+    height: 96px;
+    overflow: auto;
+    padding: 6px 8px;
+    font: 11.5px/1.4 ui-monospace, monospace;
+    color: #444;
+  }
+  .question { border-top: 1px solid #aaa; margin-top: 8px; padding-top: 8px; }
+  .question p { margin: 0 0 6px; font-weight: 600; }
+  .choices { display: flex; flex-wrap: wrap; gap: 6px; }
+  .empty {
+    border: 1px dashed #999;
+    background: #fff;
+    padding: 16px;
+    margin-top: 12px;
+    text-align: center;
+  }
+  .empty h2 { font-size: 16px; margin: 0 0 4px; }
+  .empty p { color: #555; margin: 0 0 8px; }
+  @media (max-width: 760px) {
+    main { padding: 12px; }
+    .grid { grid-template-columns: 1fr; }
+    .card-top { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header class="region">
+    <span class="annotation">region_header · P0/P1</span>
+    <div class="eyebrow">ISSUES</div>
+    <h1>Agents</h1>
+    <div class="repo">dsdenes/devboard</div>
+    <div class="meta">
+      <span class="pill">18 running · C11 P1</span>
+      <span class="pill">2 need answer · C12 P0</span>
+    </div>
+  </header>
+
+  <section class="grid" aria-label="Agent cards">
+    <article class="card" data-state="question">
+      <span class="annotation">card · P0</span>
+      <div class="card-top">
+        <div class="card-id">
+          <a class="issue" href="#">#240</a>
+          <span class="title">[ui] Redesign element: section.issues-agents-page · C2 P1</span>
+        </div>
+        <span class="status">running</span>
+        <button class="focus" type="button">Focus</button>
+      </div>
+      <div class="elapsed">5m 15s elapsed · started 15:49:35 (tooltip) · C6/C7</div>
+      <div class="log">agent activity stream, bounded 96px scroll · C8 P1</div>
+      <div class="question">
+        <span class="annotation">card_question · P0</span>
+        <p>Which scope should issue 240 take?</p>
+        <div class="choices">
+          <button type="button">The whole issue</button>
+          <button type="button">One criterion</button>
+        </div>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="card-top">
+        <div class="card-id">
+          <a class="issue" href="#">#239</a>
+          <span class="title">[ui] Put running agents to the left of the workspace</span>
+        </div>
+        <span class="status">running</span>
+        <button class="focus" type="button">Focus</button>
+      </div>
+      <div class="elapsed">2m 08s elapsed · started 15:52:35</div>
+      <div class="log">agent activity stream, bounded 96px scroll</div>
+    </article>
+  </section>
+
+  <section class="empty" aria-label="Empty state">
+    <span class="annotation">region_empty · P1</span>
+    <h2>No agents running</h2>
+    <p>Start the issues worker from Overview to see agents here.</p>
+    <button type="button">Open Overview</button>
+  </section>
+</main>
+</body>
+</html>
