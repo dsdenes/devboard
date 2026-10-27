@@ -270,19 +270,21 @@ class Evaluation {
     await opened.promise;
   }
 
-  async evaluate(expression: string): Promise<unknown> {
+  async send(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const id = this.nextId;
     this.nextId += 1;
     const settled = Promise.withResolvers<Record<string, unknown>>();
     this.pending.set(id, settled.resolve);
-    this.socket.send(
-      JSON.stringify({
-        id,
-        method: "Runtime.evaluate",
-        params: { expression, returnByValue: true, awaitPromise: true },
-      }),
-    );
-    const result = await settled.promise;
+    this.socket.send(JSON.stringify({ id, method, params }));
+    return settled.promise;
+  }
+
+  async evaluate(expression: string): Promise<unknown> {
+    const result = await this.send("Runtime.evaluate", {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
     const value = result.result;
     if (typeof value !== "object" || value === null) return undefined;
     return (value as { value?: unknown }).value;
@@ -466,6 +468,54 @@ async function liveProof(): Promise<void> {
     });
     await waitForHttp(`http://127.0.0.1:${port}/`);
 
+    await mkdir(profile, { recursive: true });
+    chrome = spawn(
+      chromePath(),
+      [
+        "--headless=new",
+        "--disable-gpu",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--metrics-recording-only",
+        `--remote-debugging-port=${browserPort}`,
+        `--user-data-dir=${profile}`,
+        "--window-size=1024,720",
+        `http://127.0.0.1:${port}/`,
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] },
+    );
+    const browser = new Evaluation(await pageTarget(browserPort));
+    await browser.connect();
+    evaluation = browser;
+    // A raw window is smaller than its CSS viewport, and the shell refuses to
+    // render below 1024x720; pin the metrics instead of trusting the window.
+    await browser.send("Emulation.setDeviceMetricsOverride", {
+      width: 1024,
+      height: 720,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await waitFor(
+      async () => {
+        const ready = await browser.evaluate(
+          "document.querySelector('[data-testid=\"app-shell\"]') !== null",
+        );
+        return ready === true ? true : undefined;
+      },
+      "the dashboard shell to render",
+      30_000,
+      100,
+    );
+    const hiddenBefore = await browser.evaluate(
+      "document.querySelector('[data-testid=\"status-issues\"]') === null",
+    );
+    check(hiddenBefore === true, "the issue item is present before any state exists", hiddenBefore);
+
     const stubCommand =
       `${process.execPath} ${stubAgent} --log=${agentLog} --sleep=6000 ` +
       "--prompt=/implement-all-issues --exit=0";
@@ -510,33 +560,10 @@ async function liveProof(): Promise<void> {
     );
     check(firstRun.open === backlog.length, "the running state's open count is wrong", firstRun);
 
-    await mkdir(profile, { recursive: true });
-    chrome = spawn(
-      chromePath(),
-      [
-        "--headless=new",
-        "--disable-gpu",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-sync",
-        "--metrics-recording-only",
-        `--remote-debugging-port=${browserPort}`,
-        `--user-data-dir=${profile}`,
-        "--window-size=1024,720",
-        `http://127.0.0.1:${port}/`,
-      ],
-      { stdio: ["ignore", "ignore", "pipe"] },
-    );
-    evaluation = new Evaluation(await pageTarget(browserPort));
-    await evaluation.connect();
-
+    const workingSince = Date.now();
     const workingText = await waitFor(
       async () => {
-        const text = await evaluation!.evaluate(
+        const text = await browser.evaluate(
           "document.querySelector('[data-testid=\"status-issues\"]')?.textContent ?? null",
         );
         return typeof text === "string" && /^issues working \(\d+\)$/.test(text.trim())
@@ -547,7 +574,9 @@ async function liveProof(): Promise<void> {
       5_000,
       200,
     );
+    const runningDelay = Date.now() - workingSince;
     const runningState = readStateFileAt(statePath(stateDir));
+    check(runningDelay <= 5_000, `the issue item took ${runningDelay}ms to show the run`);
     check(
       workingText === `issues working (${runningState?.open})`,
       "the status item does not show the state's open count",
