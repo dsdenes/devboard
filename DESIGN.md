@@ -500,10 +500,14 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page
   sections are 24px apart; cards inside a column are 12px apart. The facts rail holds its grid
   track between 320px and 420px, with 24px to the content column.
-- **Discover run header** (`.discover-run__header`) — a tinted `accent-surface` header with an
-  `accent` `overline` eyebrow and `Run in progress`, and a right action group holding the run
-  identifier as a `.code-chip`, the relative start time, and the `destructive` Stop. The panel
-  border takes `accent`.
+- **Discover run header** (`.discover-run__header`) — the active-run panel header: one 30px
+  `surface-raised` row with a 6px `accent` state dot and `Run in progress` in `panel-title`; a
+  right meta group holding the relative start time in 11px `muted-foreground` and the run
+  identifier as a `.code-chip` truncated at 180px with the full value in its tooltip; and a quiet
+  destructive `Stop` at the far right (24px, 11px word, transparent fill, `border-subtle`
+  outline, `muted-foreground` until hover or focus takes `error-surface`, `error` text, and an
+  `error` outline). The panel keeps the standard `border`; the accent dot never carries the
+  state alone, and no eyebrow restates the mode the rail and page header already name.
 - **Glossary filter toolbar** (`.discover-glossary-controls`) — one bounded `surface-raised`
   toolbar with 4px padding and 8px gaps: a search field up to 240px, a 26×14px switch for
   `Significant only`, a 1px `border` divider, and a 120px floor slider whose value renders in a
