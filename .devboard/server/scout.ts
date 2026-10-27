@@ -5,7 +5,7 @@ import { liveLockOwner, pidAlive, type LockOwner } from "../issues/lock";
 import { controlDirectory, lockPath, scanDirectory, statePath } from "../issues/scout/paths";
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
 import { preflightScout, type ScoutPreflightResult } from "../issues/scout/preflight";
-import { originRepository } from "../issues/repository";
+import { cachedRepository } from "../issues/repository";
 import { readState, type ScoutState } from "../issues/scout/state";
 import { readActivity } from "../issues/state";
 import { activityDelta } from "./activity";
@@ -68,7 +68,7 @@ export class ScoutBridge {
   private readonly harnessDir: string;
   private readonly send: (event: unknown) => void;
   private readonly environment: Record<string, string | undefined>;
-  private readonly repository: string | null;
+  private readonly repository: () => string | null;
   private readonly preflight: NonNullable<ScoutBridgeOptions["preflight"]>;
   private readonly spawnWorker: NonNullable<ScoutBridgeOptions["spawnWorker"]>;
   private readonly log: (line: string) => void;
@@ -89,8 +89,7 @@ export class ScoutBridge {
     this.harnessDir = options.harnessDir;
     this.send = options.send;
     this.environment = options.environment ?? process.env;
-    // Resolving the origin runs git; it cannot change while this server lives.
-    this.repository = originRepository(this.repoDir) ?? null;
+    this.repository = cachedRepository(this.repoDir);
     this.log = options.log ?? (() => undefined);
     this.pollMsValue = Math.max(50, options.pollMs ?? 250);
     this.preflight =
@@ -174,7 +173,7 @@ export class ScoutBridge {
         : null;
     return {
       present: state !== undefined,
-      repo: state?.repo ?? this.repository,
+      repo: state !== undefined && state.repo.length > 0 ? state.repo : this.repository(),
       root: this.repoDir,
       lifecycle,
       enabled: active?.enabled === true && lifecycle !== "stopped",

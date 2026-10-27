@@ -1,5 +1,6 @@
 import { pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +19,9 @@ const temporaryDirectories: string[] = [];
 const SERVER = join(import.meta.dir, "index.ts");
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
 const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
+/** The offline release the fixture serves; the stub `gh` never answers a release query. */
+const FIXTURE_RELEASE_VERSION = "0.0.0";
+const FIXTURE_RELEASE_TARBALL = `devboard-harness-${FIXTURE_RELEASE_VERSION}.tgz`;
 const MANAGED_SKILL = [
   "---",
   "name: behavior-first-testing",
@@ -106,6 +110,7 @@ interface Fixture {
   logPath: string;
   trackerFile: string;
   binDir: string;
+  releaseDir: string;
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -117,9 +122,17 @@ async function createFixture(): Promise<Fixture> {
   const logPath = join(root, "agent.log");
   const trackerFile = join(root, "tracker.json");
   const binDir = join(root, "bin");
+  const releaseDir = join(root, "releases");
   await mkdir(adrDir, { recursive: true });
   await mkdir(staticDir, { recursive: true });
   await mkdir(binDir, { recursive: true });
+  await mkdir(releaseDir, { recursive: true });
+  const tarball = Buffer.from("fixture release\n");
+  await writeFile(join(releaseDir, FIXTURE_RELEASE_TARBALL), tarball);
+  await writeFile(
+    join(releaseDir, `${FIXTURE_RELEASE_TARBALL}.sha256`),
+    `${createHash("sha256").update(tarball).digest("hex")}  ${FIXTURE_RELEASE_TARBALL}\n`,
+  );
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>ADR overview</title>");
   await writeFile(goalFile, "# Goal\n\nShip the lifecycle.\n");
   await writeFile(join(adrDir, "0001-first.md"), PENDING_ONE);
@@ -140,7 +153,7 @@ async function createFixture(): Promise<Fixture> {
   git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
   git(root, ["add", "-A"]);
   git(root, ["commit", "-q", "-m", "initial"]);
-  return { root, adrDir, staticDir, goalFile, stateDir, logPath, trackerFile, binDir };
+  return { root, adrDir, staticDir, goalFile, stateDir, logPath, trackerFile, binDir, releaseDir };
 }
 
 interface RunningServer {
@@ -183,6 +196,8 @@ async function startProcess(fixture: Fixture, port?: number): Promise<RunningSer
       PATH: `${fixture.binDir}:${process.env.PATH ?? ""}`,
       GH_TOKEN: "fake-token",
       FAKE_TRACKER: fixture.trackerFile,
+      // The update check reads the offline fixture instead of the stub `gh`.
+      DEVBOARD_RELEASE_DIR: fixture.releaseDir,
     },
     stdin: "ignore",
     stdout: "pipe",
@@ -356,6 +371,18 @@ function storedPath(fixture: Fixture): string {
   return stateFile(fixture.stateDir, resolve(fixture.root));
 }
 
+/** The newest release version a fresh connection hears, or null before a check succeeds. */
+async function reportedLatest(url: string): Promise<string | null> {
+  const client = await connect(url);
+  try {
+    client.send({ type: "getVersion" });
+    const state = await client.waitFor((message) => message.type === "versionState");
+    return typeof state.latest === "string" ? state.latest : null;
+  } finally {
+    client.close();
+  }
+}
+
 async function kill(child: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise<void> {
   child.kill("SIGKILL");
   await child.exited;
@@ -379,6 +406,11 @@ describe("restart after SIGKILL", () => {
       let lifecycleState: Record<string, unknown>;
 
       try {
+        // The update check resolves the offline fixture instead of journaling a failure.
+        await waitUntil(
+          async () => (await reportedLatest(server.url)) === FIXTURE_RELEASE_VERSION,
+          "the server never reported the fixture release",
+        );
         client.send({ type: "startLifecycle" });
         lifecycleState = await client.waitFor(
           (message) =>

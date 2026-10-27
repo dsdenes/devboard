@@ -137,7 +137,7 @@
       <div>
         <h1 class="issues-overview__title">Issue automation</h1>
         <p class="issues-overview__repo mono" data-testid="issues-repo">
-          {issues.repo ?? "No GitHub origin"}
+          {issues.repoLabel}
         </p>
       </div>
       <span class="badge" data-tone={statusTone(stateWord)} data-testid="issues-state">
@@ -327,7 +327,7 @@
     <PageHeader
       eyebrow="Issues"
       title="Agents"
-      subtitle={issues.repo ?? "No GitHub origin"}
+      subtitle={issues.repoLabel}
       testid="issues-agents-header"
     >
       {#snippet meta()}
@@ -431,7 +431,7 @@
       <div>
         <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Open issues</h1>
-        <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
+        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
       <span class="badge" data-tone={statusTone("pending")}>{issues.pending} pending</span>
     </header>
@@ -485,7 +485,7 @@
       <div>
         <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Runs</h1>
-        <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
+        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
       <span class="badge" data-tone="accent">{runCount}</span>
     </header>

@@ -5531,8 +5531,10 @@ export function createApp(options: AppOptions) {
         // Discover replays its published artifacts, then the run a reconnect
         // landed in, before any reply to this client's own commands.
         replayDiscover(ws);
-        if (issues.present) issues.replay(ws);
-        if (scout.present) scout.replay(ws);
+        // A client needs the checkout's origin and stopped state on connect,
+        // whether or not a worker has ever published for it.
+        issues.replay(ws);
+        scout.replay(ws);
       },
 
       close(ws) {
