@@ -47,12 +47,13 @@ no terminal frame separated it from the panel around it.
 
 | Check | Result |
 |---|---|
-| `bun run check` (svelte-check, 1245 files) | pass, 0 errors |
+| `bunx tsc --noEmit` (release workflow gate) | pass |
 | `bun run build` | pass |
-| `bun test` (536 tests, 40 files) | pass, 0 fail |
+| `bun test` (554 tests, 43 files) | pass, 0 fail |
 | `bun run verify:interface` | pass (issues mode, terminals, theme, accessibility, persistence) |
 | `bun run verify:issues` | pass (fleet, activity, answers, cooldown, restart) |
 | `bun run verify:scout` | pass (scan activity, board, attach, reload) |
+| `bun run check` (svelte-check) | one pre-existing upstream error in `FeedbackOverlay.svelte`; this change introduces none |
 | Rendered text equals `lines.join("\n")` in the browser harness | pass |
 | Command rows equal the number of `$ ` lines | pass |
 | Viewports 1600×900 and 1024×720 | pass, no clipping or overflow |
