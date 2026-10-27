@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Issues agent focus / run identity</title>
+<style>
+  :root { --ink:#222; --muted:#666; --line:#bbb; --fill:#f4f4f4; --accent:#0b5cad; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: var(--ink); font: 13px/1.45 system-ui, sans-serif; }
+  .app { display: grid; grid-template-columns: 72px 240px 1fr; grid-template-rows: 1fr 26px;
+         min-height: 100vh; }
+  .rail { border-right: 1px solid var(--line); padding: 8px 4px; display: flex; flex-direction: column;
+          gap: 6px; }
+  .mode { border: 1px solid var(--line); border-radius: 4px; padding: 8px 2px; text-align: center;
+          font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .mode[aria-current="true"] { border-color: var(--ink); color: var(--ink); font-weight: 700; }
+  .sidebar { border-right: 1px solid var(--line); padding: 8px; display: flex; flex-direction: column;
+             gap: 6px; }
+  .sidebar h1 { font-size: 12px; margin: 0 0 4px; }
+  .nav { border: 1px solid transparent; padding: 3px 4px; font-size: 12px; display: flex;
+         justify-content: space-between; }
+  .nav[aria-current="true"] { border-color: var(--line); background: var(--fill); }
+  .workspace { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  header.page { border: 1px solid var(--line); border-radius: 4px; padding: 8px;
+                display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .eyebrow { color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+  .title { font-size: 20px; font-weight: 650; margin: 2px 0; }
+  .repo { color: var(--muted); font: 11px ui-monospace, monospace; }
+  .badge { border: 1px solid var(--line); border-radius: 999px; padding: 2px 6px; font-size: 10px;
+           text-transform: uppercase; letter-spacing: .06em; }
+  .actions { display: flex; gap: 6px; align-items: center; }
+  .button { border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+  .panel { border: 1px solid var(--line); border-radius: 4px; flex: 1; display: flex;
+           flex-direction: column; min-height: 280px; }
+  .panel__header { align-items: center; border-bottom: 1px solid var(--line); display: flex;
+                   gap: 8px; height: 30px; justify-content: space-between; padding: 0 8px;
+                   flex-wrap: nowrap; }
+  .panel__title { font-size: 12px; font-weight: 600; margin: 0; white-space: nowrap; }
+  .identity { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .chip { background: var(--fill); border: 1px solid var(--line); border-radius: 3px;
+          font: 11.5px/1.4 ui-monospace, monospace; max-width: 220px; overflow: hidden;
+          padding: 2px 6px; text-overflow: ellipsis; white-space: nowrap; }
+  .started { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .log { flex: 1; margin: 0; padding: 10px; font: 11.5px/1.5 ui-monospace, monospace;
+         white-space: pre-wrap; }
+  .question { border-top: 1px solid var(--line); padding: 10px; display: flex; flex-direction: column;
+              gap: 6px; background: var(--fill); }
+  .anno { color: var(--accent); font: 10px/1.2 ui-monospace, monospace; display: block;
+          margin: 0 0 2px; }
+  .statusbar { grid-column: 1 / 4; border-top: 1px solid var(--line); font-size: 11px;
+               color: var(--muted); padding: 4px 8px; }
+  .annotation { border: 1px dashed var(--accent); border-radius: 3px; padding: 2px 4px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail">
+    <span class="mode">Goal</span>
+    <span class="mode">Flow</span>
+    <span class="mode">Discover</span>
+    <span class="mode" aria-current="true">Issues</span>
+  </nav>
+  <aside class="sidebar">
+    <h1>Issues</h1>
+    <span class="nav">Overview</span>
+    <span class="nav">Open issues</span>
+    <span class="nav">Agents</span>
+    <span class="nav">Runs</span>
+    <span class="nav" aria-current="true">#17 Fix the run identity</span>
+  </aside>
+  <main class="workspace">
+    <header class="page">
+      <div>
+        <span class="eyebrow">Issues · agent</span>
+        <h1 class="title">#17 Fix the run identity</h1>
+        <div class="repo">dsdenes/devboard</div>
+      </div>
+      <div class="actions">
+        <span class="badge">running</span>
+        <span class="button">Close</span>
+      </div>
+    </header>
+    <section class="panel">
+      <div class="panel__header">
+        <h2 class="panel__title">Output</h2>
+        <span class="identity annotation">
+          <span class="chip">2026-10-27T10-00-01-000Z</span>
+          <span class="started">Started 4 minutes ago</span>
+        </span>
+      </div>
+      <pre class="log">I'll start by discovering the repository state.
+$ git status --short --branch
+$ bun test
+All checks passed.</pre>
+      <div class="question">
+        <span class="anno">pending question</span>
+        Which scope should issue 17 take?
+      </div>
+    </section>
+  </main>
+  <div class="statusbar">connected · devboard · 3 running · running 0.1.240 · installed 0.1.240</div>
+</div>
+</body>
+</html>

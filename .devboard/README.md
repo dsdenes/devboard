@@ -1404,9 +1404,14 @@ Activating a card (its `Focus` control) opens
 `data-testid="issues-agent-focus"` with `data-testid="issues-agent-focus-status"`, the same full
 activity in `data-testid="issues-agent-focus-activity"`, its question in
 `data-testid="issues-agent-focus-question"`, and `data-testid="issues-agent-focus-close"`. The
-focus tab survives a reload while the run is active. After the run ends, a restored focus tab
-shows that run's final status and activity from run history, or a clear no-longer-available state
-linking to Runs when the run has been pruned.
+output panel header names its run once: a `Run` label, the identifier as a `.code-chip` in
+`data-testid="issues-agent-focus-run-id"` (capped at 220px; the full id is in its `title`), and
+`data-testid="issues-agent-focus-run-started"` reading `Started <relative time>` with the ISO
+start in its `title`. The start time comes from the live agent and falls back to run history; a
+missing timestamp renders no age. The header carries no bare `panel__subtitle` run id and no
+second status badge. The focus tab survives a reload while the run is active. After the run ends,
+a restored focus tab shows that run's final status and activity from run history, or a clear
+no-longer-available state linking to Runs when the run has been pruned.
 
 The Overview keeps the Start, Pause, Resume, Stop, and Check now controls, the poll and worker
 facts, and `data-testid="issues-overview"`. It shows the running-agent count as
