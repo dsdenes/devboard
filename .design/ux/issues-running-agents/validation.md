@@ -2,7 +2,9 @@
 
 - Issue: #238. Changed surface: the running-agent rows of the Issues overview (`.issues-agent-row`)
   and the row's component entry in `DESIGN.md`.
-- Worktree: `.worktree/issue-238`, branch `issue-238` from `origin/main` at `bcef392`.
+- Worktree: `.worktree/issue-238`, branch `issue-238`; the reported checks ran after merging
+  `origin/main` (which advanced to `0b6b041` while the work was in flight), and the build,
+  `verify:issues`, and the browser captures were repeated on that merged base.
 - Commands, run from `.devboard` in the worktree:
 
 ```bash
