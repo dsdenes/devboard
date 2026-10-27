@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "adrkit": {
+      "type": "stdio",
+      "command": "bunx",
+      "args": ["@adrkit/mcp", "--cwd", ".", "--dir", "adrs"]
+    }
+  }
+}
