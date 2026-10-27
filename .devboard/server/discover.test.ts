@@ -112,6 +112,11 @@ function createFixture(name: string, options: { goal?: boolean; dirty?: boolean 
     `${JSON.stringify({ name: "fixture-host", scripts: { build: "bun run build:src", test: "bun test", "test:unit": "bun test" } }, null, 2)}\n`,
   );
   writeFileSync(join(root, "src", "order.ts"), "export const orderTotal = (total: number): number => total;\n");
+  mkdirSync(join(root, "src", "checkout"), { recursive: true });
+  writeFileSync(
+    join(root, "src", "checkout", "flow.ts"),
+    "export { orderTotal } from \"../order\";\n",
+  );
   writeFileSync(
     join(root, "test", "order.test.ts"),
     'import { test, expect } from "bun:test";\ntest("order total", () => expect(1).toBe(1));\n',

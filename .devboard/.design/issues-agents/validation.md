@@ -4,8 +4,9 @@
 - Branch: `issue-240`; commit: the revision that carries this file (merge to `main` after review).
 - Command: `cd .devboard && bun run build`, `bun run check`, `bun run verify:interface`,
   `bun run verify:issues`, `bun test`.
-- Base URL: `http://127.0.0.1:8137/` (12-agent fixture) and `http://127.0.0.1:8138/`
-  (empty fixture), both launched from the worktree with `STATIC_DIR` pointing at the fresh build.
+- Base URL: `http://127.0.0.1:8141/` (three-agent fixture) and `http://127.0.0.1:8142/`
+  (empty fixture), launched from the worktree with `STATIC_DIR` pointing at the final build. An
+  earlier 12-agent fixture at `http://127.0.0.1:8137/` covered the many-card layout.
 - Playwright source: OMP browser (Playwright-backed Chromium), plus the repository's
   `verify-interface.ts` CDP contract.
 - Viewports: 2101×1017 (the issue capture), 1440×900, 1024×720. 390×844 is not supported: the
@@ -15,8 +16,8 @@
 
 | Journey | Evidence |
 |---|---|
-| Scan a 12-agent fleet | 12 cards, 4 columns at 2101, 2 at 1440, 1 at 1024; status and log inside every card box; no horizontal overflow |
-| Find the blocked agent | header badge `1 needs an answer`, card `data-asked="true"`, warning border, `needs answer` badge, question block |
+| Scan the fleet | 12 cards in the wide fixture and 3 in the final fixture; 4 columns at 2101, 2 at 1440, 1 at 1024; status and log inside every card box; no horizontal overflow |
+| Find the blocked agent | 3-agent fixture: header badge `3 need an answer`, every card `data-asked="true"`, warning border, `needs answer` badge, question block |
 | Answer and clear one question | `verify-interface.ts`: answer carries the run id, only that agent's question clears, header falls to `2 need an answer` |
 | Focus one agent | `verify-interface.ts`: Focus opens the existing focus tab with the full log and returns to the grid |
 | Empty fleet | `issues-agents-empty` panel, `0 running`, `Open Overview` control; the control returns to Overview |
@@ -37,13 +38,14 @@
 
 ## Measurements
 
-- 2101: cards 415×224 (question card 415×416), 4 columns; grid `scrollWidth === clientWidth`.
-- 1440: cards 511×206, 2 columns; no page or grid horizontal overflow.
-- 1024: card 619×206, 1 column; no horizontal overflow.
+- 2101: cards 415×397, 4 columns; grid `scrollWidth === clientWidth`.
+- 1440: cards 511×397, 2 columns; no page or grid horizontal overflow.
+- 1024: card 619×397, 1 column; no horizontal overflow.
 - Status badge and activity bottom are inside the card rect on every card (asserted in
   `verify-interface.ts`).
-- Activity surface: 96px visible, own scroll (`scrollHeight 173`, `clientHeight 94` in the
-  fixture), newest line followed by the existing `IssuesAgentLog`.
+- Activity surface: 96px visible, own scroll (`scrollHeight 155`, `clientHeight 94` in the final
+  fixture), newest line followed by the shared `IssuesAgentLog`; command rows keep their accent
+  prompt and chip from the merged activity-log design.
 - Console: no errors or warnings on either fixture page (`tab.errors()` and `tab.console()` empty).
 - Wireframe: `.design/a2ui/issues-agents.wireframe.html` has no horizontal overflow at 1440×900
   and 390×844; it is a structure rendering, not the product surface.
@@ -54,9 +56,10 @@
 
 - `PageHeader` is reused unchanged; Goal pages keep their stories and `verify-interface.ts`
   coverage.
-- `IssuesAgentLog` and `IssuesAgentQuestion` are unchanged; their Focus-tab and Scout usages pass
-  `verify:interface` and `verify:issues`.
-- Only `.issues-agent*` CSS changed; no other page consumes those classes.
+- `IssuesAgentQuestion` is unchanged. `IssuesAgentLog` gained the shared terminal treatment from
+  `main`; the Focus-tab, Scout, and overview usages pass `verify:interface` and `verify:issues`.
+- The card CSS is scoped to `.issues-agent*`; the merged `.issues-activity` base is exercised by
+  Focus, Scout, and Overview.
 
 ## Checks
 
