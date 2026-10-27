@@ -920,9 +920,10 @@ match.
 
 ## Publish a change
 
-Merging into `main` and pushing triggers `.github/workflows/devboard-release.yml`, which builds
-the client, runs the harness suite and typecheck, packs `dist/`, `server/`, `templates/`, the
-prompts and omp wrappers into the private harness tarball, publishes the launcher version to
+Merging into `main` and pushing triggers `.github/workflows/devboard-release.yml`, which runs on
+the repository's self-hosted runner — never a GitHub-hosted one, and never a fallback — and
+builds the client, runs the harness suite and typecheck, packs `dist/`, `server/`, `templates/`,
+the prompts and omp wrappers into the private harness tarball, publishes the launcher version to
 npmjs, and creates the GitHub Release `v<version>` with the tarball and its `.sha256`. The
 version is `0.1.<commit-count>` over the full history; a rerun on the same commit leaves the
 existing npm version and release assets untouched.
@@ -967,6 +968,81 @@ intact, writes `update-error` to the journal, and is retried with exponential ba
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
 |`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads GitHub Releases through `gh`.|
 
+## Self-hosted runner
+
+The release workflow's only job runs on a self-hosted runner registered to one machine, selected
+by what that runner advertises: `self-hosted`, `linux`, and `x64` are automatic, and the job also
+requires the extra `devboard` label. A machine that lacks the label never picks up the job, and
+the job never falls back to a GitHub-hosted runner. The registration below is a one-time operator
+procedure; substitute the repository (`<owner>/<repo>`), the dedicated account (`<user>`), its
+home directory (`<home>`), and the runner name (`<runner-name>`) everywhere they appear.
+
+The account is separate from every human account and holds no group that grants privilege — not
+`sudo`, `docker`, or `adm` — because the runner executes repository code and every secret the
+workflow is given.
+
+```bash
+sudo useradd --create-home --shell /bin/bash --user-group <user>
+sudo passwd --lock <user>
+sudo install -d -m 700 -o <user> -g <user> <home>
+sudo install -d -m 755 -o <user> -g <user> <home>/actions-runner
+```
+
+Download the official runner release and unpack it into that directory as `<user>`. The machine
+needs `git`, `curl`, and `tar`; everything else the workflow uses is installed by its `uses:`
+steps into the runner's own tool cache.
+
+```bash
+VERSION=$(gh api repos/actions/runner/releases/latest --jq '.tag_name | ltrimstr("v")')
+sudo -u <user> curl -fsSL -o <home>/actions-runner/runner.tar.gz \
+  "https://github.com/actions/runner/releases/download/v$VERSION/actions-runner-linux-x64-$VERSION.tar.gz"
+sudo -u <user> tar -xzf <home>/actions-runner/runner.tar.gz -C <home>/actions-runner
+sudo -u <user> rm <home>/actions-runner/runner.tar.gz
+```
+
+Register with a registration token minted for the repository. The token is valid for one hour;
+never write it into a file, a commit, or a log.
+
+```bash
+TOKEN=$(gh api -X POST repos/<owner>/<repo>/actions/runners/registration-token --jq .token)
+sudo -u <user> -- bash -c "cd <home>/actions-runner && ./config.sh \
+  --url https://github.com/<owner>/<repo> --token $TOKEN \
+  --name <runner-name> --labels devboard --work _work --unattended"
+```
+
+`--labels devboard` adds to the automatic labels rather than replacing them, `--work _work` keeps
+checkouts under `<home>/actions-runner/_work`, and `--unattended` keeps the setup non-interactive.
+Install the runner as a system service owned by `<user>`, so it starts at boot and restarts after
+a failure without an operator session:
+
+```bash
+sudo bash -c "cd <home>/actions-runner && ./svc.sh install <user>"
+sudo systemctl enable --now actions.runner.<owner>-<repo>.<runner-name>.service
+systemctl status actions.runner.<owner>-<repo>.<runner-name>.service
+```
+
+Verify the registration from any machine whose `gh` is authenticated against the repository; the
+runner must be `online`, idle, and carry exactly the four labels the job asks for:
+
+```bash
+gh api repos/<owner>/<repo>/actions/runners \
+  --jq '.runners[] | {name, status, busy, labels: [.labels[].name]}'
+```
+
+Because the service restarts on failure and at boot, `systemctl is-active` and `systemctl
+is-enabled` are the ongoing health check; a restart of the unit must return `status` to `online`
+within two minutes. The job's own checkouts stay in `<home>/actions-runner/_work/<repo>/<repo>`
+and are readable evidence that a run executed here.
+
+To remove the runner, stop the service before deregistering, then delete the account:
+
+```bash
+sudo bash -c "cd <home>/actions-runner && ./svc.sh uninstall"
+TOKEN=$(gh api -X POST repos/<owner>/<repo>/actions/runners/remove-token --jq .token)
+sudo -u <user> -- bash -c "cd <home>/actions-runner && ./config.sh remove --token $TOKEN"
+sudo userdel --remove <user>
+```
+
 ## Harness watchdog
 
 A machine-level systemd user timer runs the watchdog independently of every dashboard: at
@@ -989,10 +1065,47 @@ ends inclusive, from:
   attributes a line, so an operator's own omp session in the project directory is not dashboard
   evidence.
 
-Retention is bounded: the watchdog deletes rotated journal files older than seven days at cycle
-start and enforces a 1 GiB total for `.tmp/journal`, deleting the oldest complete files first. A
-file still holding records inside the live window always wins over that bound, so the current
-cycle never loses evidence.
+Retention is bounded at cycle start. The journal keeps its own rule: journal files older than
+seven days are deleted, and the total under `<STATE_DIR>/journal` is capped at 1 GiB by deleting
+the oldest complete files first. A file still holding records inside the live window always wins
+over that bound, so the current cycle never loses evidence. The target is each install's real
+state directory — `<host>/.devboard/.tmp/journal` for an installed host, never the serving package
+directory under `node_modules`.
+
+### State-directory cleanup
+
+Every cycle also sweeps the rest of each covered state directory. Covered directories are the
+canonical checkout's `.devboard/.tmp`, every `*/.devboard/.tmp` directly under the canonical
+root's parent, and the `STATE_DIR` of every live dashboard the cycle discovers, de-duplicated by
+real path. A symlinked `.tmp` is never followed, and a missing directory is skipped.
+
+An entry is deleted when its last-modified time is older than seven days: files and symlinks
+individually, and a directory only when it is empty after that deletion and its own mtime, read
+before the sweep, is older than the cutoff. A fresh file inside an old directory survives and
+keeps its ancestors. Old watchdog and orchestrator run directories, `orchestrator.log`, legacy
+`devboard-*.{log,state,lock}` files, verification scratch, and stray stale files are therefore
+removed after a week. These entries are never deleted at any age:
+
+- `.tmp/state/` and everything below it.
+- `.tmp/journal/`, which the journal rule above governs.
+- `.tmp/watchdog/state.json`, `.tmp/watchdog/latest.json`, and `.tmp/watchdog/lock`.
+- `.tmp/orchestrator/state.json`, `.tmp/orchestrator/ledger.json`, and `.tmp/orchestrator/lock`.
+- the run directory of the cycle performing the sweep and the orchestrator run directory named by
+  a `running` `state.json`.
+- a `devboard-<pid>.lock` whose pid is still alive.
+
+Run it by hand from `.devboard`:
+
+```bash
+bun run cleanup -- --dry-run --root <root>   # list every candidate path and byte size
+bun run cleanup -- --once --root <root>      # delete and print one summary per directory
+```
+
+`--dry-run` is also the default when neither flag is given, and it writes nothing. The watchdog
+cycle performs the same sweep and appends one `cleanup <state-dir>: removed N file(s), ...` line
+per covered directory to `coordinator.log`, including directories with zero removals. The sweep
+deletes outside the canonical checkout only inside the `.devboard/.tmp` directories it covers;
+it creates nothing outside the checkout.
 
 Discovery scans `/proc` for every process running `server/index.ts` that supplies `REPO_DIR` and
 `PORT`, de-duplicates by `(REPO_DIR, PORT)`, resolves the serving harness from `STATIC_DIR` or
