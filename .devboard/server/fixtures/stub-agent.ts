@@ -10,14 +10,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { frontmatterStatus, isPendingStatus, setFrontmatterStatus } from "./adr-source";
 
 /**
  * A deterministic ACP peer for the interface's browser verification and tests.
  *
  * It answers the protocol handshake, streams a little activity, optionally
- * interviews the developer, writes `- Status: Accepted` into the record named
- * in the prompt, and ends the turn. With `--discover` it instead stages the
- * sheet, glossary, and five Discover skills named by `/discover <staging-dir>`.
+ * interviews the developer, writes `status: accepted` into the frontmatter of
+ * the record named in the prompt, and ends the turn. With `--discover` it
+ * instead stages the sheet, glossary, and five Discover skills named by
+ * `/discover <staging-dir>`.
  */
 
 function argument(name: string): string | undefined {
@@ -177,7 +179,7 @@ function pendingCount(directory: string): number {
   try {
     return readdirSync(directory)
       .filter((file) => file.endsWith(".md"))
-      .filter((file) => /^\s*(?:[-*+]\s+)?status\s*:\s*proposed\s*$/im.test(readFileSync(join(directory, file), "utf8")))
+      .filter((file) => isPendingStatus(frontmatterStatus(readFileSync(join(directory, file), "utf8"))))
       .length;
   } catch {
     return 0;
@@ -186,10 +188,8 @@ function pendingCount(directory: string): number {
 
 function markAccepted(file: string) {
   const source = readFileSync(file, "utf8");
-  const updated = /^\s*(?:[-*+]\s+)?status\s*:\s*proposed\s*$/im.test(source)
-    ? source.replace(/^(\s*(?:[-*+]\s+)?status\s*:\s*)proposed\s*$/im, "$1Accepted")
-    : `${source.replace(/\s*$/, "")}\n\n- Status: Accepted\n`;
-  writeFileSync(file, updated);
+  if (frontmatterStatus(source) === undefined) return;
+  writeFileSync(file, setFrontmatterStatus(source, "accepted"));
 }
 
 interface FixtureEpic {

@@ -1,13 +1,15 @@
+import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parseRecord, readRecords } from "./records";
+import { readRecords } from "./records";
 
 const temporaryDirectories: string[] = [];
+const TEMP_ROOT = join(import.meta.dir, "..", ".tmp");
 
 async function temporaryDirectory() {
-  const directory = await mkdtemp(join(tmpdir(), "devboard-adr-"));
+  await mkdir(TEMP_ROOT, { recursive: true });
+  const directory = await mkdtemp(join(TEMP_ROOT, "records-"));
   temporaryDirectories.push(directory);
   return directory;
 }
@@ -18,12 +20,12 @@ afterAll(async () => {
   );
 });
 
-describe("parseRecord", () => {
-  test("reads the title and status from a record", () => {
-    const record = parseRecord(
-      "0001-example.md",
-      "# Example record\n\n- Status: Accepted\n\n## Context\n",
-    );
+describe("readRecords", () => {
+  test("reads the title and status from the frontmatter", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(join(directory, "0001-example.md"), fixtureRecord("0001-example.md", "Example record"));
+
+    const [record] = (await readRecords(directory)).records;
 
     expect(record).toEqual({
       file: "0001-example.md",
@@ -34,67 +36,104 @@ describe("parseRecord", () => {
     });
   });
 
-  test("summarizes the first paragraph of the Decision section", () => {
-    const record = parseRecord(
-      "0007-decision.md",
-      [
-        "# A decision",
-        "",
-        "- Status: Accepted",
-        "",
-        "## Context",
-        "",
-        "This must not be the summary.",
-        "",
-        "## Decision",
-        "",
-        "Use the `boring` runtime for **every** service.",
-        "The second sentence stays in the summary.",
-        "",
-        "## Consequences",
-        "",
-        "Ignored.",
-      ].join("\n"),
+  test("summarizes the first paragraph of the Decision section", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(
+      join(directory, "0007-decision.md"),
+      fixtureRecord(
+        "0007-decision.md",
+        "A decision",
+        "accepted",
+        [
+          "## Context",
+          "",
+          "This must not be the summary.",
+          "",
+          "## Decision",
+          "",
+          "Use the `boring` runtime for **every** service.",
+          "The second sentence stays in the summary.",
+          "",
+          "## Consequences",
+          "",
+          "Ignored.",
+        ].join("\n"),
+      ),
     );
 
-    expect(record.summary).toBe(
+    const [record] = (await readRecords(directory)).records;
+
+    expect(record?.summary).toBe(
       "Use the boring runtime for every service. The second sentence stays in the summary.",
     );
   });
 
-  test("shortens a long decision paragraph at a word boundary", () => {
+  test("shortens a long decision paragraph at a word boundary", async () => {
+    const directory = await temporaryDirectory();
     const paragraph = `${"word ".repeat(80)}end.`;
-    const record = parseRecord(
-      "0008-long.md",
-      `# Long\n\n- Status: Proposed\n\n## Decision\n\n${paragraph}\n`,
+    await writeFile(
+      join(directory, "0008-long.md"),
+      fixtureRecord("0008-long.md", "Long", "proposed", `## Decision\n\n${paragraph}\n`),
     );
 
-    expect(record.summary.length).toBeLessThanOrEqual(281);
-    expect(record.summary.endsWith("…")).toBe(true);
-    expect(record.summary.startsWith("word word")).toBe(true);
+    const [record] = (await readRecords(directory)).records;
+
+    expect(record?.summary.length).toBeLessThanOrEqual(281);
+    expect(record?.summary.endsWith("…")).toBe(true);
+    expect(record?.summary.startsWith("word word")).toBe(true);
   });
 
-  test("marks only Proposed records as pending", () => {
-    expect(parseRecord("0002.pending.md", "# Waiting\n\n- Status: Proposed\n").pending).toBe(true);
-    expect(parseRecord("0003.accepted.md", "# Done\n\n- Status: Accepted\n").pending).toBe(false);
-    expect(parseRecord("0004.rejected.md", "# Done\n\n- Status: Rejected\n").pending).toBe(false);
+  test("marks draft and proposed records as pending", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(join(directory, "0001-draft.md"), fixtureRecord("0001-draft.md", "Draft", "draft"));
+    await writeFile(
+      join(directory, "0002-proposed.md"),
+      fixtureRecord("0002-proposed.md", "Proposed", "proposed"),
+    );
+    await writeFile(join(directory, "0003-accepted.md"), fixtureRecord("0003-accepted.md", "Accepted"));
+    await writeFile(
+      join(directory, "0004-rejected.md"),
+      fixtureRecord("0004-rejected.md", "Rejected", "rejected"),
+    );
+    await writeFile(
+      join(directory, "0005-deprecated.md"),
+      fixtureRecord("0005-deprecated.md", "Deprecated", "deprecated"),
+    );
+
+    const list = await readRecords(directory);
+
+    expect(list.records.map((record) => [record.file, record.status, record.pending])).toEqual([
+      ["0001-draft.md", "Draft", true],
+      ["0002-proposed.md", "Proposed", true],
+      ["0003-accepted.md", "Accepted", false],
+      ["0004-rejected.md", "Rejected", false],
+      ["0005-deprecated.md", "Deprecated", false],
+    ]);
+    expect(list.next).toBe("0001-draft.md");
   });
 
-  test("accepts a status line without a list marker", () => {
-    expect(parseRecord("0005.md", "# Title\n\nStatus: Proposed\n").pending).toBe(true);
+  test("leaves a file without valid frontmatter out of the list, pending set and next", async () => {
+    const directory = await temporaryDirectory();
+    await writeFile(join(directory, "0001-invalid.md"), "# Invalid\n\nNo frontmatter here.\n");
+    await writeFile(join(directory, "0002-valid.md"), fixtureRecord("0002-valid.md", "Valid", "proposed"));
+
+    const list = await readRecords(directory);
+
+    expect(list.records.map((record) => record.file)).toEqual(["0002-valid.md"]);
+    expect(list.next).toBe("0002-valid.md");
   });
 
-  test("falls back to the file name when there is no title", () => {
-    expect(parseRecord("0006-untitled.md", "- Status: Accepted\n").title).toBe("0006-untitled");
-  });
-});
-
-describe("readRecords", () => {
   test("orders records by file name and marks the lowest pending record as next", async () => {
     const directory = await temporaryDirectory();
-    await writeFile(join(directory, "0002-second.md"), "# Second\n\n- Status: Proposed\n");
-    await writeFile(join(directory, "0001-first.md"), "# First\n\n- Status: Accepted\n");
-    await writeFile(join(directory, "0003-third.md"), "# Third\n\n- Status: Proposed\n");
+    await writeFile(
+      join(directory, "0002-second.md"),
+      fixtureRecord("0002-second.md", "Second", "proposed"),
+    );
+    await writeFile(join(directory, "0001-first.md"), fixtureRecord("0001-first.md", "First"));
+    await writeFile(
+      join(directory, "0003-third.md"),
+      fixtureRecord("0003-third.md", "Third", "proposed"),
+    );
     await writeFile(join(directory, "notes.txt"), "not a record");
 
     const list = await readRecords(directory);
@@ -109,7 +148,7 @@ describe("readRecords", () => {
 
   test("returns null next when every record is resolved", async () => {
     const directory = await temporaryDirectory();
-    await writeFile(join(directory, "0001-first.md"), "# First\n\n- Status: Accepted\n");
+    await writeFile(join(directory, "0001-first.md"), fixtureRecord("0001-first.md", "First"));
 
     const list = await readRecords(directory);
 
@@ -119,11 +158,14 @@ describe("readRecords", () => {
 
   test("reflects records added and removed between reads", async () => {
     const directory = await temporaryDirectory();
-    await writeFile(join(directory, "0001-first.md"), "# First\n\n- Status: Accepted\n");
+    await writeFile(join(directory, "0001-first.md"), fixtureRecord("0001-first.md", "First"));
 
     expect((await readRecords(directory)).next).toBeNull();
 
-    await writeFile(join(directory, "0002-added.md"), "# Added\n\n- Status: Proposed\n");
+    await writeFile(
+      join(directory, "0002-added.md"),
+      fixtureRecord("0002-added.md", "Added", "proposed"),
+    );
     expect((await readRecords(directory)).next).toBe("0002-added.md");
 
     await rm(join(directory, "0002-added.md"));

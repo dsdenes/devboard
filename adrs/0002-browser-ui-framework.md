@@ -1,6 +1,15 @@
+---
+schemaVersion: 0.2.0
+id: "0002"
+title: Browser UI framework
+status: accepted
+date: 2026-10-19
+deciders: ["@dsdenes"]
+affects:
+  - type: path
+    pattern: .devboard/client/App.svelte
+---
 # Browser UI framework
-
-- Status: Accepted
 
 ## Context
 

@@ -1,0 +1,37 @@
+name: ADR
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install harness dependencies
+        working-directory: .devboard
+        run: bun install --frozen-lockfile
+      - name: Lint the decision corpus
+        working-directory: .devboard
+        run: bun run adr:lint
+
+  governing-decisions:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mbeacom/adrkit@v0.20.0
+        with:
+          dir: adrs
+          token: ${{ github.token }}

@@ -67,7 +67,7 @@ A public or persisted schema or shape is not architectural merely because users 
 qualifies only when it is an external compatibility promise that meets all three conditions above.
 Otherwise it is an implementation choice.
 
-Architectural choices are never inferred: an unresolved one becomes a Proposed question record in
+Architectural choices are never inferred: an unresolved one becomes a pending question record in
 Phase G. A question record never blocks an epic. Each selected slice must be able to ship without
 its answer; if it cannot, choose another slice or route, and halt only when no goal-preserving
 slice exists.
@@ -187,12 +187,13 @@ The only source of architectural authority is `<host>/adrs/`. Read every file in
 ADR tool configuration elsewhere, do not look in `docs/adr/` or any other directory, and never
 substitute README, code comments, or commit history for a recorded decision.
 
-A record binds unless it declares itself Superseded, Rejected, Deprecated, or Proposed, or another
-record declares it superseded. A Proposed record is a pending decision, not a binding one. It is
-neither authority nor silence. When the selected goal needs that subject, an explicit goal
-requirement that already fixes the answer makes the record superseded by that requirement: Phase H
-requires the supersession, and no new record is written. Otherwise the slice must route around the
-question; if it cannot, choose another slice, and halt only when no goal-preserving slice exists.
+A record binds unless its own status says it no longer governs or is still awaiting a decision, in
+the directory's vocabulary, or another record declares it superseded. A record whose status is
+pending is a pending decision, not a binding one. It is neither authority nor silence. When the
+selected goal needs that subject, an explicit goal requirement that already fixes the answer makes
+the record superseded by that requirement: Phase H requires the supersession, and no new record is
+written. Otherwise the slice must route around the question; if it cannot, choose another slice,
+and halt only when no goal-preserving slice exists.
 Never duplicate the record or decide its question.
 
 From the binding records collect only constraints that meet the architectural bar in the preamble:
@@ -303,7 +304,7 @@ each selected epic, and never let one epic's classification justify another's.
 - **recorded** — settled by a binding architectural record, an explicit goal requirement, or
   already fixed architecture; cite the record identifier, the goal statement, or the product
   behavior.
-- **pending** — a non-binding (Proposed) record already asks it. An explicit goal requirement that
+- **pending** — a non-binding pending record already asks it. An explicit goal requirement that
   fixes the answer makes the record superseded by that requirement in Phase H; no new record is
   written. Otherwise never decide it and never write a second record. The selected slice must route
   around it; if it cannot, choose another slice, and halt only when no goal-preserving slice
@@ -374,7 +375,7 @@ belong to the implementer.
 The file carries exactly these parts:
 
 - **Title** — the architectural decision in a few words.
-- **Status** — `Proposed`, spelled as the directory spells it.
+- **Status** — the directory's pending status, spelled as the directory spells it.
 - **Context** — the decision to be made; why it is required now; the constraints any answer must
   satisfy; and the tradeoffs that make the choice consequential. State all of it in domain terms.
   Refer to another decision record by identifier when it is relevant; never cite any other
@@ -393,19 +394,24 @@ what will happen next. `Consequences` lists answers and outcomes, never a recomm
 NEVER prescribe schemas, message names, fields, file layouts, or other implementation choices: an
 architectural question is stated as a choice between architectural outcomes.
 
-NEVER write a decision, mark it Accepted or chosen, fill in the `Decision` section, or state a
+NEVER write a decision, mark it resolved or chosen, fill in the `Decision` section, or state a
 preference — the question is the deliverable.
 
 Before writing, test every realistic answer: if all of them foreclose a capability the project must
 reach, do not write the record; cut the candidate differently, and halt only when no goal-preserving
 slice exists.
 
-Match the directory's numbering, extension, filename pattern, status vocabulary, and the heading it
-uses for consequences when it has one; otherwise use `Consequences`. Use the directory's own
-headings for the context and the decision when it has them; otherwise use `Context` and `Decision`.
-No convention discoverable (directory absent or empty) → create the directory and use
-`NNNN-<kebab-slug>.md`, continuing from `0001`, with `Title`, `Status: Proposed`, `Context`,
-`Consequences`, `Decision` (empty).
+Match the directory's numbering, extension, filename pattern, status vocabulary, metadata shape,
+and the heading it uses for consequences when it has one; otherwise use `Consequences`. Use the
+directory's own headings for the context and the decision when it has them; otherwise use `Context`
+and `Decision`. When the existing records carry YAML frontmatter, the new record opens with the same
+fenced block, the same fields, and the same field order, with the pending status in the frontmatter
+`status` field and the title and identifier filled in the shape the other records use. When they do
+not, the new record uses the directory's status line or bullet instead, and never both. No
+convention discoverable (directory absent or empty) → create the directory and use
+`NNNN-<kebab-slug>.md`, continuing from `0001`, with a title, the pending status, `Context`,
+`Consequences`, and an empty `Decision`, in whichever metadata shape the run can establish from the
+repository.
 
 Re-read the directory before writing. If a pending record already asks the decision, do not write a
 second one: leave the existing record under Open questions in Phase H and continue.
@@ -453,8 +459,8 @@ architectural record. No implementation detail is permitted.
   that must stay unchanged. Name product areas and outcomes, never files, directories, modules,
   symbols, routes, selectors, test artifacts, environment variables, or internal responsibilities.
   State prohibited side effects in product terms, such as changing the goal's meaning, resolving a
-  Proposed record, or writing tracker state. When an explicit goal requirement conflicts with a
-  binding record, or fixes the answer to a Proposed record, permit the record's status change and
+  pending record, or writing tracker state. When an explicit goal requirement conflicts with a
+  binding record, or fixes the answer to a pending record, permit the record's status change and
   its pointer required by ADR alignment, and nothing else in that record.
 - **Non-goals** — what this epic deliberately excludes, including the remainder cut in Phase E:
   for `granular`, the rest of the balanced slice; for `milestone`, the other capabilities left
@@ -464,15 +470,15 @@ architectural record. No implementation detail is permitted.
   no pending record is superseded, stated as such. Do not paste or restate the record's schemas,
   message names, fields, commands, or payloads. When an explicit goal requirement conflicts with a
   binding record, name the record, quote the requirement, state that the conflict is resolved in
-  favor of the goal, and make the supersession a success criterion: the record's status becomes
-  `Superseded` with a pointer to that requirement, and nothing else in the record changes. When an
-  explicit goal requirement fixes the answer to a Proposed record, name that record and require the
-  same supersession.
+  favor of the goal, and make the supersession a success criterion: the record's status becomes the
+  directory's superseded status with a pointer to that requirement, and nothing else in the record
+  changes. When an explicit goal requirement fixes the answer to a pending record, name that record
+  and require the same supersession.
 - **Implementation freedom** — every technical decision not needed to state or observe the
   criteria belongs to the implementer. The implementer chooses all names, formats, schemas and
   shapes, structures, mechanisms, libraries, and tests. This epic prescribes none of them. This
   section never authorises changing a record other than the supersession named in ADR alignment.
-- **Open questions** — `None.` unless Phase G wrote a Proposed architectural record or an existing
+- **Open questions** — `None.` unless Phase G wrote a pending architectural record or an existing
   pending architectural record applies to the work without blocking it; name each by identifier
   and title and state that the implementation must not decide it. Never list an implementation
   question here.

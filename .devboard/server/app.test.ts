@@ -1,3 +1,4 @@
+import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -42,7 +43,7 @@ async function startServer(
   await mkdir(adrDir, { recursive: true });
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>ADR overview</title>");
-  await writeFile(join(adrDir, "0001-first.md"), "# First\n\n- Status: Accepted\n");
+  await writeFile(join(adrDir, "0001-first.md"), fixtureRecord("0001-first.md", "First"));
   if (options.goalText !== undefined) {
     await writeFile(options.goalFile ?? join(root, "GOAL.md"), options.goalText);
   }
@@ -225,7 +226,7 @@ describe("createApp", () => {
     try {
       expect(await listRecords(url)).toMatchObject({ next: null });
 
-      await writeFile(join(adrDir, "0002-added.md"), "# Added\n\n- Status: Proposed\n");
+      await writeFile(join(adrDir, "0002-added.md"), fixtureRecord("0002-added.md", "Added", "proposed"));
       expect(await listRecords(url)).toMatchObject({ next: "0002-added.md" });
 
       await rm(join(adrDir, "0002-added.md"));

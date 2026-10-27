@@ -1,3 +1,4 @@
+import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -63,7 +64,7 @@ async function startServer(options: ServerOptions = {}): Promise<TestServer> {
   const goalText = options.goalText === undefined ? GOAL_TEXT : options.goalText;
   if (goalText !== null) await writeFile(goalFile, goalText);
   if (options.pendingAdr === true) {
-    await writeFile(join(adrDir, "0001-decision.md"), "# A decision\n\n- Status: Proposed\n");
+    await writeFile(join(adrDir, "0001-decision.md"), fixtureRecord("0001-decision.md", "A decision", "proposed"));
   }
   for (const [relative, source] of Object.entries(options.files ?? {})) {
     const path = join(root, relative);

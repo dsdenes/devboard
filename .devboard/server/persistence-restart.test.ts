@@ -1,3 +1,4 @@
+import { pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -16,20 +17,7 @@ import { stateFile } from "./state";
 const temporaryDirectories: string[] = [];
 const SERVER = join(import.meta.dir, "index.ts");
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
-const PENDING_ONE = [
-  "# First decision",
-  "",
-  "- Status: Proposed",
-  "",
-  "## Context",
-  "",
-  "First.",
-  "",
-  "## Decision",
-  "",
-  "Choose the first.",
-  "",
-].join("\n");
+const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
 const MANAGED_SKILL = [
   "---",
   "name: behavior-first-testing",

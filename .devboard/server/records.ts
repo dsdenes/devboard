@@ -1,6 +1,5 @@
-import type { Dirent } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename } from "node:path";
+import { lintCorpus, type Adr } from "@adrkit/core";
 
 export interface AdrRecord {
   file: string;
@@ -16,8 +15,6 @@ export interface AdrList {
   next: string | null;
 }
 
-const TITLE_PATTERN = /^#\s+(.+?)\s*$/;
-const STATUS_PATTERN = /^\s*(?:[-*+]\s+)?status\s*:\s*(.+?)\s*$/i;
 const HEADING_PATTERN = /^#{1,6}\s+(.+?)\s*$/;
 const DECISION_HEADING = /^decision$/i;
 const SUMMARY_LIMIT = 280;
@@ -67,30 +64,24 @@ function readDecision(lines: string[]): string {
   return summarizeDecision(paragraph);
 }
 
-export function parseRecord(file: string, source: string): AdrRecord {
-  let title: string | undefined;
-  let status: string | undefined;
-  const lines = source.split(/\r?\n/);
-
-  for (const line of lines) {
-    title ??= TITLE_PATTERN.exec(line)?.[1];
-    status ??= STATUS_PATTERN.exec(line)?.[1];
-    if (title !== undefined && status !== undefined) break;
-  }
-
+/** Projects one adrkit record onto the interface's record contract. */
+export function recordFromAdr(adr: Adr): AdrRecord {
+  const { status } = adr.frontmatter;
   return {
-    file,
-    title: title ?? file.replace(/\.md$/i, ""),
-    status: status ?? "",
-    pending: status?.toLowerCase() === "proposed",
-    summary: readDecision(lines),
+    file: basename(adr.path),
+    title: adr.frontmatter.title,
+    // The interface renders a capitalized status; adrkit stores the lowercase enum.
+    status: status.charAt(0).toUpperCase() + status.slice(1),
+    pending: status === "draft" || status === "proposed",
+    summary: readDecision(adr.body.split(/\r?\n/)),
   };
 }
 
+/** Reads the corpus through adrkit and lists only the records it accepts. */
 export async function readRecords(directory: string): Promise<AdrList> {
-  let entries: Dirent[];
+  let records: Adr[];
   try {
-    entries = await readdir(directory, { withFileTypes: true });
+    ({ records } = await lintCorpus({ dir: directory }));
   } catch (error) {
     // An implementation reset removes the record directory. An absent
     // directory is an empty record set, not a read failure.
@@ -99,17 +90,10 @@ export async function readRecords(directory: string): Promise<AdrList> {
     }
     throw error;
   }
-  const files = entries
-    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".md"))
-    .map((entry) => entry.name)
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
-  const records = await Promise.all(
-    files.map(async (file) => parseRecord(file, await readFile(join(directory, file), "utf8"))),
-  );
-
+  const list = records.map(recordFromAdr).sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
   return {
-    records,
-    next: records.find((record) => record.pending)?.file ?? null,
+    records: list,
+    next: list.find((record) => record.pending)?.file ?? null,
   };
 }

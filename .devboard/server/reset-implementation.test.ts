@@ -1,3 +1,4 @@
+import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   access,
@@ -143,7 +144,7 @@ async function createHost(options: HostOptions = {}): Promise<Host> {
   await writeFile(join(host, "ignored", "cache.bin"), "ignored\n");
   await writeFile(join(host, ".worktree", "sentinel.txt"), "alive\n");
   await writeFile(join(host, ".worktree", "victim.txt"), "victim\n");
-  await writeFile(join(host, "adrs", "0001-old.md"), "# Old\n\n- Status: Accepted\n");
+  await writeFile(join(host, "adrs", "0001-old.md"), fixtureRecord("0001-old.md", "Old"));
   await symlink(join(host, ".worktree", "victim.txt"), join(host, "linked-victim"));
 
   if (options.origin !== false) {
@@ -601,7 +602,7 @@ describe("resetImplementation", () => {
       await pushBase(host);
       await writeFile(
         join(host.host, "adrs", "0002-pending.md"),
-        "# Pending\n\n- Status: Proposed\n",
+        fixtureRecord("0002-pending.md", "Pending", "proposed"),
       );
       const { server, url } = await startServer(host, {
         agentCommand: `bun ${STUB_AGENT} --delay-ms=5000`,

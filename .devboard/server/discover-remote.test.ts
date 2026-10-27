@@ -1,3 +1,4 @@
+import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   cpSync,
@@ -142,7 +143,7 @@ function createFixture(name: string, gate: Gate = "source"): Fixture {
   mkdirSync(join(root, "adrs"), { recursive: true });
   writeRepository(root, `fixture-${name}`);
   writeFileSync(join(root, "GOAL.md"), "# Fixture goal\n\nKeep the fixture buildable.\n");
-  writeFileSync(join(root, "adrs", "0001-fixture.md"), "# Fixture decision\n\n- Status: Accepted\n");
+  writeFileSync(join(root, "adrs", "0001-fixture.md"), fixtureRecord("0001-fixture.md", "Fixture decision"));
   if (gate !== "none") {
     mkdirSync(join(root, ".devboard"), { recursive: true });
     writeFileSync(
