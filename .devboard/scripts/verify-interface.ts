@@ -2284,7 +2284,7 @@ try {
     sidebarHeader: boolean;
     commandChips: number;
     suiteChip: boolean;
-    contextPathChip: boolean;
+    contextPathChips: number;
     sectionsHeading: number;
     sectionTabs: number;
     skillTabs: number;
@@ -2350,7 +2350,7 @@ try {
       sidebarHeader: document.querySelector('[data-testid="sidebar"] .sidebar__header') !== null,
       commandChips: document.querySelectorAll('[data-testid="discover-command-list"] code.code-chip').length,
       suiteChip: document.querySelector('[data-testid="discover-suite-command"] code.code-chip') !== null,
-      contextPathChip: document.querySelector('#workspace-discover [data-field="architecture"] code.code-chip') !== null,
+      contextPathChips: document.querySelectorAll('#workspace-discover [data-testid="discover-contexts"] .discover-context__head code').length,
       sectionsHeading: sections === null ? -1 : sections.querySelectorAll('.sidebar-group__title').length,
       sectionTabs: sections === null ? -1 : sections.querySelectorAll('[data-testid="discover-tab"]').length,
       skillTabs: skills === null ? -1 : skills.querySelectorAll('[data-testid="discover-tab"]').length,
@@ -2409,11 +2409,8 @@ try {
     "a command row is not drawn with the shared code chip",
     discoverTables,
   );
-  check(
-    discoverTables.suiteChip && discoverTables.contextPathChip,
-    "commands and paths do not share one inline-code presentation",
-    discoverTables,
-  );
+  check(discoverTables.suiteChip, "the whole-suite command is not drawn with the shared code chip", discoverTables);
+  check(discoverTables.contextPathChips === 0, "a bounded context still renders its repository path", discoverTables);
   check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
   check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
   check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");
@@ -4249,7 +4246,8 @@ try {
     runningIndicatorTitle,
   );
 
-  // The Overview counts the fleet and never renders a singular log or question.
+  // The Overview counts the fleet, lists it in the left column after Open
+  // Agents, and streams the selected agent's output on the right.
   await page.wait(
     `document.querySelector('[data-testid="issues-running-agents"]')?.textContent?.trim() === "3 running"`,
     "the overview running-agent count",
@@ -4257,23 +4255,112 @@ try {
   );
   const overview = await page.eval<{
     cooldowns: string;
-    singularActivity: number;
-    singularQuestion: number;
     link: string;
-  }>(`(() => ({
-    cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
-    singularActivity: document.querySelectorAll('[data-testid="issues-activity"]').length,
-    singularQuestion: document.querySelectorAll('[data-testid="issues-question"]').length,
-    link: document.querySelector('[data-testid="issues-agents-link"]')?.getAttribute("data-command") ?? "",
-  }))()`);
+    summaryIssues: string[];
+    sideBeforeOutput: boolean;
+    leftOfOutput: boolean;
+    linkBeforeSummary: boolean;
+    outputRun: string;
+    outputActivity: string;
+    outputQuestion: string;
+    selected: string;
+    agentsLinkBeforeSummary: boolean;
+  }>(`(() => {
+    const side = document.querySelector('[data-testid="issues-overview-side"]');
+    const output = document.querySelector('[data-testid="issues-overview-output"]');
+    const summary = document.querySelector('[data-testid="issues-agent-summary"]');
+    const link = document.querySelector('[data-testid="issues-agents-link"]');
+    const selected = summary?.querySelector('[aria-current="true"]');
+    const sideRect = side?.getBoundingClientRect();
+    const outputRect = output?.getBoundingClientRect();
+    const linkRect = link?.getBoundingClientRect();
+    const summaryRect = summary?.getBoundingClientRect();
+    return {
+      cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
+      link: link?.getAttribute("data-command") ?? "",
+      summaryIssues: [...(summary?.querySelectorAll("[data-issue]") ?? [])].map(
+        (item) => item.getAttribute("data-issue") ?? "",
+      ),
+      sideBeforeOutput: side !== null && output !== null && side.nextElementSibling === output,
+      leftOfOutput:
+        sideRect !== undefined && outputRect !== undefined &&
+        sideRect.left < outputRect.left && sideRect.right <= outputRect.left + 1,
+      linkBeforeSummary:
+        linkRect !== undefined && summaryRect !== undefined && summaryRect.top >= linkRect.bottom - 1,
+      outputRun: output?.getAttribute("data-run") ?? "",
+      outputActivity: document.querySelector('[data-testid="issues-overview-activity"]')?.textContent ?? "",
+      outputQuestion: document.querySelector('[data-testid="issues-overview-question"]')?.textContent ?? "",
+      selected: selected?.getAttribute("data-run") ?? "",
+      agentsLinkBeforeSummary:
+        link !== null && summary !== null &&
+        (link.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+    };
+  })()`);
   check(
     overview.cooldowns.includes("0 cooling") && overview.cooldowns.includes("none"),
     "the overview does not name the cooldown count and earliest time",
     overview,
   );
-  check(overview.singularActivity === 0, "the overview still renders one activity log", overview);
-  check(overview.singularQuestion === 0, "the overview still renders one question", overview);
   check(overview.link === "open.issues.agents", "the overview has no Agents link", overview);
+  check(overview.agentsLinkBeforeSummary, "the agent list is not after the Open Agents button", overview);
+  check(
+    overview.summaryIssues.join(",") === "17,18,19",
+    "the overview does not list every running agent",
+    overview,
+  );
+  check(overview.sideBeforeOutput, "the agent list is not in the left column", overview);
+  check(overview.leftOfOutput, "the side column does not sit to the left of the output", overview);
+  check(
+    overview.linkBeforeSummary,
+    "the agent list is not directly after the Open Agents button",
+    overview,
+  );
+  check(
+    overview.outputRun === "2026-10-27T10-00-01-000Z" && overview.selected === overview.outputRun,
+    "the overview does not stream the first agent by default",
+    overview,
+  );
+  check(
+    overview.outputActivity.includes("Implementing issue 17") &&
+      overview.outputActivity.includes("Implementing issue 18") === false,
+    "the overview output does not hold the selected agent's activity",
+    overview,
+  );
+  check(
+    overview.outputQuestion.includes("Which scope should issue 17 take?"),
+    "the overview output does not hold the selected agent's question",
+    overview,
+  );
+
+  await page.click('[data-testid="issues-agent-summary"] [data-issue="18"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-overview-output"]')?.getAttribute("data-run") ===
+       "2026-10-27T10-00-02-000Z" &&
+     document.querySelector('[data-testid="issues-overview-activity"]')?.textContent?.includes("Implementing issue 18") === true`,
+    "the output of the clicked agent",
+    8_000,
+  );
+  const switched = await page.eval<{ activity: string; question: string; selected: string }>(`(() => ({
+    activity: document.querySelector('[data-testid="issues-overview-activity"]')?.textContent ?? "",
+    question: document.querySelector('[data-testid="issues-overview-question"]')?.textContent ?? "",
+    selected: document.querySelector('[data-testid="issues-agent-summary"] [aria-current="true"]')?.getAttribute("data-run") ?? "",
+  }))()`);
+  check(
+    switched.activity.includes("Implementing issue 17") === false,
+    "the output kept another agent's activity",
+    switched,
+  );
+  check(
+    switched.question.includes("Which scope should issue 18 take?") &&
+      switched.question.includes("Which scope should issue 17 take?") === false,
+    "the output kept another agent's question",
+    switched,
+  );
+  check(
+    switched.selected === "2026-10-27T10-00-02-000Z",
+    "the agent list does not mark the selected agent",
+    switched,
+  );
 
   // The sidebar lists Agents directly after Overview and counts the fleet.
   const agentsEntry = await page.eval<{
