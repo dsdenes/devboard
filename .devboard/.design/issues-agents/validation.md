@@ -63,7 +63,7 @@
 - `bun run check`: 0 errors, 0 warnings.
 - `bun run verify:interface`: pass (includes the new empty, header, marker, and clipping checks).
 - `bun run verify:issues`: pass.
-- `bun test`: 536 pass, 0 fail.
+- `bun test`: 535 pass, 0 fail.
 
 ## Findings
 
