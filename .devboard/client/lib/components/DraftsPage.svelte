@@ -39,7 +39,6 @@
 <section class="issues-drafts-page" data-testid="issues-drafts" aria-label="Goal drafts">
   <header class="issues-overview__header">
     <div>
-      <p class="muted">Issues</p>
       <h1 class="issues-overview__title">Drafts</h1>
       <p class="issues-overview__repo mono">
         {issues.draftStatus} · {issues.drafts.length} draft(s)
