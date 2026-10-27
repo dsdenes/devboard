@@ -37,6 +37,13 @@ async function startServer(
     runningVersion?: string | null;
     /** Installs this checkout's `origin` before the app resolves it. */
     origin?: string;
+    issues?: {
+      closeIssue?: (request: {
+        repoDir: string;
+        repository: string;
+        number: number;
+      }) => Promise<void>;
+    };
   } = {},
 ) {
   const root = await temporaryDirectory();
@@ -66,6 +73,7 @@ async function startServer(
     restart: options.restart,
     versionState: options.versionState,
     runningVersion: options.runningVersion,
+    ...(options.issues === undefined ? {} : { issues: options.issues }),
   });
   return { server, adrDir, root, url: `127.0.0.1:${server.port}` };
 }
@@ -800,6 +808,78 @@ describe("issues protocol", () => {
         "Issues worker 0.1.0 is running; this dashboard loaded 0.2.0. " +
           "It is left running; Stop it to launch the current harness on the next Start.",
       );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("closes one issue through the bridge with the worker's repository", async () => {
+    const calls: Array<{ repoDir: string; repository: string; number: number }> = [];
+    const { server, root, url } = await startServer({
+      issues: {
+        closeIssue: async (request) => {
+          calls.push({
+            repoDir: request.repoDir,
+            repository: request.repository,
+            number: request.number,
+          });
+        },
+      },
+    });
+    await seedIssues(root);
+
+    try {
+      const message = (await exchange(url, { type: "closeIssue", number: 8 })) as Record<
+        string,
+        unknown
+      >;
+      expect(message).toEqual({ type: "issuesClosed", number: 8, ok: true });
+      expect(calls).toEqual([{ repoDir: resolve(root), repository: "acme/fixture", number: 8 }]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("reports a refused closure without a generic error", async () => {
+    const { server, root, url } = await startServer({
+      issues: {
+        closeIssue: async () => {
+          throw new Error("Could not close issue #8: HTTP 403: Resource not accessible");
+        },
+      },
+    });
+    await seedIssues(root);
+
+    try {
+      const message = (await exchange(url, { type: "closeIssue", number: 8 })) as Record<
+        string,
+        unknown
+      >;
+      expect(message).toEqual({
+        type: "issuesClosed",
+        number: 8,
+        ok: false,
+        message: "Could not close issue #8: HTTP 403: Resource not accessible",
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a close request without a number or without an origin", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      expect(await exchange(url, { type: "closeIssue" })).toEqual({
+        type: "error",
+        message: "Closing an issue needs its number.",
+      });
+      expect(await exchange(url, { type: "closeIssue", number: 8 })).toEqual({
+        type: "issuesClosed",
+        number: 8,
+        ok: false,
+        message: "This checkout has no GitHub origin.",
+      });
     } finally {
       server.stop(true);
     }
