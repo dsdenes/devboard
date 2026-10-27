@@ -1404,6 +1404,11 @@ earliest cooldown time as `data-testid="issues-cooldowns"`, and links to the Age
 the Open Agents button, the running agents in `data-testid="issues-agent-summary"`: one button per
 agent carrying `data-run` and `data-issue`, sorted by issue number, with `aria-current="true"` on
 the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
+Each row also carries `data-testid="issues-close-issue"` with `data-issue`; it closes that issue on
+the tracker as `not planned`, so an issue the operator does not want implemented leaves the next
+poll without stopping the agent already working it. A refused or failed closure leaves the issue
+open and reports the reason as an error notification; a successful one reports
+`Closed issue #<number>.` and disables the control until the queue drops the issue.
 The right column renders only the selected agent's output in
 `data-testid="issues-overview-output"` with `data-run`, its stream in
 `data-testid="issues-overview-activity"`, and its question in
@@ -1506,11 +1511,11 @@ reloading the dashboard never starts a worker: only `data-testid="scout-start"` 
 shows
 `data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`),
 `data-testid="scout-activity"` for the current or newest scan, `data-testid="scout-error"` for the
-last error, `data-testid="scout-shortfall"` while fewer than nine are staged, and
-`data-testid="scout-empty"` with the next action when nothing is staged. One control toggles the
-worker: `data-testid="scout-start"` starts it and becomes `data-testid="scout-stop"` while a worker
-is attached. Stop keeps the staged board; the next Start scans immediately, so there is no
-separate Scan now control.
+last error, and `data-testid="scout-shortfall"` while fewer than nine are staged. The staging
+board renders only while at least one recommendation is staged; a page with nothing staged shows
+no board and no placeholder text. One control toggles the worker: `data-testid="scout-start"`
+starts it and becomes `data-testid="scout-stop"` while a worker is attached. Stop keeps the
+staged board; the next Start scans immediately, so there is no separate Scan now control.
 
 The staging board holds at most nine significant, evidence-backed recommendations, and nine
 whenever nine exist. Each widget carries `data-testid="scout-widget"`, `data-id`, and
@@ -1706,6 +1711,7 @@ The client sends:
 { "type": "stopIssues" }
 { "type": "checkIssues" }
 { "type": "answerIssues", "id": 7, "value": "all", "runId": "2026-10-27T10-00-02-000Z" }
+{ "type": "closeIssue", "number": 240 }
 { "type": "getGoalDrafts" }
 { "type": "getGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "startGoalDraft", "path": ".devboard/goal-proposals/example.md" }
@@ -1763,6 +1769,10 @@ The client sends:
   send no frame.
 - `answerIssues` carries `{ runId, id, value }`; the answer reaches only the agent with that run
   id, and a missing or unknown run id is refused with an `error` that reaches no peer.
+- `closeIssue` carries `{ number }` and closes that issue on the checkout's GitHub origin as
+  `not planned` with a write-capable account. It answers `issuesClosed` with `{ number, ok }` and,
+  on failure, the reason in `message`; a missing number answers `error`. A running agent is not
+  interrupted, and the queue drops the issue on the worker's next poll.
 - `getGoalDrafts` answers `issuesDrafts` with the sorted list of `{ path, name, heading }` and
   `issuesDraftState` with the current elaboration. `getGoalDraft` answers `issuesDraftDetail` with
   the draft's exact bytes, or `issuesDraftError` when the path is refused or missing.

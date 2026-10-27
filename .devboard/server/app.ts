@@ -149,7 +149,7 @@ export interface AppOptions {
    */
   discoverClone?: RemoteCloneRunner;
   /** Issues mode's test seams; production uses the detached worker itself. */
-  issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
+  issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "closeIssue">;
   /** Auto Scout's test seams; production uses the detached worker itself. */
   scout?: Pick<ScoutBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
 }
@@ -468,6 +468,7 @@ type ClientMessage =
   | { type: "stopIssues" }
   | { type: "checkIssues" }
   | { type: "answerIssues"; id?: unknown; value?: unknown; runId?: unknown }
+  | { type: "closeIssue"; number?: unknown }
   | { type: "getGoalDrafts" }
   | { type: "getGoalDraft"; path?: unknown }
   | { type: "startGoalDraft"; path?: unknown }
@@ -555,6 +556,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
         value: "value" in value ? value.value : undefined,
         runId: "runId" in value ? value.runId : undefined,
       };
+    case "closeIssue":
+      return { type: "closeIssue", number: "number" in value ? value.number : undefined };
     case "getGoalDrafts":
       return { type: "getGoalDrafts" };
     case "getGoalDraft":
@@ -1807,6 +1810,7 @@ export function createApp(options: AppOptions) {
     ...(options.issues?.pollMs === undefined ? {} : { pollMs: options.issues.pollMs }),
     ...(options.issues?.preflight === undefined ? {} : { preflight: options.issues.preflight }),
     ...(options.issues?.spawnWorker === undefined ? {} : { spawnWorker: options.issues.spawnWorker }),
+    ...(options.issues?.closeIssue === undefined ? {} : { closeIssue: options.issues.closeIssue }),
   });
   issues.begin();
 
@@ -5634,6 +5638,23 @@ export function createApp(options: AppOptions) {
                 runId: command.runId,
               });
               if (!result.ok) send(ws, { type: "error", message: result.message });
+            }
+          } else if (command.type === "closeIssue") {
+            if (typeof command.number !== "number") {
+              send(ws, { type: "error", message: "Closing an issue needs its number." });
+            } else {
+              const result = await issues.closeIssue(command.number);
+              if (result.ok) {
+                send(ws, { type: "issuesClosed", number: command.number, ok: true });
+                issues.refresh();
+              } else {
+                send(ws, {
+                  type: "issuesClosed",
+                  number: command.number,
+                  ok: false,
+                  message: result.message,
+                });
+              }
             }
           } else if (command.type === "getGoalDrafts") {
             send(ws, { type: "issuesDrafts", drafts: listGoalDrafts(repoDir) });
