@@ -471,11 +471,14 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   confirmation dialog that names what is deleted and confirms with the `destructive` variant; no
   permanent danger panel exists. Progress and the result render as one warning message under the
   header.
-- **Flow goal header** (`.flow-goal__header`) — the panel title with a 11px state line (`Saved`
-  success, `Unsaved changes` warning, `Interview running` accent, `No goal yet` muted), and an
-  action group: the outline `(Re)create flow goal` and a primary `Save` that is disabled until the
-  draft differs from the saved goal.
-- **Discover skill header** (`.discover-skill__header`) — follows the Flow goal header: the
+- **Flow goal header** (`.flow-goal__header`) — the lead surface's header: one 44px row
+  with an 18px `section-title` word and a 10px status badge (`No goal yet` muted, `Saved`
+  success, `Unsaved changes` warning, `Interview running` accent), then a right-aligned
+  action group that stays on one line. The single filled primary follows the state:
+  `Create flow goal` while no goal exists, `Save` while the draft is unsaved; the other
+  control is outline or secondary, and a disabled Save is never the only emphasis. The
+  badge always states the meaning in words.
+- **Discover skill header** (`.discover-skill__header`) — the skill editor's header: the
   relative path `<skill>/SKILL.md` in the `panel-title` size, with the skill name in `foreground`
   and the file name in `muted-foreground`; a second 11px draft line (`No unsaved changes` muted,
   `Unsaved changes` warning, `Live file missing` error); and a right action group holding the
