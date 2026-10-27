@@ -64,25 +64,27 @@ function filedIssues(report: Record<string, unknown>): FiledIssue[] {
   return issues;
 }
 
-/** The newest run report that started at or after `since`, if it exists. */
-async function newestReport(since: number): Promise<Record<string, unknown> | undefined> {
+/** Every run report written at or after `since`, newest first. */
+async function reportsSince(since: number): Promise<Record<string, unknown>[]> {
   let names: string[];
   try {
     names = (await readdir(join(WATCHDOG_DIR, "runs"))).sort().reverse();
   } catch {
-    return undefined;
+    return [];
   }
+  const reports: Record<string, unknown>[] = [];
   for (const name of names) {
     const path = join(WATCHDOG_DIR, "runs", name, "report.json");
     try {
       const info = await stat(path);
       if (info.mtimeMs < since) continue;
-      return asRecord(JSON.parse(await readFile(path, "utf8")));
+      const report = asRecord(JSON.parse(await readFile(path, "utf8")));
+      if (report !== undefined) reports.push(report);
     } catch {
       continue;
     }
   }
-  return undefined;
+  return reports;
 }
 
 async function ghJson(args: string[]): Promise<Record<string, unknown> | undefined> {
@@ -161,16 +163,18 @@ try {
     );
     await waitFor(
       async () => {
-        const candidate = await newestReport(startedAt);
-        if (candidate === undefined) return undefined;
-        const matching = filedIssues(candidate).filter((issue) => issue.line.includes(marker));
-        if (matching.length > 0) {
-          report = candidate;
-          issues = matching;
-          return true;
+        const reports = await reportsSince(startedAt);
+        for (const candidate of reports) {
+          const matching = filedIssues(candidate).filter((issue) => issue.line.includes(marker));
+          if (matching.length > 0) {
+            report = candidate;
+            issues = matching;
+            return true;
+          }
         }
-        if (candidate.action === "failed") {
-          failure = String(candidate.reason ?? "no reason");
+        const failed = reports.find((candidate) => candidate.action === "failed");
+        if (failed !== undefined) {
+          failure = String(failed.reason ?? "no reason");
           return true;
         }
         return undefined;
