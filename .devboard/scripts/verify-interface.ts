@@ -4130,6 +4130,36 @@ try {
     stoppedConsole,
   );
 
+  // With no active agent the Agents page explains the empty fleet and links back.
+  await page.click('[data-testid="open-issues-agents"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-agents-empty"]') !== null`,
+    "the empty Agents page",
+    8_000,
+  );
+  const emptyAgents = await page.eval<{ grid: boolean; text: string; action: string; label: string }>(`(() => {
+    const action = document.querySelector('[data-testid="issues-agents-overview"]');
+    return {
+      grid: document.querySelector('[data-testid="issues-agents"]') !== null,
+      text: document.querySelector('[data-testid="issues-agents-empty"]')?.textContent ?? "",
+      action: action?.getAttribute("data-command") ?? "",
+      label: action?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(!emptyAgents.grid, "the empty Agents page still renders the grid", emptyAgents);
+  check(emptyAgents.text.includes("No agents running"), "the empty Agents page has no explanation", emptyAgents);
+  check(
+    emptyAgents.action === "open.issues.overview" && emptyAgents.label === "Open Overview",
+    "the empty Agents page has no Overview recovery",
+    emptyAgents,
+  );
+  await page.click('[data-testid="issues-agents-overview"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-overview"]') !== null`,
+    "the Overview from the empty Agents page",
+    8_000,
+  );
+
   await seedIssuesState(stateDir, host, "idle");
   await page.wait(
     `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues idle"`,
@@ -4259,6 +4289,50 @@ try {
     cards,
   );
   check(cards.every((card) => card.status === "running"), "a card has the wrong status", cards);
+  const agentsHeader = await page.eval<{ count: string; asking: string; title: string; eyebrow: string }>(`(() => ({
+    count: document.querySelector('[data-testid="issues-agents-count"]')?.textContent?.trim() ?? "",
+    asking: document.querySelector('[data-testid="issues-agents-asking"]')?.textContent?.trim() ?? "",
+    title: document.querySelector('[data-testid="issues-agents-header"] h1')?.textContent?.trim() ?? "",
+    eyebrow: document.querySelector('[data-testid="issues-agents-header"] .page-header__eyebrow')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    agentsHeader.count === "3 running" && agentsHeader.asking === "3 need an answer",
+    "the Agents header does not count the fleet and its questions",
+    agentsHeader,
+  );
+  check(agentsHeader.title === "Agents" && agentsHeader.eyebrow === "Issues", "the Agents header identity is wrong", agentsHeader);
+  const cardsFit = await page.eval<Array<{ issue: string; statusInside: boolean; activityInside: boolean; asked: boolean }>>(
+    `[...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => {
+      const cardBox = card.getBoundingClientRect();
+      const statusBox = card.querySelector('.issues-agent__head .badge')?.getBoundingClientRect();
+      const activityBox = card.querySelector('[data-testid="issues-agent-activity"]')?.getBoundingClientRect();
+      return {
+        issue: card.getAttribute("data-issue") ?? "",
+        statusInside: statusBox !== undefined && statusBox.bottom <= cardBox.bottom + 0.5,
+        activityInside: activityBox !== undefined && activityBox.bottom <= cardBox.bottom + 0.5,
+        asked: card.getAttribute("data-asked") === "true",
+      };
+    })`,
+  );
+  check(
+    cardsFit.every((card) => card.statusInside && card.activityInside),
+    "an agent card clips its status or activity",
+    cardsFit,
+  );
+  check(
+    cardsFit.every((card) => card.asked),
+    "a card with a pending question does not mark it",
+    cardsFit,
+  );
+  check(
+    await page.eval<boolean>(
+      `(() => {
+        const grid = document.querySelector('[data-testid="issues-agents"]');
+        return grid !== null && grid.scrollWidth <= grid.clientWidth + 1;
+      })()`,
+    ),
+    "the Agents grid overflows horizontally",
+  );
   check(
     await page.eval<number>(`document.querySelectorAll('[data-testid="issues-activity"]').length`) === 0,
     "the Agents page renders a singular activity log",
@@ -4322,6 +4396,18 @@ try {
       afterAnswer[2]?.asked === true,
     "answering one agent changed another agent's question",
     afterAnswer,
+  );
+  check(
+    await page.eval<string>(
+      `document.querySelector('[data-testid="issues-agents-asking"]')?.textContent?.trim() ?? ""`,
+    ) === "2 need an answer",
+    "the Agents header did not follow the remaining questions",
+  );
+  check(
+    await page.eval<number>(
+      `document.querySelectorAll('[data-testid="issues-agent"][data-asked="true"]').length`,
+    ) === 2,
+    "the question marker did not follow the remaining questions",
   );
 
   // A card opens a focus tab that keeps its own status, activity, and question.

@@ -1363,15 +1363,23 @@ the Issues mode. The command palette lists `open.issues.agents` in the `Workspac
 title `Open Agents`.
 
 The tab is `{ id: "agents", kind: "agents", resourceId: "agents", title: "Agents" }` and is
-restored after a reload. The page renders `data-testid="issues-agents-page"` and a grid
-`data-testid="issues-agents"` with one card per running agent, sorted by issue number ascending.
-Each card has `data-testid="issues-agent"`, `data-issue`, `data-run`, and `data-status`, and shows
-the issue number linked to its tracker URL, the issue title, the run id, the start time and elapsed
-time, and the status. Every card renders its agent's full streamed output simultaneously in
-`data-testid="issues-agent-activity"` with `data-run`; each log follows its newest line while the
-operator is at the bottom and stays put when scrolled back. A pending question renders inside only
-that agent's card as `data-testid="issues-agent-question"` with `data-run`, its options with a
-recommended marker, and a free-text answer. The controls are `data-testid="issues-agent-choice"`,
+restored after a reload. The page renders `data-testid="issues-agents-page"` with a page header
+`data-testid="issues-agents-header"` that carries the repository, the running count
+`data-testid="issues-agents-count"`, and, when any agent is blocked, a warning badge
+`data-testid="issues-agents-asking"` naming how many need an answer. With no active agent it
+renders `data-testid="issues-agents-empty"` and an `Open Overview` control
+`data-testid="issues-agents-overview"` instead of the grid.
+
+The grid `data-testid="issues-agents"` holds one card per running agent, sorted by issue number
+ascending. Each card has `data-testid="issues-agent"`, `data-issue`, `data-run`, `data-status`, and
+`data-asked` while its agent waits for an answer; it shows the issue number linked to its tracker
+URL, the issue title, the status word, and one compact elapsed and started-time line whose tooltip
+carries the exact timestamp. The run id appears in the Focus tab, not on the card. Every card
+renders its agent's full streamed output in `data-testid="issues-agent-activity"` with `data-run`,
+inside a 96px scroll surface; each log follows its newest line while the operator is at the bottom
+and stays put when scrolled back. A pending question renders inside only that agent's card as
+`data-testid="issues-agent-question"` with `data-run`, its options with a recommended marker, and a
+free-text answer. The controls are `data-testid="issues-agent-choice"`,
 `data-testid="issues-agent-answer-input"`, and `data-testid="issues-agent-answer-submit"`, each
 carrying `data-run`. Answering sends `{ type: "answerIssues", runId, id, value }`; only the agent
 with that run id receives the value, only its question clears, and a missing or unknown run id is
