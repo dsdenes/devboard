@@ -1089,8 +1089,12 @@ try {
   const statusBar = await page.eval<{
     connection: string;
     project: string;
+    projectTitle: string;
+    projectIcon: boolean;
+    barRight: number;
+    versionsRight: number;
     work: string;
-    mode: string;
+    mode: boolean;
     versions: string;
     reload: { label: string; title: string } | null;
     themeLabel: string;
@@ -1099,11 +1103,18 @@ try {
   }>(`(() => {
     const text = (selector) => document.querySelector(selector)?.textContent?.replace(/\\s+/g, " ").trim() ?? "";
     const reload = document.querySelector('[data-testid="reload-devboard"]');
+    const project = document.querySelector('[data-testid="status-project"]');
+    const bar = document.querySelector('[data-testid="status-bar"]');
+    const versions = document.querySelector('[data-testid="status-bar"] .status-versions');
     return {
       connection: text('[data-testid="status-connection"]'),
       project: text('[data-testid="status-project"]'),
+      projectTitle: project?.closest(".status-project")?.getAttribute("title") ?? "",
+      projectIcon: project?.closest(".status-project")?.querySelector("svg") !== null,
+      barRight: Math.round(bar?.getBoundingClientRect().right ?? -1),
+      versionsRight: Math.round(versions?.getBoundingClientRect().right ?? -1),
       work: text('[data-testid="status-bar"] .status-item[title="Running lanes and open epics"]'),
-      mode: text('[data-testid="status-mode"]'),
+      mode: document.querySelector('[data-testid="status-mode"]') !== null,
       versions: text('[data-testid="status-bar"] .status-versions'),
       reload: reload === null ? null : { label: reload.getAttribute("aria-label") ?? "", title: reload.getAttribute("title") ?? "" },
       themeLabel: document.querySelector('[data-testid="theme-toggle"]')?.getAttribute("aria-label") ?? "",
@@ -1112,8 +1123,17 @@ try {
     };
   })()`);
   check(statusBar.connection === "Connected", "the status bar does not show the connection", statusBar);
-  check(statusBar.project.includes("host"), "the status bar does not show the project path", statusBar);
-  check(statusBar.mode.toLowerCase().includes("pending"), "the status bar does not show the mode status", statusBar);
+  check(
+    statusBar.project === "host" && statusBar.projectTitle.includes("host") && statusBar.projectIcon,
+    "the status bar does not name the project compactly",
+    statusBar,
+  );
+  check(!statusBar.mode, "the status bar still repeats the active mode status", statusBar);
+  check(
+    statusBar.barRight - statusBar.versionsRight <= 48,
+    "the status bar leaves an empty tail after the versions",
+    statusBar,
+  );
   check(statusBar.versions.includes("running") && statusBar.versions.includes("installed"), "the status bar does not show both versions", statusBar);
   check(statusBar.reload !== null, "the stale reload control is missing");
   check(statusBar.reload!.label.includes("0.1.0") && statusBar.reload!.label.includes("9.9.9"), "the reload label does not name both versions", statusBar.reload);

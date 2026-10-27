@@ -34,6 +34,9 @@ new information architecture: each report corrects a specific surface the operat
 | #198 menu padding | Widen the rail to 72px and the mode tabs to 64×52px with 6px/4px padding so labels stop touching the tab edge. Values stay on the approved scale. |
 | #199/#200 testing detail | Show happy-path share and per-level counts; show the declared invocation for the whole suite and each level (`npm test`, `npm run <script>`); keep the recorded program as the command's tooltip. |
 | #201 report control | Move the trigger into the activity-bar application actions; the overlay keeps its selection mode and panel, and its phase drives the control's pressed state. |
+| #202 project path removal | Superseded by #205 (same element, 38 seconds later): removal and redesign cannot both hold. The element is redesigned, not deleted. |
+| #203/#204 mode status | Remove the active-mode status from the status bar: the sidebar and workspace already state it, and the status bar is 26px of global facts. #204 is the same report as #203. |
+| #205 project path redesign | The status bar names the project (last path segment) with a folder mark and the full path in the tooltip; the empty tail is closed by a spacer so counts, versions, and reload align right. |
 
 ## Structure
 
@@ -66,7 +69,10 @@ built bundle in headless Chrome, and asserts, among the existing checks:
   with tone `success`, and the record facts carry no `Next` term;
 - the danger zone carries an `error` badge and a tinted header distinct from its border;
 - clicking a prepared skill renders its document (`skill-content-name` equals the clicked name and
-  `skill-content-text` is non-empty).
+  `skill-content-text` is non-empty);
+- the status bar shows the project's last path segment with its folder mark and the full path in the
+  item's title, carries no `status-mode` item, and right-aligns its tail (versions end within 48px
+  of the bar's right edge).
 
 Screenshots written by the same run: `.devboard/.tmp/interface/discover-overview.png`,
 `goal-overview.png`, `flow-overview.png`, `1024x720.png`.

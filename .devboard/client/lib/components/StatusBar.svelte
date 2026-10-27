@@ -1,10 +1,8 @@
 <script lang="ts">
+  import FolderGit2 from "lucide-svelte/icons/folder-git-2";
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
   import { connection } from "../connection.svelte";
-  import { discover } from "../discover.svelte";
-  import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
-  import { layout } from "../layout.svelte";
   import IconButton from "./ui/icon-button.svelte";
   import WatchdogIndicator from "./watchdog-indicator.svelte";
 
@@ -16,24 +14,17 @@
         : "Disconnected",
   );
 
-  const modeStatus = $derived.by(() => {
-    if (layout.mode === "goal") {
-      if (goal.lifecycleActive) {
-        return goal.lifecycle.paused
-          ? `Lifecycle paused · pass ${goal.lifecycle.pass}`
-          : `Lifecycle ${goal.lifecycle.stage} · pass ${goal.lifecycle.pass}`;
-      }
-      if (goal.running) return `Running ${goal.runTitle ?? "ADR"}`;
-      return `${goal.pendingCount} ADR${goal.pendingCount === 1 ? "" : "s"} pending`;
-    }
-    if (layout.mode === "flow") {
-      const pr = flow.pr === null ? "" : ` · PR #${flow.pr.number} ${flow.pr.state}`;
-      return `Flow ${flow.status}${pr}`;
-    }
-    if (discover.active) return `Discover running${discover.runId === null ? "" : ` · ${discover.runId}`}`;
-    if (discover.stale) return "Discover artifacts stale";
-    if (discover.busy !== null) return `Discover busy: ${discover.busy}`;
-    return discover.hasArtifacts ? "Discover artifacts ready" : "Discover not run";
+  /**
+   * The status bar names the project, not its directory path: the sidebar owns
+   * the full path, and a home-relative path is unreadable at 11px in a 26px bar.
+   * The last segment is the worktree or repository name the operator recognizes;
+   * the whole path stays in the tooltip.
+   */
+  const projectName = $derived.by(() => {
+    const path = connection.projectPath.trim();
+    if (path.length === 0) return "No project";
+    const segments = path.split(/[\\/]+/).filter((segment) => segment.length > 0);
+    return segments[segments.length - 1] ?? path;
   });
 
   const issuesLabel = $derived.by(() => {
@@ -70,14 +61,13 @@
     <span class="status-dot" data-state={connection.state} aria-hidden="true"></span>
     <span data-testid="status-connection">{connectionLabel}</span>
   </span>
-  <span class="status-item status-item--grow" title={connection.projectPath}>
-    <span class="mono" data-testid="status-project">{connection.projectPath || "No project"}</span>
+  <span class="status-item status-project" title={connection.projectPath}>
+    <FolderGit2 size={12} aria-hidden="true" />
+    <span class="mono" data-testid="status-project">{projectName}</span>
   </span>
+  <span class="status-bar__spacer" aria-hidden="true"></span>
   <span class="status-item" title="Running and total agent lanes">
     <span class="mono">lanes {goal.runningLanes}/{goal.lanes.length}</span>
-  </span>
-  <span class="status-item" title="Active mode status" data-testid="status-mode">
-    {modeStatus}
   </span>
   {#if connection.orchestrator?.present === true}
     <span class="status-item" data-testid="status-issues" title={issuesTitle}>{issuesLabel}</span>
