@@ -140,11 +140,25 @@ export function findOnPath(
   return undefined;
 }
 
-/** The installed `/implement-all-issues` command files for the operator's omp. */
-export function ompCommandPaths(environment: Record<string, string | undefined> = process.env): string[] {
+/** Every directory an omp command may be installed in, checkout first. */
+export function ompCommandPaths(
+  root: string,
+  environment: Record<string, string | undefined> = process.env,
+): string[] {
   const home = environment.HOME ?? homedir();
   return [
-    join(home, ".omp", "agent", "commands", "implement-all-issues.md"),
-    join(home, ".omp", "commands", "implement-all-issues.md"),
+    join(resolve(root), ".omp", "commands"),
+    join(resolve(root), ".omp", "agent", "commands"),
+    join(home, ".omp", "commands"),
+    join(home, ".omp", "agent", "commands"),
   ];
+}
+
+/** Every directory an omp extension may be installed in, checkout first. */
+export function ompExtensionPaths(
+  root: string,
+  environment: Record<string, string | undefined> = process.env,
+): string[] {
+  const home = environment.HOME ?? homedir();
+  return [join(resolve(root), ".omp", "extensions"), join(home, ".omp", "extensions")];
 }

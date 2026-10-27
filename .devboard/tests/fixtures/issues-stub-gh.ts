@@ -60,6 +60,7 @@ const body = issues
       title: entry.title,
       url: entry.html_url,
       createdAt: entry.created_at,
+      labels: Array.isArray(entry.labels) ? entry.labels : [],
     }),
   );
 

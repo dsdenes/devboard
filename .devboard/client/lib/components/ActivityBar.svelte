@@ -57,7 +57,7 @@
   const issuesState = $derived<ModeState>(
     issues.lifecycle === "running" || issues.lifecycle === "pausing"
       ? "running"
-      : issues.question !== null || issues.lifecycle === "failed"
+      : issues.agents.some((agent) => agent.question !== null) || issues.lifecycle === "failed"
         ? "attention"
         : issues.enabled
           ? "idle"

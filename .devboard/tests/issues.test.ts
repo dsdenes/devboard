@@ -9,7 +9,7 @@ import { writeCommand } from "../issues/control";
 import { migrateLegacyLedger, legacyLiveLock, legacyLockRefusal } from "../issues/legacy";
 import { pruneLedger } from "../issues/ledger";
 import { acquireLock, liveLockOwner } from "../issues/lock";
-import { controlDirectory, ledgerPath, lockPath, statePath } from "../issues/paths";
+import { controlDirectory, ledgerPath, lockPath, runsDirectory, statePath } from "../issues/paths";
 import { preflightIssues } from "../issues/preflight";
 import {
   appendActivityLine,
@@ -26,8 +26,8 @@ import {
 import { parseResponse, pollOpenIssues } from "../issues/tracker";
 import {
   IssuesWorker,
-  implementAllPrompt,
   isGoalIssue,
+  promptFor,
   type AcpPeer,
   type IssuesPeerOptions,
 } from "../issues/worker";
@@ -35,7 +35,7 @@ import {
 /**
  * Durable worker tests. Every fixture lives under `.devboard/.tmp`; the tracker
  * is a list, the ACP peer is a controllable fake, and no GitHub object, model,
- * process outside the test, or systemd unit is involved.
+ * or process outside the test is involved.
  */
 
 const harnessRoot = resolve(import.meta.dir, "..");
@@ -210,205 +210,215 @@ async function stop(fixtureUnderTest: Fixture): Promise<void> {
   await fixtureUnderTest.worker.stop();
 }
 
-describe("trigger policy", () => {
-  test("runs once for the backlog and marks every captured issue handled", async () => {
+describe("per-issue fleet", () => {
+  test("starts one peer per unhandled issue in the same poll, with exact prompts", async () => {
+    const f = await fixture({
+      issues: [issue(1), issue(2), goalIssue(3), goalIssue(4)],
+    });
+    try {
+      await waitFor(() => (f.peers.length === 4 ? true : undefined), "four peers");
+      const prompts = f.peers.map((peer) => peer.prompts[0]).sort();
+      expect(prompts).toEqual([
+        "/implement-goal-issue 3",
+        "/implement-goal-issue 4",
+        "/implement-issue 1",
+        "/implement-issue 2",
+      ]);
+      expect(f.peers.every((peer) => peer.prompts.length === 1)).toBe(true);
+      expect(f.peers.every((peer) => peer.closed === false)).toBe(true);
+      const agents = f.state().agents;
+      expect(agents).toHaveLength(4);
+      expect(agents.map((agent) => agent.issueNumber).sort()).toEqual([1, 2, 3, 4]);
+      expect(new Set(agents.map((agent) => agent.runId)).size).toBe(4);
+      expect(f.state().lifecycle).toBe("running");
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("starts twelve peers at once with no concurrency cap", async () => {
+    const issues = Array.from({ length: 12 }, (_, index) => issue(index + 1));
+    const f = await fixture({ issues });
+    try {
+      await waitFor(() => (f.peers.length === 12 ? true : undefined), "twelve peers", 8000);
+      expect(f.peers.map((peer) => peer.prompts[0]).sort()).toEqual(
+        issues.map((entry) => `/implement-issue ${entry.number}`).sort(),
+      );
+      expect(f.state().agents).toHaveLength(12);
+      expect(f.peers.every((peer) => peer.closed === false)).toBe(true);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("never starts a second peer for an issue that already has one", async () => {
+    const f = await fixture({ issues: [issue(1), issue(2), goalIssue(3), issue(4)] });
+    try {
+      await waitFor(() => (f.peers.length === 4 ? true : undefined), "four peers");
+      await f.worker.poll();
+      await f.worker.poll();
+      expect(f.peers).toHaveLength(4);
+      expect(f.state().agents).toHaveLength(4);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("starts a peer for an issue first seen while three peers run", async () => {
     const f = await fixture({ issues: [issue(1), issue(2), issue(3)] });
     try {
-      const peer = await waitFor(() => f.peers[0], "the first peer");
-      expect(peer.prompts).toEqual([implementAllPrompt([1, 2, 3])]);
-      await waitFor(() => (f.state().lifecycle === "running" ? true : undefined), "running");
-      expect(f.state().activeRun?.issueNumbers).toEqual([1, 2, 3]);
-      peer.emit("working");
-      peer.succeed();
-
-      const idle = await waitFor(
-        () => (f.state().lifecycle === "idle" ? f.state() : undefined),
-        "idle",
+      await waitFor(() => (f.peers.length === 3 ? true : undefined), "three peers");
+      const before = [...f.peers];
+      f.issues.push(issue(4));
+      await f.worker.poll();
+      const fourth = await waitFor(
+        () => f.peers.find((peer) => peer.prompts[0] === "/implement-issue 4"),
+        "the fourth peer",
       );
-      expect(idle.runs[0]?.status).toBe("succeeded");
-      expect(idle.runs[0]?.issueNumbers).toEqual([1, 2, 3]);
+      expect(fourth).toBeDefined();
+      expect(f.peers).toHaveLength(4);
+      expect(before.every((peer) => peer.closed === false)).toBe(true);
+      expect(f.state().agents.map((agent) => agent.issueNumber).sort()).toEqual([1, 2, 3, 4]);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("records one handled ledger entry per successful issue", async () => {
+    const f = await fixture({ issues: [issue(1), goalIssue(2)] });
+    try {
+      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two peers");
+      for (const peer of f.peers) peer.succeed();
+      const handled = await waitFor(
+        () => (f.state().queue.every((entry) => entry.handled) ? f.state() : undefined),
+        "both handled",
+      );
+      expect(handled.agents).toEqual([]);
+      expect(handled.runs.every((run) => run.status === "succeeded")).toBe(true);
       const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
-      expect(Object.keys(ledger.handled).sort()).toEqual(["1", "2", "3"]);
-      expect(idle.queue.every((entry) => entry.handled)).toBe(true);
-      expect(peer.closed).toBe(true);
-      const runId = idle.runs[0]!.runId;
-      expect(readActivity(join(f.stateDir, "issues", readdirSync(join(f.stateDir, "issues"))[0]!, "runs", runId))).toContain(
-        "working",
-      );
+      expect(Object.keys(ledger.handled).sort()).toEqual(["1", "2"]);
+      expect(ledger.handled["1"].runId).not.toBe(ledger.handled["2"].runId);
+      expect(handled.lifecycle).toBe("idle");
     } finally {
       await stop(f);
     }
   });
 
-  test("never retriggers a handled issue and runs for a newly opened one", async () => {
-    const f = await fixture({ issues: [issue(1)] });
+  test("a failed agent cools down only its own issue while the others run", async () => {
+    const f = await fixture({ issues: [issue(1), issue(2), issue(3), issue(4)] });
     try {
-      const first = await waitFor(() => f.peers[0], "the first peer");
-      first.succeed();
-      await waitFor(() => (f.state().lifecycle === "idle" ? true : undefined), "idle");
-
-      await f.worker.poll();
-      expect(f.peers).toHaveLength(1);
-
-      f.issues.push(issue(2));
-      await f.worker.poll();
-      const second = await waitFor(() => f.peers[1], "the second peer");
-      second.succeed();
-      await waitFor(() => (f.state().queue.every((entry) => entry.handled) ? true : undefined), "handled queue");
-      expect(f.state().queue.map((entry) => entry.number)).toEqual([1, 2]);
-    } finally {
-      await stop(f);
-    }
-  });
-
-  test("an issue created during a run earns exactly one follow-up", async () => {
-    const f = await fixture({ issues: [issue(1)] });
-    try {
-      const first = await waitFor(() => f.peers[0], "the first peer");
-      f.issues.push(issue(2));
-      await f.worker.poll();
-      await f.worker.poll();
-      expect(f.peers).toHaveLength(1);
-      first.succeed();
-
-      const second = await waitFor(() => f.peers[1], "the follow-up peer");
-      expect(second.prompts).toEqual([implementAllPrompt([2])]);
-      await waitFor(
-        () => (f.state().activeRun?.issueNumbers.join(",") === "2" ? true : undefined),
-        "the follow-up capture",
-      );
-      second.succeed();
-      await waitFor(
-        () => (f.state().lifecycle === "idle" && f.state().queue.every((entry) => entry.handled) ? true : undefined),
-        "the follow-up success",
-      );
-      expect(f.peers).toHaveLength(2);
-    } finally {
-      await stop(f);
-    }
-  });
-
-  test("a failed run publishes the first stderr line and a five-minute cooldown", async () => {
-    const f = await fixture({ issues: [issue(1)] });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the first peer");
-      peer.fail("tracker said no");
+      await waitFor(() => (f.peers.length === 4 ? true : undefined), "four peers");
+      const failing = f.peers.find((peer) => peer.prompts[0] === "/implement-issue 2")!;
+      failing.fail("the tracker refused the push");
       const failed = await waitFor(
-        () => (f.state().lifecycle === "failed" ? f.state() : undefined),
-        "the failed state",
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(2) && run.status === "failed")
+            ? f.state()
+            : undefined,
+        "the failed run",
       );
-      expect(failed.lastError).toBe("tracker said no");
-      expect(failed.runs[0]?.status).toBe("failed");
-      const remaining = Date.parse(failed.nextAttemptAt!) - Date.now();
-      expect(remaining).toBeGreaterThan(4 * 60_000);
-      expect(remaining).toBeLessThanOrEqual(5 * 60_000);
-      expect(
-        existsSync(ledgerPath(f.stateDir, f.root))
-          ? Object.keys(JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8")).handled).length
-          : 0,
-      ).toBe(0);
+      expect(failed.runs.find((run) => run.issueNumbers.includes(2))?.firstStderrLine).toBe(
+        "the tracker refused the push",
+      );
+      expect(failed.queue.find((entry) => entry.number === 2)?.handled).toBe(false);
+      const until = Date.parse(failed.cooldowns["2"] ?? "");
+      expect(until - Date.now()).toBeGreaterThan(4 * 60_000);
+      expect(until - Date.now()).toBeLessThanOrEqual(5 * 60_000);
+      expect(failed.cooldowns["1"]).toBeUndefined();
+      expect(failed.cooldowns["3"]).toBeUndefined();
+      expect(failed.cooldowns["4"]).toBeUndefined();
+      expect(failed.agents).toHaveLength(3);
+      expect(f.peers.filter((peer) => peer.closed).length).toBe(1);
 
       await f.worker.poll();
-      expect(f.peers).toHaveLength(1);
+      expect(f.peers).toHaveLength(4);
+      expect(f.state().lifecycle).toBe("running");
+
+      for (const peer of f.peers) {
+        if (!peer.closed) peer.succeed();
+      }
+      const settled = await waitFor(
+        () => (f.state().agents.length === 0 ? f.state() : undefined),
+        "the other agents to finish",
+      );
+      expect(settled.lifecycle).toBe("failed");
+      expect(settled.cooldowns["2"]).toBeDefined();
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("Check now clears every cooldown and retries the gated issue", async () => {
+    const f = await fixture({ issues: [issue(1), issue(2)] });
+    try {
+      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two peers");
+      const failing = f.peers[0]!;
+      const failingPrompt = failing.prompts[0]!;
+      failing.fail("first attempt failed");
+      await waitFor(() => (Object.keys(f.state().cooldowns).length === 1 ? true : undefined), "a cooldown");
+      expect(f.peers).toHaveLength(2);
 
       writeCommand(controlDirectory(f.stateDir, f.root), { type: "check" });
-      const retry = await waitFor(() => f.peers[1], "the check-now retry");
-      retry.succeed();
-      await waitFor(() => (f.state().lifecycle === "idle" ? true : undefined), "the retry success");
-      expect(f.state().nextAttemptAt).toBeNull();
+      const retried = await waitFor(
+        () => f.peers.find((peer) => peer.prompts[0] === failingPrompt && peer !== failing),
+        "the retried peer",
+      );
+      expect(retried).toBeDefined();
+      await waitFor(() => (Object.keys(f.state().cooldowns).length === 0 ? true : undefined), "no cooldowns");
     } finally {
       await stop(f);
     }
   });
 
-  test("surfaces an ACP question and accepts its answer", async () => {
+  test("a poll with no unhandled issue starts no peer and publishes idle", async () => {
+    const f = await fixture({ issues: [] });
+    try {
+      await waitFor(() => (f.state().poll.lastPollAt !== null ? true : undefined), "the first poll");
+      expect(f.peers).toHaveLength(0);
+      expect(f.state().lifecycle).toBe("idle");
+      expect(f.state().agents).toEqual([]);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a handled issue is not retriggered and a reopened one is new again", async () => {
     const f = await fixture({ issues: [issue(1)] });
     try {
-      const peer = await waitFor(() => f.peers[0], "the peer");
-      peer.ask({ id: 7, message: "Which scope?", options: [], properties: {}, required: undefined });
-      const question = await waitFor(() => f.state().question, "the question");
-      expect(question.message).toBe("Which scope?");
+      const first = await waitFor(() => f.peers[0], "the first peer");
+      first.succeed();
+      await waitFor(
+        () => (f.state().queue.every((entry) => entry.handled) ? true : undefined),
+        "the handled queue",
+      );
+      await f.worker.poll();
+      expect(f.peers).toHaveLength(1);
 
-      writeCommand(controlDirectory(f.stateDir, f.root), { type: "answer", id: 7, value: "all" });
-      await waitFor(() => (f.state().question === null ? true : undefined), "the answered question");
-      expect(peer.activity.map((entry) => entry.text)).toContain("answered all");
-      peer.succeed();
-      await waitFor(() => (f.state().lifecycle === "idle" ? true : undefined), "idle");
+      f.issues.splice(0, f.issues.length);
+      await f.worker.poll();
+      expect(f.state().queue).toEqual([]);
+      await waitFor(() => (Object.keys(JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8")).handled).length === 0 ? true : undefined), "the pruned ledger");
+
+      f.issues.push(issue(1));
+      await f.worker.poll();
+      const reopened = await waitFor(() => f.peers[1], "the reopened peer");
+      expect(reopened.prompts).toEqual(["/implement-issue 1"]);
     } finally {
       await stop(f);
     }
   });
 });
 
-describe("goal-labeled issues", () => {
-  test("implement-all excludes goal issues and states the exclusion verbatim", async () => {
-    const f = await fixture({ issues: [issue(1), goalIssue(2), issue(3)] });
+describe("per-agent state and answers", () => {
+  test("keeps each agent's activity, run directory, and question separate", async () => {
+    const f = await fixture({ issues: [issue(1), issue(2)] });
     try {
-      const peer = await waitFor(() => f.peers[0], "the backlog peer");
-      const prompt = peer.prompts[0] ?? "";
-      expect(prompt).toBe(implementAllPrompt([1, 3]));
-      expect(prompt).toContain("#1, #3");
-      expect(prompt).not.toContain("#2");
-      expect(prompt).toContain(
-        'Do not process, comment on, close, or modify any issue labeled "goal".',
-      );
-      expect(prompt.startsWith("/implement-all-issues Process exactly these open issue numbers: "))
-        .toBe(true);
-      expect(f.state().activeRun?.issueNumbers).toEqual([1, 3]);
-
-      const goal = await waitFor(
-        () => f.peers.find((candidate) => candidate.prompts[0] === "/implement-goal-issue 2"),
-        "the goal peer",
-      );
-      expect(goal).toBeDefined();
-      expect(f.state().agents.map((agent) => agent.issueNumber)).toEqual([2]);
-    } finally {
-      await stop(f);
-    }
-  });
-
-  test("starts no implement-all peer when only goal issues are open", async () => {
-    const f = await fixture({ issues: [goalIssue(7)] });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the goal peer");
-      expect(peer.prompts).toEqual(["/implement-goal-issue 7"]);
-      expect(f.state().activeRun).toBeNull();
-      expect(f.state().agents).toHaveLength(1);
-      expect(f.state().agents[0]?.issueNumber).toBe(7);
-    } finally {
-      await stop(f);
-    }
-  });
-
-  test("runs one concurrent peer per goal issue and never duplicates it", async () => {
-    const f = await fixture({ issues: [goalIssue(1), goalIssue(2)] });
-    try {
-      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two goal peers");
-      const prompts = f.peers.map((peer) => peer.prompts[0]).sort();
-      expect(prompts).toEqual(["/implement-goal-issue 1", "/implement-goal-issue 2"]);
-      const agents = f.state().agents;
-      expect(agents).toHaveLength(2);
-      expect(new Set(agents.map((agent) => agent.runId)).size).toBe(2);
-      expect(agents.map((agent) => agent.issueNumber).sort()).toEqual([1, 2]);
-      expect(f.peers.every((peer) => peer.closed === false)).toBe(true);
-
-      await f.worker.poll();
-      await f.worker.poll();
-      expect(f.peers).toHaveLength(2);
-      expect(f.state().agents).toHaveLength(2);
-    } finally {
-      await stop(f);
-    }
-  });
-
-  test("routes each answer to the peer that asked it", async () => {
-    const f = await fixture({ issues: [goalIssue(1), goalIssue(2)] });
-    try {
-      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two goal peers");
-      await waitFor(() => (f.state().agents.length === 2 ? true : undefined), "two agents");
+      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two peers");
       const [first, second] = f.peers;
       first!.ask({ id: 9, message: "First scope?", options: [], properties: {}, required: undefined });
       second!.ask({ id: 9, message: "Second scope?", options: [], properties: {}, required: undefined });
+      first!.emit("first output");
+      second!.emit("second output");
       const asked = await waitFor(
         () => (f.state().agents.every((agent) => agent.question !== null) ? f.state() : undefined),
         "both questions",
@@ -417,6 +427,13 @@ describe("goal-labeled issues", () => {
       const secondAgent = asked.agents.find((agent) => agent.issueNumber === 2)!;
       expect(firstAgent.question?.message).toBe("First scope?");
       expect(secondAgent.question?.message).toBe("Second scope?");
+
+      const runsBase = runsDirectory(f.stateDir, f.root);
+      expect(readdirSync(runsBase).sort()).toEqual(
+        [firstAgent.runId, secondAgent.runId].sort(),
+      );
+      expect(readActivity(join(runsBase, firstAgent.runId))).toEqual(["first output"]);
+      expect(readActivity(join(runsBase, secondAgent.runId))).toEqual(["second output"]);
 
       writeCommand(controlDirectory(f.stateDir, f.root), {
         type: "answer",
@@ -434,128 +451,58 @@ describe("goal-labeled issues", () => {
       expect(answered.agents.find((agent) => agent.runId === secondAgent.runId)?.question).not.toBeNull();
       expect(first!.activity.map((entry) => entry.text)).toContain("answered only first");
       expect(second!.activity.map((entry) => entry.text)).not.toContain("answered only first");
-      expect(f.state().question).toBeNull();
     } finally {
       await stop(f);
     }
   });
 
-  test("records a successful goal run as handled", async () => {
-    const f = await fixture({ issues: [goalIssue(4)] });
+  test("refuses an answer without a run id or with an unknown one", async () => {
+    const f = await fixture({ issues: [issue(1)] });
     try {
-      const peer = await waitFor(() => f.peers[0], "the goal peer");
-      peer.succeed();
-      const idle = await waitFor(
-        () => (f.state().lifecycle === "idle" ? f.state() : undefined),
-        "idle",
+      const peer = await waitFor(() => f.peers[0], "the peer");
+      peer.ask({ id: 4, message: "Which scope?", options: [], properties: {}, required: undefined });
+      const agent = await waitFor(
+        () => f.state().agents.find((entry) => entry.question !== null),
+        "the question",
       );
-      expect(idle.runs[0]?.status).toBe("succeeded");
-      expect(idle.runs[0]?.issueNumbers).toEqual([4]);
-      expect(f.state().queue[0]?.handled).toBe(true);
-      expect(idle.agents).toEqual([]);
-      const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
-      expect(ledger.handled["4"]).toBeDefined();
+      const answers = controlDirectory(f.stateDir, f.root);
+
+      writeCommand(answers, { type: "answer", id: 4, value: "missing run" });
+      await waitFor(
+        () => (f.state().notice === "An answer needs its run id." ? true : undefined),
+        "the missing-run refusal",
+      );
+      expect(peer.activity.map((entry) => entry.text)).not.toContain("answered missing run");
+
+      writeCommand(answers, { type: "answer", id: 4, value: "unknown run", runId: "not-a-run" });
+      await waitFor(
+        () => (f.state().notice === "That question is no longer waiting for an answer." ? true : undefined),
+        "the unknown-run refusal",
+      );
+      expect(peer.activity.map((entry) => entry.text)).not.toContain("answered unknown run");
+      expect(f.state().agents.find((entry) => entry.runId === agent.runId)?.question).not.toBeNull();
     } finally {
       await stop(f);
     }
   });
 
-  test("a failed goal run gates only its own issue for five minutes", async () => {
-    const f = await fixture({ issues: [goalIssue(1), goalIssue(2)] });
+  test("a successful run removes only its own worktree record and closes its peer", async () => {
+    const f = await fixture({ issues: [issue(1), issue(2)] });
     try {
-      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two goal peers");
-      const failing = f.peers.find((peer) => peer.prompts[0] === "/implement-goal-issue 1")!;
-      const other = f.peers.find((peer) => peer.prompts[0] === "/implement-goal-issue 2")!;
-      failing.fail("goal exploded");
-      const failed = await waitFor(
-        () =>
-          f.state().runs.find((run) => run.issueNumbers.includes(1) && run.status === "failed")
-            ? f.state()
-            : undefined,
-        "the failed goal run",
+      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two peers");
+      const [first, second] = f.peers;
+      first!.succeed();
+      const after = await waitFor(
+        () => (f.state().agents.length === 1 ? f.state() : undefined),
+        "one agent left",
       );
-      expect(failed.runs.find((run) => run.issueNumbers.includes(1))?.firstStderrLine).toBe(
-        "goal exploded",
+      expect(after.agents[0]?.issueNumber).toBe(2);
+      expect(first!.closed).toBe(true);
+      expect(second!.closed).toBe(false);
+      expect(after.queue.find((entry) => entry.number === 1)?.handled).toBe(true);
+      expect(after.queue.find((entry) => entry.number === 2)?.agentRunId).toBe(
+        after.agents[0]?.runId,
       );
-      expect(failed.queue.find((issue) => issue.number === 1)?.handled).toBe(false);
-      const until = Date.parse(failed.goalCooldowns["1"] ?? "");
-      expect(until - Date.now()).toBeGreaterThan(4 * 60_000);
-      expect(until - Date.now()).toBeLessThanOrEqual(5 * 60_000);
-      expect(failed.goalCooldowns["2"]).toBeUndefined();
-      expect(other.closed).toBe(false);
-
-      await f.worker.poll();
-      expect(
-        f.peers.filter((peer) => peer.prompts[0] === "/implement-goal-issue 1"),
-      ).toHaveLength(1);
-      const ledger = existsSync(ledgerPath(f.stateDir, f.root))
-        ? JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"))
-        : { handled: {} };
-      expect(ledger.handled["1"]).toBeUndefined();
-    } finally {
-      await stop(f);
-    }
-  });
-
-  test("pause drains every goal peer before reporting paused", async () => {
-    const f = await fixture({ issues: [goalIssue(1), goalIssue(2)] });
-    try {
-      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two goal peers");
-      writeCommand(controlDirectory(f.stateDir, f.root), { type: "pause" });
-      await waitFor(() => (f.state().lifecycle === "pausing" ? true : undefined), "pausing");
-      expect(f.peers.every((peer) => peer.closed === false)).toBe(true);
-      f.peers[0]!.succeed();
-      expect(f.state().lifecycle).toBe("pausing");
-      f.peers[1]!.succeed();
-      const paused = await waitFor(
-        () => (f.state().lifecycle === "paused" ? f.state() : undefined),
-        "paused",
-      );
-      expect(paused.paused).toBe(true);
-      expect(paused.agents).toEqual([]);
-      expect(f.peers).toHaveLength(2);
-    } finally {
-      await stop(f);
-    }
-  });
-
-  test("stop closes every peer, stops every run, and writes no cooldown", async () => {
-    const f = await fixture({ issues: [issue(3), goalIssue(1), goalIssue(2)] });
-    try {
-      await waitFor(() => (f.peers.length === 3 ? true : undefined), "every peer");
-      writeCommand(controlDirectory(f.stateDir, f.root), { type: "stop" });
-      const stopped = await waitFor(
-        () => (f.state().lifecycle === "stopped" ? f.state() : undefined),
-        "stopped",
-      );
-      expect(f.peers.every((peer) => peer.closed === true)).toBe(true);
-      expect(stopped.runs.map((run) => run.status)).toEqual([
-        "stopped",
-        "stopped",
-        "stopped",
-      ]);
-      expect(stopped.agents).toEqual([]);
-      expect(stopped.goalCooldowns).toEqual({});
-      expect(stopped.nextAttemptAt).toBeNull();
-      expect(existsSync(lockPath(f.root))).toBe(false);
-      const ledger = existsSync(ledgerPath(f.stateDir, f.root))
-        ? JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"))
-        : { handled: {} };
-      expect(Object.keys(ledger.handled)).toEqual([]);
-    } finally {
-      await stop(f);
-    }
-  });
-
-  test("an issue closed by its agent leaves the queue on the next poll", async () => {
-    const f = await fixture({ issues: [goalIssue(5)] });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the goal peer");
-      f.issues.splice(0, f.issues.length);
-      peer.succeed();
-      await waitFor(() => (f.state().lifecycle === "idle" ? true : undefined), "idle");
-      await f.worker.poll();
-      expect(f.state().queue).toEqual([]);
     } finally {
       await stop(f);
     }
@@ -563,59 +510,49 @@ describe("goal-labeled issues", () => {
 });
 
 describe("lifecycle", () => {
-  test("pause drains the active run, resume polls, and stop ends the peer", async () => {
-    const f = await fixture({ issues: [issue(1)] });
+  test("pause drains every peer before reporting paused", async () => {
+    const f = await fixture({ issues: [issue(1), issue(2), goalIssue(3)] });
     try {
-      const peer = await waitFor(() => f.peers[0], "the active peer");
+      await waitFor(() => (f.peers.length === 3 ? true : undefined), "three peers");
       writeCommand(controlDirectory(f.stateDir, f.root), { type: "pause" });
       await waitFor(() => (f.state().lifecycle === "pausing" ? true : undefined), "pausing");
-      expect(peer.closed).toBe(false);
-
-      peer.succeed();
+      expect(f.peers.every((peer) => peer.closed === false)).toBe(true);
+      f.peers[0]!.succeed();
+      expect(f.state().lifecycle).toBe("pausing");
+      f.peers[1]!.succeed();
+      f.peers[2]!.succeed();
       const paused = await waitFor(
         () => (f.state().lifecycle === "paused" ? f.state() : undefined),
         "paused",
       );
       expect(paused.paused).toBe(true);
-      const polls = f.state().poll.lastPollAt;
-      f.issues.push(issue(2));
-      // Integration proof against the worker's real poll timer: a paused worker
-      // must not read the tracker, so waiting past one tick is the assertion.
-      await Bun.sleep(200);
-      expect(f.state().poll.lastPollAt).toBe(polls);
-      expect(f.peers).toHaveLength(1);
-
-      writeCommand(controlDirectory(f.stateDir, f.root), { type: "resume" });
-      const running = await waitFor(() => f.peers[1], "the resumed peer");
-      running.succeed();
-      await waitFor(
-        () => (f.state().lifecycle === "idle" && f.state().queue.every((entry) => entry.handled) ? true : undefined),
-        "the resumed success",
-      );
-
-      f.issues.push(issue(3));
-      await f.worker.poll();
-      const stopping = await waitFor(() => f.peers[2], "the peer to stop");
-      await waitFor(() => (f.state().lifecycle === "running" ? true : undefined), "running");
-      writeCommand(controlDirectory(f.stateDir, f.root), { type: "stop" });
-      const stopped = await waitFor(
-        () => (f.state().lifecycle === "stopped" ? f.state() : undefined),
-        "stopped",
-      );
-      expect(stopping.closed).toBe(true);
-      expect(stopped.enabled).toBe(false);
-      expect(stopped.runs[0]?.status).toBe("stopped");
-      expect(stopped.runs[0]?.issueNumbers).toEqual([3]);
-      expect(existsSync(lockPath(f.root))).toBe(false);
-      const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
-      expect(ledger.handled["3"]).toBeUndefined();
-      expect(stopped.nextAttemptAt).toBeNull();
+      expect(paused.agents).toEqual([]);
     } finally {
       await stop(f);
     }
   });
 
-  test("check now is refused while paused with a notice and no poll", async () => {
+  test("Stop closes every peer, stops every run, and writes no cooldown", async () => {
+    const f = await fixture({ issues: [issue(1), issue(2), goalIssue(3)] });
+    try {
+      await waitFor(() => (f.peers.length === 3 ? true : undefined), "three peers");
+      writeCommand(controlDirectory(f.stateDir, f.root), { type: "stop" });
+      const stopped = await waitFor(
+        () => (f.state().lifecycle === "stopped" ? f.state() : undefined),
+        "stopped",
+      );
+      expect(f.peers.every((peer) => peer.closed === true)).toBe(true);
+      expect(stopped.runs.map((run) => run.status)).toEqual(["stopped", "stopped", "stopped"]);
+      expect(stopped.agents).toEqual([]);
+      expect(stopped.cooldowns).toEqual({});
+      expect(stopped.queue.every((entry) => entry.handled === false)).toBe(true);
+      expect(existsSync(lockPath(f.root))).toBe(false);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("check now while paused writes a notice and polls nothing", async () => {
     const f = await fixture({ issues: [] });
     try {
       writeCommand(controlDirectory(f.stateDir, f.root), { type: "pause" });
@@ -631,34 +568,104 @@ describe("lifecycle", () => {
   });
 });
 
-describe("state and isolation", () => {
-  test("writes atomically, records the worker version, and quarantines damage", async () => {
-    const f = await fixture({ issues: [], harnessVersion: "0.9.7" });
+describe("history and isolation", () => {
+  test("pruning keeps every running run directory", async () => {
+    const issues = Array.from({ length: 55 }, (_, index) => issue(index + 1));
+    const f = await fixture({ issues });
     try {
-      await waitFor(() => (f.state().poll.lastPollAt !== null ? true : undefined), "the first poll");
-      const state = f.state();
-      expect(state.worker?.pid).toBe(process.pid);
-      expect(state.worker?.harnessVersion).toBe("0.9.7");
-      expect(state.worker?.argv.length).toBeGreaterThan(0);
-      expect(readdirSync(join(f.stateDir, "issues", readdirSync(join(f.stateDir, "issues"))[0]!)).some((name) => name.endsWith(".tmp"))).toBe(false);
+      await waitFor(() => (f.peers.length === 55 ? true : undefined), "fifty-five peers", 15_000);
+      const directories = readdirSync(runsDirectory(f.stateDir, f.root));
+      expect(directories).toHaveLength(55);
+      expect(f.state().runs).toHaveLength(55);
+      expect(f.state().runs.every((run) => run.status === "running")).toBe(true);
     } finally {
       await stop(f);
     }
+  });
 
-    const base = await temporaryDirectory("damaged");
+  test("a fresh start terminates every recorded ACP child", async () => {
+    const base = await temporaryDirectory("orphans");
     const root = join(base, "repo");
     const stateDir = join(base, "state");
     await mkdir(root, { recursive: true });
-    await mkdir(join(stateDir, "issues"), { recursive: true });
-    const damaged = statePath(stateDir, root);
-    await mkdir(join(damaged, ".."), { recursive: true });
-    writeFileSync(damaged, '{"version": 1, "root":');
-    expect(loadState(damaged)).toBeUndefined();
-    const names = readdirSync(join(damaged, ".."));
-    expect(names.some((name) => name.includes(".invalid-"))).toBe(true);
-    expect(readFileSync(join(damaged, "..", names.find((name) => name.includes(".invalid-"))!), "utf8")).toBe(
-      '{"version": 1, "root":',
+    await mkdir(stateDir, { recursive: true });
+    const children = [0, 1].map(() =>
+      Bun.spawn({
+        cmd: [process.execPath, "-e", "setTimeout(() => undefined, 60_000)"],
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      }),
     );
+    const identities = [];
+    for (const child of children) {
+      const pid = child.pid;
+      expect(pid).toBeGreaterThan(0);
+      const identity = await waitFor(
+        () => {
+          try {
+            const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\u0000").filter(Boolean);
+            const cwd = readlinkSync(`/proc/${pid}/cwd`);
+            return argv.length > 0 ? { pid, argv, cwd } : undefined;
+          } catch {
+            return undefined;
+          }
+        },
+        "a child identity",
+        2000,
+      );
+      identities.push(identity);
+    }
+    const path = statePath(stateDir, root);
+    const stale = emptyState({ repo: "acme/fixture", root, intervalMs: 60_000 });
+    writeState(path, {
+      ...stale,
+      enabled: true,
+      lifecycle: "running",
+      agents: identities.map((identity, index) => ({
+        runId: `orphan-${index}`,
+        issueNumber: index + 1,
+        startedAt: new Date(0).toISOString(),
+        question: null,
+        acp: identity,
+      })),
+    });
+    for (const identity of identities) {
+      expect(recordedChildAlive(identity)).toBe(true);
+    }
+    expect(parseState(readFileSync(path, "utf8"))?.agents).toHaveLength(2);
+
+    const worker = new IssuesWorker({
+      repoDir: root,
+      stateDir,
+      intervalMs: 60_000,
+      harnessVersion: "0.1.test",
+      listIssues: async () => ({ kind: "issues", issues: [], etag: null }),
+      connect: () => {
+        throw new Error("must not connect");
+      },
+    });
+    workers.push(worker);
+    try {
+      expect(worker.start("acme/fixture")).toBe(true);
+      for (const child of children) {
+        const outcome = await Promise.race([
+          child.exited.then(() => "exited" as const),
+          Bun.sleep(3000).then(() => "timeout" as const),
+        ]);
+        expect(outcome).toBe("exited");
+      }
+      expect(worker.currentState.agents).toEqual([]);
+    } finally {
+      await worker.stop();
+      for (const child of children) {
+        try {
+          process.kill(child.pid, "SIGKILL");
+        } catch {
+          // Already terminated by the worker.
+        }
+      }
+    }
   });
 
   test("two repositories sharing a state directory never share records", async () => {
@@ -668,10 +675,10 @@ describe("state and isolation", () => {
     const second = await fixture({ stateDir: firstState, issues: [issue(2)], label: "isolation-two" });
     try {
       expect(first.path).not.toBe(second.path);
-      expect(existsSync(first.path)).toBe(true);
-      expect(existsSync(second.path)).toBe(true);
       const firstPeer = await waitFor(() => first.peers[0], "the first peer");
       const secondPeer = await waitFor(() => second.peers[0], "the second peer");
+      expect(firstPeer.prompts).toEqual(["/implement-issue 1"]);
+      expect(secondPeer.prompts).toEqual(["/implement-issue 2"]);
       firstPeer.succeed();
       secondPeer.succeed();
       await waitFor(() => (first.state().lifecycle === "idle" ? true : undefined), "first idle");
@@ -725,66 +732,33 @@ describe("state and isolation", () => {
     }
   });
 
-  test("terminates a proven orphaned ACP child on a fresh start", async () => {
-    const base = await temporaryDirectory("orphan");
+  test("writes atomically and quarantines damage", async () => {
+    const f = await fixture({ issues: [], harnessVersion: "0.9.7" });
+    try {
+      await waitFor(() => (f.state().poll.lastPollAt !== null ? true : undefined), "the first poll");
+      const state = f.state();
+      expect(state.worker?.pid).toBe(process.pid);
+      expect(state.worker?.harnessVersion).toBe("0.9.7");
+      expect(
+        readdirSync(join(f.stateDir, "issues", readdirSync(join(f.stateDir, "issues"))[0]!)).some(
+          (name) => name.endsWith(".tmp"),
+        ),
+      ).toBe(false);
+    } finally {
+      await stop(f);
+    }
+
+    const base = await temporaryDirectory("damaged");
     const root = join(base, "repo");
     const stateDir = join(base, "state");
     await mkdir(root, { recursive: true });
-    await mkdir(stateDir, { recursive: true });
-    const child = Bun.spawn({
-      cmd: [process.execPath, "-e", "setTimeout(() => undefined, 60_000)"],
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    const pid = child.pid;
-    expect(pid).toBeGreaterThan(0);
-    const identity = await waitFor(
-      () => {
-        try {
-          const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\u0000").filter(Boolean);
-          const cwd = readlinkSync(`/proc/${pid}/cwd`);
-          return argv.length > 0 ? { argv, cwd } : undefined;
-        } catch {
-          return undefined;
-        }
-      },
-      "the child identity",
-      2000,
-    );
-    const { argv, cwd } = identity;
-    const path = statePath(stateDir, root);
-    const stale = emptyState({ repo: "acme/fixture", root, intervalMs: 60_000 });
-    writeState(path, { ...stale, acp: { pid, argv, cwd } });
-    expect(recordedChildAlive({ pid, argv, cwd })).toBe(true);
-    expect(loadState(path)?.acp?.pid).toBe(pid);
-    const worker = new IssuesWorker({
-      repoDir: root,
-      stateDir,
-      intervalMs: 60_000,
-      harnessVersion: "0.1.test",
-      listIssues: async () => ({ kind: "issues", issues: [], etag: null }),
-      connect: () => {
-        throw new Error("must not connect");
-      },
-    });
-    workers.push(worker);
-    try {
-      expect(worker.start("acme/fixture")).toBe(true);
-      const outcome = await Promise.race([
-        child.exited.then(() => "exited" as const),
-        Bun.sleep(3000).then(() => "timeout" as const),
-      ]);
-      expect(outcome).toBe("exited");
-      expect(worker.currentState.acp).toBeNull();
-    } finally {
-      await worker.stop();
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // It was already terminated by the worker.
-      }
-    }
+    await mkdir(join(stateDir, "issues"), { recursive: true });
+    const damaged = statePath(stateDir, root);
+    await mkdir(join(damaged, ".."), { recursive: true });
+    writeFileSync(damaged, '{"version": 2, "root":');
+    expect(loadState(damaged)).toBeUndefined();
+    const names = readdirSync(join(damaged, ".."));
+    expect(names.some((name) => name.includes(".invalid-"))).toBe(true);
   });
 
   test("reclaims a lock whose owner is gone", async () => {
@@ -794,15 +768,112 @@ describe("state and isolation", () => {
     await mkdir(join(root, ".devboard", ".tmp", "issues"), { recursive: true });
     writeFileSync(
       lockPath(root),
-      JSON.stringify({ pid: 999_999_999, startedAt: new Date(0).toISOString(), repo: root, stateDir, harnessVersion: null, argv: [] }),
+      JSON.stringify({
+        pid: 999_999_999,
+        startedAt: new Date(0).toISOString(),
+        repo: root,
+        stateDir,
+        harnessVersion: null,
+        argv: [],
+      }),
     );
-    const f = await fixture({ stateDir, issues: [], beforeStart: () => undefined });
+    const f = await fixture({ stateDir, issues: [] });
     try {
       expect(liveLockOwner(lockPath(f.root))?.pid).toBe(process.pid);
     } finally {
       await stop(f);
     }
     expect(existsSync(lockPath(f.root))).toBe(false);
+  });
+});
+
+describe("preflight", () => {
+  async function checkoutWithTools(): Promise<{
+    root: string;
+    bin: string;
+    home: string;
+    environment: Record<string, string | undefined>;
+  }> {
+    const base = await temporaryDirectory("preflight");
+    const root = join(base, "repo");
+    const bin = join(base, "bin");
+    const home = join(base, "home");
+    await mkdir(join(root, ".devboard"), { recursive: true });
+    await mkdir(bin, { recursive: true });
+    await mkdir(home, { recursive: true });
+    Bun.spawnSync({ cmd: ["git", "init", "-q", root] });
+    Bun.spawnSync({
+      cmd: ["git", "-C", root, "remote", "add", "origin", "https://github.com/acme/fixture.git"],
+    });
+    for (const name of ["gh", "omp"]) {
+      writeFileSync(join(bin, name), "#!/bin/sh\nexit 0\n");
+      Bun.spawnSync({ cmd: ["chmod", "+x", join(bin, name)] });
+    }
+    return {
+      root,
+      bin,
+      home,
+      environment: {
+        ...process.env,
+        PATH: `${bin}:/usr/bin:/bin`,
+        HOME: home,
+      },
+    };
+  }
+
+  test("refuses a missing implement-issue command and names the remedies", async () => {
+    const { root, home, environment } = await checkoutWithTools();
+    await mkdir(join(home, ".omp", "commands"), { recursive: true });
+    await mkdir(join(root, ".omp", "extensions"), { recursive: true });
+    writeFileSync(join(root, ".omp", "extensions", "implement-goal-issue.ts"), "export {};\n");
+
+    const result = await preflightIssues({
+      repoDir: root,
+      stateDir: join(root, "state"),
+      environment,
+      run: () => ({ code: 0, stdout: "true", stderr: "" }),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("implement-issue.md");
+    expect(result.message).toContain(join(root, ".omp", "commands"));
+    expect(result.message).toContain(join(home, ".omp", "agent", "commands"));
+    expect(result.message).toContain(".devboard/install.sh");
+  });
+
+  test("refuses a missing implement-goal-issue extension", async () => {
+    const { root, home, environment } = await checkoutWithTools();
+    await mkdir(join(home, ".omp", "agent", "commands"), { recursive: true });
+    writeFileSync(join(home, ".omp", "agent", "commands", "implement-issue.md"), "# command\n");
+
+    const result = await preflightIssues({
+      repoDir: root,
+      stateDir: join(root, "state"),
+      environment,
+      run: () => ({ code: 0, stdout: "true", stderr: "" }),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("implement-goal-issue.ts");
+    expect(result.message).toContain(join(root, ".omp", "extensions"));
+    expect(result.message).toContain(join(home, ".omp", "extensions"));
+    expect(result.message).toContain(".devboard/install.sh");
+  });
+
+  test("accepts both installed wrappers with push permission", async () => {
+    const { root, home, environment } = await checkoutWithTools();
+    await mkdir(join(home, ".omp", "agent", "commands"), { recursive: true });
+    await mkdir(join(home, ".omp", "extensions"), { recursive: true });
+    writeFileSync(join(home, ".omp", "agent", "commands", "implement-issue.md"), "# command\n");
+    writeFileSync(join(home, ".omp", "extensions", "implement-goal-issue.ts"), "export {};\n");
+
+    const result = await preflightIssues({
+      repoDir: root,
+      stateDir: join(root, "state"),
+      environment,
+      run: () => ({ code: 0, stdout: "true", stderr: "" }),
+    });
+    expect(result).toEqual({ ok: true, repository: "acme/fixture" });
   });
 });
 
@@ -904,7 +975,10 @@ describe("legacy orchestrator", () => {
     );
     writeFileSync(
       join(stateDir, "orchestrator", "ledger.json"),
-      JSON.stringify({ version: 1, handled: { "4": { number: 4, runId: "legacy", at: "2026-10-01T00:00:00Z" } } }),
+      JSON.stringify({
+        version: 1,
+        handled: { "4": { number: 4, runId: "legacy", at: "2026-10-01T00:00:00Z" } },
+      }),
     );
 
     expect(migrateLegacyLedger({ stateDir, repoDir: root })).toEqual([
@@ -915,7 +989,6 @@ describe("legacy orchestrator", () => {
     const f = await fixture({ root, stateDir, issues: [issue(4)] });
     try {
       await waitFor(() => (f.state().poll.lastPollAt !== null ? true : undefined), "the first poll");
-      // The migrated number is already handled, so no run covers it.
       expect(f.state().queue.find((entry) => entry.number === 4)?.handled).toBe(true);
       expect(f.peers).toHaveLength(0);
     } finally {
@@ -932,8 +1005,10 @@ describe("legacy orchestrator", () => {
     await mkdir(join(root, ".devboard"), { recursive: true });
     await mkdir(join(stateDir, "orchestrator"), { recursive: true });
     await mkdir(join(home, ".omp", "agent", "commands"), { recursive: true });
+    await mkdir(join(home, ".omp", "extensions"), { recursive: true });
     await mkdir(bin, { recursive: true });
-    writeFileSync(join(home, ".omp", "agent", "commands", "implement-all-issues.md"), "# command\n");
+    writeFileSync(join(home, ".omp", "agent", "commands", "implement-issue.md"), "# command\n");
+    writeFileSync(join(home, ".omp", "extensions", "implement-goal-issue.ts"), "export {};\n");
     for (const name of ["gh", "omp"]) {
       writeFileSync(join(bin, name), "#!/bin/sh\nexit 0\n");
       Bun.spawnSync({ cmd: ["chmod", "+x", join(bin, name)] });
@@ -942,14 +1017,16 @@ describe("legacy orchestrator", () => {
       join(stateDir, "orchestrator", "lock"),
       JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
     );
+    Bun.spawnSync({ cmd: ["git", "init", "-q", root] });
     Bun.spawnSync({
-      cmd: ["git", "init", "-q", root],
+      cmd: ["git", "-C", root, "remote", "add", "origin", "https://github.com/acme/fixture.git"],
     });
-    Bun.spawnSync({ cmd: ["git", "-C", root, "remote", "add", "origin", "https://github.com/acme/fixture.git"] });
 
     const owner = legacyLiveLock(stateDir);
     expect(owner?.pid).toBe(process.pid);
-    expect(legacyLockRefusal(owner!, stateDir)).toContain("systemctl --user stop devboard-orchestrator.service");
+    expect(legacyLockRefusal(owner!, stateDir)).toContain(
+      "systemctl --user stop devboard-orchestrator.service",
+    );
     const result = await preflightIssues({
       repoDir: root,
       stateDir,
@@ -963,35 +1040,60 @@ describe("legacy orchestrator", () => {
 });
 
 describe("state document", () => {
-  test("rejects another version and accepts the empty stopped state", () => {
+  test("accepts version 2 and rejects an unknown version", () => {
     const state: IssuesState = {
-      version: 1,
+      version: 2,
       repo: "acme/fixture",
       root: "/tmp/repo",
       lifecycle: "stopped",
       enabled: false,
       paused: false,
       worker: null,
-      poll: { intervalMs: 2000, lastPollAt: null, nextPollAt: null, etag: null, notModified: false, rateLimitedUntil: null, error: null },
+      poll: {
+        intervalMs: 2000,
+        lastPollAt: null,
+        nextPollAt: null,
+        etag: null,
+        notModified: false,
+        rateLimitedUntil: null,
+        error: null,
+      },
       queue: [],
       runs: [],
-      activeRun: null,
       agents: [],
-      question: null,
-      acp: null,
-      nextAttemptAt: null,
-      goalCooldowns: {},
+      cooldowns: {},
       lastError: null,
       lastExitCode: null,
       finishedAt: null,
       notice: null,
       updatedAt: "2026-10-27T00:00:00Z",
     };
-    expect(parseState(JSON.stringify({ ...state, version: 2 }))).toBeUndefined();
+    expect(parseState(JSON.stringify({ ...state, version: 3 }))).toBeUndefined();
     expect(parseState(JSON.stringify(state))?.lifecycle).toBe("stopped");
 
+    const path = join(testRoot, "state-document.json");
+    writeState(path, state);
+    expect(loadState(path)?.repo).toBe("acme/fixture");
+  });
+
+  test("loads a version 1 document with empty agents and its goal cooldowns", () => {
     const legacy = {
-      ...state,
+      version: 1,
+      repo: "acme/fixture",
+      root: "/tmp/repo",
+      lifecycle: "failed",
+      enabled: true,
+      paused: false,
+      worker: null,
+      poll: {
+        intervalMs: 2000,
+        lastPollAt: null,
+        nextPollAt: null,
+        etag: null,
+        notModified: false,
+        rateLimitedUntil: null,
+        error: null,
+      },
       queue: [
         {
           number: 4,
@@ -1002,13 +1104,39 @@ describe("state document", () => {
           runId: null,
         },
       ],
-      agents: undefined,
-      goalCooldowns: undefined,
+      runs: [],
+      activeRun: {
+        runId: "2026-10-27T10-00-00-000Z",
+        startedAt: "2026-10-27T10:00:00.000Z",
+        issueNumbers: [1, 2],
+      },
+      agents: [
+        {
+          runId: "2026-10-27T10-00-01-000Z",
+          issueNumber: 3,
+          startedAt: "2026-10-27T10:00:01.000Z",
+          question: null,
+          acp: null,
+        },
+      ],
+      question: { id: 1, message: "Which?", options: [] },
+      acp: null,
+      nextAttemptAt: "2026-10-27T10:05:00.000Z",
+      goalCooldowns: { "3": "2026-10-27T10:05:00.000Z" },
+      lastError: "the agent failed",
+      lastExitCode: 1,
+      finishedAt: "2026-10-27T10:01:00.000Z",
+      notice: null,
+      updatedAt: "2026-10-27T10:01:00.000Z",
     };
     const parsed = parseState(JSON.stringify(legacy));
-    expect(parsed?.queue[0]?.labels).toEqual([]);
+    expect(parsed?.version).toBe(2);
     expect(parsed?.agents).toEqual([]);
-    expect(parsed?.goalCooldowns).toEqual({});
+    expect(parsed?.cooldowns).toEqual({ "3": "2026-10-27T10:05:00.000Z" });
+    expect(parsed?.queue[0]?.labels).toEqual([]);
+    expect(parsed?.queue[0]?.agentRunId).toBeNull();
+    expect(parsed?.queue[0]?.handled).toBe(false);
+    expect(parsed?.lifecycle).toBe("failed");
 
     const legacyRun = parseRunFile(
       JSON.stringify({
@@ -1035,9 +1163,17 @@ describe("state document", () => {
       }),
     );
     expect(legacyRun?.issues[0]?.labels).toEqual([]);
+  });
+});
 
-    const path = join(testRoot, "state-document.json");
-    writeState(path, state);
-    expect(loadState(path)?.repo).toBe("acme/fixture");
+describe("prompt contract", () => {
+  test("uses the exact per-issue command and never the all-issues command", () => {
+    expect(promptFor(issue(17))).toBe("/implement-issue 17");
+    expect(promptFor(goalIssue(17))).toBe("/implement-goal-issue 17");
+    expect(isGoalIssue(issue(17, "Issue 17", ["long-goal"]))).toBe(false);
+    expect(isGoalIssue(goalIssue(18))).toBe(true);
+    expect(readFileSync(join(harnessRoot, "issues", "worker.ts"), "utf8")).not.toContain(
+      "implement-all-issues",
+    );
   });
 });

@@ -3,13 +3,17 @@
   import type { WorkspaceTab } from "../layout.svelte";
   import Button from "./ui/button.svelte";
   import DraftsPage from "./DraftsPage.svelte";
-  import Input from "./ui/input.svelte";
+  import IssuesAgentFocus from "./IssuesAgentFocus.svelte";
+  import IssuesAgentLog from "./IssuesAgentLog.svelte";
+  import IssuesAgentQuestion from "./IssuesAgentQuestion.svelte";
 
   interface Props {
     tab: WorkspaceTab | null;
+    openTab?: (tab: WorkspaceTab) => void;
+    closeTab?: (tab: WorkspaceTab) => void;
   }
 
-  let { tab }: Props = $props();
+  let { tab, openTab, closeTab }: Props = $props();
 
   const page = $derived(
     tab?.kind === "drafts"
@@ -18,7 +22,11 @@
         ? "queue"
         : tab?.kind === "runs"
           ? "runs"
-          : "overview",
+          : tab?.kind === "agents"
+            ? "agents"
+            : tab?.kind === "agent"
+              ? "agent"
+              : "overview",
   );
 
   const stateWord = $derived(issues.lifecycle);
@@ -31,40 +39,50 @@
         } · next ${nextCheck ?? "not scheduled"}`,
   );
   const runCount = $derived(issues.runs.length);
-  const activityText = $derived(
-    issues.activity.length === 0 ? "No activity yet." : issues.activity.join("\n"),
-  );
   const agents = $derived(issues.agents);
-  let agentAnswers = $state<Record<string, string>>({});
 
-  let activityElement = $state<HTMLPreElement | null>(null);
-  let followActivity = $state(true);
-
-  // Reading the tracked values keeps the activity pinned to its newest line
-  // unless the operator scrolled back through the log.
+  let now = $state(Date.now());
   $effect(() => {
-    void activityText;
-    void issues.question;
-    if (!followActivity || activityElement === null) return;
-    activityElement.scrollTop = activityElement.scrollHeight;
+    if (page !== "agents") return;
+    const timer = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(timer);
   });
 
-  // A taller or shorter viewport changes how much of the log fits; a follower
-  // stays on the newest line instead of drifting away from it.
-  $effect(() => {
-    const element = activityElement;
-    if (element === null) return;
-    const observer = new ResizeObserver(() => {
-      if (!followActivity) return;
-      element.scrollTop = element.scrollHeight;
+  function issueTitle(number: number): string {
+    return issues.queue.find((issue) => issue.number === number)?.title ?? `Issue ${number}`;
+  }
+
+  function issueUrl(number: number): string {
+    return issues.queue.find((issue) => issue.number === number)?.url ?? "";
+  }
+
+  function elapsed(startedAt: string): string {
+    const start = Date.parse(startedAt);
+    if (!Number.isFinite(start)) return startedAt;
+    const seconds = Math.max(0, Math.round((now - start) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    return minutes === 0 ? `${seconds}s` : `${minutes}m ${seconds % 60}s`;
+  }
+
+  function openAgent(runId: string, issueNumber: number): void {
+    openTab?.({
+      id: `agent:${runId}`,
+      kind: "agent",
+      resourceId: runId,
+      title: `#${issueNumber} ${issueTitle(issueNumber)}`,
     });
-    observer.observe(element);
-    return () => observer.disconnect();
-  });
+  }
 
-  function trackActivityFollow(event: Event & { currentTarget: HTMLPreElement }): void {
-    const element = event.currentTarget;
-    followActivity = element.scrollHeight - element.scrollTop - element.clientHeight <= 8;
+  function closeFocus(current: WorkspaceTab): void {
+    closeTab?.(current);
+  }
+
+  function openRuns(): void {
+    openTab?.({ id: "runs", kind: "runs", resourceId: "runs", title: "Runs" });
+  }
+
+  function openAgents(): void {
+    openTab?.({ id: "agents", kind: "agents", resourceId: "agents", title: "Agents" });
   }
 
   function runStatus(runId: string): string {
@@ -88,7 +106,6 @@
     </header>
 
     <div class="issues-overview__body">
-      <div class="issues-overview__side">
       <section class="panel">
         <div class="panel__header">
           <h2 class="panel__title">Automation</h2>
@@ -152,16 +169,22 @@
               </dd>
             </div>
             <div>
+              <dt>Agents</dt>
+              <dd data-testid="issues-running-agents">{agents.length} running</dd>
+            </div>
+            <div>
               <dt>Queue</dt>
               <dd>{issues.pending} pending · {issues.queue.length} open</dd>
             </div>
             <div>
-              <dt>Runs</dt>
-              <dd>{runCount} kept</dd>
+              <dt>Cooldowns</dt>
+              <dd class="mono" data-testid="issues-cooldowns">
+                {issues.cooldownCount} cooling · earliest {issues.earliestCooldown ?? "none"}
+              </dd>
             </div>
             <div>
-              <dt>Next attempt</dt>
-              <dd class="mono">{issues.snapshot?.nextAttemptAt ?? "none"}</dd>
+              <dt>Runs</dt>
+              <dd>{runCount} kept</dd>
             </div>
           </dl>
           {#if issues.notice !== null}
@@ -172,179 +195,106 @@
               {issues.snapshot?.poll?.error ?? issues.snapshot?.lastError}
             </p>
           {/if}
+          <Button variant="outline" data-testid="issues-agents-link" data-command="open.issues.agents" onclick={openAgents}>
+            Open Agents
+          </Button>
         </div>
       </section>
 
-      <section class="panel issues-activity-panel">
+      <section class="panel">
         <div class="panel__header">
-          <h2 class="panel__title">Goal agents</h2>
+          <h2 class="panel__title">Running agents</h2>
           <span class="panel__subtitle">{agents.length} active</span>
         </div>
-        <div class="panel__body stack-sm" data-testid="issues-agents">
-          {#each agents as agent (agent.runId)}
-            <article
-              class="issues-agent"
-              data-testid="issues-agent"
-              data-issue={agent.issueNumber}
-              data-run={agent.runId}
-            >
-              <header class="toolbar toolbar--between">
-                <span class="mono">#{agent.issueNumber}</span>
-                <span class="badge" data-tone="accent">goal</span>
-                <span class="mono muted">{agent.runId}</span>
-              </header>
-              <pre class="issues-activity mono" data-testid="issues-agent-activity" data-run={agent.runId}>{
-                issues.activityFor(agent.runId).length === 0
-                  ? "No activity yet."
-                  : issues.activityFor(agent.runId).join("\n")
-              }</pre>
-              {#if agent.question !== null}
-                <div
-                  class="issues-question"
-                  data-testid="issues-agent-question"
+        <div class="panel__body stack-sm">
+          <ol class="issues-agent-summary">
+            {#each agents as agent (agent.runId)}
+              <li>
+                <button
+                  type="button"
+                  class="issues-run"
+                  data-command="issues.agent.open"
                   data-run={agent.runId}
                   data-issue={agent.issueNumber}
+                  onclick={() => openAgent(agent.runId, agent.issueNumber)}
                 >
-                  <p>{agent.question.message}</p>
-                  {#if agent.question.options.length > 0}
-                    <div class="choice-list">
-                      {#each agent.question.options as option (option.label)}
-                        <button
-                          type="button"
-                          class="choice"
-                          data-testid="issues-agent-choice"
-                          data-run={agent.runId}
-                          data-command="issues.answer"
-                          onclick={() =>
-                            issues.submitAgentAnswer(agent.runId, agent.question!.id, option.label)}
-                        >
-                          <span class="choice__label">
-                            {option.label}
-                            {#if option.recommended}
-                              <span class="choice__recommended">Recommended</span>
-                            {/if}
-                          </span>
-                          {#if option.description}
-                            <span class="choice__description">{option.description}</span>
-                          {/if}
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
-                  <form
-                    class="issues-answer"
-                    onsubmit={(event) => {
-                      event.preventDefault();
-                      issues.submitAgentAnswer(
-                        agent.runId,
-                        agent.question!.id,
-                        agentAnswers[agent.runId] ?? "",
-                      );
-                      agentAnswers = { ...agentAnswers, [agent.runId]: "" };
-                    }}
-                  >
-                    <Input
-                      type="text"
-                      value={agentAnswers[agent.runId] ?? ""}
-                      oninput={(event) =>
-                        (agentAnswers = { ...agentAnswers, [agent.runId]: event.currentTarget.value })}
-                      placeholder="Your answer"
-                      aria-label={`Your answer for issue ${agent.issueNumber}`}
-                      data-testid="issues-agent-answer-input"
-                      data-run={agent.runId}
-                    />
-                    <Button
-                      variant="default"
-                      type="submit"
-                      data-command="issues.answer"
-                      data-testid="issues-agent-answer-submit"
-                      data-run={agent.runId}
-                      disabled={(agentAnswers[agent.runId] ?? "").trim().length === 0}
-                    >
-                      Answer
-                    </Button>
-                  </form>
-                </div>
-              {/if}
-            </article>
-          {:else}
-            <p class="muted">No goal-labeled issue is running.</p>
-          {/each}
+                  <span class="mono">#{agent.issueNumber}</span>
+                  <span>{issueTitle(agent.issueNumber)}</span>
+                  <span class="badge" data-tone="accent">running</span>
+                </button>
+              </li>
+            {:else}
+              <li class="muted">No issue is running.</li>
+            {/each}
+          </ol>
         </div>
-      </section>
-      </div>
-
-      <section class="panel issues-activity-panel">
-        <div class="panel__header">
-          <h2 class="panel__title">Agent activity</h2>
-          <span class="panel__subtitle">
-            {issues.snapshot?.activeRun === null || issues.snapshot?.activeRun === undefined
-              ? "No active run"
-              : `Run ${issues.snapshot.activeRun.runId}`}
-          </span>
-        </div>
-        <pre
-          class="issues-activity mono"
-          data-testid="issues-activity"
-          bind:this={activityElement}
-          onscroll={trackActivityFollow}
-        >{activityText}</pre>
-        {#if issues.question !== null}
-          <div class="issues-question" data-testid="issues-question">
-            <p>{issues.question.message}</p>
-            {#if issues.question.options.length > 0}
-              <div class="choice-list">
-                {#each issues.question.options as option (option.label)}
-                  <button
-                    type="button"
-                    class="choice"
-                    data-testid="issues-choice"
-                    data-command="issues.answer"
-                    onclick={() => issues.submitAnswer(option.label)}
-                  >
-                    <span class="choice__label">
-                      {option.label}
-                      {#if option.recommended}
-                        <span class="choice__recommended">Recommended</span>
-                      {/if}
-                    </span>
-                    {#if option.description}
-                      <span class="choice__description">{option.description}</span>
-                    {/if}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-            <form
-              class="issues-answer"
-              onsubmit={(event) => {
-                event.preventDefault();
-                issues.submitAnswer(issues.answer);
-              }}
-            >
-              <Input
-                type="text"
-                value={issues.answer}
-                oninput={(event) => (issues.answer = event.currentTarget.value)}
-                placeholder="Your answer"
-                aria-label="Your answer"
-                data-testid="issues-answer-input"
-              />
-              <Button
-                variant="default"
-                type="submit"
-                data-command="issues.answer"
-                data-testid="issues-answer-submit"
-                disabled={issues.answer.trim().length === 0}
-              >
-                Answer
-              </Button>
-            </form>
-          </div>
-        {/if}
       </section>
     </div>
   </section>
+{:else if page === "agents"}
+  <section class="issues-agents-page" data-testid="issues-agents-page" aria-label="Running agents">
+    <header class="issues-overview__header">
+      <div>
+        <p class="muted">Issues</p>
+        <h1 class="issues-overview__title">Agents</h1>
+        <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
+      </div>
+      <span class="badge" data-tone="accent" data-testid="issues-agents-count">{agents.length} running</span>
+    </header>
+    <div class="issues-agent-grid" data-testid="issues-agents">
+      {#each agents as agent (agent.runId)}
+        <article
+          class="issues-agent"
+          data-testid="issues-agent"
+          data-issue={agent.issueNumber}
+          data-run={agent.runId}
+          data-status={issues.statusFor(agent.runId)}
+        >
+          <header class="toolbar toolbar--between">
+            <a class="mono" href={issueUrl(agent.issueNumber)} target="_blank" rel="noreferrer">
+              #{agent.issueNumber}
+            </a>
+            <span class="issues-agent__title">{issueTitle(agent.issueNumber)}</span>
+            <Button
+              variant="outline"
+              data-testid="issues-agent-open"
+              data-run={agent.runId}
+              data-command="issues.agent.open"
+              onclick={() => openAgent(agent.runId, agent.issueNumber)}
+            >
+              Focus
+            </Button>
+          </header>
+          <dl class="issues-facts">
+            <div>
+              <dt>Run</dt>
+              <dd class="mono">{agent.runId}</dd>
+            </div>
+            <div>
+              <dt>Started</dt>
+              <dd class="mono">{agent.startedAt} · {elapsed(agent.startedAt)}</dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd>
+                <span class="badge" data-tone={issues.statusFor(agent.runId) === "failed" ? "error" : "accent"}>
+                  {issues.statusFor(agent.runId)}
+                </span>
+              </dd>
+            </div>
+          </dl>
+          <IssuesAgentLog lines={issues.activityFor(agent.runId)} testid="issues-agent-activity" runId={agent.runId} />
+          {#if agent.question}
+            <IssuesAgentQuestion runId={agent.runId} question={agent.question} testid="issues-agent-question" />
+          {/if}
+        </article>
+      {:else}
+        <p class="muted">No issue is running.</p>
+      {/each}
+    </div>
+  </section>
+{:else if page === "agent" && tab !== null}
+  <IssuesAgentFocus {tab} close={() => closeFocus(tab)} openRuns={openRuns} />
 {:else if page === "queue"}
   <section class="issues-queue-page" aria-label="Open issues">
     <header class="issues-overview__header">
@@ -354,9 +304,6 @@
         <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
       </div>
       <span class="badge" data-tone="warning">{issues.pending} pending</span>
-      {#if issues.goalPending > 0}
-        <span class="badge" data-tone="accent">{issues.goalPending} goal</span>
-      {/if}
     </header>
     <div class="panel">
       <div class="panel__header">
@@ -372,6 +319,7 @@
               data-number={issue.number}
               data-handled={issue.handled}
               data-goal={isGoalIssue(issue)}
+              data-run={issue.agentRunId ?? ""}
             >
               <a class="mono" href={issue.url} target="_blank" rel="noreferrer">#{issue.number}</a>
               <span class="issues-queue__title">{issue.title}</span>
@@ -380,7 +328,9 @@
               {/if}
               {#if issue.handled}
                 <span class="badge" data-tone="success">handled</span>
-              {:else if !isGoalIssue(issue)}
+              {:else if issue.agentRunId !== null}
+                <span class="badge" data-tone="accent" data-testid="issues-running-marker">running</span>
+              {:else}
                 <span class="badge" data-tone="warning">pending</span>
               {/if}
             </li>
@@ -406,7 +356,7 @@
     <div class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Run history</h2>
-        <span class="panel__subtitle">Newest 50</span>
+        <span class="panel__subtitle">Newest 50 plus every running run</span>
       </div>
       <div class="panel__body panel__body--flush">
         <ol class="issues-runs" data-testid="issues-runs">
@@ -426,7 +376,7 @@
                 <span class="badge" data-tone={run.status === "failed" ? "error" : run.status === "running" ? "accent" : "success"}>
                   {run.status}
                 </span>
-                <span class="muted">{run.issueNumbers.length} issue(s)</span>
+                <span class="muted">{run.issueNumbers.map((number) => `#${number}`).join(" ")}</span>
               </button>
             </li>
           {:else}

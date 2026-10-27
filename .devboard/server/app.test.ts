@@ -1,6 +1,6 @@
 import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -87,6 +87,44 @@ function exchange(url: string, command: unknown): Promise<unknown> {
   };
   socket.onerror = () => reject(new Error("websocket failed"));
 
+  return promise;
+}
+
+/**
+ * Collects socket frames until `done` accepts them. The guard timer only keeps
+ * a broken contract from hanging the suite; the assertion is the predicate.
+ */
+function collect(
+  url: string,
+  command: unknown,
+  done: (messages: unknown[]) => boolean,
+): Promise<unknown[]> {
+  const { promise, resolve, reject } = Promise.withResolvers<unknown[]>();
+  const socket = new WebSocket(`ws://${url}/ws`);
+  const messages: unknown[] = [];
+  const guard = setTimeout(() => {
+    socket.close();
+    reject(new Error("websocket frames did not arrive"));
+  }, 5000);
+  socket.onopen = () => socket.send(JSON.stringify(command));
+  socket.onmessage = (event) => {
+    try {
+      messages.push(JSON.parse(String(event.data)));
+    } catch (error) {
+      clearTimeout(guard);
+      socket.close();
+      reject(error);
+      return;
+    }
+    if (!done(messages)) return;
+    clearTimeout(guard);
+    socket.close();
+    resolve(messages);
+  };
+  socket.onerror = () => {
+    clearTimeout(guard);
+    reject(new Error("websocket failed"));
+  };
   return promise;
 }
 
@@ -300,7 +338,7 @@ describe("createApp", () => {
 /** One issues state document as the worker writes it, scoped to `repoDir`. */
 function issuesDocument(repoDir: string, overrides: Record<string, unknown> = {}) {
   return {
-    version: 1,
+    version: 2,
     repo: "acme/fixture",
     root: resolve(repoDir),
     lifecycle: "running",
@@ -330,6 +368,7 @@ function issuesDocument(repoDir: string, overrides: Record<string, unknown> = {}
         createdAt: "2026-10-26T00:00:00Z",
         handled: false,
         runId: null,
+        agentRunId: "2026-10-27T10-00-01-000Z",
       },
       {
         number: 8,
@@ -338,6 +377,16 @@ function issuesDocument(repoDir: string, overrides: Record<string, unknown> = {}
         createdAt: "2026-10-26T01:00:00Z",
         handled: true,
         runId: "2026-10-27T09-00-00-000Z",
+        agentRunId: null,
+      },
+      {
+        number: 9,
+        title: "Third issue",
+        url: "https://github.com/acme/fixture/issues/9",
+        createdAt: "2026-10-26T02:00:00Z",
+        handled: false,
+        runId: null,
+        agentRunId: "2026-10-27T10-00-02-000Z",
       },
     ],
     runs: [
@@ -351,15 +400,48 @@ function issuesDocument(repoDir: string, overrides: Record<string, unknown> = {}
         activity: 1,
         firstStderrLine: null,
       },
+      {
+        runId: "2026-10-27T10-00-01-000Z",
+        status: "running",
+        startedAt: "2026-10-27T10:00:00.000Z",
+        finishedAt: null,
+        exitCode: null,
+        issueNumbers: [7],
+        activity: 2,
+        firstStderrLine: null,
+      },
+      {
+        runId: "2026-10-27T10-00-02-000Z",
+        status: "running",
+        startedAt: "2026-10-27T10:00:00.000Z",
+        finishedAt: null,
+        exitCode: null,
+        issueNumbers: [9],
+        activity: 1,
+        firstStderrLine: null,
+      },
     ],
-    activeRun: {
-      runId: "2026-10-27T10-00-00-000Z",
-      startedAt: "2026-10-27T10:00:00.000Z",
-      issueNumbers: [7],
-    },
-    question: null,
-    acp: null,
-    nextAttemptAt: null,
+    agents: [
+      {
+        runId: "2026-10-27T10-00-01-000Z",
+        issueNumber: 7,
+        startedAt: "2026-10-27T10:00:00.000Z",
+        question: null,
+        acp: { pid: process.pid, argv: ["omp", "acp"], cwd: resolve(repoDir) },
+      },
+      {
+        runId: "2026-10-27T10-00-02-000Z",
+        issueNumber: 9,
+        startedAt: "2026-10-27T10:00:00.000Z",
+        question: {
+          id: 5,
+          message: "Which scope?",
+          options: [],
+        },
+        acp: null,
+      },
+    ],
+    cooldowns: { "10": "2026-10-27T10:05:00.000Z" },
     lastError: null,
     lastExitCode: null,
     finishedAt: null,
@@ -439,14 +521,9 @@ describe("issues protocol", () => {
     }
   });
 
-  test("replays a seeded worker snapshot and its active run", async () => {
+  test("replays a seeded worker snapshot with every running agent", async () => {
     const { server, root, url } = await startServer();
-    const { directory } = await seedIssues(root);
-    await mkdir(join(directory, "runs", "2026-10-27T10-00-00-000Z"), { recursive: true });
-    await writeFile(
-      join(directory, "runs", "2026-10-27T10-00-00-000Z", "activity.json"),
-      JSON.stringify(["first line", "second line"]),
-    );
+    await seedIssues(root);
 
     try {
       const message = (await exchange(url, { type: "getIssues" })) as Record<string, unknown>;
@@ -455,8 +532,120 @@ describe("issues protocol", () => {
       expect(message.attached).toBe(true);
       expect(message.lifecycle).toBe("running");
       expect(message.repo).toBe("acme/fixture");
-      expect((message.queue as Array<{ number: number }>).map((entry) => entry.number)).toEqual([7, 8]);
-      expect((message.activeRun as { issueNumbers: number[] }).issueNumbers).toEqual([7]);
+      expect((message.queue as Array<{ number: number }>).map((entry) => entry.number)).toEqual([
+        7, 8, 9,
+      ]);
+      const agents = message.agents as Array<{ runId: string; issueNumber: number }>;
+      expect(agents.map((agent) => agent.issueNumber)).toEqual([7, 9]);
+      expect(message.cooldowns).toEqual({ "10": "2026-10-27T10:05:00.000Z" });
+      expect(message.activeRun).toBeUndefined();
+      expect(message.question).toBeUndefined();
+      expect(message.nextAttemptAt).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("replays every running agent's activity on connect", async () => {
+    const { server, root, url } = await startServer();
+    const { directory } = await seedIssues(root);
+    for (const [runId, lines] of [
+      ["2026-10-27T10-00-01-000Z", ["agent one", "working one"]],
+      ["2026-10-27T10-00-02-000Z", ["agent two"]],
+    ] as const) {
+      await mkdir(join(directory, "runs", runId), { recursive: true });
+      await writeFile(join(directory, "runs", runId, "activity.json"), JSON.stringify(lines));
+    }
+
+    try {
+      const messages = await collect(url, { type: "getIssues" }, (received) => {
+        const replays = received.filter(
+          (message) =>
+            (message as { type?: string }).type === "issuesActivity" &&
+            (message as { replay?: boolean }).replay === true,
+        );
+        return replays.length >= 2;
+      });
+      const replays = messages.filter(
+        (message) =>
+          (message as { type?: string }).type === "issuesActivity" &&
+          (message as { replay?: boolean }).replay === true,
+      );
+      expect(replays).toHaveLength(2);
+      const byRun = new Map(
+        replays.map((message) => {
+          const entry = message as { runId: string; entries: Array<{ text: string }> };
+          return [entry.runId, entry.entries.map((item) => item.text)] as const;
+        }),
+      );
+      expect(byRun.get("2026-10-27T10-00-01-000Z")).toEqual(["agent one", "working one"]);
+      expect(byRun.get("2026-10-27T10-00-02-000Z")).toEqual(["agent two"]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answerIssues refuses a missing or unknown run id and routes a valid one", async () => {
+    const { server, root, url } = await startServer();
+    await seedIssues(root);
+    const control = join(root, "state", "issues", journalKey(resolve(root)), "control");
+
+    try {
+      const missing = (await exchange(url, {
+        type: "answerIssues",
+        id: 5,
+        value: "answer",
+      })) as Record<string, unknown>;
+      expect(missing.type).toBe("error");
+      expect(String(missing.message)).toContain("run id");
+
+      const unknown = (await exchange(url, {
+        type: "answerIssues",
+        id: 5,
+        value: "answer",
+        runId: "2026-10-27T11-00-00-000Z",
+      })) as Record<string, unknown>;
+      expect(unknown.type).toBe("error");
+      expect(String(unknown.message)).toContain("2026-10-27T11-00-00-000Z");
+
+      // A routed answer has no acknowledgement; it reaches the command dir.
+      const socket = new WebSocket(`ws://${url}/ws`);
+      await new Promise<void>((resolve) => {
+        socket.onopen = () => {
+          socket.send(
+            JSON.stringify({
+              type: "answerIssues",
+              id: 5,
+              value: "the whole goal",
+              runId: "2026-10-27T10-00-02-000Z",
+            }),
+          );
+          resolve();
+        };
+      });
+
+      // The command reaches the control directory; the worker consumes it.
+      let command: Record<string, unknown> | undefined;
+      for (let attempt = 0; attempt < 100 && command === undefined; attempt += 1) {
+        if (existsSync(control)) {
+          const name = readdirSync(control).find((entry) => entry.endsWith(".json"));
+          if (name !== undefined) {
+            command = JSON.parse(readFileSync(join(control, name), "utf8")) as Record<
+              string,
+              unknown
+            >;
+            break;
+          }
+        }
+        await Bun.sleep(10);
+      }
+      socket.close();
+      expect(command).toEqual({
+        type: "answer",
+        id: 5,
+        value: "the whole goal",
+        runId: "2026-10-27T10-00-02-000Z",
+      });
     } finally {
       server.stop(true);
     }

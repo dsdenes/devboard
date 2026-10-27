@@ -42,10 +42,8 @@ export interface IssuesSnapshot {
   poll: IssuesState["poll"] | null;
   queue: IssuesState["queue"];
   runs: IssuesState["runs"];
-  activeRun: IssuesState["activeRun"];
   agents: IssuesAgent[];
-  question: IssuesState["question"];
-  nextAttemptAt: string | null;
+  cooldowns: IssuesState["cooldowns"];
   lastError: string | null;
   lastExitCode: number | null;
   finishedAt: string | null;
@@ -199,10 +197,8 @@ export class IssuesBridge {
       poll: active?.poll ?? null,
       queue: state?.queue ?? [],
       runs: state?.runs ?? [],
-      activeRun: active?.activeRun ?? null,
       agents: active?.agents ?? [],
-      question: active?.question ?? null,
-      nextAttemptAt: active?.nextAttemptAt ?? null,
+      cooldowns: active?.cooldowns ?? {},
       lastError: active?.lastError ?? null,
       lastExitCode: active?.lastExitCode ?? null,
       finishedAt: active?.finishedAt ?? null,
@@ -211,7 +207,7 @@ export class IssuesBridge {
     };
   }
 
-  /** A connect-time replay: state, then the active run's whole activity. */
+  /** A connect-time replay: state, then every running agent's activity. */
   replay(target?: { send(data: string): unknown }): void {
     const deliver = target === undefined ? this.send : (event: unknown) => {
       try {
@@ -229,11 +225,7 @@ export class IssuesBridge {
   }
 
   private activeRunIds(snapshot: IssuesSnapshot): string[] {
-    const ids = [
-      ...(snapshot.activeRun === null ? [] : [snapshot.activeRun.runId]),
-      ...snapshot.agents.map((agent) => agent.runId),
-    ];
-    return [...new Set(ids)];
+    return [...new Set(snapshot.agents.map((agent) => agent.runId))];
   }
 
   private entries(lines: string[]): ActivityEntry[] {
@@ -375,6 +367,14 @@ export class IssuesBridge {
     }
     if (state === undefined || !state.enabled || state.lifecycle === "stopped") {
       return { ok: false, message: "No issues worker is running for this checkout." };
+    }
+    if (command.type === "answer") {
+      if (typeof command.runId !== "string" || command.runId.length === 0) {
+        return { ok: false, message: "An answer needs its run id." };
+      }
+      if (!state.agents.some((agent) => agent.runId === command.runId)) {
+        return { ok: false, message: `No agent is running for run ${command.runId}.` };
+      }
     }
     writeCommand(controlDirectory(this.stateDir, this.repoDir), command);
     if (command.type === "stop") this.scheduleStopProof(owner.pid);

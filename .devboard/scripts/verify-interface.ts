@@ -546,11 +546,50 @@ async function seedIssuesState(
   stateDir: string,
   host: string,
   lifecycle: "stopped" | "idle" | "running" | "paused" | "failed",
+  answeredRunId?: string,
 ): Promise<void> {
   const directory = join(stateDir, "issues", journalKey(host));
-  await mkdir(join(directory, "runs", "2026-10-27T10-00-00-000Z"), { recursive: true });
+  await mkdir(join(directory, "runs"), { recursive: true });
   const enabled = lifecycle !== "stopped";
   const running = lifecycle === "running";
+  const agents = [
+    {
+      runId: "2026-10-27T10-00-01-000Z",
+      issueNumber: 17,
+      question: {
+        id: 1,
+        message: "Which scope should issue 17 take?",
+        options: [
+          { label: "The whole issue", description: "Every criterion", recommended: true },
+          { label: "One criterion", description: "Only the first", recommended: false },
+        ],
+      },
+      activity: ["Reading issue 17", "Implementing issue 17"],
+    },
+    {
+      runId: "2026-10-27T10-00-02-000Z",
+      issueNumber: 18,
+      question: {
+        id: 2,
+        message: "Which scope should issue 18 take?",
+        options: [{ label: "The whole issue", recommended: true }],
+      },
+      activity: ["Reading issue 18", "Implementing issue 18"],
+    },
+    {
+      runId: "2026-10-27T10-00-03-000Z",
+      issueNumber: 19,
+      question: {
+        id: 3,
+        message: "Which scope should issue 19 take?",
+        options: [{ label: "The whole issue", recommended: true }],
+      },
+      activity: ["Reading issue 19", "Implementing issue 19"],
+    },
+  ].map((agent) => ({
+    ...agent,
+    question: agent.runId === answeredRunId ? null : agent.question,
+  }));
   const queue = running
     ? [
         ...["17", "18", "19"].map((value) => Number(value)).map((number) => ({
@@ -561,6 +600,7 @@ async function seedIssuesState(
           labels: [] as string[],
           handled: false,
           runId: null,
+          agentRunId: agents.find((agent) => agent.issueNumber === number)?.runId ?? null,
         })),
         ...["20", "21"].map((value) => Number(value)).map((number) => ({
           number,
@@ -570,41 +610,36 @@ async function seedIssuesState(
           labels: ["goal"],
           handled: false,
           runId: null,
+          agentRunId: null,
         })),
-      ]
-    : [];
-  const goalRuns = running
-    ? [
-        { runId: "2026-10-27T10-00-01-000Z", issueNumber: 20 },
-        { runId: "2026-10-27T10-00-02-000Z", issueNumber: 21 },
       ]
     : [];
   const runs = enabled
     ? [
         {
           runId: "2026-10-27T10-00-00-000Z",
-          status: running ? "running" : lifecycle === "failed" ? "failed" : "succeeded",
+          status: lifecycle === "failed" ? "failed" : "succeeded",
           startedAt: "2026-10-27T10:00:00.000Z",
-          finishedAt: running ? null : "2026-10-27T10:01:00.000Z",
-          exitCode: running ? null : lifecycle === "failed" ? 1 : 0,
-          issueNumbers: running ? [17, 18, 19] : [16],
+          finishedAt: "2026-10-27T10:01:00.000Z",
+          exitCode: lifecycle === "failed" ? 1 : 0,
+          issueNumbers: [16],
           activity: 2,
           firstStderrLine: lifecycle === "failed" ? "the agent exited with code 1" : null,
         },
-        ...goalRuns.map((goal) => ({
-          runId: goal.runId,
+        ...agents.map((agent) => ({
+          runId: agent.runId,
           status: "running",
           startedAt: "2026-10-27T10:00:01.000Z",
           finishedAt: null,
           exitCode: null,
-          issueNumbers: [goal.issueNumber],
-          activity: 2,
+          issueNumbers: [agent.issueNumber],
+          activity: agent.activity.length,
           firstStderrLine: null,
         })),
       ]
     : [];
   const state = {
-    version: 1,
+    version: 2,
     repo: "fixture/host",
     root: resolve(host),
     lifecycle,
@@ -630,44 +665,16 @@ async function seedIssuesState(
     },
     queue,
     runs,
-    activeRun: running
-      ? { runId: "2026-10-27T10-00-00-000Z", startedAt: "2026-10-27T10:00:00.000Z", issueNumbers: [17, 18, 19] }
-      : null,
     agents: running
-      ? [
-          {
-            runId: "2026-10-27T10-00-01-000Z",
-            issueNumber: 20,
-            startedAt: "2026-10-27T10:00:01.000Z",
-            question: null,
-            acp: { pid: process.pid, argv: ["omp", "acp"], cwd: resolve(host) },
-          },
-          {
-            runId: "2026-10-27T10-00-02-000Z",
-            issueNumber: 21,
-            startedAt: "2026-10-27T10:00:01.000Z",
-            question: {
-              id: 2,
-              message: "Which goal scope should the agent take?",
-              options: [
-                { label: "The whole goal", description: "Every criterion", recommended: true },
-                { label: "One criterion", description: "Only the first", recommended: false },
-              ],
-            },
-            acp: { pid: process.pid, argv: ["omp", "acp"], cwd: resolve(host) },
-          },
-        ]
+      ? agents.map((agent) => ({
+          runId: agent.runId,
+          issueNumber: agent.issueNumber,
+          startedAt: "2026-10-27T10:00:01.000Z",
+          question: agent.question,
+          acp: { pid: process.pid, argv: ["omp", "acp"], cwd: resolve(host) },
+        }))
       : [],
-    question: running
-      ? {
-          id: 1,
-          message: "Which issue scope should the agent take?",
-          options: [{ label: "Every open issue", description: "The whole backlog", recommended: true }],
-        }
-      : null,
-    acp: running ? { pid: process.pid, argv: ["omp", "acp"], cwd: resolve(host) } : null,
-    nextAttemptAt: lifecycle === "failed" ? "2026-10-27T10:05:00.000Z" : null,
-    goalCooldowns: {},
+    cooldowns: lifecycle === "failed" ? { "21": "2026-10-27T10:05:00.000Z" } : {},
     lastError: lifecycle === "failed" ? "the agent exited with code 1" : null,
     lastExitCode: lifecycle === "failed" ? 1 : running ? null : 0,
     finishedAt: running ? null : "2026-10-27T10:01:00.000Z",
@@ -678,67 +685,47 @@ async function seedIssuesState(
   const temporary = `${path}.${process.pid}.tmp`;
   await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`);
   await rename(temporary, path);
-  const runId = "2026-10-27T10-00-00-000Z";
-  await writeFile(
-    join(directory, "runs", runId, "activity.json"),
-    JSON.stringify(["Reading the open issues", "Implementing issue 17"]),
-  );
-  await writeFile(
-    join(directory, "runs", runId, "run.json"),
-    JSON.stringify({
-      version: 1,
-      runId,
-      repo: "fixture/host",
-      status: running ? "running" : lifecycle === "failed" ? "failed" : "succeeded",
-      argv: ["omp", "acp"],
-      cwd: resolve(host),
-      startedAt: "2026-10-27T10:00:00.000Z",
-      finishedAt: running ? null : "2026-10-27T10:01:00.000Z",
-      exitCode: running ? null : lifecycle === "failed" ? 1 : 0,
-      issues: (running ? [17, 18, 19] : [16]).map((number) => ({
-        number,
-        title: `Fixture issue ${number}`,
-        url: `https://github.com/fixture/host/issues/${number}`,
-        createdAt: "2026-10-26T00:00:00Z",
-        labels: [],
-      })),
-      firstStderrLine: null,
-      workerPid: process.pid,
-      harnessVersion: sourceVersion ?? "0.1.0",
-    }),
-  );
-  for (const goal of goalRuns) {
-    await mkdir(join(directory, "runs", goal.runId), { recursive: true });
+  const seedRun = async (
+    runId: string,
+    status: string,
+    issueNumber: number,
+    activity: string[],
+  ): Promise<void> => {
+    await mkdir(join(directory, "runs", runId), { recursive: true });
+    await writeFile(join(directory, "runs", runId, "activity.json"), JSON.stringify(activity));
     await writeFile(
-      join(directory, "runs", goal.runId, "activity.json"),
-      JSON.stringify([`Reading goal issue ${goal.issueNumber}`, `Implementing goal ${goal.issueNumber}`]),
-    );
-    await writeFile(
-      join(directory, "runs", goal.runId, "run.json"),
+      join(directory, "runs", runId, "run.json"),
       JSON.stringify({
         version: 1,
-        runId: goal.runId,
+        runId,
         repo: "fixture/host",
-        status: "running",
+        status,
         argv: ["omp", "acp"],
         cwd: resolve(host),
-        startedAt: "2026-10-27T10:00:01.000Z",
-        finishedAt: null,
-        exitCode: null,
+        startedAt: "2026-10-27T10:00:00.000Z",
+        finishedAt: status === "running" ? null : "2026-10-27T10:01:00.000Z",
+        exitCode: status === "running" ? null : status === "failed" ? 1 : 0,
         issues: [
           {
-            number: goal.issueNumber,
-            title: `Goal issue ${goal.issueNumber}`,
-            url: `https://github.com/fixture/host/issues/${goal.issueNumber}`,
+            number: issueNumber,
+            title: `Fixture issue ${issueNumber}`,
+            url: `https://github.com/fixture/host/issues/${issueNumber}`,
             createdAt: "2026-10-26T00:00:00Z",
-            labels: ["goal"],
+            labels: [],
           },
         ],
-        firstStderrLine: null,
+        firstStderrLine: status === "failed" ? "the agent exited with code 1" : null,
         workerPid: process.pid,
         harnessVersion: sourceVersion ?? "0.1.0",
       }),
     );
+  };
+  await seedRun("2026-10-27T10-00-00-000Z", state.runs[0]?.status ?? "succeeded", 16, [
+    "Reading the open issue",
+    "Implementing issue 16",
+  ]);
+  for (const agent of agents) {
+    await seedRun(agent.runId, "running", agent.issueNumber, agent.activity);
   }
   const lockDirectory = join(host, ".devboard", ".tmp", "issues");
   await mkdir(lockDirectory, { recursive: true });
@@ -1494,17 +1481,27 @@ try {
   await page.key("k", 2);
   await page.wait(`document.querySelector('[data-testid="command-palette"]') !== null`, "the command palette");
   const palette = await page.eval<{
-    items: Array<{ id: string; disabled: boolean; reason: string }>;
+    items: Array<{ id: string; title: string; group: string; disabled: boolean; reason: string }>;
     input: boolean;
     focus: string;
   }>(`(() => {
-    const items = [...document.querySelectorAll('[data-testid="command-item"]')];
+    const list = [...document.querySelectorAll('.palette__group, [data-testid="command-item"]')];
+    let group = "";
+    const items = list.map((element) => {
+      if (element.classList.contains("palette__group")) {
+        group = element.textContent?.trim() ?? "";
+        return null;
+      }
+      return {
+        id: element.getAttribute("data-command") ?? "",
+        title: element.querySelector(".palette__item-title")?.textContent?.trim() ?? "",
+        group,
+        disabled: element.getAttribute("aria-disabled") === "true",
+        reason: element.querySelector(".palette__item-reason")?.textContent?.trim() ?? "",
+      };
+    }).filter((item) => item !== null);
     return {
-      items: items.map((item) => ({
-        id: item.getAttribute("data-command") ?? "",
-        disabled: item.getAttribute("aria-disabled") === "true",
-        reason: item.querySelector(".palette__item-reason")?.textContent?.trim() ?? "",
-      })),
+      items,
       input: document.querySelector('[data-testid="command-palette-input"]') !== null,
       focus: document.activeElement?.getAttribute("data-testid") ?? "",
     };
@@ -1525,7 +1522,8 @@ try {
   const requiredCommands = [
     "view.mode.goal", "view.mode.issues", "view.mode.flow", "view.mode.discover",
     "issues.start", "issues.pause", "issues.resume", "issues.stop", "issues.check",
-    "open.issues.overview", "open.issues.issues", "open.issues.runs", "open.issues.drafts",
+    "open.issues.overview", "open.issues.agents", "open.issues.issues", "open.issues.runs",
+    "open.issues.drafts",
     "view.theme.toggle", "view.layout.reset",
     "app.reload", "app.report", "app.notifications.open",
     "goal.save", "goal.create", "goal.revise", "goal.skills.prepare",
@@ -1539,6 +1537,12 @@ try {
   const missingCommands = requiredCommands.filter((id) => !ids.has(id));
   check(missingCommands.length === 0, "the palette misses required commands", missingCommands);
   check(!ids.has("view.sidebar.toggle"), "the palette still offers a sidebar toggle");
+  const agentsCommand = palette.items.find((item) => item.id === "open.issues.agents");
+  check(
+    agentsCommand?.title === "Open Agents" && agentsCommand?.group === "Workspace",
+    "the palette does not list Open Agents in the Workspace group",
+    agentsCommand,
+  );
   const disabledMirror = palette.items.find((item) => item.id === "flow.pr.merge");
   check(disabledMirror?.disabled === true && disabledMirror.reason.length > 0, "a disabled control is not mirrored with a reason", disabledMirror);
 
@@ -3942,56 +3946,126 @@ try {
   );
   const runningDelay = Date.now() - runningSeededAt;
   check(runningDelay <= 2_000, `the issues indicator took ${runningDelay}ms to update`);
+  const runningIndicatorTitle = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-indicator"]')?.getAttribute("title") ?? ""`,
+  );
+  check(
+    runningIndicatorTitle.includes("running") && runningIndicatorTitle.includes("3 running agent"),
+    "the issues indicator title omits the lifecycle or the agent count",
+    runningIndicatorTitle,
+  );
+
+  // The Overview counts the fleet and never renders a singular log or question.
   await page.wait(
-    `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Reading the open issues")`,
-    "the replayed issues activity",
+    `document.querySelector('[data-testid="issues-running-agents"]')?.textContent?.trim() === "3 running"`,
+    "the overview running-agent count",
     8_000,
   );
-  const question = await page.eval<{ message: string; options: number }>(`(() => {
-    const panel = document.querySelector('[data-testid="issues-question"]');
+  const overview = await page.eval<{
+    cooldowns: string;
+    singularActivity: number;
+    singularQuestion: number;
+    link: string;
+  }>(`(() => ({
+    cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
+    singularActivity: document.querySelectorAll('[data-testid="issues-activity"]').length,
+    singularQuestion: document.querySelectorAll('[data-testid="issues-question"]').length,
+    link: document.querySelector('[data-testid="issues-agents-link"]')?.getAttribute("data-command") ?? "",
+  }))()`);
+  check(
+    overview.cooldowns.includes("0 cooling") && overview.cooldowns.includes("none"),
+    "the overview does not name the cooldown count and earliest time",
+    overview,
+  );
+  check(overview.singularActivity === 0, "the overview still renders one activity log", overview);
+  check(overview.singularQuestion === 0, "the overview still renders one question", overview);
+  check(overview.link === "open.issues.agents", "the overview has no Agents link", overview);
+
+  // The sidebar lists Agents directly after Overview and counts the fleet.
+  const agentsEntry = await page.eval<{
+    label: string;
+    command: string;
+    count: string;
+    afterOverview: boolean;
+    accessible: string;
+  }>(`(() => {
+    const entry = document.querySelector('[data-testid="open-issues-agents"]');
+    const overviewEntry = document.querySelector('[data-testid="open-issues-overview"]');
     return {
-      message: panel?.textContent?.includes("Which issue scope should the agent take?") ?? false,
-      options: document.querySelectorAll('[data-testid="issues-choice"]').length,
+      label: entry?.querySelector(".sidebar-item__label")?.textContent?.trim() ?? "",
+      command: entry?.getAttribute("data-command") ?? "",
+      count: entry?.querySelector(".sidebar-item__meta")?.textContent?.trim() ?? "",
+      afterOverview: overviewEntry !== null && overviewEntry.nextElementSibling === entry,
+      accessible: entry?.getAttribute("aria-label") ?? "",
     };
   })()`);
-  check(question.message && question.options === 1, "the ACP question is not surfaced", question);
+  check(agentsEntry.label === "Agents", "the sidebar entry is not labeled Agents", agentsEntry);
+  check(agentsEntry.command === "open.issues.agents", "the Agents entry has the wrong command", agentsEntry);
+  check(agentsEntry.count === "3", "the Agents entry does not count the running agents", agentsEntry);
+  check(agentsEntry.afterOverview, "the Agents entry is not directly after Overview", agentsEntry);
+  check(agentsEntry.accessible.includes("Issues"), "the Agents entry does not name its mode", agentsEntry);
 
-  // Every goal-labeled issue runs its own agent, with its own activity and
-  // question, alongside the implement-all run.
+  await page.click('[data-testid="open-issues-agents"]');
   await page.wait(
-    `document.querySelectorAll('[data-testid="issues-agent"]').length === 2`,
-    "the two concurrent goal agents",
+    `document.querySelector('[data-testid="issues-agents-page"]') !== null &&
+     document.querySelectorAll('[data-testid="issues-agent"]').length === 3`,
+    "the three agent cards",
     8_000,
   );
-  const agentView = await page.eval<
-    Array<{ issue: string; run: string; activity: string; question: string }>
-  >(`[...document.querySelectorAll('[data-testid="issues-agent"]')].map((agent) => ({
-    issue: agent.getAttribute("data-issue") ?? "",
-    run: agent.getAttribute("data-run") ?? "",
-    activity: agent.querySelector('[data-testid="issues-agent-activity"]')?.textContent ?? "",
-    question: agent.querySelector('[data-testid="issues-agent-question"]')?.textContent ?? "",
+  const cards = await page.eval<
+    Array<{
+      issue: string;
+      run: string;
+      status: string;
+      activity: string;
+      question: string;
+      linked: string;
+    }>
+  >(`[...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => ({
+    issue: card.getAttribute("data-issue") ?? "",
+    run: card.getAttribute("data-run") ?? "",
+    status: card.getAttribute("data-status") ?? "",
+    activity: card.querySelector('[data-testid="issues-agent-activity"]')?.textContent ?? "",
+    question: card.querySelector('[data-testid="issues-agent-question"]')?.textContent ?? "",
+    linked: card.querySelector("a")?.getAttribute("href") ?? "",
   }))`);
-  check(agentView.length === 2, "the overview lost a goal agent", agentView);
+  check(cards.length === 3, "the Agents page lost an agent", cards);
+  check(cards.map((card) => card.issue).join(",") === "17,18,19", "the cards are not sorted by issue", cards);
   check(
-    agentView.map((agent) => agent.issue).join(",") === "20,21",
-    "the goal agents are not addressable by issue",
-    agentView,
+    cards.every((card, index) => card.activity.includes(`Implementing issue ${17 + index}`)),
+    "a card does not render its own activity",
+    cards,
   );
   check(
-    agentView[0]?.activity.includes("Implementing goal 20") === true &&
-      agentView[1]?.activity.includes("Implementing goal 21") === true,
-    "a goal agent lost its own activity",
-    agentView,
+    cards[0]?.activity.includes("Implementing issue 18") === false &&
+      cards[1]?.activity.includes("Implementing issue 17") === false,
+    "two cards share activity",
+    cards,
   );
   check(
-    agentView[1]?.question.includes("Which goal scope should the agent take?") === true &&
-      agentView[0]?.question === "",
-    "goal questions are not per agent",
-    agentView,
+    cards.every((card, index) => card.question.includes(`Which scope should issue ${17 + index} take?`)),
+    "a card does not render its own question",
+    cards,
   );
+  check(
+    cards.every((card, index) => card.linked === `https://github.com/fixture/host/issues/${17 + index}`),
+    "a card's issue number does not link to its tracker URL",
+    cards,
+  );
+  check(cards.every((card) => card.status === "running"), "a card has the wrong status", cards);
+  check(
+    await page.eval<number>(`document.querySelectorAll('[data-testid="issues-activity"]').length`) === 0,
+    "the Agents page renders a singular activity log",
+  );
+  check(
+    await page.eval<number>(`document.querySelectorAll('[data-testid="issues-question"]').length`) === 0,
+    "the Agents page renders a singular question",
+  );
+
+  // An answer carries its run id and clears only that agent's question.
   await page.fill(
     '[data-testid="issues-agent-answer-input"][data-run="2026-10-27T10-00-02-000Z"]',
-    "The whole goal",
+    "The whole issue",
   );
   await page.click('[data-testid="issues-agent-answer-submit"][data-run="2026-10-27T10-00-02-000Z"]');
   const controlDir = join(stateDir, "issues", journalKey(host), "control");
@@ -4017,201 +4091,98 @@ try {
   }
   check(
     answerCommand?.runId === "2026-10-27T10-00-02-000Z" &&
-      answerCommand?.value === "The whole goal",
-    "the goal answer did not route to the asking peer",
+      answerCommand?.value === "The whole issue",
+    "the answer did not carry its run id",
     answerCommand,
   );
 
-  // A persisted activity delta reaches the live terminal within one second.
-  const activityPath = join(stateDir, "issues", journalKey(host), "runs", "2026-10-27T10-00-00-000Z", "activity.json");
-  const activitySeededAt = Date.now();
-  await writeFile(
-    activityPath,
-    JSON.stringify(["Reading the open issues", "Implementing issue 17", "Implementing issue 18"]),
-  );
+  // The worker would clear only the asking agent's question.
+  await seedIssuesState(stateDir, host, "running", "2026-10-27T10-00-02-000Z");
   await page.wait(
-    `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Implementing issue 18")`,
-    "the live activity delta",
+    `document.querySelectorAll('[data-testid="issues-agent-question"]').length === 2`,
+    "the two remaining questions",
     8_000,
   );
-  const activityDelay = Date.now() - activitySeededAt;
-  check(activityDelay <= 1_500, `the activity delta took ${activityDelay}ms`);
-
-  // A long run log fills the page below the header and stays pinned to its
-  // newest line until the operator scrolls back through it.
-  const longActivity = [
-    "Reading the open issues",
-    "Implementing issue 17",
-    "Implementing issue 18",
-    ...Array.from({ length: 160 }, (_, index) => `Step ${index + 1}: implementing the issue`),
-  ];
-  await writeFile(activityPath, JSON.stringify(longActivity));
-
-  interface ActivitySurface {
-    height: number;
-    panelHeight: number;
-    bodyHeight: number;
-    bottomGap: number;
-    viewportGap: number;
-    overflowY: string;
-    pinned: boolean;
-    scrollTop: number;
-    scrollHeight: number;
-    clientHeight: number;
-  }
-
-  const surfaceScript = `(() => {
-    const log = document.querySelector('[data-testid="issues-activity"]');
-    if (log === null || !log.textContent.includes("Step 160")) return null;
-    const panel = log.closest(".issues-activity-panel");
-    const body = log.closest(".issues-overview__body");
-    if (panel === null || body === null) return null;
-    const logRect = log.getBoundingClientRect();
-    const panelRect = panel.getBoundingClientRect();
-    const bodyRect = body.getBoundingClientRect();
-    return {
-      height: Math.round(logRect.height),
-      panelHeight: Math.round(panelRect.height),
-      bodyHeight: Math.round(bodyRect.height),
-      bottomGap: Math.round(bodyRect.bottom - panelRect.bottom),
-      viewportGap: Math.round(innerHeight - bodyRect.bottom),
-      overflowY: getComputedStyle(log).overflowY,
-      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
-      scrollTop: Math.round(log.scrollTop),
-      scrollHeight: log.scrollHeight,
-      clientHeight: log.clientHeight,
-    };
-  })()`;
-
-  const activitySurface = await page.wait<ActivitySurface>(
-    surfaceScript,
-    "the long issues activity log",
-    8_000,
+  const afterAnswer = await page.eval<Array<{ run: string; asked: boolean }>>(
+    `[...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => ({
+      run: card.getAttribute("data-run") ?? "",
+      asked: card.querySelector('[data-testid="issues-agent-question"]') !== null,
+    }))`,
   );
   check(
-    activitySurface.bottomGap === 0 && activitySurface.panelHeight === activitySurface.bodyHeight,
-    "the agent activity panel does not fill the page body",
-    activitySurface,
+    afterAnswer.length === 3 &&
+      afterAnswer[0]?.asked === true &&
+      afterAnswer[1]?.asked === false &&
+      afterAnswer[2]?.asked === true,
+    "answering one agent changed another agent's question",
+    afterAnswer,
   );
-  check(activitySurface.viewportGap <= 48, "the issues overview leaves the viewport unused", activitySurface);
-  check(activitySurface.overflowY === "auto", "the activity log does not scroll internally", activitySurface);
-  check(
-    activitySurface.height > 440 && activitySurface.scrollHeight > activitySurface.clientHeight,
-    "the activity log is capped instead of using the page height",
-    activitySurface,
-  );
-  check(activitySurface.pinned, "the activity log does not follow its newest line", activitySurface);
-  await saveShot("issues-activity-full-height");
 
-  await page.eval(`(() => {
-    const log = document.querySelector('[data-testid="issues-activity"]');
-    if (log === null) return false;
-    log.scrollTop = 0;
-    log.dispatchEvent(new Event("scroll"));
-    return true;
-  })()`);
-  await writeFile(activityPath, JSON.stringify([...longActivity, "Step 161: reading back"]));
+  // A card opens a focus tab that keeps its own status, activity, and question.
+  await page.click('[data-testid="issues-agent-open"][data-run="2026-10-27T10-00-01-000Z"]');
   await page.wait(
-    `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Step 161")`,
-    "the appended activity line",
+    `document.querySelector('[data-testid="issues-agent-focus"]') !== null`,
+    "the agent focus tab",
     8_000,
   );
-  const scrolledBack = await page.eval<{ scrollTop: number; pinned: boolean }>(`(() => {
-    const log = document.querySelector('[data-testid="issues-activity"]');
-    if (log === null) return { scrollTop: -1, pinned: false };
-    return {
-      scrollTop: Math.round(log.scrollTop),
-      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
-    };
-  })()`);
-  check(scrolledBack.scrollTop < 8 && !scrolledBack.pinned, "an operator reading history is dragged to the bottom", scrolledBack);
+  const focus = await page.eval<{
+    status: string;
+    activity: string;
+    question: string;
+    closeCommand: string;
+  }>(`(() => ({
+    status: document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() ?? "",
+    activity: document.querySelector('[data-testid="issues-agent-focus-activity"]')?.textContent ?? "",
+    question: document.querySelector('[data-testid="issues-agent-focus-question"]')?.textContent ?? "",
+    closeCommand: document.querySelector('[data-testid="issues-agent-focus-close"]')?.getAttribute("data-command") ?? "",
+  }))()`);
+  check(focus.status === "running", "the focus tab lost the run status", focus);
+  check(focus.activity.includes("Implementing issue 17"), "the focus tab lost the run activity", focus);
+  check(
+    focus.question.includes("Which scope should issue 17 take?"),
+    "the focus tab lost the run question",
+    focus,
+  );
+  check(focus.closeCommand === "tab.close", "the focus tab has no close control", focus);
 
-  await page.eval(`(() => {
-    const log = document.querySelector('[data-testid="issues-activity"]');
-    if (log === null) return false;
-    log.scrollTop = log.scrollHeight;
-    log.dispatchEvent(new Event("scroll"));
-    return true;
-  })()`);
-  await writeFile(activityPath, JSON.stringify([...longActivity, "Step 161: reading back", "Step 162: done"]));
+  await page.reload();
   await page.wait(
-    `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Step 162")`,
-    "the second appended activity line",
+    `document.querySelector('[data-testid="issues-agent-focus-activity"]')?.textContent?.includes("Implementing issue 17") === true`,
+    "the focus tab after reload",
+    20_000,
+  );
+  check(
+    await page.eval<boolean>(
+      `document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() === "running"`,
+    ),
+    "reload lost the focus status",
+  );
+
+  await page.click('[data-testid="issues-agent-focus-close"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-agents-page"]') !== null`,
+    "the Agents page after closing the focus tab",
     8_000,
   );
-  const followedAgain = await page.eval<{ pinned: boolean; scrollTop: number; scrollHeight: number }>(`(() => {
-    const log = document.querySelector('[data-testid="issues-activity"]');
-    if (log === null) return { pinned: false, scrollTop: -1, scrollHeight: -1 };
-    return {
-      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
-      scrollTop: Math.round(log.scrollTop),
-      scrollHeight: log.scrollHeight,
-    };
-  })()`);
-  check(followedAgain.pinned, "the activity log stopped following after the operator returned to the bottom", followedAgain);
 
-  // The narrow layout stacks the panels and still keeps the log pinned while
-  // its viewport changes size.
-  await devtools.send("Emulation.setDeviceMetricsOverride", {
-    width: 1024,
-    height: 720,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the narrow issues viewport");
-  await delay(200);
-  const narrowSurface = await page.wait<{
-    panelHeights: number[];
-    logHeight: number;
-    inside: boolean;
-    pinned: boolean;
-    pageOverflow: boolean;
-  }>(`(() => {
-    const body = document.querySelector(".issues-overview__body");
-    const log = document.querySelector('[data-testid="issues-activity"]');
-    const panels = body === null ? [] : [...body.children];
-    if (body === null || log === null || panels.length !== 2) return null;
-    const rects = panels.map((panel) => panel.getBoundingClientRect());
-    return {
-      panelHeights: rects.map((rect) => Math.round(rect.height)),
-      logHeight: Math.round(log.getBoundingClientRect().height),
-      inside: rects.every((rect) =>
-        rect.left >= -0.5 && rect.right <= innerWidth + 0.5 && rect.bottom <= innerHeight + 0.5
-      ),
-      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
-      pageOverflow: document.documentElement.scrollHeight > innerHeight,
-    };
-  })()`, "the stacked issues panels", 8_000);
-  check(narrowSurface.inside && !narrowSurface.pageOverflow, "the stacked issues panels leave the viewport", narrowSurface);
-  check(
-    narrowSurface.logHeight > 100 && narrowSurface.pinned,
-    "the stacked activity log does not keep its newest line",
-    narrowSurface,
+  // The Overview link opens the Agents tab too.
+  await page.click('[data-testid="open-issues-overview"]');
+  await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview");
+  await page.click('[data-testid="issues-agents-link"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-agents-page"]') !== null`,
+    "the Agents tab from the overview link",
+    8_000,
   );
-  await saveShot("issues-activity-1024");
-
-  await devtools.send("Emulation.setDeviceMetricsOverride", {
-    width: 1440,
-    height: 900,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop issues viewport");
-  await delay(200);
-  const restoredPinned = await page.eval<boolean>(`(() => {
-    const log = document.querySelector('[data-testid="issues-activity"]');
-    if (log === null) return false;
-    return log.scrollTop + log.clientHeight >= log.scrollHeight - 1;
-  })()`);
-  check(restoredPinned, "the activity log left its newest line after the viewport grew");
 
   await page.click('[data-testid="open-issues-queue"]');
   await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the issues queue");
-  const queue = await page.eval<Array<{ number: string; handled: string; goal: string }>>(
+  const queue = await page.eval<Array<{ number: string; handled: string; goal: string; run: string }>>(
     `[...document.querySelectorAll('[data-testid="issues-queue-item"]')].map((item) => ({
       number: item.getAttribute("data-number") ?? "",
       handled: item.getAttribute("data-handled") ?? "",
       goal: item.getAttribute("data-goal") ?? "",
+      run: item.getAttribute("data-run") ?? "",
     }))`,
   );
   check(queue.length === 5, "the queue does not list every open issue", queue);
@@ -4226,6 +4197,16 @@ try {
     queue,
   );
   check(queue.every((entry) => entry.handled === "false"), "a pending issue is not marked pending", queue);
+  check(
+    queue.slice(0, 3).every((entry) => entry.run.length > 0) &&
+      queue.slice(3).every((entry) => entry.run === ""),
+    "the queue does not show each issue's running agent",
+    queue,
+  );
+  check(
+    await page.eval<number>(`document.querySelectorAll('[data-testid="issues-running-marker"]').length`) === 3,
+    "the queue has no running marker for an active agent",
+  );
   const goalBadges = await page.eval<number>(
     `document.querySelectorAll('[data-testid="issues-goal-badge"]').length`,
   );
@@ -4233,12 +4214,12 @@ try {
   const pendingMeta = await page.eval<string>(
     `document.querySelector('[data-testid="open-issues-queue"] .sidebar-item__meta')?.textContent ?? ""`,
   );
-  check(pendingMeta.trim() === "3 pending", "the sidebar counts goal issues as implement-all work", pendingMeta);
+  check(pendingMeta.trim() === "5 pending", "the sidebar does not count every pending issue", pendingMeta);
 
   await page.click('[data-testid="open-issues-runs"]');
   await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the runs page");
   const runCount = await page.eval<number>(`document.querySelectorAll('[data-testid="issues-run"]').length`);
-  check(runCount === 3, "the runs page does not list every concurrent run", runCount);
+  check(runCount === 4, "the runs page does not list every concurrent run", runCount);
   const goalRunCount = await page.eval<number>(
     `[...document.querySelectorAll('[data-testid="issues-run"]')].filter((run) => run.getAttribute("data-status") === "running").length`,
   );
@@ -4248,7 +4229,7 @@ try {
   const runActivity = await page.eval<string>(
     `document.querySelector('[data-testid="issues-run-activity"]')?.textContent ?? ""`,
   );
-  check(runActivity.includes("Implementing issue 17"), "the run detail does not show its activity", runActivity);
+  check(runActivity.includes("Implementing issue 16"), "the run detail does not show its activity", runActivity);
   await page.click('[data-testid="open-issues-overview"]');
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview again");
 

@@ -29,7 +29,10 @@ export interface IssuesIssue {
 
 export interface QueuedIssue extends IssuesIssue {
   handled: boolean;
+  /** The run that last handled this issue, or null. */
   runId: string | null;
+  /** The run of the agent currently working this issue, or null. */
+  agentRunId: string | null;
 }
 
 export interface IssuesPollState {
@@ -84,10 +87,8 @@ export interface IssuesSnapshot {
   poll: IssuesPollState | null;
   queue: QueuedIssue[];
   runs: IssuesRunSummary[];
-  activeRun: { runId: string; startedAt: string; issueNumbers: number[] } | null;
   agents: IssuesAgent[];
-  question: RunQuestion | null;
-  nextAttemptAt: string | null;
+  cooldowns: Record<string, string>;
   lastError: string | null;
   lastExitCode: number | null;
   finishedAt: string | null;
@@ -112,7 +113,7 @@ export interface RunQuestion {
   options: RunQuestionOption[];
 }
 
-/** One goal-labeled issue's own concurrent peer. */
+/** One running issue's own concurrent peer. */
 export interface IssuesAgent {
   runId: string;
   issueNumber: number;

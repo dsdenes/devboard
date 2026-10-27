@@ -184,6 +184,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     ["goal", { id: "goal-document", kind: "goal-document", resourceId: "goal-document", title: "Goal document" }],
     ["goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" }],
     ["issues", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
+    ["issues", { id: "agents", kind: "agents", resourceId: "agents", title: "Agents" }],
     ["issues", { id: "issues", kind: "queue", resourceId: "issues", title: "Issues" }],
     ["issues", { id: "runs", kind: "runs", resourceId: "runs", title: "Runs" }],
     ["issues", { id: "drafts", kind: "drafts", resourceId: "drafts", title: "Drafts" }],
@@ -226,7 +227,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     id: "issues.start",
     title: "Start issue automation",
     group: "Issues",
-    keywords: "worker begin poll implement all issues",
+    keywords: "worker begin poll implement every issue",
     disabled: () => disabledWhen(!issues.canStart, "Start is unavailable while the worker is enabled."),
     run: () => issues.start(),
   });
@@ -261,17 +262,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     keywords: "poll immediately bypass cooldown",
     disabled: () => disabledWhen(!issues.canCheck, "Check now is unavailable while paused or stopped."),
     run: () => issues.check(),
-  });
-  add({
-    id: "issues.answer",
-    title: "Answer the issues question",
-    group: "Issues",
-    disabled: () => disabledWhen(issues.question === null, "No question is waiting."),
-    run: () => {
-      if (issues.question !== null) {
-        ctx.openTab("issues", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" });
-      }
-    },
   });
   add({
     id: "issues.run.open",

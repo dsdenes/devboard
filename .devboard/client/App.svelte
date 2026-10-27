@@ -90,7 +90,16 @@
   }
 
   function performClose(mode: Mode, tab: WorkspaceTab): void {
-    layout.closeTab(mode, tab.id);
+    if (mode === "issues" && tab.kind === "agent") {
+      layout.openTab("issues", {
+        id: "agents",
+        kind: "agents",
+        resourceId: "agents",
+        title: "Agents",
+      });
+    } else {
+      layout.closeTab(mode, tab.id);
+    }
     focusModeAfterTick(mode);
   }
 
@@ -388,7 +397,11 @@
                 closeTab={(tab) => closeTab("goal", tab)}
               />
             {:else if mode === "issues"}
-              <IssuesWorkspace tab={workspaceTab("issues")} />
+              <IssuesWorkspace
+                tab={workspaceTab("issues")}
+                openTab={(tab) => openTab("issues", tab)}
+                closeTab={(tab) => closeTab("issues", tab)}
+              />
             {:else if mode === "flow"}
               <FlowMode
                 tab={workspaceTab("flow")}

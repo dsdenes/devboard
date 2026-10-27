@@ -292,6 +292,18 @@
         <button
           type="button"
           class="sidebar-item"
+          aria-current={isActive("agents")}
+          aria-label="Agents, Issues mode, Alt+2"
+          data-command="open.issues.agents"
+          data-testid="open-issues-agents"
+          onclick={() => open("issues", "agents", "agents", "agents", "Agents")}
+        >
+          <span class="sidebar-item__label">Agents</span>
+          <span class="sidebar-item__meta">{issues.agents.length}</span>
+        </button>
+        <button
+          type="button"
+          class="sidebar-item"
           aria-current={isActive("issues")}
           data-command="open.issues.issues"
           data-testid="open-issues-queue"

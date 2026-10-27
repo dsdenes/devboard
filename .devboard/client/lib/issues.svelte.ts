@@ -89,11 +89,11 @@ function applyActivity(lines: string[], entries: IssuesActivityEntry[], replay: 
  */
 export class IssuesStore {
   snapshot = $state<IssuesSnapshot | null>(null);
-  activity = $state<string[]>([]);
   agentActivity = $state<Record<string, string[]>>({});
   run = $state<IssuesRunDetail | null>(null);
+  runError = $state<string | null>(null);
   selectedRun = $state<string | null>(null);
-  answer = $state("");
+  private requestedRun: string | null = null;
 
   drafts = $state<GoalDraftSummary[]>([]);
   draftRun = $state<GoalDraftRun | null>(null);
@@ -130,10 +130,6 @@ export class IssuesStore {
     return this.snapshot?.runs ?? [];
   }
 
-  get question(): IssuesSnapshot["question"] {
-    return this.snapshot?.question ?? null;
-  }
-
   get agents(): IssuesAgent[] {
     return [...(this.snapshot?.agents ?? [])].sort(
       (left, right) => left.issueNumber - right.issueNumber,
@@ -144,16 +140,37 @@ export class IssuesStore {
     return this.agentActivity[runId] ?? [];
   }
 
+  agentFor(runId: string): IssuesAgent | null {
+    return this.snapshot?.agents.find((agent) => agent.runId === runId) ?? null;
+  }
+
+  /** The run status a card shows: the live run's status, else its history. */
+  statusFor(runId: string): string {
+    return this.snapshot?.runs.find((run) => run.runId === runId)?.status ?? "running";
+  }
+
   get notice(): string | null {
     return this.snapshot?.notice ?? null;
   }
 
   get pending(): number {
-    return this.queue.filter((issue) => !issue.handled && !isGoalIssue(issue)).length;
+    return this.queue.filter((issue) => !issue.handled).length;
   }
 
-  get goalPending(): number {
-    return this.queue.filter((issue) => !issue.handled && isGoalIssue(issue)).length;
+  get cooldowns(): Record<string, string> {
+    return this.snapshot?.cooldowns ?? {};
+  }
+
+  get cooldownCount(): number {
+    return Object.keys(this.cooldowns).length;
+  }
+
+  get earliestCooldown(): string | null {
+    const times = Object.values(this.cooldowns)
+      .map((value) => Date.parse(value))
+      .filter((value) => Number.isFinite(value));
+    if (times.length === 0) return null;
+    return new Date(Math.min(...times)).toISOString();
   }
 
   get draftRunning(): boolean {
@@ -216,10 +233,6 @@ export class IssuesStore {
     this.draftAnswer = "";
   }
 
-  get activeIssueNumbers(): number[] {
-    return this.snapshot?.activeRun?.issueNumbers ?? [];
-  }
-
   get canStart(): boolean {
     return connection.open && !this.enabled;
   }
@@ -260,13 +273,6 @@ export class IssuesStore {
     connection.send({ type: "checkIssues" });
   }
 
-  submitAnswer(value: string): void {
-    const question = this.question;
-    if (question === null || value.trim().length === 0) return;
-    connection.send({ type: "answerIssues", id: question.id, value: value.trim() });
-    this.answer = "";
-  }
-
   submitAgentAnswer(runId: string, questionId: number | string, value: string): void {
     if (value.trim().length === 0) return;
     connection.send({
@@ -279,22 +285,30 @@ export class IssuesStore {
 
   openRun(runId: string): void {
     this.selectedRun = runId;
+    this.requestedRun = runId;
     this.run = null;
+    this.runError = null;
     connection.send({ type: "getIssuesRun", runId });
+  }
+
+  /** Fetches one run's history once unless it is already selected. */
+  loadRun(runId: string): void {
+    if (this.requestedRun === runId && (this.run?.runId === runId || this.selectedRun === runId)) {
+      return;
+    }
+    this.openRun(runId);
   }
 
   closeRun(): void {
     this.selectedRun = null;
+    this.requestedRun = null;
     this.run = null;
   }
 
   handleEvent(message: Record<string, unknown>): void {
     if (isSnapshot(message)) {
       const next = message as unknown as IssuesSnapshot;
-      const previous = this.snapshot?.activeRun?.runId ?? null;
-      const active = next.activeRun?.runId ?? null;
       this.snapshot = next;
-      if (active !== previous) this.activity = [];
       const live = new Set((next.agents ?? []).map((agent) => agent.runId));
       const kept: Record<string, string[]> = {};
       for (const [runId, lines] of Object.entries(this.agentActivity)) {
@@ -306,10 +320,6 @@ export class IssuesStore {
     if (message.type === "issuesActivity" && typeof message.runId === "string") {
       const runId = message.runId;
       const entries = Array.isArray(message.entries) ? message.entries.filter(isEntry) : [];
-      if (runId === this.snapshot?.activeRun?.runId) {
-        this.activity = applyActivity(this.activity, entries, message.replay === true);
-        return;
-      }
       if (!(this.snapshot?.agents ?? []).some((agent) => agent.runId === runId)) return;
       this.agentActivity = {
         ...this.agentActivity,
@@ -321,8 +331,13 @@ export class IssuesStore {
       const run = message.run as unknown as IssuesRunDetail;
       if (typeof run.runId === "string" && Array.isArray(run.activityLines)) {
         this.run = run;
+        this.runError = null;
         this.selectedRun = run.runId;
       }
+      return;
+    }
+    if (message.type === "error" && message.message === "No such issues run.") {
+      this.runError = "No such issues run.";
       return;
     }
     if (message.type === "issuesDrafts" && Array.isArray(message.drafts)) {

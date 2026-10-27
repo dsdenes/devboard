@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
 /**
  * The deterministic Issues mode gate. It runs the real detached worker against
- * throwaway git checkouts, a stub `gh`, and a stub ACP peer: Start, 2-second
- * pickup, live activity, pause drain, resume, stop, server-restart reattach,
- * per-repository isolation, same-repository attach, another-state-directory
- * refusal, legacy-lock refusal, and the absence of any systemd write.
+ * throwaway git checkouts, a stub `gh`, and stub ACP peers: Start, one peer per
+ * open unhandled issue in the same poll, per-agent activity and answers, the
+ * per-issue cooldown, an issue opened mid-run, pause draining every peer, Stop
+ * closing every peer, server-restart reattach, per-repository isolation,
+ * same-repository attach, another-state-directory refusal, legacy-lock refusal,
+ * and the absence of any systemd write.
  *
  * Every fixture, state directory, browser profile, and log lives under
  * `.devboard/.tmp`. It never contacts GitHub and never starts a real agent.
@@ -68,14 +70,16 @@ interface Issue {
   title: string;
   html_url: string;
   created_at: string;
+  labels: string[];
 }
 
-function issue(number: number): Issue {
+function issue(number: number, labels: string[] = []): Issue {
   return {
     number,
     title: `Fixture issue ${number}`,
     html_url: `https://github.com/acme/fixture/issues/${number}`,
     created_at: `2026-10-${String(20 + (number % 5)).padStart(2, "0")}T00:00:00Z`,
+    labels,
   };
 }
 
@@ -88,11 +92,13 @@ async function makeToolBin(): Promise<{ bin: string; marker: string; home: strin
   const home = join(root, "home");
   const marker = join(root, "systemd-invoked");
   await mkdir(bin, { recursive: true });
-  await mkdir(join(home, ".omp", "agent", "commands"), { recursive: true });
+  await mkdir(join(home, ".omp", "commands"), { recursive: true });
+  await mkdir(join(home, ".omp", "extensions"), { recursive: true });
   await writeFile(
-    join(home, ".omp", "agent", "commands", "implement-all-issues.md"),
-    "# implement all issues\n\nFixture command.\n",
+    join(home, ".omp", "commands", "implement-issue.md"),
+    "# implement issue\n\nFixture command.\n",
   );
+  await writeFile(join(home, ".omp", "extensions", "implement-goal-issue.ts"), "export {};\n");
   await writeFile(join(bin, "gh"), `#!/bin/sh\nexec ${process.execPath} ${stubGh} "$@"\n`);
   await writeFile(join(bin, "omp"), "#!/bin/sh\nexit 0\n");
   for (const name of ["systemctl", "loginctl"]) {
@@ -114,6 +120,7 @@ interface FixturePaths {
   ghLog: string;
   acpLog: string;
   finish: string;
+  failMarker: string;
 }
 
 async function fixture(name: string, origin: string): Promise<FixturePaths> {
@@ -126,6 +133,7 @@ async function fixture(name: string, origin: string): Promise<FixturePaths> {
     ghLog: join(base, "gh.log"),
     acpLog: join(base, "acp.log"),
     finish: join(base, "acp.finish"),
+    failMarker: join(base, "acp.failed-once"),
   };
   fixtures.push(paths);
   return paths;
@@ -161,6 +169,9 @@ async function startDashboard(
       ISSUES_STUB_GH_LOG: paths.ghLog,
       ISSUES_STUB_ACP_LOG: paths.acpLog,
       ISSUES_STUB_ACP_FINISH: paths.finish,
+      ISSUES_STUB_ACP_QUESTION: "1",
+      ISSUES_STUB_ACP_FAIL_PROMPT: "/implement-issue 6",
+      ISSUES_STUB_ACP_FAIL_MARKER: paths.failMarker,
       ISSUES_STUB_SYSTEMD_MARKER: marker,
       DEVBOARD_UPDATE_INTERVAL_MS: "600000",
     },
@@ -243,6 +254,20 @@ function workerPids(repo: string): number[] {
     if (argv.includes(join("issues", "worker.ts")) && argv.includes(repo)) pids.push(pid);
   }
   return pids.sort((left, right) => left - right);
+}
+
+function acpLogLines(paths: FixturePaths): string[] {
+  try {
+    return readFileSync(paths.acpLog, "utf8").split("\n").filter((line) => line.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function promptLines(paths: FixturePaths): string[] {
+  return acpLogLines(paths)
+    .filter((line) => line.startsWith("prompt "))
+    .map((line) => line.slice("prompt ".length));
 }
 
 interface SocketMessage {
@@ -444,7 +469,7 @@ try {
   const tools = await makeToolBin();
 
   /* ---------------------------------------------------------------- */
-  /* 1. Start the dashboard, open Issues from the rail, and click Start */
+  /* 1. Start the dashboard, open Issues, and click Start             */
   /* ---------------------------------------------------------------- */
   const a = await fixture("repo-a", "acme/fixture-a");
   await writeStore(a.store, []);
@@ -502,153 +527,436 @@ try {
   check(idle.poll.intervalMs === 2000, "the poll interval is not two seconds", idle.poll);
   check(workerPids(a.repo).length === 1, "Start did not spawn exactly one worker");
 
-  /* ------------------------------------------------------- */
-  /* 2. A new issue reaches the queue and triggers a run      */
-  /* ------------------------------------------------------- */
-  const pickupStarted = Date.now();
-  await writeStore(a.store, [issue(1)]);
-  const running = await waitState(
+  /* ---------------------------------------------------------- */
+  /* 2. Four open issues start four peers in one poll            */
+  /* ---------------------------------------------------------- */
+  await writeStore(a.store, [issue(1), issue(2), issue(3, ["goal"]), issue(4, ["goal"])]);
+  const fleet = await waitState(
     a,
-    "the new issue to start a run",
-    (state) => state.lifecycle === "running" && state.activeRun !== null,
-    2500,
+    "four peers in one poll",
+    (state) => state.lifecycle === "running" && state.agents.length === 4,
+    5000,
   );
-  const pickup = Date.now() - pickupStarted;
-  check(pickup <= 2500, `the issue took ${pickup}ms to trigger`, running.poll);
-  check(running.queue.some((entry) => entry.number === 1), "the queue lacks the new issue", running.queue);
+  const issueNumbers = fleet.agents.map((agent) => agent.issueNumber).sort((left, right) => left - right);
+  check(
+    issueNumbers.join(",") === "1,2,3,4",
+    "the four peers do not cover the four open issues",
+    fleet.agents,
+  );
+  check(
+    new Set(fleet.agents.map((agent) => agent.runId)).size === 4,
+    "two agents share a run id",
+    fleet.agents,
+  );
+  check(
+    fleet.queue.every((entry) => entry.agentRunId !== null),
+    "the queue does not name each issue's agent run",
+    fleet.queue,
+  );
 
-  const socketA = new Socket(dashboardA.port);
-  await socketA.open();
-  const activityFrom = socketA.mark();
-  const activity = await socketA.waitFrom(
-    activityFrom,
-    (message) =>
-      message.type === "issuesActivity" &&
-      Array.isArray(message.entries) &&
-      message.entries.some(
-        (entry) => typeof entry === "object" && entry !== null && String(entry.text).includes("activity"),
-      ),
-    "the live ACP activity",
-    1500,
+  const prompts = promptLines(a);
+  for (const expected of [
+    "/implement-issue 1",
+    "/implement-issue 2",
+    "/implement-goal-issue 3",
+    "/implement-goal-issue 4",
+  ]) {
+    check(prompts.includes(expected), `the ${expected} prompt is missing`, prompts);
+  }
+  check(
+    !prompts.some((prompt) => prompt.startsWith("/implement-all-issues")),
+    "an /implement-all-issues prompt was sent",
+    prompts,
   );
-  check(activity.type === "issuesActivity", "the activity event is malformed", activity);
-  const screenshot = await devtools.send("Page.captureScreenshot", { format: "png" });
-  const shotResult = screenshot.result;
-  if (typeof shotResult === "object" && shotResult !== null && "data" in shotResult) {
-    const data = shotResult.data;
-    if (typeof data === "string") {
-      await mkdir(join(harnessRoot, ".tmp"), { recursive: true });
-      await writeFile(join(harnessRoot, ".tmp", "issues-mode.png"), Buffer.from(data, "base64"));
-    }
+
+  const starts = acpLogLines(a).filter((line) => line.startsWith("start "));
+  check(starts.length === 4, `the four peers did not all start in one poll: ${starts.length}`, starts);
+  check(
+    starts.every((line) => line.includes(` ${resolve(a.repo)}`)),
+    "an ACP peer did not start in REPO_DIR",
+    starts,
+  );
+  check(
+    acpLogLines(a).some((line) =>
+      line.startsWith("permission ") &&
+      line.includes('"optionId":"allow-once"'),
+    ),
+    "a permission was not auto-approved",
+    acpLogLines(a),
+  );
+
+  // Per-agent run directories, each covering exactly its own issue.
+  const runsBase = runsDirectory(a.stateDir, a.repo);
+  for (const agent of fleet.agents) {
+    const directory = join(runsBase, agent.runId);
+    check(existsSync(join(directory, "run.json")), `run ${agent.runId} has no run.json`, agent);
+    check(existsSync(join(directory, "activity.json")), `run ${agent.runId} has no activity`, agent);
+    const run = JSON.parse(readFileSync(join(directory, "run.json"), "utf8")) as {
+      issues?: Array<{ number: number }>;
+    };
+    check(
+      run.issues?.length === 1 && run.issues[0]?.number === agent.issueNumber,
+      `run ${agent.runId} does not cover only issue ${agent.issueNumber}`,
+      run.issues,
+    );
   }
 
-  await waitFor(
-    () => {
-      try {
-        return /prompt \/implement-all-issues/.test(readFileSync(a.acpLog, "utf8")) ? true : undefined;
-      } catch {
-        return undefined;
-      }
-    },
-    "the exact /implement-all-issues prompt",
-    10_000,
-    50,
-  );
-  const acpLog = readFileSync(a.acpLog, "utf8");
-  check(acpLog.split("\n").some((line) => line === `start ${running.acp?.pid} ${resolve(a.repo)}`), "the ACP peer did not start in REPO_DIR", acpLog);
-  check(/permission \{"outcome":\{"outcome":"selected","optionId":"allow-once"\}\}/.test(acpLog), "the permission was not auto-approved", acpLog);
+  // Two polls later, no issue received a second peer.
+  await Bun.sleep(2500);
+  const secondStarts = acpLogLines(a).filter((line) => line.startsWith("start "));
+  check(secondStarts.length === 4, "a second poll started a duplicate peer", secondStarts);
 
-  // Conditional polling: a second poll carries If-None-Match and gets a 304.
-  await waitFor(
-    () => {
-      try {
-        return readFileSync(a.ghLog, "utf8").includes('"If-None-Match:') ? true : undefined;
-      } catch {
-        return undefined;
-      }
-    },
-    "a conditional poll",
-    8_000,
-    50,
-  );
-
-  /* ------------------------------------------------------- */
-  /* 3. Pause drains the run without killing the ACP peer     */
-  /* ------------------------------------------------------- */
-  const acpPid = running.acp?.pid ?? 0;
-  check(acpPid > 0, "the state does not record the ACP child", running.acp);
-  await click(devtools, "issues-pause");
-  await waitState(a, "pausing", (state) => state.lifecycle === "pausing");
-  check(processAlive(acpPid), "Pause killed the ACP peer");
-  await writeFile(a.finish, "finish\n");
-  const paused = await waitState(a, "paused after the drain", (state) => state.lifecycle === "paused");
-  check(paused.paused, "the worker is not paused", paused);
-  check(paused.runs.some((entry) => entry.status === "succeeded"), "the drained run did not succeed", paused.runs);
-  await waitFor(() => (!processAlive(acpPid) ? true : undefined), "the ACP peer to finish", 5_000, 50);
-  await rm(a.finish, { force: true });
-
-  /* ------------------------------------------------------- */
-  /* 4. Resume polls, and an issue opened then runs           */
-  /* ------------------------------------------------------- */
-  await click(devtools, "issues-resume");
-  await writeStore(a.store, [issue(1), issue(2)]);
-  const resumed = await waitState(
+  /* ---------------------------------------------------------- */
+  /* 3. Per-agent questions and per-run answers                 */
+  /* ---------------------------------------------------------- */
+  const asking = await waitState(
     a,
-    "the resumed run",
-    (state) => state.lifecycle === "running" && state.activeRun?.issueNumbers.join(",") === "2",
-    10_000,
+    "four pending questions",
+    (state) => state.agents.every((agent) => agent.question !== null),
+    8000,
   );
-  check(resumed.paused === false, "Resume did not clear the pause", resumed);
-  await writeFile(a.finish, "finish\n");
-  const bothHandled = await waitState(
+  const firstAgent = asking.agents[0]!;
+  const otherAgents = asking.agents.slice(1);
+  const socketA = new Socket(dashboardA.port);
+  await socketA.open();
+
+  /** Answers every pending question so no peer waits on one before finishing. */
+  const answerPending = async (socket: Socket): Promise<void> => {
+    for (;;) {
+      const current = stateOf(a);
+      if (current === undefined) return;
+      const pending = current.agents.filter((agent) => agent.question !== null);
+      if (pending.length === 0) return;
+      for (const agent of pending) {
+        socket.send({
+          type: "answerIssues",
+          id: agent.question!.id,
+          value: `scope for ${agent.issueNumber}`,
+          runId: agent.runId,
+        });
+      }
+      await waitState(
+        a,
+        "every pending question to clear",
+        (state) =>
+          pending.every(
+            (agent) =>
+              state.agents.find((candidate) => candidate.runId === agent.runId)?.question == null,
+          ),
+        8000,
+      );
+    }
+  };
+  socketA.send({
+    type: "answerIssues",
+    id: firstAgent.question!.id,
+    value: "the whole issue",
+    runId: firstAgent.runId,
+  });
+  const answered = await waitState(
     a,
-    "both issues handled",
+    "the first agent's question to clear",
     (state) =>
-      state.lifecycle === "idle" &&
-      state.queue.length === 2 &&
-      state.queue.every((entry) => entry.handled),
+      state.agents.find((agent) => agent.runId === firstAgent.runId)?.question === null,
+    8000,
+  );
+  check(
+    otherAgents.every(
+      (agent) =>
+        answered.agents.find((candidate) => candidate.runId === agent.runId)?.question !== null,
+    ),
+    "answering one agent cleared another agent's question",
+    answered.agents,
+  );
+
+  for (const agent of otherAgents) {
+    const current = stateOf(a)!;
+    const pending = current.agents.find((candidate) => candidate.runId === agent.runId);
+    if (pending?.question == null) continue;
+    socketA.send({
+      type: "answerIssues",
+      id: pending.question.id,
+      value: `answer for ${agent.issueNumber}`,
+      runId: agent.runId,
+    });
+    await waitState(
+      a,
+      `the question for #{agent.issueNumber} to clear`,
+      (state) =>
+        state.agents.find((candidate) => candidate.runId === agent.runId)?.question === null,
+      8000,
+    );
+  }
+
+  // Activity streams only once a peer has passed its question; every agent's
+  // own file then carries its own lines.
+  await waitFor(
+    () => {
+      const current = stateOf(a);
+      if (current === undefined || current.agents.length !== 4) return undefined;
+      const ready = current.agents.every((agent) => {
+        try {
+          const activity = JSON.parse(
+            readFileSync(join(runsBase, agent.runId, "activity.json"), "utf8"),
+          ) as unknown;
+          return Array.isArray(activity) && activity.length > 0;
+        } catch {
+          return false;
+        }
+      });
+      return ready ? true : undefined;
+    },
+    "every agent's activity file",
+    10_000,
+    50,
+  );
+
+  // A connect-time replay carries every running agent's activity.
+  const replaySocket = new Socket(dashboardA.port);
+  await replaySocket.open();
+  const replays = await waitFor(
+    () => {
+      const messages = replaySocket.messages.filter(
+        (message) => message.type === "issuesActivity" && message.replay === true,
+      );
+      return messages.length >= 4 ? messages : undefined;
+    },
+    "the replayed activity of every agent",
+    10_000,
+    25,
+  );
+  check(replays.length === 4, `the replay carried ${replays.length} agents`, replays);
+  const replayRuns = replays.map((message) => String(message.runId)).sort();
+  check(
+    replayRuns.join(",") === fleet.agents.map((agent) => agent.runId).sort().join(","),
+    "the replay does not cover every agent",
+    replayRuns,
+  );
+  replaySocket.close();
+
+  // The Overview names the running-agent count and shows no singular activity.
+  const overviewChrome = await devtools.evaluate(
+    `(() => ({
+      agents: document.querySelector('[data-testid="issues-running-agents"]')?.textContent?.trim() ?? "",
+      cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent?.trim() ?? "",
+      singularActivity: document.querySelectorAll('[data-testid="issues-activity"]').length,
+      singularQuestion: document.querySelectorAll('[data-testid="issues-question"]').length,
+    }))()`,
+  ) as { agents: string; cooldowns: string; singularActivity: number; singularQuestion: number };
+  check(overviewChrome.agents.startsWith("4 running"), "the overview lost the running-agent count", overviewChrome);
+  check(overviewChrome.singularActivity === 0, "the overview still renders one activity log", overviewChrome);
+  check(overviewChrome.singularQuestion === 0, "the overview still renders one question", overviewChrome);
+
+  await click(devtools, "open-issues-agents");
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelectorAll('[data-testid="issues-agent"]').length === 4 &&
+           document.querySelector('[data-testid="issues-agents-page"]') !== null`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the four agent cards",
     10_000,
   );
-  check(bothHandled.lastExitCode === 0, "the resumed run did not succeed", bothHandled);
-  await rm(a.finish, { force: true });
+  const cardOrder = (await devtools.evaluate(
+    `[...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => card.getAttribute("data-issue"))`,
+  )) as string[];
+  check(cardOrder.join(",") === "1,2,3,4", "the agent cards are not sorted by issue", cardOrder);
 
-  /* ------------------------------------------------------- */
-  /* 5. Stop ends the peer and the worker, leaving the issue */
-  /* ------------------------------------------------------- */
-  await writeStore(a.store, [issue(1), issue(2), issue(3)]);
+  /* ---------------------------------------------------------- */
+  /* 4. An issue opened mid-run gets its own peer               */
+  /* ---------------------------------------------------------- */
+  await writeStore(a.store, [
+    issue(1),
+    issue(2),
+    issue(3, ["goal"]),
+    issue(4, ["goal"]),
+    issue(5),
+  ]);
+  const withNewcomer = await waitState(
+    a,
+    "the newly opened issue to get its own peer",
+    (state) => state.agents.length === 5,
+    8000,
+  );
+  await waitFor(
+    () => (promptLines(a).includes("/implement-issue 5") ? true : undefined),
+    "the new issue's own prompt",
+    8000,
+    50,
+  );
+  const originalRuns = fleet.agents.map((agent) => agent.runId);
+  check(
+    originalRuns.every((runId) =>
+      withNewcomer.runs.some((run) => run.runId === runId && run.status === "running"),
+    ),
+    "starting the new peer shortened or restarted another agent",
+    withNewcomer.runs,
+  );
+
+  /* ---------------------------------------------------------- */
+  /* 5. One failure cools down only its own issue                */
+  /* ---------------------------------------------------------- */
+  await writeStore(a.store, [
+    issue(1),
+    issue(2),
+    issue(3, ["goal"]),
+    issue(4, ["goal"]),
+    issue(5),
+    issue(6),
+  ]);
+  const cooled = await waitState(
+    a,
+    "issue 6's per-issue cooldown",
+    (state) => typeof state.cooldowns["6"] === "string",
+    8000,
+  );
+  check(
+    Object.keys(cooled.cooldowns).join(",") === "6",
+    "a failure cooled another issue",
+    cooled.cooldowns,
+  );
+  check(cooled.agents.length === 5, "the failure removed another agent", cooled.agents);
+  const failingRun = cooled.runs.find(
+    (run) => run.issueNumbers.includes(6) && run.status === "failed",
+  );
+  check(failingRun !== undefined, "the failed run was not recorded", cooled.runs);
+  check(
+    failingRun!.firstStderrLine === "stub failure for /implement-issue 6",
+    "the failed run lost its first stderr line",
+    failingRun,
+  );
+
+  // Check now clears the cooldown and retries the issue.
+  await click(devtools, "open-issues-overview");
+  await click(devtools, "issues-check-now");
   await waitState(
     a,
-    "the run to stop",
-    (state) => state.lifecycle === "running" && state.activeRun?.issueNumbers.includes(3) === true,
-    10_000,
+    "the cooldown to clear",
+    (state) => Object.keys(state.cooldowns).length === 0,
+    8000,
   );
+  await waitFor(
+    () => (promptLines(a).filter((prompt) => prompt === "/implement-issue 6").length >= 2 ? true : undefined),
+    "the retried issue 6 peer",
+    8000,
+    50,
+  );
+  await waitState(
+    a,
+    "the retried issue 6 to ask its question",
+    (state) => state.agents.some((agent) => agent.issueNumber === 6 && agent.question !== null),
+    8000,
+  );
+  await answerPending(socketA);
+
+  /* ---------------------------------------------------------- */
+  /* 6. Pause drains every peer                                  */
+  /* ---------------------------------------------------------- */
+  const beforePause = stateOf(a)!;
+  const peerPids = beforePause.agents
+    .map((agent) => agent.acp?.pid)
+    .filter((pid): pid is number => typeof pid === "number" && pid > 0);
+  check(peerPids.length >= 4, "the state does not record every ACP child", beforePause.agents);
+  await click(devtools, "issues-pause");
+  await waitState(a, "pausing", (state) => state.lifecycle === "pausing");
+  check(peerPids.every(processAlive), "Pause killed an ACP peer");
+  await writeFile(a.finish, "finish\n");
+  const paused = await waitState(a, "paused after the drain", (state) => state.lifecycle === "paused", 20_000);
+  check(paused.paused, "the worker is not paused", paused);
+  check(paused.agents.length === 0, "a peer survived the drain", paused.agents);
+  check(
+    paused.runs.filter((run) => run.status === "succeeded").length >= 4,
+    "the drained runs did not succeed",
+    paused.runs,
+  );
+  await waitFor(
+    () => (peerPids.every((pid) => !processAlive(pid)) ? true : undefined),
+    "every ACP peer to exit",
+    10_000,
+    50,
+  );
+  await rm(a.finish, { force: true });
+
+  /* ---------------------------------------------------------- */
+  /* 7. Stop closes every peer and writes no cooldown            */
+  /* ---------------------------------------------------------- */
+  await writeStore(a.store, [
+    issue(1),
+    issue(2),
+    issue(3, ["goal"]),
+    issue(4, ["goal"]),
+    issue(5),
+    issue(6),
+    issue(7),
+  ]);
+  await click(devtools, "issues-resume");
+  const restarting = await waitState(
+    a,
+    "issue 7 to start",
+    (state) => state.agents.some((agent) => agent.issueNumber === 7),
+    15_000,
+  );
+  const stopPids = restarting.agents
+    .map((agent) => agent.acp?.pid)
+    .filter((pid): pid is number => typeof pid === "number" && pid > 0);
   const stoppingPid = stateOf(a)!.worker!.pid;
   await click(devtools, "issues-stop");
   const stopped = await waitState(a, "stopped", (state) => state.lifecycle === "stopped", 10_000);
   check(stopped.enabled === false, "Stop left the worker enabled", stopped);
-  check(stopped.nextAttemptAt === null, "Stop recorded a cooldown", stopped);
-  check(stopped.runs.some((entry) => entry.status === "stopped"), "Stop did not record a stopped run", stopped.runs);
+  check(Object.keys(stopped.cooldowns).length === 0, "Stop recorded a cooldown", stopped.cooldowns);
+  check(stopped.agents.length === 0, "an agent survived Stop", stopped.agents);
   check(
-    stopped.queue.find((entry) => entry.number === 3)?.handled === false,
+    stopped.runs.some((entry) => entry.status === "stopped"),
+    "Stop did not record a stopped run",
+    stopped.runs,
+  );
+  check(
+    stopped.queue.find((entry) => entry.number === 7)?.handled === false,
     "Stop marked the captured issue handled",
     stopped.queue,
   );
   check(!existsSync(lockPath(a.repo)), "Stop did not release the repo lock");
+  await waitFor(
+    () => (stopPids.every((pid) => !processAlive(pid)) ? true : undefined),
+    "every ACP peer to exit on Stop",
+    10_000,
+    50,
+  );
   await waitFor(() => (!processAlive(stoppingPid) ? true : undefined), "the worker to exit", 10_000, 50);
 
   /* ------------------------------------------------------------- */
-  /* 6. A killed dashboard leaves the worker; the replacement attaches */
+  /* 8. A killed dashboard leaves the worker; the replacement attaches */
   /* ------------------------------------------------------------- */
   await rm(a.finish, { force: true });
   socketA.send({ type: "startIssues" });
   await waitState(a, "the restarted worker", (state) => state.lifecycle === "idle" && state.enabled, 15_000);
-  await writeStore(a.store, [issue(1), issue(2), issue(3), issue(4)]);
-  await waitState(
+  await writeStore(a.store, [
+    issue(1),
+    issue(2),
+    issue(3, ["goal"]),
+    issue(4, ["goal"]),
+    issue(5),
+    issue(6),
+    issue(7),
+    issue(8),
+  ]);
+  const reattachedRun = await waitState(
     a,
     "the reattachment run",
-    (state) => state.lifecycle === "running" && state.activeRun?.issueNumbers.includes(4) === true,
-    10_000,
+    (state) => state.agents.some((agent) => agent.issueNumber === 8),
+    15_000,
   );
+  await waitState(
+    a,
+    "the reattached agents to ask",
+    (state) => state.agents.some((agent) => agent.question !== null),
+    8000,
+  );
+  await answerPending(socketA);
   const survivingPid = stateOf(a)!.worker!.pid;
   await stopDashboard(dashboardA);
   check(processAlive(survivingPid), "killing the dashboard killed its worker");
@@ -659,29 +967,30 @@ try {
   await socketReplacement.open();
   const replayed = await socketReplacement.waitFrom(
     0,
-    (message) => message.type === "issuesActivity" && message.replay === true,
+    (message) =>
+      message.type === "issuesActivity" &&
+      message.replay === true &&
+      message.runId === reattachedRun.agents.find((agent) => agent.issueNumber === 8)?.runId,
     "the replayed active-run activity",
     10_000,
   );
   check(
-    Array.isArray(replayed.entries) &&
-      replayed.entries.some(
-        (entry) => typeof entry === "object" && entry !== null && String(entry.text).includes("activity"),
-      ),
+    Array.isArray(replayed.entries) && replayed.entries.length > 0,
     "the replayed activity is empty",
     replayed,
   );
   const attachedState = stateOf(a)!;
   check(attachedState.worker?.pid === survivingPid, "the replacement attached to another worker", attachedState.worker);
   await writeFile(a.finish, "finish\n");
-  await waitState(a, "the reattached run to finish", (state) => state.lifecycle === "idle", 10_000);
+  await waitState(a, "the reattached run to finish", (state) => state.lifecycle === "idle", 15_000);
   await rm(a.finish, { force: true });
   socketReplacement.send({ type: "stopIssues" });
   await waitState(a, "the reattached worker to stop", (state) => state.lifecycle === "stopped", 10_000);
   socketReplacement.close();
+  socketA.close();
 
   /* ------------------------------------------------------- */
-  /* 7. Another repository has its own worker                 */
+  /* 9. Another repository has its own worker                 */
   /* ------------------------------------------------------- */
   const b = await fixture("repo-b", "acme/fixture-b");
   await writeStore(b.store, []);
@@ -701,7 +1010,7 @@ try {
   socketB.close();
 
   /* ------------------------------------------------------- */
-  /* 8. Same repository and state attach to one worker        */
+  /* 10. Same repository and state attach to one worker       */
   /* ------------------------------------------------------- */
   const socketA2 = new Socket(replacement.port);
   await socketA2.open();
@@ -728,7 +1037,7 @@ try {
   check(workerPids(a.repo).length === 1, "the checkout has two workers", workerPids(a.repo));
 
   /* ------------------------------------------------------- */
-  /* 9. Another STATE_DIR for the same checkout is refused    */
+  /* 11. Another STATE_DIR for the same checkout is refused    */
   /* ------------------------------------------------------- */
   const aOther: FixturePaths = {
     ...a,
@@ -757,7 +1066,7 @@ try {
   socketD.close();
 
   /* ------------------------------------------------------- */
-  /* 10. A live legacy orchestrator lock refuses Start        */
+  /* 12. A live legacy orchestrator lock refuses Start        */
   /* ------------------------------------------------------- */
   const e = await fixture("repo-e", "acme/fixture-e");
   await mkdir(join(e.stateDir, "orchestrator"), { recursive: true });
@@ -787,7 +1096,7 @@ try {
   socketE.close();
 
   /* ------------------------------------------------------- */
-  /* 11. No systemd unit, timer, or call was ever written      */
+  /* 13. No systemd unit, timer, or call was ever written      */
   /* ------------------------------------------------------- */
   check(!existsSync(tools.marker), "a systemd command was invoked", {
     marker: tools.marker,
@@ -799,9 +1108,11 @@ try {
   check(!existsSync(unit), "a systemd unit was written");
 
   console.log(
-    "verify:issues: Start, 2-second pickup, live ACP activity, pause drain, resume, stop, " +
-      "server-restart reattach, per-repository isolation, same-repository attach, " +
-      "other-state-directory refusal, legacy-lock refusal, and no systemd write passed",
+    "verify:issues: per-issue fleet with four simultaneous peers in one poll, exact prompts, " +
+      "per-agent activity and answers, per-issue cooldown, an issue opened mid-run, pause " +
+      "draining all, Stop closing all, server-restart reattach, per-repository isolation, " +
+      "same-repository attach, other-state-directory refusal, legacy-lock refusal, and no " +
+      "systemd write passed",
   );
 } finally {
   for (const dashboard of startedDashboards) {

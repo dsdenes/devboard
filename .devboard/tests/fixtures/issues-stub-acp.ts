@@ -6,11 +6,13 @@
  * prompt and working directory it received.
  */
 
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 
 const logPath = process.env.ISSUES_STUB_ACP_LOG;
 const finishPath = process.env.ISSUES_STUB_ACP_FINISH;
 const question = process.env.ISSUES_STUB_ACP_QUESTION === "1";
+const failPrompt = process.env.ISSUES_STUB_ACP_FAIL_PROMPT ?? "";
+const failMarker = process.env.ISSUES_STUB_ACP_FAIL_MARKER;
 const sessionId = "stub-issues-session";
 
 function log(line: string): void {
@@ -119,6 +121,12 @@ for await (const chunk of Bun.stdin.stream()) {
               ? first.text
               : "";
           log(`prompt ${text}`);
+          const failOnce = failMarker === undefined || !existsSync(failMarker);
+          if (failPrompt.length > 0 && text === failPrompt && failOnce) {
+            if (failMarker !== undefined) writeFileSync(failMarker, "failed once\n");
+            process.stderr.write(`stub failure for ${text}\n`);
+            process.exit(1);
+          }
           void handlePrompt(message.id);
         } else {
           write({ jsonrpc: "2.0", id: message.id, result: {} });

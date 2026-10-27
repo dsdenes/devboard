@@ -1222,19 +1222,25 @@ dashboard, waits for the installed timer to file a real issue, and closes it as 
 
 Issues is the fourth mode in the activity rail, below Goal. Each dashboard controls exactly one
 repository: its own `REPO_DIR`. Starting Issues in one checkout's dashboard polls that checkout's
-origin open issues and drives the installed `/implement-all-issues` command over ACP with that
-checkout as its working directory. A detached worker owns the poll loop, the agent peer, the
-ledger, the lock, and the activity for one repository, so it survives a dashboard restart and two
-repositories never share a worker. No systemd unit, timer, or machine-level scheduler is involved,
-and neither starting nor restarting a dashboard starts a worker.
+origin open issues and starts one ACP agent for every open, unhandled issue in that same poll. Each
+issue without the exact `goal` label receives exactly `/implement-issue <number>`; each
+`goal`-labeled issue receives exactly `/implement-goal-issue <number>`. There is no concurrency
+cap: ten ready issues start ten peers, and no peer waits for another to finish. A detached worker
+owns the poll loop, the peers, the ledger, the lock, and the activity for one repository, so it
+survives a dashboard restart and two repositories never share a worker. No systemd unit, timer, or
+machine-level scheduler is involved, and neither starting nor restarting a dashboard starts a
+worker.
 
 Start first proves the facts it needs: a canonical checkout root that is not a linked worktree,
-a GitHub `origin`, `omp` and `gh` on `PATH`, the `/implement-all-issues` command installed for the
-operator's omp (`~/.omp/agent/commands/implement-all-issues.md` or
-`~/.omp/commands/implement-all-issues.md`), and
-`gh api repos/<owner>/<repo> --jq .permissions.push` returning `true`. A refusal names the missing
-fact, spawns no peer, and writes no run. A live legacy `devboard-orchestrator` lock is refused
-too; the harness never stops that process.
+a GitHub `origin`, `omp` and `gh` on `PATH`, the `/implement-issue` command installed for the
+operator's omp, and the `/implement-goal-issue` extension installed beside it. Commands are
+discovered in `<REPO_DIR>/.omp/commands/`, `<REPO_DIR>/.omp/agent/commands/`,
+`$HOME/.omp/commands/`, and `$HOME/.omp/agent/commands/`; the extension in
+`<REPO_DIR>/.omp/extensions/` or `$HOME/.omp/extensions/`. A refusal names the missing file, every
+path searched, and `.devboard/install.sh` as the remedy, spawns no peer, and writes no run. Start
+also requires `gh api repos/<owner>/<repo> --jq .permissions.push` to return `true`. A live legacy
+`devboard-orchestrator` lock is refused too; the harness never stops that process. Issues mode no
+longer requires `/implement-all-issues`; that command stays usable by hand outside the mode.
 
 The worker is spawned detached in its own session from the harness package the server loaded,
 with `REPO_DIR` as its working directory. It holds `<REPO_DIR>/.devboard/.tmp/issues/lock`, which
@@ -1247,58 +1253,91 @@ repo-anchored lock names the live worker. Different repositories get independent
 The poll is the GitHub issues endpoint through the operator's `gh` credential every 2 seconds,
 conditional on the previous `ETag` (`If-None-Match`). A `304` is no change; `403`/`429` honor
 `Retry-After` or `X-RateLimit-Reset`. Pull requests returned by the endpoint are excluded, and
-every issue's labels are part of the poll result. When unhandled issues without the exact `goal`
-label exist, one ACP peer is spawned in `REPO_DIR`, one session is opened, and it receives the
-scoped backlog prompt:
+every issue's labels are part of the poll result. Every open issue in the queue carries `handled`,
+the run id that last handled it, and `agentRunId` while an agent works it. An issue that already
+has a running agent never receives a second peer, so a poll while four peers run starts none of
+them again. An issue first seen while three peers run gets its own peer on the next poll without
+pausing, restarting, or shortening the others. A handled issue is never retriggered while it stays
+open; a closed issue leaves the ledger, so a reopened one is eligible again. A poll with no
+unhandled open issue starts no peer and publishes `idle`.
 
-```
-/implement-all-issues Process exactly these open issue numbers: #17, #19. Do not process, comment on, close, or modify any issue labeled "goal".
-```
+Session updates stream into the mode, permission requests are auto-approved by the ACP client,
+elicitation questions are answered per agent, and every peer closes when its run ends or Stop is
+clicked. The agents own every worktree, commit, push, issue closure, and repository mutation; the
+worker passes no scope beyond the issue number and never edits code itself.
 
-Every captured non-goal number appears and no goal number does; when no unhandled non-goal issue
-exists, no implement-all peer starts at all. Every open, unhandled issue carrying the exact `goal`
-label gets its own peer instead, prompted with exactly `/implement-goal-issue <number>`. Goal peers
-run concurrently with each other and with the implement-all peer; the worker never starts a second
-peer for one issue number. Session updates stream into the mode, permission requests are
-auto-approved by the ACP client, elicitation questions are answered from the mode, and each peer
-closes when its run ends or Stop is clicked. The agents own every worktree, commit, push, issue
-closure, and repository mutation.
+### The `/implement-issue` contract
 
-The trigger policy for the implement-all backlog is unchanged. One run covers every open non-goal
-issue not in the ledger, an issue created during a run earns exactly one follow-up run, a handled
-issue is never retriggered while it stays open, a closed issue that reopens is new again, and a
-failed run publishes `failed` with the first stderr line and a five-minute cooldown. A goal run
-that succeeds records its issue as handled in the ledger. A goal run that fails records `failed`
-with its first stderr line, leaves the issue open and unhandled, and writes a per-issue
-`goalCooldowns["<number>"]` gate; that issue gets no new peer until those five minutes expire,
-while other issues continue. Pause lets every active goal peer and the implement-all peer finish,
-then reports `paused` and starts no new peer or poll. Resume polls immediately, but an unexpired
-cooldown still delays the gated work. Check now is accepted only while the worker is enabled and
-not paused, forces a poll, and clears both cooldowns; while paused it writes a notice and polls
-nothing. Stop closes every peer, records every active run as `stopped`, releases the lock, leaves
-captured issues unhandled, and never records a cooldown.
+`.devboard/prompts/implement-issue.md` holds the whole contract and
+`.devboard/omp/commands/implement-issue.md` is its command wrapper: it carries a `description` and
+an `argument-hint`, reads the prompt, and passes `$ARGUMENTS` as the issue number. No other
+harness file duplicates the contract.
+
+The prompt requires the argument to be exactly one positive integer issue number and refuses a
+missing, non-numeric, or multi-token argument before changing anything. It fetches exactly that
+one issue and never fetches, surveys, or builds a dependency graph for the rest of the backlog.
+It creates and works in one worktree under `<REPO_DIR>/.worktree/` named for the issue, never in
+the canonical checkout and never in another agent's worktree, and writes nothing outside
+`<REPO_DIR>`. It changes only that issue's implementation, tests, and documentation; it may read
+other issues and code but never edits, comments on, closes, or reopens another issue. When the
+issue declares an open prerequisite (`depends on`, `blocked by`, or a task-list issue reference),
+it writes `blocked: #<prerequisite>` as the first stderr line, exits nonzero, leaves the issue open
+and unhandled, and never implements the prerequisite in another agent's place. It is
+non-interactive: no `question` tool, no confirmation, no interactive editor, no login prompt. It
+fetches the canonical integration line, integrates concurrent changes, resolves every conflict
+itself, reruns every check the integration invalidates, and publishes directly to that line with
+bounded retry when a push is rejected; it never creates a pull request or merge request and never
+force-pushes. It closes the issue only after verifying the pushed revision is on the canonical
+line and the required checks pass, and comments on that issue with the revision and the
+verification evidence. A proven duplicate, invalid, or already-fixed issue is closed with evidence
+and without committing unrelated work. A successful agent removes only the worktree and branch it
+created; a failed or blocked agent leaves its worktree in place and reports its path.
+
+The `goal` label keeps its goal-mode implementation contract: every goal-labeled issue runs
+`/implement-goal-issue <number>` concurrently with the rest.
+
+### Per-agent state, lifecycle, and history
+
+Each agent has its own run directory, `run.json`, `activity.json`, first-stderr line, question,
+ACP child record, and retry gate keyed by issue number. No agent shares a run record or question
+slot with another. The published state carries `agents`, one entry per running issue with `runId`,
+`issueNumber`, `startedAt`, `question`, and `acp`; the queue carries each issue's `handled`, last
+handling `runId`, and `agentRunId`; and `cooldowns` maps an issue number to its ISO 8601 retry
+time. A failed agent finishes its run as `failed` with its first stderr line, leaves its issue
+open and unhandled, and writes only its own cooldown. A successful agent finishes its run as
+`succeeded`, records only its issue as handled, and does not touch another issue. The five-minute
+cooldown remains: an issue in cooldown is retried when it expires, and other issues keep running
+and start normally.
+
+`Check now` clears every cooldown and polls immediately; while paused it writes a notice and polls
+nothing. Lifecycle is `running` while any peer runs, `pausing` while paused with any peer,
+`paused` when paused with none, `failed` when enabled and unpaused with no peer and an unhandled
+issue still cooling down, `idle` when enabled and unpaused with no peer and no unhandled issue,
+and `stopped` after Stop. Pause, Resume, Check now, and Stop apply to the whole fleet. Pause starts
+no peer and no poll and lets every peer finish. Stop closes every peer, records every active run as
+`stopped`, leaves every captured issue unhandled, writes no cooldown, releases the lock, and stops
+the ticker; no peer survives Stop. A fresh worker start terminates every ACP child the previous
+state recorded when `/proc` proves the process is that child, closes every interrupted run as
+`stopped`, clears `agents`, and starts no peer from stale state.
 
 State, ledger, runs, and activity live under `<STATE_DIR>/issues/<journalKey(REPO_DIR)>/`:
-`state.json` is atomic and carries the worker record, lifecycle, poll state, the queue with each
-issue's labels, run summaries, the implement-all active run, the concurrent goal `agents` (run id,
-issue number, question, and ACP child), the shared question, the implement-all cooldown, and the
-per-issue `goalCooldowns`; `ledger.json` records handled numbers with the run id;
-`runs/<runId>/run.json` and `runs/<runId>/activity.json` keep the newest 50 runs; `control/`
-carries dashboard commands as atomically renamed files. A state or run file written before labels
-existed still loads, with each issue's `labels` defaulting to `[]` and `agents`/`goalCooldowns`
-defaulting to empty. Activity is persisted before a dashboard can read it, bounded at the first of
-1,000 entries or 1 MiB with the trimmed marker, and replayed with every active run after a
-reconnect. A damaged state file is renamed aside and never prevents the mode from opening. The
-worker records the harness version it loaded, its pid, and its argv; a mismatched dashboard shows
-a notice and never kills the worker, and the state also records each ACP child's pid, argv, and
-cwd so Stop or a fresh Start can terminate a proven orphan. The worker and the dashboard read that
-version the same way: a packed release's manifest, or `0.1.<commit-count>` for an unpacked source
-checkout, so Stop then Start brings a worker left on an older harness to the dashboard's version.
+`state.json` is atomic, `ledger.json` records handled numbers with the run id,
+`runs/<runId>/run.json` and `runs/<runId>/activity.json` keep the newest 50 finished runs plus
+every currently running run, and `control/` carries dashboard commands as atomically renamed
+files. Each run's activity is persisted before the dashboard can read it, bounded at the first of
+1,000 entries or 1 MiB with the trimmed marker, and is never merged with another run's activity.
+On connect, the bridge replays `issuesState` and then one `issuesActivity` with `replay: true` for
+every running agent, so a dashboard connecting mid-flight sees every agent and all its output. The
+state document version is 2; the parser still accepts version 1, loading it with empty `agents`,
+`cooldowns` populated from its `goalCooldowns`, and its queue, labels, ledger, and runs intact. A
+damaged state file is renamed aside and never prevents the mode from opening.
 
-The first worker to find no repo-keyed ledger imports handled numbers from
-`<STATE_DIR>/orchestrator/state.json` and `ledger.json` when the legacy state parses and its
-`root` resolves to this `REPO_DIR`. A missing, damaged, or mismatched legacy file is ignored. The
-legacy files are otherwise left untouched.
+The worker records the harness version it loaded, its pid, and its argv; a mismatched dashboard
+shows a notice and never kills the worker, and the state records each ACP child's pid, argv, and
+cwd so Stop or a fresh Start can terminate a proven orphan. The first worker to find no repo-keyed
+ledger imports handled numbers from `<STATE_DIR>/orchestrator/state.json` and `ledger.json` when
+the legacy state parses and its `root` resolves to this `REPO_DIR`. A missing, damaged, or
+mismatched legacy file is ignored. The legacy files are otherwise left untouched.
 
 An already-installed legacy unit is removed by hand, once:
 
@@ -1308,6 +1347,48 @@ rm -f ~/.config/systemd/user/devboard-orchestrator.service
 rm -f ~/.config/systemd/user/default.target.wants/devboard-orchestrator.service
 systemctl --user daemon-reload
 ```
+
+### The Agents surface
+
+The Issues sidebar lists `Agents` directly after `Overview`, with `data-command="open.issues.agents"`
+and `data-testid="open-issues-agents"`, trailing the running-agent count; its accessible name names
+the Issues mode. The command palette lists `open.issues.agents` in the `Workspace` group with the
+title `Open Agents`.
+
+The tab is `{ id: "agents", kind: "agents", resourceId: "agents", title: "Agents" }` and is
+restored after a reload. The page renders `data-testid="issues-agents-page"` and a grid
+`data-testid="issues-agents"` with one card per running agent, sorted by issue number ascending.
+Each card has `data-testid="issues-agent"`, `data-issue`, `data-run`, and `data-status`, and shows
+the issue number linked to its tracker URL, the issue title, the run id, the start time and elapsed
+time, and the status. Every card renders its agent's full streamed output simultaneously in
+`data-testid="issues-agent-activity"` with `data-run`; each log follows its newest line while the
+operator is at the bottom and stays put when scrolled back. A pending question renders inside only
+that agent's card as `data-testid="issues-agent-question"` with `data-run`, its options with a
+recommended marker, and a free-text answer. The controls are `data-testid="issues-agent-choice"`,
+`data-testid="issues-agent-answer-input"`, and `data-testid="issues-agent-answer-submit"`, each
+carrying `data-run`. Answering sends `{ type: "answerIssues", runId, id, value }`; only the agent
+with that run id receives the value, only its question clears, and a missing or unknown run id is
+refused with an error that reaches no peer. Two agents asking at once keep two independent
+questions.
+
+Activating a card (its `Focus` control) opens
+`{ id: "agent:<runId>", kind: "agent", resourceId: <runId>, title: "#<issue> <title>" }`, rendering
+`data-testid="issues-agent-focus"` with `data-testid="issues-agent-focus-status"`, the same full
+activity in `data-testid="issues-agent-focus-activity"`, its question in
+`data-testid="issues-agent-focus-question"`, and `data-testid="issues-agent-focus-close"`. The
+focus tab survives a reload while the run is active. After the run ends, a restored focus tab
+shows that run's final status and activity from run history, or a clear no-longer-available state
+linking to Runs when the run has been pruned.
+
+The Overview keeps the Start, Pause, Resume, Stop, and Check now controls, the poll and worker
+facts, and `data-testid="issues-overview"`. It shows the running-agent count as
+`data-testid="issues-running-agents"`, the pending count, the number of issues in cooldown and the
+earliest cooldown time as `data-testid="issues-cooldowns"`, and links to the Agents tab. It no
+longer renders a single `issues-activity` log or a singular `issues-question`. The queue keeps
+every open issue, its `goal` badge, and its handled state, and shows `data-run` and a running
+marker for an issue with an active agent. The Runs page lists every run with its status and issue,
+and a run's detail shows only that run's activity. The status bar's issues indicator reports the
+lifecycle and the running-agent count in its title and still opens Issues mode.
 
 ## Drafts and proposed goals
 
@@ -1365,16 +1446,13 @@ failure and any created issue URL. A successful completion removes the draft fro
 the spec under `.devboard/goals/`, and the next Issues poll lists the new open issue with its
 `goal` badge.
 
-The Open issues list shows every open issue. A `goal`-labeled issue carries a visible `goal` badge,
-is excluded from the implement-all pending count, and never enters an `/implement-all-issues`
-run. When unhandled non-goal issues exist, the peer receives exactly
-`/implement-all-issues Process exactly these open issue numbers: #<n>, #<n>. Do not process, comment on, close, or modify any issue labeled "goal".`
-with every captured non-goal number and no goal number; when none exist, no implement-all peer
-starts. Every open, unhandled `goal` issue gets its own concurrent peer prompted with exactly
-`/implement-goal-issue <number>`, its own run record, activity, and question slot. The snapshot
-publishes `agents: [{ runId, issueNumber, startedAt, question, acp }]`, so the overview and Runs
-page address each agent by issue number and run id while several are active, and an answer carries
-that `runId` so it routes only to its peer.
+The Open issues list shows every open issue with its `goal` badge and its handled state. Every
+open, unhandled issue gets its own concurrent peer: non-goal issues are prompted with exactly
+`/implement-issue <number>`, goal issues with exactly `/implement-goal-issue <number>`. Each has its
+own run record, activity, and question slot. The snapshot publishes
+`agents: [{ runId, issueNumber, startedAt, question, acp }]`, so the Agents page, the Overview, and
+the Runs page address each agent by issue number and run id while several are active, and an
+answer carries that `runId` so it routes only to its peer.
 
 `.devboard/extensions/implement-goal-issue.ts` implements the command and
 `.devboard/omp/extensions/implement-goal-issue.ts` is its host-side re-export copied by
@@ -1387,12 +1465,12 @@ surface, merges into `main` with conflict integration and retry, pushes `main` t
 the worktree and branch, and closes the issue only after the push, through the same forge-auth
 wrapper.
 
-Pause lets every active goal peer and the implement-all peer finish, then reports `paused` and
-starts no new peer or poll. Resume polls immediately. Stop closes every peer, records every active
-run as `stopped`, leaves every issue unhandled, releases the lock, and writes no cooldown. A
-successful goal run records its issue as handled in the ledger; a failed one records `failed` with
-its first stderr line and gates only that issue for five minutes, leaving it open and unhandled.
-An issue closed by its agent leaves the queue on the next poll.
+Pause lets every active peer finish, then reports `paused` and starts no new peer or poll.
+Resume polls immediately. Stop closes every peer, records every active run as `stopped`, leaves
+every issue unhandled, releases the lock, and writes no cooldown. A successful run records only
+its issue as handled in the ledger; a failed one records `failed` with its first stderr line and
+gates only that issue for five minutes, leaving it open and unhandled. An issue closed by its
+agent leaves the queue on the next poll.
 
 ## Report, remove, or redesign a UI element
 
@@ -1514,7 +1592,6 @@ The client sends:
 { "type": "resumeIssues" }
 { "type": "stopIssues" }
 { "type": "checkIssues" }
-{ "type": "answerIssues", "id": 7, "value": "all" }
 { "type": "answerIssues", "id": 7, "value": "all", "runId": "2026-10-27T10-00-02-000Z" }
 { "type": "getGoalDrafts" }
 { "type": "getGoalDraft", "path": ".devboard/goal-proposals/example.md" }
@@ -1554,15 +1631,17 @@ The client sends:
   and the page every few seconds, asks for it; a stale answer makes the reload control appear
   with both versions in its title.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
-  lifecycle, enabled, paused, repository, poll times, queue entries with `labels`, run summaries,
-  the implement-all `activeRun`, the concurrent goal `agents` (run id, issue number, startedAt,
-  question, ACP child), the shared question, both cooldowns, next attempt, errors, and the harness
-  version the worker loaded. A missing state and no live lock answer `present: false`,
-  `attached: false`, and `lifecycle: "stopped"`. A live worker from another harness version adds a
-  non-blocking `notice` naming both versions. A connect also replays every active run's whole
-  activity as one `issuesActivity` per run with `replay: true`; `getIssuesRun` answers `issuesRun`
-  with one run's metadata and activity. The client never polls: state and activity arrive as
-  events, so switching modes and reconnecting send no frame.
+  lifecycle, enabled, paused, repository, poll times, queue entries with `labels`, `handled`,
+  `runId`, and `agentRunId`, run summaries, the running `agents` (run id, issue number, startedAt,
+  question, ACP child), the per-issue `cooldowns` map, errors, and the harness version the worker
+  loaded. A missing state and no live lock answer `present: false`, `attached: false`, and
+  `lifecycle: "stopped"`. A live worker from another harness version adds a non-blocking `notice`
+  naming both versions. A connect also replays one `issuesActivity` with `replay: true` for every
+  running agent; `getIssuesRun` answers `issuesRun` with one run's metadata and activity. The
+  client never polls: state and activity arrive as events, so switching modes and reconnecting
+  send no frame.
+- `answerIssues` carries `{ runId, id, value }`; the answer reaches only the agent with that run
+  id, and a missing or unknown run id is refused with an `error` that reaches no peer.
 - `getGoalDrafts` answers `issuesDrafts` with the sorted list of `{ path, name, heading }` and
   `issuesDraftState` with the current elaboration. `getGoalDraft` answers `issuesDraftDetail` with
   the draft's exact bytes, or `issuesDraftError` when the path is refused or missing.
@@ -1878,15 +1957,22 @@ under `.devboard/.tmp`, install them into throwaway hosts, and assert the launch
 reload contracts end to end. They never touch a real host.
 
 `bun run verify:issues` is the deterministic end-to-end gate. It starts a source dashboard
-against a throwaway checkout with stub `gh` and ACP commands, starts the worker, proves the 2-second
-pickup, live activity, pause drain, resume, stop, server-restart reattachment, per-repository
-isolation, same-repository attach, refusal with another `STATE_DIR`, legacy-lock refusal, and that
-no systemd unit or timer is written and no `systemctl`/`loginctl` stub is invoked. It writes only
-under `.devboard/.tmp`.
-`tests/issues.test.ts` covers the trigger policy (fresh backlog, no-op poll, new and handled
-issue, one follow-up, failure cooldown with a successful retry), lifecycle transitions, question
-answers, repo-scoped state and lock isolation, atomic and damaged state, ledger migration, the
-activity bounds, and the conditional tracker. `tests/cleanup.test.ts` proves the watchdog
+against a throwaway checkout with stub `gh` and ACP commands, starts the worker, and proves four
+simultaneous peers started in one poll with exact distinct prompts, per-agent run directories and
+activity files, per-agent questions answered by run id, an issue opened mid-run, one issue's
+cooldown leaving the others running, Check now retrying the gated issue, pause draining every peer,
+Stop closing every peer without a cooldown, connect-time replay of every agent, server-restart
+reattachment, per-repository isolation, same-repository attach, refusal with another `STATE_DIR`,
+legacy-lock refusal, that no `/implement-all-issues` prompt is ever sent, and that no systemd unit
+or timer is written and no `systemctl`/`loginctl` stub is invoked. It writes only under
+`.devboard/.tmp`.
+`tests/issues.test.ts` covers the fleet (four mixed issues, twelve peers with no cap, duplicate
+prevention, an issue opened mid-run, per-issue success and ledger entries, one failure cooling only
+its issue), Check now clearing every cooldown, pause draining every peer, Stop closing every peer
+without a cooldown, per-agent questions and answer routing, two orphan children on a fresh start,
+version 1 state loading, reopened-issue eligibility, history pruning that keeps every running
+directory, preflight for both wrappers, repo-scoped state and lock isolation, atomic and damaged
+state, ledger migration, the activity bounds, and the conditional tracker. `tests/cleanup.test.ts` proves the watchdog
 preserves repo-scoped issues state and the repo-anchored lock while sweeping legacy orchestrator
 run files. Every fixture stays under `.devboard/.tmp`.
 `tests/launcher.test.ts` covers the launcher and harness package boundaries: the help output,

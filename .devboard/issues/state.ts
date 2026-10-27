@@ -29,7 +29,10 @@ export interface IssuesIssue {
 
 export interface QueuedIssue extends IssuesIssue {
   handled: boolean;
+  /** The run that last handled this issue, or null before it is handled. */
   runId: string | null;
+  /** The run of the agent currently working this issue, or null. */
+  agentRunId: string | null;
 }
 
 export interface IssuesRunSummary {
@@ -78,8 +81,8 @@ export interface IssuesAcpChild {
 }
 
 /**
- * One goal-labeled issue's own peer. Each agent has a run record, activity,
- * and pending question of its own; `runId` is what routes an answer.
+ * One running issue's own peer. Each agent has a run record, activity, and
+ * pending question of its own; `runId` is what routes an answer.
  */
 export interface IssuesAgent {
   runId: string;
@@ -96,7 +99,7 @@ export interface IssuesQuestion {
 }
 
 export interface IssuesState {
-  version: 1;
+  version: 2;
   repo: string;
   root: string;
   lifecycle: IssuesLifecycle;
@@ -106,14 +109,10 @@ export interface IssuesState {
   poll: IssuesPollState;
   queue: QueuedIssue[];
   runs: IssuesRunSummary[];
-  activeRun: { runId: string; startedAt: string; issueNumbers: number[] } | null;
-  /** One entry per concurrently running goal-labeled issue peer. */
+  /** One entry per concurrently running issue peer. */
   agents: IssuesAgent[];
-  question: IssuesQuestion | null;
-  acp: IssuesAcpChild | null;
-  nextAttemptAt: string | null;
-  /** Per-issue retry gate for a failed goal run, keyed by issue number. */
-  goalCooldowns: Record<string, string>;
+  /** Per-issue retry gate for a failed agent, keyed by issue number. */
+  cooldowns: Record<string, string>;
   lastError: string | null;
   lastExitCode: number | null;
   finishedAt: string | null;
@@ -144,6 +143,16 @@ export function issueLabels(value: unknown): string[] {
 
 function normalizedIssue(value: IssuesIssue): IssuesIssue {
   return { ...value, labels: issueLabels(value) };
+}
+
+/** A queue entry from either document version, with `agentRunId` explicit. */
+function normalizedQueued(value: QueuedIssue): QueuedIssue {
+  return {
+    ...normalizedIssue(value),
+    handled: value.handled,
+    runId: value.runId,
+    agentRunId: value.agentRunId ?? null,
+  };
 }
 
 function isQueued(value: unknown): value is QueuedIssue {
@@ -265,12 +274,8 @@ export function emptyState(options: {
     poll: emptyPoll(options.intervalMs ?? 2000),
     queue: [],
     runs: [],
-    activeRun: null,
     agents: [],
-    question: null,
-    acp: null,
-    nextAttemptAt: null,
-    goalCooldowns: {},
+    cooldowns: {},
     lastError: null,
     lastExitCode: null,
     finishedAt: null,
@@ -287,7 +292,9 @@ export function parseState(text: string): IssuesState | undefined {
   } catch {
     return undefined;
   }
-  if (!isRecord(parsed) || parsed.version !== STATE_VERSION) return undefined;
+  if (!isRecord(parsed)) return undefined;
+  const version = parsed.version;
+  if (version !== 1 && version !== STATE_VERSION) return undefined;
   if (typeof parsed.repo !== "string" || typeof parsed.root !== "string") return undefined;
   const lifecycle = parsed.lifecycle;
   if (
@@ -305,35 +312,34 @@ export function parseState(text: string): IssuesState | undefined {
   if (!isPoll(parsed.poll)) return undefined;
   if (!Array.isArray(parsed.queue) || !parsed.queue.every(isQueued)) return undefined;
   if (!Array.isArray(parsed.runs) || !parsed.runs.every(isRunSummary)) return undefined;
-  if (parsed.activeRun !== null) {
+
+  // Version 1 carried a single implement-all run and its question. It still
+  // loads: the fleet starts empty and the per-issue cooldowns carry over.
+  const previous = version === 1;
+  if (!previous) {
+    if (!Array.isArray(parsed.agents) || !parsed.agents.every(isAgent)) return undefined;
     if (
-      !isRecord(parsed.activeRun) ||
-      typeof parsed.activeRun.runId !== "string" ||
-      typeof parsed.activeRun.startedAt !== "string" ||
-      !Array.isArray(parsed.activeRun.issueNumbers) ||
-      !parsed.activeRun.issueNumbers.every(isInteger)
+      !isRecord(parsed.cooldowns) ||
+      !Object.values(parsed.cooldowns).every((entry) => typeof entry === "string")
     ) {
       return undefined;
     }
-  }
-  if (parsed.question !== null && !isQuestion(parsed.question)) return undefined;
-  if (parsed.acp !== null && !isAcp(parsed.acp)) return undefined;
-  if (parsed.agents !== undefined && (!Array.isArray(parsed.agents) || !parsed.agents.every(isAgent))) {
-    return undefined;
-  }
-  if (
+  } else if (
     parsed.goalCooldowns !== undefined &&
     (!isRecord(parsed.goalCooldowns) ||
       !Object.values(parsed.goalCooldowns).every((entry) => typeof entry === "string"))
   ) {
     return undefined;
   }
-  if (!nullableString(parsed.nextAttemptAt) || !nullableString(parsed.lastError)) return undefined;
+  if (!nullableString(parsed.lastError)) return undefined;
   if (parsed.lastExitCode !== null && !isInteger(parsed.lastExitCode)) return undefined;
   if (!nullableString(parsed.finishedAt)) return undefined;
   if (!nullableString(parsed.notice)) return undefined;
   if (typeof parsed.updatedAt !== "string") return undefined;
 
+  const cooldowns = previous
+    ? ((parsed.goalCooldowns as Record<string, string> | undefined) ?? {})
+    : (parsed.cooldowns as Record<string, string>);
   return {
     version: STATE_VERSION,
     repo: parsed.repo,
@@ -343,14 +349,10 @@ export function parseState(text: string): IssuesState | undefined {
     paused: parsed.paused,
     worker: parsed.worker as IssuesWorkerRecord | null,
     poll: parsed.poll,
-    queue: parsed.queue.map((entry) => normalizedIssue(entry)) as QueuedIssue[],
+    queue: parsed.queue.map((entry) => normalizedQueued(entry)),
     runs: parsed.runs,
-    activeRun: parsed.activeRun as IssuesState["activeRun"],
-    agents: (parsed.agents as IssuesAgent[] | undefined) ?? [],
-    question: parsed.question as IssuesQuestion | null,
-    acp: parsed.acp as IssuesAcpChild | null,
-    nextAttemptAt: parsed.nextAttemptAt,
-    goalCooldowns: (parsed.goalCooldowns as Record<string, string> | undefined) ?? {},
+    agents: previous ? [] : (parsed.agents as IssuesAgent[]),
+    cooldowns: { ...cooldowns },
     lastError: parsed.lastError,
     lastExitCode: parsed.lastExitCode,
     finishedAt: parsed.finishedAt,

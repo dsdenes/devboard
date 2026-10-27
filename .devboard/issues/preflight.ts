@@ -1,8 +1,10 @@
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   findOnPath,
   isGitHubRemote,
   ompCommandPaths,
+  ompExtensionPaths,
   originRemoteUrl,
   originRepository,
   rootProblem,
@@ -86,13 +88,27 @@ export async function preflightIssues(options: PreflightOptions): Promise<Prefli
     return { ok: false, message: "missing prerequisite: gh is not on PATH" };
   }
 
-  const commandPaths = ompCommandPaths(environment);
-  if (!commandPaths.some((path) => existsSync(path))) {
+  const commands = ompCommandPaths(options.repoDir, environment).map((directory) =>
+    join(directory, "implement-issue.md"),
+  );
+  if (!commands.some((path) => existsSync(path))) {
     return {
       ok: false,
       message:
-        "missing prerequisite: the /implement-all-issues command is not installed for omp " +
-        `(looked in ${commandPaths.join(" and ")})`,
+        "missing prerequisite: the /implement-issue command is not installed for omp " +
+        `(looked in ${commands.join(", ")}); install the harness wrappers with .devboard/install.sh`,
+    };
+  }
+
+  const extensions = ompExtensionPaths(options.repoDir, environment).map((directory) =>
+    join(directory, "implement-goal-issue.ts"),
+  );
+  if (!extensions.some((path) => existsSync(path))) {
+    return {
+      ok: false,
+      message:
+        "missing prerequisite: the /implement-goal-issue extension is not installed for omp " +
+        `(looked in ${extensions.join(", ")}); install the harness wrappers with .devboard/install.sh`,
     };
   }
 

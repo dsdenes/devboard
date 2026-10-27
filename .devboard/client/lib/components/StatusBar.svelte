@@ -31,7 +31,7 @@
 
   const issuesLabel = $derived.by(() => {
     const pending = issues.pending;
-    if (issues.lifecycle === "running") return `issues working (${issues.activeIssueNumbers.length})`;
+    if (issues.lifecycle === "running") return `issues working (${issues.agents.length})`;
     if (issues.lifecycle === "pausing") return "issues pausing";
     if (issues.lifecycle === "paused") return "issues paused";
     if (issues.lifecycle === "failed") return "issues failed";
@@ -47,7 +47,7 @@
         : issues.snapshot?.worker === null || issues.snapshot?.worker === undefined
           ? ""
           : ` · worker pid ${issues.snapshot.worker.pid}`;
-    return `Issues automation for ${repo} · ${issues.lifecycle}${detail}`;
+    return `Issues automation for ${repo} · ${issues.lifecycle} · ${issues.agents.length} running agent(s)${detail}`;
   });
 
   const versions = $derived(

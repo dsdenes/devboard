@@ -97,6 +97,14 @@ try {
   assertTrue(!isSymlink(prefix), ".devboard must be a real directory");
   assertTrue(!isSymlink(join(host.directory, ".omp", "commands")), ".omp/commands must be real");
   assertTrue(!isSymlink(join(host.directory, ".omp", "extensions")), ".omp/extensions must be real");
+  assertTrue(
+    existsSync(join(host.directory, ".omp", "commands", "implement-issue.md")),
+    ".omp/commands/implement-issue.md is missing",
+  );
+  assertTrue(
+    existsSync(join(host.directory, ".omp", "extensions", "implement-goal-issue.ts")),
+    ".omp/extensions/implement-goal-issue.ts is missing",
+  );
   assertEquals(symlinkTargetsUnder(prefix), [], "no symlinks under the installed prefix");
   assertEquals(
     installedVersion(prefix),

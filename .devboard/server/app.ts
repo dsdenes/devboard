@@ -5505,12 +5505,14 @@ export function createApp(options: AppOptions) {
               typeof command.value !== "string"
             ) {
               send(ws, { type: "error", message: "An answer needs its question id and value." });
+            } else if (typeof command.runId !== "string" || command.runId.length === 0) {
+              send(ws, { type: "error", message: "An answer needs its run id." });
             } else {
               const result = issues.command({
                 type: "answer",
                 id: command.id,
                 value: command.value,
-                ...(typeof command.runId === "string" ? { runId: command.runId } : {}),
+                runId: command.runId,
               });
               if (!result.ok) send(ws, { type: "error", message: result.message });
             }

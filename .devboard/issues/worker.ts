@@ -29,6 +29,7 @@ import {
   writeActivity,
   writeRunFile,
   writeState,
+  type IssuesAcpChild,
   type IssuesAgent,
   type IssuesIssue,
   type IssuesQuestion,
@@ -42,19 +43,19 @@ import {
 /**
  * The detached worker for exactly one repository. It owns the poll loop, the
  * ACP peers, the ledger, the repository lock, and the activity, so it outlives
- * any dashboard process. One peer runs `/implement-all-issues` for the
- * unlabeled backlog; every open issue carrying the exact `goal` label gets a
- * separate peer of its own and they run concurrently.
+ * any dashboard process. Every open, unhandled issue gets its own peer in the
+ * same poll, with no concurrency cap, and all of them run at the same time.
  */
 
 const DEFAULT_INTERVAL_MS = 2000;
 const COOLDOWN_MS = 5 * 60_000;
 const TICK_MS = 100;
-const IMPLEMENT_ALL_COMMAND = "/implement-all-issues";
+const IMPLEMENT_ISSUE_COMMAND = "/implement-issue";
 const IMPLEMENT_GOAL_COMMAND = "/implement-goal-issue";
 const GOAL_LABEL = "goal";
 const DEFAULT_AGENT_COMMAND = "omp acp";
 const FIRST_LINE_MAX = 400;
+const RUN_HISTORY_LIMIT = 50;
 
 export interface WorkerOptions {
   repoDir: string;
@@ -129,9 +130,7 @@ interface ActiveRun {
   runId: string;
   directory: string;
   startedAt: string;
-  kind: "implement-all" | "goal";
-  /** The one goal issue this peer serves, or null for the shared backlog. */
-  issue: IssuesIssue | null;
+  issue: IssuesIssue;
   captured: IssuesIssue[];
   activity: string[];
   peer: AcpPeer;
@@ -140,7 +139,10 @@ interface ActiveRun {
 }
 
 /** The child as the process table sees it, for a later proven termination. */
-function observedChild(pid: number | undefined, cwd: string): { pid: number; argv: string[]; cwd: string } | null {
+function observedChild(
+  pid: number | undefined,
+  cwd: string,
+): { pid: number; argv: string[]; cwd: string } | null {
   if (pid === undefined) return null;
   try {
     const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\u0000").filter(Boolean);
@@ -168,23 +170,31 @@ export function runIdentifier(now: Date): string {
   return now.toISOString().replace(/[:.]/g, "-");
 }
 
-/** Loads the newest run records, newest first, at most `RUN_HISTORY_LIMIT`. */
+/**
+ * Loads every run record, newest first: every running run plus the newest
+ * `limit` finished ones. A running agent never loses its directory.
+ */
 export function loadRuns(
   stateDir: string,
   repoDir: string,
-  limit = 50,
+  limit = RUN_HISTORY_LIMIT,
 ): Array<{ run: RunFile; directory: string; activity: number }> {
   const found: Array<{ run: RunFile; directory: string; activity: number }> = [];
+  let finished = 0;
   for (const name of listRunDirectories(stateDir, repoDir)) {
     const directory = join(runsDirectory(stateDir, repoDir), name);
     try {
       const run = parseRunFile(readFileSync(runFilePath(directory), "utf8"));
       if (run === undefined) continue;
-      found.push({ run, directory, activity: readActivity(directory).length });
+      if (run.status === "running") {
+        found.push({ run, directory, activity: readActivity(directory).length });
+      } else if (finished < limit) {
+        found.push({ run, directory, activity: readActivity(directory).length });
+        finished += 1;
+      }
     } catch {
       // A run file that vanished mid-scan is already gone.
     }
-    if (found.length >= limit) break;
   }
   return found;
 }
@@ -193,13 +203,58 @@ export function isGoalIssue(issue: IssuesIssue): boolean {
   return (issue.labels ?? []).includes(GOAL_LABEL);
 }
 
-/** The exact `/implement-all-issues` prompt for the captured non-goal backlog. */
-export function implementAllPrompt(numbers: number[]): string {
-  const list = numbers.map((number) => `#${number}`).join(", ");
-  return (
-    `${IMPLEMENT_ALL_COMMAND} Process exactly these open issue numbers: ${list}. ` +
-    `Do not process, comment on, close, or modify any issue labeled "goal".`
-  );
+/** The exact prompt for one issue: `/implement-issue` or `/implement-goal-issue`. */
+export function promptFor(issue: IssuesIssue): string {
+  const command = isGoalIssue(issue) ? IMPLEMENT_GOAL_COMMAND : IMPLEMENT_ISSUE_COMMAND;
+  return `${command} ${issue.number}`;
+}
+
+/** Reads the previous state file's recorded ACP children and run ids verbatim. */
+function previousRecords(path: string): {
+  children: IssuesAcpChild[];
+  runIds: string[];
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return { children: [], runIds: [] };
+  }
+  if (typeof parsed !== "object" || parsed === null) return { children: [], runIds: [] };
+  const record = parsed as Record<string, unknown>;
+  const children: IssuesAcpChild[] = [];
+  const runIds: string[] = [];
+  const collect = (value: unknown): void => {
+    if (typeof value !== "object" || value === null) return;
+    const candidate = value as Record<string, unknown>;
+    if (
+      typeof candidate.pid === "number" &&
+      Number.isInteger(candidate.pid) &&
+      candidate.pid > 0 &&
+      Array.isArray(candidate.argv) &&
+      candidate.argv.every((entry) => typeof entry === "string") &&
+      typeof candidate.cwd === "string"
+    ) {
+      children.push({
+        pid: candidate.pid,
+        argv: candidate.argv as string[],
+        cwd: candidate.cwd,
+      });
+    }
+  };
+  const agents = Array.isArray(record.agents) ? record.agents : [];
+  for (const agent of agents) {
+    if (typeof agent !== "object" || agent === null) continue;
+    const entry = agent as Record<string, unknown>;
+    if (typeof entry.runId === "string") runIds.push(entry.runId);
+    collect(entry.acp);
+  }
+  collect(record.acp);
+  if (typeof record.activeRun === "object" && record.activeRun !== null) {
+    const active = record.activeRun as Record<string, unknown>;
+    if (typeof active.runId === "string") runIds.push(active.runId);
+  }
+  return { children, runIds };
 }
 
 export class IssuesWorker {
@@ -216,11 +271,8 @@ export class IssuesWorker {
 
   private state: IssuesState;
   private ledger: Ledger;
-  private active: ActiveRun | undefined;
-  private readonly goals = new Map<number, ActiveRun>();
+  private readonly active = new Map<number, ActiveRun>();
   private runs: Array<{ run: RunFile; directory: string }> = [];
-  private followUp = false;
-  private finishing = false;
   private stopping = false;
   private polling = false;
   private nextPollDue = 0;
@@ -234,7 +286,10 @@ export class IssuesWorker {
     this.stateDir = resolve(options.stateDir);
     this.intervalMs = Math.max(100, options.intervalMs ?? DEFAULT_INTERVAL_MS);
     this.agentCommand =
-      options.agentCommand ?? options.environment?.AGENT_COMMAND ?? process.env.AGENT_COMMAND ?? DEFAULT_AGENT_COMMAND;
+      options.agentCommand ??
+      options.environment?.AGENT_COMMAND ??
+      process.env.AGENT_COMMAND ??
+      DEFAULT_AGENT_COMMAND;
     this.environment = options.environment ?? process.env;
     this.clock = options.now ?? (() => new Date());
     this.listIssues =
@@ -246,11 +301,8 @@ export class IssuesWorker {
           environment: this.environment,
         }));
     this.connect =
-      options.connect ??
-      ((peerOptions) => new AcpConnection(peerOptions) as unknown as AcpPeer);
-    this.harnessVersion =
-      options.harnessVersion ??
-      readHarnessVersion(resolve(import.meta.dir, ".."));
+      options.connect ?? ((peerOptions) => new AcpConnection(peerOptions) as unknown as AcpPeer);
+    this.harnessVersion = options.harnessVersion ?? readHarnessVersion(resolve(import.meta.dir, ".."));
     this.log = options.log ?? (() => undefined);
     this.onStopped = options.onStopped;
     this.state = emptyState({
@@ -267,7 +319,7 @@ export class IssuesWorker {
   }
 
   get running(): boolean {
-    return this.active !== undefined || this.goals.size > 0;
+    return this.active.size > 0;
   }
 
   /** Takes the repository lock and publishes the fresh `idle` cycle. */
@@ -284,7 +336,9 @@ export class IssuesWorker {
     }
     this.lock = lockResult;
 
-    const previous = loadState(statePath(this.stateDir, this.repoDir));
+    const path = statePath(this.stateDir, this.repoDir);
+    const previous = loadState(path);
+    const records = previousRecords(path);
     this.ledger = loadLedger(this.stateDir, this.repoDir);
     const migrated = migrateLegacyLedger({
       stateDir: this.stateDir,
@@ -305,13 +359,9 @@ export class IssuesWorker {
       run: entry.run,
       directory: entry.directory,
     }));
-    // A worker that died mid-run leaves a recorded child and a `running`
-    // record. Only a process the table proves is that child is signalled.
-    const orphans = [
-      ...(previous?.acp === null || previous?.acp === undefined ? [] : [previous.acp]),
-      ...(previous?.agents ?? []).flatMap((agent) => (agent.acp === null ? [] : [agent.acp])),
-    ];
-    for (const orphan of orphans) {
+    // A worker that died mid-run leaves recorded children and `running`
+    // records. Only a process the table proves is that child is signalled.
+    for (const orphan of records.children) {
       if (!recordedChildAlive(orphan)) continue;
       try {
         process.kill(orphan.pid, "SIGKILL");
@@ -320,14 +370,12 @@ export class IssuesWorker {
         // It exited between the proof and the signal.
       }
     }
-    for (const runId of [
-      ...(previous?.activeRun === null || previous?.activeRun === undefined
-        ? []
-        : [previous.activeRun.runId]),
-      ...(previous?.agents ?? []).map((agent) => agent.runId),
-    ]) {
-      this.closeInterruptedRun(runId);
-    }
+    const interrupted = new Set([
+      ...records.runIds,
+      ...this.runs.filter((entry) => entry.run.status === "running").map((entry) => entry.run.runId),
+    ]);
+    for (const runId of interrupted) this.closeInterruptedRun(runId);
+    this.active.clear();
 
     const now = this.clock();
     this.state = {
@@ -349,6 +397,7 @@ export class IssuesWorker {
       runs: this.summaries(),
       updatedAt: now.toISOString(),
     };
+    void previous;
     this.nextPollDue = now.getTime();
     this.publish();
     this.startTicker();
@@ -414,16 +463,10 @@ export class IssuesWorker {
   }
 
   private findActive(runId: string): ActiveRun | undefined {
-    if (this.active?.runId === runId) return this.active;
-    for (const run of this.goals.values()) {
+    for (const run of this.active.values()) {
       if (run.runId === runId) return run;
     }
     return undefined;
-  }
-
-  private questionFor(run: ActiveRun): IssuesQuestion | null {
-    if (run.kind === "implement-all") return this.state.question;
-    return this.state.agents.find((agent) => agent.runId === run.runId)?.question ?? null;
   }
 
   private async apply(command: IssuesCommand): Promise<void> {
@@ -438,11 +481,7 @@ export class IssuesWorker {
       case "resume": {
         this.state.paused = false;
         this.state.notice = null;
-        this.state.lifecycle = this.running
-          ? "running"
-          : this.cooldownRemaining() || this.anyGoalCooldownRemaining()
-            ? "failed"
-            : "idle";
+        this.state.lifecycle = this.settledLifecycle();
         this.nextPollDue = this.clock().getTime();
         this.publish();
         return;
@@ -458,8 +497,7 @@ export class IssuesWorker {
           this.publish();
           return;
         }
-        this.state.nextAttemptAt = null;
-        this.state.goalCooldowns = {};
+        this.state.cooldowns = {};
         this.state.notice = null;
         if (this.state.lifecycle === "failed") this.state.lifecycle = "idle";
         this.nextPollDue = this.clock().getTime();
@@ -467,13 +505,15 @@ export class IssuesWorker {
         return;
       }
       case "answer": {
-        const run = command.runId === undefined ? this.active : this.findActive(command.runId);
+        const runId = command.runId;
+        if (typeof runId !== "string" || runId.length === 0) {
+          this.state.notice = "An answer needs its run id.";
+          this.publish();
+          return;
+        }
+        const run = this.findActive(runId);
         const question = run === undefined ? null : this.questionFor(run);
-        if (
-          run === undefined ||
-          question === null ||
-          String(question.id) !== String(command.id)
-        ) {
+        if (run === undefined || question === null || String(question.id) !== String(command.id)) {
           this.state.notice = "That question is no longer waiting for an answer.";
           this.publish();
           return;
@@ -484,13 +524,9 @@ export class IssuesWorker {
           this.publish();
           return;
         }
-        if (run.kind === "implement-all") {
-          this.state.question = null;
-        } else {
-          this.state.agents = this.state.agents.map((agent) =>
-            agent.runId === run.runId ? { ...agent, question: null } : agent,
-          );
-        }
+        this.state.agents = this.state.agents.map((agent) =>
+          agent.runId === run.runId ? { ...agent, question: null } : agent,
+        );
         this.state.notice = null;
         this.publish();
         return;
@@ -502,25 +538,32 @@ export class IssuesWorker {
     }
   }
 
-  private cooldownRemaining(): boolean {
-    const until = this.state.nextAttemptAt;
-    if (until === null) return false;
-    const at = Date.parse(until);
-    return Number.isFinite(at) && this.clock().getTime() < at;
+  private questionFor(run: ActiveRun): IssuesQuestion | null {
+    return this.state.agents.find((agent) => agent.runId === run.runId)?.question ?? null;
   }
 
-  private goalCooldownRemaining(number: number): boolean {
-    const until = this.state.goalCooldowns[String(number)];
+  private cooldownRemaining(number: number): boolean {
+    const until = this.state.cooldowns[String(number)];
     if (until === undefined) return false;
     const at = Date.parse(until);
     return Number.isFinite(at) && this.clock().getTime() < at;
   }
 
-  private anyGoalCooldownRemaining(): boolean {
-    return Object.values(this.state.goalCooldowns).some((until) => {
+  private anyCooldownRemaining(): boolean {
+    return Object.values(this.state.cooldowns).some((until) => {
       const at = Date.parse(until);
       return Number.isFinite(at) && this.clock().getTime() < at;
     });
+  }
+
+  private settledLifecycle(): IssuesState["lifecycle"] {
+    if (this.stopping) return "stopped";
+    if (this.state.paused) return this.running ? "pausing" : "paused";
+    if (this.running) return "running";
+    if (!this.state.enabled) return "stopped";
+    const unhandled = this.state.queue.filter((issue) => !issue.handled);
+    if (unhandled.length === 0) return "idle";
+    return "failed";
   }
 
   /** One conditional poll, then the trigger decision. */
@@ -538,9 +581,7 @@ export class IssuesWorker {
           this.state.poll.notModified = true;
           this.state.poll.error = null;
           this.state.poll.rateLimitedUntil = null;
-          this.state.poll.nextPollAt = new Date(
-            startedAt.getTime() + this.intervalMs,
-          ).toISOString();
+          this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
           this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
           this.refreshQueue();
           break;
@@ -550,9 +591,7 @@ export class IssuesWorker {
           this.state.poll.notModified = false;
           this.state.poll.error = null;
           this.state.poll.rateLimitedUntil = null;
-          this.state.poll.nextPollAt = new Date(
-            startedAt.getTime() + this.intervalMs,
-          ).toISOString();
+          this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
           this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
           this.applyIssues(result.issues);
           break;
@@ -566,9 +605,7 @@ export class IssuesWorker {
         }
         case "error": {
           this.state.poll.error = result.detail;
-          this.state.poll.nextPollAt = new Date(
-            startedAt.getTime() + this.intervalMs,
-          ).toISOString();
+          this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
           this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
           this.state.lastError = result.detail;
           break;
@@ -589,70 +626,49 @@ export class IssuesWorker {
       writeLedger(this.stateDir, this.repoDir, this.ledger);
     }
     const cooldowns = Object.fromEntries(
-      Object.entries(this.state.goalCooldowns).filter(([key]) => open.has(Number(key))),
+      Object.entries(this.state.cooldowns).filter(([key]) => open.has(Number(key))),
     );
-    if (Object.keys(cooldowns).length !== Object.keys(this.state.goalCooldowns).length) {
-      this.state.goalCooldowns = cooldowns;
+    if (Object.keys(cooldowns).length !== Object.keys(this.state.cooldowns).length) {
+      this.state.cooldowns = cooldowns;
     }
-    this.state.queue = issues.map((issue) => {
-      const handled = this.ledger.handled[String(issue.number)];
-      return {
-        ...issue,
-        handled: handled !== undefined,
-        runId: handled?.runId ?? null,
-      };
-    });
-    if (this.active !== undefined) {
-      const captured = new Set(this.active.captured.map((issue) => issue.number));
-      const novel = this.state.queue.filter(
-        (issue) =>
-          !issue.handled && !captured.has(issue.number) && !isGoalIssue(issue),
-      );
-      if (novel.length > 0) this.followUp = true;
-    }
+    this.state.queue = issues.map((issue) => this.queued(issue));
+  }
+
+  private queued(issue: IssuesIssue): QueuedIssue {
+    const handled = this.ledger.handled[String(issue.number)];
+    return {
+      ...issue,
+      handled: handled !== undefined,
+      runId: handled?.runId ?? null,
+      agentRunId: this.active.get(issue.number)?.runId ?? null,
+    };
   }
 
   private refreshQueue(): void {
-    this.state.queue = this.state.queue.map((issue) => {
-      const handled = this.ledger.handled[String(issue.number)];
-      return {
-        ...issue,
-        handled: handled !== undefined,
-        runId: handled?.runId ?? null,
-      };
-    });
+    this.state.queue = this.state.queue.map((issue) => this.queued(issue));
   }
 
   private maybeTrigger(): void {
-    if (this.stopping || this.state.paused || !this.state.enabled || this.finishing) return;
-    const unhandled = this.state.queue.filter((issue) => !issue.handled);
-    if (this.active === undefined) {
-      const backlog = unhandled.filter((issue) => !isGoalIssue(issue));
-      if (backlog.length > 0 && !this.cooldownRemaining()) {
-        this.beginImplementAll(backlog);
-      }
+    if (this.stopping || this.state.paused || !this.state.enabled) return;
+    for (const issue of this.state.queue) {
+      if (issue.handled) continue;
+      if (this.active.has(issue.number)) continue;
+      if (this.cooldownRemaining(issue.number)) continue;
+      this.begin(issue);
     }
-    for (const issue of unhandled) {
-      if (!isGoalIssue(issue)) continue;
-      if (this.goals.has(issue.number)) continue;
-      if (this.goalCooldownRemaining(issue.number)) continue;
-      this.beginGoal(issue);
-    }
-    if (this.stopping || this.running) return;
-    if (unhandled.length > 0) {
-      this.state.lifecycle = "failed";
-      return;
-    }
-    this.state.lifecycle = "idle";
-    this.state.lastExitCode = null;
-    this.state.lastError = null;
-    this.state.nextAttemptAt = null;
+    this.state.lifecycle = this.settledLifecycle();
+    this.publish();
+  }
+
+  private acpChild(active: ActiveRun): IssuesAcpChild | null {
+    const observed = observedChild(active.peer.pid, this.repoDir);
+    if (observed !== null) return observed;
+    if (active.peer.pid === undefined || active.peer.pid <= 0) return null;
+    return { pid: active.peer.pid, argv: [...active.peer.argv], cwd: this.repoDir };
   }
 
   private openRun(
-    kind: ActiveRun["kind"],
-    captured: IssuesIssue[],
-    issue: IssuesIssue | null,
+    issue: IssuesIssue,
   ): { active: ActiveRun } | { runId: string; directory: string; error: string } {
     const now = this.clock();
     const base = runsDirectory(this.stateDir, this.repoDir);
@@ -670,7 +686,7 @@ export class IssuesWorker {
       startedAt: now.toISOString(),
       finishedAt: null,
       exitCode: null,
-      issues: captured,
+      issues: [issue],
       firstStderrLine: null,
       workerPid: process.pid,
       harnessVersion: this.harnessVersion,
@@ -684,9 +700,8 @@ export class IssuesWorker {
       runId: created.runId,
       directory: created.directory,
       startedAt: run.startedAt,
-      kind,
       issue,
-      captured,
+      captured: [issue],
       activity,
       peer: undefined as unknown as AcpPeer,
       firstLine,
@@ -703,87 +718,43 @@ export class IssuesWorker {
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      this.updateRun(created.runId, created.directory, "failed", now.toISOString(), 1, detail);
-      this.state.runs = this.summaries();
       return { runId: created.runId, directory: created.directory, error: detail };
     }
     active.peer = peer;
     return { active };
   }
 
-  private beginImplementAll(captured: IssuesIssue[]): void {
-    const opened = this.openRun("implement-all", captured, null);
+  /** Starts one peer for one issue and records its run and agent entry. */
+  private begin(issue: IssuesIssue): void {
+    const opened = this.openRun(issue);
     if ("error" in opened) {
-      this.finishWithoutPeer(opened.runId, opened.directory, opened.error, null);
+      this.failWithoutPeer(issue, opened.runId, opened.directory, opened.error);
       return;
     }
     const active = opened.active;
-    this.active = active;
-    this.followUp = false;
-    this.state.activeRun = {
-      runId: active.runId,
-      startedAt: active.startedAt,
-      issueNumbers: captured.map((issue) => issue.number),
-    };
-    this.state.lifecycle = "running";
-    this.state.lastExitCode = null;
-    this.state.lastError = null;
-    this.state.nextAttemptAt = null;
-    this.state.question = null;
-    this.state.acp =
-      observedChild(active.peer.pid, this.repoDir) ?? {
-        pid: active.peer.pid ?? 0,
-        argv: [...active.peer.argv],
-        cwd: this.repoDir,
-      };
-    if (this.state.acp.pid === 0) this.state.acp = null;
-    this.state.runs = this.summaries();
-    this.publish();
-
-    void active.peer
-      .run(implementAllPrompt(captured.map((issue) => issue.number)))
-      .then(() => this.finishImplementAllSucceeded(active))
-      .catch((error: unknown) => {
-        const detail =
-          error instanceof Error && error.message.length > 0
-            ? error.message
-            : "the agent ended its turn with an error";
-        this.finishImplementAllFailed(active, detail);
-      });
-  }
-
-  private beginGoal(issue: IssuesIssue): void {
-    const opened = this.openRun("goal", [issue], issue);
-    if ("error" in opened) {
-      this.finishWithoutPeer(opened.runId, opened.directory, opened.error, issue);
-      return;
-    }
-    const active = opened.active;
-    this.goals.set(issue.number, active);
+    this.active.set(issue.number, active);
     const agent: IssuesAgent = {
       runId: active.runId,
       issueNumber: issue.number,
       startedAt: active.startedAt,
       question: null,
-      acp: observedChild(active.peer.pid, this.repoDir),
+      acp: this.acpChild(active),
     };
     this.state.agents = [...this.state.agents, agent];
+    this.refreshQueue();
     this.state.lifecycle = "running";
-    this.state.lastExitCode = null;
-    this.state.lastError = null;
-    this.state.nextAttemptAt = null;
     this.state.runs = this.summaries();
     this.publish();
 
     void active.peer
-      .run(`${IMPLEMENT_GOAL_COMMAND} ${issue.number}`)
-      .then(() => this.finishGoalSucceeded(active))
+      .run(promptFor(issue))
+      .then(() => this.finishSucceeded(active))
       .catch((error: unknown) => {
         const detail =
           error instanceof Error && error.message.length > 0
             ? error.message
             : "the agent ended its turn with an error";
-        this.finishGoalFailed(active, detail);
+        this.finishFailed(active, detail);
       });
   }
 
@@ -811,13 +782,9 @@ export class IssuesWorker {
         recommended: option.recommended,
       })),
     };
-    if (active.kind === "implement-all") {
-      this.state.question = stored;
-    } else {
-      this.state.agents = this.state.agents.map((agent) =>
-        agent.runId === active.runId ? { ...agent, question: stored } : agent,
-      );
-    }
+    this.state.agents = this.state.agents.map((agent) =>
+      agent.runId === active.runId ? { ...agent, question: stored } : agent,
+    );
     this.publish();
   }
 
@@ -847,134 +814,70 @@ export class IssuesWorker {
     }
   }
 
-  private finishWithoutPeer(
-    runId: string,
-    directory: string,
-    detail: string,
-    issue: IssuesIssue | null,
-  ): void {
-    const finishedAt = this.clock().toISOString();
-    this.updateRun(runId, directory, "failed", finishedAt, 1, detail);
-    if (issue !== null) {
-      this.state.goalCooldowns[String(issue.number)] = new Date(
-        this.clock().getTime() + COOLDOWN_MS,
-      ).toISOString();
-    } else {
-      this.state.nextAttemptAt = new Date(this.clock().getTime() + COOLDOWN_MS).toISOString();
-    }
-    this.state.lastError = detail;
-    this.state.lastExitCode = 1;
-    this.state.finishedAt = finishedAt;
-    this.state.runs = this.summaries();
-    this.state.lifecycle = this.running ? "running" : "failed";
-    this.publish();
-  }
-
-  private finishImplementAllSucceeded(active: ActiveRun): void {
-    if (active.finished) return;
-    active.finished = true;
-    this.finishing = true;
-    this.closePeer(active);
-    const finishedAt = this.clock().toISOString();
-    this.updateRun(active.runId, active.directory, "succeeded", finishedAt, 0, null);
-    this.ledger = recordHandled(this.ledger, active.captured, active.runId, this.clock());
-    writeLedger(this.stateDir, this.repoDir, this.ledger);
-    this.refreshQueue();
-    this.state.activeRun = null;
-    this.state.acp = null;
-    this.state.question = null;
-    this.active = undefined;
-    this.finishAfterPeer(0, null, finishedAt);
-  }
-
-  private finishImplementAllFailed(active: ActiveRun, detail: string): void {
-    if (active.finished) return;
-    active.finished = true;
-    this.finishing = true;
-    this.closePeer(active);
-    active.firstLine.finish();
-    const error = active.firstLine.value ?? detail;
-    const finishedAt = this.clock().toISOString();
-    this.updateRun(active.runId, active.directory, "failed", finishedAt, 1, error);
-    this.state.activeRun = null;
-    this.state.acp = null;
-    this.state.question = null;
-    this.active = undefined;
-    this.state.nextAttemptAt = new Date(this.clock().getTime() + COOLDOWN_MS).toISOString();
-    this.finishAfterPeer(1, error, finishedAt);
-  }
-
-  private finishGoalSucceeded(active: ActiveRun): void {
-    if (active.finished) return;
-    active.finished = true;
-    this.finishing = true;
-    this.closePeer(active);
-    const finishedAt = this.clock().toISOString();
-    this.updateRun(active.runId, active.directory, "succeeded", finishedAt, 0, null);
-    this.ledger = recordHandled(this.ledger, active.captured, active.runId, this.clock());
-    writeLedger(this.stateDir, this.repoDir, this.ledger);
-    this.forgetGoal(active);
-    this.refreshQueue();
-    this.finishAfterPeer(0, null, finishedAt);
-    if (!this.stopping && !this.state.paused) {
-      this.nextPollDue = this.clock().getTime();
-    }
-  }
-
-  private finishGoalFailed(active: ActiveRun, detail: string): void {
-    if (active.finished) return;
-    active.finished = true;
-    this.finishing = true;
-    this.closePeer(active);
-    active.firstLine.finish();
-    const error = active.firstLine.value ?? detail;
-    const finishedAt = this.clock().toISOString();
-    this.updateRun(active.runId, active.directory, "failed", finishedAt, 1, error);
-    const number = active.issue?.number;
-    if (number !== undefined) {
-      this.state.goalCooldowns[String(number)] = new Date(
-        this.clock().getTime() + COOLDOWN_MS,
-      ).toISOString();
-    }
-    this.forgetGoal(active);
-    this.finishAfterPeer(1, error, finishedAt);
-  }
-
-  private forgetGoal(active: ActiveRun): void {
-    if (active.issue !== null) {
-      this.goals.delete(active.issue.number);
-    }
+  private forget(active: ActiveRun): void {
+    this.active.delete(active.issue.number);
     this.state.agents = this.state.agents.filter((agent) => agent.runId !== active.runId);
   }
 
-  /** Publishes the run outcome and the lifecycle once every peer has settled. */
-  private finishAfterPeer(
-    exitCode: number | null,
-    error: string | null,
-    finishedAt: string,
-  ): void {
+  private settle(exitCode: number | null, error: string | null, finishedAt: string): void {
     this.state.runs = this.summaries();
     this.state.lastExitCode = exitCode;
-    this.state.lastError = error;
+    if (error !== null) this.state.lastError = error;
     this.state.finishedAt = finishedAt;
-    if (this.stopping) {
-      this.state.lifecycle = "stopped";
-    } else if (this.state.paused) {
-      this.state.lifecycle = this.running ? "pausing" : "paused";
-    } else if (this.running) {
-      this.state.lifecycle = "running";
-    } else if (exitCode === 0 && !this.cooldownRemaining() && !this.anyGoalCooldownRemaining()) {
-      this.state.lifecycle = "idle";
-      this.state.nextAttemptAt = null;
-    } else {
-      this.state.lifecycle = "failed";
+    const lifecycle = this.settledLifecycle();
+    this.state.lifecycle = lifecycle;
+    if (lifecycle === "idle") {
+      this.state.lastError = null;
+      this.state.lastExitCode = null;
+      this.state.finishedAt = null;
     }
-    this.finishing = false;
     this.publish();
-    if (this.followUp && exitCode === 0 && !this.stopping && !this.state.paused) {
-      this.followUp = false;
-      this.nextPollDue = this.clock().getTime();
+    if (!this.stopping && this.state.enabled && !this.state.paused) {
+      this.nextPollDue = Math.min(this.nextPollDue, this.clock().getTime());
     }
+  }
+
+  private failWithoutPeer(
+    issue: IssuesIssue,
+    runId: string,
+    directory: string,
+    detail: string,
+  ): void {
+    const finishedAt = this.clock().toISOString();
+    this.updateRun(runId, directory, "failed", finishedAt, 1, detail);
+    this.state.cooldowns[String(issue.number)] = new Date(
+      this.clock().getTime() + COOLDOWN_MS,
+    ).toISOString();
+    this.settle(1, detail, finishedAt);
+  }
+
+  private finishSucceeded(active: ActiveRun): void {
+    if (active.finished || this.stopping) return;
+    active.finished = true;
+    this.closePeer(active);
+    const finishedAt = this.clock().toISOString();
+    this.updateRun(active.runId, active.directory, "succeeded", finishedAt, 0, null);
+    this.ledger = recordHandled(this.ledger, active.captured, active.runId, this.clock());
+    writeLedger(this.stateDir, this.repoDir, this.ledger);
+    this.forget(active);
+    this.refreshQueue();
+    this.settle(0, null, finishedAt);
+  }
+
+  private finishFailed(active: ActiveRun, detail: string): void {
+    if (active.finished || this.stopping) return;
+    active.finished = true;
+    this.closePeer(active);
+    active.firstLine.finish();
+    const error = active.firstLine.value ?? detail;
+    const finishedAt = this.clock().toISOString();
+    this.updateRun(active.runId, active.directory, "failed", finishedAt, 1, error);
+    this.state.cooldowns[String(active.issue.number)] = new Date(
+      this.clock().getTime() + COOLDOWN_MS,
+    ).toISOString();
+    this.forget(active);
+    this.refreshQueue();
+    this.settle(1, error, finishedAt);
   }
 
   private closePeer(active: ActiveRun): void {
@@ -985,16 +888,31 @@ export class IssuesWorker {
     }
   }
 
+  /** Keeps every running run and the newest 50 finished ones. */
   private pruneHistory(): void {
     const base = runsDirectory(this.stateDir, this.repoDir);
-    for (const name of listRunDirectories(this.stateDir, this.repoDir).slice(50)) {
+    const kept = new Set<string>();
+    let finished = 0;
+    for (const entry of this.runs) {
+      if (entry.run.status === "running") {
+        kept.add(entry.directory);
+        continue;
+      }
+      if (finished < RUN_HISTORY_LIMIT) {
+        kept.add(entry.directory);
+        finished += 1;
+      }
+    }
+    for (const entry of this.runs) {
+      if (kept.has(entry.directory)) continue;
       try {
-        rmSync(join(base, name), { recursive: true, force: true });
+        rmSync(entry.directory, { recursive: true, force: true });
       } catch {
         // A stale directory is left for the watchdog.
       }
     }
-    this.runs = this.runs.slice(0, 50);
+    this.runs = this.runs.filter((entry) => kept.has(entry.directory));
+    void base;
   }
 
   /** Stop: end every peer, record `stopped`, leave captured issues unhandled. */
@@ -1003,21 +921,16 @@ export class IssuesWorker {
     this.stopping = true;
     this.state.enabled = false;
     this.state.paused = false;
-    this.state.nextAttemptAt = null;
-    this.state.goalCooldowns = {};
-    const runs = [...(this.active === undefined ? [] : [this.active]), ...this.goals.values()];
-    for (const active of runs) {
+    this.state.cooldowns = {};
+    for (const active of this.active.values()) {
       if (active.finished) continue;
       active.finished = true;
       this.closePeer(active);
       this.updateRun(active.runId, active.directory, "stopped", this.clock().toISOString(), null, null);
     }
-    this.active = undefined;
-    this.goals.clear();
-    this.state.activeRun = null;
-    this.state.acp = null;
-    this.state.question = null;
+    this.active.clear();
     this.state.agents = [];
+    for (const issue of this.state.queue) issue.agentRunId = null;
     this.state.runs = this.summaries();
     this.state.lastExitCode = null;
     this.state.lastError = null;
@@ -1038,7 +951,9 @@ export class IssuesWorker {
   }
 }
 
-function parseArguments(args: string[]): { repoDir: string; stateDir: string; intervalMs?: number } | undefined {
+function parseArguments(
+  args: string[],
+): { repoDir: string; stateDir: string; intervalMs?: number } | undefined {
   let repoDir: string | undefined;
   let stateDir: string | undefined;
   let intervalMs: number | undefined;

@@ -11,7 +11,7 @@ import { journalKey } from "../server/journal";
  */
 
 export const ISSUES_DIRECTORY = "issues";
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 export const LEDGER_VERSION = 1;
 export const RUN_HISTORY_LIMIT = 50;
 export const ACTIVITY_MAX_ENTRIES = 1000;
