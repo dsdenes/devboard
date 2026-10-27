@@ -651,12 +651,17 @@ copies README prose, or records a configuration value; a claim it cannot ground 
 Main commands render as a two-column `Task`/`Command` table of the observed commands, `$`-prefixed,
 with no header row, under an `N of 8 commands found` count; no explanatory note follows the table.
 A `tryOut` command is listed only when it is a hands-on entry point that no other recorded command
-aliases. Testing shows the test and level totals and the whole-suite command
-(`data-testid="discover-suite-command"`), then a `Level`/`Tests` table
-(`data-testid="discover-pyramid"`). Only a level that carries a test is listed and counted; a
-recorded level with no test case is omitted, so a sheet cannot claim a second level while its table
-holds none. Every listed level states an exact test count, never `count unknown`. No pyramid
-graphic is drawn. Runtime,
+aliases. A command the host manifest declares as a script is shown as its invocation — `npm test`
+for `scripts.test`, `npm run <name>` for any other script — instead of the program the script
+expands to; the recorded program is the row's tooltip. Testing shows the test, level, and
+happy-path totals and the whole-suite command (`data-testid="discover-suite-command"`), then a
+`Level`/`Tests`/`Happy path`/`Command` table (`data-testid="discover-pyramid"`). Happy path is the
+part of a level's count that exercises the primary success path, recorded as an exact count from
+`0` to the level's total; the summary percentage appears only when every listed level reports one.
+`Command` is the narrowest declared invocation for that level. Only a level that carries a test is
+listed and counted; a recorded level with no test case is omitted, so a sheet cannot claim a
+second level while its table holds none. Every listed level states an exact test count, never
+`count unknown`. No pyramid graphic is drawn. Runtime,
 deployment, CI, and branching use compact `dt`/`dd` facts whose list values are comma-separated.
 Architecture renders under the heading `Bounded contexts` as a table headed `Bounded context` with
 path, responsibility, and entry points, followed by external-boundary and shared-kernel chips.
@@ -1249,21 +1254,22 @@ symlink are the only paths outside the repository.
 
 ## Report, remove, or redesign a UI element
 
-Every page carries one action group in the lower-right corner with three controls: `Report UI
-issue`, `Remove element`, and `Redesign element`. The group has an accessible name, the active
-control carries `aria-pressed="true"`, and the dock, its status line, and its error line stay out
-of element picking. `Esc` cancels a mode that is not filing, and `app.report.cancel` cancels any
-active mode from the palette. While one request is in flight all three controls are disabled and
-the active one reads `Filing…`, so one click or one double-click files at most one issue.
+Every page carries three UI issue controls in the activity bar's application actions, beside
+commands, notifications, and theme: `Report UI issue`, `Remove element`, and `Redesign element`.
+Each is a 28px icon control with an accessible name and `aria-pressed="true"` while its action is
+armed; the result line and its error stay out of element picking. `Esc` cancels a mode that is
+not filing, and `app.report.cancel` cancels any active mode from the palette. While one request is
+in flight every control is disabled and the active one is labelled `Filing the UI issue`, so one
+click or one double-click files at most one issue.
 
 `Report UI issue` enters element-selection mode: the element under the pointer is outlined, and a
 click opens a report panel anchored beside it, without filing anything yet. The panel shows the
 selected element's selector path; the report text is free-form. `File issue` posts the report and
 the captured context to `POST /api/feedback`, the server files the GitHub issue through the
 operator's authenticated `gh` CLI, and the panel closes back into report selection mode so another
-element can be picked without leaving and re-entering the mode. `Esc` or `Cancel` leaves the
-mode, a failed report stays in the panel with its error, and a click in selection mode never
-activates the element.
+element can be picked without leaving and re-entering the mode. `Esc`, the control again, or
+`Cancel` leaves the mode, a failed report stays in the panel with its error, and a click in
+selection mode never activates the element.
 
 The panel also answers questions. `Ask`, or `Enter` in the composer (`Shift+Enter` inserts a
 newline), sends the typed question and the captured element context — route, URL, selector,
@@ -1312,9 +1318,9 @@ Every request carries an `action` of `report`, `remove`, or `redesign`; an absen
 before `gh` runs. Every issue is filed in `dsdenes/devboard`, the harness repository, whatever
 host project the interface is serving; nothing is created in the host's own tracker. `gh` runs in
 `REPO_DIR` and must be authenticated with permission to create issues in `dsdenes/devboard`. A
-missing, unauthenticated, or failing `gh` is reported in the dock and still creates nothing. The
-endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and gives `gh` 60
-seconds.
+missing, unauthenticated, or failing `gh` is reported in the issue result line and still creates
+nothing. The endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and
+gives `gh` 60 seconds.
 
 ## Container
 

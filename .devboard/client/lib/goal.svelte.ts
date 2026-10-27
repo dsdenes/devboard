@@ -54,7 +54,10 @@ function isQuestion(value: unknown): value is RunQuestion {
 
 function isSkill(value: unknown): value is SkillSummary {
   return (
-    isObject(value) && typeof value.name === "string" && typeof value.description === "string"
+    isObject(value) &&
+    typeof value.name === "string" &&
+    typeof value.description === "string" &&
+    (value.content === undefined || typeof value.content === "string")
   );
 }
 

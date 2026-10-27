@@ -1,12 +1,15 @@
-# UI issue dock — validation
+# UI issue actions — validation
 
 Source of truth: `DESIGN.md` (tokens and rationale) and the buttons' exact token contract from the
 existing `Button` primitive. No token, color, shadow, or component variant was added.
 
 ## Scope and journeys
 
-The three-action dock replaces the single `Report UI issue` control in the lower-right corner of
-the shell. Every route carries it; it is shell chrome, not a page.
+The three UI issue actions live in the activity bar's application actions, beside commands,
+notifications, and theme; the operator's review batch that moved the report control there is
+`.design/ux/operator-ui-tweaks/validation.md`. Every route carries them; they are shell chrome,
+not a page. The action's result, or its failure, appears as one line at the bottom of the
+workspace, above the status bar.
 
 - **Report journey.** Operator sees a wrong or unclear element → picks `Report UI issue` → the
   element under the pointer is outlined → click it → read the selector → type the problem →
@@ -54,38 +57,36 @@ retained unchanged.
 
 ## Structure
 
-One fixed group in the lower-right corner holding three 28px native buttons in a stable order —
-`Report UI issue`, `Remove element`, `Redesign element` — with the active one carrying
-`aria-pressed` and a `secondary` fill, and the group carrying an accessible name. The result line
-sits directly above the group: `role="status"` with the issue link on success, `role="alert"` with
-the message on failure. The hint stays in the shell's existing top-center position. The
-notification region is anchored 8px to the dock's left so the two fixed surfaces never overlap,
-and the existing 56px page bottom padding keeps a page's last control clear of both at maximum
-scroll.
+Three 28px ghost icon controls in the rail's application actions, in a stable order — report,
+remove, redesign — each with an accessible name, a tooltip, `aria-pressed` while armed, and a
+disabled state while a filing runs or the report panel owns the selection. The result line is one
+centered `surface-raised` row above the status bar: `role="status"` with the issue link on
+success, `role="alert"` with the message on failure. The hint stays in the shell's existing
+top-center position. The notification region keeps its lower-right corner and never intersects
+the result line.
 
-Wireframe: not produced. The dock is shell chrome whose order, labels, and surfaces are fixed by
-the task specification, so an A2UI structural pass would restate the specification rather than
-decide anything. Step 4 decision: reuse the `Button` token contract (28px height, 4px radius,
-`control` type, approved spacing, `var(--...)` colors) inside the overlay's scoped styles; the
-shared primitive, catalog, and stories are unchanged.
+Wireframe: not produced. These are shell chrome whose order, names, and surfaces follow the
+existing mode rail and the operator's review, so an A2UI structural pass would restate the
+specification rather than decide anything. Step 4 decision: reuse the `IconButton` primitive for
+all three actions and the `Button` token contract for the result line; the shared primitives,
+catalog, and stories are unchanged.
 
 ## Evidence
 
 | Check | Viewport | Evidence | Result |
 |---|---|---|---|
-| Three controls with fixed labels and `data-command` ids, one group per route (Goal, Flow, Discover) | 1440×900 | `bun run verify:interface` assertions | pass |
+| Three controls with `data-command` ids and accessible names on every route (Goal, Flow, Discover) | 1440×900 | `bun run verify:interface` assertions | pass |
 | Report panel path unchanged (title, placeholder, `File issue`/`Cancel`, selector, drag) | 1440×900 | `bun run verify:interface` assertions | pass |
 | Two consecutive removals and two consecutive redesigns from one armed mode | 1440×900 | stub records + CDP request bodies | pass |
 | Delayed filing disables all three controls and reads `Filing…`; a double-click files once | 1440×900 | `bun run verify:interface` assertions | pass |
 | Failure alert keeps the mode armed, re-enables the controls, shows no link | 1440×900 | `bun run verify:interface` assertions | pass |
-| Dock clears the status bar, sits beside the notification region, and covers no page control at maximum scroll | 1024×720 | `issue-dock-1024x720.png` | pass |
-| Dark and light rendering | 1440×900 | `ui-issue-dock-dark.png`, `ui-issue-dock-light.png` | pass |
+| Actions stay inside the rail; result line clears the status bar and the notification region | 1024×720 | `issue-actions-1024x720.png` | pass |
+| Dark and light rendering | 1440×900 | `issue-actions-dark.png`, `issue-actions-light.png` | pass |
 | Console errors and failed requests | 1440×900 | `bun run verify:interface` final check | pass |
 
-Spacing audit: 4px gaps and padding, 6px between the status line and the dock, 10px control
-padding, 28px control height, 4px radius, 8px corner inset — all inside the approved scale or the
-documented fixed overlay dimensions. Focus rings are the existing 2px `accent` outline with a 2px
-offset.
+Spacing audit: the 28px icon controls, the 4px result-line padding, and the 6px 8px result-line
+box are the existing primitive and spacing values. Focus rings are the existing 2px `ring` ring
+with a 1px offset.
 
 Playwright: not used. The project's documented browser gate is `bun run verify:interface`, which
 drives headless Chrome over CDP; it is the evidence source above.

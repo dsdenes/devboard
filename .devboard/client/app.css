@@ -42,11 +42,6 @@
   --font-mono:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --selection-background: #264f78;
-  /* The issue dock's fixed footprint in the lower-right corner. The
-     notification region is placed beside it, never under it. */
-  --issue-dock-inset: 8px;
-  --issue-dock-width: 372px;
-  --issue-dock-gap: 8px;
 }
 
 :root[data-theme="light"] {
@@ -192,10 +187,10 @@ kbd {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  flex: 0 0 64px;
+  flex: 0 0 72px;
   gap: 4px;
   padding: 8px 0;
-  width: 64px;
+  width: 72px;
 }
 
 .activity-tab {
@@ -208,11 +203,11 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  height: 48px;
+  height: 52px;
   justify-content: center;
-  padding: 0;
+  padding: 6px 4px;
   position: relative;
-  width: 56px;
+  width: 64px;
 }
 
 .activity-tab__label {
@@ -241,7 +236,7 @@ kbd {
   height: 24px;
   left: -5px;
   position: absolute;
-  top: 12px;
+  top: 14px;
   width: 2px;
 }
 
@@ -802,9 +797,6 @@ kbd {
 }
 
 .notification-region {
-  /* The issue dock owns the lower-right corner; this region sits beside it,
-     never under it. */
-  right: calc(var(--issue-dock-inset) + var(--issue-dock-width) + var(--issue-dock-gap));
   bottom: 34px;
   display: flex;
   flex-direction: column;
@@ -813,6 +805,7 @@ kbd {
   max-width: 380px;
   overflow: hidden;
   position: fixed;
+  right: 8px;
   width: min(380px, calc(100vw - 16px));
   z-index: 80;
 }
@@ -1345,9 +1338,8 @@ kbd {
 /* Discover: one page frame, a two-column sheet, and plain rail blocks. */
 .discover-page {
   gap: 24px;
-  /* The notification region is fixed 34px above the status bar and the issue
-     dock sits beside it; reserve their height so the last control of a page
-     can scroll clear of both. */
+  /* The notification region is fixed 34px above the status bar; reserve its
+     height so the last control of a page can scroll clear of it. */
   padding: 0 2px 56px;
 }
 
@@ -1485,7 +1477,7 @@ kbd {
   align-items: start;
   display: grid;
   gap: 16px 24px;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
   max-width: 1440px;
 }
 
@@ -1888,6 +1880,10 @@ a.discover-chip--link:focus-visible {
 
 .discover-card[data-field="testing"] .table-wrap th:nth-child(2) {
   width: 104px;
+}
+
+.discover-card[data-field="testing"] .table-wrap th:nth-child(3) {
+  width: 96px;
 }
 
 .discover-card[data-field="architecture"] {
@@ -2430,4 +2426,28 @@ a.discover-chip--link:focus-visible {
 
 .skill__description {
   font-size: 11px;
+}
+
+.skill__content {
+  font-size: 11.5px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.goal-skill-detail {
+  flex: 0 0 auto;
+}
+
+.goal-danger {
+  border-color: var(--error);
+}
+
+.goal-danger > .panel__header {
+  background: var(--error-surface);
+  border-bottom-color: var(--error);
+}
+
+.goal-danger > .panel__header .panel__title {
+  color: var(--error);
 }

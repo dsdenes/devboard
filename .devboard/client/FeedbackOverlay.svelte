@@ -1,15 +1,17 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { connection } from "./lib/connection.svelte";
-  import type { AskContext, AskTurn } from "./lib/types";
+  import type { AskContext, AskTurn, FeedbackAction, FeedbackPhase } from "./lib/types";
 
   /**
-   * Operator issue reporter. A dock of three actions sits in the lower-right
-   * corner. The report action starts a selection mode that opens a free-text
-   * panel anchored beside the picked element; the removal and redesign actions
-   * are one-click shortcuts that file a fixed-instruction issue for the picked
-   * element and stay armed. Every filing posts the captured DOM context to the
-   * server, which files a GitHub issue for an implementation agent.
+   * Operator issue reporter. The activity bar's three issue actions start a
+   * selection mode that highlights whatever is under the pointer. The report
+   * action opens a free-text panel anchored beside the picked element; the
+   * removal and redesign shortcuts file a fixed-instruction issue for the
+   * picked element at once and stay armed. Every filing posts the captured DOM
+   * context to the server, which files a GitHub issue for an implementation
+   * agent. The component owns the overlay; the shell owns the controls and the
+   * armed action.
    *
    * The same panel answers questions: `Ask`, or Enter in the composer, sends
    * the question and the captured context over the WebSocket to a background
@@ -18,8 +20,9 @@
    * is open.
    */
 
-  type Action = "report" | "remove" | "redesign";
-  type Phase = "idle" | "picking" | "composing" | "sending" | "failed";
+  type Action = FeedbackAction;
+  type Phase = FeedbackPhase;
+
   type Rect = { top: number; left: number; width: number; height: number };
   type Status = { ok: true; text: string; url: string } | { ok: false; text: string };
 
@@ -35,11 +38,10 @@
   const MAX_VIEWPORT = 500;
   const MAX_CAPTURED_AT = 100;
 
-  const ACTIONS: { action: Action; label: string; command: string }[] = [
-    { action: "report", label: "Report UI issue", command: "app.report" },
-    { action: "remove", label: "Remove element", command: "app.remove" },
-    { action: "redesign", label: "Redesign element", command: "app.redesign" },
-  ];
+  let {
+    phase = $bindable("idle"),
+    action = $bindable<Action | null>(null),
+  }: { phase?: Phase; action?: Action | null } = $props();
 
   const HINTS: Record<Action, string> = {
     report: "Click an element · Esc cancels",
@@ -47,8 +49,6 @@
     redesign: "Click an element to redesign · Esc cancels",
   };
 
-  let action = $state<Action | null>(null);
-  let phase = $state<Phase>("idle");
   let target = $state<Element | null>(null);
   let selector = $state("");
   let marker = $state<Rect | null>(null);
@@ -147,14 +147,17 @@
   }
 
   /**
-   * The overlays and dialogs that keep working while an action is armed: the
-   * dock, the report panel, the command palette, and any dialog must never be
-   * picked as a page element, and a click inside them must reach them.
+   * The surfaces that keep working while an action is armed: the overlay's own
+   * parts, the activity-bar controls that toggle it, and any dialog. Picking an
+   * element never selects them, and a click inside them reaches them.
    */
   function ownOverlay(node: Element | null): boolean {
     return (
       node !== null &&
       (node.closest("[data-feedback-overlay]") !== null ||
+        node.closest('[data-command="app.report"]') !== null ||
+        node.closest('[data-command="app.remove"]') !== null ||
+        node.closest('[data-command="app.redesign"]') !== null ||
         node.closest('[role="dialog"], [role="alertdialog"], dialog') !== null)
     );
   }
@@ -382,13 +385,18 @@
     arm("redesign");
   }
 
-  function toggle(next: Action): void {
+  /** The activity-bar controls: the active action cancels, any other arms. */
+  export function toggleAction(next: Action): void {
     if (sending) return;
     if (action === next) {
       reset();
       return;
     }
     arm(next);
+  }
+
+  export function toggleReport(): void {
+    toggleAction("report");
   }
 
   function onPointerMove(event: MouseEvent): void {
@@ -641,109 +649,38 @@
   </div>
 {/if}
 
-<div
-  class="feedback-dock"
-  data-feedback-overlay
-  role="group"
-  aria-label="UI issue actions"
->
-  {#if result !== null}
-    <div
-      class="feedback-result"
-      role={result.ok ? "status" : "alert"}
-      class:feedback-result--error={!result.ok}
-    >
-      <span>{result.text}</span>
-      {#if result.ok}
-        <a href={result.url} target="_blank" rel="noreferrer">{result.url}</a>
-      {/if}
-    </div>
-  {/if}
-  <div class="feedback-dock__actions">
-    {#each ACTIONS as entry (entry.action)}
-      <button
-        type="button"
-        class="feedback-action"
-        class:feedback-action--active={action === entry.action}
-        title={action === entry.action ? `Cancel ${entry.label}` : entry.label}
-        aria-pressed={action === entry.action ? "true" : "false"}
-        data-command={entry.command}
-        disabled={sending || (entry.action !== "report" && panel !== null)}
-        onclick={() => toggle(entry.action)}
-      >
-        {sending && action === entry.action ? "Filing…" : entry.label}
-      </button>
-    {/each}
+{#if result !== null}
+  <div
+    class="feedback-result"
+    data-feedback-overlay
+    role={result.ok ? "status" : "alert"}
+    class:feedback-result--error={!result.ok}
+  >
+    <span>{result.text}</span>
+    {#if result.ok}
+      <a href={result.url} target="_blank" rel="noreferrer">{result.url}</a>
+    {/if}
   </div>
-</div>
+{/if}
 
 <style>
-  .feedback-dock {
-    align-items: flex-end;
-    bottom: 34px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    position: fixed;
-    right: var(--issue-dock-inset);
-    z-index: 2147483647;
-  }
-
-  .feedback-dock__actions {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    display: flex;
-    gap: 4px;
-    padding: 4px;
-  }
-
-  .feedback-action {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text);
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    height: 28px;
-    padding: 0 10px;
-    white-space: nowrap;
-  }
-
-  .feedback-action:hover:not(:disabled),
-  .feedback-action--active {
-    background: var(--secondary);
-    border-color: var(--border-strong);
-    color: var(--foreground);
-  }
-
-  .feedback-action--active {
-    border-color: var(--accent);
-  }
-
-  .feedback-action:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-
-  .feedback-action:disabled {
-    cursor: progress;
-    opacity: 0.45;
-  }
-
   .feedback-result {
+    align-items: baseline;
     background: var(--surface-raised);
     border: 1px solid var(--border-strong);
     border-radius: 4px;
+    bottom: 40px;
     color: var(--text);
     display: flex;
-    flex-direction: column;
+    flex-wrap: wrap;
     font-size: 12px;
-    gap: 2px;
-    max-width: 380px;
+    gap: 2px 8px;
+    left: 50%;
+    max-width: min(420px, calc(100vw - 32px));
     padding: 6px 8px;
+    position: fixed;
+    transform: translateX(-50%);
+    z-index: 2147483647;
   }
 
   .feedback-result--error {

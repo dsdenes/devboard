@@ -2,6 +2,7 @@
   import { connection } from "../connection.svelte";
   import { goal } from "../goal.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
+  import { recordStatusTone } from "../record-status";
   import type { AdrRecord, Lane } from "../types";
   import AdrTable from "./AdrTable.svelte";
   import MonacoEditor from "./MonacoEditor.svelte";
@@ -23,6 +24,11 @@
   let filterMode = $state<FilterMode>("all");
   let filterQuery = $state("");
   let skillsList = $state<HTMLUListElement | undefined>();
+  const selectedSkill = $derived(
+    goal.selectedSkill === null
+      ? null
+      : (goal.skills.find((skill) => skill.name === goal.selectedSkill) ?? null),
+  );
 
   const createGoalTitle = $derived(
     goal.creationActive
@@ -404,7 +410,7 @@
       <section class="panel goal-danger" data-testid="danger-zone">
         <div class="panel__header">
           <h2 class="panel__title">Danger zone</h2>
-          <span class="muted">Destructive</span>
+          <span class="badge" data-tone="error" data-testid="danger-zone-label">Destructive</span>
         </div>
         <div class="panel__body stack-sm">
           {#if !goal.resetArmed}
@@ -469,16 +475,6 @@
         {#snippet meta()}
           <span class="muted" data-testid="pending-summary">{progressLine}</span>
           <span class="muted">Next: <span class="mono">{nextLabel}</span></span>
-        {/snippet}
-        {#snippet actions()}
-          <Button
-            variant="outline"
-            data-command={`tab.close.goal.${tab.id}`}
-            data-testid="close-adrs"
-            onclick={() => closeTab(tab)}
-          >
-            Close
-          </Button>
         {/snippet}
       </PageHeader>
 
@@ -634,7 +630,7 @@
       </section>
     </div>
   {:else if tab.kind === "skills"}
-    <div class="goal-page">
+    <div class="goal-page goal-page--fill">
       <PageHeader eyebrow="Plan" title="Skills" subtitle={skillsReady} testid="skills-header">
         {#snippet meta()}
           {#if goal.contradictions.length > 0}
@@ -713,6 +709,24 @@
           {/if}
         </div>
       </section>
+
+      {#if selectedSkill !== null}
+        <section class="panel goal-skill-detail" data-testid="skill-content">
+          <div class="panel__header">
+            <h2 class="panel__title mono" data-testid="skill-content-name">{selectedSkill.name}</h2>
+            <span class="muted">{selectedSkill.description}</span>
+          </div>
+          <div class="panel__body">
+            {#if selectedSkill.content !== undefined && selectedSkill.content.length > 0}
+              <pre class="skill__content mono" data-testid="skill-content-text">{selectedSkill.content}</pre>
+            {:else}
+              <p class="empty" style="padding: 0;">
+                This skill has no file on disk; prepare the skills again to write it.
+              </p>
+            {/if}
+          </div>
+        </section>
+      {/if}
     </div>
   {:else if tab.kind === "adr"}
     {#if record === null}
@@ -740,10 +754,13 @@
             {#if goal.next === record.file}
               <span class="badge" data-tone="accent" data-testid="next-marker">Next</span>
             {/if}
-            <span class="badge" data-tone={record.pending ? "pending" : "resolved"}>
-              {record.pending ? "Pending" : "Resolved"}
+            <span
+              class="badge"
+              data-tone={recordStatusTone(record.status)}
+              data-testid="record-status"
+            >
+              {record.status || "Unknown"}
             </span>
-            <span class="badge">{record.status || "Unknown"}</span>
           {/snippet}
           {#snippet actions()}
             <Button
@@ -775,8 +792,6 @@
               <dd>{record.status || "Unknown"}</dd>
               <dt>Implementation</dt>
               <dd>{record.pending ? "Pending" : "Resolved"}</dd>
-              <dt>Next</dt>
-              <dd>{goal.next === record.file ? "Yes" : "No"}</dd>
             </dl>
           </div>
         </section>

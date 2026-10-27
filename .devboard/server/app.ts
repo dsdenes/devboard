@@ -38,6 +38,7 @@ import {
   artifactRelative,
   artifactsStale,
   confirmGlossaryTerm,
+  declaredCommandAliases,
   dependencyRepositories,
   hostFacts,
   isInsideRepository,
@@ -215,6 +216,8 @@ interface SkillSummary {
   description: string;
   family: SkillFamily;
   state: SkillState;
+  /** The SKILL.md text, empty for a skill the manifest names but the host lacks. */
+  content: string;
 }
 
 /** Two skills whose directives state opposite policies for the same subject. */
@@ -230,6 +233,8 @@ interface SkillFile {
   managed: boolean;
   family: SkillFamily;
   directives: { polarity: "positive" | "negative"; text: string; source: string }[];
+  /** The whole SKILL.md, so the interface can open a skill without a second read. */
+  content: string;
 }
 
 interface SkillsSnapshot {
@@ -793,6 +798,7 @@ async function readSkillAt(root: string, directory: string): Promise<SkillFile |
     // skills written before the family marker keep working.
     family: familyField === "discover" ? "discover" : "prepare",
     directives: extractDirectives(source),
+    content: source,
   };
 }
 
@@ -937,6 +943,7 @@ async function inspectSkills(root: string): Promise<SkillsInspection> {
         description: skill.description,
         family: "discover",
         state: skill.state,
+        content: "",
       });
     }
   }
@@ -968,6 +975,7 @@ async function inspectSkills(root: string): Promise<SkillsInspection> {
       description: skill.description,
       family: skill.family,
       state: live,
+      content: skill.content,
     };
   });
   for (const [name, view] of discoverStates) {
@@ -2102,6 +2110,9 @@ export function createApp(options: AppOptions) {
       manifest: artifacts?.manifest ?? null,
       freshness: artifacts?.sheet.freshness ?? null,
       sheet: artifacts?.sheet ?? null,
+      // The manifest's own invocations for the commands the sheet recorded, so
+      // the interface shows `npm test` rather than the program it expands to.
+      commandAliases: declaredCommandAliases(root),
       dependencyRepositories:
         artifacts === null ? {} : dependencyRepositories(root, artifacts.sheet),
       glossaries: artifacts?.glossaries ?? [],

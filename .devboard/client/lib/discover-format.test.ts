@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  commandAlias,
   conceptSignificance,
   conceptUsage,
   filterContexts,
   glossaryHasSignificance,
   implementedTiers,
+  pyramidHappyPathCount,
   pyramidTiers,
   relativeTime,
   SIGNIFICANCE_FLOOR,
@@ -177,9 +179,9 @@ describe("glossary significance", () => {
 describe("test levels", () => {
   const levels: Leaf = {
     value: [
-      { level: "contract", tests: "0", command: "npm run test:contract" },
-      { level: "unit", tests: "118", command: "node --test" },
-      { level: "integration", tests: "4", command: "node --test" },
+      { level: "contract", tests: "0", happyPath: "0", command: "npm run test:contract" },
+      { level: "unit", tests: "118", happyPath: "92", command: "npm run test:unit" },
+      { level: "integration", tests: "4", happyPath: "1", command: "node --test" },
     ],
     evidence: ["package.json"],
     confidence: "observed",
@@ -204,6 +206,38 @@ describe("test levels", () => {
       confidence: "observed",
     };
     expect(implementedTiers(pyramidTiers(unknown))).toEqual([]);
+  });
+
+  test("sums happy-path counts only across implemented levels", () => {
+    const tiers = implementedTiers(pyramidTiers(levels));
+    expect(tiers.map((tier) => [tier.level, tier.tests, tier.happyPath, tier.command])).toEqual([
+      ["unit", "118", "92", "npm run test:unit"],
+      ["integration", "4", "1", "node --test"],
+    ]);
+    expect(pyramidHappyPathCount(tiers)).toEqual({ happy: 93, tests: 122 });
+  });
+
+  test("refuses a happy-path total when a level never reported one", () => {
+    const partial: Leaf = {
+      value: [
+        { level: "unit", tests: "10", happyPath: "6" },
+        { level: "integration", tests: "2" },
+      ],
+      evidence: ["package.json"],
+      confidence: "observed",
+    };
+    expect(pyramidHappyPathCount(implementedTiers(pyramidTiers(partial)))).toBeNull();
+  });
+
+  test("prefers the manifest's declaration for a recorded command", () => {
+    const aliases = [
+      { command: "node --test test/*.test.js", alias: "npm test" },
+      { command: "node --test test/unit/*.js", alias: "npm run test:unit" },
+    ];
+    expect(commandAlias(aliases, "node --test test/*.test.js")).toBe("npm test");
+    expect(commandAlias(aliases, " node  --test   test/unit/*.js ")).toBe("npm run test:unit");
+    expect(commandAlias(aliases, "pytest tests")).toBe("pytest tests");
+    expect(commandAlias(undefined, "pytest tests")).toBe("pytest tests");
   });
 });
 

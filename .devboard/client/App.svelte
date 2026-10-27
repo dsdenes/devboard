@@ -22,7 +22,7 @@
   import { applyTheme, layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
   import { notifications } from "./lib/notifications.svelte";
-  import type { Mode } from "./lib/types";
+  import type { FeedbackAction, FeedbackPhase, Mode } from "./lib/types";
   import { MINIMUM_VIEWPORT, viewport } from "./lib/viewport.svelte";
 
   interface PendingClose {
@@ -34,6 +34,8 @@
     startPicking: () => void;
     startRemoving: () => void;
     startRedesigning: () => void;
+    toggleReport: () => void;
+    toggleAction: (action: FeedbackAction) => void;
     cancelReport: () => void;
   }
 
@@ -43,6 +45,8 @@
   let paletteReturnFocus: HTMLElement | null = null;
   let pendingClose = $state<PendingClose | null>(null);
   let feedbackOverlay = $state<FeedbackHandle>();
+  let reportPhase = $state<FeedbackPhase>("idle");
+  let reportAction = $state<FeedbackAction | null>(null);
 
   const savedFocus: Record<Mode, HTMLElement | null> = {
     goal: null,
@@ -398,7 +402,14 @@
   <Tooltip.Provider>
     <div class="app-shell" data-testid="app-shell">
       <div class="shell-main">
-        <ActivityBar onopenpalette={openPalette} />
+        <ActivityBar
+          onopenpalette={openPalette}
+          onreportissue={() => feedbackOverlay?.toggleReport()}
+          onremoveelement={() => feedbackOverlay?.toggleAction("remove")}
+          onredesignelement={() => feedbackOverlay?.toggleAction("redesign")}
+          reportphase={reportPhase}
+          reportaction={reportAction}
+        />
         <PaneGroup
           direction="horizontal"
           autoSaveId={`devboard.sidebar.${layout.epoch}`}
@@ -452,4 +463,8 @@
 
 <NotificationRegion />
 
-<FeedbackOverlay bind:this={feedbackOverlay} />
+<FeedbackOverlay
+  bind:this={feedbackOverlay}
+  bind:phase={reportPhase}
+  bind:action={reportAction}
+/>

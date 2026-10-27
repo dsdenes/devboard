@@ -821,9 +821,10 @@ function recordFields(
   entry: unknown,
   path: string,
   required: Record<string, (value: unknown, fieldPath: string) => unknown>,
+  optional: Record<string, (value: unknown, fieldPath: string) => unknown> = {},
 ): Record<string, unknown> {
   if (!isRecord(entry)) invalid(path, "must be an object");
-  const known = new Set(Object.keys(required));
+  const known = new Set([...Object.keys(required), ...Object.keys(optional)]);
   for (const key of Object.keys(entry)) {
     if (!known.has(key)) invalid(`${path}.${key}`, "is not a declared field");
   }
@@ -831,6 +832,11 @@ function recordFields(
   for (const [key, validate] of Object.entries(required)) {
     const value = entry[key];
     if (value === undefined) invalid(`${path}.${key}`, "is required");
+    result[key] = validate(value, `${path}.${key}`);
+  }
+  for (const [key, validate] of Object.entries(optional)) {
+    const value = entry[key];
+    if (value === undefined) continue;
     result[key] = validate(value, `${path}.${key}`);
   }
   return result;
@@ -963,19 +969,36 @@ export function normalizeSheet(raw: unknown, freshness: Freshness): Sheet {
         leafRecords(
           node,
           path,
-          (entry, entryPath) =>
-            recordFields(entry, entryPath, {
-              level: (value, fieldPath) => {
-                if (typeof value !== "string" || !(TEST_LEVELS as readonly string[]).includes(value)) {
-                  invalid(fieldPath, `must be one of ${TEST_LEVELS.join(", ")}`);
-                }
-                return value;
+          (entry, entryPath) => {
+            const record = recordFields(
+              entry,
+              entryPath,
+              {
+                level: (value, fieldPath) => {
+                  if (
+                    typeof value !== "string" ||
+                    !(TEST_LEVELS as readonly string[]).includes(value)
+                  ) {
+                    invalid(fieldPath, `must be one of ${TEST_LEVELS.join(", ")}`);
+                  }
+                  return value;
+                },
+                tests: textValue,
+                paths: recordTexts,
+                command: textValue,
+                fixtures: recordTexts,
               },
-              tests: textValue,
-              paths: recordTexts,
-              command: textValue,
-              fixtures: recordTexts,
-            }),
+              // Optional so a sheet staged by an older prompt still validates;
+              // the current prompt records the count for every level.
+              { happyPath: textValue },
+            );
+            const tests = Number.parseInt(String(record.tests), 10);
+            const happy = Number.parseInt(String(record.happyPath ?? ""), 10);
+            if (Number.isFinite(tests) && Number.isFinite(happy) && happy > tests) {
+              invalid(`${entryPath}.happyPath`, "must not exceed the level's test count");
+            }
+            return record;
+          },
           (entry) => String((entry as { level: string }).level),
         ),
       pyramid: leafText,
@@ -1029,6 +1052,42 @@ export function normalizeSheet(raw: unknown, freshness: Freshness): Sheet {
     }),
   };
   return sheet;
+}
+
+/**
+ * A recorded command paired with the installed invocation that runs it.
+ *
+ * The crawl reads programs, so it stages `node --test test/*.test.js` even when
+ * the manifest declares `"test": "node --test test/*.test.js"`. The operator
+ * reads the manifest's invocation. This derivation keeps the recorded evidence
+ * untouched and maps each script body to the command that runs it: `npm test`
+ * for the `test` script and `npm run <name>` for every other script.
+ */
+export function declaredCommandAliases(root: string): Array<{ command: string; alias: string }> {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  } catch {
+    return [];
+  }
+  if (!isRecord(manifest) || !isRecord(manifest.scripts)) return [];
+  const scripts = manifest.scripts;
+  const aliases = new Map<string, string>();
+  const names = Object.keys(scripts).sort((left, right) => {
+    if (left === "test") return -1;
+    if (right === "test") return 1;
+    return left.localeCompare(right);
+  });
+  for (const name of names) {
+    const body = scripts[name];
+    if (typeof body !== "string") continue;
+    const command = body.replace(/\s+/g, " ").trim();
+    if (command.length === 0 || aliases.has(command)) continue;
+    aliases.set(command, name === "test" ? "npm test" : `npm run ${name}`);
+  }
+  return [...aliases]
+    .map(([command, alias]) => ({ command, alias }))
+    .sort((left, right) => left.command.localeCompare(right.command));
 }
 
 function canonicalLeaf(leaf: Leaf, prose: boolean): Record<string, unknown> {

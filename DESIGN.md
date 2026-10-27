@@ -326,11 +326,12 @@ Spacing uses a **2px base unit** with a half-step grid. The approved scale is 2,
   a control label, 6px between header actions, 8px is the default, 12px between cards and grid
   items, 16px between Discover sheet rows, and 24px between Discover sheet columns.
 - **Section spacing.** 12px between stacked Discover cards, 24px between Discover page sections.
-- **Containers and gutters.** The shell fills the viewport: mode rail 64px, sidebar 300px
+- **Containers and gutters.** The shell fills the viewport: mode rail 72px, sidebar 300px
   default (resizable 200–600px), workspace flexible, status bar 26px, content padding 8px. There
   is no centered page container and no horizontal gutter; panels use their own 1px borders.
-  Inside the rail each mode tab is a 56×48px control with an 18px icon over a 10px `overline`
-  label; the label never collapses to an icon-only state.
+  Inside the rail each mode tab is a 64×52px control with an 18px icon over a 10px `overline`
+  label, inset 6px vertically and 4px horizontally so the label never touches the tab edge; the
+  label never collapses to an icon-only state.
 - **Responsive spacing.** The supported viewport is at least 1024×720. Panes resize rather than
   reflow; when a pane narrows, gaps collapse to the next lower scale step before text wraps.
   Below 1024×720 the workspace is replaced by the viewport guard, so no mobile spacing scale
@@ -343,13 +344,12 @@ Mapping to tokens: `{spacing.hairline}` 2px, `{spacing.tight}` 4px, `{spacing.sn
 
 Documented exceptions outside the scale: Flow diagram grid gaps of 18px and 22px and the diagram's
 `14px 32px` column gap are geometry of an inline SVG map, not layout spacing. The 26px, 30px,
-34px, and 44px region heights and the 64px rail are fixed shell dimensions. The 56px bottom
-padding on a Discover page reserves the fixed notification region and the issue dock (both 34px
-above the 26px status bar) so a page's last control can scroll clear of them; the same 56px on the
-Goal document page clears both overlays. The issue dock reserves 372px of the lower-right corner
-with an 8px inset, and the notification region starts 8px to its left. The 180px Discover activity
-terminal, the 104px fact-label column, the 160px Discover boundary-role column, the 200–600px
-sidebar bounds, and the 160px split minimum are component geometry, not spacing steps.
+34px, and 44px region heights and the 72px rail are fixed shell dimensions. The 56px bottom
+padding on a Discover page reserves the fixed notification region (34px above the 26px status
+bar) so a page's last control can scroll clear of it; the same 56px on the Goal workspace's
+scrolling pages clears that region. The 180px Discover activity terminal, the
+104px fact-label column, the 160px Discover boundary-role column, the 200–600px sidebar bounds,
+and the 160px split minimum are component geometry, not spacing steps.
 
 ## Elevation & Depth
 
@@ -403,30 +403,36 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   (Not started, Running, Paused, Finished, Manual run), and the current work item. It never
   infers progress: `seen=false` keeps Goal current.
 - **Badge** (`.badge`) — full-radius outline pill, `overline` type, 2px 6px padding; tone comes
-  from the matching state token and the text always states the meaning.
-- **Mode rail** (`.activity-bar`) — the shared application menu: 64px vertical rail, `activity-bar`
+  from the matching state token and the text always states the meaning. A decision record's
+  header carries one status badge, colored by meaning: `accepted` success, `proposed` pending,
+  `superseded`/`deprecated` stale, `rejected` error; the implementation state is never repeated
+  as a second resolved/pending badge.
+- **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The three `role="tab"` controls sit in a `role="tablist"`
-  group, each 56×48px: an 18px icon over a 10px `overline` label, 4px apart. Resting color is
-  `muted-foreground`; hover and the selected tab use `secondary`, a `border-strong` outline, and
-  `foreground` text; the selected tab carries a 2px `accent` bar on its left edge, outside the tab
-  box. A 6px state dot (accent running, warning attention/stale, `border-strong` idle) sits at the
-  tab's top-right with no text; the mode's state word joins its accessible name. Below a 1px
-  divider at the rail's bottom, three 28px ghost icon buttons — commands (`Ctrl+K`),
-  notifications, theme — are the application actions. The rail never shows a brand label and never
-  collapses to icons only.
-- **Issue actions dock** (`.feedback-dock` in `FeedbackOverlay.svelte`) — the fixed operator
-  control in the lower-right corner, 8px inset: one `surface` frame with 1px `border`, 4px radius,
-  and 4px padding holding three 28px controls (`Report UI issue`, `Remove element`,
-  `Redesign element`) 4px apart. Each control is `control` type with a 1px `border`; the active
-  action takes the `secondary` fill, a `border-strong` outline, and `aria-pressed="true"`, and
-  the group carries an accessible name. Results appear above the dock in a `surface-raised`
-  `role="status"` line with the issue link, or a `role="alert"` line with the same border and
-  `error` text. The notification region is anchored 8px to the dock's left so the two fixed
-  surfaces never overlap.
+  group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px
+  `overline` label, 4px apart. Resting color is `muted-foreground`; hover and the selected tab use
+  `secondary`, a `border-strong` outline, and `foreground` text; the selected tab carries a 2px
+  `accent` bar on its left edge, outside the tab box. A 6px state dot (accent running, warning
+  attention/stale, `border-strong` idle) sits at the tab's top-right with no text; the mode's
+  state word joins its accessible name. Below a 1px divider at the rail's bottom, six 28px ghost
+  icon buttons are the application actions: commands (`Ctrl+K`), notifications, theme, and the
+  three UI-issue actions — `Report UI issue`, `Remove element`, `Redesign element` — each active
+  (`aria-pressed="true"`, `secondary` fill) while its selection mode is armed, and disabled while
+  a filing runs or the report panel owns the selection. The rail never shows a brand label and
+  never collapses to icons only.
+- **Issue result line** (`.feedback-result` in `FeedbackOverlay.svelte`) — a fixed
+  `surface-raised` line 40px above the status bar, centered, with 1px `border-strong`, 4px radius,
+  6px 8px padding, 12px text, and the issue URL as an `accent` link; `role="status"` on success
+  and `role="alert"` with `error` text on failure. It clears the notification region, which stays
+  in the lower-right corner.
+- **Danger zone** (`.goal-danger`) — the destructive panel reuses the error pair: `error` border,
+  `error-surface` header, `error` title, and a `Destructive` badge; the action inside stays the
+  `destructive` button variant.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page
-  sections are 24px apart; cards inside a column are 12px apart.
+  sections are 24px apart; cards inside a column are 12px apart. The facts rail holds its grid
+  track between 260px and 340px, with 24px to the content column.
 
 ## Do's and Don'ts
 

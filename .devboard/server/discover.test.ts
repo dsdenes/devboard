@@ -12,6 +12,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
+import { declaredCommandAliases } from "./discover";
 
 /**
  * Discover Mode's deterministic contract. It drives the app over its WebSocket
@@ -107,7 +108,7 @@ function createFixture(name: string, options: { goal?: boolean; dirty?: boolean 
   writeFileSync(join(root, "README.md"), "# Fixture\n\nA small fixture host for Discover.\n");
   writeFileSync(
     join(root, "package.json"),
-    `${JSON.stringify({ name: "fixture-host", scripts: { build: "bun run build:src", test: "bun test" } }, null, 2)}\n`,
+    `${JSON.stringify({ name: "fixture-host", scripts: { build: "bun run build:src", test: "bun test", "test:unit": "bun test" } }, null, 2)}\n`,
   );
   writeFileSync(join(root, "src", "order.ts"), "export const orderTotal = (total: number): number => total;\n");
   writeFileSync(
@@ -266,6 +267,7 @@ interface DiscoverState {
   manifest: Record<string, unknown> | null;
   freshness: Record<string, unknown> | null;
   sheet: Record<string, unknown> | null;
+  commandAliases: Array<{ command: string; alias: string }>;
   glossaries: Record<string, unknown>[];
   glossaryUsage: Record<string, Record<string, { count: number; files: number; examples: string[] }>>;
   glossarySignificance: Record<string, Record<string, { score: number; reason: string }>>;
@@ -517,6 +519,29 @@ describe("discover mode", () => {
           expect(path.length).toBeGreaterThan(0);
         }
 
+        // The testing card carries a happy-path count and a declared level
+        // command, and the manifest's own invocations resolve the suite.
+        const testing = sheet.testing;
+        if (typeof testing !== "object" || testing === null || Array.isArray(testing)) {
+          throw new Error("the published sheet has no testing section");
+        }
+        const testingFields = testing as Record<string, unknown>;
+        const levelsLeaf = testingFields.levels;
+        if (typeof levelsLeaf !== "object" || levelsLeaf === null || Array.isArray(levelsLeaf)) {
+          throw new Error("the published sheet has no testing levels");
+        }
+        const levelValues = (levelsLeaf as Record<string, unknown>).value;
+        if (!Array.isArray(levelValues)) throw new Error("the testing levels carry no records");
+        const publishedLevels = levelValues as Array<Record<string, unknown>>;
+        expect(publishedLevels).toHaveLength(1);
+        expect(publishedLevels[0]?.level).toBe("unit");
+        expect(publishedLevels[0]?.happyPath).toBe("1");
+        expect(publishedLevels[0]?.command).toBe("npm run test:unit");
+        expect(state.commandAliases).toEqual([
+          { command: "bun run build:src", alias: "npm run build" },
+          { command: "bun test", alias: "npm test" },
+        ]);
+
         // The glossary is a complete UbiLang document.
         expect(state.glossaries.length).toBe(1);
         const glossary = state.glossaries[0] as Record<string, unknown>;
@@ -684,6 +709,7 @@ describe("discover mode", () => {
         "--discover-sheet-no-evidence",
         "--discover-sheet-secret",
         "--discover-sheet-two-sentences",
+        "--discover-sheet-happy-overflow",
         "--discover-glossary-invalid",
         "--discover-glossary-grounding",
         "--discover-missing-artifact",
@@ -1390,6 +1416,69 @@ describe("discover mode", () => {
     },
     60000,
   );
+
+  test(
+    "accepts a sheet whose levels carry no happy-path count",
+    async () => {
+      const { server, url } = startServer({
+        stub: ["--discover", "--discover-sheet-no-happy-path"],
+      });
+      const client = await connect(url);
+      try {
+        const state = await runDiscover(client);
+        expect(state.error).toBeNull();
+        const testing = state.sheet?.testing;
+        if (typeof testing !== "object" || testing === null) {
+          throw new Error("the published sheet has no testing section");
+        }
+        const levelsLeaf = (testing as Record<string, unknown>).levels;
+        if (typeof levelsLeaf !== "object" || levelsLeaf === null) {
+          throw new Error("the published sheet has no testing levels");
+        }
+        const values = (levelsLeaf as Record<string, unknown>).value;
+        if (!Array.isArray(values)) throw new Error("the testing levels carry no records");
+        const publishedLevels = values as Array<Record<string, unknown>>;
+        expect(publishedLevels).toHaveLength(1);
+        expect(publishedLevels[0]?.happyPath).toBeUndefined();
+        expect(publishedLevels[0]?.tests).toBe("1");
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+});
+
+describe("declared command aliases", () => {
+  test("maps a script body to the command that runs it", () => {
+    const root = testDirectory("aliases");
+    writeFileSync(
+      join(root, "package.json"),
+      `${JSON.stringify({
+        scripts: {
+          test: "bun test",
+          "test:unit": "bun test",
+          build: "tsc -p .",
+          lint: "eslint .",
+        },
+      })}\n`,
+    );
+    expect(declaredCommandAliases(root)).toEqual([
+      { command: "bun test", alias: "npm test" },
+      { command: "eslint .", alias: "npm run lint" },
+      { command: "tsc -p .", alias: "npm run build" },
+    ]);
+  });
+
+  test("ignores a missing, malformed, or scriptless manifest", () => {
+    const root = testDirectory("aliases-missing");
+    expect(declaredCommandAliases(root)).toEqual([]);
+    writeFileSync(join(root, "package.json"), "{not json\n");
+    expect(declaredCommandAliases(root)).toEqual([]);
+    writeFileSync(join(root, "package.json"), `${JSON.stringify({ scripts: [] })}\n`);
+    expect(declaredCommandAliases(root)).toEqual([]);
+  });
 });
 
 /** The fixture a server started from `url` serves, for a restart in one test. */

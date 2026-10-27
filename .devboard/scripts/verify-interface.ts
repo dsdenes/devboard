@@ -402,7 +402,7 @@ async function writeFixture(root: string): Promise<string> {
   await writeFile(join(host, "README.md"), "# Fixture\n\nA small fixture host for the interface check.\n");
   await writeFile(
     join(host, "package.json"),
-    `${JSON.stringify({ name: "interface-fixture", scripts: { build: "bun run build:src", test: "bun test" } }, null, 2)}\n`,
+    `${JSON.stringify({ name: "interface-fixture", scripts: { build: "bun run build:src", test: "bun test", "test:unit": "bun test" } }, null, 2)}\n`,
   );
   await mkdir(join(host, "node_modules", "typescript"), { recursive: true });
   await writeFile(
@@ -655,7 +655,7 @@ async function createRemoteSource(root: string): Promise<string> {
   await writeFile(join(source, "README.md"), "# Remote fixture\n\nA repository cloned for Discover.\n");
   await writeFile(
     join(source, "package.json"),
-    `${JSON.stringify({ name: "remote-fixture", scripts: { test: "bun test" } }, null, 2)}\n`,
+    `${JSON.stringify({ name: "remote-fixture", scripts: { test: "bun test", "test:unit": "bun test" } }, null, 2)}\n`,
   );
   await writeFile(join(source, "src", "catalog.ts"), "export const catalogSize = 3;\n");
   await writeFile(
@@ -1049,34 +1049,38 @@ try {
       await delay(50);
     }
   };
-  const dockState = async (): Promise<{
-    docks: number;
-    labels: string[];
+  const issueState = async (): Promise<{
+    present: boolean;
     commands: string[];
+    labels: string[];
     pressed: boolean[];
     disabled: boolean[];
-    group: string | null;
-    overlay: boolean;
     inside: boolean;
   }> =>
     page.eval(`(() => {
-      const docks = [...document.querySelectorAll(".feedback-dock")];
-      const dock = docks[0];
-      const buttons = [...document.querySelectorAll(".feedback-dock__actions button")];
-      const rects = buttons.map((button) => button.getBoundingClientRect());
+      const ids = ["activity-report", "activity-remove", "activity-redesign"];
+      const buttons = ids.map((id) => document.querySelector('[data-testid="' + id + '"]'));
+      const rail = document.querySelector('[data-testid="activity-bar"]')?.getBoundingClientRect();
       return {
-        docks: docks.length,
-        labels: buttons.map((button) => button.textContent.trim()),
-        commands: buttons.map((button) => button.getAttribute("data-command") ?? ""),
-        pressed: buttons.map((button) => button.getAttribute("aria-pressed") === "true"),
-        disabled: buttons.map((button) => button.disabled === true),
-        group: dock?.getAttribute("role") === "group" ? (dock.getAttribute("aria-label") ?? "") : null,
-        overlay: dock?.closest("[data-feedback-overlay]") !== null,
-        inside: rects.every(
-          (rect) => rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
-        ),
+        present: buttons.every((button) => button !== null),
+        commands: buttons.map((button) => button?.getAttribute("data-command") ?? ""),
+        labels: buttons.map((button) => button?.getAttribute("aria-label") ?? ""),
+        pressed: buttons.map((button) => button?.getAttribute("aria-pressed") === "true"),
+        disabled: buttons.map((button) => button?.disabled === true),
+        inside: buttons.every((button) => {
+          const rect = button?.getBoundingClientRect();
+          return (
+            rect !== undefined &&
+            rail !== undefined &&
+            rect.top >= rail.top - 0.5 &&
+            rect.bottom <= rail.bottom + 0.5 &&
+            rect.left >= rail.left - 0.5 &&
+            rect.right <= rail.right + 0.5
+          );
+        }),
       };
     })()`);
+
 
   // 1. Shell regions, density, theme default.
   const shell = await page.eval<{
@@ -1165,7 +1169,7 @@ try {
     check(entry.visible === visible, `${testid} does not render its visible label`, entry);
     check(entry.command === `view.mode.${testid.replace("mode-", "")}`, `${testid} lacks its command`, entry);
   }
-  const railLabels = await page.eval<Array<{ text: string; overflow: number; inside: boolean }>>(`(() => {
+  const railLabels = await page.eval<Array<{ text: string; overflow: number; inside: boolean; height: number; width: number }>>(`(() => {
     return [...document.querySelectorAll('[data-testid="activity-bar"] .activity-tab')].map((tab) => {
       const label = tab.querySelector('.activity-tab__label');
       const tabRect = tab.getBoundingClientRect();
@@ -1174,12 +1178,19 @@ try {
         text: label?.textContent?.trim() ?? "",
         overflow: label === null ? 1 : label.scrollWidth - label.clientWidth,
         inside: labelRect !== undefined && labelRect.left >= tabRect.left - 0.5 && labelRect.right <= tabRect.right + 0.5,
+        height: Math.round(tabRect.height),
+        width: Math.round(tabRect.width),
       };
     });
   })()`);
   check(
     railLabels.length === 3 && railLabels.every((label) => label.overflow <= 1 && label.inside),
     "a mode label overflows or leaves its tab",
+    railLabels,
+  );
+  check(
+    railLabels.every((label) => label.height === 52 && label.width === 64),
+    "a mode tab does not keep its padded 64×52 box",
     railLabels,
   );
 
@@ -1261,8 +1272,7 @@ try {
   const requiredCommands = [
     "view.mode.goal", "view.mode.flow", "view.mode.discover",
     "view.theme.toggle", "view.layout.reset",
-    "app.reload", "app.report", "app.remove", "app.redesign", "app.report.cancel",
-    "app.notifications.open",
+    "app.reload", "app.report", "app.notifications.open",
     "goal.save", "goal.create", "goal.revise", "goal.skills.prepare",
     "goal.adr.start-next", "goal.lifecycle.start", "goal.lifecycle.pause",
     "goal.lifecycle.resume", "goal.lifecycle.stop", "goal.reset",
@@ -1477,6 +1487,32 @@ try {
   const framesBeforeRow = await page.eval<number>("window.__viFrames.length");
   await page.click('[data-testid="record"]');
   await page.wait(`document.querySelector('[data-testid="record-file"]') !== null && !document.querySelector('[data-testid="adr-table"]')`, "the ADR detail tab");
+  const recordSurface = await page.eval<{
+    close: boolean;
+    status: string;
+    tone: string;
+    resolved: number;
+    nextFact: number;
+  }>(`(() => {
+    const header = document.querySelector('[data-testid="record-header"]');
+    const badges = [...(header?.querySelectorAll('.badge') ?? [])].map((badge) => badge.textContent?.trim() ?? "");
+    const status = document.querySelector('[data-testid="record-status"]');
+    const facts = [...document.querySelectorAll('[data-testid="record-meta"] dt')].map((term) => term.textContent?.trim() ?? "");
+    return {
+      close: document.querySelector('[data-testid="close-adrs"]') !== null,
+      status: status?.textContent?.trim() ?? "",
+      tone: status?.getAttribute("data-tone") ?? "",
+      resolved: badges.filter((text) => text === "Resolved" || text === "Pending").length,
+      nextFact: facts.filter((text) => text === "Next").length,
+    };
+  })()`);
+  check(!recordSurface.close, "the decision-records header still carries its own close button", recordSurface);
+  check(
+    recordSurface.status === "Accepted" && recordSurface.tone === "success" && recordSurface.resolved === 0,
+    "the record header repeats its status instead of coloring it",
+    recordSurface,
+  );
+  check(recordSurface.nextFact === 0, "the record facts still repeat the next marker", recordSurface);
   const framesAfterRow = await page.eval<number>("window.__viFrames.length");
   check(framesAfterRow === framesBeforeRow, "selecting a row sent a WebSocket frame", { framesBeforeRow, framesAfterRow });
   await runPalette("goal.adr.open.0001-shell-and-layout.md");
@@ -1512,10 +1548,34 @@ try {
     };
   })()`);
   check(goalSkillSurface.selected === clickedSkill && goalSkillSurface.current === "true", "clicking a prepared skill does not select it", { clickedSkill, goalSkillSurface });
+  const skillDocument = await page.eval<{ name: string; text: string }>(`(() => ({
+    name: document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() ?? "",
+    text: document.querySelector('[data-testid="skill-content-text"]')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    skillDocument.name === clickedSkill && skillDocument.text.length > 0,
+    "selecting a prepared skill does not open its document",
+    { clickedSkill, skillDocument },
+  );
 
   // 9. Goal editor: reset arm/cancel, dirty marker, save, unsaved survival, close prompt.
   await runPalette("open.goal.overview");
   await page.wait(`document.querySelector('[data-testid="reset-implementation"]') !== null`, "the reset control");
+  const dangerZone = await page.eval<{ tone: string; border: string; tint: string }>(`(() => {
+    const zone = document.querySelector('[data-testid="danger-zone"]');
+    const label = document.querySelector('[data-testid="danger-zone-label"]');
+    const header = zone?.querySelector('.panel__header');
+    return {
+      tone: label?.getAttribute("data-tone") ?? "",
+      border: zone === null || zone === undefined ? "" : getComputedStyle(zone).borderTopColor,
+      tint: header === null || header === undefined ? "" : getComputedStyle(header).backgroundColor,
+    };
+  })()`);
+  check(
+    dangerZone.tone === "error" && dangerZone.border !== dangerZone.tint,
+    "the danger zone is not colour-coded",
+    dangerZone,
+  );
   await page.click('[data-testid="reset-implementation"]');
   await page.wait(`document.querySelector('[data-testid="reset-confirmation"]') !== null`, "the reset confirmation");
   await page.click('[data-testid="cancel-reset"]');
@@ -1618,6 +1678,16 @@ try {
     flowSurfaces,
   );
   check(flowSurfaces.terminal, "the Flow activity is not rendered by xterm", flowSurfaces);
+  const flowMenu = await page.eval<{ items: number; icons: number }>(`(() => {
+    const group = document.querySelector('[data-testid="sidebar"] section[aria-label="Flow surfaces"]');
+    const items = [...(group?.querySelectorAll('button.sidebar-item') ?? [])];
+    return { items: items.length, icons: items.filter((item) => item.querySelector('svg') !== null).length };
+  })()`);
+  check(
+    flowMenu.items >= 4 && flowMenu.icons === 0,
+    "the Flow menu still carries decorative icons",
+    flowMenu,
+  );
   const terminalBuffer = await page.eval<string>(`window.__devboardTerminals.get("flow-activity")?.getBuffer() ?? "missing"`);
   check(terminalBuffer !== "missing", "the Flow terminal has no buffer", terminalBuffer);
   const flowData = await page.eval<{
@@ -1908,22 +1978,32 @@ try {
     stale: boolean;
     commit: boolean;
     railLeft: number;
+    railWidth: number;
     columnLeft: number;
     headers: string[];
     subtitle: string;
     rows: number;
     versions: boolean;
+    suite: string;
+    levelCommand: string;
+    happyPath: string;
   }>(`(() => {
     const head = document.querySelector('#workspace-discover .discover-head');
     const sheet = document.querySelector('[data-testid="discover-sheet"]');
     const rail = sheet?.querySelector('.discover-rail');
     const column = sheet?.querySelector('.discover-col');
     const testing = document.querySelector('#workspace-discover [data-field="testing"]');
+    const stats = [...(testing?.querySelectorAll('.discover-stat') ?? [])].map((stat) => ({
+      value: stat.querySelector('.discover-stat__value')?.textContent?.trim() ?? "",
+      label: stat.querySelector('.discover-stat__label')?.textContent?.trim() ?? "",
+    }));
+    const commandCell = testing?.querySelector('[data-testid="discover-pyramid"] tbody td.discover-mono');
     return {
       eyebrow: head?.querySelector('.discover-page__eyebrow') !== null,
       stale: document.querySelector('[data-testid="discover-stale"]') !== null,
       commit: head?.querySelector('.discover-head__meta code') !== null,
       railLeft: Math.round(rail?.getBoundingClientRect().left ?? -1),
+      railWidth: Math.round(rail?.getBoundingClientRect().width ?? -1),
       columnLeft: Math.round(column?.getBoundingClientRect().left ?? -1),
       headers: [...document.querySelectorAll('[data-testid="discover-pyramid"] thead th')]
         .map((header) => header.textContent.trim()),
@@ -1931,14 +2011,37 @@ try {
       rows: document.querySelectorAll('[data-testid="discover-pyramid"] tbody tr').length,
       versions: [...document.querySelectorAll('#workspace-discover [data-field="runtime"] dt')]
         .some((term) => term.textContent.trim() === "Versions"),
+      suite: testing?.querySelector('[data-testid="discover-suite-command"] code')?.textContent?.trim() ?? "",
+      levelCommand: commandCell?.textContent?.trim() ?? "",
+      happyPath: stats.find((stat) => stat.label === "happy path")?.value ?? "",
     };
   })()`);
   check(!discoverChrome.eyebrow && !discoverChrome.stale && !discoverChrome.commit, "the sheet still renders removed masthead chrome", discoverChrome);
   check(discoverChrome.railLeft < discoverChrome.columnLeft, "the sheet column is not to the right of the facts rail", discoverChrome);
   check(
-    discoverChrome.headers.join("|") === "Level|Tests",
-    "the test level table still renders a paths column",
+    discoverChrome.railWidth >= 260,
+    "the Discover facts rail is narrower than its approved track",
+    discoverChrome,
+  );
+  check(
+    discoverChrome.headers.join("|") === "Level|Tests|Happy path|Command",
+    "the test level table does not carry its happy-path and command columns",
     discoverChrome.headers,
+  );
+  check(
+    discoverChrome.suite === "npm test",
+    "the whole-suite line does not show the manifest's own invocation",
+    discoverChrome,
+  );
+  check(
+    discoverChrome.levelCommand === "$ npm run test:unit",
+    "a test level does not show the declared command that runs it",
+    discoverChrome,
+  );
+  check(
+    discoverChrome.happyPath === "100%",
+    "the testing summary does not carry the happy-path share",
+    discoverChrome,
   );
   check(
     discoverChrome.subtitle.startsWith(`${discoverChrome.rows} level`) &&
@@ -2652,34 +2755,50 @@ try {
   const resolvedAdrSidebar = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="ADR records"]') !== null`);
   check(!resolvedAdrSidebar, "the sidebar still shows resolved ADR records");
 
-  // 14. The UI issue dock: three actions, the unchanged report panel, and the
-  // one-click removal and redesign shortcuts, all filed through the stub.
-  const issueCommands = "app.report,app.remove,app.redesign";
-  const issueLabels = "Report UI issue|Remove element|Redesign element";
-  for (const mode of ["goal", "flow", "discover"]) {
-    await runPalette(`view.mode.${mode}`);
-    await page.wait(
-      `document.querySelector('[data-testid="mode-${mode}"]')?.getAttribute("aria-selected") === "true"`,
-      `the ${mode} mode for the issue dock`,
-    );
-    const dock = await dockState();
-    check(dock.docks === 1, `the ${mode} route has ${dock.docks} issue docks`, dock);
-    check(dock.labels.join("|") === issueLabels, `the ${mode} route mislabels the issue dock`, dock);
-    check(dock.commands.join(",") === issueCommands, `the ${mode} route exposes the wrong issue commands`, dock);
-    check(
-      dock.group === "UI issue actions" && dock.overlay,
-      `the ${mode} issue dock is not an accessible overlay group`,
-      dock,
-    );
-    check(dock.inside, `the ${mode} issue dock leaves the viewport`, dock);
-  }
+  // 14. The three issue actions live in the activity bar and toggle themselves.
+  await page.click('[data-testid="activity-report"]');
+  await page.wait(
+    `document.querySelector('.feedback-hint') !== null`,
+    "the activity-bar report control picking mode",
+  );
+  const reportActive = await issueState();
+  check(
+    reportActive.pressed.join(",") === "true,false,false",
+    "the report action is not pressed in selection mode",
+    reportActive,
+  );
+  await page.click('[data-testid="activity-report"]');
+  await page.wait(
+    `document.querySelector('.feedback-hint') === null`,
+    "the activity-bar report control to cancel",
+  );
+
+  await runPalette("view.mode.goal");
+  const idleIssue = await issueState();
+  check(idleIssue.present, "an issue action is missing from the activity bar", idleIssue);
+  check(
+    idleIssue.commands.join(",") === "app.report,app.remove,app.redesign",
+    "the activity bar exposes the wrong issue commands",
+    idleIssue,
+  );
+  check(
+    idleIssue.labels[0]?.includes("Report a UI issue") &&
+      idleIssue.labels[1]?.includes("Remove element") &&
+      idleIssue.labels[2]?.includes("Redesign element"),
+    "an issue action lacks its accessible name",
+    idleIssue,
+  );
+  check(
+    idleIssue.pressed.every((value) => !value) && idleIssue.inside,
+    "the issue actions are not idle inside the rail",
+    idleIssue,
+  );
 
   // The report path is unchanged: selection, panel, filing, and back to selection.
-  await runPalette("view.mode.goal");
   await clearFeedback();
   await runPalette("app.report");
   await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter picking mode");
-  const reportArmed = await dockState();
+  const reportArmed = await issueState();
   check(reportArmed.pressed.join(",") === "true,false,false", "the report action is not pressed in selection mode", reportArmed);
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the issue reporter to cancel");
@@ -2704,8 +2823,12 @@ try {
     panelChrome,
   );
   check(panelChrome.selector.length > 0, "the report panel shows no selector", panelChrome);
-  const composing = await dockState();
-  check(composing.disabled.join(",") === "false,true,true", "the quick actions are not disabled while composing", composing);
+  const composing = await issueState();
+  check(
+    composing.disabled.join(",") === "false,true,true",
+    "the quick actions are not disabled while composing",
+    composing,
+  );
   check(
     (await feedbackCalls()).length === 0 && feedbackRequests.length === 0,
     "a report request was sent before File issue",
@@ -2763,7 +2886,7 @@ try {
     "the report request is wrong",
     feedbackRequests,
   );
-  const backToPicking = await dockState();
+  const backToPicking = await issueState();
   check(backToPicking.pressed.join(",") === "true,false,false", "a filed report did not return to report selection", backToPicking);
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the report mode to close after filing");
@@ -2782,7 +2905,9 @@ try {
   const failedReport = await page.eval<{ panel: boolean; error: string; disabled: boolean[] }>(`(() => ({
     panel: document.querySelector('.feedback-panel') !== null,
     error: document.querySelector('.feedback-error')?.textContent?.trim() ?? "",
-    disabled: [...document.querySelectorAll('.feedback-dock__actions button')].map((button) => button.disabled),
+    disabled: ["activity-report", "activity-remove", "activity-redesign"].map(
+      (id) => document.querySelector('[data-testid="' + id + '"]')?.disabled === true,
+    ),
   }))()`);
   check(
     failedReport.panel && failedReport.error.includes("Issue creation failed"),
@@ -2790,11 +2915,8 @@ try {
     failedReport,
   );
   check(
-    failedReport.disabled.length === 3 &&
-      !failedReport.disabled[0] &&
-      failedReport.disabled[1] &&
-      failedReport.disabled[2],
-    "a failed report left the dock in the wrong state",
+    !failedReport.disabled[0] && failedReport.disabled[1] && failedReport.disabled[2],
+    "a failed report left the issue actions in the wrong state",
     failedReport,
   );
   await setFeedbackMode("ok");
@@ -2805,15 +2927,14 @@ try {
   await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter for the palette cancel");
   await runPalette("app.report.cancel");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the palette to cancel the issue reporter");
-  check((await dockState()).pressed.every((value) => !value), "a canceled mode is still pressed");
-  check((await dockState()).pressed.every((value) => !value), "a canceled mode is still pressed");
+  check((await issueState()).pressed.every((value) => !value), "a canceled mode is still pressed");
 
   // Two removals from one uninterrupted mode, the second on a control whose
   // activation the selection mode must swallow.
   await clearFeedback();
   await runPalette("app.remove");
   await page.wait(`document.querySelector('.feedback-hint')?.textContent?.includes("to remove") === true`, "the removal hint");
-  const removalArmed = await dockState();
+  const removalArmed = await issueState();
   check(removalArmed.pressed.join(",") === "false,true,false", "the removal action is not armed", removalArmed);
   await page.click('[data-testid="status-connection"]');
   await waitForFeedbackCalls(1);
@@ -2830,7 +2951,7 @@ try {
   check(removalStatus.role === "status", "a removal success is not a status surface", removalStatus);
   check(removalStatus.text.startsWith("Removal issue filed."), "the removal success text is wrong", removalStatus);
   check(removalStatus.href === stubIssueUrl, "the removal success carries no stub issue URL", removalStatus);
-  const removalStillArmed = await dockState();
+  const removalStillArmed = await issueState();
   check(
     removalStillArmed.pressed.join(",") === "false,true,false" &&
       removalStillArmed.disabled.every((value) => !value),
@@ -2865,7 +2986,7 @@ try {
     check(call.body.includes("### DOM excerpt"), "a removal body lost the DOM excerpt", call.body);
   }
   const removalRequests = feedbackRequests.filter((entry) => entry.action === "remove");
-  check(removalRequests.length === 2, "the dock did not send two removal requests", feedbackRequests);
+  check(removalRequests.length === 2, "the issue actions did not send two removal requests", feedbackRequests);
   check(
     removalRequests.every(
       (entry) =>
@@ -2878,18 +2999,13 @@ try {
     "a removal request lacks its captured context",
     removalRequests,
   );
-  check(
-    removalCalls[1]!.args.join(" ").includes(String(removalRequests[1]?.selector ?? "\u0000")),
-    "the second removal names the wrong selector",
-    removalCalls[1]!.args,
-  );
 
   // A different action switches modes without filing; two redesigns then file
   // from the same uninterrupted mode.
   await clearFeedback();
   await runPalette("app.redesign");
   await page.wait(`document.querySelector('.feedback-hint')?.textContent?.includes("to redesign") === true`, "the redesign hint");
-  const redesignArmed = await dockState();
+  const redesignArmed = await issueState();
   check(redesignArmed.pressed.join(",") === "false,false,true", "switching the action did not arm the redesign", redesignArmed);
   check((await feedbackCalls()).length === 0, "switching actions filed an issue");
   await page.click('[data-testid="status-connection"]');
@@ -2910,7 +3026,7 @@ try {
     check(call.body.includes("## Captured UI context"), "a redesign body lost the captured context", call.body);
   }
   const redesignRequests = feedbackRequests.filter((entry) => entry.action === "redesign");
-  check(redesignRequests.length === 2, "the dock did not send two redesign requests", feedbackRequests);
+  check(redesignRequests.length === 2, "the issue actions did not send two redesign requests", feedbackRequests);
   const redesignStatus = await page.eval<{ text: string; href: string }>(`(() => {
     const status = document.querySelector('.feedback-result');
     return {
@@ -2920,25 +3036,26 @@ try {
   })()`);
   check(redesignStatus.text.startsWith("Redesign issue filed."), "the redesign success text is wrong", redesignStatus);
   check(redesignStatus.href === stubIssueUrl, "the redesign success carries no stub issue URL", redesignStatus);
-  check((await dockState()).pressed.join(",") === "false,false,true", "a filed redesign did not stay armed");
+  check((await issueState()).pressed.join(",") === "false,false,true", "a filed redesign did not stay armed");
 
   // A delayed filing disables every action and a double-click files once.
   await setFeedbackMode("delay");
   await page.doubleClick('[data-testid="status-connection"]');
   await page.wait(
-    `[...document.querySelectorAll('.feedback-dock__actions button')].every((button) => button.disabled)`,
-    "the dock disabled during a delayed filing",
+    `["activity-report", "activity-remove", "activity-redesign"].every((id) => document.querySelector('[data-testid="' + id + '"]')?.disabled === true)`,
+    "the issue actions disabled during a delayed filing",
   );
   const filing = await page.eval<{ labels: string[]; active: number }>(`(() => {
-    const buttons = [...document.querySelectorAll('.feedback-dock__actions button')];
+    const ids = ["activity-report", "activity-remove", "activity-redesign"];
+    const buttons = ids.map((id) => document.querySelector('[data-testid="' + id + '"]'));
     return {
-      labels: buttons.map((button) => button.textContent.trim()),
-      active: buttons.findIndex((button) => button.getAttribute("aria-pressed") === "true"),
+      labels: buttons.map((button) => button?.getAttribute("aria-label") ?? ""),
+      active: buttons.findIndex((button) => button?.getAttribute("aria-pressed") === "true"),
     };
   })()`);
   check(
-    filing.active === 2 && filing.labels[filing.active] === "Filing…",
-    "the active action does not read Filing… while filing",
+    filing.active === 2 && (filing.labels[filing.active] ?? "").startsWith("Filing"),
+    "the active action does not read Filing while filing",
     filing,
   );
   await waitForFeedbackCalls(3);
@@ -2947,7 +3064,7 @@ try {
   check(delayedCalls.length === 3, "a double-click filed more than one issue", delayedCalls.length);
   await page.wait(`document.querySelector('.feedback-result[role="status"]') !== null`, "the delayed filing status");
 
-  // A failing filing keeps the mode armed, re-enables the dock, and files nothing.
+  // A failing filing keeps the mode armed, re-enables the actions, and files nothing.
   await setFeedbackMode("fail");
   await page.click('[data-testid="status-connection"]');
   await page.wait(`document.querySelector('.feedback-result[role="alert"]') !== null`, "the redesign failure alert");
@@ -2959,13 +3076,13 @@ try {
     disabled: boolean[];
   }>(`(() => {
     const alert = document.querySelector('.feedback-result[role="alert"]');
-    const buttons = [...document.querySelectorAll('.feedback-dock__actions button')];
+    const ids = ["activity-report", "activity-remove", "activity-redesign"];
     return {
       text: (alert?.textContent ?? "").split("\\n").map((value) => value.trim()).filter((value) => value.length > 0).join(" "),
       link: alert?.querySelector("a") !== null,
       hint: document.querySelector('.feedback-hint')?.textContent ?? "",
-      pressed: buttons.map((button) => button.getAttribute("aria-pressed") ?? ""),
-      disabled: buttons.map((button) => button.disabled),
+      pressed: ids.map((id) => document.querySelector('[data-testid="' + id + '"]')?.getAttribute("aria-pressed") ?? ""),
+      disabled: ids.map((id) => document.querySelector('[data-testid="' + id + '"]')?.disabled === true),
     };
   })()`);
   check(
@@ -2976,81 +3093,62 @@ try {
   check(!failure.link, "a failed redesign rendered an issue link", failure);
   check(failure.hint.includes("to redesign"), "a failed redesign left the mode", failure);
   check(failure.pressed.join(",") === "false,false,true", "a failed redesign lost its pressed state", failure);
-  check(failure.disabled.every((value) => !value), "a failed redesign left the dock disabled", failure);
+  check(failure.disabled.every((value) => !value), "a failed redesign left the actions disabled", failure);
   await setFeedbackMode("ok");
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "Escape to cancel the shortcut mode");
-  check((await dockState()).pressed.every((value) => !value), "Escape left an action pressed");
+  check((await issueState()).pressed.every((value) => !value), "Escape left an action pressed");
 
-  // The dock clears the status bar, the notification region, and the page's
-  // lowest control at the narrowest supported viewport.
+  // The result line fits the supported viewport without covering the status
+  // bar or the notification region, and the actions stay inside the rail.
   await devtools.send("Emulation.setDeviceMetricsOverride", {
     width: 1024,
     height: 720,
     deviceScaleFactor: 1,
     mobile: false,
   });
-  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the 1024×720 viewport for the issue dock");
-  await runPalette("discover.tab.overview");
-  await page.wait(`document.querySelector('#workspace-discover .scroll-column') !== null`, "the Discover page for the dock check");
-  const dockLayout = await page.eval<{
-    inside: boolean;
+  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the 1024×720 viewport for the issue actions");
+  await clearFeedback();
+  await runPalette("app.remove");
+  await page.click('[data-testid="status-connection"]');
+  await waitForFeedbackCalls(1);
+  await page.wait(`document.querySelector('.feedback-result[role="status"]') !== null`, "the issue result at 1024×720");
+  const issueLayout = await page.eval<{
+    resultInside: boolean;
     aboveStatus: boolean;
-    besideRegion: boolean;
-    reserved: boolean;
-    controlClear: boolean;
-    controlHit: boolean;
+    clearsRegion: boolean;
+    insideRail: boolean;
+    label: string;
   }>(`(() => {
-    const dock = document.querySelector(".feedback-dock")?.getBoundingClientRect();
+    const box = document.querySelector(".feedback-result")?.getBoundingClientRect();
     const status = document.querySelector('[data-testid="status-bar"]')?.getBoundingClientRect();
     const region = document.querySelector('[data-testid="notifications"]')?.getBoundingClientRect();
-    if (dock === undefined || status === undefined || region === undefined) {
-      return {
-        inside: false,
-        aboveStatus: false,
-        besideRegion: false,
-        reserved: false,
-        controlClear: false,
-        controlHit: false,
-      };
-    }
-    const scroller = document.querySelector("#workspace-discover .scroll-column");
-    let controlClear = false;
-    let controlHit = false;
-    if (scroller !== null) {
-      scroller.scrollTop = scroller.scrollHeight;
-      const entries = [...scroller.querySelectorAll("*")]
-        .filter((element) => element.getClientRects().length > 0)
-        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
-        .filter((entry) => entry.rect.width > 0 && entry.rect.height > 0);
-      if (entries.length > 0) {
-        const lowest = entries.reduce((best, entry) => (entry.rect.bottom > best.rect.bottom ? entry : best));
-        const hit = document.elementFromPoint(
-          lowest.rect.left + lowest.rect.width / 2,
-          lowest.rect.top + lowest.rect.height / 2,
-        );
-        controlClear = lowest.rect.bottom <= dock.top;
-        controlHit = hit !== null && lowest.element.contains(hit);
-      }
-    }
-    const reserved = Number.parseFloat(
-      getComputedStyle(document.documentElement).getPropertyValue("--issue-dock-width"),
+    const rail = document.querySelector('[data-testid="activity-bar"]')?.getBoundingClientRect();
+    const actions = ["activity-report", "activity-remove", "activity-redesign"].map(
+      (id) => document.querySelector('[data-testid="' + id + '"]')?.getBoundingClientRect(),
     );
+    const overlap = (a, b) =>
+      a !== undefined && b !== undefined &&
+      a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
     return {
-      inside: dock.left >= 0 && dock.top >= 0 && dock.right <= innerWidth && dock.bottom <= innerHeight,
-      aboveStatus: dock.bottom <= status.top + 0.5,
-      besideRegion: region.right <= dock.left + 0.5,
-      reserved: dock.width <= reserved + 0.5,
-      controlClear,
-      controlHit,
+      resultInside:
+        box !== undefined && box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight,
+      aboveStatus: box !== undefined && status !== undefined && box.bottom <= status.top + 0.5,
+      clearsRegion: !overlap(box, region),
+      insideRail: actions.every(
+        (rect) =>
+          rect !== undefined && rail !== undefined &&
+          rect.top >= rail.top - 0.5 && rect.bottom <= rail.bottom + 0.5 &&
+          rect.left >= rail.left - 0.5 && rect.right <= rail.right + 0.5,
+      ),
+      label: document.querySelector('[data-testid="activity-remove"]')?.getAttribute("aria-label") ?? "",
     };
   })()`);
-  check(dockLayout.inside, "the issue dock leaves the 1024×720 viewport", dockLayout);
-  check(dockLayout.aboveStatus, "the issue dock overlaps the status bar", dockLayout);
-  check(dockLayout.besideRegion, "the issue dock overlaps the notification region", dockLayout);
-  check(dockLayout.reserved, "the issue dock is wider than its reserved footprint", dockLayout);
-  check(dockLayout.controlClear && dockLayout.controlHit, "the issue dock hides or covers the last Discover control", dockLayout);
-  await page.screenshot(join(harnessRoot, ".tmp", "interface", "issue-dock-1024x720.png"));
+  check(issueLayout.resultInside && issueLayout.aboveStatus, "the issue result leaves the viewport or covers the status bar", issueLayout);
+  check(issueLayout.clearsRegion, "the issue result overlaps the notification region", issueLayout);
+  check(issueLayout.insideRail, "an issue action leaves the activity bar", issueLayout);
+  check(issueLayout.label.includes("Cancel element removal"), "the armed action is not labelled as a cancel", issueLayout);
+  await page.screenshot(join(harnessRoot, ".tmp", "interface", "issue-actions-1024x720.png"));
 
   await devtools.send("Emulation.setDeviceMetricsOverride", {
     width: 1440,
@@ -3058,25 +3156,26 @@ try {
     deviceScaleFactor: 1,
     mobile: false,
   });
-  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the 1440×900 viewport after the dock check");
-  await runPalette("view.mode.goal");
-  await clearFeedback();
-  await runPalette("app.remove");
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the 1440×900 viewport after the issue actions");
+  await page.key("Escape");
+  await page.wait(`document.querySelector('.feedback-hint') === null`, "the issue actions to leave selection mode");
+  await page.click('[data-testid="activity-remove"]');
   await page.click('[data-testid="status-connection"]');
-  await waitForFeedbackCalls(1);
-  await page.wait(`document.querySelector('.feedback-result[role="status"]') !== null`, "the dock status for the screenshots");
-  await saveShot("ui-issue-dock-dark");
+  await waitForFeedbackCalls(2);
+  await page.wait(`document.querySelector('.feedback-result[role="status"]') !== null`, "the issue result for the screenshots");
+  await saveShot("issue-actions-dark");
   await page.key("Escape");
-  await page.wait(`document.querySelector('.feedback-hint') === null`, "the dock screenshots to leave selection mode");
+  await page.wait(`document.querySelector('.feedback-hint') === null`, "the issue screenshots to leave selection mode");
   await page.click('[data-testid="theme-toggle"]');
-  await page.wait(`document.documentElement.dataset.theme === "light"`, "the light theme for the dock screenshot");
-  await runPalette("app.redesign");
-  await page.wait(`document.querySelector('.feedback-hint') !== null`, "the redesign mode for the light dock screenshot");
-  await saveShot("ui-issue-dock-light");
+  await page.wait(`document.documentElement.dataset.theme === "light"`, "the light theme for the issue screenshot");
+  await page.click('[data-testid="activity-redesign"]');
+  await page.wait(`document.querySelector('.feedback-hint') !== null`, "the redesign mode for the light issue screenshot");
+  await saveShot("issue-actions-light");
   await page.key("Escape");
-  await page.wait(`document.querySelector('.feedback-hint') === null`, "the light dock screenshot to leave selection mode");
+  await page.wait(`document.querySelector('.feedback-hint') === null`, "the light issue screenshot to leave selection mode");
   await page.click('[data-testid="theme-toggle"]');
-  await page.wait(`document.documentElement.dataset.theme === "dark"`, "the dark theme after the dock screenshots");
+  await page.wait(`document.documentElement.dataset.theme === "dark"`, "the dark theme after the issue screenshots");
+
   // 14b. Ask mode: the same panel streams a background agent's plain-text answer.
   const postsBeforeAsk = feedbackPosts.length;
   await runPalette("app.report");

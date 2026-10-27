@@ -2,23 +2,39 @@
   import { Tooltip } from "bits-ui";
   import Bell from "lucide-svelte/icons/bell";
   import Compass from "lucide-svelte/icons/compass";
+  import Flag from "lucide-svelte/icons/flag";
   import Moon from "lucide-svelte/icons/moon";
   import Search from "lucide-svelte/icons/search";
+  import Sparkles from "lucide-svelte/icons/sparkles";
   import Sun from "lucide-svelte/icons/sun";
   import Target from "lucide-svelte/icons/target";
+  import Trash2 from "lucide-svelte/icons/trash-2";
   import Workflow from "lucide-svelte/icons/workflow";
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
   import { layout } from "../layout.svelte";
   import { notifications } from "../notifications.svelte";
+  import type { FeedbackAction, FeedbackPhase } from "../types";
   import IconButton from "./ui/icon-button.svelte";
 
   interface Props {
     onopenpalette: () => void;
+    onreportissue: () => void;
+    onremoveelement: () => void;
+    onredesignelement: () => void;
+    reportphase: FeedbackPhase;
+    reportaction: FeedbackAction | null;
   }
 
-  let { onopenpalette }: Props = $props();
+  let {
+    onopenpalette,
+    onreportissue,
+    onremoveelement,
+    onredesignelement,
+    reportphase,
+    reportaction,
+  }: Props = $props();
 
   const tooltipClass =
     "z-50 rounded-sm border border-[var(--border-strong)] bg-[var(--surface-raised)] px-2 py-1 text-[11px] text-[var(--foreground)] shadow-md";
@@ -65,6 +81,33 @@
   );
   const themeLabel = $derived(
     layout.theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
+  );
+  const reportLabel = $derived(
+    reportphase !== "idle" && reportaction === "report"
+      ? reportphase === "sending"
+        ? "Filing the UI issue"
+        : reportphase === "composing" || reportphase === "failed"
+          ? "Cancel UI issue report"
+          : "Cancel element selection"
+      : "Report a UI issue",
+  );
+  const removeLabel = $derived(
+    reportaction === "remove"
+      ? reportphase === "sending"
+        ? "Filing the removal issue"
+        : "Cancel element removal"
+      : "Remove element",
+  );
+  const redesignLabel = $derived(
+    reportaction === "redesign"
+      ? reportphase === "sending"
+        ? "Filing the redesign issue"
+        : "Cancel element redesign"
+      : "Redesign element",
+  );
+  // A quick action cannot run while the report panel owns the selection.
+  const quickDisabled = $derived(
+    reportphase === "sending" || reportphase === "composing" || reportphase === "failed",
   );
 </script>
 
@@ -175,6 +218,39 @@
       {:else}
         <Moon size={15} aria-hidden="true" />
       {/if}
+    </IconButton>
+    <IconButton
+      label={reportLabel}
+      command="app.report"
+      data-testid="activity-report"
+      class="activity-bar__action"
+      active={reportaction === "report"}
+      disabled={reportphase === "sending"}
+      onclick={onreportissue}
+    >
+      <Flag size={15} aria-hidden="true" />
+    </IconButton>
+    <IconButton
+      label={removeLabel}
+      command="app.remove"
+      data-testid="activity-remove"
+      class="activity-bar__action"
+      active={reportaction === "remove"}
+      disabled={quickDisabled}
+      onclick={onremoveelement}
+    >
+      <Trash2 size={15} aria-hidden="true" />
+    </IconButton>
+    <IconButton
+      label={redesignLabel}
+      command="app.redesign"
+      data-testid="activity-redesign"
+      class="activity-bar__action"
+      active={reportaction === "redesign"}
+      disabled={quickDisabled}
+      onclick={onredesignelement}
+    >
+      <Sparkles size={15} aria-hidden="true" />
     </IconButton>
   </div>
 </div>
