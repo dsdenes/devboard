@@ -21,19 +21,35 @@
           : "overview",
   );
 
-  const stateWord = $derived(issues.lifecycle);
-  const nextCheck = $derived(issues.snapshot?.poll?.nextPollAt ?? null);
-  const pollLine = $derived(
-    issues.snapshot?.poll === null || issues.snapshot?.poll === undefined
-      ? "Not polling"
-      : `Every ${Math.round(issues.snapshot.poll.intervalMs / 100) / 10}s · last ${
-          issues.snapshot.poll.lastPollAt ?? "never"
-        } · next ${nextCheck ?? "not scheduled"}`,
+  const poll = $derived(issues.snapshot?.poll ?? null);
+  const pollInterval = $derived(
+    poll === null ? "" : `${Math.round(poll.intervalMs / 100) / 10}s`,
   );
+  const activeRun = $derived(issues.snapshot?.activeRun ?? null);
   const runCount = $derived(issues.runs.length);
-  const activityText = $derived(
-    issues.activity.length === 0 ? "No activity yet." : issues.activity.join("\n"),
+  // One clock for the relative poll and run labels; snapshots arrive every two
+  // seconds, but a reader should not see a stale "2s ago" while waiting.
+  let now = $state(Date.now());
+  $effect(() => {
+    const timer = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(timer);
+  });
+
+  /** A compact relative age for a timestamp, or "never"/"not scheduled". */
+  function ageLabel(value: string | null, future = false): string {
+    if (value === null || value.length === 0) return future ? "not scheduled" : "never";
+    const at = Date.parse(value);
+    if (!Number.isFinite(at)) return future ? "not scheduled" : "never";
+    const seconds = Math.max(0, Math.round((future ? at - now : now - at) / 1000));
+    if (seconds < 1) return future ? "in <1s" : "just now";
+    if (seconds < 60) return future ? `in ${seconds}s` : `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    return future ? `in ${minutes}m` : `${minutes}m ago`;
+  }
+  const activityLines = $derived(
+    issues.activity.length === 0 ? ["No activity yet."] : issues.activity,
   );
+  const activityText = $derived(activityLines.join("\n"));
   const agents = $derived(issues.agents);
   let agentAnswers = $state<Record<string, string>>({});
 
@@ -76,15 +92,11 @@
   <section class="issues-overview" data-testid="issues-overview" aria-label="Issues overview">
     <header class="issues-overview__header">
       <div>
-        <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Issue automation</h1>
         <p class="issues-overview__repo mono" data-testid="issues-repo">
           {issues.repo ?? "No GitHub origin"}
         </p>
       </div>
-      <span class="badge" data-tone={stateWord === "failed" ? "error" : stateWord === "running" ? "accent" : "warning"} data-testid="issues-state">
-        {stateWord}
-      </span>
     </header>
 
     <div class="issues-overview__body">
@@ -92,7 +104,21 @@
       <section class="panel">
         <div class="panel__header">
           <h2 class="panel__title">Automation</h2>
-          <span class="panel__subtitle">{pollLine}</span>
+          {#if poll === null}
+            <span class="panel__subtitle">Not polling</span>
+          {:else}
+            <span class="issues-poll" data-testid="issues-poll">
+              <span class="issues-poll__item" title={`Every ${poll.intervalMs} ms`}>
+                every {pollInterval}
+              </span>
+              <span class="issues-poll__item" title={poll.lastPollAt ?? "never"}>
+                last {ageLabel(poll.lastPollAt)}
+              </span>
+              <span class="issues-poll__item" title={poll.nextPollAt ?? "not scheduled"}>
+                next {ageLabel(poll.nextPollAt, true)}
+              </span>
+            </span>
+          {/if}
         </div>
         <div class="panel__body stack-sm">
           <div class="toolbar">
@@ -246,18 +272,30 @@
       <section class="panel issues-activity-panel">
         <div class="panel__header">
           <h2 class="panel__title">Agent activity</h2>
-          <span class="panel__subtitle">
-            {issues.snapshot?.activeRun === null || issues.snapshot?.activeRun === undefined
-              ? "No active run"
-              : `Run ${issues.snapshot.activeRun.runId}`}
+          <span class="issues-run-identity" data-testid="issues-run-identity">
+            {#if activeRun === null}
+              <span class="muted">No active run</span>
+            {:else}
+              <code class="code-chip" title={activeRun.runId}>{activeRun.runId}</code>
+              <span class="muted">started {ageLabel(activeRun.startedAt)}</span>
+            {/if}
           </span>
         </div>
         <pre
           class="issues-activity mono"
           data-testid="issues-activity"
+          role="log"
+          aria-label="Agent activity"
           bind:this={activityElement}
           onscroll={trackActivityFollow}
-        >{activityText}</pre>
+        >{#each activityLines as line, index (index)}<span
+            class="issues-activity__line"
+            data-kind={line.trimStart().startsWith("$ ")
+              ? "command"
+              : line.trim().length === 0
+                ? "blank"
+                : "text"}
+          >{line}{"\n"}</span>{/each}</pre>
         {#if issues.question !== null}
           <div class="issues-question" data-testid="issues-question">
             <p>{issues.question.message}</p>

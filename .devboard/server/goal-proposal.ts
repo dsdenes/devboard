@@ -14,8 +14,10 @@ import { join } from "node:path";
 import {
   FeedbackRequestError,
   parseCapturedFields,
+  parseConversation,
   parseReportText,
   type CapturedFields,
+  type FeedbackTurn,
 } from "./feedback";
 
 /** Repository-relative directory holding every draft. */
@@ -32,6 +34,7 @@ const DRAFT_NOTICE = "> Unprocessed draft. Refine it with `/goal-spec` before it
 
 export interface GoalProposalSubmission extends CapturedFields {
   report: string;
+  conversation: FeedbackTurn[];
 }
 
 export interface GoalProposal {
@@ -45,7 +48,11 @@ export function parseGoalProposalSubmission(value: unknown): GoalProposalSubmiss
     throw new FeedbackRequestError(400, "The proposal must be a JSON object.");
   }
   const source = value as Record<string, unknown>;
-  return { report: parseReportText(source.report), ...parseCapturedFields(source) };
+  return {
+    report: parseReportText(source.report),
+    conversation: parseConversation(source.conversation),
+    ...parseCapturedFields(source),
+  };
 }
 
 /** The report's first non-empty line, trimmed, or the empty string. */
@@ -127,6 +134,18 @@ export function goalProposalBody(submission: GoalProposalSubmission): string {
     "",
     submission.report,
     "",
+    ...(submission.conversation.length === 0
+      ? []
+      : [
+          "## Conversation",
+          "",
+          ...submission.conversation.flatMap((turn) => [
+            `**${turn.role === "developer" ? "Developer" : "Agent"}:**`,
+            "",
+            ...turn.text.trim().split("\n"),
+            "",
+          ]),
+        ]),
     "## Captured UI context",
     "",
     ...capturedContext(submission),

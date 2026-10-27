@@ -464,6 +464,23 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   bubble. Sending clears the composer immediately; the question is already in the transcript.
 - **Prepared skills** (`.skill`) — each row is the skill disclosure button plus a 28px delete
   control that takes `error-surface` on hover and opens one confirmation dialog.
+- **Discover skill file header** (`.discover-skill__header`) — a `Skill file` overline, the
+  `SKILL.md` panel title, the skill directory as a `.code-chip`, and one state badge
+  (Generated success, Edited/Unsaved warning, Missing error); the actions are Save (disabled until
+  dirty) and the conditional Restore. The editor fills the remaining pane.
+- **Quality gates card** (`.discover-gates`) — one full-width row per required gate with 8px
+  padding and a `border-subtle` rule: the gate name at 600 weight, its `$ command` chip, and a
+  12px muted description of what it checks. The Delivery facts never repeat the gate list.
+- **Context dependency map** (`.discover-dependencies`) — below the context rows: a
+  `Dependencies` label, one `body-small` caption, and a Mermaid `flowchart LR` on the
+  `background` fill inside a `border-subtle` frame. Arrows point from a context to what it
+  imports; the stored `dependencyDirection` statement stays below as the fallback.
+- **Issues overview** — the header is one 18px title over the repository; it repeats neither the
+  mode name nor the worker state. The Automation header pairs the title with a labeled poll line
+  (`every 2s`, `last 3s ago`, `next in 2s`); exact ISO times live in tooltips. Agent activity pairs
+  a run-id `.code-chip` and its start age with a terminal-surface log, where command lines use the
+  `accent` color and the log owns the page height and the newest line. Goal agents are one card per
+  issue.
 
 ## Do's and Don'ts
 

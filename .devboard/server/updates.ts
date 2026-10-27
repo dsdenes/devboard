@@ -72,6 +72,16 @@ export function updateRetryDelay(failures: number, intervalMs: number, maxBackof
 
 export function startUpdater(options: UpdateOptions): Updater {
   const env = options.env ?? process.env;
+  // An explicit 0 is the documented off switch: a verification fixture, an
+  // air-gapped host, or an operator who does not want automatic updates runs
+  // no release check and journals no update failure.
+  if (options.intervalMs === undefined && env.DEVBOARD_UPDATE_INTERVAL_MS?.trim() === "0") {
+    return {
+      latest: () => null,
+      checkNow: () => Promise.resolve("stopped"),
+      stop: () => undefined,
+    };
+  }
   const intervalMs =
     options.intervalMs ?? positiveNumber(env.DEVBOARD_UPDATE_INTERVAL_MS, DEFAULT_UPDATE_INTERVAL_MS);
   const maxBackoffMs =

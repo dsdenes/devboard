@@ -1739,6 +1739,38 @@ kbd {
   min-height: 0;
 }
 
+.discover-skill__header {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.discover-skill__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.discover-skill__eyebrow {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.discover-skill__meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.discover-skill__actions {
+  flex: 0 0 auto;
+}
+
 /* Warnings page. */
 .discover-warning-list {
   list-style: none;
@@ -1991,13 +2023,6 @@ a.code-chip--link:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.discover-context__path {
-  color: var(--muted-foreground);
-  margin-left: auto;
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
 .discover-context__responsibility {
   color: var(--muted-foreground);
   font-size: 12px;
@@ -2024,6 +2049,72 @@ a.code-chip--link:focus-visible {
 
 .discover-context__entries .discover-chips {
   margin: 0;
+}
+
+.discover-gates {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.discover-gate {
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+}
+
+.discover-gate:last-child {
+  border-bottom: 0;
+}
+
+.discover-gate__head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.discover-gate__name {
+  font-weight: 600;
+}
+
+.discover-gate__description {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.discover-dependencies {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.discover-dependencies__head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mermaid-diagram {
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.mermaid-diagram svg {
+  height: auto;
+  max-width: 100%;
 }
 
 .discover-boundaries {
@@ -2704,14 +2795,38 @@ a.code-chip--link:focus-visible {
 
 .issues-activity {
   margin: 0;
-  padding: 10px 12px;
+  padding: 8px 10px;
   overflow: auto;
-  background: var(--surface-raised);
+  background: var(--terminal-background);
   border-top: 1px solid var(--border);
   font-size: 11.5px;
-  line-height: 1.5;
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.issues-activity__line[data-kind="command"] {
+  color: var(--accent);
+}
+
+.issues-activity__line[data-kind="blank"] {
+  line-height: 1;
+}
+
+.issues-poll,
+.issues-run-identity {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.issues-poll__item {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .issues-activity-panel {

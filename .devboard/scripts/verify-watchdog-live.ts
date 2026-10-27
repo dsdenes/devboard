@@ -124,6 +124,7 @@ try {
       GOAL_FILE: join(host.directory, "GOAL.md"),
       STATIC_DIR: join(harnessRoot, "dist"),
       STATE_DIR: stateDir,
+      DEVBOARD_UPDATE_INTERVAL_MS: "0",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });

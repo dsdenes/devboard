@@ -581,18 +581,22 @@ optional meta row, and a right-aligned action group. The Overview frame holds th
 `owner/name` from its GitHub remote (falling back to the directory name when no remote names one;
 the full path stays in the tooltip), the one-line definition, the discovery date, and the single
 filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
-report it. Below the frame, an active run region appears only while a run exists: a tinted header
-with a `Discover` eyebrow, `Run in progress`, the run identifier as a code chip, `Started 3 minutes
-ago`, and Stop, followed by the activity terminal and its ownership note. A queued question region
-follows while a question waits. The sheet
-follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and Testing in the
-main column on the right, and Bounded contexts below them. The manual-testing strip is the last
-region of the page, so a source checkout never pushes it above the project identity. An error,
-an interrupted-run notice, and a stop notice render above the page in one notice stack.
+report it. Directly below the frame, a source checkout renders the manual-testing target first, so
+the active target and its URL field lead the page; a dashboard that is not a source checkout omits
+it. An active run region then appears only while a run exists: a tinted header with a `Discover`
+eyebrow, `Run in progress`, the run identifier as a code chip, `Started 3 minutes ago`, and Stop,
+followed by the activity terminal and its ownership note. A queued question region follows while a
+question waits. The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left,
+Commands, Testing, Quality gates, and Bounded contexts in the main column on the right. Quality
+gates have their own card, one row per gate with what it checks and its invocation; a gate whose
+sheet predates the detail rows is listed by name. Bounded contexts carry a Mermaid dependency
+diagram of the recorded context edges, with arrows pointing from a context to what it imports, and
+the direction statement remains below it. An error, an interrupted-run notice, and a stop notice
+render above the page in one notice stack.
 
 The Glossary row is a plain section link: it has no disclosure control and no nested submenu, so
-individual terms are never repeated as sidebar menu items. A term opens from its row on the
-Glossary page.
+individual terms are never repeated as sidebar menu items. A glossary row is read-only; it has no
+activation target and no single-term page.
 
 With no published artifacts the Overview page shows an empty state (`data-testid="discover-empty"`)
 and a `Discover project` button (`data-testid="discover-start"`); with artifacts it shows
@@ -679,8 +683,9 @@ sheet covers the short platform stack (languages, runtimes, package managers, fr
 major tools, not individual dependencies), customer-facing deployment (artifact class, artifact,
 target, and pipeline sources), every environment (at least `production`, whose purpose states how
 changes reach it), exact main commands (with `unknown` for an unobserved command), branching
-strategy and model, test levels and pyramid, architecture boundaries, CI provider, triggers, jobs,
-and quality gates, and the three mandatory sections: runtime inventory, entry-point and
+strategy and model, test levels and pyramid, architecture boundaries (including each context's
+`dependsOn` edges), CI provider, triggers, jobs, quality gates, and per-gate detail rows
+(`qualityGateDetails`: name, one-sentence description, and invocation), and the three mandatory sections: runtime inventory, entry-point and
 dependency map, and delivery and versioning. It never guesses, invents an additional environment,
 copies README prose, or records a configuration value; a claim it cannot ground is `unknown`.
 
@@ -815,11 +820,12 @@ every implementation agent in that host discovers the set with no extra configur
 
 Each skill has a page that is one full-height Monaco Markdown editor for the whole `SKILL.md`
 (`data-testid="discover-skill-text"`), with no rendered preview and no split pane. The page header
-holds only the skill's page title; the editor panel is titled with the skill's relative path,
-`<skill>/SKILL.md`. The panel header also holds `discover-skill-save` and, while the live text
-differs from the generated version or the file is missing, `discover-skill-restore`. A
-`discover-skill-dirty` marker appears while the draft has unsaved changes; the page renders no
-state badge and no purpose line, because the sidebar already flags `edited` or `missing`.
+holds only the skill's page title. The editor panel header is the file identity: a `Skill file`
+overline, the `SKILL.md` title, the skill directory as a code chip, and one state badge
+(`Generated`, `Edited`, `Missing`, or `Unsaved changes`). It holds `discover-skill-save`, disabled
+until the draft differs, and, while the live text differs from the generated version or the file
+is missing, `discover-skill-restore`. A dirty draft swaps the state badge for
+`discover-skill-dirty`.
 `saveDiscoverSkill` writes the submitted bytes verbatim and updates the manifest's current hash and
 edited state; it is refused with one
 `discoverError` when the name is not one of the five, the skill is missing, the frontmatter name
@@ -1002,7 +1008,8 @@ dashboard serving the canonical source checkout reports `0.1.<commit-count>` on 
 version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder. A
 failed check, checksum, authentication, or npm install leaves the previous package and server
 intact, writes `update-error` to the journal, and is retried with exponential backoff
-(`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it).
+(`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it). `DEVBOARD_UPDATE_INTERVAL_MS=0` disables the release
+check entirely: no check runs, nothing is installed, and no `update-error` is journaled.
 
 |Variable|Default|Purpose|
 |---|---|---|
@@ -1014,7 +1021,7 @@ intact, writes `update-error` to the journal, and is retried with exponential ba
 |`STATIC_DIR`|`dist`|Built client directory.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
 |`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`.|
-|`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
+|`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval; `0` disables it.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
 |`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads GitHub Releases through `gh`.|
 
@@ -1283,6 +1290,14 @@ none is enabled, and Stop closes every peer, records every active run as `stoppe
 lock, leaves captured issues unhandled, and never records a cooldown. There is no pause, resume,
 or check-now control, and none of them exists on the wire.
 
+The overview header is one title, `Issue automation`, over the repository name; it repeats neither
+the mode name nor the worker state, because the activity rail and status bar own those. The
+Automation panel carries the single Start/Stop control and a labeled poll line (`every 2s`,
+`last 3s ago`, `next in 2s`), with the exact ISO values in each item's tooltip. Goal agents render
+one card each with their issue, run id, live activity, and question. Agent activity names the
+active run as a code chip and its start age, then renders the log on the terminal surface with
+command lines in the accent color; it still fills the page body and follows the newest line.
+
 State, ledger, runs, and activity live under `<STATE_DIR>/issues/<journalKey(REPO_DIR)>/`:
 `state.json` is atomic and carries the worker record, lifecycle, poll state, the queue with each
 issue's labels, run summaries, the implement-all active run, the concurrent goal `agents` (run id,
@@ -1475,12 +1490,16 @@ with `## Removal request` and the instruction `Remove the selected UI element fr
 interface.`. A redesign body starts with `## Redesign request` and the instruction `Check the
 selected UI element and redesign it because it does not look good. Use the global OMP UI/UX
 standard (the ui-ux skill) and this repository's DESIGN.md and design/tokens.json as the normative
-design system.` Both bodies end with the same `## Captured UI context` block: route, URL, selected
-element, viewport, capture time, visible text, and DOM excerpt.
+design system.` When the panel has an ask conversation, the body carries a `## Conversation`
+section before the captured context: one labeled block per turn, `**Developer:**` or `**Agent:**`.
+The optional `conversation` field is bounded to 20 turns of 4000 characters each, and either role
+is refused otherwise. Both bodies end with the same `## Captured UI context` block: route, URL,
+selected element, viewport, capture time, visible text, and DOM excerpt. The goal draft carries
+the same conversation section before its captured context.
 
 The report title is `[ui] ` plus the first line of the report, at most 200 characters; its body is
-the verbatim report followed by the same captured context, so the ticket stays authoritative
-without a model in the loop.
+the verbatim report, the ask conversation, and the same captured context, so the ticket stays
+authoritative without a model in the loop.
 
 Every request carries an `action` of `report`, `remove`, or `redesign`; an absent `action` means
 `report`, the only action that requires report text, and any other value is refused with HTTP 400

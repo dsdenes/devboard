@@ -21,6 +21,7 @@
   import { discover } from "../discover.svelte";
   import type { Leaf } from "../types";
   import DataTable from "./DataTable.svelte";
+  import MermaidDiagram from "./MermaidDiagram.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
@@ -50,6 +51,7 @@
     path: string;
     responsibility: string;
     entryPoints: string[];
+    dependsOn: string[];
   }
 
   interface BoundaryRow {
@@ -130,6 +132,28 @@
     visibleSection(sheet?.deployment, HIDDEN_LEAVES.deployment ?? []),
   );
   const ciSection = $derived(visibleSection(sheet?.ci, []));
+  // The quality gates have their own card; the Delivery facts keep the rest.
+  const deliveryCiSection = $derived(
+    visibleSection(sheet?.ci, ["qualityGates", "qualityGateDetails"]),
+  );
+  const qualityGatesLeaf = $derived(sectionLeaf(ciSection, "qualityGates"));
+  const qualityGateDetailsLeaf = $derived(sectionLeaf(ciSection, "qualityGateDetails"));
+  const gateRows = $derived.by(() => {
+    const details = recordItems(qualityGateDetailsLeaf)
+      .map((record) => ({
+        name: scalarText(record.name).trim(),
+        description: scalarText(record.description).trim(),
+        command: scalarText(record.command).trim(),
+      }))
+      .filter((gate) => gate.name.length > 0);
+    if (details.length > 0) return details;
+    // A sheet published before gate details existed still lists its gates.
+    return (qualityGatesLeaf?.confidence === "unknown"
+      ? []
+      : leafLines(qualityGatesLeaf?.value))
+      .map((name) => ({ name, description: "", command: "" }))
+      .filter((gate) => gate.name.length > 0);
+  });
   const branchingSection = $derived(visibleSection(sheet?.branching, []));
   const hasDelivery =
     $derived(
@@ -152,15 +176,39 @@
         const entryPoints = Array.isArray(record.entryPoints)
           ? record.entryPoints.map((entry) => scalarText(entry).trim()).filter(Boolean)
           : [];
+        const dependsOn = Array.isArray(record.dependsOn)
+          ? record.dependsOn.map((entry) => scalarText(entry).trim()).filter(Boolean)
+          : [];
         return {
           name: scalarText(record.name).trim(),
           path,
           responsibility: scalarText(record.responsibility).trim(),
           entryPoints: [...new Set(entryPoints)].filter((entry) => entry !== path),
+          dependsOn: [...new Set(dependsOn)],
         };
       })
       .filter((row) => row.name.length > 0 || row.path.length > 0),
   );
+  const dependencyCode = $derived.by(() => {
+    const names = new Set(contextRows.map((context) => context.name));
+    const edges = contextRows.flatMap((context) =>
+      context.dependsOn
+        .filter((target) => names.has(target) && target !== context.name)
+        .map((target) => ({ from: context.name, to: target })),
+    );
+    if (edges.length === 0) return "";
+    const nodes = new Map<string, string>();
+    contextRows.forEach((context, index) => nodes.set(context.name, `ctx${index}`));
+    const safe = (name: string) => name.replace(/["<>{}`]/g, "").trim();
+    const lines = ["flowchart LR"];
+    for (const [name, id] of nodes) {
+      lines.push(`  ${id}["${safe(name)}"]`);
+    }
+    for (const edge of edges) {
+      lines.push(`  ${nodes.get(edge.from)} --> ${nodes.get(edge.to)}`);
+    }
+    return lines.join("\n");
+  });
   const boundaryRows: BoundaryRow[] = $derived.by(() => {
     const rows: BoundaryRow[] = [];
     for (const group of BOUNDARY_GROUPS) {
@@ -427,7 +475,7 @@
         {#if Object.keys(ciSection).length > 0}
           <div class="discover-subblock">
             <h3 class="discover-subblock__title">CI</h3>
-            {@render factList(ciSection)}
+            {@render factList(deliveryCiSection)}
           </div>
         {/if}
         {#if Object.keys(branchingSection).length > 0}
@@ -488,6 +536,8 @@
       </div>
     {/if}
   </header>
+
+  {@render remotePanel()}
 
   {#if discover.active}
     <section class="panel discover-run" data-testid="discover-active">
@@ -709,6 +759,42 @@
           </section>
         {/if}
 
+        {#if gateRows.length > 0}
+          <section
+            class="panel discover-card"
+            data-testid="discover-card"
+            data-field="quality-gates"
+          >
+            <div class="panel__header">
+              <h2 class="panel__title">Quality gates</h2>
+              <span class="panel__subtitle">
+                {gateRows.length} required
+              </span>
+            </div>
+            <div class="panel__body panel__body--flush">
+              <ul class="discover-gates" data-testid="discover-quality-gates">
+                {#each gateRows as gate (gate.name)}
+                  <li
+                    class="discover-gate"
+                    data-testid="discover-quality-gate"
+                    data-name={gate.name}
+                  >
+                    <div class="discover-gate__head">
+                      <span class="discover-gate__name">{gate.name}</span>
+                      {#if gate.command.length > 0}
+                        <code class="code-chip">$ {gate.command}</code>
+                      {/if}
+                    </div>
+                    <p class="discover-gate__description">
+                      {gate.description || "No description recorded."}
+                    </p>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          </section>
+        {/if}
+
         {#if architectureSection !== undefined && typeof architectureSection === "object" && architectureSection !== null}
           <section class="panel discover-card" data-testid="discover-card" data-field="architecture">
             <div class="panel__header">
@@ -721,9 +807,6 @@
                     <li class="discover-context" data-context={context.name}>
                       <div class="discover-context__head">
                         <span class="discover-context__name">{context.name}</span>
-                        {#if context.path.length > 0}
-                          <code class="code-chip discover-context__path">{context.path}</code>
-                        {/if}
                       </div>
                       {#if context.responsibility.length > 0}
                         <p class="discover-context__responsibility">{context.responsibility}</p>
@@ -741,6 +824,19 @@
                 <p class="empty">{unknownText(contextsLeaf)}</p>
               {:else}
                 <p class="empty">No bounded context was detected.</p>
+              {/if}
+
+              {#if dependencyCode.length > 0}
+                <div class="discover-dependencies" data-testid="discover-dependencies">
+                  <div class="discover-dependencies__head">
+                    <span class="discover-context__label">Dependencies</span>
+                    <span class="muted">Arrows point from a context to what it imports.</span>
+                  </div>
+                  <MermaidDiagram
+                    code={dependencyCode}
+                    label="Bounded-context dependency diagram"
+                  />
+                </div>
               {/if}
 
               {#if boundaryRows.length > 0}
@@ -802,6 +898,4 @@
       </div>
     </section>
   {/if}
-
-  {@render remotePanel()}
 </div>

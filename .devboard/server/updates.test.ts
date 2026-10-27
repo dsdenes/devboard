@@ -87,6 +87,33 @@ describe("updateRetryDelay", () => {
 });
 
 describe("startUpdater", () => {
+  test("an explicit zero interval disables the release check", async () => {
+    const prefix = await installedPrefix("0.1.0");
+    const { journal, records } = journalRecorder();
+    let checks = 0;
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: "0.1.0",
+      journal,
+      env: { DEVBOARD_UPDATE_INTERVAL_MS: "0" },
+      startImmediately: false,
+      fetchRelease: async () => {
+        checks += 1;
+        return release("0.1.1");
+      },
+    });
+    try {
+      expect(await updater.checkNow()).toBe("stopped");
+      expect(checks).toBe(0);
+      expect(records).toEqual([]);
+      expect(updater.latest()).toBeNull();
+    } finally {
+      updater.stop();
+    }
+  });
+
   test("checks immediately, records an install, and reports the latest release", async () => {
     const prefix = await installedPrefix("0.1.0");
     const { journal, records } = journalRecorder();

@@ -147,7 +147,7 @@ Sections and required keys:
     "pyramid": { "value": "short pyramid description", "evidence": ["path"], "confidence": "inferred" }
   },
   "architecture": {
-    "contexts": { "value": [{ "name": "context name", "path": "repo-relative path", "responsibility": "short responsibility", "entryPoints": ["repo-relative path"] }], "evidence": ["path"], "confidence": "observed" },
+    "contexts": { "value": [{ "name": "context name", "path": "repo-relative path", "responsibility": "short responsibility", "entryPoints": ["repo-relative path"], "dependsOn": ["staged context name"] }], "evidence": ["path"], "confidence": "observed" },
     "dependencyDirection": { "value": "short direction statement", "evidence": ["path"], "confidence": "inferred" },
     "externalBoundaries": { "value": ["external system"], "evidence": ["path"], "confidence": "observed" },
     "sharedKernels": { "value": ["kernel and path"], "evidence": ["path"], "confidence": "observed" }
@@ -157,6 +157,7 @@ Sections and required keys:
     "triggers": { "value": ["trigger"], "evidence": ["path"], "confidence": "observed" },
     "jobs": { "value": ["job name"], "evidence": ["path"], "confidence": "observed" },
     "qualityGates": { "value": ["required gate"], "evidence": ["path"], "confidence": "declared" },
+    "qualityGateDetails": { "value": [{ "name": "required gate", "description": "what the gate checks, one sentence", "command": "exact invocation" }], "evidence": ["path"], "confidence": "declared" },
     "artifacts": { "value": ["artifact"], "evidence": ["path"], "confidence": "observed" }
   },
   "runtime": {
@@ -235,9 +236,13 @@ Section rules:
   separate entry point, it is the whole-suite invocation.
 - `architecture` reports detected bounded contexts or modules with path and responsibility, entry
   points, allowed dependency direction, shared kernels, and `externalBoundaries`, which carries
-  external systems only and never internal architecture. `ci` reports provider, triggers, jobs,
-  required quality gates, and artifacts; with no CI configuration use `none detected`, never
-  invented jobs.
+  external systems only and never internal architecture. Each context's `dependsOn` names the
+  other staged contexts it imports or calls, never itself and never a name it did not stage; the
+  interface draws those edges. `ci` reports provider, triggers, jobs, required quality gates, and
+  artifacts; with no CI configuration use `none detected`, never invented jobs. `qualityGateDetails`
+  carries one row per required gate with a one-sentence description of what it checks and its exact
+  invocation, read from the gate's own configuration; a gate with no separate command records an
+  empty `command`.
 - `runtime`, `dependencyMap`, and `delivery` are mandatory cards. Report languages, runtimes,
   package managers, versions, and manifests; binaries, packages, routes, jobs, external services,
   data stores, and key dependencies; artifact target, release channels, version scheme, and

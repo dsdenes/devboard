@@ -74,8 +74,15 @@ try {
   servers.push(server);
   await waitForInstalledVersion(prefix, NEW);
   assertTrue(processRunning(server.pid), "the server survives its own install");
-  const updateRecords = readJournal(prefix, host).filter((record) => record.kind === "update");
-  assertTrue(updateRecords.length > 0, "the update is written to the host journal");
+  // The package version changes inside the install; the journal record lands
+  // right after it, so wait for both instead of racing the write.
+  const updateRecords = await waitFor(
+    () => {
+      const records = readJournal(prefix, host).filter((record) => record.kind === "update");
+      return records.length > 0 ? records : undefined;
+    },
+    "the update journal record",
+  );
   const auto = await readVersion(server.port);
   assertEquals(
     [auto.running, auto.installed, auto.latest, auto.stale],

@@ -1009,12 +1009,17 @@ export function normalizeSheet(raw: unknown, freshness: Freshness): Sheet {
           node,
           path,
           (entry, entryPath) =>
-            recordFields(entry, entryPath, {
-              name: textValue,
-              path: textValue,
-              responsibility: textValue,
-              entryPoints: recordTexts,
-            }),
+            recordFields(
+              entry,
+              entryPath,
+              {
+                name: textValue,
+                path: textValue,
+                responsibility: textValue,
+                entryPoints: recordTexts,
+              },
+              { dependsOn: recordTexts },
+            ),
           (entry) => String((entry as { name: string }).name),
         ),
       dependencyDirection: leafText,
@@ -1026,6 +1031,19 @@ export function normalizeSheet(raw: unknown, freshness: Freshness): Sheet {
       triggers: leafTexts,
       jobs: leafTexts,
       qualityGates: leafTexts,
+      qualityGateDetails: (node, path) =>
+        leafRecords(
+          node,
+          path,
+          (entry, entryPath) =>
+            recordFields(
+              entry,
+              entryPath,
+              { name: textValue, description: textValue },
+              { command: textValue },
+            ),
+          (entry) => String((entry as { name: string }).name),
+        ),
       artifacts: leafTexts,
     }),
     runtime: validateSectionRecord(raw, "runtime", {

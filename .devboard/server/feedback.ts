@@ -15,6 +15,8 @@
 export const FEEDBACK_REPOSITORY = "dsdenes/devboard";
 
 const MAX_REPORT = 8000;
+const MAX_CONVERSATION_TURNS = 20;
+const MAX_CONVERSATION_TURN = 4000;
 const MAX_CONTEXT_FIELD = 2000;
 const MAX_DOM_EXCERPT = 8000;
 const MAX_VISIBLE_TEXT = 8000;
@@ -43,9 +45,16 @@ export const REDESIGN_INSTRUCTION =
 
 const ACTION_ERROR = "action must be one of report, remove, redesign.";
 
+/** One turn of the operator's ask conversation about the picked element. */
+export interface FeedbackTurn {
+  role: "developer" | "agent";
+  text: string;
+}
+
 export interface FeedbackSubmission {
   action: FeedbackAction;
   report: string;
+  conversation: FeedbackTurn[];
   route: string;
   url: string;
   selector: string;
@@ -163,6 +172,38 @@ export function parseReportText(value: unknown): string {
   return field(value, "report", MAX_REPORT, true);
 }
 
+/**
+ * Validates the ask conversation a report may carry. It is optional, so an
+ * older client or a one-click shortcut files exactly as before; a turn is
+ * bounded so one report cannot become an unbounded transcript.
+ */
+export function parseConversation(value: unknown): FeedbackTurn[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new FeedbackRequestError(400, "conversation must be a list.");
+  }
+  if (value.length > MAX_CONVERSATION_TURNS) {
+    throw new FeedbackRequestError(
+      400,
+      `conversation has more than ${MAX_CONVERSATION_TURNS} turns.`,
+    );
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new FeedbackRequestError(400, `conversation[${index}] must be an object.`);
+    }
+    const turn = entry as Record<string, unknown>;
+    if (turn.role !== "developer" && turn.role !== "agent") {
+      throw new FeedbackRequestError(
+        400,
+        `conversation[${index}].role must be developer or agent.`,
+      );
+    }
+    const text = field(turn.text, `conversation[${index}].text`, MAX_CONVERSATION_TURN, true);
+    return { role: turn.role, text };
+  });
+}
+
 /** Validates one JSON body. Unknown fields are ignored for forwards compatibility. */
 export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -175,6 +216,7 @@ export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
     // The one-click shortcuts use a fixed instruction, so any text the client
     // still sends is ignored rather than validated or filed.
     report: action === "report" ? parseReportText(source.report) : "",
+    conversation: parseConversation(source.conversation),
     ...parseCapturedFields(source),
   };
 }
@@ -248,6 +290,14 @@ export function feedbackBody(submission: FeedbackSubmission): string {
   if (dom.length > 0) {
     const fence = dom.includes("```") ? "````" : "```";
     context.push("", "### DOM excerpt", "", `${fence}html`, dom, fence);
+  }
+
+  if (submission.conversation.length > 0) {
+    lines.push("## Conversation", "");
+    for (const turn of submission.conversation) {
+      const who = turn.role === "developer" ? "Developer" : "Agent";
+      lines.push(`**${who}:**`, "", ...turn.text.trim().split("\n"), "");
+    }
   }
 
   lines.push("## Captured UI context", "");

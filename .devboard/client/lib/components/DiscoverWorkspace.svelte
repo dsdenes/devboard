@@ -258,16 +258,41 @@
 
       <div class="discover-skill" data-testid="discover-skill" data-name={activeSkill}>
         <div class="panel discover-skill__panel">
-          <div class="panel__header">
-            <h2 class="panel__title mono">{activeSkill}/SKILL.md</h2>
-            <div class="row-sm">
-              {#if discover.skillDirty(activeSkill)}
-                <span class="muted" data-testid="discover-skill-dirty">Unsaved changes</span>
-              {/if}
+          <div class="panel__header discover-skill__header">
+            <div class="discover-skill__identity">
+              <span class="discover-skill__eyebrow">Skill file</span>
+              <h2 class="panel__title">SKILL.md</h2>
+              <div class="discover-skill__meta">
+                <code class="code-chip">{activeSkill}</code>
+                <span
+                  class="badge"
+                  data-tone={discover.skillDirty(activeSkill)
+                    ? "warning"
+                    : skillState === "missing"
+                      ? "error"
+                      : skillState === "edited"
+                        ? "warning"
+                        : "success"}
+                  data-testid={discover.skillDirty(activeSkill)
+                    ? "discover-skill-dirty"
+                    : "discover-skill-state"}
+                >
+                  {discover.skillDirty(activeSkill)
+                    ? "Unsaved changes"
+                    : skillState === "missing"
+                      ? "Missing"
+                      : skillState === "edited"
+                        ? "Edited"
+                        : "Generated"}
+                </span>
+              </div>
+            </div>
+            <div class="row-sm discover-skill__actions">
               <Button
                 variant="default"
                 data-command={`discover.skill.save.${activeSkill}`}
                 data-testid="discover-skill-save"
+                disabled={!discover.skillDirty(activeSkill)}
                 onclick={() => discover.saveSkill(activeSkill)}
               >
                 Save

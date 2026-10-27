@@ -219,6 +219,22 @@
           "description": "Value for data-testid on the track root."
         }
       }
+    },
+    "MermaidDiagram": {
+      "description": "A Mermaid flowchart rendered from published data, used for the Discover bounded-context dependency map. It renders no user HTML: labels are escaped, Mermaid runs with securityLevel=strict, and the diagram re-renders on the dark/light theme. A failed or empty render shows a text fallback. Source: .devboard/client/lib/components/MermaidDiagram.svelte.",
+      "example": "<script>\n  import MermaidDiagram from \"./lib/components/MermaidDiagram.svelte\";\n</script>\n\n<MermaidDiagram\n  code={\"flowchart LR\\n  ctx0[\\\"Cli\\\"]\\n  ctx1[\\\"Orders\\\"]\\n  ctx0 --> ctx1\"}\n  label=\"Bounded-context dependency diagram\"\n/>",
+      "props": {
+        "code": {
+          "type": "string",
+          "description": "Mermaid flowchart source. An empty string renders the loading/empty state.",
+          "required": true
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name for the role=img diagram frame.",
+          "required": true
+        }
+      }
     }
   }
 }

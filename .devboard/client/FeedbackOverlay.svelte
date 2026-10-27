@@ -215,6 +215,11 @@
     return `${collapsed.slice(0, limit - 1)}…`;
   }
 
+  /** The ask conversation, so a filed issue or draft keeps its context. */
+  function capturedConversation(): Array<{ role: "developer" | "agent"; text: string }> {
+    return transcript.map((turn) => ({ role: turn.role, text: turn.text }));
+  }
+
   /** The captured context every filing carries. */
   function captured(element: Element): Record<string, string> {
     return {
@@ -487,7 +492,7 @@
   }
 
   /** Posts one submission and returns the filed issue URL, or the error text. */
-  async function post(payload: Record<string, string>): Promise<
+  async function post(payload: Record<string, unknown>): Promise<
     { ok: true; url: string } | { ok: false; error: string }
   > {
     try {
@@ -536,7 +541,7 @@
 
   /** Writes one proposed-goal draft and returns the draft path, or the error. */
   async function postGoal(
-    payload: Record<string, string>,
+    payload: Record<string, unknown>,
   ): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
     try {
       const response = await fetch("/api/goal-proposals", {
@@ -578,7 +583,11 @@
     goalPending = true;
     errorMessage = null;
     dismissToast();
-    const response = await postGoal({ report, ...captured(element) });
+    const response = await postGoal({
+      report,
+      conversation: capturedConversation(),
+      ...captured(element),
+    });
     goalPending = false;
     if (!response.ok) {
       errorMessage = response.error;
@@ -598,7 +607,12 @@
     dismissToast();
     phase = "sending";
     errorMessage = null;
-    const response = await post({ action: "report", report, ...captured(element) });
+    const response = await post({
+      action: "report",
+      report,
+      conversation: capturedConversation(),
+      ...captured(element),
+    });
     if (!response.ok) {
       errorMessage = response.error;
       phase = "failed";

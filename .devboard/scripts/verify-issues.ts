@@ -162,7 +162,7 @@ async function startDashboard(
       ISSUES_STUB_ACP_LOG: paths.acpLog,
       ISSUES_STUB_ACP_FINISH: paths.finish,
       ISSUES_STUB_SYSTEMD_MARKER: marker,
-      DEVBOARD_UPDATE_INTERVAL_MS: "600000",
+      DEVBOARD_UPDATE_INTERVAL_MS: "0",
     },
     stdio: ["ignore", "ignore", "ignore"],
   });

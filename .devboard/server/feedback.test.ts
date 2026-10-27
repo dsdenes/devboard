@@ -119,6 +119,51 @@ describe("feedback endpoint", () => {
     }
   });
 
+  test("files the ask conversation as part of the issue", async () => {
+    const { server, url, recordPath } = await startServer();
+
+    try {
+      const response = await submit(
+        url,
+        report({
+          conversation: [
+            { role: "developer", text: "What does this button do?" },
+            { role: "agent", text: "It starts the run." },
+          ],
+        }),
+      );
+
+      expect(response.status).toBe(201);
+      const call = await recorded(recordPath);
+      expect(call.args.join(" ")).not.toContain("What does this button do?");
+      expect(call.body).toContain("## Conversation");
+      expect(call.body).toContain("**Developer:**\n\nWhat does this button do?");
+      expect(call.body).toContain("**Agent:**\n\nIt starts the run.");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a malformed ask conversation before running gh", async () => {
+    const { server, url, recordPath } = await startServer();
+
+    try {
+      const badRole = await submit(
+        url,
+        report({ conversation: [{ role: "system", text: "nope" }] }),
+      );
+      expect(badRole.status).toBe(400);
+      const emptyTurn = await submit(
+        url,
+        report({ conversation: [{ role: "agent", text: "   " }] }),
+      );
+      expect(emptyTurn.status).toBe(400);
+      expect(existsSync(recordPath)).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("always files the issue in the harness repository", async () => {
     const { server, url, recordPath } = await startServer();
 

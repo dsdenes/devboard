@@ -701,7 +701,7 @@ async function seedIssuesState(
   const runId = "2026-10-27T10-00-00-000Z";
   await writeFile(
     join(directory, "runs", runId, "activity.json"),
-    JSON.stringify(["Reading the open issues", "Implementing issue 17"]),
+    JSON.stringify(["$ gh issue list", "Reading the open issues", "Implementing issue 17"]),
   );
   await writeFile(
     join(directory, "runs", runId, "run.json"),
@@ -918,7 +918,7 @@ async function seedRemoteClone(root: string, stateDir: string): Promise<string> 
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: join(root, "remote-seed-state"),
     AGENT_COMMAND: `bun ${stubAgent} --log=${join(root, "remote-seed-agent.log")} --discover`,
-    DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
+    DEVBOARD_UPDATE_INTERVAL_MS: "0",
     GIT_TERMINAL_PROMPT: "0",
     GIT_ASKPASS: "true",
   };
@@ -1050,7 +1050,7 @@ try {
     DEVBOARD_FEEDBACK_STUB: "stub",
     DEVBOARD_FEEDBACK_RECORD_DIR: join(root, "feedback"),
     DEVBOARD_FEEDBACK_MODE_FILE: join(root, "feedback-mode"),
-    DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
+    DEVBOARD_UPDATE_INTERVAL_MS: "0",
     GIT_TERMINAL_PROMPT: "0",
     GIT_ASKPASS: "true",
   };
@@ -2277,6 +2277,7 @@ try {
     commandChips: number;
     suiteChip: boolean;
     contextPathChip: boolean;
+    contextPathChips: number;
     sectionsHeading: number;
     sectionTabs: number;
     skillTabs: number;
@@ -2334,6 +2335,7 @@ try {
       commandChips: document.querySelectorAll('[data-testid="discover-command-list"] code.code-chip').length,
       suiteChip: document.querySelector('[data-testid="discover-suite-command"] code.code-chip') !== null,
       contextPathChip: document.querySelector('#workspace-discover [data-field="architecture"] code.code-chip') !== null,
+      contextPathChips: document.querySelectorAll('#workspace-discover .discover-context__path').length,
       sectionsHeading: sections === null ? -1 : sections.querySelectorAll('.sidebar-group__title').length,
       sectionTabs: sections === null ? -1 : sections.querySelectorAll('[data-testid="discover-tab"]').length,
       skillTabs: skills === null ? -1 : skills.querySelectorAll('[data-testid="discover-tab"]').length,
@@ -2365,6 +2367,66 @@ try {
   check(discoverTables.commandHeaders === 0, "the command table still renders a header row", discoverTables.commandHeaders);
   check(discoverTables.contextHeader === "", "the bounded-context card still renders a table header", discoverTables.contextHeader);
   check(discoverTables.contextRows > 0, "the bounded-context list is empty", discoverTables);
+  check(discoverTables.contextPathChips === 0, "a bounded context still repeats its path chip", discoverTables);
+  await page.wait(
+    `document.querySelector('[data-testid="mermaid-diagram"] svg') !== null`,
+    "the rendered context dependency diagram",
+    15_000,
+  );
+  const dependencyMap = await page.eval<{
+    present: boolean;
+    nodes: string[];
+    edges: number;
+    caption: string;
+  }>(`(() => {
+    const block = document.querySelector('[data-testid="discover-dependencies"]');
+    const svg = block?.querySelector('[data-testid="mermaid-diagram"] svg');
+    return {
+      present: block !== null && svg !== null,
+      nodes: [...(svg?.querySelectorAll("g.node") ?? [])].map((node) => node.textContent?.trim() ?? ""),
+      edges: svg?.querySelectorAll("path.flowchart-link").length ?? 0,
+      caption: block?.querySelector(".discover-dependencies__head .muted")?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    dependencyMap.present &&
+      dependencyMap.nodes.includes("Orders") &&
+      dependencyMap.nodes.includes("Cli") &&
+      dependencyMap.edges >= 1 &&
+      dependencyMap.caption.includes("Arrows point from a context"),
+    "the bounded-context dependency diagram is missing its nodes or edge",
+    dependencyMap,
+  );
+  const gateCard = await page.eval<{
+    present: boolean;
+    count: number;
+    name: string;
+    description: string;
+    command: string;
+    deliveryFact: boolean;
+  }>(`(() => {
+    const card = document.querySelector('[data-testid="discover-quality-gates"]');
+    const gate = card?.querySelector('[data-testid="discover-quality-gate"]');
+    return {
+      present: card !== null,
+      count: card?.querySelectorAll('[data-testid="discover-quality-gate"]').length ?? 0,
+      name: gate?.querySelector(".discover-gate__name")?.textContent?.trim() ?? "",
+      description: gate?.querySelector(".discover-gate__description")?.textContent?.trim() ?? "",
+      command: gate?.querySelector("code.code-chip")?.textContent?.trim() ?? "",
+      deliveryFact: [...document.querySelectorAll('#workspace-discover [data-field="delivery"] dt')]
+        .some((term) => term.textContent?.trim() === "Quality gates"),
+    };
+  })()`);
+  check(
+    gateCard.present &&
+      gateCard.count === 1 &&
+      gateCard.name === "bun test" &&
+      gateCard.description.includes("Bun's test runner") &&
+      gateCard.command === "$ bun test" &&
+      !gateCard.deliveryFact,
+    "the quality gates card is missing or duplicated in Delivery",
+    gateCard,
+  );
   check(discoverTables.contextRoles.includes("Dependency direction"), "the boundary map does not label the dependency direction", discoverTables.contextRoles);
   check(discoverTables.externalBoundaries === "None detected.", "the External boundaries block does not render the observed empty list", discoverTables.externalBoundaries);
   check(!(discoverTables.externalBoundaries ?? "").includes("node:"), "the External boundaries block names a runtime built-in", discoverTables.externalBoundaries);
@@ -2818,6 +2880,24 @@ try {
 
   await runPalette("discover.tab.testing-strategy");
   await page.wait(`document.querySelector('[data-testid="discover-skill-text"] .monaco-editor') !== null`, "the Discover skill editor");
+  const skillHeader = await page.eval<{ state: string; tone: string; chip: string; saveDisabled: boolean }>(`(() => {
+    const state = document.querySelector('[data-testid="discover-skill-state"]');
+    const save = document.querySelector('[data-testid="discover-skill-save"]');
+    return {
+      state: state?.textContent?.trim() ?? "",
+      tone: state?.getAttribute("data-tone") ?? "",
+      chip: document.querySelector(".discover-skill__meta code.code-chip")?.textContent?.trim() ?? "",
+      saveDisabled: save?.disabled !== false,
+    };
+  })()`);
+  check(
+    skillHeader.state === "Generated" &&
+      skillHeader.tone === "success" &&
+      skillHeader.chip === "discover-testing-strategy" &&
+      skillHeader.saveDisabled,
+    "the skill header does not state the file, its state, and an idle Save",
+    skillHeader,
+  );
   const skillLabel = await page.eval<string>(`document.querySelector('[data-testid="discover-skill-text"] textarea')?.getAttribute("aria-label") ?? ""`);
   check(skillLabel.length > 0, "the skill editor has no accessible label", skillLabel);
   const originalSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
@@ -2898,37 +2978,43 @@ try {
   const skillLayout = await page.eval<{
     preview: boolean;
     split: number;
-    badge: boolean;
+    state: string;
+    tone: string;
+    chip: string;
     editor: number;
     panel: number;
     title: string;
     eyebrow: boolean;
     meta: boolean;
-    name: boolean;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
     const index = document.querySelector('#workspace-discover .discover-skill-page');
+    const state = document.querySelector('[data-testid="discover-skill-state"]');
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
-      badge: document.querySelector('[data-testid="discover-skill-state"]') !== null,
+      state: state?.textContent?.trim() ?? "",
+      tone: state?.getAttribute("data-tone") ?? "",
+      chip: document.querySelector(".discover-skill__meta code.code-chip")?.textContent?.trim() ?? "",
       editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
       panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
       title: panel?.querySelector('.panel__title')?.textContent?.trim() ?? "",
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
-      name: panel?.querySelector('.panel__header .muted') !== null,
     };
   })()`);
   check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
-  check(!skillLayout.badge, "the skill tab still renders a state badge");
   check(
-    skillLayout.title === "discover-testing-strategy/SKILL.md",
-    "the skill panel is not titled with the relative path",
-    skillLayout.title,
+    skillLayout.title === "SKILL.md" &&
+      skillLayout.state === "Generated" &&
+      skillLayout.tone === "success" &&
+      skillLayout.chip === "discover-testing-strategy" &&
+      skillLayout.meta,
+    "the skill panel does not name its file, identity, and state",
+    skillLayout,
   );
-  check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);
+  check(!skillLayout.eyebrow, "the skill page still renders its old page eyebrow", skillLayout);
   check(skillLayout.editor >= skillLayout.panel - 48, "the skill editor does not use the full pane", skillLayout);
 
   // The open surface survives mode switches; only one page exists per mode.
@@ -3066,6 +3152,22 @@ try {
   );
   check(remoteStrip.clear, "the clear control is missing for a remote target", remoteStrip);
   check(remoteStrip.sheet, "the clone's sheet does not render", remoteStrip);
+  const remoteOrder = await page.eval<{ head: number; target: number; sheet: number }>(`(() => {
+    const top = (selector) => {
+      const node = document.querySelector(selector);
+      return node === null ? -1 : Math.round(node.getBoundingClientRect().top);
+    };
+    return {
+      head: top("#workspace-discover .discover-head"),
+      target: top('[data-testid="discover-remote"]'),
+      sheet: top('[data-testid="discover-sheet"]'),
+    };
+  })()`);
+  check(
+    remoteOrder.head < remoteOrder.target && remoteOrder.target < remoteOrder.sheet,
+    "the manual testing target does not lead the Discover page",
+    remoteOrder,
+  );
   const remoteTitle = await page.eval<string>(
     `document.querySelector('#workspace-discover .discover-head__title')?.textContent?.trim() ?? ""`,
   );
@@ -4053,6 +4155,30 @@ try {
   const fitsRestored = await panelFits();
   check(fitsRestored.inside && fitsRestored.width === 380, "the ask panel leaves the restored viewport", fitsRestored);
 
+  // Filing after asking keeps the conversation on the issue.
+  const callsBeforeAskFiling = (await feedbackCalls()).length;
+  await page.click('.feedback-panel .feedback-actions button');
+  await waitForFeedbackCalls(callsBeforeAskFiling + 1);
+  const askFiling = (await feedbackCalls())[callsBeforeAskFiling]!;
+  const askFilingRequest = feedbackRequests[feedbackRequests.length - 1]!;
+  const filedConversation = Array.isArray(askFilingRequest.conversation)
+    ? (askFilingRequest.conversation as Array<{ role?: string; text?: string }>)
+    : [];
+  check(
+    filedConversation.map((turn) => turn.role).join(",") === "developer,agent,developer,agent" &&
+      filedConversation[0]?.text === "What does the StatusBar issues label mean?" &&
+      filedConversation[3]?.text?.includes("StatusBar.svelte"),
+    "the filed issue does not carry the ask conversation",
+    filedConversation,
+  );
+  check(
+    askFiling.body.includes("## Conversation") &&
+      askFiling.body.includes("**Developer:**") &&
+      askFiling.body.includes("**Agent:**"),
+    "the issue body drops the ask conversation",
+    askFiling.body,
+  );
+
   const askLog = await readFile(agentLog, "utf8");
   const askSpawns = askLog.split("\n").filter((line) => line.startsWith("ask-spawn ")).length;
   const askPrompts = askLog.split("\n").filter((line) => line.startsWith("ask-prompt ")).length;
@@ -4094,7 +4220,8 @@ try {
   const stoppedConsole = await page.eval<{
     visible: boolean;
     overview: boolean;
-    state: string;
+    eyebrow: boolean;
+    stateBadge: boolean;
     repo: string;
     toggle: string;
     toggleEnabled: boolean;
@@ -4105,7 +4232,8 @@ try {
     return {
       visible: workspace !== null && !workspace.hasAttribute("hidden"),
       overview: button("issues-overview") !== null,
-      state: button("issues-state")?.textContent?.trim() ?? "",
+      eyebrow: document.querySelector(".issues-overview__header > div > p.muted") !== null,
+      stateBadge: button("issues-state") !== null,
       repo: button("issues-repo")?.textContent?.trim() ?? "",
       toggle: button("issues-toggle")?.textContent?.trim() ?? "",
       toggleEnabled: button("issues-toggle")?.disabled === false,
@@ -4115,7 +4243,7 @@ try {
     };
   })()`);
   check(stoppedConsole.visible && stoppedConsole.overview, "the Issues pane or overview is missing", stoppedConsole);
-  check(stoppedConsole.state === "stopped", "the Issues mode does not open stopped", stoppedConsole);
+  check(!stoppedConsole.eyebrow && !stoppedConsole.stateBadge, "the Issues header still repeats its name or state", stoppedConsole);
   check(stoppedConsole.repo === "fixture/host", "the Issues overview does not name the repository", stoppedConsole);
   check(
     stoppedConsole.toggle === "Start" && stoppedConsole.toggleEnabled && stoppedConsole.controls === 0,
@@ -4129,13 +4257,12 @@ try {
     "the idle issues indicator",
     8_000,
   );
-  const idleControls = await page.eval<{ state: string; toggle: string; toggleEnabled: boolean }>(`(() => ({
-    state: document.querySelector('[data-testid="issues-state"]')?.textContent?.trim() ?? "",
+  const idleControls = await page.eval<{ toggle: string; toggleEnabled: boolean }>(`(() => ({
     toggle: document.querySelector('[data-testid="issues-toggle"]')?.textContent?.trim() ?? "",
     toggleEnabled: document.querySelector('[data-testid="issues-toggle"]')?.disabled === false,
   }))()`);
   check(
-    idleControls.state === "idle" && idleControls.toggle === "Stop" && idleControls.toggleEnabled,
+    idleControls.toggle === "Stop" && idleControls.toggleEnabled,
     "the idle state does not offer a single enabled Stop control",
     idleControls,
   );
@@ -4153,6 +4280,35 @@ try {
     `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Reading the open issues")`,
     "the replayed issues activity",
     8_000,
+  );
+  const runChrome = await page.eval<{ poll: string; run: string; runId: string }>(`(() => {
+    const poll = document.querySelector('[data-testid="issues-poll"]');
+    const identity = document.querySelector('[data-testid="issues-run-identity"]');
+    return {
+      poll: [...(poll?.querySelectorAll(".issues-poll__item") ?? [])]
+        .map((item) => item.textContent?.trim() ?? "")
+        .join(" "),
+      run: [
+        identity?.querySelector("code.code-chip")?.textContent?.trim() ?? "",
+        identity?.querySelector(".muted")?.textContent?.trim() ?? "",
+      ].filter((part) => part.length > 0).join(" "),
+      runId: identity?.querySelector("code.code-chip")?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    runChrome.poll.includes("every 2s") &&
+      runChrome.poll.includes("last ") &&
+      runChrome.poll.includes("next ") &&
+      !/\d{4}-\d{2}-\d{2}T/.test(runChrome.poll),
+    "the poll header still prints raw timestamps",
+    runChrome,
+  );
+  check(
+    runChrome.run.startsWith(runChrome.runId) &&
+      runChrome.runId === "2026-10-27T10-00-00-000Z" &&
+      runChrome.run.includes("started "),
+    "the activity header does not name the run and its age",
+    runChrome,
   );
   const question = await page.eval<{ message: string; options: number }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-question"]');
@@ -4247,6 +4403,7 @@ try {
   // A long run log fills the page below the header and stays pinned to its
   // newest line until the operator scrolls back through it.
   const longActivity = [
+    "$ gh issue list",
     "Reading the open issues",
     "Implementing issue 17",
     "Implementing issue 18",
@@ -4309,6 +4466,20 @@ try {
   );
   check(activitySurface.pinned, "the activity log does not follow its newest line", activitySurface);
   await saveShot("issues-activity-full-height");
+  const logChrome = await page.eval<{ role: string; name: string; commands: string[]; blank: number }>(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    return {
+      role: log?.getAttribute("role") ?? "",
+      name: log?.getAttribute("aria-label") ?? "",
+      commands: [...(log?.querySelectorAll('[data-kind="command"]') ?? [])].map((line) => line.textContent?.trim() ?? ""),
+      blank: log?.querySelectorAll('[data-kind="blank"]').length ?? 0,
+    };
+  })()`);
+  check(
+    logChrome.role === "log" && logChrome.name.length > 0 && logChrome.commands.includes("$ gh issue list"),
+    "the activity log does not mark commands or announce itself",
+    logChrome,
+  );
 
   await page.eval(`(() => {
     const log = document.querySelector('[data-testid="issues-activity"]');
@@ -4696,7 +4867,7 @@ try {
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the overview before the failed state");
   await seedIssuesState(stateDir, host, "failed");
   await page.wait(
-    `document.querySelector('[data-testid="issues-state"]')?.textContent?.trim() === "failed"`,
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues failed"`,
     "the failed issues state",
     8_000,
   );

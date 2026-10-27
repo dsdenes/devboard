@@ -1008,6 +1008,14 @@ function discoverSheet(): Record<string, unknown> {
                 path: "src",
                 responsibility: "Owns order records and order totals.",
                 entryPoints: ["src"],
+                dependsOn: [],
+              },
+              {
+                name: "Cli",
+                path: "src/cli",
+                responsibility: "Parses commands and prints order totals.",
+                entryPoints: ["src/cli"],
+                dependsOn: ["Orders"],
               },
             ],
             ["src"],
@@ -1045,6 +1053,20 @@ function discoverSheet(): Record<string, unknown> {
         paths.ci === undefined
           ? discoverLeaf([], evidence, "observed")
           : discoverLeaf(["bun test"], [paths.ci], "declared"),
+      qualityGateDetails:
+        paths.ci === undefined
+          ? discoverLeaf([], evidence, "observed")
+          : discoverLeaf(
+              [
+                {
+                  name: "bun test",
+                  description: "Runs every fixture test with Bun's test runner.",
+                  command: "bun test",
+                },
+              ],
+              [paths.ci],
+              "declared",
+            ),
       artifacts:
         paths.ci === undefined
           ? discoverLeaf([], evidence, "observed")
