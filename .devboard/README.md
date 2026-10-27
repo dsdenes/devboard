@@ -566,13 +566,14 @@ and starts, stops, resets, or clears nothing; all three views stay mounted, so n
 scroll state, and focus survive. Discover events render only in this view and never touch Goal
 Mode's activity, question, or error state.
 
-The Discover sidebar opens pages for `Overview` and `Glossary` without a group heading, and the five
-skills `Testing Strategy`, `Naming Conventions`, `Coding Conventions`,
-`Architecture & Boundaries`, and `Glossary` under **Skills** (`data-testid="discover-tab"` with
-`data-tab` values `overview`, `glossary`, `testing-strategy`, `naming-conventions`,
-`coding-conventions`, `architecture-boundaries`, and `glossary-skill`). The sidebar has no header,
-so its first entry is its mode's navigation. The active panel carries `data-testid="discover-panel"`
-and the same `data-tab`.
+The Discover sidebar opens pages for `Overview` and `Glossary` without a group heading. Once
+Discover artifacts are published it also lists the five skills `Testing Strategy`,
+`Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and `Glossary` under
+**Skills** (`data-testid="discover-tab"` with `data-tab` values `overview`, `glossary`,
+`testing-strategy`, `naming-conventions`, `coding-conventions`, `architecture-boundaries`, and
+`glossary-skill`); with no published artifacts the **Skills** group and its header do not render.
+The sidebar has no header, so its first entry is its mode's navigation. The active panel carries
+`data-testid="discover-panel"` and the same `data-tab`.
 Warnings appears as its own group with a count only while at least one warning exists; the sidebar
 keeps no freshness group and no recent-notice list.
 

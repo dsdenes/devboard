@@ -3328,6 +3328,7 @@ try {
     banner: document.querySelector('[data-testid="discover-remote-target"]') !== null,
     clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
     panel: document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null,
+    skills: document.querySelector('[data-testid="sidebar"] section[aria-label="Skills"]') !== null,
   })`);
   check(gateOff.panel, "the gate-off host has no Discover overview", gateOff);
   check(
@@ -3335,6 +3336,7 @@ try {
     "the gate-off host renders a remote control",
     gateOff,
   );
+  check(!gateOff.skills, "the host without Discover artifacts renders a Skills group", gateOff);
   gateOffProcess.kill("SIGTERM");
   gateOffProcess = undefined;
   await page.navigate(baseUrl);

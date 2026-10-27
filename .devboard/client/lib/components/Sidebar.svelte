@@ -562,6 +562,7 @@
         {/each}
       </section>
 
+      {#if discover.hasArtifacts}
       <section class="sidebar-group" aria-label="Skills">
         <div class="sidebar-group__title">
           <span>Skills</span>
@@ -590,6 +591,7 @@
           </button>
         {/each}
       </section>
+      {/if}
 
       {#if discover.displayedWarnings.length > 0}
         <section class="sidebar-group sidebar-group--separated" aria-label="Warnings">
