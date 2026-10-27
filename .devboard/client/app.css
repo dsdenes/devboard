@@ -3138,7 +3138,8 @@ a.code-chip--link:focus-visible {
 }
 
 .issues-agent-summary__empty {
-  padding: 10px 12px;
+  color: var(--muted-foreground);
+  padding: 12px 10px;
 }
 
 .issues-agent-row {
@@ -3147,7 +3148,8 @@ a.code-chip--link:focus-visible {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 6px 10px;
+  border-left: 2px solid transparent;
+  padding: 6px 10px 6px 8px;
   background: transparent;
   color: var(--foreground);
   font-size: 12px;
@@ -3155,13 +3157,24 @@ a.code-chip--link:focus-visible {
   cursor: pointer;
 }
 
-.issues-agent-row:hover,
-.issues-agent-row[aria-current="true"] {
-  background: var(--secondary);
+.issues-agent-row:hover {
+  background: var(--row-hover);
+}
+
+.issues-agent-row[aria-current="true"],
+.issues-agent-row[aria-current="true"]:hover {
+  background: var(--accent-surface);
+  border-left-color: var(--accent);
 }
 
 .issues-agent-row__issue {
   color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+}
+
+.issues-agent-row[aria-current="true"] .issues-agent-row__issue {
+  color: var(--accent);
 }
 
 .issues-agent-row__title {
@@ -3169,6 +3182,7 @@ a.code-chip--link:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.3;
 }
 
 .issues-agent-row__meta {
@@ -3181,6 +3195,43 @@ a.code-chip--link:focus-visible {
   color: var(--muted-foreground);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  min-width: 40px;
+  text-align: right;
+}
+
+.issues-agent-row__close {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  height: 24px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.issues-agent-summary__item:hover .issues-agent-row__close {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.issues-agent-row__close:hover:not(:disabled),
+.issues-agent-row__close:focus-visible {
+  background: var(--error-surface);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.issues-agent-row__close:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .issues-agent-output > .panel__body {

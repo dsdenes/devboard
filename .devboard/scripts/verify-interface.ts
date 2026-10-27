@@ -4322,6 +4322,7 @@ try {
     outputActivity: string;
     outputQuestion: string;
     selected: string;
+    asking: { text: string; tone: string };
     poll: { text: string; tone: string; title: string; dot: number };
   }>(`(() => {
     const side = document.querySelector('[data-testid="issues-overview-side"]');
@@ -4334,6 +4335,7 @@ try {
     const automationRect = automation?.getBoundingClientRect();
     const summaryRect = summary?.getBoundingClientRect();
     const poll = document.querySelector('[data-testid="issues-poll"]');
+    const asking = document.querySelector('[data-testid="issues-overview-asking"]');
     return {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
       summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
@@ -4350,6 +4352,10 @@ try {
       outputActivity: document.querySelector('[data-testid="issues-overview-activity"]')?.textContent ?? "",
       outputQuestion: document.querySelector('[data-testid="issues-overview-question"]')?.textContent ?? "",
       selected: selected?.getAttribute("data-run") ?? "",
+      asking: {
+        text: asking?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+        tone: asking?.getAttribute("data-tone") ?? "",
+      },
       poll: {
         text: poll?.querySelector(".issues-poll__label")?.textContent?.trim() ?? "",
         tone: poll?.getAttribute("data-tone") ?? "",
@@ -4362,6 +4368,11 @@ try {
     overview.cooldowns.includes("0 cooling") && overview.cooldowns.includes("none"),
     "the overview does not name the cooldown count and earliest time",
     overview,
+  );
+  check(
+    overview.asking.text === "3 need answers" && overview.asking.tone === "warning",
+    "the running-agent header does not count the blocked agents",
+    overview.asking,
   );
   check(
     overview.poll.tone === "active" &&

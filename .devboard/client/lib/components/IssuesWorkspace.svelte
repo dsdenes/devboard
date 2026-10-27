@@ -236,7 +236,16 @@
       <section class="panel">
         <div class="panel__header">
           <h2 class="panel__title">Running agents</h2>
-          <span class="panel__subtitle">{agents.length} active</span>
+          {#if asking > 0}
+            <span
+              class="badge"
+              data-tone="warning"
+              data-testid="issues-overview-asking"
+              title={`${asking} ${asking === 1 ? "agent needs" : "agents need"} an answer`}
+            >
+              {asking} {asking === 1 ? "needs answer" : "need answers"}
+            </span>
+          {/if}
         </div>
         <div class="panel__body panel__body--flush">
           <ol class="issues-agent-summary" data-testid="issues-agent-summary">
@@ -258,12 +267,17 @@
                     {#if agent.question !== null}
                       <span class="badge" data-tone="warning">needs answer</span>
                     {/if}
-                    <span class="issues-agent-row__elapsed mono">{elapsedShort(agent.startedAt)}</span>
+                    <span
+                      class="issues-agent-row__elapsed mono"
+                      title={`Started ${startedClock(agent.startedAt)}`}
+                    >
+                      {elapsedShort(agent.startedAt)}
+                    </span>
                   </span>
                 </button>
-                <Button
-                  variant="destructive"
-                  size="sm"
+                <button
+                  type="button"
+                  class="issues-agent-row__close"
                   data-testid="issues-close-issue"
                   data-issue={agent.issueNumber}
                   title={`Close issue #${agent.issueNumber} as not planned`}
@@ -272,10 +286,10 @@
                   onclick={() => issues.closeIssue(agent.issueNumber)}
                 >
                   Close
-                </Button>
+                </button>
               </li>
             {:else}
-              <li class="issues-agent-summary__empty muted">No issue is running.</li>
+              <li class="issues-agent-summary__empty">No agents running.</li>
             {/each}
           </ol>
         </div>

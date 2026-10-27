@@ -92,9 +92,21 @@ stored sheet stays unchanged:
 - The compact pyramid label omits counts; hosts with five levels rely on the table for numbers. A future
   variant could show counts on hover/focus.
 
+## Running agents panel (#256)
+
+The second panel of the Overview side column was redesigned in place; its brief, inventory,
+structure, component needs, decisions, and validation live in
+`.devboard/.design/overview/running-agents/`.
+
+- Selection owns the emphasis: `accent-surface` plus a 2px `accent` edge, not the `secondary` fill
+  it shared with hover.
+- The per-row close control is a quiet word with a `border-subtle` outline; it takes the
+  `error-surface`/`error` tint only when hovered or focused. The header carries one waiting-count
+  badge and no fleet count, because the Automation panel above already states it.
+
 ## Artifacts
 
 - Design artifacts live under `.devboard/.design/overview/` rather than a root `.design/`, because
   `AGENTS.md` confines every harness artifact to `.devboard/`. `directions/` and `shots/` are ignored by
-  `.devboard/.design/.gitignore`; the brief, design system, mock, component map, decisions, and review are
-  committed with the surface.
+  `.devboard/.design/.gitignore`; the brief, design system, mock, component map, decisions, review,
+  and the `running-agents/` focus run are committed with the surface.

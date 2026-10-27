@@ -413,11 +413,22 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   a second inline-code style.
 - **Running agent row** (`.issues-agent-row`) — one button row in the Issues overview's running
   agent list: a 44px mono issue-number column, the issue title on one line with ellipsis and the
-  full title as its tooltip, and a right-aligned meta group. The meta group carries the elapsed
-  run time in `mono-small`, tabular, `muted-foreground`, and a `needs answer` warning badge only
-  while the agent is waiting on a question. Rows are 28px tall with 6px 10px padding, separated by
-  a `border-subtle` rule; hover takes `secondary`. The per-row state word is omitted because the
-  panel is the running list, so color never repeats the header.
+  full title as its tooltip, and a right-aligned meta group. The meta group carries the elapsed run
+  time in `mono-small`, tabular, `muted-foreground` with the start clock in its tooltip, and a
+  `needs answer` warning badge only while the agent is waiting on a question. Rows are 28px tall
+  with 6px 10px padding, separated by a `border-subtle` rule; hover takes `row-hover`, and the
+  selected row takes `accent-surface` with a 2px `accent` left edge and an `accent` issue number,
+  matching `aria-current="true"`. The per-row state word is omitted because the panel is the
+  running list, so color never repeats the header.
+- **Running agent close control** (`.issues-agent-row__close`) — the quiet destructive control
+  beside a running-agent row: 24px tall, 11px text word `Close`, transparent fill, a
+  `border-subtle` outline, 4px radius, `muted-foreground` until its row is pointed at. Its own
+  hover or focus takes `error-surface`, `error` text, and an `error` outline; a hovered row raises
+  the outline to `border` and the word to `foreground`; disabled is 45% opacity. It is a word at
+  every supported width, never an icon, and it closes the tracker issue as `not planned` without
+  stopping the running agent. The panel header carries one aggregate warning badge,
+  `<n> need answers`, only while an agent waits; the fleet size is not repeated there because the
+  Automation panel owns it.
 - **Agent fleet card** (`.issues-agent`) — one card per running agent in the Agents page grid: a
   360px-minimum `surface` card with 1px `border`, 4px radius, 10px padding, and an 8px internal
   rhythm. Its head holds the mono `accent` issue-number link to the tracker and one outline
