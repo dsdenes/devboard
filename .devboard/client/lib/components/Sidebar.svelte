@@ -6,6 +6,7 @@
   import { goal } from "../goal.svelte";
   import { issues } from "../issues.svelte";
   import { scout } from "../scout.svelte";
+  import { statusTone } from "../status-tone";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import type { Mode } from "../types";
@@ -263,7 +264,7 @@
               onclick={() => open("goal", `lane:${lane.id}`, "lane", lane.id, label)}
             >
               <span class="sidebar-item__label">{label}</span>
-              <span class="badge" data-tone={lane.status === "running" ? "accent" : lane.status === "failed" ? "error" : "warning"}>
+              <span class="badge" data-tone={statusTone(lane.status)}>
                 {lane.status}
               </span>
             </button>
@@ -286,7 +287,7 @@
           onclick={() => open("issues", "overview", "overview", "overview", "Overview")}
         >
           <span class="sidebar-item__label">Overview</span>
-          <span class="badge" data-tone={issues.lifecycle === "failed" ? "error" : "warning"}>
+          <span class="badge" data-tone={statusTone(issues.lifecycle)}>
             {issues.lifecycle}
           </span>
         </button>
@@ -364,7 +365,7 @@
             <span class="badge" data-tone="warning">unsaved</span>
           {/if}
           {#if flow.status !== "none"}
-            <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
+            <span class="badge" data-tone={statusTone(flow.status)}>
               {flow.status}
             </span>
           {/if}
@@ -413,7 +414,7 @@
         >
           <span class="sidebar-item__label">Status</span>
           {#if flow.status !== "none"}
-            <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
+            <span class="badge" data-tone={statusTone(flow.status)}>
               {flow.status}
             </span>
           {/if}

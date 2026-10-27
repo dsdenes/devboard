@@ -452,6 +452,12 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   success, `Unsaved changes` warning, `Interview running` accent, `No goal yet` muted), and an
   action group: the outline `(Re)create flow goal` and a primary `Save` that is disabled until the
   draft differs from the saved goal.
+- **Discover skill header** (`.discover-skill__header`) — follows the Flow goal header: the
+  relative path `<skill>/SKILL.md` in the `panel-title` size, with the skill name in `foreground`
+  and the file name in `muted-foreground`; a second 11px draft line (`No unsaved changes` muted,
+  `Unsaved changes` warning, `Live file missing` error); and a right action group holding the
+  outline restore control and a primary `Save` disabled until the draft differs from the live
+  text. The path truncates with a full-path `title`; the state line and actions never shrink.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page

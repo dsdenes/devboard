@@ -1,6 +1,7 @@
 <script lang="ts">
   import { issues, isGoalIssue } from "../issues.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
+  import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
   import DraftsPage from "./DraftsPage.svelte";
   import IssuesAgentFocus from "./IssuesAgentFocus.svelte";
@@ -294,7 +295,7 @@
             <div>
               <dt>Status</dt>
               <dd>
-                <span class="badge" data-tone={issues.statusFor(agent.runId) === "failed" ? "error" : "accent"}>
+                <span class="badge" data-tone={statusTone(issues.statusFor(agent.runId))}>
                   {issues.statusFor(agent.runId)}
                 </span>
               </dd>
@@ -320,7 +321,7 @@
         <h1 class="issues-overview__title">Open issues</h1>
         <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
       </div>
-      <span class="badge" data-tone="warning">{issues.pending} pending</span>
+      <span class="badge" data-tone={statusTone("pending")}>{issues.pending} pending</span>
     </header>
     <div class="panel">
       <div class="panel__header">
@@ -344,11 +345,17 @@
                 <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
               {/if}
               {#if issue.handled}
-                <span class="badge" data-tone="success">handled</span>
+                <span class="badge" data-tone={statusTone("handled")}>handled</span>
               {:else if issue.agentRunId !== null}
-                <span class="badge" data-tone="accent" data-testid="issues-running-marker">running</span>
+                <span
+                  class="badge"
+                  data-tone={statusTone("running")}
+                  data-testid="issues-running-marker"
+                >
+                  running
+                </span>
               {:else}
-                <span class="badge" data-tone="warning">pending</span>
+                <span class="badge" data-tone={statusTone("pending")}>pending</span>
               {/if}
             </li>
           {:else}
@@ -390,7 +397,7 @@
                 onclick={() => issues.openRun(run.runId)}
               >
                 <span class="mono">{run.runId}</span>
-                <span class="badge" data-tone={run.status === "failed" ? "error" : run.status === "running" ? "accent" : "success"}>
+                <span class="badge" data-tone={statusTone(run.status)}>
                   {run.status}
                 </span>
                 <span class="muted">{run.issueNumbers.map((number) => `#${number}`).join(" ")}</span>
@@ -404,7 +411,9 @@
           <div class="issues-run-detail" data-testid="issues-run-detail" data-run={issues.run.runId}>
             <div class="toolbar toolbar--between">
               <h3 class="mono">{issues.run.runId}</h3>
-              <span class="badge" data-tone="accent">{runStatus(issues.run.runId)}</span>
+              <span class="badge" data-tone={statusTone(runStatus(issues.run.runId))}>
+                {runStatus(issues.run.runId)}
+              </span>
             </div>
             <p class="muted mono">{issues.run.cwd}</p>
             <p class="muted">{issues.run.issues.map((issue) => `#${issue.number}`).join(" ")}</p>
