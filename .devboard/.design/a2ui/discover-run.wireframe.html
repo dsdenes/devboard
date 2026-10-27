@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Discover / Run header</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f4f4f4; color: #222; font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px; }
+  .panel { background: #fff; border: 1px solid #999; }
+  .header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    border-bottom: 1px solid #bbb; padding: 6px 8px;
+  }
+  .identity { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: #555; flex: 0 0 6px; }
+  h2 { font-size: 12px; font-weight: 600; margin: 0; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .right { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .meta { color: #666; font-size: 11px; white-space: nowrap; }
+  .id {
+    border: 1px solid #ccc; background: #fafafa; border-radius: 3px; color: #666;
+    font: 11.5px/1.4 ui-monospace, monospace; max-width: 180px; overflow: hidden;
+    padding: 2px 6px; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .stop {
+    background: transparent; border: 1px solid #ccc; border-radius: 4px; color: #555;
+    font: 11px/1 system-ui, sans-serif; padding: 0 8px; height: 24px;
+  }
+  .body { padding: 8px; }
+  .terminal { background: #fafafa; border: 1px dashed #999; height: 120px; padding: 8px;
+    color: #555; font: 12px/1.45 ui-monospace, monospace; }
+  .note { color: #666; font-size: 11px; margin: 8px 0 0; }
+  .annotation { color: #888; display: block; font: 10px/1.2 ui-monospace, monospace;
+    margin-bottom: 6px; text-transform: uppercase; }
+  @media (max-width: 760px) {
+    .right { gap: 6px; }
+    .id { max-width: 120px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="panel" aria-label="Discover run panel">
+    <span class="annotation" style="padding:6px 8px 0">header · state P0 · meta P2/P3 · stop P1</span>
+    <div class="header">
+      <div class="identity">
+        <span class="dot" aria-hidden="true"></span>
+        <h2>Run in progress</h2>
+      </div>
+      <div class="right">
+        <span class="meta">Started 2 minutes ago</span>
+        <span class="id">run-mvr4j56w-45e0d9</span>
+        <button class="stop" type="button">Stop</button>
+      </div>
+    </div>
+    <div class="body">
+      <span class="annotation">body · unchanged activity terminal</span>
+      <div class="terminal">run activity…</div>
+      <p class="note">The run is owned by the server. Leaving this view does not stop it.</p>
+    </div>
+  </section>
+</main>
+</body>
+</html>
