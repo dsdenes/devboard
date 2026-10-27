@@ -1144,6 +1144,25 @@ viewport and capture time to `POST /api/feedback`, and the server files a GitHub
 the operator's authenticated `gh` CLI, then returns its URL. A filed report returns to element
 selection mode, so another element can be picked without leaving and re-entering the mode.
 
+The panel also answers questions. `Ask`, or `Enter` in the composer (`Shift+Enter` inserts a
+newline), sends the typed question and the captured element context — route, URL, selector,
+viewport, visible text, DOM excerpt, and capture time — over the existing WebSocket to a
+background ACP agent started from `AGENT_COMMAND`. The agent runs in the host repository root,
+and its answer streams into a compact transcript in the same panel as plain text, with preserved
+line breaks and no Markdown interpretation. Every prompt tells it the conversation is `read-only`:
+never edit files, run mutating commands, file issues, commit, or push. It also tells it to answer
+in at most `three short sentences` and about 400 characters in plain text. That is a prompt-level
+rule, not a sandbox.
+
+One conversation exists `per selected element`, and only while its panel is open. Escape, `×`,
+`Cancel`, a new pick, a successful filing, or a lost connection closes it: the server kills the
+agent and the transcript is discarded. Reopening a panel starts a new conversation, selecting a
+different element never resumes the previous one, nothing is written to `localStorage` or the
+state directory, and a page reload loses it. While a turn is pending the composer and both action
+buttons are disabled, `Ask` reads `Asking…`, and `Cancel` stays enabled. A failed start, an exited
+agent, or a rejected prompt shows the error in the panel, keeps the question and earlier answers,
+and accepts the next question. `Ask` never calls `POST /api/feedback` and creates `no GitHub issue`.
+
 The issue title is `[ui] ` plus the first line of the report, at most 200 characters. The body is
 the verbatim report followed by the captured context, so the ticket stays authoritative without a
 model in the loop. Every issue is filed in `dsdenes/devboard`, the harness repository, whatever
@@ -1190,6 +1209,8 @@ The client sends:
 { "type": "getSkills" }
 { "type": "resetImplementation" }
 { "type": "answer", "id": 1, "value": "Gamma" }
+{ "type": "ask", "conversationId": "…", "question": "What does this label mean?", "context": { … } }
+{ "type": "closeAsk", "conversationId": "…" }
 ```
 
 - `getGoal` reads the goal document from disk and answers with its complete contents; an
@@ -1233,6 +1254,14 @@ The client sends:
   between records), while a goal revision, goal creation, or skills preparation is active, when
   no record is pending, or when the named record is not pending.
 - `answer` supplies one value for the pending elicitation; the question is cleared after the first answer.
+- `ask` sends one question and the captured element context for a conversation id. The first turn
+  starts one ACP peer from `AGENT_COMMAND` in `REPO_DIR`; a follow-up reuses that peer and session,
+  and a replacement peer receives the earlier turns. Only the asking socket receives the
+  conversation's `askChunk`, `askDone`, and `askError` events, each carrying its conversation id.
+  A question must be 1–4000 trimmed characters with a present, bounded context, one turn runs at a
+  time per conversation, and events for a closed conversation are dropped. `closeAsk` closes the
+  conversation and kills its peer; closing the socket closes every conversation it owned. See
+  Report a UI issue.
 - `reviseGoal` starts a guided goal revision with one ACP peer. `request` is optional free-form guidance passed to the agent; without it, the agent establishes the direction through its interview questions. The agent writes the goal document itself. Activity and questions use the existing `activity` and `question` events, and `answer` replies to a revision question exactly as it does to a run question. It is accepted while the lifecycle is paused, where the suspended lanes keep their tabs.
 - A revision is refused with an `error` event while the lifecycle is advancing, a run or run
   sequence is active, a manual ADR sequence is active, or another revision is active. While a revision is active, `startRun`, `startLifecycle`, `resumeLifecycle`, and another `reviseGoal` are each refused with an `error`, and no agent is spawned.

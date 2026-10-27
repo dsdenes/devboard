@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
+  import { connection } from "./lib/connection.svelte";
+  import type { AskContext, AskTurn } from "./lib/types";
 
   /**
    * Operator issue reporter. The floating button starts a selection mode that
@@ -7,6 +9,12 @@
    * free-text panel anchored beside it. Sending posts the report and the
    * captured DOM context to the server, which files a GitHub issue for an
    * implementation agent and returns its URL.
+   *
+   * The same panel answers questions: `Ask`, or Enter in the composer, sends
+   * the question and the captured context over the WebSocket to a background
+   * ACP agent and streams its plain-text answer into the transcript. One
+   * conversation belongs to the picked element and lives only while its panel
+   * is open.
    */
 
   type Phase = "idle" | "picking" | "composing" | "sending" | "failed";
@@ -19,6 +27,11 @@
   const MARGIN = 8;
   const MAX_DOM_EXCERPT = 4000;
   const MAX_VISIBLE_TEXT = 1500;
+  const MAX_SELECTOR = 500;
+  const MAX_ROUTE = 2000;
+  const MAX_URL = 2000;
+  const MAX_VIEWPORT = 500;
+  const MAX_CAPTURED_AT = 100;
 
   let phase = $state<Phase>("idle");
   let target = $state<Element | null>(null);
@@ -32,6 +45,11 @@
   let report = $state("");
   let errorMessage = $state<string | null>(null);
   let textarea = $state<HTMLTextAreaElement | null>(null);
+  /** The one conversation this open panel owns; null before the first ask. */
+  let conversationId = $state<string | null>(null);
+  let transcript = $state<AskTurn[]>([]);
+  let askPending = $state(false);
+  let askError = $state<string | null>(null);
 
   const drag = { pointerId: -1, offsetX: 0, offsetY: 0 };
 
@@ -150,7 +168,106 @@
     return `${collapsed.slice(0, limit - 1)}…`;
   }
 
+  /** What the ask agent receives; each value is bounded to the server's limit. */
+  function captureContext(element: Element): AskContext {
+    return {
+      route: truncate(window.location.pathname, MAX_ROUTE),
+      url: truncate(window.location.href, MAX_URL),
+      selector: truncate(selector, MAX_SELECTOR),
+      viewport: truncate(
+        `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
+        MAX_VIEWPORT,
+      ),
+      captured_at: truncate(new Date().toISOString(), MAX_CAPTURED_AT),
+      visible_text: truncate(
+        (element as HTMLElement).innerText ?? element.textContent ?? "",
+        MAX_VISIBLE_TEXT,
+      ),
+      dom_excerpt: truncate(element.outerHTML ?? "", MAX_DOM_EXCERPT),
+    };
+  }
+
+  /** Keeps the panel fully inside the viewport after the transcript grows. */
+  async function fitPanel(): Promise<void> {
+    await tick();
+    if (panel === null || panelElement === null) return;
+    const height = panelElement.getBoundingClientRect().height;
+    const maxTop = Math.max(MARGIN, window.innerHeight - height - MARGIN);
+    const top = Math.min(Math.max(panel.top, MARGIN), maxTop);
+    if (top !== panel.top) panel = { top, left: panel.left };
+  }
+
+  function focusComposer(): void {
+    void tick().then(() => textarea?.focus());
+  }
+
+  function ask(): void {
+    const question = report.trim();
+    if (target === null || question.length === 0 || askPending || sending) return;
+    const id = conversationId ?? crypto.randomUUID();
+    conversationId = id;
+    askPending = true;
+    askError = null;
+    transcript = [...transcript, { role: "developer", text: question }];
+    const sent = connection.send({
+      type: "ask",
+      conversationId: id,
+      question,
+      context: captureContext(target),
+    });
+    if (!sent) {
+      askPending = false;
+      askError = "Not connected to the server.";
+      focusComposer();
+    }
+  }
+
+  /** Enter sends; Shift+Enter and an IME composition keep their newline. */
+  function onComposerKeyDown(event: KeyboardEvent): void {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    event.preventDefault();
+    ask();
+  }
+
+  /** Events for a closed or replaced conversation never reach the transcript. */
+  function onConnectionMessage(message: Record<string, unknown>): void {
+    if (typeof message.conversationId !== "string") return;
+    if (message.conversationId !== conversationId) return;
+
+    if (message.type === "askChunk") {
+      const text = typeof message.text === "string" ? message.text : "";
+      if (text.length === 0 || !askPending) return;
+      const last = transcript[transcript.length - 1];
+      if (last !== undefined && last.role === "agent") {
+        last.text += text;
+      } else {
+        transcript = [...transcript, { role: "agent", text }];
+      }
+      return;
+    }
+
+    if (message.type === "askDone") {
+      askPending = false;
+      askError = null;
+      report = "";
+      focusComposer();
+      return;
+    }
+
+    if (message.type === "askError") {
+      askPending = false;
+      askError =
+        typeof message.message === "string" && message.message.length > 0
+          ? message.message
+          : "The agent could not answer.";
+      focusComposer();
+    }
+  }
+
   function openPanel(element: Element): void {
+    closeConversation();
     target = element;
     selector = describeTarget(element);
     const rect = viewportRect(element);
@@ -165,7 +282,20 @@
     queueMicrotask(() => textarea?.focus());
   }
 
+  /** Drops the panel's conversation: no transcript, and the peer is killed. */
+  function closeConversation(): void {
+    const id = conversationId;
+    conversationId = null;
+    transcript = [];
+    askPending = false;
+    askError = null;
+    if (id !== null && connection.open) {
+      connection.send({ type: "closeAsk", conversationId: id });
+    }
+  }
+
   function reset(): void {
+    closeConversation();
     phase = "idle";
     target = null;
     selector = "";
@@ -234,6 +364,7 @@
     panel = moved && panel !== null
       ? clampPlacement(panel.top, panel.left)
       : anchorFor(rect);
+    void fitPanel();
   }
 
   async function send(): Promise<void> {
@@ -280,7 +411,22 @@
     }
   }
 
+  // A dropped socket owns no conversation; the server kills its peer.
+  $effect(() => {
+    if (connection.state === "closed" && conversationId !== null) closeConversation();
+  });
+
+  // Measure after every transcript change so the panel never grows past the viewport.
+  $effect(() => {
+    void transcript.length;
+    void transcript[transcript.length - 1]?.text.length;
+    void askPending;
+    void askError;
+    void fitPanel();
+  });
+
   onMount(() => {
+    connection.onMessage(onConnectionMessage);
     window.addEventListener("mousemove", onPointerMove);
     window.addEventListener("mousedown", onPointerDown, true);
     window.addEventListener("click", onClick, true);
@@ -344,20 +490,51 @@
         onclick={reset}>×</button>
     </header>
     <code class="feedback-selector" title={selector}>{selector}</code>
+    {#if transcript.length > 0}
+      <div class="feedback-transcript" role="log" aria-label="Ask conversation" aria-live="polite">
+        {#each transcript as turn, index (index)}
+          <p
+            class="feedback-turn"
+            class:feedback-turn--developer={turn.role === "developer"}
+            class:feedback-turn--agent={turn.role === "agent"}
+          >{turn.text}</p>
+        {/each}
+      </div>
+    {/if}
     <textarea
       bind:this={textarea}
       bind:value={report}
       placeholder="What is wrong with this element?"
       aria-label="Issue description"
       rows="5"
-      disabled={sending}
+      disabled={sending || askPending}
+      onkeydown={onComposerKeyDown}
     ></textarea>
+    {#if askPending}
+      <p class="feedback-status" role="status">Asking…</p>
+    {/if}
+    {#if askError !== null}
+      <p class="feedback-error" role="alert">{askError}</p>
+    {/if}
     {#if phase === "failed" && errorMessage !== null}
       <p class="feedback-error">{errorMessage}</p>
     {/if}
     <div class="feedback-actions">
-      <button type="button" onclick={send} disabled={sending || report.trim().length === 0}>
+      <button
+        type="button"
+        onclick={send}
+        disabled={sending || askPending || report.trim().length === 0}
+      >
         {sending ? "Filing…" : "File issue"}
+      </button>
+      <button
+        type="button"
+        data-testid="feedback-ask"
+        aria-label="Ask the agent about this element"
+        onclick={ask}
+        disabled={askPending || sending || report.trim().length === 0}
+      >
+        {askPending ? "Asking…" : "Ask"}
       </button>
       <button
         type="button"
@@ -560,6 +737,37 @@
     background: var(--surface);
     border-color: var(--border);
     color: var(--text);
+  }
+
+  .feedback-transcript {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 0.45rem;
+  }
+
+  .feedback-turn {
+    color: var(--text);
+    font-size: 0.8rem;
+    margin: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .feedback-turn--developer {
+    color: var(--muted);
+    font-weight: 600;
+  }
+
+  .feedback-status {
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin: 0;
   }
 
   .feedback-error {
