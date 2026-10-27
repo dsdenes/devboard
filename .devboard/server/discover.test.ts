@@ -339,7 +339,10 @@ function hashText(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-const SECRET_PATTERN = /(?:ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})/;
+// A token-shaped secret, never a path segment: `…/task-…` or a worktree name
+// that starts `sk-` is not a credential.
+const SECRET_PATTERN =
+  /(?<![A-Za-z0-9_/-])(?:ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})(?![A-Za-z0-9_/-])/;
 
 function leaves(node: unknown, trail: string, out: Array<{ path: string; leaf: Record<string, unknown> }>) {
   if (typeof node !== "object" || node === null) return;
