@@ -59,7 +59,7 @@
 - Checks:
   - `bun run check`: 0 errors, 0 warnings.
   - `bunx tsc --noEmit`: 0 errors.
-  - `bun test`: 600 pass, 0 fail (46 files).
+  - `bun test`: 602 pass, 0 fail (46 files).
   - `bun run verify:scout`: passed.
   - `bun run verify:interface`: passed.
   - UI/UX preflight: `applicable: true`, no missing prerequisites.
