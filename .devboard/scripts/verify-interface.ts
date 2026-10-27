@@ -17,10 +17,14 @@ import { dirname, join, resolve } from "node:path";
 import { journalKey } from "../server/journal";
 import { REDESIGN_INSTRUCTION as redesignInstruction, REMOVAL_INSTRUCTION as removalInstruction } from "../server/feedback";
 import { stateFile } from "../server/state";
+import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { freePort, run, waitFor } from "./verification";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const stubAgent = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
+// The source dashboard reports the commit-count version, not the unpacked
+// manifest's placeholder.
+const sourceVersion = readHarnessVersion(runningHarnessDir());
 // The deterministic `gh` stub always answers with this issue URL.
 const stubIssueUrl = "https://github.com/example/host/issues/42";
 const chromeCandidates = [
@@ -1353,8 +1357,20 @@ try {
   );
   check(statusBar.versions.includes("running") && statusBar.versions.includes("installed"), "the status bar does not show both versions", statusBar);
   check(statusBar.reload !== null, "the stale reload control is missing");
-  check(statusBar.reload!.label.includes("0.1.0") && statusBar.reload!.label.includes("9.9.9"), "the reload label does not name both versions", statusBar.reload);
-  check(statusBar.reload!.title.includes("0.1.0") && statusBar.reload!.title.includes("9.9.9"), "the reload title does not name both versions", statusBar.reload);
+  check(
+    sourceVersion !== null &&
+      statusBar.reload!.label.includes(sourceVersion) &&
+      statusBar.reload!.label.includes("9.9.9"),
+    "the reload label does not name both versions",
+    { sourceVersion, reload: statusBar.reload },
+  );
+  check(
+    sourceVersion !== null &&
+      statusBar.reload!.title.includes(sourceVersion) &&
+      statusBar.reload!.title.includes("9.9.9"),
+    "the reload title does not name both versions",
+    { sourceVersion, reload: statusBar.reload },
+  );
   check(statusBar.themeLabel.length > 0 && statusBar.notificationLabel.includes("Notifications"), "a status-bar icon lacks a name", statusBar);
   const sidebarToggle = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar-toggle"]') !== null`);
   check(!sidebarToggle, "the sidebar still renders a hide control");
