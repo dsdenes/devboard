@@ -329,12 +329,12 @@
           type="button"
           class="sidebar-item"
           aria-current={isActive("drafts")}
-          aria-label="Drafts, Issues mode, Alt+2"
+          aria-label="Draft goals, Issues mode, Alt+2"
           data-command="open.issues.drafts"
           data-testid="open-issues-drafts"
-          onclick={() => open("issues", "drafts", "drafts", "drafts", "Drafts")}
+          onclick={() => open("issues", "drafts", "drafts", "drafts", "Draft goals")}
         >
-          <span class="sidebar-item__label">Drafts</span>
+          <span class="sidebar-item__label">Draft goals</span>
           <span class="sidebar-item__meta">{issues.drafts.length}</span>
         </button>
       </section>
@@ -562,6 +562,7 @@
         {/each}
       </section>
 
+      {#if discover.hasArtifacts}
       <section class="sidebar-group" aria-label="Skills">
         <div class="sidebar-group__title">
           <span>Skills</span>
@@ -590,6 +591,7 @@
           </button>
         {/each}
       </section>
+      {/if}
 
       {#if discover.displayedWarnings.length > 0}
         <section class="sidebar-group sidebar-group--separated" aria-label="Warnings">

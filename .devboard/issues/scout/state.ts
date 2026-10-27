@@ -274,10 +274,15 @@ export function migrateState(text: string): ScoutState | undefined {
   };
 }
 
-/** Reads without side effects; the dashboard uses this. */
+/**
+ * Reads without side effects; the dashboard uses this. A version-1 file is
+ * migrated in memory, so a dashboard upgraded ahead of its worker still reads
+ * the worker's lifecycle and can stop it.
+ */
 export function readState(path: string): ScoutState | undefined {
   try {
-    return parseState(readFileSync(path, "utf8"));
+    const text = readFileSync(path, "utf8");
+    return parseState(text) ?? migrateState(text);
   } catch {
     return undefined;
   }

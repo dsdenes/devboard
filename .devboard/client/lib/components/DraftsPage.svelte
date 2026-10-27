@@ -6,7 +6,7 @@
   import Input from "./ui/input.svelte";
 
   /**
-   * The Drafts surface. It mounts only while the Drafts tab is active, so its
+   * The Draft goals surface. It mounts only while the Draft goals tab is active, so its
    * refresh loop stops with the page. Opening the page restores the stored
    * draft path; a path whose file vanished resolves to the list.
    */
@@ -39,8 +39,7 @@
 <section class="issues-drafts-page" data-testid="issues-drafts" aria-label="Goal drafts">
   <header class="issues-overview__header">
     <div>
-      <p class="muted">Issues</p>
-      <h1 class="issues-overview__title">Drafts</h1>
+      <h1 class="issues-overview__title">Draft goals</h1>
       <p class="issues-overview__repo mono">
         {issues.draftStatus} · {issues.drafts.length} draft(s)
       </p>

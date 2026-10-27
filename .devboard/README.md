@@ -566,13 +566,14 @@ and starts, stops, resets, or clears nothing; all three views stay mounted, so n
 scroll state, and focus survive. Discover events render only in this view and never touch Goal
 Mode's activity, question, or error state.
 
-The Discover sidebar opens pages for `Overview` and `Glossary` without a group heading, and the five
-skills `Testing Strategy`, `Naming Conventions`, `Coding Conventions`,
-`Architecture & Boundaries`, and `Glossary` under **Skills** (`data-testid="discover-tab"` with
-`data-tab` values `overview`, `glossary`, `testing-strategy`, `naming-conventions`,
-`coding-conventions`, `architecture-boundaries`, and `glossary-skill`). The sidebar has no header,
-so its first entry is its mode's navigation. The active panel carries `data-testid="discover-panel"`
-and the same `data-tab`.
+The Discover sidebar opens pages for `Overview` and `Glossary` without a group heading. Once
+Discover artifacts are published it also lists the five skills `Testing Strategy`,
+`Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and `Glossary` under
+**Skills** (`data-testid="discover-tab"` with `data-tab` values `overview`, `glossary`,
+`testing-strategy`, `naming-conventions`, `coding-conventions`, `architecture-boundaries`, and
+`glossary-skill`); with no published artifacts the **Skills** group and its header do not render.
+The sidebar has no header, so its first entry is its mode's navigation. The active panel carries
+`data-testid="discover-panel"` and the same `data-tab`.
 Warnings appears as its own group with a count only while at least one warning exists; the sidebar
 keeps no freshness group and no recent-notice list.
 
@@ -1445,9 +1446,9 @@ active agent. The Runs page lists every run with its status and issue,
 and a run's detail shows only that run's activity. The status bar's issues indicator reports the
 lifecycle and the running-agent count in its title and still opens Issues mode.
 
-## Drafts and proposed goals
+## Draft goals and proposed goals
 
-The Issues sidebar carries a fourth entry after Runs: `Drafts`, with `data-command="open.issues.drafts"`
+The Issues sidebar carries a fourth entry after Runs: `Draft goals`, with `data-command="open.issues.drafts"`
 and `data-testid="open-issues-drafts"`. It trails the number of listed drafts, its accessible
 name names the Issues mode and the `Alt+2` shortcut, and the command palette lists it under the
 same command id. Opening it renders `data-testid="issues-drafts"`: every regular `.md` file
@@ -1462,7 +1463,7 @@ opens, after the report panel writes a draft through `POST /api/goal-proposals`,
 elaboration finishes or stops, and when a listed draft disappears. The page polls the list every
 two seconds while it is mounted, so an external deletion is visible without a reload, and the
 report panel's write broadcast reaches an open page immediately. A browser reload restores the
-Drafts page and the selected path; when the file no longer exists, the page opens the list.
+Draft goals page and the selected path; when the file no longer exists, the page opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
@@ -1529,7 +1530,7 @@ agent leaves the queue on the next poll.
 
 ## Auto Scout
 
-The Issues sidebar lists `Overview`, `Auto Scout`, `Issues`, `Runs`, and then `Drafts`
+The Issues sidebar lists `Overview`, `Auto Scout`, `Issues`, `Runs`, and then `Draft goals`
 in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`,
 palette `Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its
 tab, or reloading the dashboard never starts a worker and never files an issue: only
@@ -1641,7 +1642,9 @@ current scan, next attempt, last error, and notice; a damaged state file is rena
 state produced by the previous Auto Scout version loads with its worker and scan facts intact,
 discards every unapproved staged recommendation without filing anything, applies the default
 limits, and publishes a notice naming how many recommendations were discarded; no pre-upgrade
-recommendation is ever filed.
+recommendation is ever filed. The dashboard migrates that file in memory too, so an upgraded
+dashboard reads the lifecycle of a worker it did not start, and Stop acts on the live lock owner
+even when no state file is readable.
 
 Scan directories live under `<REPO_DIR>/.devboard/.tmp/scout/scans/<scanId>/` and hold
 `request.json`, `recommendations.json`, `scan.json`, and `activity.json`, which is bounded at the
