@@ -31,7 +31,7 @@ Colors, dark theme (light theme mirrors them and is not redesigned here):
 | `--primary` | `#1f6feb` | primary action, filled |
 | `--primary-hover` | `#388bfd` | primary hover |
 | `--accent` | `#58a6ff` | focus-adjacent accent, links |
-| `--success` / `--badge-confirmed` | `#3fb950` | pass, resolved, observed |
+| `--success` | `#3fb950` | pass, accepted, observed |
 | `--warning` / `--badge-stale` | `#d29922` | dirty, stale, pending |
 | `--error` | `#ff7b72` | failure text |
 | `--destructive` | `#da3633` | destructive action |

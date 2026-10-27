@@ -320,7 +320,7 @@ Spacing uses a **2px base unit** with a half-step grid. The approved scale is 2,
 - **Rhythm.** 8px is the default macro rhythm: panel body padding, the default flex gap, and the
   gap between stacked panels. 12px is the card-grid gap. 24–28px separates page-level sections.
 - **Component padding.** Buttons `0 10px` (`sm` buttons `0 8px`), inputs `0 8px`, panel bodies
-  8px, panel headers 8px horizontal, sidebar headers `6px` left and right, table cells `5px 8px`,
+  8px, panel headers 8px horizontal, table cells `5px 8px`,
   badges `2px 6px`, icon buttons a 28px square.
 - **Layout gaps.** 2px between an icon and its inline text at micro sizes, 4px between an icon and
   a control label, 6px between header actions, 8px is the default, 12px between cards and grid

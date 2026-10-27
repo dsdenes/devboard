@@ -35,7 +35,7 @@ Bands: P0 80–100, P1 60–79, P2 40–59, P3 20–39, drop below 20.
 | C30 | Current mode | 3 | 2 | 5 | 1 | 1 | 51 | P2 | Rail selection |
 | C38 | Sidebar skills disclosure | 3 | 3 | 3 | 1 | 1 | 50 | P2 | One disclosure under the Skills entry |
 | C39 | Reset keep/delete rule | 1 | 5 | 1 | 1 | 5 | 48 | P2 | Shown only while the reset is armed |
-| C29 | Project path | 2 | 2 | 5 | 2 | 1 | 47 | P2 | Status bar, plus the sidebar header the shell contract requires |
+| C29 | Project path | 2 | 2 | 5 | 2 | 1 | 47 | P2 | Status bar, plus the sidebar identity the shell contract requires |
 | C32 | Theme preference | 2 | 2 | 5 | 1 | 1 | 47 | P2 | Rail footer toggle |
 | C33 | Notification history | 2 | 2 | 4 | 2 | 2 | 46 | P2 | Rail footer indicator |
 | C24 | Running lane count | 2 | 2 | 4 | 1 | 1 | 41 | P2 | Lanes group head and the ambient status bar |
@@ -56,5 +56,5 @@ Bands: P0 80–100, P1 60–79, P2 40–59, P3 20–39, drop below 20.
 - Deduplication after scoring: the lifecycle work title appears once on the implementation page and
   once as the lane page's own name. The pending count appears once per visible page (implementation
   or ADRs), because the loop's next action depends on it; the status bar keeps the ambient word.
-  The project path appears in the status bar and in the sidebar header, where the shell contract
+  The project path appears in the status bar and in the sidebar identity, where the shell contract
   requires the repository name; the versions appear only in the status bar.

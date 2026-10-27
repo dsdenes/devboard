@@ -19,7 +19,7 @@ ghost icon buttons — commands (`Ctrl+K`), notifications, theme — form the ap
 longer a bare tablist; the tabs sit in their own `role="tablist"` group so the footer buttons are
 not mistyped as tabs.
 
-The sidebar header keeps the mode over the repository path: the shell contract requires the sidebar
+The sidebar identity keeps the mode over the repository path: the shell contract requires the sidebar
 to name the repository for every mode, so this is a deliberate repetition of the status bar's full
 path. Goal operating context lives next to the page it describes: the Run entry states the
 lifecycle stage or `manual`/`idle`, and the ADRs entry states the pending count.
@@ -190,7 +190,7 @@ sidebar disclosure is the fast path to one skill; the page is the audit surface.
 - **Sidebar is navigation, not a second page.** It no longer repeats every resolved record or the
   full skills list outside one disclosure. It shows progress, pending records with the next one
   marked, and lanes because those are the shortcuts an operator takes mid-run. The repository path
-  stays because the shell contract puts the repository name in the sidebar header.
+  stays because the shell contract puts the repository name in the sidebar identity.
 - **The rail is the app menu.** Theme and notifications were floating in a 26px status bar while the
   command palette had no visible affordance. The rail now holds mode selection and the three app
   actions, with state dots so a failed lane or a stale Discover is visible from another mode.
