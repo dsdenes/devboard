@@ -1,6 +1,7 @@
 <script lang="ts">
   import { issues } from "../issues.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
+  import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
   import IssuesAgentQuestion from "./IssuesAgentQuestion.svelte";
@@ -34,7 +35,7 @@
       <h1 class="issues-overview__title">{tab.title}</h1>
       <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
     </div>
-    <span class="badge" data-tone={status === "failed" ? "error" : status === "running" ? "accent" : "success"} data-testid="issues-agent-focus-status">
+    <span class="badge" data-tone={statusTone(status)} data-testid="issues-agent-focus-status">
       {status}
     </span>
     <Button
