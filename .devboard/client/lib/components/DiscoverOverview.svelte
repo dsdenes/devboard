@@ -457,6 +457,68 @@
   data-tab="overview"
   aria-label="Discover overview"
 >
+  {#snippet remotePanel()}
+    {#if discover.remoteAvailable}
+      <section class="panel discover-remote" data-testid="discover-remote" aria-label="Discover remote target">
+        <div class="panel__header">
+          <h2 class="panel__title">Manual testing target</h2>
+          <span class="panel__subtitle">Source checkout only</span>
+        </div>
+        <div class="panel__body stack-sm">
+          {#if discover.remoteTarget !== null}
+            <p class="row-sm" data-testid="discover-remote-target">
+              <span class="badge" data-tone="warning">Manual testing</span>
+              <span>Discover reads <code>{discover.remoteTarget.url}</code>.</span>
+            </p>
+          {/if}
+          <form
+            class="discover-remote__form"
+            onsubmit={(event) => {
+              event.preventDefault();
+              discover.startRemote();
+            }}
+          >
+            <Input
+              type="url"
+              aria-label="GitHub repository URL"
+              placeholder="https://github.com/owner/repo"
+              autocomplete="off"
+              spellcheck="false"
+              value={discover.remoteUrl}
+              oninput={(event) => (discover.remoteUrl = event.currentTarget.value)}
+              data-testid="discover-remote-url"
+            />
+            <Button
+              variant="outline"
+              type="submit"
+              data-testid="discover-remote-start"
+              disabled={discover.remoteStartDisabled}
+              title={discover.remoteStartTitle}
+            >
+              Discover from URL
+            </Button>
+            {#if discover.remoteTarget !== null}
+              <Button
+                variant="ghost"
+                data-testid="discover-remote-clear"
+                onclick={() => discover.clearRemote()}
+              >
+                Clear remote target
+              </Button>
+            {/if}
+          </form>
+          {#if discover.cloning !== null}
+            <p class="muted" data-testid="discover-remote-cloning">
+              Cloning <code>{discover.cloning.url}</code>…
+            </p>
+          {/if}
+        </div>
+      </section>
+    {/if}
+  {/snippet}
+
+  {@render remotePanel()}
+
   <header class="discover-head" data-testid="discover-card" data-field="definition">
     <div class="discover-head__top">
       <div class="discover-head__identity">
@@ -531,66 +593,6 @@
   {/if}
 
   {@render questionPanel()}
-
-{#snippet remotePanel()}
-  {#if discover.remoteAvailable}
-    <section class="panel discover-remote" data-testid="discover-remote" aria-label="Discover remote target">
-      <div class="panel__header">
-        <h2 class="panel__title">Manual testing target</h2>
-        <span class="panel__subtitle">Source checkout only</span>
-      </div>
-      <div class="panel__body stack-sm">
-        {#if discover.remoteTarget !== null}
-          <p class="row-sm" data-testid="discover-remote-target">
-            <span class="badge" data-tone="warning">Manual testing</span>
-            <span>Discover reads <code>{discover.remoteTarget.url}</code>.</span>
-          </p>
-        {/if}
-        <form
-          class="discover-remote__form"
-          onsubmit={(event) => {
-            event.preventDefault();
-            discover.startRemote();
-          }}
-        >
-          <Input
-            type="url"
-            aria-label="GitHub repository URL"
-            placeholder="https://github.com/owner/repo"
-            autocomplete="off"
-            spellcheck="false"
-            value={discover.remoteUrl}
-            oninput={(event) => (discover.remoteUrl = event.currentTarget.value)}
-            data-testid="discover-remote-url"
-          />
-          <Button
-            variant="outline"
-            type="submit"
-            data-testid="discover-remote-start"
-            disabled={discover.remoteStartDisabled}
-            title={discover.remoteStartTitle}
-          >
-            Discover from URL
-          </Button>
-          {#if discover.remoteTarget !== null}
-            <Button
-              variant="ghost"
-              data-testid="discover-remote-clear"
-              onclick={() => discover.clearRemote()}
-            >
-              Clear remote target
-            </Button>
-          {/if}
-        </form>
-        {#if discover.cloning !== null}
-          <p class="muted" data-testid="discover-remote-cloning">
-            Cloning <code>{discover.cloning.url}</code>…
-          </p>
-        {/if}
-      </div>
-    </section>
-  {/if}
-{/snippet}
 
   {#if discover.hasArtifacts && sheet !== null}
     <div class="discover-sheet" data-testid="discover-sheet">
@@ -802,6 +804,4 @@
       </div>
     </section>
   {/if}
-
-  {@render remotePanel()}
 </div>
