@@ -1943,6 +1943,14 @@ a.code-chip--link:focus-visible {
   width: 96px;
 }
 
+.discover-quality-gate__name {
+  font-weight: 550;
+}
+
+.discover-quality-gate__checks {
+  color: var(--muted-foreground);
+}
+
 .discover-card[data-field="architecture"] {
   min-width: 0;
 }

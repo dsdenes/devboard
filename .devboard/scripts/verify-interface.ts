@@ -2257,6 +2257,9 @@ try {
     pyramid: number;
     pyramidText: string[];
     pyramidChart: boolean;
+    qualityGateHeaders: string[];
+    qualityGateRows: string[][];
+    deliveryFacts: string[];
     suite: boolean;
     rowHeights: number[];
     tableFont: string;
@@ -2303,6 +2306,15 @@ try {
       pyramid: rows.length,
       pyramidText: rows.map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim()).join(" | ")),
       pyramidChart: document.querySelector('[data-testid="discover-pyramid-chart"], svg.pyramid__svg') !== null,
+      qualityGateHeaders: [
+        ...document.querySelectorAll('[data-testid="discover-quality-gates"] thead th'),
+      ].map((header) => header.textContent.trim()),
+      qualityGateRows: [
+        ...document.querySelectorAll('[data-testid="discover-quality-gates"] tbody tr'),
+      ].map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim())),
+      deliveryFacts: [
+        ...document.querySelectorAll('#workspace-discover [data-field="delivery"] dt'),
+      ].map((term) => term.textContent.trim()),
       suite: document.querySelector('[data-testid="discover-suite-command"]') !== null,
       rowHeights: rows.map((row) => Math.round(row.getBoundingClientRect().height)),
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
@@ -2351,6 +2363,24 @@ try {
   check(discoverTables.pyramid > 0 && discoverTables.suite, "the Discover testing tables are empty", discoverTables);
   check(discoverTables.pyramidText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover pyramid row renders no values", discoverTables.pyramidText);
   check(discoverTables.pyramidText.every((text) => !text.toLowerCase().includes("unknown")), "a Discover test level still reports an unknown count", discoverTables.pyramidText);
+  check(
+    discoverTables.qualityGateHeaders.join("|") === "Quality gate|What it checks",
+    "the quality gate table does not carry its gate and check columns",
+    discoverTables.qualityGateHeaders,
+  );
+  check(
+    discoverTables.qualityGateRows.length > 0 &&
+      discoverTables.qualityGateRows.every((cells) =>
+        cells[0]?.trim().length > 0 && cells[1]?.trim().length > 0
+      ),
+    "a quality gate row renders no name or check",
+    discoverTables.qualityGateRows,
+  );
+  check(
+    !discoverTables.deliveryFacts.includes("Quality gates"),
+    "the Delivery facts still repeat the quality gates",
+    discoverTables.deliveryFacts,
+  );
   check(!discoverTables.pyramidChart, "the test pyramid graphic is still rendered", discoverTables);
   check(discoverTables.rowHeights.every((height) => height > 0 && height <= 120), "a Discover table row is mis-sized", discoverTables.rowHeights);
   const discoverFont = Number.parseFloat(discoverTables.tableFont);

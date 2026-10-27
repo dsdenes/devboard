@@ -790,6 +790,37 @@ function leafTexts(node: unknown, path: string): Leaf {
   return { value: values, ...base };
 }
 
+/**
+ * Required CI checks, each with the line describing what it verifies.
+ *
+ * Sheets published before a gate carried its check stored gate names only;
+ * accept that shape and read it as a gate with no recorded check so a host
+ * keeps its Discover artifacts across the upgrade.
+ */
+function leafQualityGates(node: unknown, path: string): Leaf {
+  const base = leafBase(node, path);
+  if (base.confidence === "unknown") return { value: null, ...base };
+  const record = node as Record<string, unknown>;
+  if (!Array.isArray(record.value)) invalid(`${path}.value`, "must be a list");
+  if (record.value.length > LIST_MAX) invalid(`${path}.value`, "has too many entries");
+  const gates = new Map<string, { name: string; checks: string }>();
+  for (const [index, entry] of record.value.entries()) {
+    const entryPath = `${path}.value[${index}]`;
+    const gate = typeof entry === "string"
+      ? { name: textValue(entry, entryPath), checks: "" }
+      : recordFields(entry, entryPath, { name: textValue, checks: textValue }) as {
+        name: string;
+        checks: string;
+      };
+    if (gates.has(gate.name)) invalid(`${entryPath}.name`, "must be unique");
+    gates.set(gate.name, gate);
+  }
+  return {
+    value: [...gates.values()].sort((left, right) => left.name.localeCompare(right.name)),
+    ...base,
+  };
+}
+
 function leafEnum<T extends string>(node: unknown, path: string, values: readonly T[]): Leaf {
   const base = leafBase(node, path);
   if (base.confidence === "unknown") return { value: null, ...base };
@@ -1025,7 +1056,7 @@ export function normalizeSheet(raw: unknown, freshness: Freshness): Sheet {
       provider: leafText,
       triggers: leafTexts,
       jobs: leafTexts,
-      qualityGates: leafTexts,
+      qualityGates: leafQualityGates,
       artifacts: leafTexts,
     }),
     runtime: validateSectionRecord(raw, "runtime", {

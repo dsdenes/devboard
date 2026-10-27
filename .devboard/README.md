@@ -663,10 +663,11 @@ Overview page is a project sheet, not a card grid. A masthead
 (`data-testid="discover-freshness"`) carries the project name, the one-sentence definition, and the
 discovery date. The commit, the dirty flag, and the staleness flag stay in the sheet and the state
 payload but render no header badge. Below the masthead the sheet is one bounded two-column spine:
-`Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, and Bounded contexts in
-the main column on the right. Every section carries `data-testid="discover-card"` and
-`data-field`; the commands and testing panels are raised surfaces and the remaining sections are
-flat, separated by hairlines. Below 1240px viewport the columns collapse into one in reading order.
+`Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates, and
+Bounded contexts in the main column on the right. Every section carries
+`data-testid="discover-card"` and `data-field`; the commands, testing, and quality-gate panels are
+raised surfaces and the remaining sections are flat, separated by hairlines. Below 1240px viewport
+the columns collapse into one in reading order.
 Tables grow with the page; neither a panel nor a card shrinks below its rows, and none scrolls
 inside the page. Every non-`unknown` leaf
 carries at least one sorted, unique repository-relative evidence path, symbol anchor, or safe git
@@ -701,8 +702,11 @@ part of a level's count that exercises the primary success path, recorded as an 
 `Command` is the narrowest declared invocation for that level. Only a level that carries a test is
 listed and counted; a recorded level with no test case is omitted, so a sheet cannot claim a
 second level while its table holds none. Every listed level states an exact test count, never
-`count unknown`. No pyramid graphic is drawn. Runtime,
-deployment, CI, and branching use compact `dt`/`dd` facts whose list values are comma-separated.
+`count unknown`. No pyramid graphic is drawn. Quality gates render as a `Quality gate`/`What it
+checks` table (`data-testid="discover-quality-gates"`): one row per required CI gate, its name, and
+one short line saying what it verifies. A gate recorded without a check states `No check was
+recorded.`, and the gates are not repeated among the Delivery facts. Runtime, deployment, CI, and
+branching use compact `dt`/`dd` facts whose list values are comma-separated.
 Architecture renders under the heading `Bounded contexts` as a table headed `Bounded context` with
 path, responsibility, and entry points, followed by external-boundary and shared-kernel chips.
 External boundaries name only external systems — a remote API or service, a message broker, a

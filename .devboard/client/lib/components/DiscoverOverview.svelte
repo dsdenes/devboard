@@ -37,6 +37,11 @@
     { id: "happyPath", header: "Happy path", accessorKey: "happyPath" },
     { id: "command", header: "Command", accessorKey: "command" },
   ];
+  const QUALITY_GATE_COLUMNS = [
+    { id: "gate", header: "Quality gate", accessorKey: "gate" },
+    { id: "checks", header: "What it checks", accessorKey: "checks" },
+  ];
+  const QUALITY_GATE_WIDTHS = { gate: "220px" };
   const BOUNDARY_GROUPS = [
     { key: "sharedKernels", label: "Shared kernels", kind: "chips" },
     { key: "externalBoundaries", label: "External boundaries", kind: "chips" },
@@ -115,6 +120,20 @@
     }),
   );
 
+  const qualityGatesLeaf = $derived(sectionLeaf(sheet?.ci, "qualityGates"));
+  const qualityGateRows = $derived(
+    recordItems(qualityGatesLeaf)
+      .map((record) => ({
+        gate: scalarText(record.name).trim(),
+        checks: scalarText(record.checks).trim(),
+      }))
+      .filter((row) => row.gate.length > 0),
+  );
+  const hasQualityGates = $derived(
+    qualityGatesLeaf !== undefined &&
+      (qualityGatesLeaf.confidence === "unknown" || qualityGateRows.length > 0),
+  );
+
   const runtimeSection = $derived(visibleSection(sheet?.runtime, HIDDEN_LEAVES.runtime ?? []));
   let now = $state(Date.now());
   const startedLabel = $derived(
@@ -129,7 +148,7 @@
   const deploymentSection = $derived(
     visibleSection(sheet?.deployment, HIDDEN_LEAVES.deployment ?? []),
   );
-  const ciSection = $derived(visibleSection(sheet?.ci, []));
+  const ciSection = $derived(visibleSection(sheet?.ci, HIDDEN_LEAVES.ci ?? []));
   const branchingSection = $derived(visibleSection(sheet?.branching, []));
   const hasDelivery =
     $derived(
@@ -387,6 +406,16 @@
     {/if}
   {:else}
     {String(row[columnId] ?? "")}
+  {/if}
+{/snippet}
+
+{#snippet qualityGateCell(row: Record<string, unknown>, columnId: string)}
+  {#if columnId === "gate"}
+    <span class="discover-quality-gate__name">{String(row.gate ?? "")}</span>
+  {:else if String(row.checks ?? "").length > 0}
+    <span class="discover-quality-gate__checks">{String(row.checks)}</span>
+  {:else}
+    <span class="muted">No check was recorded.</span>
   {/if}
 {/snippet}
 
@@ -701,6 +730,42 @@
                   rows={levelRows}
                   rowAttrs={(row) => ({ "data-level": String(row.rawLevel ?? "") })}
                   cell={levelCell}
+                  full
+                  wrap
+                />
+              {/if}
+            </div>
+          </section>
+        {/if}
+
+        {#if hasQualityGates}
+          <section
+            class="panel discover-card"
+            data-testid="discover-card"
+            data-field="quality-gates"
+          >
+            <div class="panel__header">
+              <h2 class="panel__title">Quality gates</h2>
+              {#if qualityGatesLeaf !== undefined && qualityGatesLeaf.confidence !== "unknown"}
+                <span class="panel__subtitle">
+                  {qualityGateRows.length}
+                  {qualityGateRows.length === 1 ? "gate" : "gates"}
+                </span>
+              {/if}
+            </div>
+            <div class="panel__body">
+              {#if qualityGatesLeaf === undefined}
+                <p class="empty">No quality gate was recorded.</p>
+              {:else if qualityGatesLeaf.confidence === "unknown"}
+                <p class="empty">{unknownText(qualityGatesLeaf)}</p>
+              {:else}
+                <DataTable
+                  data-testid="discover-quality-gates"
+                  columns={QUALITY_GATE_COLUMNS}
+                  rows={qualityGateRows}
+                  rowAttrs={(row) => ({ "data-gate": String(row.gate ?? "") })}
+                  cell={qualityGateCell}
+                  columnWidths={QUALITY_GATE_WIDTHS}
                   full
                   wrap
                 />

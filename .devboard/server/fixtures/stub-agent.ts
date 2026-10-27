@@ -1044,7 +1044,11 @@ function discoverSheet(): Record<string, unknown> {
       qualityGates:
         paths.ci === undefined
           ? discoverLeaf([], evidence, "observed")
-          : discoverLeaf(["bun test"], [paths.ci], "declared"),
+          : discoverLeaf(
+              [{ name: "bun test", checks: "Runs the whole fixture test suite in CI." }],
+              [paths.ci],
+              "declared",
+            ),
       artifacts:
         paths.ci === undefined
           ? discoverLeaf([], evidence, "observed")
