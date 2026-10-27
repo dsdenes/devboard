@@ -1,21 +1,19 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isRecord } from "../guards";
+import { isValidLimit } from "./state";
 
 /**
  * The dashboard-to-scout channel. Commands are individual files created by
  * atomic rename, so the worker never reads a half-written command, and their
  * names sort in submission order. A worker consumes them from any dashboard
- * attached to the same repository state.
+ * attached to the same repository state. Only Stop and a limits change remain:
+ * filing needs no command.
  */
 
 export type ScoutCommand =
   | { type: "stop" }
-  | { type: "approve"; id: string }
-  | { type: "draft"; id: string }
-  | { type: "reject"; id: string };
-
-export type ScoutDecisionCommand = Extract<ScoutCommand, { id: string }>;
+  | { type: "limits"; maxPerHour: number; maxPending: number };
 
 let sequence = 0;
 
@@ -41,11 +39,13 @@ export function parseCommand(text: string): ScoutCommand | undefined {
   switch (parsed.type) {
     case "stop":
       return { type: "stop" };
-    case "approve":
-    case "draft":
-    case "reject":
-      if (typeof parsed.id !== "string" || parsed.id.length === 0) return undefined;
-      return { type: parsed.type, id: parsed.id };
+    case "limits":
+      if (!isValidLimit(parsed.maxPerHour) || !isValidLimit(parsed.maxPending)) return undefined;
+      return {
+        type: "limits",
+        maxPerHour: parsed.maxPerHour,
+        maxPending: parsed.maxPending,
+      };
     default:
       return undefined;
   }

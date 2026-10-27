@@ -1,20 +1,28 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { isInteger, isRecord, nullableString } from "../guards";
-import { isCategory } from "./recommendation";
-import { STATE_VERSION, scanFilePath } from "./paths";
-import type { ScoutEvidence, ScoutRecommendation } from "./recommendation";
+import {
+  DEFAULT_MAX_PER_HOUR,
+  DEFAULT_MAX_PENDING,
+  LIMIT_MAX,
+  LIMIT_MIN,
+  SCAN_VERSION,
+  STATE_VERSION,
+  scanFilePath,
+} from "./paths";
 
 /**
- * The scout worker's published board. It is the whole contract between the
+ * The scout worker's published state. It is the whole contract between the
  * detached worker and whatever dashboard is attached: the worker writes it
  * atomically before publishing anything, and a dashboard only ever reads it.
- * A file this module cannot understand is renamed aside, never deleted.
+ * A file this module cannot understand is renamed aside, never deleted; a
+ * version-1 file is migrated instead, discarding every staged recommendation.
  */
 
 export type ScoutLifecycle = "stopped" | "idle" | "scanning" | "failed";
-export type ScoutDecisionKind = "approve" | "draft" | "reject";
 export type ScoutScanStatus = "running" | "succeeded" | "failed" | "stopped";
+export type ScoutIssueState = "pending" | "implemented";
+export type ScoutSyncState = "ok" | "error" | "stale";
 
 export interface ScoutWorkerRecord {
   pid: number;
@@ -30,15 +38,33 @@ export interface ScoutAcpChild {
   cwd: string;
 }
 
-export interface ScoutDecision {
-  id: string;
-  kind: ScoutDecisionKind;
+/** The adjustable caps the dashboard persists and the worker enforces. */
+export interface ScoutLimits {
+  maxPerHour: number;
+  maxPending: number;
+}
+
+/** One Auto Scout issue, as GitHub last reported it. */
+export interface ScoutIssueRow {
+  number: number;
   title: string;
-  at: string;
-  /** The filed issue's URL, for an approval. */
-  url: string | null;
-  /** The draft's repository-relative path, for a drafted goal. */
-  path: string | null;
+  url: string;
+  createdAt: string;
+  /** An open issue is `pending`; a closed one is `implemented`. */
+  state: ScoutIssueState;
+  /** The recommendation's category, the body's `## Category`, or null. */
+  category: string | null;
+  /** The earliest published release that shipped the closing commit, or null. */
+  version: string | null;
+}
+
+/** The last periodic GitHub read and whether it succeeded. */
+export interface ScoutSync {
+  state: ScoutSyncState;
+  /** The last successful read, or null before one. */
+  at: string | null;
+  /** Why the last read failed, or null. */
+  error: string | null;
 }
 
 export interface ScoutScanRecord {
@@ -48,71 +74,63 @@ export interface ScoutScanRecord {
   requested: number;
 }
 
-export interface ScoutShortfall {
-  staged: number;
-  /** `9 - staged`, the slots the last scan left empty. */
-  missing: number;
-  reason: string;
-  at: string;
-}
-
 export interface ScoutState {
-  version: 1;
+  version: 2;
   repo: string;
   root: string;
   lifecycle: ScoutLifecycle;
   enabled: boolean;
   worker: ScoutWorkerRecord | null;
-  staged: ScoutRecommendation[];
+  limits: ScoutLimits;
+  /** Every Auto Scout issue known from GitHub, newest creation first. */
+  issues: ScoutIssueRow[];
+  sync: ScoutSync;
   scan: ScoutScanRecord | null;
   /** The newest scan, running or finished, so its activity can be replayed. */
   newestScanId: string | null;
-  shortfall: ScoutShortfall | null;
   nextAttemptAt: string | null;
   lastError: string | null;
   notice: string | null;
-  decisions: ScoutDecision[];
   updatedAt: string;
 }
 
-function isEvidence(value: unknown): value is ScoutEvidence {
+export const DEFAULT_LIMITS: ScoutLimits = Object.freeze({
+  maxPerHour: DEFAULT_MAX_PER_HOUR,
+  maxPending: DEFAULT_MAX_PENDING,
+});
+
+export function isValidLimit(value: unknown): value is number {
+  return isInteger(value) && value >= LIMIT_MIN && value <= LIMIT_MAX;
+}
+
+export function isLimits(value: unknown): value is ScoutLimits {
+  return isRecord(value) && isValidLimit(value.maxPerHour) && isValidLimit(value.maxPending);
+}
+
+function isIssueState(value: unknown): value is ScoutIssueState {
+  return value === "pending" || value === "implemented";
+}
+
+function isIssueRow(value: unknown): value is ScoutIssueRow {
   return (
     isRecord(value) &&
-    typeof value.path === "string" &&
-    typeof value.lines === "string" &&
-    (value.quote === undefined || typeof value.quote === "string")
+    isInteger(value.number) &&
+    value.number > 0 &&
+    typeof value.title === "string" &&
+    typeof value.url === "string" &&
+    typeof value.createdAt === "string" &&
+    isIssueState(value.state) &&
+    nullableString(value.category) &&
+    nullableString(value.version)
   );
 }
 
-function isRecommendation(value: unknown): value is ScoutRecommendation {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.id === "string" &&
-    isCategory(value.category) &&
-    typeof value.title === "string" &&
-    typeof value.summary === "string" &&
-    typeof value.impact === "string" &&
-    Array.isArray(value.evidence) &&
-    value.evidence.length > 0 &&
-    value.evidence.every(isEvidence) &&
-    typeof value.proposedChange === "string" &&
-    Array.isArray(value.files) &&
-    value.files.every((entry) => typeof entry === "string") &&
-    Array.isArray(value.acceptanceCriteria) &&
-    value.acceptanceCriteria.every((entry) => typeof entry === "string") &&
-    typeof value.stagedAt === "string"
-  );
-}
-
-function isDecision(value: unknown): value is ScoutDecision {
+function isSync(value: unknown): value is ScoutSync {
   return (
     isRecord(value) &&
-    typeof value.id === "string" &&
-    (value.kind === "approve" || value.kind === "draft" || value.kind === "reject") &&
-    typeof value.title === "string" &&
-    typeof value.at === "string" &&
-    nullableString(value.url) &&
-    nullableString(value.path)
+    (value.state === "ok" || value.state === "error" || value.state === "stale") &&
+    nullableString(value.at) &&
+    nullableString(value.error)
   );
 }
 
@@ -137,20 +155,15 @@ function isScan(value: unknown): value is ScoutScanRecord {
   );
 }
 
-function isShortfall(value: unknown): value is ScoutShortfall {
-  return (
-    isRecord(value) &&
-    isInteger(value.staged) &&
-    isInteger(value.missing) &&
-    typeof value.reason === "string" &&
-    typeof value.at === "string"
-  );
+function isLifecycle(value: unknown): value is ScoutLifecycle {
+  return value === "stopped" || value === "idle" || value === "scanning" || value === "failed";
 }
 
 export function emptyState(options: {
   repo: string;
   root: string;
   lifecycle?: ScoutLifecycle;
+  limit?: ScoutLimits;
   now?: Date;
 }): ScoutState {
   return {
@@ -160,19 +173,19 @@ export function emptyState(options: {
     lifecycle: options.lifecycle ?? "stopped",
     enabled: false,
     worker: null,
-    staged: [],
+    limits: options.limit ?? { ...DEFAULT_LIMITS },
+    issues: [],
+    sync: { state: "stale", at: null, error: null },
     scan: null,
     newestScanId: null,
-    shortfall: null,
     nextAttemptAt: null,
     lastError: null,
     notice: null,
-    decisions: [],
     updatedAt: (options.now ?? new Date()).toISOString(),
   };
 }
 
-/** Parses one document; `undefined` means the bytes are not this version. */
+/** Parses one version-2 document; `undefined` means the bytes are not ours. */
 export function parseState(text: string): ScoutState | undefined {
   let parsed: unknown;
   try {
@@ -182,41 +195,81 @@ export function parseState(text: string): ScoutState | undefined {
   }
   if (!isRecord(parsed) || parsed.version !== STATE_VERSION) return undefined;
   if (typeof parsed.repo !== "string" || typeof parsed.root !== "string") return undefined;
-  const lifecycle = parsed.lifecycle;
-  if (
-    lifecycle !== "stopped" &&
-    lifecycle !== "idle" &&
-    lifecycle !== "scanning" &&
-    lifecycle !== "failed"
-  ) {
-    return undefined;
-  }
+  if (!isLifecycle(parsed.lifecycle)) return undefined;
   if (typeof parsed.enabled !== "boolean") return undefined;
   if (parsed.worker !== null && !isWorker(parsed.worker)) return undefined;
-  if (!Array.isArray(parsed.staged) || !parsed.staged.every(isRecommendation)) return undefined;
+  if (!isLimits(parsed.limits)) return undefined;
+  if (!Array.isArray(parsed.issues) || !parsed.issues.every(isIssueRow)) return undefined;
+  if (!isSync(parsed.sync)) return undefined;
   if (parsed.scan !== null && !isScan(parsed.scan)) return undefined;
   if (!nullableString(parsed.newestScanId)) return undefined;
-  if (parsed.shortfall !== null && !isShortfall(parsed.shortfall)) return undefined;
   if (!nullableString(parsed.nextAttemptAt) || !nullableString(parsed.lastError)) return undefined;
   if (!nullableString(parsed.notice)) return undefined;
-  if (!Array.isArray(parsed.decisions) || !parsed.decisions.every(isDecision)) return undefined;
   if (typeof parsed.updatedAt !== "string") return undefined;
 
   return {
     version: STATE_VERSION,
     repo: parsed.repo,
     root: parsed.root,
-    lifecycle,
+    lifecycle: parsed.lifecycle,
     enabled: parsed.enabled,
     worker: parsed.worker as ScoutWorkerRecord | null,
-    staged: parsed.staged,
+    limits: parsed.limits,
+    issues: parsed.issues,
+    sync: parsed.sync,
     scan: parsed.scan as ScoutScanRecord | null,
     newestScanId: parsed.newestScanId,
-    shortfall: parsed.shortfall as ScoutShortfall | null,
     nextAttemptAt: parsed.nextAttemptAt,
     lastError: parsed.lastError,
     notice: parsed.notice,
-    decisions: parsed.decisions,
+    updatedAt: parsed.updatedAt,
+  };
+}
+
+/**
+ * A version-1 board kept only its staging array and its decisions. The worker
+ * and scan facts are carried forward, the staged recommendations are discarded
+ * without filing anything, and both limits take their defaults. The notice
+ * names the discard so the operator sees what the upgrade dropped.
+ */
+export function migrateState(text: string): ScoutState | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || parsed.version !== 1) return undefined;
+  if (typeof parsed.repo !== "string" || typeof parsed.root !== "string") return undefined;
+  if (!isLifecycle(parsed.lifecycle)) return undefined;
+  if (typeof parsed.enabled !== "boolean") return undefined;
+  if (parsed.worker !== null && !isWorker(parsed.worker)) return undefined;
+  if (!Array.isArray(parsed.staged)) return undefined;
+  if (parsed.scan !== null && !isScan(parsed.scan)) return undefined;
+  if (!nullableString(parsed.newestScanId)) return undefined;
+  if (!nullableString(parsed.lastError) || !nullableString(parsed.notice)) return undefined;
+  if (typeof parsed.updatedAt !== "string") return undefined;
+
+  const discarded = parsed.staged.length;
+  return {
+    version: STATE_VERSION,
+    repo: parsed.repo,
+    root: parsed.root,
+    lifecycle: parsed.lifecycle,
+    enabled: parsed.enabled,
+    worker: parsed.worker as ScoutWorkerRecord | null,
+    limits: { ...DEFAULT_LIMITS },
+    issues: [],
+    sync: { state: "stale", at: null, error: null },
+    scan: parsed.scan as ScoutScanRecord | null,
+    newestScanId: parsed.newestScanId,
+    nextAttemptAt: null,
+    lastError: parsed.lastError,
+    notice:
+      discarded === 0
+        ? parsed.notice
+        : `Discarded ${discarded} staged recommendation${discarded === 1 ? "" : "s"} from the ` +
+          "previous Auto Scout version; nothing was filed.",
     updatedAt: parsed.updatedAt,
   };
 }
@@ -230,7 +283,7 @@ export function readState(path: string): ScoutState | undefined {
   }
 }
 
-/** Reads and moves an unusable file aside, preserved. */
+/** Reads and migrates, moving an unusable file aside, preserved. */
 export function loadState(path: string): ScoutState | undefined {
   if (!existsSync(path)) return undefined;
   let text: string;
@@ -239,7 +292,7 @@ export function loadState(path: string): ScoutState | undefined {
   } catch {
     return undefined;
   }
-  const state = parseState(text);
+  const state = parseState(text) ?? migrateState(text);
   if (state !== undefined) return state;
   quarantine(path);
   return undefined;
@@ -273,11 +326,37 @@ export function writeAtomic(path: string, content: string): void {
 }
 
 /* ------------------------------------------------------------------ */
+/* Persisted limits                                                    */
+/* ------------------------------------------------------------------ */
+
+export function parseSettings(text: string): ScoutLimits | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  return isLimits(parsed) ? { maxPerHour: parsed.maxPerHour, maxPending: parsed.maxPending } : undefined;
+}
+
+export function readSettings(path: string): ScoutLimits | undefined {
+  try {
+    return parseSettings(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeSettings(path: string, limits: ScoutLimits): void {
+  writeAtomic(path, `${JSON.stringify(limits, null, 2)}\n`);
+}
+
+/* ------------------------------------------------------------------ */
 /* Scan records                                                        */
 /* ------------------------------------------------------------------ */
 
 export interface ScoutScanFile {
-  version: 1;
+  version: 2;
   scanId: string;
   repo: string;
   root: string;
@@ -285,7 +364,7 @@ export interface ScoutScanFile {
   startedAt: string;
   finishedAt: string | null;
   requested: number;
-  staged: number;
+  filed: number;
   prompt: string;
   acp: ScoutAcpChild | null;
   error: string | null;
@@ -304,6 +383,7 @@ function isAcp(value: unknown): value is ScoutAcpChild {
   );
 }
 
+/** Reads a version-2 record; a version-1 record's `staged` becomes `filed`. */
 export function parseScanFile(text: string): ScoutScanFile | undefined {
   let parsed: unknown;
   try {
@@ -311,7 +391,8 @@ export function parseScanFile(text: string): ScoutScanFile | undefined {
   } catch {
     return undefined;
   }
-  if (!isRecord(parsed) || parsed.version !== 1) return undefined;
+  if (!isRecord(parsed)) return undefined;
+  if (parsed.version !== 1 && parsed.version !== SCAN_VERSION) return undefined;
   if (typeof parsed.scanId !== "string" || typeof parsed.repo !== "string") return undefined;
   if (typeof parsed.root !== "string") return undefined;
   if (
@@ -323,13 +404,15 @@ export function parseScanFile(text: string): ScoutScanFile | undefined {
     return undefined;
   }
   if (typeof parsed.startedAt !== "string" || !nullableString(parsed.finishedAt)) return undefined;
-  if (!isInteger(parsed.requested) || !isInteger(parsed.staged)) return undefined;
+  if (!isInteger(parsed.requested)) return undefined;
+  const filed = parsed.version === 1 ? parsed.staged : parsed.filed;
+  if (!isInteger(filed)) return undefined;
   if (typeof parsed.prompt !== "string") return undefined;
   if (parsed.acp !== null && !isAcp(parsed.acp)) return undefined;
   if (!nullableString(parsed.error) || !nullableString(parsed.shortfall)) return undefined;
   if (!isInteger(parsed.workerPid) || !nullableString(parsed.harnessVersion)) return undefined;
   return {
-    version: 1,
+    version: SCAN_VERSION,
     scanId: parsed.scanId,
     repo: parsed.repo,
     root: parsed.root,
@@ -337,7 +420,7 @@ export function parseScanFile(text: string): ScoutScanFile | undefined {
     startedAt: parsed.startedAt,
     finishedAt: parsed.finishedAt,
     requested: parsed.requested,
-    staged: parsed.staged,
+    filed,
     prompt: parsed.prompt,
     acp: parsed.acp as ScoutAcpChild | null,
     error: parsed.error,
@@ -358,4 +441,3 @@ export function readScanFile(directory: string): ScoutScanFile | undefined {
 export function writeScanFile(directory: string, scan: ScoutScanFile): void {
   writeAtomic(scanFilePath(directory), `${JSON.stringify(scan, null, 2)}\n`);
 }
-

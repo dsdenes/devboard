@@ -145,56 +145,44 @@ export interface GoalDraftRun {
 }
 
 export type ScoutLifecycle = "stopped" | "idle" | "scanning" | "failed";
-export type ScoutCategory =
-  | "clarity"
-  | "structure"
-  | "naming"
-  | "tests"
-  | "robustness"
-  | "correctness";
+export type ScoutIssueState = "pending" | "implemented";
+export type ScoutSyncState = "ok" | "error" | "stale";
 
-export interface ScoutEvidence {
-  path: string;
-  lines: string;
-  quote?: string;
+/** One Auto Scout issue, as GitHub last reported it. */
+export interface ScoutIssueRow {
+  number: number;
+  title: string;
+  url: string;
+  createdAt: string;
+  /** An open issue is `pending`; a closed one is `implemented`. */
+  state: ScoutIssueState;
+  /** The recommendation's category, the body's `## Category`, or null. */
+  category: string | null;
+  /** The earliest published release that shipped the closing commit, or null. */
+  version: string | null;
 }
 
-export interface ScoutRecommendation {
-  id: string;
-  category: ScoutCategory;
-  title: string;
-  summary: string;
-  impact: string;
-  evidence: ScoutEvidence[];
-  proposedChange: string;
-  files: string[];
-  acceptanceCriteria: string[];
-  stagedAt: string;
+export interface ScoutLimits {
+  maxPerHour: number;
+  maxPending: number;
 }
 
-export interface ScoutDecision {
-  id: string;
-  kind: "approve" | "draft" | "reject";
-  title: string;
-  at: string;
-  url: string | null;
-  path: string | null;
+export interface ScoutSync {
+  state: ScoutSyncState;
+  /** The last successful read, or null before one. */
+  at: string | null;
+  /** Why the last read failed, or null. */
+  error: string | null;
 }
 
 export interface ScoutScanRecord {
   scanId: string;
   startedAt: string;
+  /** How many recommendations the request asked for. */
   requested: number;
 }
 
-export interface ScoutShortfall {
-  staged: number;
-  missing: number;
-  reason: string;
-  at: string;
-}
-
-/** The scout worker's published board, as the dashboard is allowed to see it. */
+/** The scout worker's published state, as the dashboard is allowed to see it. */
 export interface ScoutSnapshot {
   present: boolean;
   repo: string | null;
@@ -203,14 +191,14 @@ export interface ScoutSnapshot {
   enabled: boolean;
   attached: boolean;
   worker: IssuesWorkerRecord | null;
-  staged: ScoutRecommendation[];
+  limits: ScoutLimits;
+  issues: ScoutIssueRow[];
+  sync: ScoutSync;
   scan: ScoutScanRecord | null;
   newestScanId: string | null;
-  shortfall: ScoutShortfall | null;
   nextAttemptAt: string | null;
   lastError: string | null;
   notice: string | null;
-  decisions: ScoutDecision[];
   updatedAt: string | null;
 }
 

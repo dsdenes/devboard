@@ -1,19 +1,27 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
-import { CATEGORIES, EXCLUDED_ROOTS, type ScoutCategory } from "./paths";
+import { isInteger } from "../guards";
+import {
+  CATEGORIES,
+  EXCLUDED_ROOTS,
+  SIGNIFICANCE_MAX,
+  SIGNIFICANCE_MIN,
+  type ScoutCategory,
+} from "./paths";
 
 /**
  * The scan contract's answer: every recommendation the agent produced, checked
- * against the repository before anything is staged. Validation is atomic — one
- * malformed item rejects the whole answer and leaves the staged board exactly
- * as it was — so a partial or invented result can never reach the operator.
+ * against the repository before anything is filed. Validation is atomic — one
+ * malformed item rejects the whole answer, so a partial or invented result can
+ * never become an issue.
  */
 
 export const TITLE_MAX = 200;
 const ID_LENGTH = 16;
 const MAX_SUMMARY = 4000;
 const MAX_QUOTE = 2000;
+const MAX_SIGNIFICANCE_REASON = 2000;
 
 export interface ScoutEvidence {
   /** Repository-relative path, `/` separators. */
@@ -34,14 +42,13 @@ export interface ScoutRecommendation {
   proposedChange: string;
   files: string[];
   acceptanceCriteria: string[];
-  stagedAt: string;
+  /** 1–5; only a 4 or a 5 earns an issue. */
+  significance: number;
+  significanceReason: string;
 }
 
-/** A validated item before the worker stamps it and stages it. */
-export type ValidatedRecommendation = Omit<ScoutRecommendation, "stagedAt">;
-
 export type ScanResult =
-  | { ok: true; items: ValidatedRecommendation[]; shortfall: string | null }
+  | { ok: true; items: ScoutRecommendation[]; shortfall: string | null }
   | { ok: false; error: string };
 
 export function isCategory(value: unknown): value is ScoutCategory {
@@ -54,9 +61,26 @@ export function normalizeTitle(title: string): string {
 }
 
 /**
+ * The `## Category` line of an issue body, for an issue Auto Scout adopted
+ * rather than filed. A missing heading or a blank value yields null.
+ */
+export function categoryFromBody(body: string): string | null {
+  const lines = body.split(/\r?\n/);
+  const heading = lines.findIndex((line) => line.trim().toLowerCase() === "## category");
+  if (heading < 0) return null;
+  for (let index = heading + 1; index < lines.length; index += 1) {
+    const value = lines[index]!.trim();
+    if (value.length === 0) continue;
+    if (value.startsWith("#")) return null;
+    return value.length <= 40 ? value : null;
+  }
+  return null;
+}
+
+/**
  * The same finding produced twice keeps its id: the hash covers the category,
  * the sorted evidence paths, and the normalized title, and nothing that a new
- * scan may legitimately change, such as the summary or the staged time.
+ * scan may legitimately change, such as the summary or the significance score.
  */
 export function recommendationId(
   category: ScoutCategory,
@@ -210,7 +234,7 @@ function validateItem(
   value: unknown,
   index: number,
   repoDir: string,
-): { ok: true; item: ValidatedRecommendation } | { ok: false; error: string } {
+): { ok: true; item: ScoutRecommendation } | { ok: false; error: string } {
   const fallback = `item ${index + 1}`;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { ok: false, error: `${fallback} is not an object` };
@@ -244,6 +268,25 @@ function validateItem(
     if (!checked.ok) return checked;
     impact = checked.value;
   }
+
+  const significance = source.significance;
+  if (
+    !isInteger(significance) ||
+    significance < SIGNIFICANCE_MIN ||
+    significance > SIGNIFICANCE_MAX
+  ) {
+    return {
+      ok: false,
+      error: `${label} has no significance score from ${SIGNIFICANCE_MIN} to ${SIGNIFICANCE_MAX}`,
+    };
+  }
+  const reason = boundedText(
+    source.significanceReason,
+    "significance reason",
+    MAX_SIGNIFICANCE_REASON,
+    label,
+  );
+  if (!reason.ok) return reason;
 
   if (!Array.isArray(source.evidence) || source.evidence.length === 0) {
     return { ok: false, error: `${label} cites no evidence` };
@@ -301,17 +344,19 @@ function validateItem(
       proposedChange: proposedChange.value,
       files: [...new Set(normalizedFiles)],
       acceptanceCriteria: criteria.value,
+      significance,
+      significanceReason: reason.value,
     },
   };
 }
 
 /**
  * Parses `<scan-dir>/recommendations.json`. A result may carry at most the
- * missing count the request asked for; anything else fails the whole scan.
+ * count the request asked for; anything else fails the whole scan.
  */
 export function parseScanResult(
   value: unknown,
-  options: { missing: number; repoDir: string },
+  options: { requested: number; repoDir: string },
 ): ScanResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { ok: false, error: "the result is not a JSON object" };
@@ -320,16 +365,16 @@ export function parseScanResult(
   if (!Array.isArray(source.recommendations)) {
     return { ok: false, error: "the result has no recommendations array" };
   }
-  if (source.recommendations.length > options.missing) {
+  if (source.recommendations.length > options.requested) {
     return {
       ok: false,
       error:
         `the result carried ${source.recommendations.length} recommendations, ` +
-        `more than the ${options.missing} requested`,
+        `more than the ${options.requested} requested`,
     };
   }
 
-  const items: ValidatedRecommendation[] = [];
+  const items: ScoutRecommendation[] = [];
   const ids = new Map<string, number>();
   for (const [index, entry] of source.recommendations.entries()) {
     const checked = validateItem(entry, index, options.repoDir);

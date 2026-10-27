@@ -2,8 +2,10 @@ import { connection } from "./connection.svelte";
 import { notifications } from "./notifications.svelte";
 import type {
   ScoutActivityEntry,
-  ScoutRecommendation,
+  ScoutIssueRow,
+  ScoutLimits,
   ScoutSnapshot,
+  ScoutSync,
 } from "./types";
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -16,8 +18,9 @@ function isSnapshot(value: Record<string, unknown>): boolean {
     typeof value.root === "string" &&
     typeof value.lifecycle === "string" &&
     typeof value.enabled === "boolean" &&
-    Array.isArray(value.staged) &&
-    Array.isArray(value.decisions)
+    Array.isArray(value.issues) &&
+    isObject(value.sync) &&
+    isObject(value.limits)
   );
 }
 
@@ -34,11 +37,12 @@ function applyActivity(lines: string[], entries: ScoutActivityEntry[], replay: b
   return next;
 }
 
-const PENDING_TIMEOUT_MS = 10_000;
+const DEFAULT_LIMITS: ScoutLimits = { maxPerHour: 10, maxPending: 5 };
+const EMPTY_SYNC: ScoutSync = { state: "stale", at: null, error: null };
 
 /**
  * The Auto Scout page's client state. It never polls and never starts a scan:
- * the dashboard replays the worker's board and activity on connect, then
+ * the dashboard replays the worker's state and activity on connect, then
  * streams both as the worker persists them. Controls only send commands.
  */
 export class ScoutStore {
@@ -46,9 +50,6 @@ export class ScoutStore {
   activity = $state<string[]>([]);
   /** The scan whose activity is shown, so a stale stream cannot overwrite it. */
   activityScanId = $state<string | null>(null);
-  /** Staged ids with a decision in flight; their controls stay disabled. */
-  pending = $state<string[]>([]);
-  private pendingTimers = new Map<string, number>();
   private lastNotice: string | null = null;
   private lastError: string | null = null;
 
@@ -77,24 +78,26 @@ export class ScoutStore {
     return this.snapshot?.enabled === true || this.attached;
   }
 
-  get count(): number {
-    return this.staged.length;
+  get issues(): ScoutIssueRow[] {
+    return this.snapshot?.issues ?? [];
   }
 
-  get staged(): ScoutRecommendation[] {
-    return this.snapshot?.staged ?? [];
+  /** The sidebar count: open Auto Scout issues. */
+  get count(): number {
+    return this.issues.filter((issue) => issue.state === "pending").length;
+  }
+
+  get limits(): ScoutLimits {
+    const limits = this.snapshot?.limits;
+    return limits ?? DEFAULT_LIMITS;
+  }
+
+  get sync(): ScoutSync {
+    return this.snapshot?.sync ?? EMPTY_SYNC;
   }
 
   get scanning(): boolean {
     return this.snapshot?.scan !== null && this.snapshot?.scan !== undefined;
-  }
-
-  get shortfall(): string | null {
-    if (this.count >= 9) return null;
-    const reason = this.snapshot?.shortfall?.reason;
-    return reason === undefined
-      ? `${this.count} of 9 slots filled`
-      : `${this.count} of 9 slots filled — ${reason}`;
   }
 
   get notice(): string | null {
@@ -109,20 +112,12 @@ export class ScoutStore {
     return this.snapshot?.nextAttemptAt ?? null;
   }
 
-  get decisions(): ScoutSnapshot["decisions"] {
-    return this.snapshot?.decisions ?? [];
-  }
-
   get canStart(): boolean {
     return connection.open && !this.attached;
   }
 
   get canStop(): boolean {
     return this.attached;
-  }
-
-  inFlight(id: string): boolean {
-    return this.pending.includes(id);
   }
 
   start(): void {
@@ -133,35 +128,8 @@ export class ScoutStore {
     connection.send({ type: "stopScout" });
   }
 
-  approve(id: string): void {
-    this.decide("approveScout", id);
-  }
-
-  draftGoal(id: string): void {
-    this.decide("draftScoutGoal", id);
-  }
-
-  reject(id: string): void {
-    this.decide("rejectScout", id);
-  }
-
-  private decide(type: string, id: string): void {
-    if (this.inFlight(id) || !this.staged.some((item) => item.id === id)) return;
-    this.pending = [...this.pending, id];
-    const timer = window.setTimeout(() => this.settle(id), PENDING_TIMEOUT_MS);
-    this.pendingTimers.set(id, timer);
-    connection.send({ type, id });
-  }
-
-  private settle(id: string): void {
-    const timer = this.pendingTimers.get(id);
-    if (timer !== undefined) window.clearTimeout(timer);
-    this.pendingTimers.delete(id);
-    this.pending = this.pending.filter((entry) => entry !== id);
-  }
-
-  private settleAll(): void {
-    for (const id of [...this.pending]) this.settle(id);
+  saveLimits(maxPerHour: number, maxPending: number): void {
+    connection.send({ type: "setScoutLimits", maxPerHour, maxPending });
   }
 
   handleEvent(message: Record<string, unknown>): void {
@@ -176,26 +144,16 @@ export class ScoutStore {
         this.activity = [];
         this.activityScanId = nextScan;
       }
-      // A decision that left the board is settled; a failure clears the error.
-      const staged = new Set(next.staged.map((item) => item.id));
-      for (const id of [...this.pending]) {
-        if (!staged.has(id)) this.settle(id);
-      }
       // The first snapshot of a page load is replayed state, not news.
       if (next.lastError !== this.lastError) {
         this.lastError = next.lastError;
-        if (next.lastError !== null) {
-          this.settleAll();
-          if (!first) notifications.push("error", next.lastError);
+        if (next.lastError !== null && !first) {
+          notifications.push("error", next.lastError);
         }
       }
       if (next.notice !== this.lastNotice) {
         this.lastNotice = next.notice;
-        if (
-          !first &&
-          next.notice !== null &&
-          (next.notice.startsWith("Filed ") || next.notice.startsWith("Drafted "))
-        ) {
+        if (!first && next.notice !== null && next.notice.startsWith("Filed ")) {
           notifications.push("success", next.notice);
         }
       }

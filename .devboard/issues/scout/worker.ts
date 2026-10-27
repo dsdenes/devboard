@@ -6,21 +6,33 @@ import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner } from "../lock";
 import { originRepository } from "../repository";
 import { appendActivityLine, writeActivity } from "../state";
-import { pollOpenIssues } from "../tracker";
-import { fileScoutIssue, writeScoutDraft } from "./actions";
+import { fileScoutIssue } from "./actions";
 import { takeCommands, type ScoutCommand } from "./control";
 import {
-  DECISION_LIMIT,
-  MAX_STAGED,
-  RETRY_MS,
+  createScoutGitHub,
+  shippedVersion,
+  type ScoutGitHubClient,
+  type ScoutGitHubIssue,
+  type ScoutRelease,
+} from "./github";
+import {
+  HOUR_MS,
   SCAN_TIMEOUT_MS,
+  SIGNIFICANCE_THRESHOLD,
+  SYNC_INTERVAL_MS,
   controlDirectory,
   lockPath,
   recommendationsPath,
   scanDirectory,
+  settingsPath,
   statePath,
 } from "./paths";
-import { normalizeTitle, parseScanResult, type ValidatedRecommendation } from "./recommendation";
+import {
+  categoryFromBody,
+  normalizeTitle,
+  parseScanResult,
+  type ScoutRecommendation,
+} from "./recommendation";
 import {
   buildRequest,
   createScanDirectory,
@@ -29,23 +41,27 @@ import {
   writeRequest,
 } from "./scan";
 import {
+  DEFAULT_LIMITS,
   emptyState,
+  isValidLimit,
   loadState,
   readScanFile,
+  readSettings,
   writeScanFile,
+  writeSettings,
   writeState,
-  type ScoutDecision,
+  type ScoutIssueRow,
+  type ScoutLimits,
   type ScoutScanFile,
   type ScoutState,
 } from "./state";
 import type { AcpPeer, IssuesPeerOptions } from "../worker";
 
 /**
- * The detached worker for exactly one repository's Auto Scout board. It owns
- * the scan loop, the ACP peer, the repository lock, the decisions, and the
- * activity, so it outlives any dashboard process. A dashboard may start it,
- * read its state, and send it commands; nothing else can create a second scout
- * for the checkout.
+ * The detached worker for exactly one repository's Auto Scout. It owns the
+ * periodic GitHub read, the scan loop, the ACP peer, the repository lock, and
+ * the activity, so it outlives any dashboard process. A scan files significant
+ * recommendations directly as `scout` issues; nothing waits for an operator.
  */
 
 const TICK_MS = 100;
@@ -58,17 +74,16 @@ export interface ScoutWorkerOptions {
   stateDir: string;
   agentCommand?: string;
   environment?: Record<string, string | undefined>;
-  /** Wait before a shortfall or a failure schedules another scan. */
-  retryMs?: number;
+  /** The periodic GitHub read; 60 seconds in production. */
+  syncMs?: number;
   /** A scan that exceeds this is closed as failed. */
   timeoutMs?: number;
   now?: () => Date;
   /** Injected for tests; defaults to the real ACP client. */
   connect?: (options: IssuesPeerOptions) => AcpPeer;
-  /** The origin's open issue titles, read before every scan. */
-  listIssues?: () => Promise<string[]>;
+  /** Injected for tests; defaults to the checkout's `gh` reads. */
+  github?: ScoutGitHubClient;
   fileIssue?: typeof fileScoutIssue;
-  draftGoal?: typeof writeScoutDraft;
   harnessVersion?: string | null;
   log?: (line: string) => void;
   /** Runs after Stop has written its state and released the lock. */
@@ -82,12 +97,28 @@ interface ActiveScan {
   prompt: string;
   activity: string[];
   peer: AcpPeer;
-  openIssueTitles: string[];
   draftGoalHeadings: string[];
   startedAt: string;
   finished: boolean;
   timer: Timer | undefined;
   firstLine: string | null;
+}
+
+interface GitHubRead {
+  issues: ScoutGitHubIssue[];
+  releases: ScoutRelease[];
+  openTitles: string[];
+}
+
+interface Capacity {
+  /** How many issues this cycle may create. */
+  batch: number;
+  windowCount: number;
+  openCount: number;
+  hourlyRoom: number;
+  pendingRoom: number;
+  /** When zero capacity may become positive again. */
+  blockedUntil: string | null;
 }
 
 /** Bounded one-line diagnostic from the peer's stderr. */
@@ -100,38 +131,59 @@ function boundedLine(text: string): string {
   return line.length <= FIRST_LINE_MAX ? line : `${line.slice(0, FIRST_LINE_MAX - 1)}…`;
 }
 
+function detailOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Newest creation first; the number breaks a same-instant tie. */
+function newestFirst(rows: ScoutIssueRow[]): ScoutIssueRow[] {
+  return [...rows].sort((left, right) => {
+    const leftAt = Date.parse(left.createdAt);
+    const rightAt = Date.parse(right.createdAt);
+    if (Number.isFinite(leftAt) && Number.isFinite(rightAt) && leftAt !== rightAt) {
+      return rightAt - leftAt;
+    }
+    return right.number - left.number;
+  });
+}
+
 export class ScoutWorker {
   readonly repoDir: string;
   readonly stateDir: string;
-  readonly retryMs: number;
+  readonly syncMs: number;
   readonly timeoutMs: number;
   private readonly agentCommand: string;
   private readonly environment: Record<string, string | undefined>;
   private readonly clock: () => Date;
   private readonly connect: NonNullable<ScoutWorkerOptions["connect"]>;
-  private readonly listIssues: NonNullable<ScoutWorkerOptions["listIssues"]> | undefined;
+  private readonly injectedGithub: ScoutGitHubClient | undefined;
   private readonly fileIssue: typeof fileScoutIssue;
-  private readonly draftGoal: typeof writeScoutDraft;
   private readonly harnessVersion: string | null;
   private readonly log: (line: string) => void;
   private readonly onStopped: (() => void) | undefined;
 
   private state: ScoutState;
+  private github: ScoutGitHubClient | undefined;
   private active: ActiveScan | undefined;
   private starting = false;
   private stopping = false;
-  /** One consumer at a time, so two ticks never apply the same decision. */
+  /** One consumer at a time, so two ticks never apply the same command. */
   private consuming = false;
-  /** Decisions in flight, so one staged id can never be filed twice. */
-  private readonly deciding = new Set<string>();
+  /** One GitHub read at a time. */
+  private syncing = false;
+  /** A scan is reading and filing; the periodic read waits for it. */
+  private filing = false;
+  /** The open titles from the last successful read, for deduplication. */
+  private openTitles: string[] = [];
   private ticker: Timer | undefined;
   private lock: { release: () => void } | undefined;
   private lastSaved = "";
+  private nextSyncAt = 0;
 
   constructor(options: ScoutWorkerOptions) {
     this.repoDir = resolve(options.repoDir);
     this.stateDir = resolve(options.stateDir);
-    this.retryMs = Math.max(0, options.retryMs ?? RETRY_MS);
+    this.syncMs = Math.max(1000, options.syncMs ?? SYNC_INTERVAL_MS);
     this.timeoutMs = Math.max(1000, options.timeoutMs ?? SCAN_TIMEOUT_MS);
     this.agentCommand =
       options.agentCommand ??
@@ -142,9 +194,8 @@ export class ScoutWorker {
     this.clock = options.now ?? (() => new Date());
     this.connect =
       options.connect ?? ((peerOptions) => new AcpConnection(peerOptions) as unknown as AcpPeer);
-    this.listIssues = options.listIssues;
+    this.injectedGithub = options.github;
     this.fileIssue = options.fileIssue ?? fileScoutIssue;
-    this.draftGoal = options.draftGoal ?? writeScoutDraft;
     this.harnessVersion =
       options.harnessVersion ?? readHarnessVersion(resolve(import.meta.dir, "..", ".."));
     this.log = options.log ?? (() => undefined);
@@ -182,8 +233,9 @@ export class ScoutWorker {
     }
 
     const now = this.clock();
+    const limits = readSettings(settingsPath(this.stateDir, this.repoDir)) ?? previous?.limits;
     this.state = {
-      ...emptyState({ repo: repository, root: this.repoDir, now }),
+      ...emptyState({ repo: repository, root: this.repoDir, limit: limits, now }),
       lifecycle: "idle",
       enabled: true,
       worker: {
@@ -193,13 +245,22 @@ export class ScoutWorker {
         harnessVersion: this.harnessVersion,
         argv: [...process.argv],
       },
-      staged: previous?.staged ?? [],
-      decisions: previous?.decisions ?? [],
+      limits: limits ?? { ...DEFAULT_LIMITS },
+      issues: previous?.issues ?? [],
+      sync: previous?.sync ?? { state: "stale", at: null, error: null },
       newestScanId: previous?.newestScanId ?? null,
-      shortfall: previous?.shortfall ?? null,
       lastError,
+      notice: previous?.notice ?? null,
       updatedAt: now.toISOString(),
     };
+    this.github =
+      this.injectedGithub ??
+      createScoutGitHub({
+        repository,
+        repoDir: this.repoDir,
+        environment: this.environment,
+      });
+    this.nextSyncAt = 0;
     this.publish();
     this.startTicker();
     return true;
@@ -238,7 +299,7 @@ export class ScoutWorker {
       writeState(statePath(this.stateDir, this.repoDir), this.state);
       this.lastSaved = text;
     } catch (error) {
-      this.log(`could not write state: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(`could not write state: ${detailOf(error)}`);
     }
   }
 
@@ -252,12 +313,38 @@ export class ScoutWorker {
   private async tick(): Promise<void> {
     if (this.stopping) return;
     await this.consumeCommands();
-    if (this.stopping) return;
-    if (!this.state.enabled) return;
+    if (this.stopping || !this.state.enabled) return;
+    this.markStale();
+    if (this.syncing || this.filing) return;
+    if (this.clock().getTime() >= this.nextSyncAt) {
+      await this.refresh();
+      if (this.stopping || !this.state.enabled) return;
+    }
     if (this.active !== undefined || this.starting) return;
-    if (this.state.staged.length >= MAX_STAGED) return;
+    if (this.state.sync.state !== "ok") return;
     if (this.cooldownRemaining()) return;
+    const capacity = this.capacity();
+    if (capacity.batch === 0) {
+      this.block(capacity.blockedUntil);
+      return;
+    }
     await this.beginScan();
+  }
+
+  /** A read that has not succeeded for two intervals is no longer trusted. */
+  private markStale(): void {
+    if (this.state.sync.state !== "ok") return;
+    const at = this.state.sync.at;
+    if (at === null) return;
+    const last = Date.parse(at);
+    if (!Number.isFinite(last)) return;
+    if (this.clock().getTime() - last <= 2 * this.syncMs) return;
+    this.state.sync = {
+      state: "stale",
+      at,
+      error: `no GitHub read has succeeded for more than ${Math.round((2 * this.syncMs) / 1000)} seconds`,
+    };
+    this.publish();
   }
 
   private cooldownRemaining(): boolean {
@@ -265,6 +352,12 @@ export class ScoutWorker {
     if (until === null) return false;
     const at = Date.parse(until);
     return Number.isFinite(at) && this.clock().getTime() < at;
+  }
+
+  private block(until: string | null): void {
+    if (this.state.nextAttemptAt === until) return;
+    this.state.nextAttemptAt = until;
+    this.publish();
   }
 
   private async consumeCommands(): Promise<void> {
@@ -287,147 +380,177 @@ export class ScoutWorker {
         await this.stop();
         return;
       }
-      case "approve":
-      case "draft":
-      case "reject": {
-        await this.decide(command.type, command.id);
+      case "limits": {
+        if (!isValidLimit(command.maxPerHour) || !isValidLimit(command.maxPending)) {
+          this.state.lastError = "Auto Scout limits must be integers from 1 through 100.";
+          this.publish();
+          return;
+        }
+        this.state.limits = {
+          maxPerHour: command.maxPerHour,
+          maxPending: command.maxPending,
+        };
+        try {
+          writeSettings(settingsPath(this.stateDir, this.repoDir), this.state.limits);
+        } catch (error) {
+          this.log(`could not persist limits: ${detailOf(error)}`);
+        }
+        this.state.lastError = null;
+        this.state.notice =
+          `Limits saved: ${this.state.limits.maxPerHour} per hour, ` +
+          `${this.state.limits.maxPending} open.`;
+        this.state.nextAttemptAt = null;
+        this.publish();
         return;
       }
     }
   }
 
-  private removeStaged(id: string): void {
-    this.state.staged = this.state.staged.filter((item) => item.id !== id);
-    if (this.state.staged.length === 0) this.state.shortfall = null;
-  }
+  /* ------------------------------------------------------------------ */
+  /* Capacity                                                            */
+  /* ------------------------------------------------------------------ */
 
-  private recordDecision(decision: ScoutDecision): void {
-    this.state.decisions = [...this.state.decisions, decision].slice(-DECISION_LIMIT);
-  }
-
-  /** One click, one outcome: a decision applies to exactly one staged item. */
-  private async decide(kind: "approve" | "draft" | "reject", id: string): Promise<void> {
-    if (this.deciding.has(id)) {
-      this.state.notice = "That decision is already in progress.";
-      this.state.lastError = null;
-      this.publish();
-      return;
-    }
-    const recommendation = this.state.staged.find((item) => item.id === id);
-    if (recommendation === undefined) {
-      this.state.notice = "That recommendation is no longer staged.";
-      this.state.lastError = null;
-      this.publish();
-      return;
-    }
-    if (kind === "reject") {
-      this.removeStaged(id);
-      this.state.shortfall = null;
-      this.state.lastError = null;
-      this.state.notice = `Rejected “${recommendation.title}”.`;
-      this.recordDecision({
-        id,
-        kind,
-        title: recommendation.title,
-        at: this.clock().toISOString(),
-        url: null,
-        path: null,
-      });
-      this.publish();
-      this.refill();
-      return;
-    }
-
-    this.deciding.add(id);
-    try {
-      if (kind === "approve") {
-        const result = await this.fileIssue({
-          repoDir: this.repoDir,
-          repository: this.state.repo,
-          recommendation,
-          environment: this.environment,
-        });
-        this.removeStaged(id);
-        this.state.shortfall = null;
-        this.state.lastError = null;
-        this.state.notice = `Filed ${result.url}`;
-        this.recordDecision({
-          id,
-          kind,
-          title: recommendation.title,
-          at: this.clock().toISOString(),
-          url: result.url,
-          path: null,
-        });
-      } else {
-        const result = await this.draftGoal(recommendation, { repoDir: this.repoDir });
-        this.removeStaged(id);
-        this.state.shortfall = null;
-        this.state.lastError = null;
-        this.state.notice = `Drafted ${result.path}`;
-        this.recordDecision({
-          id,
-          kind,
-          title: recommendation.title,
-          at: this.clock().toISOString(),
-          url: null,
-          path: result.path,
-        });
+  /**
+   * The effective batch: how many issues this cycle may create. The hourly
+   * window counts every Auto Scout issue created inside it, in any state, so a
+   * restart never forgets a filing.
+   */
+  private capacity(now: Date = this.clock()): Capacity {
+    const windowStart = now.getTime() - HOUR_MS;
+    let windowCount = 0;
+    let oldest = Number.POSITIVE_INFINITY;
+    let openCount = 0;
+    for (const issue of this.state.issues) {
+      const createdAt = Date.parse(issue.createdAt);
+      if (Number.isFinite(createdAt) && createdAt > windowStart) {
+        windowCount += 1;
+        if (createdAt < oldest) oldest = createdAt;
       }
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      this.state.lastError = detail;
-      this.state.notice =
-        kind === "approve"
-          ? `Could not file the issue: ${detail}`
-          : `Could not draft the goal: ${detail}`;
-      this.publish();
-      return;
-    } finally {
-      this.deciding.delete(id);
+      if (issue.state === "pending") openCount += 1;
     }
-    this.publish();
-    this.refill();
+    const hourlyRoom = Math.max(0, this.state.limits.maxPerHour - windowCount);
+    const pendingRoom = Math.max(0, this.state.limits.maxPending - openCount);
+    const batch = Math.min(hourlyRoom, pendingRoom);
+    let blockedUntil: string | null = null;
+    if (batch === 0) {
+      const candidates: number[] = [];
+      if (pendingRoom === 0) candidates.push(now.getTime() + this.syncMs);
+      if (hourlyRoom === 0 && Number.isFinite(oldest)) candidates.push(oldest + HOUR_MS);
+      if (candidates.length === 0) candidates.push(now.getTime() + this.syncMs);
+      blockedUntil = new Date(Math.min(...candidates)).toISOString();
+    }
+    return { batch, windowCount, openCount, hourlyRoom, pendingRoom, blockedUntil };
   }
 
-  /** Clear the retry and start the scan that fills the freed slot. */
-  private refill(): void {
-    if (this.stopping || !this.state.enabled) return;
-    if (this.state.staged.length >= MAX_STAGED) return;
+  /* ------------------------------------------------------------------ */
+  /* GitHub reads                                                        */
+  /* ------------------------------------------------------------------ */
+
+  private async readGitHub(): Promise<GitHubRead> {
+    const github = this.github;
+    if (github === undefined) throw new Error("no GitHub client is configured");
+    const [issues, releases, openTitles] = await Promise.all([
+      github.listIssues(),
+      github.listReleases(),
+      github.listOpenIssueTitles(),
+    ]);
+    return { issues, releases, openTitles };
+  }
+
+  /**
+   * The periodic check: every `scout` issue, every published release, and the
+   * open titles the next scan must not restate. A failed read keeps the last
+   * known rows, records the reason, and blocks filing until a read succeeds.
+   */
+  async refresh(): Promise<void> {
+    if (this.stopping || !this.state.enabled || this.syncing || this.filing) return;
+    this.syncing = true;
+    try {
+      let read: GitHubRead;
+      try {
+        read = await this.readGitHub();
+      } catch (error) {
+        this.recordSyncFailure(detailOf(error));
+        return;
+      }
+      try {
+        await this.applyRead(read);
+      } catch (error) {
+        this.recordSyncFailure(detailOf(error));
+        return;
+      }
+      this.nextSyncAt = this.clock().getTime() + this.syncMs;
+      this.publish();
+      if (this.state.sync.state === "ok" && this.capacity().batch > 0) {
+        this.state.nextAttemptAt = null;
+      }
+    } finally {
+      this.syncing = false;
+    }
+  }
+
+  private recordSyncFailure(detail: string): void {
+    this.state.sync = { state: "error", at: this.state.sync.at, error: detail };
+    this.state.lastError = detail;
+    this.state.notice = `Could not read GitHub: ${detail}`;
     this.state.nextAttemptAt = null;
+    this.nextSyncAt = this.clock().getTime() + this.syncMs;
     this.publish();
-    if (this.active === undefined && !this.starting) void this.beginScan();
   }
 
-  private async openIssueTitles(): Promise<string[]> {
-    if (this.listIssues !== undefined) return await this.listIssues();
-    const result = await pollOpenIssues({
-      repository: this.state.repo,
-      environment: this.environment,
-    });
-    if (result.kind === "issues") return result.issues.map((issue) => issue.title);
-    if (result.kind === "not-modified") return [];
-    throw new Error(`could not read the open issues: ${result.detail}`);
+  private async applyRead(read: GitHubRead): Promise<void> {
+    const github = this.github;
+    const previous = new Map(this.state.issues.map((row) => [row.number, row]));
+    const rows: ScoutIssueRow[] = [];
+    for (const issue of read.issues) {
+      const before = previous.get(issue.number);
+      const state = issue.state === "closed" ? "implemented" : "pending";
+      const category = before?.category ?? categoryFromBody(issue.body);
+      let version: string | null = state === "implemented" ? (before?.version ?? null) : null;
+      if (state === "implemented" && version === null && github !== undefined) {
+        version = await shippedVersion(issue, github, read.releases);
+      }
+      rows.push({
+        number: issue.number,
+        title: issue.title,
+        url: issue.url,
+        createdAt: issue.createdAt,
+        state,
+        category,
+        version,
+      });
+    }
+    this.state.issues = newestFirst(rows);
+    this.openTitles = read.openTitles;
+    this.state.sync = { state: "ok", at: this.clock().toISOString(), error: null };
+    this.state.lastError = null;
   }
+
+  /* ------------------------------------------------------------------ */
+  /* Scanning                                                            */
+  /* ------------------------------------------------------------------ */
 
   /** One scan: one request file, one prompt, one validated answer. */
   async beginScan(): Promise<void> {
     if (this.stopping || this.active !== undefined || this.starting) return;
-    if (!this.state.enabled || this.state.staged.length >= MAX_STAGED) return;
+    if (!this.state.enabled || this.state.sync.state !== "ok") return;
+    if (this.cooldownRemaining()) return;
+    const capacity = this.capacity();
+    if (capacity.batch === 0) {
+      this.block(capacity.blockedUntil);
+      return;
+    }
     this.starting = true;
     try {
-      const missing = MAX_STAGED - this.state.staged.length;
-      const openIssueTitles = await this.openIssueTitles();
-      if (this.stopping) return;
-      const scan = createScanDirectory(this.repoDir, this.clock());
+      const now = this.clock();
       const draftGoalHeadings = readDraftGoalHeadings(this.repoDir);
+      const scan = createScanDirectory(this.repoDir, now);
       const request = buildRequest({
         scan,
         repository: this.state.repo,
         repoDir: this.repoDir,
-        missing,
-        staged: this.state.staged,
-        openIssueTitles,
+        requested: capacity.batch,
+        knownTitles: this.knownTitles(draftGoalHeadings),
         draftGoalHeadings,
       });
       writeRequest(scan.directory, request);
@@ -444,16 +567,19 @@ export class ScoutWorker {
           onStderr: (text) => this.recordStderr(text),
         });
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        const failed = { scanId: scan.scanId, directory: scan.directory, prompt, startedAt: scan.startedAt };
-        this.writeScan(failed, "failed", { requested: missing, staged: 0, error: detail });
+        const detail = detailOf(error);
+        const failed = {
+          scanId: scan.scanId,
+          directory: scan.directory,
+          prompt,
+          startedAt: scan.startedAt,
+        };
+        this.writeScan(failed, "failed", { requested: capacity.batch, filed: 0, error: detail });
         this.state.newestScanId = scan.scanId;
         this.state.lastError = detail;
         this.state.notice = `Scan failed: ${detail}`;
         this.state.lifecycle = "failed";
-        this.state.nextAttemptAt = new Date(
-          this.clock().getTime() + this.retryMs,
-        ).toISOString();
+        this.state.nextAttemptAt = new Date(this.clock().getTime() + this.syncMs).toISOString();
         this.publish();
         return;
       }
@@ -461,11 +587,10 @@ export class ScoutWorker {
       const active: ActiveScan = {
         scanId: scan.scanId,
         directory: scan.directory,
-        requested: missing,
+        requested: capacity.batch,
         prompt,
         activity: [],
         peer,
-        openIssueTitles,
         draftGoalHeadings,
         startedAt: scan.startedAt,
         finished: false,
@@ -473,13 +598,13 @@ export class ScoutWorker {
         firstLine: null,
       };
       this.active = active;
-      this.state.scan = { scanId: scan.scanId, startedAt: scan.startedAt, requested: missing };
+      this.state.scan = { scanId: scan.scanId, startedAt: scan.startedAt, requested: capacity.batch };
       this.state.newestScanId = scan.scanId;
       this.state.lifecycle = "scanning";
       this.state.nextAttemptAt = null;
       this.state.lastError = null;
       this.publish();
-      this.writeScan(active, "running", { requested: missing, staged: 0 });
+      this.writeScan(active, "running", { requested: capacity.batch, filed: 0 });
 
       active.timer = setTimeout(() => {
         this.abandonScan(active, "the scan timed out");
@@ -491,14 +616,23 @@ export class ScoutWorker {
         .then(() => this.completeScan(active))
         .catch((error: unknown) => {
           const detail =
-            error instanceof Error && error.message.length > 0
-              ? error.message
+            detailOf(error).length > 0
+              ? detailOf(error)
               : "the agent ended its turn with an error";
           this.abandonScan(active, detail);
         });
     } finally {
       this.starting = false;
     }
+  }
+
+  /** Normalized titles the scan must not restate: issues in any state, open ones, drafts. */
+  private knownTitles(draftGoalHeadings: string[]): string[] {
+    const titles = new Set<string>();
+    for (const issue of this.state.issues) titles.add(normalizeTitle(issue.title));
+    for (const title of this.openTitles) titles.add(normalizeTitle(title));
+    for (const heading of draftGoalHeadings) titles.add(normalizeTitle(heading));
+    return [...titles].sort();
   }
 
   private recordActivity(entry: AcpActivity): void {
@@ -557,11 +691,11 @@ export class ScoutWorker {
       peer?: AcpPeer;
     },
     status: ScoutScanFile["status"],
-    extra: { requested: number; staged: number; error?: string; shortfall?: string },
+    extra: { requested: number; filed: number; error?: string; shortfall?: string },
   ): void {
     const acp = target.peer === undefined ? null : this.observedChild(target.peer);
     const scan: ScoutScanFile = {
-      version: 1,
+      version: 2,
       scanId: target.scanId,
       repo: this.state.repo,
       root: this.repoDir,
@@ -569,7 +703,7 @@ export class ScoutWorker {
       startedAt: target.startedAt,
       finishedAt: status === "running" ? null : this.clock().toISOString(),
       requested: extra.requested,
-      staged: extra.staged,
+      filed: extra.filed,
       prompt: target.prompt,
       acp,
       error: extra.error ?? null,
@@ -604,7 +738,7 @@ export class ScoutWorker {
     }
   }
 
-  /** A scan that timed out or whose peer failed: nothing is staged. */
+  /** A scan that timed out or whose peer failed: nothing is filed. */
   private abandonScan(active: ActiveScan, detail: string): void {
     if (active.finished) return;
     this.recordScanLine(active, `failed: ${detail}`);
@@ -615,29 +749,34 @@ export class ScoutWorker {
     const error = active.firstLine ?? detail;
     this.writeScan(active, "failed", {
       requested: active.requested,
-      staged: 0,
+      filed: 0,
       error,
     });
     this.finishScan(active, error);
   }
 
   private finishScan(active: ActiveScan, error: string | null): void {
+    this.filing = false;
     this.active = undefined;
     this.state.scan = null;
     this.state.newestScanId = active.scanId;
     this.state.lastError = error;
     this.state.notice = error === null ? this.state.notice : `Scan failed: ${error}`;
-    const now = this.clock();
-    if (!this.stopping && this.state.enabled && this.state.staged.length < MAX_STAGED) {
-      this.state.nextAttemptAt = new Date(now.getTime() + this.retryMs).toISOString();
-    } else {
-      this.state.nextAttemptAt = null;
-    }
     this.state.lifecycle = error === null ? "idle" : "failed";
+    const now = this.clock();
+    const capacity = this.capacity(now);
+    this.state.nextAttemptAt =
+      capacity.batch > 0
+        ? new Date(now.getTime() + this.syncMs).toISOString()
+        : capacity.blockedUntil;
     this.publish();
   }
 
-  /** Reads and validates the answer, then stages every novel item. */
+  /**
+   * Reads and validates the answer, re-reads GitHub immediately before filing,
+   * then files every significant, novel item the caps allow. A malformed or
+   * insignificant item never reaches `gh`; a failed read files nothing.
+   */
   private async completeScan(active: ActiveScan): Promise<void> {
     if (active.finished) return;
     // Claim the terminal path before touching the answer, so the timeout can
@@ -653,7 +792,7 @@ export class ScoutWorker {
     } catch {
       this.writeScan(active, "failed", {
         requested: active.requested,
-        staged: 0,
+        filed: 0,
         error: "the agent wrote no recommendations.json",
       });
       this.finishScan(active, "the agent wrote no recommendations.json");
@@ -665,82 +804,160 @@ export class ScoutWorker {
     } catch {
       this.writeScan(active, "failed", {
         requested: active.requested,
-        staged: 0,
+        filed: 0,
         error: "recommendations.json is not valid JSON",
       });
       this.finishScan(active, "recommendations.json is not valid JSON");
       return;
     }
     const result = parseScanResult(parsed, {
-      missing: active.requested,
+      requested: active.requested,
       repoDir: this.repoDir,
     });
     if (!result.ok) {
       this.recordScanLine(active, `rejected: ${result.error}`);
       this.writeScan(active, "failed", {
         requested: active.requested,
-        staged: 0,
+        filed: 0,
         error: result.error,
       });
       this.finishScan(active, result.error);
       return;
     }
 
-    const now = this.clock();
-    const known = new Set<string>([
-      ...this.state.staged.map((item) => normalizeTitle(item.title)),
-      ...active.openIssueTitles.map(normalizeTitle),
-      ...active.draftGoalHeadings.map(normalizeTitle),
-    ]);
-    let accepted = 0;
+    // Immediately before filing, read every scout issue again. The periodic
+    // read stands aside until this scan has finished filing, so a stale apply
+    // can never drop a row that was just created. A failed read files nothing
+    // and surfaces the reason; the next read retries.
+    this.filing = true;
+    while (this.syncing) await Bun.sleep(5);
+    let read: GitHubRead;
+    try {
+      read = await this.readGitHub();
+    } catch (error) {
+      const detail = detailOf(error);
+      this.recordScanLine(active, `failed: ${detail}`);
+      this.recordSyncFailure(detail);
+      this.writeScan(active, "failed", {
+        requested: active.requested,
+        filed: 0,
+        error: detail,
+      });
+      this.finishScan(active, detail);
+      return;
+    }
+    try {
+      await this.applyRead(read);
+    } catch (error) {
+      const detail = detailOf(error);
+      this.recordScanLine(active, `failed: ${detail}`);
+      this.recordSyncFailure(detail);
+      this.writeScan(active, "failed", {
+        requested: active.requested,
+        filed: 0,
+        error: detail,
+      });
+      this.finishScan(active, detail);
+      return;
+    }
+    this.publish();
+
+    const known = new Set(this.knownTitles(active.draftGoalHeadings));
+    const capacity = this.capacity();
+    const limit = Math.min(active.requested, capacity.batch);
+    let filed = 0;
+    let filingError: string | null = null;
+    let lastFiled: { number: number; title: string } | null = null;
     for (const item of result.items) {
-      if (this.state.staged.length >= MAX_STAGED) break;
+      if (this.stopping) break;
+      if (item.significance < SIGNIFICANCE_THRESHOLD) {
+        this.recordScanLine(
+          active,
+          `dropped “${item.title}” — significance ${item.significance}/5 is below ` +
+            `${SIGNIFICANCE_THRESHOLD}`,
+        );
+        continue;
+      }
       const key = normalizeTitle(item.title);
       if (known.has(key)) {
         this.recordScanLine(active, `dropped duplicate “${item.title}”`);
         continue;
       }
+      if (filed >= limit) break;
+      let created: { url: string; number: number };
+      try {
+        created = await this.fileIssue({
+          repoDir: this.repoDir,
+          repository: this.state.repo,
+          recommendation: item,
+          environment: this.environment,
+        });
+      } catch (error) {
+        filingError = detailOf(error);
+        this.recordScanLine(active, `failed to file “${item.title}”: ${filingError}`);
+        break;
+      }
       known.add(key);
-      this.state.staged.push({ ...(item as ValidatedRecommendation), stagedAt: now.toISOString() });
-      accepted += 1;
+      filed += 1;
+      lastFiled = { number: created.number, title: item.title };
+      const createdAt = this.clock().toISOString();
+      this.state.issues = newestFirst([
+        ...this.state.issues.filter((row) => row.number !== created.number),
+        {
+          number: created.number,
+          title: item.title,
+          url: created.url,
+          createdAt,
+          state: "pending",
+          category: item.category,
+          version: null,
+        },
+      ]);
+      this.recordScanLine(active, `filed #${created.number} “${item.title}”`);
+      this.publish();
     }
 
-    const staged = this.state.staged.length;
-    if (staged >= MAX_STAGED) {
-      this.state.shortfall = null;
-    } else {
-      const reason =
-        result.shortfall ??
-        (accepted < active.requested
-          ? `the agent returned ${accepted} of the ${active.requested} requested recommendations`
-          : "a decision freed a slot while the scan ran");
-      this.state.shortfall = {
-        staged,
-        missing: MAX_STAGED - staged,
-        reason,
-        at: now.toISOString(),
-      };
-      this.recordScanLine(active, `shortfall: ${reason}`);
+    if (this.stopping) {
+      this.filing = false;
+      this.active = undefined;
+      this.writeScan(active, "stopped", { requested: active.requested, filed });
+      return;
     }
-    this.writeScan(active, "succeeded", {
+
+    if (lastFiled !== null) {
+      this.state.notice =
+        filed === 1
+          ? `Filed #${lastFiled.number} “${lastFiled.title}”`
+          : `Filed ${filed} issues.`;
+    }
+
+    const shortfall =
+      filed < active.requested
+        ? (filingError ??
+          result.shortfall ??
+          `filed ${filed} of the ${active.requested} requested`)
+        : null;
+    if (shortfall !== null) this.recordScanLine(active, `shortfall: ${shortfall}`);
+    this.writeScan(active, filingError === null ? "succeeded" : "failed", {
       requested: active.requested,
-      staged: accepted,
-      shortfall: this.state.shortfall?.reason ?? "",
+      filed,
+      ...(filingError === null ? {} : { error: filingError }),
+      ...(shortfall === null ? {} : { shortfall }),
     });
-    this.finishScan(active, null);
+    this.finishScan(active, filingError);
   }
 
-  /** Stop: end the peer, keep the board, record `stopped`, release the lock. */
+  /** Stop: end the peer, keep the rows and limits, release the lock. */
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
     const active = this.active;
     if (active !== undefined && !active.finished) {
       active.finished = true;
-      if (active.timer !== undefined) clearTimeout(active.timer);
+      clearTimeout(active.timer);
       active.timer = undefined;
       this.closePeer(active);
-      this.writeScan(active, "stopped", { requested: active.requested, staged: 0 });
+      this.writeScan(active, "stopped", { requested: active.requested, filed: 0 });
       this.active = undefined;
     }
     this.state.enabled = false;
@@ -765,13 +982,13 @@ export class ScoutWorker {
 
 function parseArguments(
   args: string[],
-): { repoDir: string; stateDir: string; retryMs?: number } | undefined {
+): { repoDir: string; stateDir: string; syncMs?: number } | undefined {
   let repoDir: string | undefined;
   let stateDir: string | undefined;
-  let retryMs: number | undefined;
+  let syncMs: number | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--repo" || argument === "--state-dir" || argument === "--retry") {
+    if (argument === "--repo" || argument === "--state-dir" || argument === "--sync") {
       const value = args[index + 1];
       index += 1;
       if (value === undefined) return undefined;
@@ -779,18 +996,18 @@ function parseArguments(
       else if (argument === "--state-dir") stateDir = value;
       else {
         const parsed = Number(value);
-        if (Number.isFinite(parsed) && parsed >= 0) retryMs = parsed;
+        if (Number.isFinite(parsed) && parsed >= 1000) syncMs = parsed;
       }
     }
   }
   if (repoDir === undefined || stateDir === undefined) return undefined;
-  return { repoDir, stateDir, ...(retryMs === undefined ? {} : { retryMs }) };
+  return { repoDir, stateDir, ...(syncMs === undefined ? {} : { syncMs }) };
 }
 
 async function main(): Promise<void> {
   const parsed = parseArguments(process.argv.slice(2));
   if (parsed === undefined) {
-    console.error("usage: worker.ts --repo <checkout> --state-dir <dir> [--retry <ms>]");
+    console.error("usage: worker.ts --repo <checkout> --state-dir <dir> [--sync <ms>]");
     process.exit(2);
   }
   const repoDir = resolve(parsed.repoDir);
@@ -805,10 +1022,15 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  const environmentSync = Number(process.env.SCOUT_SYNC_MS);
+  const syncMs =
+    parsed.syncMs ??
+    (Number.isFinite(environmentSync) && environmentSync >= 1000 ? environmentSync : undefined);
+
   const worker = new ScoutWorker({
     repoDir,
     stateDir,
-    ...(parsed.retryMs === undefined ? {} : { retryMs: parsed.retryMs }),
+    ...(syncMs === undefined ? {} : { syncMs }),
     log: (line) => console.error(`scout: ${line}`),
     onStopped: () => process.exit(0),
   });

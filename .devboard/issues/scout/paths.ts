@@ -5,21 +5,31 @@ import { journalKey } from "../../server/journal";
  * Every path one repository's scout worker owns. State lives under the
  * dashboard's `STATE_DIR`, keyed by the repository path exactly like the
  * dashboard journal and the issues worker, so two checkouts sharing one state
- * directory never read each other's boards. The lock and the scan directories
+ * directory never read each other's state. The lock and the scan directories
  * deliberately live in the checkout: one repository can have only one scout,
  * whichever state directory a dashboard was configured with.
  */
 
 export const SCOUT_DIRECTORY = "scout";
-export const STATE_VERSION = 1;
-export const SCAN_VERSION = 1;
-/** The staging board never holds more than this many recommendations. */
-export const MAX_STAGED = 9;
-export const DECISION_LIMIT = 200;
+export const STATE_VERSION = 2;
+export const SCAN_VERSION = 2;
 /** A scan that runs longer than this is closed and recorded as failed. */
 export const SCAN_TIMEOUT_MS = 15 * 60_000;
-/** The default wait before a shortfall or a failure schedules another scan. */
-export const RETRY_MS = 10 * 60_000;
+/** The periodic GitHub read while the worker is started. */
+export const SYNC_INTERVAL_MS = 60_000;
+/** The rolling window the hourly cap counts inside. */
+export const HOUR_MS = 60 * 60_000;
+/** The default number of issues Auto Scout may create per rolling hour. */
+export const DEFAULT_MAX_PER_HOUR = 10;
+/** The default number of Auto Scout issues that may stay open. */
+export const DEFAULT_MAX_PENDING = 5;
+/** Both limits accept an integer from this value through `LIMIT_MAX`. */
+export const LIMIT_MIN = 1;
+export const LIMIT_MAX = 100;
+/** A finding earns an issue only at this significance or above. */
+export const SIGNIFICANCE_THRESHOLD = 4;
+export const SIGNIFICANCE_MIN = 1;
+export const SIGNIFICANCE_MAX = 5;
 
 export const CATEGORIES = [
   "clarity",
@@ -46,7 +56,7 @@ export const EXCLUDED_ROOTS = [
   ".devboard/.tmp",
 ];
 
-/** `<STATE_DIR>/scout`: every repository's board below one dashboard. */
+/** `<STATE_DIR>/scout`: every repository's state below one dashboard. */
 export function scoutRoot(stateDir: string): string {
   return join(stateDir, SCOUT_DIRECTORY);
 }
@@ -58,6 +68,15 @@ export function repoStateDirectory(stateDir: string, repoDir: string): string {
 
 export function statePath(stateDir: string, repoDir: string): string {
   return join(repoStateDirectory(stateDir, repoDir), "state.json");
+}
+
+/**
+ * The limits the dashboard persists for a repository. It lives beside the
+ * worker state so a save survives a page reload and a worker restart, and the
+ * worker reads it at start rather than relying on a command it may have missed.
+ */
+export function settingsPath(stateDir: string, repoDir: string): string {
+  return join(repoStateDirectory(stateDir, repoDir), "settings.json");
 }
 
 /** Command files the dashboard writes and the worker consumes in order. */

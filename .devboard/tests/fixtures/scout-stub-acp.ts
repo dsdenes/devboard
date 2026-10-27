@@ -82,10 +82,10 @@ function recommendationsFor(scanDirectory: string, index: number): Record<string
       ? []
       : (JSON.parse(readFileSync(poolPath, "utf8")) as Array<Record<string, unknown>>);
   const request = JSON.parse(readFileSync(join(scanDirectory, "request.json"), "utf8")) as {
-    missing: number;
+    requested: number;
   };
   const wave = waves[Math.min(index, Math.max(waves.length - 1, 0))];
-  const wanted = wave === undefined ? request.missing : Math.min(wave.count, request.missing);
+  const wanted = wave === undefined ? request.requested : Math.min(wave.count, request.requested);
   const offset = waves.slice(0, index).reduce((total, entry) => total + entry.count, 0);
   return {
     recommendations: pool.slice(offset, offset + wanted),

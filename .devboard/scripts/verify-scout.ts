@@ -1,22 +1,22 @@
 #!/usr/bin/env bun
 /**
  * The deterministic Auto Scout gate. It drives the built dashboard in headless
- * Chrome against a fixture checkout, a stub ACP peer, and a stub `gh`: sidebar
- * order and palette entry, the first scan's shortfall and the Start/Stop toggle, Approve's
- * single issue with the `scout` label, Draft goal's single file, Reject, a
- * refill back to nine, a second dashboard attaching instead of spawning, Stop,
- * and a reload that preserves the board and the open tab.
+ * Chrome against a fixture checkout, a stub ACP peer, and a stub `gh`: Start
+ * files significant items with no click, the issue table shows title, creation,
+ * category, state, and shipped version, both limits save and survive a reload,
+ * a close and a later release update the row, and no review widget or command
+ * remains.
  *
  * Every fixture, state directory, browser profile, and log lives under
  * `.devboard/.tmp`. It never contacts GitHub and never starts a real agent.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { lockPath, scansDirectory, statePath } from "../issues/scout/paths";
-import { readState, type ScoutState } from "../issues/scout/state";
+import { lockPath, scansDirectory, settingsPath, statePath } from "../issues/scout/paths";
+import { readSettings, readState, type ScoutState } from "../issues/scout/state";
 import { freePort, run, waitFor } from "./verification";
 
 const harnessRoot = resolve(import.meta.dir, "..");
@@ -31,12 +31,9 @@ const chromeCandidates = [
 
 const MODULES = 24;
 const WAVES = [
-  { count: 3, shortfall: "Only three significant gaps remain." },
-  { count: 9 },
-  { count: 1 },
-  { count: 1 },
-  { count: 1 },
-  { count: 1 },
+  { count: 2, shortfall: "The first two candidates were not filable." },
+  { count: 2 },
+  { count: 0 },
 ];
 
 function check(condition: boolean, message: string, evidence?: unknown): asserts condition {
@@ -53,16 +50,37 @@ function chromePath(): string {
   throw new Error("verify:scout: Chrome is unavailable");
 }
 
+interface StubIssue {
+  number: number;
+  title: string;
+  url: string;
+  state: "open" | "closed";
+  createdAt: string;
+  body: string;
+  labels: string[];
+}
+
+interface StubStore {
+  nextNumber: number;
+  issues: StubIssue[];
+  openTitles: string[];
+  releases: Array<{ tag: string; publishedAt: string; draft?: boolean }>;
+  closing: Record<string, string>;
+  comments: Record<string, string[]>;
+  failReads?: boolean;
+}
+
 interface Fixture {
   repo: string;
   stateDir: string;
   home: string;
   bin: string;
   pool: string;
+  store: string;
   ghLog: string;
   acpLog: string;
   acpCounter: string;
-  issues: string;
+  head: string;
 }
 
 async function makeToolBin(base: string): Promise<{ bin: string; home: string }> {
@@ -77,20 +95,26 @@ async function makeToolBin(base: string): Promise<{ bin: string; home: string }>
   return { bin, home };
 }
 
-function recommendation(index: number): Record<string, unknown> {
+function candidate(
+  index: number,
+  title: string,
+  category: string,
+  significance: number,
+  reason: string,
+): Record<string, unknown> {
   const module = (index % MODULES) + 1;
   return {
-    category: ["clarity", "structure", "naming", "tests", "robustness", "correctness"][
-      index % 6
-    ],
-    title: `Scout fixture recommendation ${index + 1}`,
+    category,
+    title,
     summary: `Module ${module} repeats the same rule in several branches, which hides its intent.`,
     impact: "One rule with one owner is cheaper to change and harder to break.",
+    significance,
+    significanceReason: reason,
     evidence: [
       {
         path: `src/module-${module}.ts`,
         lines: "1-5",
-        quote: `export const value${module} = ${module};`,
+        quote: `export const value${module}_1 = 1;`,
       },
     ],
     proposedChange: `Extract the repeated rule in module ${module} into one named unit.`,
@@ -99,7 +123,7 @@ function recommendation(index: number): Record<string, unknown> {
   };
 }
 
-async function makeRepository(base: string): Promise<string> {
+async function makeRepository(base: string): Promise<{ repo: string; head: string }> {
   const directory = join(base, "repo");
   await mkdir(join(directory, ".devboard", ".tmp"), { recursive: true });
   await mkdir(join(directory, ".omp", "commands"), { recursive: true });
@@ -109,14 +133,16 @@ async function makeRepository(base: string): Promise<string> {
   for (let index = 1; index <= MODULES; index += 1) {
     await writeFile(
       join(directory, "src", `module-${index}.ts`),
-      Array.from({ length: 20 }, (_value, line) => `export const value${index}_${line + 1} = ${line + 1};`).join(
-        "\n",
-      ),
+      Array.from(
+        { length: 20 },
+        (_value, line) => `export const value${index}_${line + 1} = ${line + 1};`,
+      ).join("\n"),
     );
   }
-  const git = (args: string[]): void => {
+  const git = (args: string[]): string => {
     const result = run("git", ["-C", directory, ...args]);
     check(result.code === 0, `git ${args.join(" ")} failed: ${result.stderr}`);
+    return result.stdout.trim();
   };
   git(["init", "-q"]);
   git(["config", "user.email", "devboard@example.test"]);
@@ -124,16 +150,55 @@ async function makeRepository(base: string): Promise<string> {
   git(["add", "-A"]);
   git(["commit", "-q", "-m", "fixture"]);
   git(["remote", "add", "origin", "https://github.com/acme/fixture-scout.git"]);
-  return directory;
+  return { repo: directory, head: git(["rev-parse", "HEAD"]) };
 }
 
 async function makeFixture(base: string): Promise<Fixture> {
   const tools = await makeToolBin(base);
-  const repo = await makeRepository(base);
+  const { repo, head } = await makeRepository(base);
   const pool = join(base, "pool.json");
   await writeFile(
     pool,
-    `${JSON.stringify(Array.from({ length: 24 }, (_value, index) => recommendation(index)), null, 2)}\n`,
+    `${JSON.stringify(
+      [
+        candidate(0, "Existing open issue", "tests", 5, "The same issue title is already open."),
+        candidate(1, "Scout polish only", "clarity", 2, "Polishing code that is already correct."),
+        candidate(
+          2,
+          "Scout fixture recommendation one",
+          "clarity",
+          5,
+          "The duplicate rule rejects a trailing slash that the second copy accepts.",
+        ),
+        candidate(
+          3,
+          "Scout fixture recommendation two",
+          "clarity",
+          5,
+          "The unhandled failure path returns a partial file on a write error.",
+        ),
+        candidate(4, "Scout spare one", "robustness", 5, "A real failure mode."),
+        candidate(5, "Scout spare two", "robustness", 5, "A real failure mode."),
+      ],
+      null,
+      2,
+    )}\n`,
+  );
+  const store = join(base, "store.json");
+  writeFileSync(
+    store,
+    `${JSON.stringify(
+      {
+        nextNumber: 1,
+        issues: [],
+        openTitles: ["Existing open issue"],
+        releases: [],
+        closing: {},
+        comments: {},
+      } satisfies StubStore,
+      null,
+      2,
+    )}\n`,
   );
   return {
     repo,
@@ -141,11 +206,20 @@ async function makeFixture(base: string): Promise<Fixture> {
     home: tools.home,
     bin: tools.bin,
     pool,
+    store,
     ghLog: join(base, "gh.log"),
     acpLog: join(base, "acp.log"),
     acpCounter: join(base, "acp-counter.log"),
-    issues: join(base, "issues.log"),
+    head,
   };
+}
+
+function readStore(fixture: Fixture): StubStore {
+  return JSON.parse(readFileSync(fixture.store, "utf8")) as StubStore;
+}
+
+function writeStore(fixture: Fixture, store: StubStore): void {
+  writeFileSync(fixture.store, `${JSON.stringify(store, null, 2)}\n`);
 }
 
 interface Dashboard {
@@ -172,10 +246,11 @@ async function startDashboard(fixture: Fixture): Promise<Dashboard> {
       SCOUT_STUB_POOL: fixture.pool,
       SCOUT_STUB_WAVES: JSON.stringify(WAVES),
       SCOUT_STUB_GH_LOG: fixture.ghLog,
-      SCOUT_STUB_ISSUES: fixture.issues,
+      SCOUT_STUB_STATE: fixture.store,
       SCOUT_STUB_ACP_LOG: fixture.acpLog,
       SCOUT_STUB_ACP_COUNTER: fixture.acpCounter,
       SCOUT_STUB_QUESTION: "1",
+      SCOUT_SYNC_MS: "1000",
       DEVBOARD_UPDATE_INTERVAL_MS: "600000",
     },
     stdio: ["ignore", "ignore", "ignore"],
@@ -183,7 +258,9 @@ async function startDashboard(fixture: Fixture): Promise<Dashboard> {
   await waitFor(
     async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1000) });
+        const response = await fetch(`http://127.0.0.1:${port}/`, {
+          signal: AbortSignal.timeout(1000),
+        });
         return response.ok ? true : undefined;
       } catch {
         return undefined;
@@ -199,7 +276,8 @@ async function stopDashboard(dashboard: Dashboard): Promise<void> {
   if (dashboard.child.exitCode !== null) return;
   dashboard.child.kill("SIGTERM");
   await waitFor(
-    () => (dashboard.child.exitCode !== null || dashboard.child.signalCode !== null ? true : undefined),
+    () =>
+      dashboard.child.exitCode !== null || dashboard.child.signalCode !== null ? true : undefined,
     "the dashboard to exit",
     10_000,
   ).catch(() => undefined);
@@ -250,6 +328,7 @@ function workerPids(repo: string): number[] {
 
 interface SocketMessage {
   type?: string;
+  message?: string;
   [key: string]: unknown;
 }
 
@@ -287,7 +366,12 @@ class Socket {
     description: string,
     timeoutMs = 15_000,
   ): Promise<SocketMessage> {
-    return await waitFor(() => this.messages.slice(from).find(predicate), description, timeoutMs, 25);
+    return await waitFor(
+      () => this.messages.slice(from).find(predicate),
+      description,
+      timeoutMs,
+      25,
+    );
   }
 
   close(): void {
@@ -402,59 +486,76 @@ async function click(devtools: Devtools, testid: string): Promise<void> {
   );
 }
 
-interface WidgetSnapshot {
-  id: string;
-  title: string;
-  category: string;
-  approveCommand: string;
+async function setInput(devtools: Devtools, testid: string, value: string): Promise<void> {
+  await devtools.evaluate(
+    `(() => {
+      const element = document.querySelector('[data-testid="${testid}"]');
+      if (element === null) return false;
+      element.value = ${JSON.stringify(value)};
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`,
+  );
 }
 
-async function widgets(devtools: Devtools): Promise<WidgetSnapshot[]> {
+async function text(devtools: Devtools, testid: string): Promise<string> {
   const value = await devtools
     .evaluate(
-      `(() => Array.from(document.querySelectorAll('[data-testid="scout-widget"]')).map((element) => ({
-        id: element.dataset.id ?? "",
-        title: element.querySelector('.panel__title')?.textContent?.trim() ?? "",
-        category: element.dataset.category ?? "",
-        approveCommand: element.querySelector('[data-testid="scout-approve"]')?.dataset.command ?? "",
+      `document.querySelector('[data-testid="${testid}"]')?.textContent?.trim() ?? ''`,
+    )
+    .catch(() => "");
+  return typeof value === "string" ? value : "";
+}
+
+interface RowSnapshot {
+  number: string;
+  state: string;
+  version: string;
+  title: string;
+  href: string;
+  created: string;
+  type: string;
+  stateText: string;
+  versionText: string;
+}
+
+async function rows(devtools: Devtools): Promise<RowSnapshot[]> {
+  const value = await devtools
+    .evaluate(
+      `(() => Array.from(document.querySelectorAll('[data-testid="scout-issue"]')).map((row) => ({
+        number: row.dataset.number ?? '',
+        state: row.dataset.state ?? '',
+        version: row.dataset.version ?? '',
+        title: row.querySelector('[data-testid="scout-issue-title"]')?.textContent?.trim() ?? '',
+        href: row.querySelector('[data-testid="scout-issue-title"]')?.getAttribute('href') ?? '',
+        created: row.querySelector('[data-testid="scout-issue-created"]')?.textContent?.trim() ?? '',
+        type: row.querySelector('[data-testid="scout-issue-type"]')?.textContent?.trim() ?? '',
+        stateText: row.querySelector('[data-testid="scout-issue-state"]')?.textContent?.trim() ?? '',
+        versionText: row.querySelector('[data-testid="scout-issue-version"]')?.textContent?.trim() ?? '',
       })))()`,
     )
     .catch(() => undefined);
-  return Array.isArray(value) ? (value as WidgetSnapshot[]) : [];
+  return Array.isArray(value) ? (value as RowSnapshot[]) : [];
 }
 
-async function waitWidgets(devtools: Devtools, count: number, description: string): Promise<void> {
-  await waitFor(
-    async () => ((await widgets(devtools)).length === count ? true : undefined),
-    description,
-    20_000,
-  );
-}
-
-/**
- * A decision removes one widget and the refill appends another, so the count
- * only dips for a moment. Wait for the board back at nine without the decided
- * item instead of racing the transient count.
- */
-async function waitRefilled(devtools: Devtools, removed: string, description: string): Promise<void> {
-  await waitFor(
+async function waitRows(devtools: Devtools, count: number, description: string): Promise<RowSnapshot[]> {
+  return await waitFor(
     async () => {
-      const current = await widgets(devtools);
-      return current.length === 9 && !current.some((widget) => widget.id === removed)
-        ? true
-        : undefined;
+      const current = await rows(devtools);
+      return current.length === count ? current : undefined;
     },
     description,
-    20_000,
+    30_000,
   );
 }
 
-function ghCalls(fixture: Fixture): string[][] {
+function issueCreateCalls(fixture: Fixture): string[][] {
   try {
     return readFileSync(fixture.ghLog, "utf8")
       .split("\n")
       .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line) as string[]);
+      .map((line) => JSON.parse(line) as string[])
+      .filter((argv) => argv[0] === "issue" && argv[1] === "create");
   } catch {
     return [];
   }
@@ -463,6 +564,7 @@ function ghCalls(fixture: Fixture): string[][] {
 const dashboards: Dashboard[] = [];
 let chrome: ChildProcess | undefined;
 let devtools: Devtools | undefined;
+let socket: Socket | undefined;
 
 try {
   await mkdir(root, { recursive: true });
@@ -497,94 +599,47 @@ try {
   await devtools.send("Page.enable");
 
   /* ---------------------------------------------------------------- */
-  /* 1. Sidebar order and the palette entry                            */
+  /* 1. Open Auto Scout without starting a worker                      */
   /* ---------------------------------------------------------------- */
   await click(devtools, "mode-issues");
-  const sidebar = await waitFor(
-    async () =>
-      (await devtools!
-        .evaluate(
-          `(() => {
-            const ids = ['open-issues-overview', 'open-issues-agents', 'open-issues-scout', 'open-issues-queue', 'open-issues-runs'];
-            const found = ids.map((id) => document.querySelector('[data-testid="' + id + '"]'));
-            if (found.some((element) => element === null)) return null;
-            const labels = found.map((element) => element.querySelector('.sidebar-item__label')?.textContent?.trim() ?? '');
-            const ordered = ids.every((_id, index) => index === ids.length - 1 ||
-              (found[index].compareDocumentPosition(found[index + 1]) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
-            const scoutButton = found[2];
-            return {
-              labels,
-              ordered,
-              scoutLabel: scoutButton.getAttribute('aria-label') ?? '',
-              command: scoutButton.dataset.command ?? '',
-              count: scoutButton.querySelector('[data-testid="scout-count"]')?.textContent?.trim() ?? '',
-              current: scoutButton.getAttribute('aria-current'),
-            };
-          })()`,
-        )
-        .catch(() => undefined)) as Record<string, unknown> | null,
-    "the Issues sidebar",
-    15_000,
-  );
-  check(
-    JSON.stringify(sidebar.labels) ===
-      JSON.stringify(["Overview", "Agents", "Auto Scout", "Issues", "Runs"]),
-    "the sidebar order is not Overview, Agents, Auto Scout, Issues, Runs",
-    sidebar,
-  );
-  check(sidebar.ordered === true, "the sidebar entries are out of document order", sidebar);
-  check(sidebar.command === "open.issues.scout", "the Auto Scout button has no command", sidebar);
-  check(String(sidebar.scoutLabel).includes("Issues"), "the accessible name omits the mode", sidebar);
-  check(sidebar.count === "0", "the staged count does not start at zero", sidebar);
-  check(sidebar.current !== "true", "an inactive Auto Scout button claims aria-current", sidebar);
-  check(workerPids(fixture.repo).length === 0, "opening the mode started a worker");
-  check(!existsSync(lockPath(fixture.repo)), "opening the mode took the repository lock");
-
-  await devtools.evaluate(
-    `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })), true`,
-  );
   await waitFor(
     async () =>
       (await devtools!
-        .evaluate(`document.querySelector('[data-testid="command-palette"]') !== null`)
+        .evaluate(`document.querySelector('[data-testid="open-issues-scout"]') !== null`)
         .catch(() => false)) === true
         ? true
         : undefined,
-    "the command palette",
-    10_000,
+    "the Auto Scout sidebar entry",
+    15_000,
   );
-  const palette = await waitFor(
-    async () =>
-      (await devtools!
-        .evaluate(
-          `(() => {
-            const input = document.querySelector('[data-testid="command-palette-input"]');
-            if (input === null) return null;
-            input.value = 'auto scout';
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            const item = document.querySelector('[data-testid="command-palette"] [data-command="open.issues.scout"]');
-            if (item === null) return null;
-            let group = '';
-            for (let node = item.previousElementSibling; node !== null; node = node.previousElementSibling) {
-              if (node.classList.contains('palette__group')) {
-                group = node.textContent?.trim() ?? '';
-                break;
-              }
-            }
-            return {
-              title: item.querySelector('.palette__item-title')?.textContent?.trim() ?? '',
-              group,
-            };
-          })()`,
-        )
-        .catch(() => undefined)) as Record<string, unknown> | null,
-    "the Auto Scout palette entry",
-    10_000,
+  const scoutEntry = await devtools.evaluate(
+    `(() => {
+      const button = document.querySelector('[data-testid="open-issues-scout"]');
+      if (button === null) return null;
+      return {
+        command: button.dataset.command ?? '',
+        count: button.querySelector('[data-testid="scout-count"]')?.textContent?.trim() ?? '',
+        label: button.getAttribute('aria-label') ?? '',
+      };
+    })()`,
   );
-  check(palette.title === "Open Auto Scout", "the palette title is wrong", palette);
-  check(palette.group === "Workspace", "the palette entry is not in Workspace", palette);
+  check(
+    (scoutEntry as Record<string, unknown> | null)?.command === "open.issues.scout",
+    "the Auto Scout button has no command",
+    scoutEntry,
+  );
+  check(
+    (scoutEntry as Record<string, unknown> | null)?.count === "0",
+    "the pending count does not start at zero",
+    scoutEntry,
+  );
+  check(
+    String((scoutEntry as Record<string, unknown> | null)?.label).includes("Issues"),
+    "the accessible name omits the mode",
+    scoutEntry,
+  );
   await devtools.evaluate(
-    `(() => { document.querySelector('[data-testid="command-palette"] [data-command="open.issues.scout"]').click(); return true; })()`,
+    `(() => { document.querySelector('[data-testid="open-issues-scout"]').click(); return true; })()`,
   );
   await waitFor(
     async () =>
@@ -597,234 +652,291 @@ try {
     10_000,
   );
   check(workerPids(fixture.repo).length === 0, "opening the page started a worker");
+  check(!existsSync(lockPath(fixture.repo)), "opening the page took the repository lock");
+  check(
+    (await devtools.evaluate(
+      `document.querySelector('[data-testid="scout-issues-empty"]') !== null`,
+    )) === true,
+    "an empty table renders no empty state",
+  );
 
   /* ---------------------------------------------------------------- */
-  /* 2. Start, the shortfall, and the Start/Stop toggle                */
+  /* 2. Save both limits, then Start files significant items           */
   /* ---------------------------------------------------------------- */
-  await click(devtools, "scout-start");
-  await waitWidgets(devtools, 3, "the first scan's three findings");
-  const shortfall = await devtools.evaluate(
-    `document.querySelector('[data-testid="scout-shortfall"]')?.textContent?.trim() ?? ''`,
-  );
-  check(typeof shortfall === "string", "the shortfall element is missing", shortfall);
-  check(shortfall.includes("3") && shortfall.includes("9"), "the shortfall does not name 3 and 9", shortfall);
-  const count = await devtools.evaluate(
-    `document.querySelector('[data-testid="scout-count"]')?.textContent?.trim() ?? ''`,
-  );
-  check(count === "3", "the staged count does not match the widgets", count);
-  await waitState(fixture, "the shortfall state", (state) => state.staged.length === 3);
-  check(workerPids(fixture.repo).length === 1, "Start did not spawn exactly one worker");
+  await setInput(devtools, "scout-max-per-hour", "10");
+  await setInput(devtools, "scout-max-pending", "2");
+  await click(devtools, "scout-save-limits");
   await waitFor(
     () => {
-      const log = existsSync(fixture.acpLog) ? readFileSync(fixture.acpLog, "utf8") : "";
-      return /permission \{"outcome":\{"outcome":"selected","optionId":"allow-once"\}\}/.test(log)
-        ? true
-        : undefined;
+      const saved = readSettings(settingsPath(fixture.stateDir, fixture.repo));
+      return saved?.maxPerHour === 10 && saved.maxPending === 2 ? true : undefined;
     },
-    "the auto-approved permission",
+    "the saved limits",
     10_000,
-    50,
-  );
-  const firstActivity = await waitFor(
-    async () =>
-      (await devtools!
-        .evaluate(`document.querySelector('[data-testid="scout-activity"]')?.textContent ?? ''`)
-        .catch(() => "")) as string,
-    "the scan activity",
-    15_000,
-  ).catch(() => "");
-  check(
-    firstActivity.includes("scout activity") &&
-      firstActivity.includes("question:") &&
-      firstActivity.includes("answer: correctness"),
-    "the question and its answer are not in the activity",
-    firstActivity,
   );
 
+  await click(devtools, "scout-start");
+  const filedRows = await waitRows(devtools, 2, "the two filed issues");
+  check(workerPids(fixture.repo).length === 1, "Start did not spawn exactly one worker");
+  const numbers = filedRows.map((row) => row.number).sort();
   check(
-    (await devtools.evaluate(`document.querySelector('[data-testid="scout-scan-now"]') === null`)) ===
-      true,
-    "the page still offers a separate Scan now control",
+    JSON.stringify(numbers) === JSON.stringify(["1", "2"]),
+    "the table does not hold the two filed issues",
+    filedRows,
+  );
+  for (const row of filedRows) {
+    check(row.title.length > 0, "a row has no title", row);
+    check(row.href.includes("/issues/"), "the title is not an anchor to the issue", row);
+    check(row.created.length > 0, "a row has no creation time", row);
+    check(row.type === "clarity", "a row has the wrong category", row);
+    check(row.state === "pending", "a pending issue has the wrong state", row);
+    check(row.stateText === "pending", "a pending issue renders the wrong state", row);
+    check(row.version === "—", "a pending issue has a shipped version", row);
+    check(row.versionText === "—", "a pending issue renders a shipped version", row);
+  }
+  check(
+    (await text(devtools, "scout-count")) === "2",
+    "the sidebar count does not match the pending rows",
+    await text(devtools, "scout-count"),
+  );
+  const created = issueCreateCalls(fixture);
+  check(created.length === 2, "a non-significant or duplicate item was filed", created);
+  check(
+    created.every(
+      (argv) =>
+        argv[argv.indexOf("--repo") + 1] === "acme/fixture-scout" &&
+        argv[argv.indexOf("--label") + 1] === "scout",
+    ),
+    "an issue was filed without the host origin and the scout label",
+    created,
+  );
+  const activity = await text(devtools, "scout-activity");
+  check(activity.includes("filed #"), "the filings are not in the activity", activity);
+  const createdBodies = readStore(fixture).issues.map((issue) => issue.body);
+  check(
+    createdBodies.every((body) => body.includes("## Significance") && body.includes("5/5")),
+    "a filed issue body has no significance section",
+    createdBodies,
+  );
+  // Every scan keeps its own activity; the page shows the newest one, so the
+  // drops from the first scan are read from its recorded file.
+  const recorded = readdirSync(scansDirectory(fixture.repo))
+    .map((scanId) => {
+      try {
+        return readFileSync(join(scansDirectory(fixture.repo), scanId, "activity.json"), "utf8");
+      } catch {
+        return "";
+      }
+    })
+    .join("\n");
+  check(recorded.includes("dropped duplicate"), "the duplicate was not recorded", recorded);
+  check(recorded.includes("significance 2/5"), "the low score was not recorded", recorded);
+
+  const reviewIds = [
+    "scout-widget",
+    "scout-approve",
+    "scout-draft-goal",
+    "scout-reject",
+    "scout-shortfall",
+  ];
+  const remaining = await devtools.evaluate(
+    `(() => ${JSON.stringify(reviewIds)}.filter((id) => document.querySelector('[data-testid="' + id + '"]') !== null))()`,
   );
   check(
-    (await devtools.evaluate(`document.querySelector('[data-testid="scout-stop"]') !== null`)) ===
-      true,
-    "a running scout does not offer Stop",
+    Array.isArray(remaining) && remaining.length === 0,
+    "a review widget or control remains",
+    remaining,
   );
-  await click(devtools, "scout-stop");
-  await waitState(fixture, "the stopped scout", (state) => state.lifecycle === "stopped");
+
+  /* ---------------------------------------------------------------- */
+  /* 3. No approve, draft, or reject command is accepted               */
+  /* ---------------------------------------------------------------- */
+  socket = new Socket(dashboard.port);
+  await socket.open();
+  const beforeCommands = issueCreateCalls(fixture).length;
+  socket.send({ type: "approveScout", id: "1" });
+  socket.send({ type: "draftScoutGoal", id: "1" });
+  socket.send({ type: "rejectScout", id: "1" });
+  await waitUntilErrors(socket, 3);
+  check(
+    issueCreateCalls(fixture).length === beforeCommands,
+    "a review command filed an issue",
+    issueCreateCalls(fixture),
+  );
+  socket.close();
+  socket = undefined;
+
+  /* ---------------------------------------------------------------- */
+  /* 4. An invalid save shows the error and sends nothing              */
+  /* ---------------------------------------------------------------- */
+  await setInput(devtools, "scout-max-per-hour", "0");
+  await click(devtools, "scout-save-limits");
+  const limitsError = await waitFor(
+    async () => {
+      const value = await text(devtools, "scout-limits-error");
+      return value.length > 0 ? value : undefined;
+    },
+    "the limits error",
+    10_000,
+  );
+  check(
+    limitsError.includes("1 through 100"),
+    "the limits error does not name the accepted range",
+    limitsError,
+  );
+  const stillSaved = readSettings(settingsPath(fixture.stateDir, fixture.repo));
+  check(
+    stillSaved?.maxPerHour === 10 && stillSaved.maxPending === 2,
+    "an invalid save changed the persisted limits",
+    stillSaved,
+  );
+
+  /* ---------------------------------------------------------------- */
+  /* 5. A valid save survives a reload                                 */
+  /* ---------------------------------------------------------------- */
+  await setInput(devtools, "scout-max-per-hour", "3");
+  await setInput(devtools, "scout-max-pending", "1");
+  await click(devtools, "scout-save-limits");
+  await waitFor(
+    () => {
+      const saved = readSettings(settingsPath(fixture.stateDir, fixture.repo));
+      return saved?.maxPerHour === 3 && saved.maxPending === 1 ? true : undefined;
+    },
+    "the second saved limits",
+    10_000,
+  );
+  const applied = await waitState(
+    fixture,
+    "the running worker's limits",
+    (state) => state.limits.maxPerHour === 3 && state.limits.maxPending === 1,
+  );
+  check(applied.limits.maxPending === 1, "the running worker did not apply the saved limits", applied);
+  await devtools.send("Page.reload");
   await waitFor(
     async () =>
-      (await devtools
-        .evaluate(`document.querySelector('[data-testid="scout-start"]') !== null`)
+      (await devtools!
+        .evaluate(
+          `document.readyState === "complete" && document.querySelector('[data-testid="issues-scout"]') !== null`,
+        )
         .catch(() => false)) === true
         ? true
         : undefined,
-    "the Start control after Stop",
-    10_000,
+    "the reloaded Auto Scout page",
+    30_000,
   );
-  await click(devtools, "scout-start");
-  await waitWidgets(devtools, 9, "the restarted scan's nine findings");
-  const fullCount = await devtools.evaluate(
-    `document.querySelector('[data-testid="scout-count"]')?.textContent?.trim() ?? ''`,
-  );
-  check(fullCount === "9", "the staged count is not nine", fullCount);
+  await waitRows(devtools, 2, "the table after a reload");
   check(
-    (await devtools.evaluate(`document.querySelector('[data-testid="scout-shortfall"]') === null`)) === true,
-    "a full board still shows a shortfall",
+    (await devtools.evaluate(
+      `document.querySelector('[data-testid="scout-max-per-hour"]')?.value ?? ''`,
+    )) === "3",
+    "the hourly limit did not survive a reload",
   );
   check(
     (await devtools.evaluate(
-      `document.querySelector('[data-testid="scout-lifecycle"]')?.textContent?.trim() ?? ''`,
-    )) === "idle",
-    "the page does not report idle after the scan",
+      `document.querySelector('[data-testid="scout-max-pending"]')?.value ?? ''`,
+    )) === "1",
+    "the pending limit did not survive a reload",
   );
 
   /* ---------------------------------------------------------------- */
-  /* 3. Approve files one issue and the refill restores nine           */
+  /* 6. A close makes the row implemented; a later release fills it    */
   /* ---------------------------------------------------------------- */
-  const beforeApprove = await widgets(devtools);
-  const approved = beforeApprove[0]!;
-  check(approved.approveCommand === `issues.scout.approve.${approved.id}`, "the approve command is wrong", approved);
-  await devtools.evaluate(
-    `(() => { document.querySelector('[data-testid="scout-widget"] [data-testid="scout-approve"]').click(); return true; })()`,
-  );
-  const issueRecord = await waitFor(
-    () => {
-      const lines = existsSync(fixture.issues)
-        ? readFileSync(fixture.issues, "utf8").split("\n").filter(Boolean)
-        : [];
-      if (lines.length === 0) return undefined;
-      return JSON.parse(lines[0]!) as { repo: string; title: string; label: string; body: string };
+  const store = readStore(fixture);
+  const first = store.issues[0]!;
+  first.state = "closed";
+  store.closing[String(first.number)] = fixture.head;
+  writeStore(fixture, store);
+  const implemented = await waitFor(
+    async () => {
+      const current = await rows(devtools);
+      const row = current.find((entry) => entry.number === String(first.number));
+      return row?.state === "implemented" ? row : undefined;
     },
-    "the filed issue",
+    "the implemented row",
     15_000,
   );
-  check(issueRecord.repo === "acme/fixture-scout", "the issue was not filed in the host origin", issueRecord);
-  check(issueRecord.label === "scout", "the issue does not carry the scout label", issueRecord);
-  check(issueRecord.title === approved.title, "the issue title is not the recommendation's", {
-    issueRecord,
-    approved,
-  });
-  check(issueRecord.body.includes("## Evidence"), "the issue body has no evidence", issueRecord.body);
   check(
-    ghCalls(fixture).some((argv) => argv[0] === "label" && argv[1] === "create"),
-    "the missing scout label was not created",
-  );
-  await waitRefilled(devtools, approved.id, "the refill after the approval");
-  const notified = await devtools.evaluate(
-    `document.querySelector('[data-testid="notifications"]')?.textContent ?? ''`,
+    implemented.version === "—" && implemented.versionText === "—",
+    "a closed issue with no release shows a version",
+    implemented,
   );
   check(
-    typeof notified === "string" &&
-      notified.includes("https://github.com/acme/fixture-scout/issues/1"),
-    "no notification states the filed issue's URL",
-    notified,
-  );
-  const afterApprove = await widgets(devtools);
-  check(
-    JSON.stringify(afterApprove.slice(0, 8).map((widget) => widget.id)) ===
-      JSON.stringify(beforeApprove.slice(1).map((widget) => widget.id)),
-    "the remaining widgets did not keep their positions",
-    { beforeApprove, afterApprove },
+    (await text(devtools, "scout-count")) === "1",
+    "the pending count did not fall after a close",
+    await text(devtools, "scout-count"),
   );
 
-  /* ---------------------------------------------------------------- */
-  /* 4. Draft goal writes one file and the refill restores nine        */
-  /* ---------------------------------------------------------------- */
-  const beforeDraft = await widgets(devtools);
-  const drafted = beforeDraft[0]!;
-  await devtools.evaluate(
-    `(() => { document.querySelector('[data-testid="scout-widget"] [data-testid="scout-draft-goal"]').click(); return true; })()`,
-  );
-  const proposals = join(fixture.repo, ".devboard", "goal-proposals");
-  const draftFile = await waitFor(
-    () => {
-      if (!existsSync(proposals)) return undefined;
-      const names = readdirSync(proposals);
-      return names.length === 1 ? join(proposals, names[0]!) : undefined;
+  run("git", ["-C", fixture.repo, "tag", "v0.1.0", fixture.head]);
+  const released = readStore(fixture);
+  released.releases.push({ tag: "v0.1.0", publishedAt: new Date().toISOString() });
+  writeStore(fixture, released);
+  const shipped = await waitFor(
+    async () => {
+      const current = await rows(devtools);
+      const row = current.find((entry) => entry.number === String(first.number));
+      return row?.version === "v0.1.0" ? row : undefined;
     },
-    "the drafted goal file",
+    "the shipped version",
+    20_000,
+  );
+  check(
+    shipped.versionText === "v0.1.0",
+    "the shipped version is not rendered",
+    shipped,
+  );
+
+  /* ---------------------------------------------------------------- */
+  /* 7. A failed read surfaces the reason and keeps the rows           */
+  /* ---------------------------------------------------------------- */
+  const syncAt = await text(devtools, "scout-sync-at");
+  const failing = readStore(fixture);
+  failing.failReads = true;
+  writeStore(fixture, failing);
+  await waitFor(
+    async () => {
+      const state = await devtools!.evaluate(
+        `document.querySelector('[data-testid="scout-sync"]')?.dataset.state ?? ''`,
+      );
+      return state === "error" || state === "stale" ? true : undefined;
+    },
+    "the sync error state",
     15_000,
   );
-  const draftText = readFileSync(draftFile, "utf8");
-  check(draftText.includes(drafted.title), "the draft does not carry the recommendation", draftText.slice(0, 400));
-  check(
-    draftText.includes("> Unprocessed draft. Refine it with `/goal-spec` before it becomes a goal."),
-    "the draft has no draft notice",
-  );
-  await waitRefilled(devtools, drafted.id, "the refill after the draft");
-  const draftNotified = await devtools.evaluate(
-    `document.querySelector('[data-testid="notifications"]')?.textContent ?? ''`,
+  const syncError = await waitFor(
+    async () => {
+      const value = await text(devtools, "scout-sync-error");
+      return value.length > 0 ? value : undefined;
+    },
+    "the sync error reason",
+    10_000,
   );
   check(
-    typeof draftNotified === "string" &&
-      draftNotified.includes(".devboard/goal-proposals/"),
-    "no notification states the draft's path",
-    draftNotified,
-  );
-
-  /* ---------------------------------------------------------------- */
-  /* 5. Reject removes the widget and the refill restores nine         */
-  /* ---------------------------------------------------------------- */
-  const rejected = (await widgets(devtools))[0]!;
-  await devtools.evaluate(
-    `(() => { document.querySelector('[data-testid="scout-widget"] [data-testid="scout-reject"]').click(); return true; })()`,
-  );
-  await waitRefilled(devtools, rejected.id, "the refill after the rejection");
-  const decisions = await waitState(
-    fixture,
-    "the recorded decisions",
-    (state) => state.decisions.length === 3,
-  );
-  check(decisions.staged.length === 9, "the board is not full after the refill", decisions.staged.length);
-  check(
-    decisions.decisions.map((entry) => entry.kind).join(",") === "approve,draft,reject",
-    "the decisions are not recorded in order",
-    decisions.decisions,
+    syncError.includes("unavailable"),
+    "the sync error does not carry the reason",
+    syncError,
   );
   check(
-    decisions.decisions.some((entry) => entry.kind === "reject" && entry.title === rejected.title),
-    "the rejection did not record its title",
-    decisions.decisions,
+    (await text(devtools, "scout-sync-at")) === syncAt,
+    "a failed read discarded the last success time",
+    await text(devtools, "scout-sync-at"),
   );
-
-  /* ---------------------------------------------------------------- */
-  /* 6. A second dashboard attaches instead of spawning                */
-  /* ---------------------------------------------------------------- */
-  const second = await startDashboard(fixture);
-  dashboards.push(second);
-  const socket = new Socket(second.port);
-  await socket.open();
-  socket.send({ type: "startScout" });
-  const attached = await socket.waitFrom(
-    0,
-    (message) => message.type === "scoutState" && message.attached === true,
-    "the attach reply",
+  await waitRows(devtools, 2, "the rows after a failed read");
+  const recovered = readStore(fixture);
+  recovered.failReads = false;
+  writeStore(fixture, recovered);
+  await waitFor(
+    async () => {
+      const state = await devtools!.evaluate(
+        `document.querySelector('[data-testid="scout-sync"]')?.dataset.state ?? ''`,
+      );
+      return state === "ok" ? true : undefined;
+    },
+    "the recovered sync",
     15_000,
   );
-  check(attached.attached === true, "the second dashboard did not attach", attached);
-  check(Array.isArray(attached.staged) && attached.staged.length === 9, "the attach reply has no board", attached);
-  check(workerPids(fixture.repo).length === 1, "the second dashboard spawned a worker", workerPids(fixture.repo));
-
-  const attachedStage = attached.staged as Array<{ id: string; title: string }>;
-  const rejectedElsewhere = attachedStage[0]!;
-  socket.send({ type: "rejectScout", id: rejectedElsewhere.id });
-  await waitRefilled(devtools, rejectedElsewhere.id, "the board updating from the other dashboard");
-  const crossDecision = await waitState(
-    fixture,
-    "the decision from the other dashboard",
-    (state) => state.decisions.length === 4,
-  );
-  check(
-    crossDecision.decisions.at(-1)?.id === rejectedElsewhere.id,
-    "the other dashboard's decision was not recorded",
-    crossDecision.decisions,
-  );
-  socket.close();
 
   /* ---------------------------------------------------------------- */
-  /* 7. Stop ends the worker and keeps the board                       */
+  /* 8. Stop ends the worker and the table survives                    */
   /* ---------------------------------------------------------------- */
   const stoppingPid = stateOf(fixture)?.worker?.pid ?? 0;
   await click(devtools, "scout-stop");
@@ -834,23 +946,10 @@ try {
     (state) => state.lifecycle === "stopped",
   );
   check(stopped.enabled === false, "Stop left the scout enabled", stopped);
-  check(stopped.staged.length === 9, "Stop discarded the staged board", stopped.staged);
   check(!existsSync(lockPath(fixture.repo)), "Stop did not release the repository lock");
   await waitFor(
     () => (workerPids(fixture.repo).length === 0 ? true : undefined),
     "the worker to exit",
-    10_000,
-  );
-  await waitFor(
-    async () =>
-      (await devtools!
-        .evaluate(
-          `document.querySelector('[data-testid="scout-lifecycle"]')?.textContent?.trim() ?? ''`,
-        )
-        .catch(() => "")) === "stopped"
-        ? true
-        : undefined,
-    "the page to report stopped",
     10_000,
   );
   if (stoppingPid > 0) {
@@ -862,65 +961,36 @@ try {
     }
     check(!alive, "the stopped worker process still runs", stoppingPid);
   }
+  await waitRows(devtools, 2, "the table after Stop");
 
-  /* ---------------------------------------------------------------- */
-  /* 8. Reload preserves the board and the open tab                    */
-  /* ---------------------------------------------------------------- */
   await devtools.send("Page.reload");
   await waitFor(
     async () =>
       (await devtools!
-        .evaluate(`document.readyState === "complete" && document.querySelector('[data-testid="app-shell"]') !== null`)
+        .evaluate(
+          `document.readyState === "complete" && document.querySelector('[data-testid="issues-scout"]') !== null`,
+        )
         .catch(() => false)) === true
         ? true
         : undefined,
-    "the reloaded dashboard",
+    "the final reloaded page",
     30_000,
   );
-  await waitFor(
-    async () =>
-      (await devtools!
-        .evaluate(`document.querySelector('[data-testid="issues-scout"]') !== null`)
-        .catch(() => false)) === true
-        ? true
-        : undefined,
-    "the Auto Scout tab after a reload",
-    20_000,
-  );
-  await waitWidgets(devtools, 9, "the staged board after a reload");
+  await waitRows(devtools, 2, "the table after the final reload");
   check(
     workerPids(fixture.repo).length === 0,
     "reloading the dashboard started a worker",
     workerPids(fixture.repo),
   );
-  check(
-    (await devtools.evaluate(
-      `document.querySelector('[data-testid="scout-count"]')?.textContent?.trim() ?? ''`,
-    )) === "9",
-    "the sidebar count does not survive a reload",
-  );
-  check(
-    (await devtools.evaluate(
-      `document.querySelector('[data-testid="open-issues-scout"]')?.getAttribute('aria-current') ?? ''`,
-    )) === "true",
-    "the Auto Scout tab is not current after a reload",
-  );
-  const prompts = readFileSync(fixture.acpLog, "utf8")
-    .split("\n")
-    .filter((line) => line.startsWith("prompt /scout-recommendations "));
-  check(prompts.length === 6, "a scan did not send exactly one prompt", prompts);
-  check(
-    readdirSync(scansDirectory(fixture.repo)).length === 6,
-    "the checkout does not hold one directory per scan",
-    readdirSync(scansDirectory(fixture.repo)),
-  );
 
   console.log(
-    "verify:scout: sidebar order, palette entry, shortfall, the Start/Stop toggle, Approve with the scout " +
-      "label, Draft goal, Reject, refill to nine, second-dashboard attach and decision, Stop, and " +
-      "reload passed",
+    "verify:scout: Start filed significant items with no click, the table shows title, creation, " +
+      "category, state, and shipped version, both limits saved and survived a reload, a close " +
+      "and a later release updated the row, a failed read surfaced its reason, and no review " +
+      "widget or command remains",
   );
 } finally {
+  socket?.close();
   for (const dashboard of dashboards) {
     await stopDashboard(dashboard);
   }
@@ -944,4 +1014,17 @@ try {
   } else {
     console.error(`verify:scout: kept ${root}`);
   }
+}
+
+/** Waits for the dashboard to answer each refused review command with an error. */
+async function waitUntilErrors(target: Socket, count: number): Promise<void> {
+  await waitFor(
+    () => {
+      const errors = target.messages.filter((message) => message.type === "error");
+      return errors.length >= count ? errors : undefined;
+    },
+    `${count} refused review commands`,
+    10_000,
+    25,
+  );
 }

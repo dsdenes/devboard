@@ -477,9 +477,7 @@ type ClientMessage =
   | { type: "getScout" }
   | { type: "startScout" }
   | { type: "stopScout" }
-  | { type: "approveScout"; id?: unknown }
-  | { type: "draftScoutGoal"; id?: unknown }
-  | { type: "rejectScout"; id?: unknown }
+  | { type: "setScoutLimits"; maxPerHour?: unknown; maxPending?: unknown }
   | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
@@ -578,12 +576,12 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "startScout" };
     case "stopScout":
       return { type: "stopScout" };
-    case "approveScout":
-      return { type: "approveScout", id: "id" in value ? value.id : undefined };
-    case "draftScoutGoal":
-      return { type: "draftScoutGoal", id: "id" in value ? value.id : undefined };
-    case "rejectScout":
-      return { type: "rejectScout", id: "id" in value ? value.id : undefined };
+    case "setScoutLimits":
+      return {
+        type: "setScoutLimits",
+        maxPerHour: "maxPerHour" in value ? value.maxPerHour : undefined,
+        maxPending: "maxPending" in value ? value.maxPending : undefined,
+      };
     case "restartServer":
       return {
         type: "restartServer",
@@ -5737,18 +5735,8 @@ export function createApp(options: AppOptions) {
           } else if (command.type === "stopScout") {
             const result = scout.stop();
             if (!result.ok) send(ws, { type: "error", message: result.message });
-          } else if (
-            command.type === "approveScout" ||
-            command.type === "draftScoutGoal" ||
-            command.type === "rejectScout"
-          ) {
-            const kind =
-              command.type === "approveScout"
-                ? "approve"
-                : command.type === "draftScoutGoal"
-                  ? "draft"
-                  : "reject";
-            const result = scout.decide(kind, command.id);
+          } else if (command.type === "setScoutLimits") {
+            const result = scout.setLimits(command.maxPerHour, command.maxPending);
             if (!result.ok) send(ws, { type: "error", message: result.message });
           } else if (command.type === "restartServer") {
             restartServer(ws, command.whenIdle === true);

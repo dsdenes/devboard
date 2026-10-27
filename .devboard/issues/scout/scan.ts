@@ -5,34 +5,36 @@ import { runIdentifier } from "../worker";
 import {
   CATEGORIES,
   EXCLUDED_ROOTS,
+  SIGNIFICANCE_THRESHOLD,
   requestPath,
   scanDirectory,
   scansDirectory,
 } from "./paths";
 import { writeAtomic } from "./state";
-import type { ScoutRecommendation } from "./recommendation";
 
 /**
  * One scan's request: written before the prompt and read by the agent, so the
  * contract between the worker and `/scout-recommendations` is a file, not a
- * convention. The request names what to ignore and what is already known, so
- * the agent never proposes a staged item, an open issue, or a draft goal.
+ * convention. The request names how many issues may be filed, what to ignore,
+ * and which titles already exist, so the agent never restates a known finding.
  */
 
 export const SCAN_PROMPT = "/scout-recommendations";
 
 export interface ScanRequest {
-  version: 1;
+  version: 2;
   scanId: string;
   repository: string;
   repositoryPath: string;
-  /** The slots the board has free; the agent returns at most this many. */
-  missing: number;
+  /** How many significant findings this scan may turn into issues. */
+  requested: number;
   categories: string[];
   excludedRoots: string[];
-  staged: Array<{ id: string; category: string; title: string }>;
-  openIssueTitles: string[];
+  /** Normalized titles of existing Auto Scout issues and open issues. */
+  knownTitles: string[];
   draftGoalHeadings: string[];
+  /** Findings below this score are not filed. */
+  significanceThreshold: number;
   createdAt: string;
 }
 
@@ -64,26 +66,21 @@ export function buildRequest(options: {
   scan: CreatedScan;
   repository: string;
   repoDir: string;
-  missing: number;
-  staged: ScoutRecommendation[];
-  openIssueTitles: string[];
+  requested: number;
+  knownTitles: string[];
   draftGoalHeadings: string[];
 }): ScanRequest {
   return {
-    version: 1,
+    version: 2,
     scanId: options.scan.scanId,
     repository: options.repository,
     repositoryPath: resolve(options.repoDir),
-    missing: options.missing,
+    requested: options.requested,
     categories: [...CATEGORIES],
     excludedRoots: [...EXCLUDED_ROOTS],
-    staged: options.staged.map((item) => ({
-      id: item.id,
-      category: item.category,
-      title: item.title,
-    })),
-    openIssueTitles: [...options.openIssueTitles],
+    knownTitles: [...options.knownTitles],
     draftGoalHeadings: [...options.draftGoalHeadings],
+    significanceThreshold: SIGNIFICANCE_THRESHOLD,
     createdAt: options.scan.startedAt,
   };
 }

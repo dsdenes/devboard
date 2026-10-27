@@ -1,4 +1,3 @@
-import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
   authEnvironment,
@@ -6,22 +5,15 @@ import {
   resolveForgeAuth,
   type Exec,
 } from "../../lib/forge-auth";
-import {
-  DRAFT_NOTICE,
-  GOAL_PROPOSALS_DIRECTORY,
-  createExclusive,
-  goalProposalName,
-} from "../../server/goal-proposal";
 import { ghCommand } from "./preflight";
 import { issueBodyDirectory } from "./paths";
 import { writeAtomic } from "./state";
 import type { ScoutRecommendation } from "./recommendation";
 
 /**
- * The two decisions that leave the board with something durable: Approve files
- * exactly one issue in the host origin, and Draft goal writes exactly one
- * Markdown draft. Both are called only from the detached worker, and a failure
- * throws so the widget stays staged and the reason reaches the page.
+ * Filing one recommendation as one issue in the host origin. It is called only
+ * from the detached worker, and a failure throws so the scan records the reason
+ * and files nothing else.
  */
 
 export interface GhRunner {
@@ -65,6 +57,12 @@ export function issueBody(recommendation: ScoutRecommendation): string {
     ...(recommendation.impact.length === 0
       ? []
       : ["## Impact", "", recommendation.impact, ""]),
+    "## Significance",
+    "",
+    `${recommendation.significance}/5`,
+    "",
+    recommendation.significanceReason,
+    "",
     "## Evidence",
     "",
     ...recommendation.evidence.map(evidenceLine),
@@ -84,35 +82,6 @@ export function issueBody(recommendation: ScoutRecommendation): string {
     "---",
     "",
     "Filed by Auto Scout. Implement this issue the way any other open issue is implemented.",
-    "",
-  ].join("\n");
-}
-
-/** The draft body: a proposal to elaborate, never a finalized goal. */
-export function draftBody(recommendation: ScoutRecommendation): string {
-  return [
-    `# Proposed goal: ${recommendation.title}`,
-    "",
-    DRAFT_NOTICE,
-    "",
-    "## Summary",
-    "",
-    recommendation.summary,
-    "",
-    ...(recommendation.impact.length === 0
-      ? []
-      : ["## Impact", "", recommendation.impact, ""]),
-    "## Evidence",
-    "",
-    ...recommendation.evidence.map(evidenceLine),
-    "",
-    "## Proposed change",
-    "",
-    recommendation.proposedChange,
-    "",
-    "## Acceptance criteria",
-    "",
-    ...recommendation.acceptanceCriteria.map((criterion) => `- ${criterion}`),
     "",
   ].join("\n");
 }
@@ -160,7 +129,7 @@ const bunExec: Exec = async (commandName, args, options) => {
  * is absent, the body is passed as a file, and the returned URL is the only
  * fact recorded in the decisions.
  */
-export async function fileScoutIssue(options: FileIssueOptions): Promise<{ url: string }> {
+export async function fileScoutIssue(options: FileIssueOptions): Promise<{ url: string; number: number }> {
   const environment = options.environment ?? process.env;
   const auth = await resolveForgeAuth(options.exec ?? bunExec, {
     forge: "github",
@@ -224,20 +193,9 @@ export async function fileScoutIssue(options: FileIssueOptions): Promise<{ url: 
   if (url === undefined) {
     throw new Error("the issue was created without a URL");
   }
-  return { url };
-}
-
-/** Writes one draft under `<REPO_DIR>/.devboard/goal-proposals/`. */
-export async function writeScoutDraft(
-  recommendation: ScoutRecommendation,
-  options: { repoDir: string },
-): Promise<{ path: string }> {
-  const directory = join(options.repoDir, GOAL_PROPOSALS_DIRECTORY);
-  await mkdir(directory, { recursive: true });
-  const filename = await createExclusive(
-    directory,
-    goalProposalName(recommendation.title),
-    draftBody(recommendation),
-  );
-  return { path: `${GOAL_PROPOSALS_DIRECTORY}/${filename}` };
+  const number = /\/issues\/(\d+)\/?$/.exec(url);
+  if (number === null) {
+    throw new Error("the issue was created without an issue number");
+  }
+  return { url, number: Number(number[1]) };
 }
