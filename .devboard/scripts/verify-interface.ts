@@ -546,14 +546,32 @@ async function seedIssuesState(
   const enabled = lifecycle !== "stopped";
   const running = lifecycle === "running";
   const queue = running
-    ? [17, 18, 19].map((number) => ({
-        number,
-        title: `Fixture issue ${number}`,
-        url: `https://github.com/fixture/host/issues/${number}`,
-        createdAt: "2026-10-26T00:00:00Z",
-        handled: false,
-        runId: null,
-      }))
+    ? [
+        ...["17", "18", "19"].map((value) => Number(value)).map((number) => ({
+          number,
+          title: `Fixture issue ${number}`,
+          url: `https://github.com/fixture/host/issues/${number}`,
+          createdAt: "2026-10-26T00:00:00Z",
+          labels: [] as string[],
+          handled: false,
+          runId: null,
+        })),
+        ...["20", "21"].map((value) => Number(value)).map((number) => ({
+          number,
+          title: `Goal issue ${number}`,
+          url: `https://github.com/fixture/host/issues/${number}`,
+          createdAt: "2026-10-26T00:00:00Z",
+          labels: ["goal"],
+          handled: false,
+          runId: null,
+        })),
+      ]
+    : [];
+  const goalRuns = running
+    ? [
+        { runId: "2026-10-27T10-00-01-000Z", issueNumber: 20 },
+        { runId: "2026-10-27T10-00-02-000Z", issueNumber: 21 },
+      ]
     : [];
   const runs = enabled
     ? [
@@ -567,6 +585,16 @@ async function seedIssuesState(
           activity: 2,
           firstStderrLine: lifecycle === "failed" ? "the agent exited with code 1" : null,
         },
+        ...goalRuns.map((goal) => ({
+          runId: goal.runId,
+          status: "running",
+          startedAt: "2026-10-27T10:00:01.000Z",
+          finishedAt: null,
+          exitCode: null,
+          issueNumbers: [goal.issueNumber],
+          activity: 2,
+          firstStderrLine: null,
+        })),
       ]
     : [];
   const state = {
@@ -599,6 +627,31 @@ async function seedIssuesState(
     activeRun: running
       ? { runId: "2026-10-27T10-00-00-000Z", startedAt: "2026-10-27T10:00:00.000Z", issueNumbers: [17, 18, 19] }
       : null,
+    agents: running
+      ? [
+          {
+            runId: "2026-10-27T10-00-01-000Z",
+            issueNumber: 20,
+            startedAt: "2026-10-27T10:00:01.000Z",
+            question: null,
+            acp: { pid: process.pid, argv: ["omp", "acp"], cwd: resolve(host) },
+          },
+          {
+            runId: "2026-10-27T10-00-02-000Z",
+            issueNumber: 21,
+            startedAt: "2026-10-27T10:00:01.000Z",
+            question: {
+              id: 2,
+              message: "Which goal scope should the agent take?",
+              options: [
+                { label: "The whole goal", description: "Every criterion", recommended: true },
+                { label: "One criterion", description: "Only the first", recommended: false },
+              ],
+            },
+            acp: { pid: process.pid, argv: ["omp", "acp"], cwd: resolve(host) },
+          },
+        ]
+      : [],
     question: running
       ? {
           id: 1,
@@ -608,6 +661,7 @@ async function seedIssuesState(
       : null,
     acp: running ? { pid: process.pid, argv: ["omp", "acp"], cwd: resolve(host) } : null,
     nextAttemptAt: lifecycle === "failed" ? "2026-10-27T10:05:00.000Z" : null,
+    goalCooldowns: {},
     lastError: lifecycle === "failed" ? "the agent exited with code 1" : null,
     lastExitCode: lifecycle === "failed" ? 1 : running ? null : 0,
     finishedAt: running ? null : "2026-10-27T10:01:00.000Z",
@@ -640,12 +694,46 @@ async function seedIssuesState(
         title: `Fixture issue ${number}`,
         url: `https://github.com/fixture/host/issues/${number}`,
         createdAt: "2026-10-26T00:00:00Z",
+        labels: [],
       })),
       firstStderrLine: null,
       workerPid: process.pid,
       harnessVersion: sourceVersion ?? "0.1.0",
     }),
   );
+  for (const goal of goalRuns) {
+    await mkdir(join(directory, "runs", goal.runId), { recursive: true });
+    await writeFile(
+      join(directory, "runs", goal.runId, "activity.json"),
+      JSON.stringify([`Reading goal issue ${goal.issueNumber}`, `Implementing goal ${goal.issueNumber}`]),
+    );
+    await writeFile(
+      join(directory, "runs", goal.runId, "run.json"),
+      JSON.stringify({
+        version: 1,
+        runId: goal.runId,
+        repo: "fixture/host",
+        status: "running",
+        argv: ["omp", "acp"],
+        cwd: resolve(host),
+        startedAt: "2026-10-27T10:00:01.000Z",
+        finishedAt: null,
+        exitCode: null,
+        issues: [
+          {
+            number: goal.issueNumber,
+            title: `Goal issue ${goal.issueNumber}`,
+            url: `https://github.com/fixture/host/issues/${goal.issueNumber}`,
+            createdAt: "2026-10-26T00:00:00Z",
+            labels: ["goal"],
+          },
+        ],
+        firstStderrLine: null,
+        workerPid: process.pid,
+        harnessVersion: sourceVersion ?? "0.1.0",
+      }),
+    );
+  }
   const lockDirectory = join(host, ".devboard", ".tmp", "issues");
   await mkdir(lockDirectory, { recursive: true });
   await writeFile(
@@ -664,6 +752,21 @@ async function seedIssuesState(
 async function clearIssuesState(stateDir: string, host: string): Promise<void> {
   await rm(join(stateDir, "issues", journalKey(host)), { recursive: true, force: true });
   await rm(join(host, ".devboard", ".tmp", "issues", "lock"), { force: true });
+}
+
+/** Two deterministic drafts: one asks a question, one waits for Stop. */
+async function seedGoalDrafts(host: string): Promise<string> {
+  const directory = join(host, ".devboard", "goal-proposals");
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "001-question.md"),
+    "# Question draft\n\n> Unprocessed draft. STUB-QUESTION\n\nAsk about the scope before finalizing.\n",
+  );
+  await writeFile(
+    join(directory, "002-hang.md"),
+    "# Hang draft\n\n> Unprocessed draft. STUB-HANG\n\nKeep this elaboration running until it is stopped.\n",
+  );
+  return directory;
 }
 
 async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
@@ -915,7 +1018,7 @@ try {
     GOAL_FILE: join(host, "GOAL.md"),
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
-    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --ask --ask-delay-ms=600`,
+    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --ask --ask-delay-ms=600 --goal-draft`,
     // Every feedback action is filed through the recording stub, never through
     // the operator's real `gh`, and the recorded requests stay under `.tmp`.
     DEVBOARD_FEEDBACK_STUB: "stub",
@@ -1416,7 +1519,7 @@ try {
   const requiredCommands = [
     "view.mode.goal", "view.mode.issues", "view.mode.flow", "view.mode.discover",
     "issues.start", "issues.pause", "issues.resume", "issues.stop", "issues.check",
-    "open.issues.overview", "open.issues.issues", "open.issues.runs",
+    "open.issues.overview", "open.issues.issues", "open.issues.runs", "open.issues.drafts",
     "view.theme.toggle", "view.layout.reset",
     "app.reload", "app.report", "app.notifications.open",
     "goal.save", "goal.create", "goal.revise", "goal.skills.prepare",
@@ -3847,6 +3950,72 @@ try {
   })()`);
   check(question.message && question.options === 1, "the ACP question is not surfaced", question);
 
+  // Every goal-labeled issue runs its own agent, with its own activity and
+  // question, alongside the implement-all run.
+  await page.wait(
+    `document.querySelectorAll('[data-testid="issues-agent"]').length === 2`,
+    "the two concurrent goal agents",
+    8_000,
+  );
+  const agentView = await page.eval<
+    Array<{ issue: string; run: string; activity: string; question: string }>
+  >(`[...document.querySelectorAll('[data-testid="issues-agent"]')].map((agent) => ({
+    issue: agent.getAttribute("data-issue") ?? "",
+    run: agent.getAttribute("data-run") ?? "",
+    activity: agent.querySelector('[data-testid="issues-agent-activity"]')?.textContent ?? "",
+    question: agent.querySelector('[data-testid="issues-agent-question"]')?.textContent ?? "",
+  }))`);
+  check(agentView.length === 2, "the overview lost a goal agent", agentView);
+  check(
+    agentView.map((agent) => agent.issue).join(",") === "20,21",
+    "the goal agents are not addressable by issue",
+    agentView,
+  );
+  check(
+    agentView[0]?.activity.includes("Implementing goal 20") === true &&
+      agentView[1]?.activity.includes("Implementing goal 21") === true,
+    "a goal agent lost its own activity",
+    agentView,
+  );
+  check(
+    agentView[1]?.question.includes("Which goal scope should the agent take?") === true &&
+      agentView[0]?.question === "",
+    "goal questions are not per agent",
+    agentView,
+  );
+  await page.fill(
+    '[data-testid="issues-agent-answer-input"][data-run="2026-10-27T10-00-02-000Z"]',
+    "The whole goal",
+  );
+  await page.click('[data-testid="issues-agent-answer-submit"][data-run="2026-10-27T10-00-02-000Z"]');
+  const controlDir = join(stateDir, "issues", journalKey(host), "control");
+  const answerDeadline = Date.now() + 8_000;
+  let answerCommand: { runId?: unknown; value?: unknown } | undefined;
+  while (Date.now() < answerDeadline) {
+    if (existsSync(controlDir)) {
+      const names = (await readdir(controlDir)).filter((name) => name.endsWith(".json")).sort();
+      for (const name of names) {
+        const parsed = JSON.parse(await readFile(join(controlDir, name), "utf8")) as unknown;
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          "value" in parsed &&
+          "runId" in parsed
+        ) {
+          answerCommand = { runId: parsed.runId, value: parsed.value };
+        }
+      }
+      if (answerCommand !== undefined) break;
+    }
+    await delay(50);
+  }
+  check(
+    answerCommand?.runId === "2026-10-27T10-00-02-000Z" &&
+      answerCommand?.value === "The whole goal",
+    "the goal answer did not route to the asking peer",
+    answerCommand,
+  );
+
   // A persisted activity delta reaches the live terminal within one second.
   const activityPath = join(stateDir, "issues", journalKey(host), "runs", "2026-10-27T10-00-00-000Z", "activity.json");
   const activitySeededAt = Date.now();
@@ -4032,20 +4201,42 @@ try {
 
   await page.click('[data-testid="open-issues-queue"]');
   await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the issues queue");
-  const queue = await page.eval<Array<{ number: string; handled: string }>>(
+  const queue = await page.eval<Array<{ number: string; handled: string; goal: string }>>(
     `[...document.querySelectorAll('[data-testid="issues-queue-item"]')].map((item) => ({
       number: item.getAttribute("data-number") ?? "",
       handled: item.getAttribute("data-handled") ?? "",
+      goal: item.getAttribute("data-goal") ?? "",
     }))`,
   );
-  check(queue.length === 3, "the queue does not list every open issue", queue);
-  check(queue.map((entry) => entry.number).join(",") === "17,18,19", "the queue is not sorted by number", queue);
+  check(queue.length === 5, "the queue does not list every open issue", queue);
+  check(
+    queue.map((entry) => entry.number).join(",") === "17,18,19,20,21",
+    "the queue is not sorted by number",
+    queue,
+  );
+  check(
+    queue.every((entry, index) => entry.goal === (index >= 3 ? "true" : "false")),
+    "a goal label is not visible on its issue",
+    queue,
+  );
   check(queue.every((entry) => entry.handled === "false"), "a pending issue is not marked pending", queue);
+  const goalBadges = await page.eval<number>(
+    `document.querySelectorAll('[data-testid="issues-goal-badge"]').length`,
+  );
+  check(goalBadges === 2, "the goal issues carry no goal badge", goalBadges);
+  const pendingMeta = await page.eval<string>(
+    `document.querySelector('[data-testid="open-issues-queue"] .sidebar-item__meta')?.textContent ?? ""`,
+  );
+  check(pendingMeta.trim() === "3 pending", "the sidebar counts goal issues as implement-all work", pendingMeta);
 
   await page.click('[data-testid="open-issues-runs"]');
   await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the runs page");
   const runCount = await page.eval<number>(`document.querySelectorAll('[data-testid="issues-run"]').length`);
-  check(runCount === 1, "the runs page does not list the run history", runCount);
+  check(runCount === 3, "the runs page does not list every concurrent run", runCount);
+  const goalRunCount = await page.eval<number>(
+    `[...document.querySelectorAll('[data-testid="issues-run"]')].filter((run) => run.getAttribute("data-status") === "running").length`,
+  );
+  check(goalRunCount === 3, "the runs page lost a running agent", goalRunCount);
   await page.click('[data-testid="issues-run"]');
   await page.wait(`document.querySelector('[data-testid="issues-run-detail"]') !== null`, "the run detail");
   const runActivity = await page.eval<string>(
@@ -4055,6 +4246,241 @@ try {
   await page.click('[data-testid="open-issues-overview"]');
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview again");
 
+  // Drafts: list, read, elaborate, answer, stop, refresh, reload, and empty.
+  await seedGoalDrafts(host);
+  await page.click('[data-testid="open-issues-drafts"]');
+  await page.wait(`document.querySelector('[data-testid="issues-drafts"]') !== null`, "the drafts page");
+  const draftsChrome = await page.eval<{
+    entryTestid: string;
+    command: string;
+    label: string;
+    count: string;
+    afterRuns: boolean;
+    palette: boolean;
+  }>(`(() => {
+    const entry = document.querySelector('[data-testid="open-issues-drafts"]');
+    const runs = document.querySelector('[data-testid="open-issues-runs"]');
+    return {
+      entryTestid: entry?.getAttribute("data-testid") ?? "",
+      command: entry?.getAttribute("data-command") ?? "",
+      label: entry?.getAttribute("aria-label") ?? "",
+      count: entry?.querySelector(".sidebar-item__meta")?.textContent?.trim() ?? "",
+      afterRuns: runs !== null && runs.nextElementSibling === entry,
+      palette: window.__viFrames.some((frame) => frame.includes("open.issues.drafts")) ||
+        [...document.querySelectorAll('[data-command="open.issues.drafts"]')].length > 0,
+    };
+  })()`);
+  check(draftsChrome.entryTestid === "open-issues-drafts", "the Drafts entry has no test id", draftsChrome);
+  check(draftsChrome.command === "open.issues.drafts", "the Drafts entry has the wrong command", draftsChrome);
+  check(
+    draftsChrome.label.includes("Issues") && draftsChrome.label.includes("Alt+2"),
+    "the Drafts entry does not name its mode and shortcut",
+    draftsChrome,
+  );
+  check(draftsChrome.count === "3", "the Drafts entry does not count the listed drafts", draftsChrome);
+  check(draftsChrome.afterRuns, "the Drafts entry is not after Runs", draftsChrome);
+
+  const listedDrafts = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="issues-draft"]')].map((item) => item.getAttribute("data-path") ?? "")`,
+  );
+  const draftDirectory = join(host, ".devboard", "goal-proposals");
+  const expectedDrafts = (await readdir(draftDirectory))
+    .filter((name) => name.endsWith(".md"))
+    .sort()
+    .map((name) => `.devboard/goal-proposals/${name}`);
+  check(
+    listedDrafts.join(",") === expectedDrafts.join(",") && listedDrafts.length === 3,
+    "the drafts list is missing, unsorted, or lists the wrong files",
+    { listedDrafts, expectedDrafts },
+  );
+  const draftHeadings = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="issues-draft"]')].map((item) => item.textContent ?? "")`,
+  );
+  check(
+    draftHeadings[0]?.includes("Question draft") === true &&
+      draftHeadings[1]?.includes("Hang draft") === true,
+    "a draft does not show its first heading",
+    draftHeadings,
+  );
+
+  // The report panel's earlier write is listed and its bytes are exact.
+  const reportDraftPath = expectedDrafts.find((path) => path.includes(goalFiles[0]!));
+  check(reportDraftPath !== undefined, "the report panel's draft is missing from the list", expectedDrafts);
+  await page.click(`[data-testid="issues-draft"][data-path="${reportDraftPath}"]`);
+  await page.wait(`document.querySelector('[data-testid="issues-draft-detail"]') !== null`, "the draft detail");
+  const reportDraftText = await readFile(join(host, reportDraftPath!), "utf8");
+  const detail = await page.eval<{
+    path: string;
+    text: string;
+    context: string;
+    start: string;
+    startCommand: string;
+    stop: boolean;
+  }>(`(() => {
+    const panel = document.querySelector('[data-testid="issues-draft-detail"]');
+    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    return {
+      path: panel?.getAttribute("data-path") ?? "",
+      text: document.querySelector('[data-testid="issues-draft-text"]')?.textContent ?? "",
+      context: document.querySelector('[data-testid="issues-draft-context"]')?.textContent ?? "",
+      start: document.querySelector('[data-testid="issues-draft-start"]') !== null ? "yes" : "",
+      startCommand: start?.getAttribute("data-command") ?? "",
+      stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+    };
+  })()`);
+  check(detail.path === reportDraftPath, "the detail does not name the selected draft", detail);
+  const storedSelection = await page.eval<{ path: string | null; page: string | null }>(`(() => ({
+    path: localStorage.getItem("devboard.issues.draft.v1"),
+    page: localStorage.getItem("devboard.issues.draftsPage.v1"),
+  }))()`);
+  check(
+    storedSelection.path === reportDraftPath && storedSelection.page === "1",
+    "the draft selection is not persisted",
+    storedSelection,
+  );
+  check(detail.text === reportDraftText, "the detail does not show the draft bytes exactly", detail);
+  check(
+    detail.context.includes("Route:") &&
+      detail.context.includes("Selected element:") &&
+      detail.context.includes("Visible text"),
+    "the detail lost the captured UI context",
+    detail,
+  );
+  check(
+    detail.start === "yes" && detail.startCommand === "issues.draft.start" && !detail.stop,
+    "the draft detail has the wrong controls",
+    detail,
+  );
+
+  // The question draft asks, answers, writes the spec, and disappears.
+  await page.click('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/001-question.md"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/001-question.md"`,
+    "the question draft detail",
+  );
+  await page.click('[data-testid="issues-draft-start"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("Reading the draft")`,
+    "the streamed elaboration activity",
+    8_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the elaboration question",
+    8_000,
+  );
+  const draftQuestion = await page.eval<{ message: string; options: number }>(`(() => ({
+    message: document.querySelector('[data-testid="issues-draft-question"]')?.textContent?.includes("Choose an answer") ?? false,
+    options: document.querySelectorAll('[data-testid="issues-draft-choice"]').length,
+  }))()`);
+  check(draftQuestion.message && draftQuestion.options === 2, "the elaboration question is not surfaced", draftQuestion);
+  const blocked = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="issues-draft-blocked"]')].map((item) => item.textContent ?? "")`,
+  );
+  check(
+    blocked.length === 3 &&
+      blocked.some((reason) => reason.includes("001-question.md")) &&
+      blocked.some((reason) => reason === "This draft is being elaborated."),
+    "another draft's start control has no stated reason",
+    blocked,
+  );
+  await page.click('[data-testid="issues-draft-choice"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/001-question.md"]') === null`,
+    "the elaborated draft to disappear",
+    8_000,
+  );
+  check(
+    existsSync(join(host, ".devboard", "goals", "001-question.md")),
+    "the elaboration did not keep its finalized spec",
+  );
+  check(
+    (await readFile(agentLog, "utf8")).includes("answer Alpha"),
+    "the answer did not reach the elaboration peer",
+  );
+
+  // A hanging elaboration exposes Stop, keeps the draft, and re-enables start.
+  await page.click('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/002-hang.md"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
+    "the hanging draft detail",
+  );
+  await page.click('[data-testid="issues-draft-start"]');
+  await page.wait(`document.querySelector('[data-testid="issues-draft-stop"]') !== null`, "the stop control");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("Reading the draft")`,
+    "the hanging activity",
+    8_000,
+  );
+  await page.click('[data-testid="issues-draft-stop"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "stopped"`,
+    "the stopped elaboration",
+    8_000,
+  );
+  const afterStop = await page.eval<{ stop: boolean; startDisabled: boolean; present: boolean }>(`(() => ({
+    stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+    startDisabled: document.querySelector('[data-testid="issues-draft-start"]')?.disabled === false,
+    present: document.querySelector('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/002-hang.md"]') !== null,
+  }))()`);
+  check(!afterStop.stop && afterStop.startDisabled && afterStop.present, "Stop lost the draft or kept the peer", afterStop);
+
+  // A report-panel write reaches the open Drafts page without a reload.
+  await runPalette("app.report");
+  await page.click('[data-testid="status-bar"]');
+  await page.wait(`document.querySelector('.feedback-panel') !== null`, "the report panel for a second draft");
+  await page.fill('.feedback-panel textarea', "Drafts should refresh without a reload.");
+  await page.click('[data-testid="feedback-goal"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/drafts-should-refresh-without-a-reload.md"]') !== null`,
+    "the draft written through POST to appear without a reload",
+    8_000,
+  );
+  await page.key("Escape");
+  const refreshedCount = await page.eval<string>(
+    `document.querySelector('[data-testid="open-issues-drafts"] .sidebar-item__meta')?.textContent?.trim() ?? ""`,
+  );
+  check(refreshedCount === "3", "the Drafts count did not follow the new draft", refreshedCount);
+
+  // Reload restores the drafts page and the selected path's bytes.
+  await page.reload();
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
+    "the selected draft after reload",
+    20_000,
+  );
+  const restoredText = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-draft-text"]')?.textContent ?? ""`,
+  );
+  check(
+    restoredText === (await readFile(join(host, ".devboard", "goal-proposals", "002-hang.md"), "utf8")),
+    "reload lost the selected draft's bytes",
+  );
+
+  // A vanished draft leaves the list and selection; a reload opens the list.
+  await rm(draftDirectory, { recursive: true, force: true });
+  await page.wait(
+    `document.querySelector('[data-testid="issues-drafts-empty"]') !== null`,
+    "the empty drafts state after the files vanished",
+    8_000,
+  );
+  check(
+    await page.eval<boolean>(`document.querySelector('[data-testid="issues-draft-detail"]') === null`),
+    "a vanished draft kept its detail",
+  );
+  await page.reload();
+  await page.wait(
+    `document.querySelector('[data-testid="issues-drafts"]') !== null && document.querySelector('[data-testid="issues-drafts-empty"]') !== null`,
+    "the empty drafts page after reload",
+    20_000,
+  );
+  check(
+    await page.eval<boolean>(`document.querySelector('[data-testid="issues-draft-detail"]') === null`),
+    "a missing restored path opened a detail",
+  );
+
+  await page.click('[data-testid="open-issues-overview"]');
+  await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the overview before the failed state");
   await seedIssuesState(stateDir, host, "failed");
   await page.wait(
     `document.querySelector('[data-testid="issues-state"]')?.textContent?.trim() === "failed"`,

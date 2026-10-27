@@ -24,6 +24,7 @@ export interface IssuesIssue {
   title: string;
   url: string;
   createdAt: string;
+  labels: string[];
 }
 
 export interface QueuedIssue extends IssuesIssue {
@@ -76,6 +77,18 @@ export interface IssuesAcpChild {
   cwd: string;
 }
 
+/**
+ * One goal-labeled issue's own peer. Each agent has a run record, activity,
+ * and pending question of its own; `runId` is what routes an answer.
+ */
+export interface IssuesAgent {
+  runId: string;
+  issueNumber: number;
+  startedAt: string;
+  question: IssuesQuestion | null;
+  acp: IssuesAcpChild | null;
+}
+
 export interface IssuesQuestion {
   id: number | string;
   message: string;
@@ -94,9 +107,13 @@ export interface IssuesState {
   queue: QueuedIssue[];
   runs: IssuesRunSummary[];
   activeRun: { runId: string; startedAt: string; issueNumbers: number[] } | null;
+  /** One entry per concurrently running goal-labeled issue peer. */
+  agents: IssuesAgent[];
   question: IssuesQuestion | null;
   acp: IssuesAcpChild | null;
   nextAttemptAt: string | null;
+  /** Per-issue retry gate for a failed goal run, keyed by issue number. */
+  goalCooldowns: Record<string, string>;
   lastError: string | null;
   lastExitCode: number | null;
   finishedAt: string | null;
@@ -105,14 +122,28 @@ export interface IssuesState {
 }
 
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+/** Labels are optional in files written before label-aware polling. */
 function isIssue(value: unknown): value is IssuesIssue {
   return (
     isRecord(value) &&
     isInteger(value.number) &&
     typeof value.title === "string" &&
     typeof value.url === "string" &&
-    typeof value.createdAt === "string"
+    typeof value.createdAt === "string" &&
+    (value.labels === undefined || isStringArray(value.labels))
   );
+}
+
+export function issueLabels(value: unknown): string[] {
+  return isRecord(value) && isStringArray(value.labels) ? [...value.labels] : [];
+}
+
+function normalizedIssue(value: IssuesIssue): IssuesIssue {
+  return { ...value, labels: issueLabels(value) };
 }
 
 function isQueued(value: unknown): value is QueuedIssue {
@@ -180,6 +211,17 @@ function isAcp(value: unknown): value is IssuesAcpChild {
   );
 }
 
+function isAgent(value: unknown): value is IssuesAgent {
+  return (
+    isRecord(value) &&
+    typeof value.runId === "string" &&
+    isInteger(value.issueNumber) &&
+    typeof value.startedAt === "string" &&
+    (value.question === null || isQuestion(value.question)) &&
+    (value.acp === null || isAcp(value.acp))
+  );
+}
+
 function isPoll(value: unknown): value is IssuesPollState {
   return (
     isRecord(value) &&
@@ -224,9 +266,11 @@ export function emptyState(options: {
     queue: [],
     runs: [],
     activeRun: null,
+    agents: [],
     question: null,
     acp: null,
     nextAttemptAt: null,
+    goalCooldowns: {},
     lastError: null,
     lastExitCode: null,
     finishedAt: null,
@@ -274,6 +318,16 @@ export function parseState(text: string): IssuesState | undefined {
   }
   if (parsed.question !== null && !isQuestion(parsed.question)) return undefined;
   if (parsed.acp !== null && !isAcp(parsed.acp)) return undefined;
+  if (parsed.agents !== undefined && (!Array.isArray(parsed.agents) || !parsed.agents.every(isAgent))) {
+    return undefined;
+  }
+  if (
+    parsed.goalCooldowns !== undefined &&
+    (!isRecord(parsed.goalCooldowns) ||
+      !Object.values(parsed.goalCooldowns).every((entry) => typeof entry === "string"))
+  ) {
+    return undefined;
+  }
   if (!nullableString(parsed.nextAttemptAt) || !nullableString(parsed.lastError)) return undefined;
   if (parsed.lastExitCode !== null && !isInteger(parsed.lastExitCode)) return undefined;
   if (!nullableString(parsed.finishedAt)) return undefined;
@@ -289,12 +343,14 @@ export function parseState(text: string): IssuesState | undefined {
     paused: parsed.paused,
     worker: parsed.worker as IssuesWorkerRecord | null,
     poll: parsed.poll,
-    queue: parsed.queue,
+    queue: parsed.queue.map((entry) => normalizedIssue(entry)) as QueuedIssue[],
     runs: parsed.runs,
     activeRun: parsed.activeRun as IssuesState["activeRun"],
+    agents: (parsed.agents as IssuesAgent[] | undefined) ?? [],
     question: parsed.question as IssuesQuestion | null,
     acp: parsed.acp as IssuesAcpChild | null,
     nextAttemptAt: parsed.nextAttemptAt,
+    goalCooldowns: (parsed.goalCooldowns as Record<string, string> | undefined) ?? {},
     lastError: parsed.lastError,
     lastExitCode: parsed.lastExitCode,
     finishedAt: parsed.finishedAt,
@@ -407,7 +463,7 @@ export function parseRunFile(text: string): RunFile | undefined {
     startedAt: parsed.startedAt,
     finishedAt: parsed.finishedAt,
     exitCode: parsed.exitCode,
-    issues: parsed.issues,
+    issues: parsed.issues.map(normalizedIssue),
     firstStderrLine: parsed.firstStderrLine,
     workerPid: parsed.workerPid,
     harnessVersion: parsed.harnessVersion,

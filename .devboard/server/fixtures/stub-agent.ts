@@ -133,6 +133,10 @@ const ask = process.argv.includes("--ask");
 const askDelayMs = Number(argument("ask-delay-ms") ?? 0);
 const askFail = process.argv.includes("--ask-fail");
 const askExit = process.argv.includes("--ask-exit");
+
+/** Draft elaboration mode: simulate the goal-draft command's observable work. */
+const goalDraft = process.argv.includes("--goal-draft");
+const goalDraftFinish = argument("goal-draft-finish");
 const ASK_INSTRUCTION = "This conversation is read-only.";
 const ASK_ANSWER_ONE =
   "The issues indicator shows the lifecycle the detached worker published for this repository. " +
@@ -523,6 +527,68 @@ async function askQuestions(count: number) {
       },
     });
   }
+}
+
+/**
+ * The `/goal-draft` turn. The draft's own bytes choose the scenario:
+ * `STUB-QUESTION` asks one question first, `STUB-HANG` waits for Stop, and
+ * `STUB-FAIL` reports a failed label verification. A successful turn writes
+ * the five-section spec and removes the draft, exactly as the prompt requires.
+ */
+async function runGoalDraft(relativePath: string) {
+  log(`goal-draft ${relativePath}`);
+  const draftPath = join(process.cwd(), relativePath);
+  let source = "";
+  try {
+    source = readFileSync(draftPath, "utf8");
+  } catch {
+    // A missing draft still produces a deterministic failure.
+  }
+  stream("Reading the draft and researching the repository");
+
+  if (source.includes("STUB-QUESTION")) {
+    await askQuestions(1);
+  }
+  if (source.includes("STUB-FAIL")) {
+    throw new Error("goal label verification failed");
+  }
+  if (source.includes("STUB-HANG")) {
+    while (goalDraftFinish === undefined || !existsSync(goalDraftFinish)) {
+      await Bun.sleep(50);
+    }
+  }
+
+  const name = basename(relativePath, ".md");
+  const spec = join(process.cwd(), ".devboard", "goals", `${name}.md`);
+  mkdirSync(dirname(spec), { recursive: true });
+  writeFileSync(
+    spec,
+    [
+      "## Objective",
+      "",
+      `Finalized ${name}.`,
+      "",
+      "## Success criteria",
+      "",
+      "- The stub wrote this spec.",
+      "",
+      "## Verification",
+      "",
+      "- Read this file.",
+      "",
+      "## Boundaries",
+      "",
+      "- The fixture only.",
+      "",
+      "## Stop conditions",
+      "",
+      "- Halt on a missing prerequisite.",
+      "",
+    ].join("\n"),
+  );
+  log(`goal-draft-verified ${relativePath}`);
+  unlinkSync(draftPath);
+  stream("Filed the goal issue and verified the goal label");
 }
 
 function promptText(params: unknown): string | undefined {
@@ -1402,6 +1468,10 @@ async function promptTurn(params: unknown) {
     return;
   }
 
+  if (goalDraft && firstLine.startsWith("/goal-draft ")) {
+    await runGoalDraft(firstLine.slice("/goal-draft ".length).trim());
+    return;
+  }
   if (flowGoal && firstLine.startsWith("/flow-goal ")) {
     log(`prompt ${firstLine}`);
     await runFlowGoal(firstLine.slice("/flow-goal ".length).trim());

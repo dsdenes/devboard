@@ -1218,37 +1218,54 @@ repo-anchored lock names the live worker. Different repositories get independent
 
 The poll is the GitHub issues endpoint through the operator's `gh` credential every 2 seconds,
 conditional on the previous `ETag` (`If-None-Match`). A `304` is no change; `403`/`429` honor
-`Retry-After` or `X-RateLimit-Reset`. Pull requests returned by the endpoint are excluded. When
-an open issue is not in the ledger, one ACP peer is spawned in `REPO_DIR`, one session is opened,
-and exactly `/implement-all-issues` is sent with no appended scope. Session updates stream into
-the mode, permission requests are auto-approved by the ACP client, elicitation questions are
-answered from the mode, and the peer closes when the run ends or Stop is clicked. The agent owns
-every worktree, commit, push, issue closure, and repository mutation.
+`Retry-After` or `X-RateLimit-Reset`. Pull requests returned by the endpoint are excluded, and
+every issue's labels are part of the poll result. When unhandled issues without the exact `goal`
+label exist, one ACP peer is spawned in `REPO_DIR`, one session is opened, and it receives the
+scoped backlog prompt:
 
-The trigger policy is unchanged. One run covers every open issue not in the ledger, an issue
-created during a run earns exactly one follow-up run, a handled issue is never retriggered while
-it stays open, a closed issue that reopens is new again, and a failed run publishes `failed`
-with the first stderr line and a five-minute cooldown. Pause lets the active run finish and stops
-new polls and triggers, reporting `pausing` until the run ends and then `paused`; it never kills
-the peer. Resume polls immediately, but an unexpired cooldown still delays a new run. Check now
-is accepted only while the worker is enabled and not paused, forces a poll, and clears the
-cooldown; while paused it writes a notice and polls nothing. Stop ends the peer and the worker,
-records the run as `stopped`, releases the lock, leaves captured issues unhandled, and never
-records a cooldown. No two ACP peers run concurrently for one repository.
+```
+/implement-all-issues Process exactly these open issue numbers: #17, #19. Do not process, comment on, close, or modify any issue labeled "goal".
+```
+
+Every captured non-goal number appears and no goal number does; when no unhandled non-goal issue
+exists, no implement-all peer starts at all. Every open, unhandled issue carrying the exact `goal`
+label gets its own peer instead, prompted with exactly `/implement-goal-issue <number>`. Goal peers
+run concurrently with each other and with the implement-all peer; the worker never starts a second
+peer for one issue number. Session updates stream into the mode, permission requests are
+auto-approved by the ACP client, elicitation questions are answered from the mode, and each peer
+closes when its run ends or Stop is clicked. The agents own every worktree, commit, push, issue
+closure, and repository mutation.
+
+The trigger policy for the implement-all backlog is unchanged. One run covers every open non-goal
+issue not in the ledger, an issue created during a run earns exactly one follow-up run, a handled
+issue is never retriggered while it stays open, a closed issue that reopens is new again, and a
+failed run publishes `failed` with the first stderr line and a five-minute cooldown. A goal run
+that succeeds records its issue as handled in the ledger. A goal run that fails records `failed`
+with its first stderr line, leaves the issue open and unhandled, and writes a per-issue
+`goalCooldowns["<number>"]` gate; that issue gets no new peer until those five minutes expire,
+while other issues continue. Pause lets every active goal peer and the implement-all peer finish,
+then reports `paused` and starts no new peer or poll. Resume polls immediately, but an unexpired
+cooldown still delays the gated work. Check now is accepted only while the worker is enabled and
+not paused, forces a poll, and clears both cooldowns; while paused it writes a notice and polls
+nothing. Stop closes every peer, records every active run as `stopped`, releases the lock, leaves
+captured issues unhandled, and never records a cooldown.
 
 State, ledger, runs, and activity live under `<STATE_DIR>/issues/<journalKey(REPO_DIR)>/`:
-`state.json` is atomic and carries the worker record, lifecycle, poll state, queue, run
-summaries, active run, question, and cooldown; `ledger.json` records handled numbers with the run
-id; `runs/<runId>/run.json` and `runs/<runId>/activity.json` keep the newest 50 runs; `control/`
-carries dashboard commands as atomically renamed files. Activity is persisted before a dashboard
-can read it, bounded at the first of 1,000 entries or 1 MiB with the trimmed marker, and replayed
-with the active run after a reconnect. A damaged state file is renamed aside and never prevents
-the mode from opening. The worker records the harness version it loaded, its pid, and its argv;
-a mismatched dashboard shows a notice and never kills the worker, and the state also records the
-ACP child's pid, argv, and cwd so Stop or a fresh Start can terminate a proven orphan. The worker
-and the dashboard read that version the same way: a packed release's manifest, or
-`0.1.<commit-count>` for an unpacked source checkout, so Stop then Start brings a worker left on
-an older harness to the dashboard's version.
+`state.json` is atomic and carries the worker record, lifecycle, poll state, the queue with each
+issue's labels, run summaries, the implement-all active run, the concurrent goal `agents` (run id,
+issue number, question, and ACP child), the shared question, the implement-all cooldown, and the
+per-issue `goalCooldowns`; `ledger.json` records handled numbers with the run id;
+`runs/<runId>/run.json` and `runs/<runId>/activity.json` keep the newest 50 runs; `control/`
+carries dashboard commands as atomically renamed files. A state or run file written before labels
+existed still loads, with each issue's `labels` defaulting to `[]` and `agents`/`goalCooldowns`
+defaulting to empty. Activity is persisted before a dashboard can read it, bounded at the first of
+1,000 entries or 1 MiB with the trimmed marker, and replayed with every active run after a
+reconnect. A damaged state file is renamed aside and never prevents the mode from opening. The
+worker records the harness version it loaded, its pid, and its argv; a mismatched dashboard shows
+a notice and never kills the worker, and the state also records each ACP child's pid, argv, and
+cwd so Stop or a fresh Start can terminate a proven orphan. The worker and the dashboard read that
+version the same way: a packed release's manifest, or `0.1.<commit-count>` for an unpacked source
+checkout, so Stop then Start brings a worker left on an older harness to the dashboard's version.
 
 The first worker to find no repo-keyed ledger imports handled numbers from
 `<STATE_DIR>/orchestrator/state.json` and `ledger.json` when the legacy state parses and its
@@ -1263,6 +1280,91 @@ rm -f ~/.config/systemd/user/devboard-orchestrator.service
 rm -f ~/.config/systemd/user/default.target.wants/devboard-orchestrator.service
 systemctl --user daemon-reload
 ```
+
+## Drafts and proposed goals
+
+The Issues sidebar carries a fourth entry after Runs: `Drafts`, with `data-command="open.issues.drafts"`
+and `data-testid="open-issues-drafts"`. It trails the number of listed drafts, its accessible
+name names the Issues mode and the `Alt+2` shortcut, and the command palette lists it under the
+same command id. Opening it renders `data-testid="issues-drafts"`: every regular `.md` file
+directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each with
+`data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
+and its first Markdown heading. An empty directory shows `No drafts exist.`.
+
+Selecting one opens `data-testid="issues-draft-detail"` with the draft's bytes exactly, its
+`## Captured UI context` block, and `issues-draft-start` (`issues.draft.start`) plus, while an
+elaboration runs, `issues-draft-stop` (`issues.draft.stop`). The detail refreshes when the page
+opens, after the report panel writes a draft through `POST /api/goal-proposals`, after an
+elaboration finishes or stops, and when a listed draft disappears. The page polls the list every
+two seconds while it is mounted, so an external deletion is visible without a reload, and the
+report panel's write broadcast reaches an open page immediately. A browser reload restores the
+Drafts page and the selected path; when the file no longer exists, the page opens the list.
+
+The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
+path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
+refused with a visible error, and nothing outside the directory is read. The list never follows
+symlinks.
+
+Only one elaboration runs at a time. Starting one spawns exactly one ACP peer with `AGENT_COMMAND`
+in `REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-relative path>`. Its
+activity streams into `issues-draft-activity`, its `ask` question renders as options plus a
+free-text answer, and an answer goes only to that peer. While it runs, every other draft's start
+control is disabled with the stated reason; Stop closes the peer, records `stopped`, keeps the
+draft, and re-enables the controls; a failed peer keeps the draft, shows the error, and accepts a
+retry as a new peer.
+
+`.devboard/prompts/goal-draft.md` is the elaboration contract and
+`.devboard/omp/commands/goal-draft.md` its command wrapper, which reads the prompt and passes
+`$ARGUMENTS` as the draft path; `install.sh` installs the wrapper into the host's `.omp/commands/`.
+The prompt requires repository research before questions, then an `ask` interview with exactly one
+question per call, three mutually exclusive options with concrete descriptions and exactly one
+recommended, and forbids questions about effort, cost, time, token budget, or attempt caps. The
+finalized spec contains exactly `## Objective`, `## Success criteria`, `## Verification`,
+`## Boundaries`, and `## Stop conditions`, in that order, with binary success criteria and exact
+verification commands or actions.
+
+The spec is written to `<REPO_DIR>/.devboard/goals/<slug>.md`: lowercase kebab-case, at most six
+words, and an existing filename is never overwritten (`-2`, `-3`, …). The elaboration agent
+creates no other file except that spec and the draft removal, starts no implementation, and does
+not enter goal mode. It files the spec's bytes verbatim, as a body file, as an open issue in the
+checkout's `origin` (never the harness repository unless that is the origin), with a one-line title
+bounded to 200 characters and the exact `goal` label, creating the label first when it is missing.
+Every tracker command goes through `.devboard/scripts/forge-auth.ts exec --required write`. After
+filing it reads the issue back with `gh issue view <number> --json number,url,labels,body`; only
+when the `goal` label is present and the body equals the spec file may it delete the draft. A
+failed label creation, issue creation, or verification leaves the draft in place and reports the
+failure and any created issue URL. A successful completion removes the draft from the list, keeps
+the spec under `.devboard/goals/`, and the next Issues poll lists the new open issue with its
+`goal` badge.
+
+The Open issues list shows every open issue. A `goal`-labeled issue carries a visible `goal` badge,
+is excluded from the implement-all pending count, and never enters an `/implement-all-issues`
+run. When unhandled non-goal issues exist, the peer receives exactly
+`/implement-all-issues Process exactly these open issue numbers: #<n>, #<n>. Do not process, comment on, close, or modify any issue labeled "goal".`
+with every captured non-goal number and no goal number; when none exist, no implement-all peer
+starts. Every open, unhandled `goal` issue gets its own concurrent peer prompted with exactly
+`/implement-goal-issue <number>`, its own run record, activity, and question slot. The snapshot
+publishes `agents: [{ runId, issueNumber, startedAt, question, acp }]`, so the overview and Runs
+page address each agent by issue number and run id while several are active, and an answer carries
+that `runId` so it routes only to its peer.
+
+`.devboard/extensions/implement-goal-issue.ts` implements the command and
+`.devboard/omp/extensions/implement-goal-issue.ts` is its host-side re-export copied by
+`install.sh`. It accepts one issue number and refuses a missing number, a missing issue, an issue
+without the exact `goal` label, or an existing goal in the session. It creates one worktree and
+branch under `.worktree/`, activates the `goal` tool, and calls the `goal` create operation with
+the fetched issue body verbatim as the objective: no distillation, no section filtering, and no
+appended requirements. It then implements the body, verifies every criterion through the product
+surface, merges into `main` with conflict integration and retry, pushes `main` to origin, removes
+the worktree and branch, and closes the issue only after the push, through the same forge-auth
+wrapper.
+
+Pause lets every active goal peer and the implement-all peer finish, then reports `paused` and
+starts no new peer or poll. Resume polls immediately. Stop closes every peer, records every active
+run as `stopped`, leaves every issue unhandled, releases the lock, and writes no cooldown. A
+successful goal run records its issue as handled in the ledger; a failed one records `failed` with
+its first stderr line and gates only that issue for five minutes, leaving it open and unhandled.
+An issue closed by its agent leaves the queue on the next poll.
 
 ## Report, remove, or redesign a UI element
 
@@ -1385,6 +1487,12 @@ The client sends:
 { "type": "stopIssues" }
 { "type": "checkIssues" }
 { "type": "answerIssues", "id": 7, "value": "all" }
+{ "type": "answerIssues", "id": 7, "value": "all", "runId": "2026-10-27T10-00-02-000Z" }
+{ "type": "getGoalDrafts" }
+{ "type": "getGoalDraft", "path": ".devboard/goal-proposals/example.md" }
+{ "type": "startGoalDraft", "path": ".devboard/goal-proposals/example.md" }
+{ "type": "stopGoalDraft" }
+{ "type": "answerGoalDraft", "id": 4, "value": "The whole goal" }
 { "type": "restartServer" }
 { "type": "restartServer", "whenIdle": true }
 { "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
@@ -1418,13 +1526,22 @@ The client sends:
   and the page every few seconds, asks for it; a stale answer makes the reload control appear
   with both versions in its title.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
-  lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
-  next attempt, errors, and the harness version the worker loaded. A missing state and no live
-  lock answer `present: false`, `attached: false`, and `lifecycle: "stopped"`. A live worker from
-  another harness version adds a non-blocking `notice` naming both versions. A connect also
-  replays the active run's whole activity as one `issuesActivity` with `replay: true`;
-  `getIssuesRun` answers `issuesRun` with one run's metadata and activity. The client never
-  polls: state and activity arrive as events, so switching modes and reconnecting send no frame.
+  lifecycle, enabled, paused, repository, poll times, queue entries with `labels`, run summaries,
+  the implement-all `activeRun`, the concurrent goal `agents` (run id, issue number, startedAt,
+  question, ACP child), the shared question, both cooldowns, next attempt, errors, and the harness
+  version the worker loaded. A missing state and no live lock answer `present: false`,
+  `attached: false`, and `lifecycle: "stopped"`. A live worker from another harness version adds a
+  non-blocking `notice` naming both versions. A connect also replays every active run's whole
+  activity as one `issuesActivity` per run with `replay: true`; `getIssuesRun` answers `issuesRun`
+  with one run's metadata and activity. The client never polls: state and activity arrive as
+  events, so switching modes and reconnecting send no frame.
+- `getGoalDrafts` answers `issuesDrafts` with the sorted list of `{ path, name, heading }` and
+  `issuesDraftState` with the current elaboration. `getGoalDraft` answers `issuesDraftDetail` with
+  the draft's exact bytes, or `issuesDraftError` when the path is refused or missing.
+  `startGoalDraft` starts the one elaboration peer and broadcasts `issuesDraftState` and
+  `issuesDrafts`; `stopGoalDraft` closes it, records `stopped`, and keeps the draft.
+  `answerGoalDraft` routes one answer to the elaboration question. Activity is sent as
+  `issuesDraftState` snapshots while the peer runs.
 - `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
   stops the listener, starts the installed harness package, and exits. It is refused with an
   `error` when no launcher is configured or while a restart is already in progress. A client

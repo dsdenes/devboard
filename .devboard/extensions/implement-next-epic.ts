@@ -209,7 +209,7 @@ export function parseRemote(url: string): { host: string; project: string } | nu
  * so credential validation cannot use it; every probe starts its own child and
  * the selected token only ever travels in that child's environment.
  */
-async function execWithEnvironment(
+export async function execWithEnvironment(
   command: string,
   args: string[],
   options: { cwd: string; env?: Record<string, string> },

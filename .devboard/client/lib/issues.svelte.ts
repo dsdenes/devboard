@@ -1,14 +1,61 @@
 import { connection } from "./connection.svelte";
 import type {
+  GoalDraftDetail,
+  GoalDraftRun,
+  GoalDraftSummary,
   IssuesActivityEntry,
+  IssuesAgent,
   IssuesRunDetail,
   IssuesRunSummary,
   IssuesSnapshot,
   QueuedIssue,
 } from "./types";
 
+export const GOAL_LABEL = "goal";
+export const DRAFT_PATH_KEY = "devboard.issues.draft.v1";
+export const DRAFT_PAGE_KEY = "devboard.issues.draftsPage.v1";
+
+export function markDraftsPage(open: boolean): void {
+  try {
+    if (open) localStorage.setItem(DRAFT_PAGE_KEY, "1");
+    else localStorage.removeItem(DRAFT_PAGE_KEY);
+  } catch {
+    // Storage may be unavailable; the current session still works.
+  }
+}
+
+export function draftsPageWasOpen(): boolean {
+  try {
+    return localStorage.getItem(DRAFT_PAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function isGoalIssue(issue: { labels?: string[] }): boolean {
+  return issue.labels?.includes(GOAL_LABEL) === true;
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function readDraftPath(): string | null {
+  try {
+    const value = localStorage.getItem(DRAFT_PATH_KEY);
+    return value === null || value.length === 0 ? null : value;
+  } catch {
+    return null;
+  }
+}
+
+function writeDraftPath(path: string | null): void {
+  try {
+    if (path === null) localStorage.removeItem(DRAFT_PATH_KEY);
+    else localStorage.setItem(DRAFT_PATH_KEY, path);
+  } catch {
+    // Storage may be unavailable; the selection then lasts the session only.
+  }
 }
 
 function isSnapshot(value: Record<string, unknown>): boolean {
@@ -43,9 +90,17 @@ function applyActivity(lines: string[], entries: IssuesActivityEntry[], replay: 
 export class IssuesStore {
   snapshot = $state<IssuesSnapshot | null>(null);
   activity = $state<string[]>([]);
+  agentActivity = $state<Record<string, string[]>>({});
   run = $state<IssuesRunDetail | null>(null);
   selectedRun = $state<string | null>(null);
   answer = $state("");
+
+  drafts = $state<GoalDraftSummary[]>([]);
+  draftRun = $state<GoalDraftRun | null>(null);
+  draft = $state<GoalDraftDetail | null>(null);
+  draftPath = $state<string | null>(readDraftPath());
+  draftError = $state<string | null>(null);
+  draftAnswer = $state("");
 
   get lifecycle(): string {
     return this.snapshot?.lifecycle ?? "stopped";
@@ -79,12 +134,86 @@ export class IssuesStore {
     return this.snapshot?.question ?? null;
   }
 
+  get agents(): IssuesAgent[] {
+    return [...(this.snapshot?.agents ?? [])].sort(
+      (left, right) => left.issueNumber - right.issueNumber,
+    );
+  }
+
+  activityFor(runId: string): string[] {
+    return this.agentActivity[runId] ?? [];
+  }
+
   get notice(): string | null {
     return this.snapshot?.notice ?? null;
   }
 
   get pending(): number {
-    return this.queue.filter((issue) => !issue.handled).length;
+    return this.queue.filter((issue) => !issue.handled && !isGoalIssue(issue)).length;
+  }
+
+  get goalPending(): number {
+    return this.queue.filter((issue) => !issue.handled && isGoalIssue(issue)).length;
+  }
+
+  get draftRunning(): boolean {
+    return this.draftRun?.status === "running";
+  }
+
+  get draftBusyPath(): string | null {
+    return this.draftRunning ? (this.draftRun?.path ?? null) : null;
+  }
+
+  get draftStatus(): string {
+    return this.draftRun?.status ?? "idle";
+  }
+
+  /** The stated reason another draft's start control is disabled, or null. */
+  draftStartBlocker(path: string): string | null {
+    const busy = this.draftBusyPath;
+    if (busy === null) return null;
+    return busy === path
+      ? "This draft is being elaborated."
+      : `An elaboration is running for ${busy}.`;
+  }
+
+  refreshDrafts(): void {
+    if (!connection.open) return;
+    connection.send({ type: "getGoalDrafts" });
+  }
+
+  openDraft(path: string): void {
+    this.draftPath = path;
+    this.draft = null;
+    this.draftError = null;
+    writeDraftPath(path);
+    if (connection.open) connection.send({ type: "getGoalDraft", path });
+  }
+
+  clearDraft(): void {
+    this.draftPath = null;
+    this.draft = null;
+    this.draftError = null;
+    writeDraftPath(null);
+  }
+
+  startDraft(): void {
+    const path = this.draftPath;
+    if (path === null || this.draftRunning) return;
+    this.draftError = null;
+    connection.send({ type: "startGoalDraft", path });
+  }
+
+  stopDraft(): void {
+    if (!this.draftRunning) return;
+    connection.send({ type: "stopGoalDraft" });
+  }
+
+  submitDraftAnswer(value: string): void {
+    const question = this.draftRun?.question ?? null;
+    if (question === null || value.trim().length === 0) return;
+    connection.send({ type: "answerGoalDraft", id: question.id, value: value.trim() });
+    this.draftAnswer = "";
   }
 
   get activeIssueNumbers(): number[] {
@@ -138,6 +267,16 @@ export class IssuesStore {
     this.answer = "";
   }
 
+  submitAgentAnswer(runId: string, questionId: number | string, value: string): void {
+    if (value.trim().length === 0) return;
+    connection.send({
+      type: "answerIssues",
+      id: questionId,
+      value: value.trim(),
+      runId,
+    });
+  }
+
   openRun(runId: string): void {
     this.selectedRun = runId;
     this.run = null;
@@ -156,12 +295,26 @@ export class IssuesStore {
       const active = next.activeRun?.runId ?? null;
       this.snapshot = next;
       if (active !== previous) this.activity = [];
+      const live = new Set((next.agents ?? []).map((agent) => agent.runId));
+      const kept: Record<string, string[]> = {};
+      for (const [runId, lines] of Object.entries(this.agentActivity)) {
+        if (live.has(runId)) kept[runId] = lines;
+      }
+      this.agentActivity = kept;
       return;
     }
     if (message.type === "issuesActivity" && typeof message.runId === "string") {
-      if (message.runId !== this.snapshot?.activeRun?.runId) return;
+      const runId = message.runId;
       const entries = Array.isArray(message.entries) ? message.entries.filter(isEntry) : [];
-      this.activity = applyActivity(this.activity, entries, message.replay === true);
+      if (runId === this.snapshot?.activeRun?.runId) {
+        this.activity = applyActivity(this.activity, entries, message.replay === true);
+        return;
+      }
+      if (!(this.snapshot?.agents ?? []).some((agent) => agent.runId === runId)) return;
+      this.agentActivity = {
+        ...this.agentActivity,
+        [runId]: applyActivity(this.agentActivity[runId] ?? [], entries, message.replay === true),
+      };
       return;
     }
     if (message.type === "issuesRun" && isObject(message.run)) {
@@ -170,6 +323,49 @@ export class IssuesStore {
         this.run = run;
         this.selectedRun = run.runId;
       }
+      return;
+    }
+    if (message.type === "issuesDrafts" && Array.isArray(message.drafts)) {
+      const drafts = (message.drafts as GoalDraftSummary[]).filter(
+        (draft) => typeof draft?.path === "string" && typeof draft?.name === "string",
+      );
+      this.drafts = drafts.sort((left, right) =>
+        left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+      );
+      const known = new Set(drafts.map((draft) => draft.path));
+      if (this.draftPath !== null && !known.has(this.draftPath)) {
+        this.clearDraft();
+      }
+      return;
+    }
+    if (message.type === "issuesDraftState" && isObject(message.draft)) {
+      const run = message.draft as unknown as GoalDraftRun;
+      if (typeof run.status !== "string") return;
+      this.draftRun = {
+        ...run,
+        activity: Array.isArray(run.activity) ? run.activity : [],
+        question: (run.question ?? null) as GoalDraftRun["question"],
+      };
+      if (run.status === "running") this.draftError = null;
+      return;
+    }
+    if (message.type === "issuesDraftDetail" && isObject(message.draft)) {
+      const draft = message.draft as unknown as GoalDraftDetail;
+      if (typeof draft.path === "string" && typeof draft.text === "string") {
+        this.draft = draft;
+        this.draftPath = draft.path;
+        writeDraftPath(draft.path);
+        this.draftError = null;
+      }
+      return;
+    }
+    if (message.type === "issuesDraftError" && typeof message.message === "string") {
+      // A stored path whose draft is gone opens the list instead of an error.
+      if (this.draft === null && this.draftPath !== null && message.message.startsWith("No draft at")) {
+        this.clearDraft();
+        return;
+      }
+      this.draftError = message.message;
     }
   }
 }

@@ -18,6 +18,7 @@ import {
   readState,
   runDetail,
   runFilePath,
+  type IssuesAgent,
   type IssuesRunDetail,
   type IssuesState,
 } from "../issues/state";
@@ -42,6 +43,7 @@ export interface IssuesSnapshot {
   queue: IssuesState["queue"];
   runs: IssuesState["runs"];
   activeRun: IssuesState["activeRun"];
+  agents: IssuesAgent[];
   question: IssuesState["question"];
   nextAttemptAt: string | null;
   lastError: string | null;
@@ -92,8 +94,7 @@ export class IssuesBridge {
 
   private timer: Timer | undefined;
   private lastSignature = "";
-  private lastActivityRunId: string | null = null;
-  private lastActivity: string[] = [];
+  private lastActivities = new Map<string, string[]>();
   private stopping: { pid: number; timer: Timer } | undefined;
   private starting = false;
 
@@ -199,6 +200,7 @@ export class IssuesBridge {
       queue: state?.queue ?? [],
       runs: state?.runs ?? [],
       activeRun: active?.activeRun ?? null,
+      agents: active?.agents ?? [],
       question: active?.question ?? null,
       nextAttemptAt: active?.nextAttemptAt ?? null,
       lastError: active?.lastError ?? null,
@@ -219,12 +221,19 @@ export class IssuesBridge {
       }
     };
     deliver({ type: "issuesState", ...this.snapshot() });
-    const runId = this.currentState()?.activeRun?.runId;
-    if (runId === undefined) return;
-    const activity = this.readActivity(runId);
-    this.lastActivityRunId = runId;
-    this.lastActivity = activity;
-    deliver({ type: "issuesActivity", runId, replay: true, entries: this.entries(activity) });
+    for (const runId of this.activeRunIds(this.snapshot())) {
+      const activity = this.readActivity(runId);
+      this.lastActivities.set(runId, activity);
+      deliver({ type: "issuesActivity", runId, replay: true, entries: this.entries(activity) });
+    }
+  }
+
+  private activeRunIds(snapshot: IssuesSnapshot): string[] {
+    const ids = [
+      ...(snapshot.activeRun === null ? [] : [snapshot.activeRun.runId]),
+      ...snapshot.agents.map((agent) => agent.runId),
+    ];
+    return [...new Set(ids)];
   }
 
   private entries(lines: string[]): ActivityEntry[] {
@@ -240,22 +249,21 @@ export class IssuesBridge {
   }
 
   private publishActivity(runId: string, activity: string[]): void {
-    if (this.lastActivityRunId !== runId) {
-      this.lastActivityRunId = runId;
-      this.lastActivity = activity;
+    const previous = this.lastActivities.get(runId);
+    if (previous === undefined) {
+      this.lastActivities.set(runId, activity);
       this.send({ type: "issuesActivity", runId, replay: true, entries: this.entries(activity) });
       return;
     }
-    const previous = this.lastActivity;
     if (activity.length === 0) return;
     if (previous.length === 0) {
-      this.lastActivity = activity;
+      this.lastActivities.set(runId, activity);
       this.send({ type: "issuesActivity", runId, replay: true, entries: this.entries(activity) });
       return;
     }
     // A trim drops the front of the log, so only a whole replay stays correct.
     if (activity.length < previous.length || (activity[0] !== previous[0] && previous[0] !== undefined)) {
-      this.lastActivity = activity;
+      this.lastActivities.set(runId, activity);
       this.send({ type: "issuesActivity", runId, replay: true, entries: this.entries(activity) });
       return;
     }
@@ -272,28 +280,28 @@ export class IssuesBridge {
       if (after.startsWith(before)) entries = [{ text: after.slice(before.length), append: true }];
     }
     if (entries.length === 0) {
-      this.lastActivity = activity;
+      this.lastActivities.set(runId, activity);
       return;
     }
-    this.lastActivity = activity;
+    this.lastActivities.set(runId, activity);
     this.send({ type: "issuesActivity", runId, entries });
   }
 
   refresh(): void {
-    const state = this.currentState();
     const snapshot = this.snapshot();
     const signature = JSON.stringify(snapshot);
     if (signature !== this.lastSignature) {
       this.lastSignature = signature;
       this.send({ type: "issuesState", ...snapshot });
     }
-    const runId = snapshot.activeRun?.runId;
-    if (runId === undefined) {
-      this.lastActivityRunId = null;
-      this.lastActivity = [];
-      return;
+    const runIds = this.activeRunIds(snapshot);
+    const active = new Set(runIds);
+    for (const runId of [...this.lastActivities.keys()]) {
+      if (!active.has(runId)) this.lastActivities.delete(runId);
     }
-    this.publishActivity(runId, this.readActivity(runId));
+    for (const runId of runIds) {
+      this.publishActivity(runId, this.readActivity(runId));
+    }
   }
 
   /* ------------------------------------------------------------------ */

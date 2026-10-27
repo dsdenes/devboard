@@ -20,7 +20,7 @@
   import { discover } from "./lib/discover.svelte";
   import { flow } from "./lib/flow.svelte";
   import { goal } from "./lib/goal.svelte";
-  import { issues } from "./lib/issues.svelte";
+  import { draftsPageWasOpen, issues } from "./lib/issues.svelte";
   import { applyTheme, layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
   import { notifications } from "./lib/notifications.svelte";
@@ -281,6 +281,18 @@
 
   let previousMode = layout.mode;
   let lastFlowConversation: string | null = null;
+  let draftsRequested = false;
+
+  // The sidebar's Drafts count needs the list before the page is opened; the
+  // page itself refreshes while mounted.
+  $effect(() => {
+    if (connection.open && !draftsRequested) {
+      draftsRequested = true;
+      issues.refreshDrafts();
+    } else if (!connection.open) {
+      draftsRequested = false;
+    }
+  });
 
   $effect(() => {
     const mode = layout.mode;
@@ -322,6 +334,17 @@
 
   onMount(() => {
     applyTheme(layout.theme);
+    // A reload while the Drafts page is open restores that page even when the
+    // layout snapshot is unavailable; its selected path is restored by the page.
+    if (draftsPageWasOpen()) {
+      layout.setMode("issues");
+      layout.openTab("issues", {
+        id: "drafts",
+        kind: "drafts",
+        resourceId: "drafts",
+        title: "Drafts",
+      });
+    }
     viewport.update();
     const onResize = () => viewport.update();
     window.addEventListener("resize", onResize);
