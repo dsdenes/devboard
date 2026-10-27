@@ -1,17 +1,19 @@
 # Issues — Agents fleet page brief
 
 Issue: #240, redesign the selected `section.issues-agents-page`. The page is the Issues mode's
-fleet monitor at `/` when the `Agents` sidebar entry, the `Open Agents` control, or the command
-palette opens it.
+fleet monitor at `/` when the command palette's `Open Agents` opens it or a restored `agents` tab
+reopens it.
 
 ## Page identity
 
-- Route: `/`, client-only Issues mode, Agents page. The mode rail is the entry; the sidebar
-  `Agents` entry and the Overview `Open Agents` button are the in-product routes.
+- Route: Issues mode → Agents tab (`#workspace-issues > section.issues-agents-page`).
+- Entry points: the command palette's `Open Agents` (`open.issues.agents`), and a restored
+  `agents` tab after reload. The current Issues sidebar has no `Agents` entry and the Overview has
+  no Open Agents control.
 - Visible identity: eyebrow `Issues`, title `Agents`, the repository as `owner/repo`, a running
   count and a waiting-question count.
-- Auth/role: local operator of the running dashboard. No account model.
-- Entry points: sidebar `Agents`, Overview `Open Agents`, command palette, a restored page.
+- Audience: the local operator of the running dashboard watching a running issues fleet. No
+  account model.
 
 ## Primary goal
 
@@ -53,8 +55,8 @@ submit an answer in its card or reach its focus page in one click, without openi
 1. **Survey the fleet and open one agent.** Trigger: the operator needs one agent's output.
    Steps: scan issue numbers and titles, check the right side of each card, click `Focus`.
    Success: the focus page names the issue and shows its activity. Failure: no agents → the
-   empty state explains how to start the worker and offers `Open Overview`. Recovery: the
-   sidebar `Agents` entry stays reachable.
+   empty state explains how to start the worker and offers `Open Overview`. Recovery: the command
+   palette can reopen the page, and a reload restores the tab.
 2. **Answer a blocked agent.** Trigger: a card shows a question. Steps: read the question,
    choose an option or type an answer, submit. Success: the card's question block disappears on
    the next state push and the header count decrements. Failure: an empty answer disables the

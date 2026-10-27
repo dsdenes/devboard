@@ -161,6 +161,9 @@ describe("journal", () => {
       expect(kinds.has("question")).toBe(true);
       expect(kinds.has("run-start")).toBe(true);
       expect(kinds.has("run-stop")).toBe(true);
+      expect(records.find((record) => record.kind === "question")?.scope).toBe(
+        "run:0001-first.md",
+      );
       for (const record of records) {
         expect(record.repo).toBe(repoDir);
         expect(record.pid).toBe(process.pid);

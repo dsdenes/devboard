@@ -682,8 +682,8 @@ async function seedIssuesState(
       : null,
     poll: {
       intervalMs: 2000,
-      lastPollAt: enabled ? "2026-10-27T10:00:00.000Z" : null,
-      nextPollAt: enabled ? "2026-10-27T10:00:02.000Z" : null,
+      lastPollAt: enabled ? new Date(Date.now() - 1_000).toISOString() : null,
+      nextPollAt: enabled ? new Date(Date.now() + 1_000).toISOString() : null,
       etag: enabled ? '"etag"' : null,
       notModified: false,
       rateLimitedUntil: null,
@@ -4208,31 +4208,36 @@ try {
   const stoppedConsole = await page.eval<{
     visible: boolean;
     overview: boolean;
-    state: string;
     repo: string;
     start: boolean;
     pause: boolean;
     resume: boolean;
     stop: boolean;
     check: boolean;
+    poll: string;
   }>(`(() => {
     const workspace = document.getElementById("workspace-issues");
     const button = (testid) => document.querySelector('[data-testid="' + testid + '"]');
     return {
       visible: workspace !== null && !workspace.hasAttribute("hidden"),
       overview: button("issues-overview") !== null,
-      state: button("issues-state")?.textContent?.trim() ?? "",
       repo: button("issues-repo")?.textContent?.trim() ?? "",
       start: button("issues-start")?.disabled === true,
       pause: button("issues-pause")?.disabled === true,
       resume: button("issues-resume")?.disabled === true,
       stop: button("issues-stop")?.disabled === true,
       check: button("issues-check-now")?.disabled === true,
+      poll: button("issues-poll-text")?.textContent?.trim() ?? "",
     };
   })()`);
   check(stoppedConsole.visible && stoppedConsole.overview, "the Issues pane or overview is missing", stoppedConsole);
-  check(stoppedConsole.state === "stopped", "the Issues mode does not open stopped", stoppedConsole);
   check(stoppedConsole.repo === "fixture/host", "the Issues overview does not name the repository", stoppedConsole);
+  check(stoppedConsole.poll === "Not polling", "the stopped poll line does not say it is not polling", stoppedConsole);
+  check(
+    await page.eval<boolean>(`document.querySelector('[data-testid="issues-state"]') === null`),
+    "the Issues overview kept the lifecycle badge",
+    stoppedConsole,
+  );
   check(
     !stoppedConsole.start && stoppedConsole.pause && stoppedConsole.resume && stoppedConsole.stop && stoppedConsole.check,
     "the stopped controls are not in their exact states",
@@ -4240,7 +4245,7 @@ try {
   );
 
   // With no active agent the Agents page explains the empty fleet and links back.
-  await page.click('[data-testid="open-issues-agents"]');
+  await runPalette("open.issues.agents");
   await page.wait(
     `document.querySelector('[data-testid="issues-agents-empty"]') !== null`,
     "the empty Agents page",
@@ -4276,12 +4281,11 @@ try {
     "the idle issues indicator",
     8_000,
   );
-  const idleControls = await page.eval<{ state: string; start: boolean; check: boolean }>(`(() => ({
-    state: document.querySelector('[data-testid="issues-state"]')?.textContent?.trim() ?? "",
+  const idleControls = await page.eval<{ start: boolean; check: boolean }>(`(() => ({
     start: document.querySelector('[data-testid="issues-start"]')?.disabled === true,
     check: document.querySelector('[data-testid="issues-check-now"]')?.disabled === true,
   }))()`);
-  check(idleControls.state === "idle" && idleControls.start && !idleControls.check, "the idle controls are wrong", idleControls);
+  check(idleControls.start && !idleControls.check, "the idle controls are wrong", idleControls);
 
   const runningSeededAt = Date.now();
   await seedIssuesState(stateDir, host, "running");
@@ -4301,8 +4305,8 @@ try {
     runningIndicatorTitle,
   );
 
-  // The Overview counts the fleet, lists it in the left column after Open
-  // Agents, and streams the selected agent's output on the right.
+  // The Overview counts the fleet, lists it in the left column below the
+  // Automation panel, and streams the selected agent's output on the right.
   await page.wait(
     `document.querySelector('[data-testid="issues-running-agents"]')?.textContent?.trim() === "3 running"`,
     "the overview running-agent count",
@@ -4310,29 +4314,28 @@ try {
   );
   const overview = await page.eval<{
     cooldowns: string;
-    link: string;
     summaryIssues: string[];
     sideBeforeOutput: boolean;
     leftOfOutput: boolean;
-    linkBeforeSummary: boolean;
+    summaryBelowAutomation: boolean;
     outputRun: string;
     outputActivity: string;
     outputQuestion: string;
     selected: string;
-    agentsLinkBeforeSummary: boolean;
+    poll: { text: string; tone: string; title: string; dot: number };
   }>(`(() => {
     const side = document.querySelector('[data-testid="issues-overview-side"]');
     const output = document.querySelector('[data-testid="issues-overview-output"]');
     const summary = document.querySelector('[data-testid="issues-agent-summary"]');
-    const link = document.querySelector('[data-testid="issues-agents-link"]');
+    const automation = side?.querySelector(".panel");
     const selected = summary?.querySelector('[aria-current="true"]');
     const sideRect = side?.getBoundingClientRect();
     const outputRect = output?.getBoundingClientRect();
-    const linkRect = link?.getBoundingClientRect();
+    const automationRect = automation?.getBoundingClientRect();
     const summaryRect = summary?.getBoundingClientRect();
+    const poll = document.querySelector('[data-testid="issues-poll"]');
     return {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
-      link: link?.getAttribute("data-command") ?? "",
       summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
       ),
@@ -4340,15 +4343,19 @@ try {
       leftOfOutput:
         sideRect !== undefined && outputRect !== undefined &&
         sideRect.left < outputRect.left && sideRect.right <= outputRect.left + 1,
-      linkBeforeSummary:
-        linkRect !== undefined && summaryRect !== undefined && summaryRect.top >= linkRect.bottom - 1,
+      summaryBelowAutomation:
+        automationRect !== undefined && summaryRect !== undefined &&
+        summaryRect.top >= automationRect.bottom - 1,
       outputRun: output?.getAttribute("data-run") ?? "",
       outputActivity: document.querySelector('[data-testid="issues-overview-activity"]')?.textContent ?? "",
       outputQuestion: document.querySelector('[data-testid="issues-overview-question"]')?.textContent ?? "",
       selected: selected?.getAttribute("data-run") ?? "",
-      agentsLinkBeforeSummary:
-        link !== null && summary !== null &&
-        (link.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      poll: {
+        text: poll?.querySelector(".issues-poll__label")?.textContent?.trim() ?? "",
+        tone: poll?.getAttribute("data-tone") ?? "",
+        title: poll?.getAttribute("title") ?? "",
+        dot: parseFloat(getComputedStyle(poll?.querySelector(".issues-poll__dot") ?? document.body).width),
+      },
     };
   })()`);
   check(
@@ -4356,8 +4363,66 @@ try {
     "the overview does not name the cooldown count and earliest time",
     overview,
   );
-  check(overview.link === "open.issues.agents", "the overview has no Agents link", overview);
-  check(overview.agentsLinkBeforeSummary, "the agent list is not after the Open Agents button", overview);
+  check(
+    overview.poll.tone === "active" &&
+      /^Every 2s · checked .+$/.test(overview.poll.text) &&
+      /Poll interval 2s · last check \d{4}-\d{2}-\d{2}T/.test(overview.poll.title) &&
+      overview.poll.dot === 6,
+    "the poll line does not state the cadence, last check, and active dot",
+    overview.poll,
+  );
+  await saveShot("issues-poll");
+
+  // The poll line is the right end of a 30px header: it must not collide with
+  // the title or lose its dot at the narrow supported viewport.
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024`, "the 1024×720 poll line");
+  const narrowPoll = await page.eval<{
+    header: number;
+    inside: boolean;
+    separated: boolean;
+    labelClipped: boolean;
+  }>(`(() => {
+    const poll = document.querySelector('[data-testid="issues-poll"]');
+    const header = poll?.closest(".panel__header");
+    const title = header?.querySelector(".panel__title");
+    const label = poll?.querySelector(".issues-poll__label");
+    const pollRect = poll?.getBoundingClientRect();
+    const headerRect = header?.getBoundingClientRect();
+    const titleRect = title?.getBoundingClientRect();
+    return {
+      header: headerRect?.height ?? 0,
+      inside: pollRect !== undefined && headerRect !== undefined &&
+        pollRect.top >= headerRect.top - 0.5 && pollRect.bottom <= headerRect.bottom + 0.5 &&
+        pollRect.right <= headerRect.right + 0.5,
+      separated: pollRect !== undefined && titleRect !== undefined && pollRect.left >= titleRect.right,
+      labelClipped: label !== null && label !== undefined && label.scrollWidth > label.clientWidth,
+    };
+  })()`);
+  check(
+    narrowPoll.header === 30 && narrowPoll.inside && narrowPoll.separated && !narrowPoll.labelClipped,
+    "the poll line collides with its title or clips at 1024×720",
+    narrowPoll,
+  );
+  await page.screenshot(join(harnessRoot, ".tmp", "interface", "issues-poll-1024x720.png"));
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the 1440×900 viewport after the poll line");
+  await page.click('[data-testid="theme-toggle"]');
+  await page.wait(`document.documentElement.dataset.theme === "light"`, "the light theme for the poll line");
+  await saveShot("issues-poll-light");
+  await page.click('[data-testid="theme-toggle"]');
+  await page.wait(`document.documentElement.dataset.theme === "dark"`, "the dark theme after the poll line");
+
   check(
     overview.summaryIssues.join(",") === "17,18,19",
     "the overview does not list every running agent",
@@ -4366,8 +4431,8 @@ try {
   check(overview.sideBeforeOutput, "the agent list is not in the left column", overview);
   check(overview.leftOfOutput, "the side column does not sit to the left of the output", overview);
   check(
-    overview.linkBeforeSummary,
-    "the agent list is not directly after the Open Agents button",
+    overview.summaryBelowAutomation,
+    "the agent list is not directly after the Automation panel",
     overview,
   );
   check(
@@ -4441,31 +4506,13 @@ try {
     closeControls,
   );
 
-  // The sidebar lists Agents directly after Overview and counts the fleet.
-  const agentsEntry = await page.eval<{
-    label: string;
-    command: string;
-    count: string;
-    afterOverview: boolean;
-    accessible: string;
-  }>(`(() => {
-    const entry = document.querySelector('[data-testid="open-issues-agents"]');
-    const overviewEntry = document.querySelector('[data-testid="open-issues-overview"]');
-    return {
-      label: entry?.querySelector(".sidebar-item__label")?.textContent?.trim() ?? "",
-      command: entry?.getAttribute("data-command") ?? "",
-      count: entry?.querySelector(".sidebar-item__meta")?.textContent?.trim() ?? "",
-      afterOverview: overviewEntry !== null && overviewEntry.nextElementSibling === entry,
-      accessible: entry?.getAttribute("aria-label") ?? "",
-    };
-  })()`);
-  check(agentsEntry.label === "Agents", "the sidebar entry is not labeled Agents", agentsEntry);
-  check(agentsEntry.command === "open.issues.agents", "the Agents entry has the wrong command", agentsEntry);
-  check(agentsEntry.count === "3", "the Agents entry does not count the running agents", agentsEntry);
-  check(agentsEntry.afterOverview, "the Agents entry is not directly after Overview", agentsEntry);
-  check(agentsEntry.accessible.includes("Issues"), "the Agents entry does not name its mode", agentsEntry);
+  // The sidebar no longer lists Agents; the palette still opens the tab.
+  check(
+    await page.eval<boolean>(`document.querySelector('[data-testid="open-issues-agents"]') === null`),
+    "the Issues sidebar still lists Agents",
+  );
 
-  await page.click('[data-testid="open-issues-agents"]');
+  await runPalette("open.issues.agents");
   await page.wait(
     `document.querySelector('[data-testid="issues-agents-page"]') !== null &&
      document.querySelectorAll('[data-testid="issues-agent"]').length === 3`,
@@ -4835,16 +4882,6 @@ try {
     8_000,
   );
 
-  // The Overview link opens the Agents tab too.
-  await page.click('[data-testid="open-issues-overview"]');
-  await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview");
-  await page.click('[data-testid="issues-agents-link"]');
-  await page.wait(
-    `document.querySelector('[data-testid="issues-agents-page"]') !== null`,
-    "the Agents tab from the overview link",
-    8_000,
-  );
-
   await page.click('[data-testid="open-issues-queue"]');
   await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the issues queue");
   const queue = await page.eval<Array<{ number: string; handled: string; goal: string; run: string }>>(
@@ -5140,8 +5177,8 @@ try {
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the overview before the failed state");
   await seedIssuesState(stateDir, host, "failed");
   await page.wait(
-    `document.querySelector('[data-testid="issues-state"]')?.textContent?.trim() === "failed"`,
-    "the failed issues state",
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues failed"`,
+    "the failed issues indicator",
     8_000,
   );
   const failed = await page.eval<{ indicator: string; error: string }>(`(() => ({

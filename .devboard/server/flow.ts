@@ -1020,7 +1020,7 @@ export class FlowController {
             message: question.message,
             options: question.options,
           };
-          this.#journal?.write("question", question.message);
+          this.#journal?.write("question", question.message, "flow:goal");
           this.#broadcast({
             type: "flowQuestion",
             target: "goal",

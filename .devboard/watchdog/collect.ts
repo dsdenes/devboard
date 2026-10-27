@@ -20,6 +20,8 @@ export interface EvidenceEvent {
   /** ISO timestamp used for the window decision. */
   ts: string;
   text: string;
+  /** Logical run, lane, or peer the journal record named. */
+  scope?: string;
   /** Severity token an `omp-log` record carried. */
   level?: "error" | "warn" | "fatal";
   /** Project the evidence belongs to, when attribution resolved it. */
@@ -93,6 +95,9 @@ export function readJournalEvidence(
       kind,
       ts: new Date(ts).toISOString(),
       text: record.text,
+      ...(typeof record.scope === "string" && record.scope.length > 0
+        ? { scope: record.scope }
+        : {}),
       instance,
     });
   }

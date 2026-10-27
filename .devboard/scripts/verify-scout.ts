@@ -505,16 +505,17 @@ try {
       (await devtools!
         .evaluate(
           `(() => {
-            const ids = ['open-issues-overview', 'open-issues-agents', 'open-issues-scout', 'open-issues-queue', 'open-issues-runs'];
+            const ids = ['open-issues-overview', 'open-issues-scout', 'open-issues-queue', 'open-issues-runs'];
             const found = ids.map((id) => document.querySelector('[data-testid="' + id + '"]'));
             if (found.some((element) => element === null)) return null;
             const labels = found.map((element) => element.querySelector('.sidebar-item__label')?.textContent?.trim() ?? '');
             const ordered = ids.every((_id, index) => index === ids.length - 1 ||
               (found[index].compareDocumentPosition(found[index + 1]) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
-            const scoutButton = found[2];
+            const scoutButton = found[1];
             return {
               labels,
               ordered,
+              agentsEntry: document.querySelector('[data-testid="open-issues-agents"]') !== null,
               scoutLabel: scoutButton.getAttribute('aria-label') ?? '',
               command: scoutButton.dataset.command ?? '',
               count: scoutButton.querySelector('[data-testid="scout-count"]')?.textContent?.trim() ?? '',
@@ -528,10 +529,11 @@ try {
   );
   check(
     JSON.stringify(sidebar.labels) ===
-      JSON.stringify(["Overview", "Agents", "Auto Scout", "Issues", "Runs"]),
-    "the sidebar order is not Overview, Agents, Auto Scout, Issues, Runs",
+      JSON.stringify(["Overview", "Auto Scout", "Issues", "Runs"]),
+    "the sidebar order is not Overview, Auto Scout, Issues, Runs",
     sidebar,
   );
+  check(sidebar.agentsEntry === false, "the sidebar still lists Agents", sidebar);
   check(sidebar.ordered === true, "the sidebar entries are out of document order", sidebar);
   check(sidebar.command === "open.issues.scout", "the Auto Scout button has no command", sidebar);
   check(String(sidebar.scoutLabel).includes("Issues"), "the accessible name omits the mode", sidebar);
@@ -612,6 +614,15 @@ try {
     `document.querySelector('[data-testid="scout-count"]')?.textContent?.trim() ?? ''`,
   );
   check(count === "3", "the staged count does not match the widgets", count);
+  const widgetSections = await devtools.evaluate(
+    `Array.from(document.querySelectorAll('[data-testid="scout-widget"] .scout-widget__section h3')).map((heading) => heading.textContent.trim())`,
+  );
+  check(
+    Array.isArray(widgetSections) &&
+      !widgetSections.some((heading) => /acceptance criteria/i.test(String(heading))),
+    "a widget still shows acceptance criteria",
+    widgetSections,
+  );
   await waitState(fixture, "the shortfall state", (state) => state.staged.length === 3);
   check(workerPids(fixture.repo).length === 1, "Start did not spawn exactly one worker");
   await waitFor(

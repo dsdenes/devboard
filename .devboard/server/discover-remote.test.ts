@@ -19,6 +19,7 @@ import {
   type RemoteCloneRunner,
 } from "./discover";
 import { readStateFile, stateFile } from "./state";
+import { journalFile } from "./journal";
 
 /**
  * Discover's remote target: the source-checkout gate, URL validation, the one
@@ -1063,7 +1064,7 @@ describe("discover remote target", () => {
   );
 
   test(
-    "falls back to the host target and reports a missing clone once",
+    "falls back to the host target, drops the missing target, and reports it once",
     async () => {
       const fixture = createFixture("missing");
       const clones = cloneHarness({ source: createSourceRepository("missing-source") });
@@ -1096,6 +1097,35 @@ describe("discover remote target", () => {
       } finally {
         restored.close();
         second.server.stop(true);
+      }
+
+      // A target whose clone is gone is not durable: the next start has
+      // nothing to restore and nothing to report.
+      expect(persistedState(fixture).discoverTarget).toBeNull();
+      const records = readFileSync(journalFile(fixture.stateDir, resolve(fixture.root)), "utf8")
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line) as { kind: string; text: string });
+      expect(
+        records.some(
+          (record) =>
+            record.kind === "lifecycle" && record.text === "discover-remote-missing",
+        ),
+      ).toBe(true);
+      expect(
+        records.some(
+          (record) => record.kind === "server-error" && record.text.includes("missing"),
+        ),
+      ).toBe(false);
+      const third = startServer({ fixture, clone: cloneHarness() });
+      const again = await connect(third.url);
+      try {
+        const state = await discoverState(again);
+        expect(state.target).toEqual({ kind: "host" });
+        expect(again.events.filter((event) => event.type === "discoverError")).toHaveLength(0);
+      } finally {
+        again.close();
+        third.server.stop(true);
       }
     },
     60_000,

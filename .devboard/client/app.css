@@ -2748,6 +2748,42 @@ a.code-chip--link:focus-visible {
   margin: 0;
 }
 
+.issues-poll {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 1 auto;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.issues-poll__dot {
+  background: var(--border-strong);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 6px;
+  width: 6px;
+}
+
+.issues-poll[data-tone="active"] .issues-poll__dot {
+  background: var(--success);
+}
+
+.issues-poll[data-tone="stale"] .issues-poll__dot,
+.issues-poll[data-tone="limited"] .issues-poll__dot {
+  background: var(--warning);
+}
+
+.issues-poll[data-tone="failed"] .issues-poll__dot {
+  background: var(--error);
+}
+
+.issues-poll__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .issues-facts dt {
   font-size: 10.5px;
   text-transform: uppercase;

@@ -935,11 +935,12 @@ Durable state stores the active target as URL, owner, and repository only, and `
 from `STATE_DIR`, so moving the state directory never leaves a stale absolute path. Startup removes
 every leftover `.staging-*` and every clone that is not the stored target's, so the scratch root
 holds at most one clone. A replacement restores a remote target only while `<cloneDir>/.git` exists;
-otherwise it starts on the host target and sends one `discoverError` naming the missing clone to the
-next client. A restart during a remote crawl interrupts it as a host run does: the recorded child
-ends, the clone's staging is removed, its published artifacts stay, and nothing is published or
-resumed. After a restart with an intact clone, `getDiscover` and the Overview render the clone's
-artifacts with `target.kind === "remote"` without a re-crawl.
+otherwise it starts on the host target, drops the stored target so the fallback never repeats, and
+sends one `discoverError` naming the missing clone to the next client. A restart during a remote
+crawl interrupts it as a host run does: the recorded child ends, the clone's staging is removed, its
+published artifacts stay, and nothing is published or resumed. After a restart with an intact clone,
+`getDiscover` and the Overview render the clone's artifacts with `target.kind === "remote"` without a
+re-crawl.
 
 The protocol adds `{ "type": "discoverRemote", "url": string }` and
 `{ "type": "clearDiscoverRemote" }`. A malformed payload, a missing or non-string `url`, and an
@@ -1121,8 +1122,9 @@ ends inclusive, from:
   value, `<host>/.devboard/.tmp` for an installed host. Each record carries `ts` (UTC ISO
   8601), `repo`, `port`, `pid`, `kind`, and `text`; kinds are `activity`, `question`,
   `run-start`, `run-stop`, `lane-start`, `lane-stop`, `lifecycle`, `acp-stderr`,
-  `server-error`, `update`, and `update-error`. A live journal rotates at 8 MiB instead of
-  truncating.
+  `server-error`, `update`, and `update-error`. A `question` record also carries `scope`, the
+  run, lane, or peer that asked, so questions from separate work streams never accumulate into
+  one finding. A live journal rotates at 8 MiB instead of truncating.
 - omp's own warnings and errors under `~/.omp/logs/omp.*.log`, attributed to an instance only
   when that pid descends from the instance's server process. A shared working directory never
   attributes a line, so an operator's own omp session in the project directory is not dashboard
@@ -1182,7 +1184,8 @@ Findings derive only from machine-checkable evidence: a `server-error`, `update-
 `acp-stderr` journal record; a `lane-stop` whose status token is `failed`; an omp log record at
 `error`, `warn`, or `fatal`; a `run-start` or `lane-start` at least five minutes before window end
 with no `run-stop` or `lane-stop` at or after it for the same instance (a stall); and three or
-more `question` records for one instance in one window (a question loop, quoting the last).
+more `question` records for one instance's run, lane, or peer in one window (a question loop,
+quoting the last).
 `activity`, `lifecycle`, `update`, ordinary run and lane text, and questions below the loop
 threshold never produce a finding, whatever words they contain.
 
@@ -1370,10 +1373,9 @@ systemctl --user daemon-reload
 
 ### The Agents surface
 
-The Issues sidebar lists `Agents` directly after `Overview`, with `data-command="open.issues.agents"`
-and `data-testid="open-issues-agents"`, trailing the running-agent count; its accessible name names
-the Issues mode. The command palette lists `open.issues.agents` in the `Workspace` group with the
-title `Open Agents`.
+The Issues sidebar has no `Agents` entry and the Overview has no Open Agents control; the command
+palette lists `open.issues.agents` in the `Workspace` group with the title `Open Agents` and opens
+the tab from any mode.
 
 The tab is `{ id: "agents", kind: "agents", resourceId: "agents", title: "Agents" }` and is
 restored after a reload. The page renders `data-testid="issues-agents-page"` with a page header
@@ -1419,10 +1421,10 @@ no-longer-available state linking to Runs when the run has been pruned.
 The Overview keeps the Start, Pause, Resume, Stop, and Check now controls, the poll and worker
 facts, and `data-testid="issues-overview"`. It shows the running-agent count as
 `data-testid="issues-running-agents"`, the pending count, the number of issues in cooldown and the
-earliest cooldown time as `data-testid="issues-cooldowns"`, and links to the Agents tab with
-`data-testid="issues-agents-link"`. The left column holds the Automation panel and, directly after
-the Open Agents button, the running agents in `data-testid="issues-agent-summary"`: one button per
-agent carrying `data-run` and `data-issue`, sorted by issue number, with `aria-current="true"` on
+earliest cooldown time as `data-testid="issues-cooldowns"`. The left column holds the Automation
+panel and, directly after it, the running agents in
+`data-testid="issues-agent-summary"`: one button per agent carrying `data-run` and `data-issue`,
+sorted by issue number, with `aria-current="true"` on
 the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
 Each row also carries `data-testid="issues-close-issue"` with `data-issue`; it closes that issue on
 the tracker as `not planned`, so an issue the operator does not want implemented leaves the next
@@ -1524,7 +1526,7 @@ agent leaves the queue on the next poll.
 
 ## Auto Scout
 
-The Issues sidebar lists `Overview`, `Agents`, `Auto Scout`, `Issues`, `Runs`, and then `Drafts`
+The Issues sidebar lists `Overview`, `Auto Scout`, `Issues`, `Runs`, and then `Drafts`
 in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`, palette
 `Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its tab, or
 reloading the dashboard never starts a worker: only `data-testid="scout-start"` does. The page
@@ -1540,7 +1542,7 @@ staged board; the next Start scans immediately, so there is no separate Scan now
 The staging board holds at most nine significant, evidence-backed recommendations, and nine
 whenever nine exist. Each widget carries `data-testid="scout-widget"`, `data-id`, and
 `data-category`, shows its category, title, summary, impact, `path:lines` evidence with any quote,
-proposed change, files, acceptance criteria, and staged time, and offers
+proposed change, files, and staged time, and offers
 `data-testid="scout-approve"`, `data-testid="scout-draft-goal"`, and
 `data-testid="scout-reject"`. Existing widgets keep their position and refills append; a decision
 removes one widget in the same published update that records it and the agent refills the freed
