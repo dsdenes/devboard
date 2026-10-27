@@ -463,6 +463,12 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   success, `Unsaved changes` warning, `Interview running` accent, `No goal yet` muted), and an
   action group: the outline `(Re)create flow goal` and a primary `Save` that is disabled until the
   draft differs from the saved goal.
+- **Flow steering panel** (`.steering-composer`) — the panel header carries the title and an 11px
+  state line (`Read at the next checkpoint` muted while empty, `N notes waiting for the next
+  checkpoint` warning while any note is new, `All notes read` success otherwise). The composer is
+  a full-width textarea followed by a right-aligned primary `Send` at 6px, disabled while the draft
+  is blank, so the action sits with the field it acts on instead of the header bar. Notes follow
+  as left-ruled rows with source, timestamp, and status words.
 - **Discover skill header** (`.discover-skill__header`) — follows the Flow goal header: the
   relative path `<skill>/SKILL.md` in the `panel-title` size, with the skill name in `foreground`
   and the file name in `muted-foreground`; a second 11px draft line (`No unsaved changes` muted,

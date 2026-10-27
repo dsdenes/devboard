@@ -26,6 +26,7 @@
   };
 
   const activeWidget = $derived(tab?.kind === "widget" ? flow.widget(tab.resourceId) : null);
+  const pendingSteering = $derived(flow.steering.filter((note) => note.status === "new").length);
   const focusedFile = $derived(tab?.kind === "file" ? flow.file(tab.resourceId) : null);
   const checkpoint = $derived(
     tab?.kind === "checkpoint" ? flow.checkpoint(tab.resourceId) : null,
@@ -694,25 +695,46 @@
       <section class="panel" data-testid="flow-steering">
         <div class="panel__header">
           <h2 class="panel__title">Steering</h2>
-          <Button
-            variant="default"
-            data-command="flow.steering.send"
-            data-testid="send-flow-steering"
-            disabled={flow.steeringDraft.trim().length === 0}
-            onclick={() => flow.sendSteering()}
+          <span
+            class="panel__subtitle steering-state"
+            data-testid="flow-steering-state"
+            data-state={pendingSteering > 0
+              ? "waiting"
+              : flow.steering.length > 0
+                ? "read"
+                : "empty"}
           >
-            Send
-          </Button>
+            {#if pendingSteering > 0}
+              {pendingSteering} note{pendingSteering === 1 ? "" : "s"} waiting for the next checkpoint
+            {:else if flow.steering.length > 0}
+              All notes read
+            {:else}
+              Read at the next checkpoint
+            {/if}
+          </span>
         </div>
         <div class="panel__body stack-sm">
-          <textarea
-            id="flow-steering-text"
-            class="textarea"
-            data-testid="flow-steering-text"
-            placeholder="Steer the implementation"
-            aria-label="Steering note"
-            bind:value={flow.steeringDraft}
-          ></textarea>
+          <div class="steering-composer">
+            <textarea
+              id="flow-steering-text"
+              class="textarea"
+              data-testid="flow-steering-text"
+              placeholder="Steer the implementation"
+              aria-label="Steering note"
+              bind:value={flow.steeringDraft}
+            ></textarea>
+            <div class="steering-composer__actions">
+              <Button
+                variant="default"
+                data-command="flow.steering.send"
+                data-testid="send-flow-steering"
+                disabled={flow.steeringDraft.trim().length === 0}
+                onclick={() => flow.sendSteering()}
+              >
+                Send
+              </Button>
+            </div>
+          </div>
           {#each flow.steering as note (note.id)}
             <div
               class="steering-note"

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Flow / Steering</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f4f4f4; color: #222; font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px; }
+  .panel { background: #fff; border: 1px solid #999; }
+  .region { border-bottom: 1px solid #ccc; padding: 12px; position: relative; }
+  .region:last-child { border-bottom: 0; }
+  .annotation {
+    display: block; color: #666; font: 10px/1.2 ui-monospace, monospace;
+    margin-bottom: 6px; text-transform: uppercase;
+  }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h2 { font-size: 13px; margin: 0; }
+  .state { color: #666; font-size: 11px; }
+  .input {
+    background: #fafafa; border: 1px dashed #888; min-height: 64px; padding: 8px;
+    color: #555;
+  }
+  .actions { display: flex; justify-content: flex-end; margin-top: 6px; }
+  .action { border: 1px solid #444; background: #444; color: #fff; padding: 4px 10px;
+    font-size: 12px; }
+  .note { border-left: 2px solid #999; padding: 4px 8px; margin-top: 8px; }
+  .note p { margin: 2px 0 0; }
+  .meta { color: #666; font-size: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .empty { color: #666; font-size: 12px; margin: 0; }
+  @media (max-width: 768px) {
+    main { padding: 12px; }
+    .row { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="panel" aria-label="Flow steering panel">
+    <header class="region">
+      <span class="annotation">region_header · P0</span>
+      <div class="row">
+        <h2>Steering</h2>
+        <span class="state">1 note waiting for the next checkpoint</span>
+      </div>
+    </header>
+    <section class="region">
+      <span class="annotation">region_composer · P0</span>
+      <div class="input">Steering note</div>
+      <div class="actions"><span class="action">Send</span></div>
+    </section>
+    <section class="region">
+      <span class="annotation">region_notes · P1</span>
+      <article class="note">
+        <div class="meta"><span>developer</span><span>2026-10-25T10:00:00.000Z</span><span>new</span></div>
+        <p>Prefer a smaller configuration</p>
+      </article>
+      <article class="note">
+        <div class="meta"><span>developer</span><span>2026-10-25T09:40:00.000Z</span><span>read</span></div>
+        <p>Keep the public API unchanged.</p>
+      </article>
+    </section>
+    <section class="region">
+      <span class="annotation">region_empty · P2</span>
+      <p class="empty">No steering notes yet.</p>
+    </section>
+  </section>
+</main>
+</body>
+</html>

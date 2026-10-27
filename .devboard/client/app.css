@@ -1189,6 +1189,25 @@ kbd {
   padding: 4px 6px;
 }
 
+.steering-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.steering-composer__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.steering-state[data-state="waiting"] {
+  color: var(--warning);
+}
+
+.steering-state[data-state="read"] {
+  color: var(--success);
+}
+
 .steering-note {
   border-left: 2px solid var(--border-strong);
   padding: 4px 8px;
