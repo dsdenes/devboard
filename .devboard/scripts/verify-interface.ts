@@ -4257,7 +4257,7 @@ try {
     return {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
       link: link?.getAttribute("data-command") ?? "",
-      summaryIssues: [...(summary?.querySelectorAll("[data-issue]") ?? [])].map(
+      summaryIssues: [...(summary?.querySelectorAll("button[data-run]") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
       ),
       sideBeforeOutput: side !== null && output !== null && side.nextElementSibling === output,
@@ -4311,7 +4311,7 @@ try {
     overview,
   );
 
-  await page.click('[data-testid="issues-agent-summary"] [data-issue="18"]');
+  await page.click('[data-testid="issues-agent-summary"] button[data-run][data-issue="18"]');
   await page.wait(
     `document.querySelector('[data-testid="issues-overview-output"]')?.getAttribute("data-run") ===
        "2026-10-27T10-00-02-000Z" &&
