@@ -300,9 +300,6 @@
             <h2 class="panel__title" data-testid="issues-overview-output-title">
               #{selectedAgent.issueNumber} · {issueTitle(selectedAgent.issueNumber)}
             </h2>
-            <span class="badge" data-tone="accent" data-testid="issues-overview-output-status">
-              running
-            </span>
           </div>
           <div class="panel__body stack-sm">
             <IssuesAgentLog
