@@ -5,6 +5,7 @@
   import { goal } from "../goal.svelte";
   import { issues } from "../issues.svelte";
   import { layout } from "../layout.svelte";
+  import { statusTone } from "../status-tone";
   import IconButton from "./ui/icon-button.svelte";
   import WatchdogIndicator from "./watchdog-indicator.svelte";
 
@@ -81,6 +82,7 @@
       data-testid="issues-indicator"
       data-command="view.mode.issues"
       data-state={issues.lifecycle}
+      data-tone={statusTone(issues.lifecycle)}
       title={issuesTitle}
       aria-label={`${issuesLabel}. Open Issues mode.`}
       onclick={() => layout.setMode("issues")}

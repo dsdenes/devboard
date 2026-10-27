@@ -42,6 +42,7 @@
     activeSkill === null ? null : (TABS.find((entry) => entry.skill === activeSkill) ?? null),
   );
   const skillState = $derived(skill?.state ?? "missing");
+  const skillDirty = $derived(activeSkill === null ? false : discover.skillDirty(activeSkill));
 
   const totalTerms = $derived(
     discover.contexts.reduce(
@@ -258,16 +259,51 @@
 
       <div class="discover-skill" data-testid="discover-skill" data-name={activeSkill}>
         <div class="panel discover-skill__panel">
-          <div class="panel__header">
-            <h2 class="panel__title mono">{activeSkill}/SKILL.md</h2>
-            <div class="row-sm">
-              {#if discover.skillDirty(activeSkill)}
-                <span class="muted" data-testid="discover-skill-dirty">Unsaved changes</span>
+          <div class="panel__header discover-skill__header">
+            <div class="discover-skill__identity">
+              <h2
+                class="panel__title mono discover-skill__title"
+                title={`${activeSkill}/SKILL.md`}
+              >
+                <span>{activeSkill}</span><span class="discover-skill__file">/SKILL.md</span>
+              </h2>
+              {#if skillDirty}
+                <span
+                  class="discover-skill__state"
+                  data-state="dirty"
+                  data-testid="discover-skill-dirty"
+                >
+                  Unsaved changes
+                </span>
+              {:else if skillState === "missing"}
+                <span
+                  class="discover-skill__state"
+                  data-state="missing"
+                  data-testid="discover-skill-status"
+                >
+                  Live file missing
+                </span>
+              {:else}
+                <span
+                  class="discover-skill__state"
+                  data-state="clean"
+                  data-testid="discover-skill-status"
+                >
+                  No unsaved changes
+                </span>
               {/if}
+            </div>
+            <div class="row-sm discover-skill__actions">
               <Button
                 variant="default"
                 data-command={`discover.skill.save.${activeSkill}`}
                 data-testid="discover-skill-save"
+                disabled={!skillDirty || skillState === "missing"}
+                title={skillState === "missing"
+                  ? "Recreate the generated version before saving."
+                  : skillDirty
+                    ? "Save the skill file."
+                    : "No unsaved changes."}
                 onclick={() => discover.saveSkill(activeSkill)}
               >
                 Save
@@ -292,7 +328,7 @@
               value={skillDraft}
               label={`${activeSkill} skill text`}
               data-testid="discover-skill-text"
-              dirty={discover.skillDirty(activeSkill)}
+              dirty={skillDirty}
               onchange={(text) => discover.updateDraft(activeSkill, text)}
               onsave={() => discover.saveSkill(activeSkill)}
             />

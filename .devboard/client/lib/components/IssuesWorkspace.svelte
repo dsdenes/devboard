@@ -1,6 +1,7 @@
 <script lang="ts">
   import { issues, isGoalIssue } from "../issues.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
+  import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
   import DraftsPage from "./DraftsPage.svelte";
   import IssuesAgentFocus from "./IssuesAgentFocus.svelte";
@@ -46,7 +47,7 @@
 
   let now = $state(Date.now());
   $effect(() => {
-    if (page !== "agents") return;
+    if (page !== "agents" && page !== "overview") return;
     const timer = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(timer);
   });
@@ -65,6 +66,17 @@
     const seconds = Math.max(0, Math.round((now - start) / 1000));
     const minutes = Math.floor(seconds / 60);
     return minutes === 0 ? `${seconds}s` : `${minutes}m ${seconds % 60}s`;
+  }
+
+  /** One glanceable duration for a summary row: `12s`, `7m`, `2h 5m`. */
+  function elapsedShort(startedAt: string): string {
+    const start = Date.parse(startedAt);
+    if (!Number.isFinite(start)) return startedAt;
+    const seconds = Math.max(0, Math.round((now - start) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   }
 
   function openAgent(runId: string, issueNumber: number): void {
@@ -104,7 +116,7 @@
           {issues.repo ?? "No GitHub origin"}
         </p>
       </div>
-      <span class="badge" data-tone={stateWord === "failed" ? "error" : stateWord === "running" ? "accent" : "warning"} data-testid="issues-state">
+      <span class="badge" data-tone={statusTone(stateWord)} data-testid="issues-state">
         {stateWord}
       </span>
     </header>
@@ -210,25 +222,31 @@
           <h2 class="panel__title">Running agents</h2>
           <span class="panel__subtitle">{agents.length} active</span>
         </div>
-        <div class="panel__body stack-sm">
-          <ol class="issues-agent-summary">
+        <div class="panel__body panel__body--flush">
+          <ol class="issues-agent-summary" data-testid="issues-agent-summary">
             {#each agents as agent (agent.runId)}
               <li>
                 <button
                   type="button"
-                  class="issues-run"
+                  class="issues-agent-row"
                   data-command="issues.agent.open"
                   data-run={agent.runId}
                   data-issue={agent.issueNumber}
+                  title={issueTitle(agent.issueNumber)}
                   onclick={() => openAgent(agent.runId, agent.issueNumber)}
                 >
-                  <span class="mono">#{agent.issueNumber}</span>
-                  <span>{issueTitle(agent.issueNumber)}</span>
-                  <span class="badge" data-tone="accent">running</span>
+                  <span class="issues-agent-row__issue mono">#{agent.issueNumber}</span>
+                  <span class="issues-agent-row__title">{issueTitle(agent.issueNumber)}</span>
+                  <span class="issues-agent-row__meta">
+                    {#if agent.question !== null}
+                      <span class="badge" data-tone="warning">needs answer</span>
+                    {/if}
+                    <span class="issues-agent-row__elapsed mono">{elapsedShort(agent.startedAt)}</span>
+                  </span>
                 </button>
               </li>
             {:else}
-              <li class="muted">No issue is running.</li>
+              <li class="issues-agent-summary__empty muted">No issue is running.</li>
             {/each}
           </ol>
         </div>
@@ -281,7 +299,7 @@
             <div>
               <dt>Status</dt>
               <dd>
-                <span class="badge" data-tone={issues.statusFor(agent.runId) === "failed" ? "error" : "accent"}>
+                <span class="badge" data-tone={statusTone(issues.statusFor(agent.runId))}>
                   {issues.statusFor(agent.runId)}
                 </span>
               </dd>
@@ -307,7 +325,7 @@
         <h1 class="issues-overview__title">Open issues</h1>
         <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
       </div>
-      <span class="badge" data-tone="warning">{issues.pending} pending</span>
+      <span class="badge" data-tone={statusTone("pending")}>{issues.pending} pending</span>
     </header>
     <div class="panel">
       <div class="panel__header">
@@ -331,11 +349,17 @@
                 <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
               {/if}
               {#if issue.handled}
-                <span class="badge" data-tone="success">handled</span>
+                <span class="badge" data-tone={statusTone("handled")}>handled</span>
               {:else if issue.agentRunId !== null}
-                <span class="badge" data-tone="accent" data-testid="issues-running-marker">running</span>
+                <span
+                  class="badge"
+                  data-tone={statusTone("running")}
+                  data-testid="issues-running-marker"
+                >
+                  running
+                </span>
               {:else}
-                <span class="badge" data-tone="warning">pending</span>
+                <span class="badge" data-tone={statusTone("pending")}>pending</span>
               {/if}
             </li>
           {:else}
@@ -377,7 +401,7 @@
                 onclick={() => issues.openRun(run.runId)}
               >
                 <span class="mono">{run.runId}</span>
-                <span class="badge" data-tone={run.status === "failed" ? "error" : run.status === "running" ? "accent" : "success"}>
+                <span class="badge" data-tone={statusTone(run.status)}>
                   {run.status}
                 </span>
                 <span class="muted">{run.issueNumbers.map((number) => `#${number}`).join(" ")}</span>
@@ -391,7 +415,9 @@
           <div class="issues-run-detail" data-testid="issues-run-detail" data-run={issues.run.runId}>
             <div class="toolbar toolbar--between">
               <h3 class="mono">{issues.run.runId}</h3>
-              <span class="badge" data-tone="accent">{runStatus(issues.run.runId)}</span>
+              <span class="badge" data-tone={statusTone(runStatus(issues.run.runId))}>
+                {runStatus(issues.run.runId)}
+              </span>
             </div>
             <p class="muted mono">{issues.run.cwd}</p>
             <p class="muted">{issues.run.issues.map((issue) => `#${issue.number}`).join(" ")}</p>

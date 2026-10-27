@@ -1,19 +1,12 @@
 <script lang="ts">
   import { scout } from "../scout.svelte";
+  import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
 
   const activityText = $derived(
     scout.activity.length === 0 ? "No activity yet." : scout.activity.join("\n"),
   );
-  const lifecycleTone = $derived(
-    scout.lifecycle === "failed"
-      ? "error"
-      : scout.lifecycle === "scanning"
-        ? "accent"
-        : scout.lifecycle === "idle"
-          ? "success"
-          : "warning",
-  );
+  const lifecycleTone = $derived(statusTone(scout.lifecycle));
   let activityElement = $state<HTMLPreElement | null>(null);
 
   // Reading the tracked values keeps the activity pinned to its newest line.
@@ -46,36 +39,14 @@
     </div>
     <div class="panel__body stack-sm">
       <div class="toolbar">
-        {#if scout.canStart}
-          <Button
-            variant="default"
-            data-testid="scout-start"
-            data-command="issues.scout.start"
-            disabled={!scout.canStart}
-            onclick={() => scout.start()}
-          >
-            Start
-          </Button>
-        {/if}
-        {#if scout.canStop}
-          <Button
-            variant="destructive"
-            data-testid="scout-stop"
-            data-command="issues.scout.stop"
-            disabled={!scout.canStop}
-            onclick={() => scout.stop()}
-          >
-            Stop
-          </Button>
-        {/if}
         <Button
-          variant="outline"
-          data-testid="scout-scan-now"
-          data-command="issues.scout.scan"
-          disabled={!scout.attached}
-          onclick={() => scout.scanNow()}
+          variant={scout.canStop ? "destructive" : "default"}
+          data-testid={scout.canStop ? "scout-stop" : "scout-start"}
+          data-command={scout.canStop ? "issues.scout.stop" : "issues.scout.start"}
+          disabled={!scout.canStop && !scout.canStart}
+          onclick={() => (scout.canStop ? scout.stop() : scout.start())}
         >
-          Scan now
+          {scout.canStop ? "Stop" : "Start"}
         </Button>
       </div>
       <dl class="issues-facts">
@@ -210,7 +181,7 @@
       <div class="panel scout-empty" data-testid="scout-empty">
         <p>
           {scout.attached
-            ? "Nothing is staged. Scan now starts one scan."
+            ? "Nothing is staged. Scouting runs automatically."
             : "Nothing is staged. Start Auto Scout to survey the repository."}
         </p>
       </div>

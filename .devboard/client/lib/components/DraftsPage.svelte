@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { issues, markDraftsPage } from "../issues.svelte";
+  import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -94,7 +95,7 @@
           <h2 class="panel__title mono">{issues.draft.name}</h2>
           <span
             class="badge"
-            data-tone={issues.draftStatus === "failed" ? "error" : "accent"}
+            data-tone={statusTone(issues.draftStatus)}
             data-testid="issues-draft-state"
           >
             {issues.draftStatus}

@@ -4,6 +4,7 @@
   import { flow } from "./lib/flow.svelte";
   import { layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
+  import { statusTone } from "./lib/status-tone";
   import type { FlowFile, FlowWidget, RunQuestion } from "./lib/types";
   import DetailSplit from "./lib/components/DetailSplit.svelte";
   import MonacoEditor from "./lib/components/MonacoEditor.svelte";
@@ -628,7 +629,7 @@
       <div class="panel__header">
         <h2 class="panel__title">Implementation activity</h2>
         {#if flow.status !== "none"}
-          <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
+          <span class="badge" data-tone={statusTone(flow.status)}>
             {flow.status}
           </span>
         {/if}
