@@ -24,7 +24,8 @@
     "cleanup": "bun run watchdog/cleanup-main.ts",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "verify:interface": "bun run scripts/verify-interface.ts",
-    "verify:issues": "bun run scripts/verify-issues.ts"
+    "verify:issues": "bun run scripts/verify-issues.ts",
+    "verify:scout": "bun run scripts/verify-scout.ts"
   },
   "files": [
     "package.json",

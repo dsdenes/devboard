@@ -1479,6 +1479,85 @@ its issue as handled in the ledger; a failed one records `failed` with its first
 gates only that issue for five minutes, leaving it open and unhandled. An issue closed by its
 agent leaves the queue on the next poll.
 
+## Auto Scout
+
+The Issues sidebar lists `Overview`, `Agents`, `Auto Scout`, `Issues`, `Runs`, and then `Drafts`
+in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`, palette
+`Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its tab, or
+reloading the dashboard never starts a worker: only `data-testid="scout-start"` does. The page
+shows
+`data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`),
+`data-testid="scout-activity"` for the current or newest scan, `data-testid="scout-error"` for the
+last error, `data-testid="scout-shortfall"` while fewer than nine are staged, and
+`data-testid="scout-empty"` with the next action when nothing is staged.
+`data-testid="scout-stop"` appears only while a worker is attached, and
+`data-testid="scout-scan-now"` clears a pending retry and starts one scan; while a scan runs or the
+board already holds nine it is refused with a notice.
+
+The staging board holds at most nine significant, evidence-backed recommendations, and nine
+whenever nine exist. Each widget carries `data-testid="scout-widget"`, `data-id`, and
+`data-category`, shows its category, title, summary, impact, `path:lines` evidence with any quote,
+proposed change, files, acceptance criteria, and staged time, and offers
+`data-testid="scout-approve"`, `data-testid="scout-draft-goal"`, and
+`data-testid="scout-reject"`. Existing widgets keep their position and refills append; a decision
+removes one widget in the same published update that records it and the agent refills the freed
+slot immediately. A decision for an id no longer staged is refused, so one recommendation can
+never file two issues or two drafts, and its three controls are disabled while it is in flight.
+
+- **Approve** files exactly one issue in the host `origin` (never in the harness repository unless
+  that is the origin). The title is the recommendation's; the body is passed as a file and carries
+  the category, summary, evidence, proposed change, files, and acceptance criteria; the exact
+  label `scout` is created first when absent. The worker resolves forge write access through
+  `lib/forge-auth.ts`. The Issues worker picks the issue up on its next poll while it runs; while
+  it is stopped the issue waits.
+- **Draft goal** writes exactly one Markdown draft under `<REPO_DIR>/.devboard/goal-proposals/`
+  with the existing draft notice, a base name of at most six hyphenated words taken from the
+  title, and `-2`, `-3`, … instead of overwriting. It carries no finalized success criteria,
+  and `/goal-spec` elaborates it later.
+- **Reject** removes the widget and records nothing else. No rejection ledger is consulted, so a
+  later scan may propose the same finding again.
+
+Start proves one set of facts before spawning anything: a canonical checkout root that is not a
+linked worktree, a GitHub `origin`, `STATE_DIR` inside `REPO_DIR`, `omp` and `gh` on `PATH` with
+push permission, and the `/scout-recommendations` command installed at
+`<REPO_DIR>/.omp/commands/`, `~/.omp/commands/`, or `~/.omp/agent/commands/`. A refusal names the
+missing fact and writes no scan. The worker is spawned detached from the loaded harness package
+with `REPO_DIR` as its working directory and holds `<REPO_DIR>/.devboard/.tmp/scout/lock`; a live
+owner is never replaced, a different `STATE_DIR` is refused, a dead owner is reclaimed, and a
+second dashboard with the same repository and state directory attaches. Stop ends the peer,
+records `enabled: false` and `lifecycle: "stopped"`, keeps the staged board, releases the lock, and
+exits; a worker that outlives the command is signalled only after the process table proves it.
+A worker on another harness version is left running with a notice, and Stop then Start is the only
+upgrade path.
+
+State lives under `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/state.json`, written atomically and
+carrying the worker record, lifecycle, staged array, current scan, shortfall, next attempt, last
+error, notice, and the last 200 decisions; a damaged state file is renamed aside. Scan directories
+live under `<REPO_DIR>/.devboard/.tmp/scout/scans/<scanId>/` and hold `request.json`,
+`recommendations.json`, `scan.json`, and `activity.json`, which is bounded at the first of 1,000
+entries or 1 MiB with the trimmed marker. One scan runs at a time and sends exactly one ACP prompt
+from `AGENT_COMMAND` (default `omp acp`) with `cwd = REPO_DIR`:
+`/scout-recommendations <absolute scan directory>`. The prompt is
+`prompts/scout-recommendations.md`, wrapped by `omp/commands/scout-recommendations.md`; the
+request carries the repository path, missing count, categories, excluded roots, staged items, open
+issue titles, and draft-goal headings, and the agent writes only `recommendations.json`. A
+permission request is auto-approved, a question is answered with its recommended option (or its
+first), and both sides reach the activity. A scan that exceeds 15 minutes is closed as failed.
+
+Every result is validated before staging: at most the requested count; a known category; a
+one-line title of at most 200 characters; a summary, proposed change, and at least one acceptance
+criterion; at least one evidence entry whose repository-relative path resolves to an existing
+regular file inside `REPO_DIR` and outside `.git/`, `node_modules/`, `dist/`, `.worktree/`, and
+`.tmp/`, with an in-range `N` or `N-M` span; and a non-empty file list whose entries all appear in
+the evidence. A malformed item, duplicate id, path escape, or over-count fails the whole answer
+atomically, naming the offending item, so the staged board is unchanged. An item's id is the first
+16 hex characters of SHA-256 over its category, sorted evidence paths, and normalized title, so
+the same finding keeps its id. Titles matching a staged item, an open issue, or a draft goal
+heading are dropped and recorded in the activity without failing the scan. Fewer items than
+requested are accepted: the shortfall names the agent's reason and another scan is scheduled after
+the retry interval (ten minutes by default). A full board shows no shortfall, and the worker never
+edits source, tests, configuration, a goal, a draft, a branch, or a pull request.
+
 ## Report, remove, or redesign a UI element
 
 Every page carries three UI issue controls in the activity bar's application actions, beside
@@ -1605,6 +1684,14 @@ The client sends:
 { "type": "startGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "stopGoalDraft" }
 { "type": "answerGoalDraft", "id": 4, "value": "The whole goal" }
+
+{ "type": "getScout" }
+{ "type": "startScout" }
+{ "type": "stopScout" }
+{ "type": "scanScout" }
+{ "type": "approveScout", "id": "84b9c38cdc877035" }
+{ "type": "draftScoutGoal", "id": "84b9c38cdc877035" }
+{ "type": "rejectScout", "id": "84b9c38cdc877035" }
 { "type": "restartServer" }
 { "type": "restartServer", "whenIdle": true }
 { "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
@@ -1657,6 +1744,22 @@ The client sends:
   `issuesDrafts`; `stopGoalDraft` closes it, records `stopped`, and keeps the draft.
   `answerGoalDraft` routes one answer to the elaboration question. Activity is sent as
   `issuesDraftState` snapshots while the peer runs.
+
+  lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
+  next attempt, errors, and the harness version the worker loaded. A missing state and no live
+  lock answer `present: false`, `attached: false`, and `lifecycle: "stopped"`. A live worker from
+  another harness version adds a non-blocking `notice` naming both versions. A connect also
+  replays the active run's whole activity as one `issuesActivity` with `replay: true`;
+  `getIssuesRun` answers `issuesRun` with one run's metadata and activity. The client never
+  polls: state and activity arrive as events, so switching modes and reconnecting send no frame.
+- `getScout` answers with `scoutState` and the newest scan's `scoutActivity`, on connect and on
+  demand: the worker record, lifecycle, enabled and attached flags, the staged board, the current
+  scan, the shortfall, next attempt, errors, notice, and the last 200 decisions. A connect replays
+  a present state and the newest scan's whole activity before any reply to the client's own
+  commands. `startScout` runs the preflight and spawns or attaches; `stopScout`, `scanScout`,
+  `approveScout`, `draftScoutGoal`, and `rejectScout` write one command file to the worker, and a
+  refused command answers with an `error` the notification region shows. The board is pushed to
+  every connected dashboard, so a decision made in one updates another without a reload.
 - `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
   stops the listener, starts the installed harness package, and exits. It is refused with an
   `error` when no launcher is configured or while a restart is already in progress. A client
@@ -1961,6 +2064,7 @@ bun run verify:install
 bun run verify:update
 bun run verify:ui
 bun run verify:issues
+bun run verify:scout
 ```
 
 `verify:interface` drives the IDE shell against a seeded fixture host in headless Chrome and
@@ -1978,6 +2082,24 @@ reattachment, per-repository isolation, same-repository attach, refusal with ano
 legacy-lock refusal, that no `/implement-all-issues` prompt is ever sent, and that no systemd unit
 or timer is written and no `systemctl`/`loginctl` stub is invoked. It writes only under
 `.devboard/.tmp`.
+`bun run verify:scout` drives the built dashboard in headless Chrome against a fixture checkout,
+a stub ACP peer, and a stub `gh`: the sidebar order and palette entry, a short first scan with its
+shortfall, Scan now, an approval that files one issue with the `scout` label and refills to nine, a
+draft that writes one goal-proposals file, a rejection, a second dashboard attaching and deciding,
+Stop with no surviving worker, and a reload that keeps the board and the open tab. It writes only
+under `.devboard/.tmp`.
+
+`server/scout.test.ts` covers recommendation identity, result validation (over-count, malformed
+item, multi-line title, path escape, excluded tree, duplicate id, out-of-range span, uncited file,
+shortfall), the request document, the Start preflight refusals, and the activity delta.
+`tests/scout.test.ts` covers the first scan's nine items, an over-count refusal that leaves the
+board unchanged, the shortfall retry and Scan now, duplicate titles against the board, open issues,
+and drafts, a scan that writes nothing, a timeout, question answering, approval, drafting,
+rejection, a failed decision that leaves the widget staged, refills after a decision, an id no
+longer staged, restoring staged items, decisions, and the shortfall across a restart, the live
+lock, Stop keeping the board, a replacement closing an interrupted scan, bridge replay without a
+spawn, another `STATE_DIR` refused, a harness-version notice, Scan now refusals, and the issue
+body, label creation, and exclusive draft naming.
 `tests/issues.test.ts` covers the fleet (four mixed issues, twelve peers with no cap, duplicate
 prevention, an issue opened mid-run, per-issue success and ledger entries, one failure cooling only
 its issue), Check now clearing every cooldown, pause draining every peer, Stop closing every peer

@@ -28,7 +28,7 @@ const BODY_VISIBLE_TEXT = 1500;
 /** Bounds the `-2`, `-3`, … search; far past any real click count. */
 const MAX_NAME_ATTEMPTS = 1000;
 
-const DRAFT_NOTICE = "> Unprocessed draft. Refine it with `/goal-spec` before it becomes a goal.";
+export const DRAFT_NOTICE = "> Unprocessed draft. Refine it with `/goal-spec` before it becomes a goal.";
 
 export interface GoalProposalSubmission extends CapturedFields {
   report: string;
@@ -139,7 +139,7 @@ export function goalProposalBody(submission: GoalProposalSubmission): string {
  * … The content is staged in a temporary file and hard-linked into place, so a
  * failed write leaves no partial draft and an existing draft is never replaced.
  */
-async function createExclusive(directory: string, name: string, content: string): Promise<string> {
+export async function createExclusive(directory: string, name: string, content: string): Promise<string> {
   const temporary = join(directory, `.${name}.${crypto.randomUUID()}.tmp`);
   try {
     await writeFile(temporary, content, { flag: "wx" });

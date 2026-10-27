@@ -22,6 +22,7 @@ import {
   type IssuesRunDetail,
   type IssuesState,
 } from "../issues/state";
+import { activityDelta } from "./activity";
 
 /**
  * The dashboard half of Issues mode. It never owns a poll loop, an agent, or
@@ -247,36 +248,16 @@ export class IssuesBridge {
       this.send({ type: "issuesActivity", runId, replay: true, entries: this.entries(activity) });
       return;
     }
-    if (activity.length === 0) return;
-    if (previous.length === 0) {
-      this.lastActivities.set(runId, activity);
-      this.send({ type: "issuesActivity", runId, replay: true, entries: this.entries(activity) });
-      return;
-    }
     // A trim drops the front of the log, so only a whole replay stays correct.
-    if (activity.length < previous.length || (activity[0] !== previous[0] && previous[0] !== undefined)) {
-      this.lastActivities.set(runId, activity);
-      this.send({ type: "issuesActivity", runId, replay: true, entries: this.entries(activity) });
-      return;
-    }
-    let prefix = 0;
-    while (prefix < previous.length && prefix < activity.length && previous[prefix] === activity[prefix]) {
-      prefix += 1;
-    }
-    let entries: ActivityEntry[] = [];
-    if (prefix === previous.length) {
-      entries = activity.slice(prefix).map((text) => ({ text, append: false }));
-    } else if (prefix === previous.length - 1 && activity.length === previous.length) {
-      const before = previous[prefix] ?? "";
-      const after = activity[prefix] ?? "";
-      if (after.startsWith(before)) entries = [{ text: after.slice(before.length), append: true }];
-    }
-    if (entries.length === 0) {
-      this.lastActivities.set(runId, activity);
-      return;
-    }
+    const delta = activityDelta(previous, activity);
     this.lastActivities.set(runId, activity);
-    this.send({ type: "issuesActivity", runId, entries });
+    if (!delta.replay && delta.entries.length === 0) return;
+    this.send({
+      type: "issuesActivity",
+      runId,
+      ...(delta.replay ? { replay: true } : {}),
+      entries: delta.entries,
+    });
   }
 
   refresh(): void {

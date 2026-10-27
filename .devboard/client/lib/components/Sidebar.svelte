@@ -5,6 +5,7 @@
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
   import { issues } from "../issues.svelte";
+  import { scout } from "../scout.svelte";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import type { Mode } from "../types";
@@ -300,6 +301,18 @@
         >
           <span class="sidebar-item__label">Agents</span>
           <span class="sidebar-item__meta">{issues.agents.length}</span>
+        </button>
+        <button
+          type="button"
+          class="sidebar-item"
+          aria-current={isActive("scout") ? "true" : undefined}
+          aria-label={`Auto Scout (${modeLabel})`}
+          data-command="open.issues.scout"
+          data-testid="open-issues-scout"
+          onclick={() => open("issues", "scout", "scout", "scout", "Auto Scout")}
+        >
+          <span class="sidebar-item__label">Auto Scout</span>
+          <span class="sidebar-item__meta" data-testid="scout-count">{scout.count}</span>
         </button>
         <button
           type="button"

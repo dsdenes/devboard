@@ -6,6 +6,7 @@
   import IssuesAgentFocus from "./IssuesAgentFocus.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
   import IssuesAgentQuestion from "./IssuesAgentQuestion.svelte";
+  import ScoutWorkspace from "./ScoutWorkspace.svelte";
 
   interface Props {
     tab: WorkspaceTab | null;
@@ -26,7 +27,9 @@
             ? "agents"
             : tab?.kind === "agent"
               ? "agent"
-              : "overview",
+              : tab?.kind === "scout"
+                ? "scout"
+                : "overview",
   );
 
   const stateWord = $derived(issues.lifecycle);
@@ -90,7 +93,9 @@
   }
 </script>
 
-{#if page === "overview"}
+{#if page === "scout"}
+  <ScoutWorkspace />
+{:else if page === "overview"}
   <section class="issues-overview" data-testid="issues-overview" aria-label="Issues overview">
     <header class="issues-overview__header">
       <div>
