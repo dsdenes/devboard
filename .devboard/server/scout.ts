@@ -383,7 +383,6 @@ export class ScoutBridge {
   }
 
   private command(command: ScoutCommand): { ok: true } | { ok: false; message: string } {
-    const state = this.currentState();
     const owner = this.lockOwner();
     if (owner === undefined) {
       return { ok: false, message: "No Auto Scout worker is running for this checkout." };
@@ -396,9 +395,8 @@ export class ScoutBridge {
           `STATE_DIR is ${this.stateDir}`,
       };
     }
-    if (state === undefined || !state.enabled || state.lifecycle === "stopped") {
-      return { ok: false, message: "No Auto Scout worker is running for this checkout." };
-    }
+    // The live lock proves a worker exists even when its state file is absent,
+    // unreadable, or left by another harness version; Stop must still reach it.
     writeCommand(controlDirectory(this.stateDir, this.repoDir), command);
     if (command.type === "stop") this.scheduleStopProof(owner.pid);
     return { ok: true };

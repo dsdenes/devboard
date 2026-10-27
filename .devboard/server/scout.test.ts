@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { activityDelta } from "./activity";
 import { ScoutBridge } from "./scout";
 import { parseCommand } from "../issues/scout/control";
+import { acquireLock } from "../issues/lock";
 import {
   closingCommitFromComments,
   closingCommitFromTimeline,
@@ -14,7 +15,13 @@ import {
   type ScoutGitHubClient,
   type ScoutRelease,
 } from "../issues/scout/github";
-import { DEFAULT_MAX_PENDING, settingsPath, statePath } from "../issues/scout/paths";
+import {
+  DEFAULT_MAX_PENDING,
+  controlDirectory,
+  lockPath,
+  settingsPath,
+  statePath,
+} from "../issues/scout/paths";
 import { preflightScout, scoutCommandPaths, stateInsideRepository } from "../issues/scout/preflight";
 import {
   categoryFromBody,
@@ -536,6 +543,109 @@ describe("bridge", () => {
       maxPending: 3,
     });
     bridge.dispose();
+  });
+
+  test("a live worker with a legacy state reports its lifecycle and can be stopped", async () => {
+    const root = await repository();
+    const stateDir = join(root, ".devboard", ".tmp", "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    try {
+      const legacy = {
+        version: 1,
+        repo: "acme/fixture",
+        root,
+        lifecycle: "idle",
+        enabled: true,
+        worker: {
+          pid: process.pid,
+          startedAt: "2026-01-01T00:00:00Z",
+          stateDir,
+          harnessVersion: "0.1.0",
+          argv: [],
+        },
+        staged: items(3).map((item, index) => ({
+          ...item,
+          id: `id${index}`,
+          stagedAt: "2026-01-01T00:00:00Z",
+        })),
+        scan: null,
+        newestScanId: null,
+        shortfall: null,
+        nextAttemptAt: null,
+        lastError: null,
+        notice: null,
+        decisions: [],
+        updatedAt: "2026-01-01T00:00:00Z",
+      };
+      mkdirSync(dirname(statePath(stateDir, root)), { recursive: true });
+      writeFileSync(statePath(stateDir, root), JSON.stringify(legacy));
+      const bridge = new ScoutBridge({
+        repoDir: root,
+        stateDir,
+        agentCommand: "stub",
+        runningVersion: "0.1.0",
+        harnessDir: join(import.meta.dir, ".."),
+        send: () => undefined,
+        pollMs: 60_000,
+        spawnWorker: () => undefined,
+      });
+      const snapshot = bridge.snapshot();
+      expect(snapshot.attached).toBe(true);
+      expect(snapshot.present).toBe(true);
+      expect(snapshot.lifecycle).toBe("idle");
+      expect(snapshot.enabled).toBe(true);
+      expect(snapshot.worker?.pid).toBe(process.pid);
+      expect(snapshot.notice).toContain("Discarded 3 staged recommendations");
+      expect(bridge.stop()).toEqual({ ok: true });
+      const files = readdirSync(controlDirectory(stateDir, root));
+      expect(files).toHaveLength(1);
+      expect(
+        JSON.parse(readFileSync(join(controlDirectory(stateDir, root), files[0]!), "utf8")),
+      ).toEqual({ type: "stop" });
+      bridge.dispose();
+    } finally {
+      lock.release();
+    }
+  });
+
+  test("a live worker without readable state can still be stopped", async () => {
+    const root = await repository();
+    const stateDir = join(root, ".devboard", ".tmp", "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    try {
+      const bridge = new ScoutBridge({
+        repoDir: root,
+        stateDir,
+        agentCommand: "stub",
+        runningVersion: "0.1.0",
+        harnessDir: join(import.meta.dir, ".."),
+        send: () => undefined,
+        pollMs: 60_000,
+        spawnWorker: () => undefined,
+      });
+      const snapshot = bridge.snapshot();
+      expect(snapshot.attached).toBe(true);
+      expect(snapshot.present).toBe(false);
+      expect(bridge.stop()).toEqual({ ok: true });
+      expect(readdirSync(controlDirectory(stateDir, root))).toHaveLength(1);
+      bridge.dispose();
+    } finally {
+      lock.release();
+    }
   });
 
   test("the bridge exposes no decision path", () => {
