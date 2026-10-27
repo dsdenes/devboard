@@ -89,6 +89,7 @@ function instanceFor(root: string, port: number, harness = join(root, ".devboard
     repoDir: root,
     host: "127.0.0.1",
     harness,
+    stateDir: join(harness, ".tmp"),
     journal: journalFile(join(harness, ".tmp"), root),
     instrumented: true,
   };

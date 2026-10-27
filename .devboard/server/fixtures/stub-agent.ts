@@ -123,6 +123,22 @@ const discoverExtraArtifact = process.argv.includes("--discover-extra-artifact")
 const discoverWriteOutside = process.argv.includes("--discover-write-outside");
 const discoverError = process.argv.includes("--discover-error");
 const discoverNoExit = process.argv.includes("--discover-no-exit");
+
+/** Ask mode: a read-only answer, preceded by thought and tool noise. */
+const ask = process.argv.includes("--ask");
+const askDelayMs = Number(argument("ask-delay-ms") ?? 0);
+const askFail = process.argv.includes("--ask-fail");
+const askExit = process.argv.includes("--ask-exit");
+const ASK_INSTRUCTION = "This conversation is read-only.";
+const ASK_ANSWER_ONE =
+  "The issues label shows the open issue count the orchestrator published for this repository. " +
+  "It turns amber while a run is working and shows failed when the last run failed. " +
+  "It sits in the status bar beside the connection state.";
+const ASK_ANSWER_TWO =
+  "The status bar renders that label in StatusBar.svelte from the orchestrator snapshot the server sends. " +
+  "The count is the open issues the tracker returned for the host repository. " +
+  "No other page shows the label.";
+let askTurns = 0;
 const DISCOVER_SECRET = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
 const CREATED_GOAL = "# Created goal\n\nThe agent wrote this.";
 const SETTLE_DELAY_MS = 400;
@@ -1323,6 +1339,56 @@ async function promptTurn(params: unknown) {
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
   const firstLine = text?.split("\n")[0] ?? "";
 
+  if (ask && text !== undefined && text.includes(ASK_INSTRUCTION)) {
+    askTurns += 1;
+    if (askTurns === 1) log(`ask-spawn ${process.pid}`);
+    const question = /(?:^|\n)Question: ([^\n]*)/.exec(text)?.[1] ?? "";
+    log(`ask-prompt ${askTurns} ${question}`);
+    log(`ask-text ${askTurns} ${JSON.stringify(text)}`);
+    // Thoughts and tool activity precede the answer; the panel must drop them.
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "Considering the captured element before answering." },
+          messageId: `ask-thought-${askTurns}`,
+        },
+      },
+    });
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: `ask-tool-${askTurns}`,
+          title: "Reading the captured element",
+          kind: "read",
+          status: "pending",
+        },
+      },
+    });
+    if (askDelayMs > 0) await Bun.sleep(askDelayMs);
+    // The first peer of a conversation exits; its replacement, which carries
+    // the earlier turns, answers. A new process cannot see ask turns alone.
+    const firstPeer = !text.includes("Earlier in this conversation:");
+    if (askExit && firstPeer) {
+      log("ask-exit");
+      process.exit(0);
+    }
+    if (askFail && askTurns === 1) throw new Error("The ask agent failed.");
+    const answer = askTurns === 1 ? ASK_ANSWER_ONE : ASK_ANSWER_TWO;
+    const split = answer.indexOf(". ") + 2;
+    stream(answer.slice(0, split).trim());
+    if (askDelayMs > 0) await Bun.sleep(askDelayMs);
+    stream(answer.slice(split).trim());
+    return;
+  }
+
   if (flowGoal && firstLine.startsWith("/flow-goal ")) {
     log(`prompt ${firstLine}`);
     await runFlowGoal(firstLine.slice("/flow-goal ".length).trim());
@@ -1598,6 +1664,19 @@ function handleMessage(message: Record<string, unknown>) {
   pending.get(String(message.id))?.(message.result);
   pending.delete(String(message.id));
 }
+
+// A killed peer records that it left exactly once, so a test can prove the close.
+let loggedExit = false;
+function logExit() {
+  if (loggedExit) return;
+  loggedExit = true;
+  log(`exit ${process.pid}`);
+}
+process.on("exit", logExit);
+process.on("SIGTERM", () => {
+  logExit();
+  process.exit(0);
+});
 
 const decoder = new TextDecoder();
 let buffer = "";

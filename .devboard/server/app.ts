@@ -23,6 +23,7 @@ import {
   type AcpQuestion,
   type AcpQuestionOption,
 } from "./acp";
+import { AskController } from "./ask";
 import {
   FeedbackDeliveryError,
   FeedbackRequestError,
@@ -484,7 +485,9 @@ type ClientMessage =
   | { type: "saveDiscoverSkill"; name?: unknown; text?: unknown }
   | { type: "restoreDiscoverSkill"; name?: unknown }
   | { type: "confirmGlossaryTerm"; context?: unknown; id?: unknown }
-  | { type: "rejectGlossaryTerm"; context?: unknown; id?: unknown; reason?: unknown };
+  | { type: "rejectGlossaryTerm"; context?: unknown; id?: unknown; reason?: unknown }
+  | { type: "ask"; conversationId?: unknown; question?: unknown; context?: unknown }
+  | { type: "closeAsk"; conversationId?: unknown };
 
 function parseClientMessage(value: unknown): ClientMessage | undefined {
   if (typeof value !== "object" || value === null || !("type" in value)) return undefined;
@@ -619,6 +622,18 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
         context: "context" in value ? value.context : undefined,
         id: "id" in value ? value.id : undefined,
         reason: "reason" in value ? value.reason : undefined,
+      };
+    case "ask":
+      return {
+        type: "ask",
+        conversationId: "conversationId" in value ? value.conversationId : undefined,
+        question: "question" in value ? value.question : undefined,
+        context: "context" in value ? value.context : undefined,
+      };
+    case "closeAsk":
+      return {
+        type: "closeAsk",
+        conversationId: "conversationId" in value ? value.conversationId : undefined,
       };
     default:
       return undefined;
@@ -1410,6 +1425,8 @@ export function createApp(options: AppOptions) {
   const creationGoalFile = defaultGoalPath(repoDir);
   const skillsDir = join(repoDir, ".omp", "skills");
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
+  // Every Ask peer runs in the host repository, whatever the request came from.
+  const ask = new AskController({ command: agentCommand, cwd: repoDir });
   const tracker = options.tracker ?? findOpenEpics;
   const trackerSettle: TrackerSettle = {
     attempts: Math.max(1, options.trackerSettle?.attempts ?? TRACKER_SETTLE_ATTEMPTS),
@@ -5284,6 +5301,7 @@ export function createApp(options: AppOptions) {
 
       close(ws) {
         clients.delete(ws);
+        ask.disconnect(ws);
       },
 
       async message(ws, message) {
@@ -5419,6 +5437,10 @@ export function createApp(options: AppOptions) {
                 rejectGlossaryTerm(targetRoot(), term.context, term.id, command.reason),
               );
             }
+          } else if (command.type === "ask") {
+            ask.ask(ws, command);
+          } else if (command.type === "closeAsk") {
+            ask.close(ws, command.conversationId);
           }
         } catch (error) {
           send(ws, {
@@ -5432,6 +5454,7 @@ export function createApp(options: AppOptions) {
 
   const stop = server.stop.bind(server);
   server.stop = (closeActiveConnections?: boolean) => {
+    ask.dispose();
     flow.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);

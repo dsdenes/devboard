@@ -185,6 +185,29 @@ class Page {
     });
   }
 
+  /** A key that also inserts text, so Enter can perform its default action. */
+  async keyWithText(key: string, text: string, modifiers = 0): Promise<void> {
+    const [vk, code] = VK[key] ?? [0, `Key${key.toUpperCase()}`];
+    await this.devtools.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key,
+      code,
+      text,
+      unmodifiedText: text,
+      windowsVirtualKeyCode: vk,
+      nativeVirtualKeyCode: vk,
+      modifiers,
+    });
+    await this.devtools.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key,
+      code,
+      windowsVirtualKeyCode: vk,
+      nativeVirtualKeyCode: vk,
+      modifiers,
+    });
+  }
+
   async typeText(text: string): Promise<void> {
     await this.devtools.send("Input.insertText", { text });
   }
@@ -798,7 +821,7 @@ try {
     GOAL_FILE: join(host, "GOAL.md"),
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
-    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover`,
+    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --ask --ask-delay-ms=600`,
     // Every feedback action is filed through the recording stub, never through
     // the operator's real `gh`, and the recorded requests stay under `.tmp`.
     DEVBOARD_FEEDBACK_STUB: "stub",
@@ -865,6 +888,7 @@ try {
   const networkProblems: Problem[] = [];
   const requestUrls = new Map<string, string>();
   const feedbackRequests: Array<Record<string, unknown>> = [];
+  const feedbackPosts: string[] = [];
 
   devtools.on("Runtime.exceptionThrown", (params) => {
     const details = params.exceptionDetails as Record<string, unknown> | undefined;
@@ -887,6 +911,13 @@ try {
   devtools.on("Network.requestWillBeSent", (params) => {
     const requestId = params.requestId;
     const request = params.request as { url?: string; method?: string; postData?: string } | undefined;
+    if (
+      typeof request?.url === "string" &&
+      request.method === "POST" &&
+      request.url.includes("/api/feedback")
+    ) {
+      feedbackPosts.push(request.url);
+    }
     if (typeof requestId === "string" && typeof request?.url === "string") {
       requestUrls.set(requestId, request.url);
     }
@@ -2667,7 +2698,11 @@ try {
   }))()`);
   check(panelChrome.title === "Report a UI issue", "the report panel title changed", panelChrome);
   check(panelChrome.placeholder === "What is wrong with this element?", "the report panel placeholder changed", panelChrome);
-  check(panelChrome.buttons.join("|") === "File issue|Cancel", "the report panel actions changed", panelChrome);
+  check(
+    panelChrome.buttons.join("|") === "File issue|Ask|Cancel",
+    "the report panel actions changed",
+    panelChrome,
+  );
   check(panelChrome.selector.length > 0, "the report panel shows no selector", panelChrome);
   const composing = await dockState();
   check(composing.disabled.join(",") === "false,true,true", "the quick actions are not disabled while composing", composing);
@@ -2783,9 +2818,9 @@ try {
   await page.click('[data-testid="status-connection"]');
   await waitForFeedbackCalls(1);
   await delay(150);
-  await page.wait(`document.querySelector('.feedback-status[role="status"] a') !== null`, "the removal success link");
+  await page.wait(`document.querySelector('.feedback-result[role="status"] a') !== null`, "the removal success link");
   const removalStatus = await page.eval<{ role: string; text: string; href: string }>(`(() => {
-    const status = document.querySelector('.feedback-status');
+    const status = document.querySelector('.feedback-result');
     return {
       role: status?.getAttribute("role") ?? "",
       text: (status?.textContent ?? "").split("\\n").map((value) => value.trim()).filter((value) => value.length > 0).join(" "),
@@ -2877,7 +2912,7 @@ try {
   const redesignRequests = feedbackRequests.filter((entry) => entry.action === "redesign");
   check(redesignRequests.length === 2, "the dock did not send two redesign requests", feedbackRequests);
   const redesignStatus = await page.eval<{ text: string; href: string }>(`(() => {
-    const status = document.querySelector('.feedback-status');
+    const status = document.querySelector('.feedback-result');
     return {
       text: (status?.textContent ?? "").split("\\n").map((value) => value.trim()).filter((value) => value.length > 0).join(" "),
       href: status?.querySelector("a")?.getAttribute("href") ?? "",
@@ -2910,12 +2945,12 @@ try {
   await delay(200);
   const delayedCalls = await feedbackCalls();
   check(delayedCalls.length === 3, "a double-click filed more than one issue", delayedCalls.length);
-  await page.wait(`document.querySelector('.feedback-status[role="status"]') !== null`, "the delayed filing status");
+  await page.wait(`document.querySelector('.feedback-result[role="status"]') !== null`, "the delayed filing status");
 
   // A failing filing keeps the mode armed, re-enables the dock, and files nothing.
   await setFeedbackMode("fail");
   await page.click('[data-testid="status-connection"]');
-  await page.wait(`document.querySelector('.feedback-status[role="alert"]') !== null`, "the redesign failure alert");
+  await page.wait(`document.querySelector('.feedback-result[role="alert"]') !== null`, "the redesign failure alert");
   const failure = await page.eval<{
     text: string;
     link: boolean;
@@ -2923,7 +2958,7 @@ try {
     pressed: string[];
     disabled: boolean[];
   }>(`(() => {
-    const alert = document.querySelector('.feedback-status[role="alert"]');
+    const alert = document.querySelector('.feedback-result[role="alert"]');
     const buttons = [...document.querySelectorAll('.feedback-dock__actions button')];
     return {
       text: (alert?.textContent ?? "").split("\\n").map((value) => value.trim()).filter((value) => value.length > 0).join(" "),
@@ -3029,7 +3064,7 @@ try {
   await runPalette("app.remove");
   await page.click('[data-testid="status-connection"]');
   await waitForFeedbackCalls(1);
-  await page.wait(`document.querySelector('.feedback-status[role="status"]') !== null`, "the dock status for the screenshots");
+  await page.wait(`document.querySelector('.feedback-result[role="status"]') !== null`, "the dock status for the screenshots");
   await saveShot("ui-issue-dock-dark");
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the dock screenshots to leave selection mode");
@@ -3042,6 +3077,213 @@ try {
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the light dock screenshot to leave selection mode");
   await page.click('[data-testid="theme-toggle"]');
   await page.wait(`document.documentElement.dataset.theme === "dark"`, "the dark theme after the dock screenshots");
+  // 14b. Ask mode: the same panel streams a background agent's plain-text answer.
+  const postsBeforeAsk = feedbackPosts.length;
+  await runPalette("app.report");
+  await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter picking mode for Ask");
+  await page.click('[data-testid="status-bar"]');
+  await page.wait(`document.querySelector('.feedback-panel') !== null`, "the report panel for Ask");
+  const askActions = await page.eval<string[]>(
+    `[...document.querySelectorAll('.feedback-panel .feedback-actions button')].map((button) => button.textContent.trim())`,
+  );
+  check(
+    JSON.stringify(askActions) === JSON.stringify(["File issue", "Ask", "Cancel"]),
+    "the report panel actions are not File issue, Ask, Cancel",
+    askActions,
+  );
+  const askControl = await page.eval<{ present: boolean; name: string; label: string; disabled: boolean }>(`(() => {
+    const button = document.querySelector('[data-testid="feedback-ask"]');
+    return {
+      present: button !== null,
+      name: button?.getAttribute("aria-label") ?? "",
+      label: button?.textContent?.trim() ?? "",
+      disabled: button === null || button.disabled,
+    };
+  })()`);
+  check(
+    askControl.present && askControl.label === "Ask" && askControl.name.includes("Ask"),
+    "the Ask control is missing or unnamed",
+    askControl,
+  );
+  check(askControl.disabled, "Ask is enabled with an empty question", askControl);
+
+  const composer = ".feedback-panel textarea";
+  await page.fill(composer, "What does the StatusBar issues label mean?");
+  await page.wait(`document.querySelector('[data-testid="feedback-ask"]')?.disabled === false`, "Ask to enable on a question");
+  await page.key("Enter");
+  const asking = await page.wait<{
+    status: string;
+    ask: string;
+    askDisabled: boolean;
+    fileDisabled: boolean;
+    textareaDisabled: boolean;
+    cancelDisabled: boolean;
+  }>(`(() => {
+    const status = document.querySelector('.feedback-panel [role="status"]');
+    if (status?.textContent?.trim() !== "Asking…") return null;
+    const ask = document.querySelector('[data-testid="feedback-ask"]');
+    const buttons = [...document.querySelectorAll('.feedback-panel .feedback-actions button')];
+    const textarea = document.querySelector('.feedback-panel textarea');
+    return {
+      status: status.textContent.trim(),
+      ask: ask?.textContent?.trim() ?? "",
+      askDisabled: ask === null || ask.disabled,
+      fileDisabled: buttons[0]?.disabled !== false,
+      textareaDisabled: textarea?.disabled !== false,
+      cancelDisabled: buttons[2]?.disabled !== false,
+    };
+  })()`, "the pending ask controls", 8_000);
+  check(asking.status === "Asking…" && asking.ask === "Asking…", "the pending ask does not read Asking…", asking);
+  check(
+    asking.askDisabled && asking.fileDisabled && asking.textareaDisabled && !asking.cancelDisabled,
+    "the pending ask controls are wrong",
+    asking,
+  );
+
+  const streaming = await page.wait<{ text: string; pending: boolean; first: string }>(`(() => {
+    const agent = document.querySelector('.feedback-panel .feedback-turn--agent');
+    const text = agent?.textContent ?? "";
+    if (text.length === 0) return null;
+    return {
+      text,
+      pending: document.querySelector('.feedback-panel [role="status"]') !== null,
+      first: document.querySelector('.feedback-panel .feedback-turn')?.textContent ?? "",
+    };
+  })()`, "the first streamed answer chunk", 12_000);
+  check(streaming.pending, "the answer appeared only after the turn ended", streaming);
+  check(streaming.first === "What does the StatusBar issues label mean?", "the question bubble is wrong", streaming);
+
+  const firstAnswer = await page.wait<{ turns: string[]; focused: string; value: string }>(`(() => {
+    const turns = [...document.querySelectorAll('.feedback-panel .feedback-turn')].map((turn) => turn.textContent);
+    if (turns.length < 2) return null;
+    if ((turns[1] ?? "").length === 0) return null;
+    if (document.querySelector('.feedback-panel [role="status"]') !== null) return null;
+    return {
+      turns,
+      focused: document.activeElement?.tagName ?? "",
+      value: document.querySelector('.feedback-panel textarea')?.value ?? "",
+    };
+  })()`, "the completed first answer", 20_000);
+  check(firstAnswer.turns[1]!.includes("The issues label shows"), "the first answer text is wrong", firstAnswer);
+  check(
+    !firstAnswer.turns[1]!.includes("Considering the captured element") &&
+      !firstAnswer.turns[1]!.includes("Reading the captured element"),
+    "thought or tool activity reached the transcript",
+    firstAnswer,
+  );
+  check(!firstAnswer.turns[1]!.includes("```"), "the transcript interpreted Markdown", firstAnswer);
+  check(firstAnswer.value === "" && firstAnswer.focused === "TEXTAREA", "the composer did not clear and refocus", firstAnswer);
+
+  await page.fill(composer, "Which file renders it?");
+  await page.key("Enter");
+  const followUp = await page.wait<{ turns: string[]; value: string }>(`(() => {
+    const turns = [...document.querySelectorAll('.feedback-panel .feedback-turn')].map((turn) => turn.textContent);
+    if (turns.length < 4) return null;
+    if ((turns[3] ?? "").length === 0) return null;
+    if (document.querySelector('.feedback-panel [role="status"]') !== null) return null;
+    return { turns, value: document.querySelector('.feedback-panel textarea')?.value ?? "" };
+  })()`, "the follow-up answer", 20_000);
+  check(followUp.turns[2] === "Which file renders it?", "the follow-up question bubble is wrong", followUp);
+  check(followUp.turns[3]!.includes("StatusBar.svelte"), "the follow-up answer is wrong", followUp);
+  check(followUp.turns[1]!.includes("The issues label shows"), "the first answer disappeared", followUp);
+  check(followUp.value === "", "the follow-up composer did not clear", followUp);
+
+  await page.focus(composer);
+  await page.fill(composer, "Shift newline check");
+  const turnsBeforeShift = await page.eval<number>(
+    `document.querySelectorAll('.feedback-panel .feedback-turn').length`,
+  );
+  await page.keyWithText("Enter", "\r", 8);
+  await delay(200);
+  const shifted = await page.eval<{ value: string; turns: number; askDisabled: boolean }>(`(() => ({
+    value: document.querySelector('.feedback-panel textarea')?.value ?? "",
+    turns: document.querySelectorAll('.feedback-panel .feedback-turn').length,
+    askDisabled: document.querySelector('[data-testid="feedback-ask"]')?.disabled !== false,
+  }))()`);
+  check(shifted.value.includes("\n"), "Shift+Enter did not insert a newline", shifted);
+  check(shifted.turns === turnsBeforeShift, "Shift+Enter sent the question", shifted);
+  check(!shifted.askDisabled, "Shift+Enter left Ask disabled with a question", shifted);
+
+  await page.fill(composer, "The Start button is clipped.");
+  const filingReady = await page.wait<{ file: boolean; ask: boolean; hint: boolean }>(`(() => {
+    const buttons = [...document.querySelectorAll('.feedback-panel .feedback-actions button')];
+    const ready = buttons[0]?.textContent?.trim() === "File issue" && buttons[0].disabled === false && buttons[1]?.disabled === false;
+    return ready ? {
+      file: buttons[0].disabled === false,
+      ask: buttons[1]?.disabled === false,
+      hint: document.querySelector('.feedback-hint') !== null,
+    } : null;
+  })()`, "File issue and Ask to stay usable after the answers");
+  check(
+    filingReady.file && filingReady.ask && !filingReady.hint,
+    "the ask broke the filing path",
+    filingReady,
+  );
+  check(feedbackPosts.length === postsBeforeAsk, "an ask posted to /api/feedback", feedbackPosts);
+
+  const transcriptSurface = await page.eval<{ role: string; name: string; maxHeight: string; overflow: string; turns: number }>(`(() => {
+    const log = document.querySelector('.feedback-panel [role="log"]');
+    const style = log === null ? null : getComputedStyle(log);
+    return {
+      role: log?.getAttribute("role") ?? "",
+      name: log?.getAttribute("aria-label") ?? "",
+      maxHeight: style?.maxHeight ?? "",
+      overflow: style?.overflowY ?? "",
+      turns: log?.querySelectorAll('.feedback-turn').length ?? 0,
+    };
+  })()`);
+  check(transcriptSurface.role === "log" && transcriptSurface.name.length > 0, "the transcript is not an accessible log", transcriptSurface);
+  check(transcriptSurface.maxHeight === "180px" && transcriptSurface.overflow === "auto", "the transcript does not scroll inside 180px", transcriptSurface);
+  check(transcriptSurface.turns === 4, "the transcript lost a turn", transcriptSurface);
+
+  const panelFits = (): Promise<{ inside: boolean; width: number; top: number; bottom: number; scroll: boolean }> =>
+    page.eval<{ inside: boolean; width: number; top: number; bottom: number; scroll: boolean }>(`(() => {
+      const panel = document.querySelector('.feedback-panel');
+      const rect = panel?.getBoundingClientRect();
+      const log = panel?.querySelector('[role="log"]');
+      return {
+        inside: rect === undefined ? false : rect.top >= -0.5 && rect.left >= -0.5 && rect.bottom <= innerHeight + 0.5 && rect.right <= innerWidth + 0.5,
+        width: Math.round(rect?.width ?? -1),
+        top: Math.round(rect?.top ?? -1),
+        bottom: Math.round(rect?.bottom ?? -1),
+        scroll: log === null ? false : log.scrollHeight >= log.clientHeight,
+      };
+    })()`);
+  const fitsDesktop = await panelFits();
+  check(fitsDesktop.inside && fitsDesktop.width === 380, "the ask panel leaves the 1440×900 viewport", fitsDesktop);
+  check(fitsDesktop.scroll, "the transcript does not use its scroll surface", fitsDesktop);
+  await saveShot("ask-transcript");
+
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the 1024×720 viewport for the ask transcript");
+  await delay(150);
+  const fitsNarrow = await panelFits();
+  check(fitsNarrow.inside && fitsNarrow.width === 380, "the ask panel leaves the 1024×720 viewport", fitsNarrow);
+  await saveShot("ask-transcript-1024");
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop viewport after the ask transcript");
+  await delay(150);
+  const fitsRestored = await panelFits();
+  check(fitsRestored.inside && fitsRestored.width === 380, "the ask panel leaves the restored viewport", fitsRestored);
+
+  const askLog = await readFile(agentLog, "utf8");
+  const askSpawns = askLog.split("\n").filter((line) => line.startsWith("ask-spawn ")).length;
+  const askPrompts = askLog.split("\n").filter((line) => line.startsWith("ask-prompt ")).length;
+  check(askSpawns === 1, `the ask stub started ${askSpawns} peers`, askLog);
+  check(askPrompts === 2, `the ask stub answered ${askPrompts} prompts`, askLog);
+
+  await page.key("Escape");
+  await page.wait(`document.querySelector('.feedback-panel') === null`, "the ask panel to close");
 
   // 15. Orchestrator status item: idle, working, failed, hidden, and live update.
   await seedOrchestrator(stateDir, host, "idle");
@@ -3343,7 +3585,7 @@ try {
 
   devtools.close();
   console.log(
-    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, editors, terminals, accessibility, notifications, status bar, orchestrator status, persistence, and boundary passed",
+    "verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, editors, terminals, accessibility, notifications, status bar, orchestrator status, ask transcript, persistence, and boundary passed",
   );
 } finally {
   try {

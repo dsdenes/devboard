@@ -24,6 +24,8 @@ export interface Instance {
   host: string;
   /** Harness directory that serves this dashboard. */
   harness: string;
+  /** The dashboard's own state directory, from `STATE_DIR`. */
+  stateDir: string;
   journal: string;
   /** False when the serving harness never wrote a journal for this project. */
   instrumented: boolean;
@@ -112,6 +114,7 @@ export function instancesFromProcesses(
       repoDir,
       host: process.env.get("HOST") ?? "127.0.0.1",
       harness,
+      stateDir,
       journal,
       instrumented: existsSync(join(stateDir, "journal")),
       ...(existsSync(legacy) ? { legacyLog: legacy } : {}),

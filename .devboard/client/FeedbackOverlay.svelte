@@ -1,22 +1,27 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
+  import { connection } from "./lib/connection.svelte";
+  import type { AskContext, AskTurn } from "./lib/types";
 
   /**
    * Operator issue reporter. A dock of three actions sits in the lower-right
    * corner. The report action starts a selection mode that opens a free-text
-   * panel anchored beside the picked element. The removal and redesign actions
-   * are one-click shortcuts: they file a fixed-instruction issue for the picked
-   * element immediately and stay armed, so several elements can be filed in a
-   * row. Every request carries the captured DOM context to the server, which
-   * files a GitHub issue for an implementation agent and returns its URL.
+   * panel anchored beside the picked element; the removal and redesign actions
+   * are one-click shortcuts that file a fixed-instruction issue for the picked
+   * element and stay armed. Every filing posts the captured DOM context to the
+   * server, which files a GitHub issue for an implementation agent.
+   *
+   * The same panel answers questions: `Ask`, or Enter in the composer, sends
+   * the question and the captured context over the WebSocket to a background
+   * ACP agent and streams its plain-text answer into the transcript. One
+   * conversation belongs to the picked element and lives only while its panel
+   * is open.
    */
 
   type Action = "report" | "remove" | "redesign";
   type Phase = "idle" | "picking" | "composing" | "sending" | "failed";
   type Rect = { top: number; left: number; width: number; height: number };
-  type Status =
-    | { ok: true; text: string; url: string }
-    | { ok: false; text: string };
+  type Status = { ok: true; text: string; url: string } | { ok: false; text: string };
 
   const PANEL_WIDTH = 380;
   const PANEL_ESTIMATED_HEIGHT = 390;
@@ -24,6 +29,11 @@
   const MARGIN = 8;
   const MAX_DOM_EXCERPT = 4000;
   const MAX_VISIBLE_TEXT = 1500;
+  const MAX_SELECTOR = 500;
+  const MAX_ROUTE = 2000;
+  const MAX_URL = 2000;
+  const MAX_VIEWPORT = 500;
+  const MAX_CAPTURED_AT = 100;
 
   const ACTIONS: { action: Action; label: string; command: string }[] = [
     { action: "report", label: "Report UI issue", command: "app.report" },
@@ -49,8 +59,13 @@
   let dragging = $state(false);
   let report = $state("");
   let errorMessage = $state<string | null>(null);
-  let status = $state<Status | null>(null);
+  let result = $state<Status | null>(null);
   let textarea = $state<HTMLTextAreaElement | null>(null);
+  /** The one conversation this open panel owns; null before the first ask. */
+  let conversationId = $state<string | null>(null);
+  let transcript = $state<AskTurn[]>([]);
+  let askPending = $state(false);
+  let askError = $state<string | null>(null);
 
   const drag = { pointerId: -1, offsetX: 0, offsetY: 0 };
 
@@ -61,8 +76,7 @@
     action !== null && panel === null && (phase === "picking" || phase === "sending"),
   );
   let picking = $derived(selecting && !sending);
-  let hint =
-    $derived(action !== null && selecting && panel === null ? HINTS[action] : null);
+  let hint = $derived(action !== null && selecting ? HINTS[action] : null);
 
   function viewportRect(element: Element): Rect {
     const box = element.getBoundingClientRect();
@@ -188,7 +202,122 @@
     return `${collapsed.slice(0, limit - 1)}…`;
   }
 
+  /** The captured context every filing carries. */
+  function captured(element: Element): Record<string, string> {
+    return {
+      route: window.location.pathname,
+      url: window.location.href,
+      selector,
+      dom_excerpt: truncate(element.outerHTML ?? "", MAX_DOM_EXCERPT),
+      visible_text: truncate(
+        (element as HTMLElement).innerText ?? element.textContent ?? "",
+        MAX_VISIBLE_TEXT,
+      ),
+      viewport: `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
+      captured_at: new Date().toISOString(),
+    };
+  }
+
+  /** What the ask agent receives; each value is bounded to the server's limit. */
+  function captureContext(element: Element): AskContext {
+    return {
+      route: truncate(window.location.pathname, MAX_ROUTE),
+      url: truncate(window.location.href, MAX_URL),
+      selector: truncate(selector, MAX_SELECTOR),
+      viewport: truncate(
+        `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
+        MAX_VIEWPORT,
+      ),
+      captured_at: truncate(new Date().toISOString(), MAX_CAPTURED_AT),
+      visible_text: truncate(
+        (element as HTMLElement).innerText ?? element.textContent ?? "",
+        MAX_VISIBLE_TEXT,
+      ),
+      dom_excerpt: truncate(element.outerHTML ?? "", MAX_DOM_EXCERPT),
+    };
+  }
+
+  /** Keeps the panel fully inside the viewport after the transcript grows. */
+  async function fitPanel(): Promise<void> {
+    await tick();
+    if (panel === null || panelElement === null) return;
+    const height = panelElement.getBoundingClientRect().height;
+    const maxTop = Math.max(MARGIN, window.innerHeight - height - MARGIN);
+    const top = Math.min(Math.max(panel.top, MARGIN), maxTop);
+    if (top !== panel.top) panel = { top, left: panel.left };
+  }
+
+  function focusComposer(): void {
+    void tick().then(() => textarea?.focus());
+  }
+
+  function ask(): void {
+    const question = report.trim();
+    if (target === null || question.length === 0 || askPending || sending) return;
+    const id = conversationId ?? crypto.randomUUID();
+    conversationId = id;
+    askPending = true;
+    askError = null;
+    transcript = [...transcript, { role: "developer", text: question }];
+    const sent = connection.send({
+      type: "ask",
+      conversationId: id,
+      question,
+      context: captureContext(target),
+    });
+    if (!sent) {
+      askPending = false;
+      askError = "Not connected to the server.";
+      focusComposer();
+    }
+  }
+
+  /** Enter sends; Shift+Enter and an IME composition keep their newline. */
+  function onComposerKeyDown(event: KeyboardEvent): void {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    event.preventDefault();
+    ask();
+  }
+
+  /** Events for a closed or replaced conversation never reach the transcript. */
+  function onConnectionMessage(message: Record<string, unknown>): void {
+    if (typeof message.conversationId !== "string") return;
+    if (message.conversationId !== conversationId) return;
+
+    if (message.type === "askChunk") {
+      const text = typeof message.text === "string" ? message.text : "";
+      if (text.length === 0 || !askPending) return;
+      const last = transcript[transcript.length - 1];
+      if (last !== undefined && last.role === "agent") {
+        last.text += text;
+      } else {
+        transcript = [...transcript, { role: "agent", text }];
+      }
+      return;
+    }
+
+    if (message.type === "askDone") {
+      askPending = false;
+      askError = null;
+      report = "";
+      focusComposer();
+      return;
+    }
+
+    if (message.type === "askError") {
+      askPending = false;
+      askError =
+        typeof message.message === "string" && message.message.length > 0
+          ? message.message
+          : "The agent could not answer.";
+      focusComposer();
+    }
+  }
+
   function openPanel(element: Element): void {
+    closeConversation();
     target = element;
     selector = describeTarget(element);
     const rect = viewportRect(element);
@@ -198,14 +327,27 @@
     dragging = false;
     report = "";
     errorMessage = null;
-    status = null;
+    result = null;
     action = "report";
     phase = "composing";
     document.body.style.cursor = "";
     queueMicrotask(() => textarea?.focus());
   }
 
+  /** Drops the panel's conversation: no transcript, and the peer is killed. */
+  function closeConversation(): void {
+    const id = conversationId;
+    conversationId = null;
+    transcript = [];
+    askPending = false;
+    askError = null;
+    if (id !== null && connection.open) {
+      connection.send({ type: "closeAsk", conversationId: id });
+    }
+  }
+
   function reset(): void {
+    closeConversation();
     action = null;
     phase = "idle";
     target = null;
@@ -216,7 +358,7 @@
     dragging = false;
     report = "";
     errorMessage = null;
-    status = null;
+    result = null;
     document.body.style.cursor = "";
   }
 
@@ -297,21 +439,7 @@
     panel = moved && panel !== null
       ? clampPlacement(panel.top, panel.left)
       : anchorFor(rect);
-  }
-
-  function captured(element: Element): Record<string, string> {
-    return {
-      route: window.location.pathname,
-      url: window.location.href,
-      selector,
-      dom_excerpt: truncate(element.outerHTML ?? "", MAX_DOM_EXCERPT),
-      visible_text: truncate(
-        (element as HTMLElement).innerText ?? element.textContent ?? "",
-        MAX_VISIBLE_TEXT,
-      ),
-      viewport: `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
-      captured_at: new Date().toISOString(),
-    };
+    void fitPanel();
   }
 
   /** Posts one submission and returns the filed issue URL, or the error text. */
@@ -345,16 +473,15 @@
 
   /** Files a removal or redesign issue for one element and stays armed. */
   async function fileShortcut(kind: "remove" | "redesign", element: Element): Promise<void> {
-    const known = describeTarget(element);
-    selector = known;
+    selector = describeTarget(element);
     marker = null;
-    status = null;
+    result = null;
     phase = "sending";
-    const result = await post({ action: kind, report: "", ...captured(element) });
+    const response = await post({ action: kind, report: "", ...captured(element) });
     const noun = kind === "remove" ? "Removal" : "Redesign";
-    status = result.ok
-      ? { ok: true, text: `${noun} issue filed.`, url: result.url }
-      : { ok: false, text: `${noun} issue failed: ${result.error}` };
+    result = response.ok
+      ? { ok: true, text: `${noun} issue filed.`, url: response.url }
+      : { ok: false, text: `${noun} issue failed: ${response.error}` };
     // The shortcut stays armed so the next element is one click away.
     phase = "picking";
     selector = "";
@@ -366,9 +493,9 @@
     const element = target;
     phase = "sending";
     errorMessage = null;
-    const result = await post({ action: "report", report, ...captured(element) });
-    if (!result.ok) {
-      errorMessage = result.error;
+    const response = await post({ action: "report", report, ...captured(element) });
+    if (!response.ok) {
+      errorMessage = response.error;
       phase = "failed";
       return;
     }
@@ -376,7 +503,22 @@
     arm("report");
   }
 
+  // A dropped socket owns no conversation; the server kills its peer.
+  $effect(() => {
+    if (connection.state === "closed" && conversationId !== null) closeConversation();
+  });
+
+  // Measure after every transcript change so the panel never grows past the viewport.
+  $effect(() => {
+    void transcript.length;
+    void transcript[transcript.length - 1]?.text.length;
+    void askPending;
+    void askError;
+    void fitPanel();
+  });
+
   onMount(() => {
+    connection.onMessage(onConnectionMessage);
     window.addEventListener("mousemove", onPointerMove);
     window.addEventListener("mousedown", onPointerDown, true);
     window.addEventListener("click", onClick, true);
@@ -440,20 +582,51 @@
         onclick={reset}>×</button>
     </header>
     <code class="feedback-selector" title={selector}>{selector}</code>
+    {#if transcript.length > 0}
+      <div class="feedback-transcript" role="log" aria-label="Ask conversation" aria-live="polite">
+        {#each transcript as turn, index (index)}
+          <p
+            class="feedback-turn"
+            class:feedback-turn--developer={turn.role === "developer"}
+            class:feedback-turn--agent={turn.role === "agent"}
+          >{turn.text}</p>
+        {/each}
+      </div>
+    {/if}
     <textarea
       bind:this={textarea}
       bind:value={report}
       placeholder="What is wrong with this element?"
       aria-label="Issue description"
       rows="5"
-      disabled={sending}
+      disabled={sending || askPending}
+      onkeydown={onComposerKeyDown}
     ></textarea>
+    {#if askPending}
+      <p class="feedback-status" role="status">Asking…</p>
+    {/if}
+    {#if askError !== null}
+      <p class="feedback-error" role="alert">{askError}</p>
+    {/if}
     {#if phase === "failed" && errorMessage !== null}
       <p class="feedback-error">{errorMessage}</p>
     {/if}
     <div class="feedback-actions">
-      <button type="button" onclick={send} disabled={sending || report.trim().length === 0}>
+      <button
+        type="button"
+        onclick={send}
+        disabled={sending || askPending || report.trim().length === 0}
+      >
         {sending ? "Filing…" : "File issue"}
+      </button>
+      <button
+        type="button"
+        data-testid="feedback-ask"
+        aria-label="Ask the agent about this element"
+        onclick={ask}
+        disabled={askPending || sending || report.trim().length === 0}
+      >
+        {askPending ? "Asking…" : "Ask"}
       </button>
       <button
         type="button"
@@ -474,15 +647,15 @@
   role="group"
   aria-label="UI issue actions"
 >
-  {#if status !== null}
+  {#if result !== null}
     <div
-      class="feedback-status"
-      role={status.ok ? "status" : "alert"}
-      class:feedback-status--error={!status.ok}
+      class="feedback-result"
+      role={result.ok ? "status" : "alert"}
+      class:feedback-result--error={!result.ok}
     >
-      <span>{status.text}</span>
-      {#if status.ok}
-        <a href={status.url} target="_blank" rel="noreferrer">{status.url}</a>
+      <span>{result.text}</span>
+      {#if result.ok}
+        <a href={result.url} target="_blank" rel="noreferrer">{result.url}</a>
       {/if}
     </div>
   {/if}
@@ -492,9 +665,7 @@
         type="button"
         class="feedback-action"
         class:feedback-action--active={action === entry.action}
-        title={action === entry.action
-          ? `Cancel the ${entry.label.toLowerCase()} selection`
-          : entry.label}
+        title={action === entry.action ? `Cancel ${entry.label}` : entry.label}
         aria-pressed={action === entry.action ? "true" : "false"}
         data-command={entry.command}
         disabled={sending || (entry.action !== "report" && panel !== null)}
@@ -562,7 +733,7 @@
     opacity: 0.45;
   }
 
-  .feedback-status {
+  .feedback-result {
     background: var(--surface-raised);
     border: 1px solid var(--border-strong);
     border-radius: 4px;
@@ -575,12 +746,12 @@
     padding: 6px 8px;
   }
 
-  .feedback-status--error {
+  .feedback-result--error {
     border-color: var(--error);
     color: var(--error);
   }
 
-  .feedback-status a {
+  .feedback-result a {
     color: var(--accent);
     overflow-wrap: anywhere;
   }
@@ -679,6 +850,26 @@
     white-space: nowrap;
   }
 
+  .feedback-transcript {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 0.45rem;
+  }
+
+  .feedback-turn {
+    color: var(--text);
+    font-size: 0.8rem;
+    margin: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
   .feedback-panel textarea {
     background: var(--background);
     border: 1px solid var(--border);
@@ -722,6 +913,12 @@
     background: var(--surface);
     border-color: var(--border);
     color: var(--text);
+  }
+
+  .feedback-status {
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin: 0;
   }
 
   .feedback-error {

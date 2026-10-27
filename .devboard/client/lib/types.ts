@@ -321,3 +321,20 @@ export interface DiscoverTab {
   label: string;
   skill: string | null;
 }
+
+/** One visible turn of the element-scoped Ask conversation. */
+export interface AskTurn {
+  role: "developer" | "agent";
+  text: string;
+}
+
+/** The captured element an Ask question travels with. */
+export interface AskContext {
+  route: string;
+  url: string;
+  selector: string;
+  viewport: string;
+  captured_at: string;
+  visible_text: string;
+  dom_excerpt: string;
+}
