@@ -653,10 +653,15 @@ try {
   );
   await click(devtools, "scout-stop");
   await waitState(fixture, "the stopped scout", (state) => state.lifecycle === "stopped");
-  check(
-    (await devtools.evaluate(`document.querySelector('[data-testid="scout-start"]') !== null`)) ===
-      true,
-    "a stopped scout does not offer Start",
+  await waitFor(
+    async () =>
+      (await devtools
+        .evaluate(`document.querySelector('[data-testid="scout-start"]') !== null`)
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the Start control after Stop",
+    10_000,
   );
   await click(devtools, "scout-start");
   await waitWidgets(devtools, 9, "the restarted scan's nine findings");
