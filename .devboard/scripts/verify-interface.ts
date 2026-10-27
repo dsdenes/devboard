@@ -2206,18 +2206,44 @@ try {
     "a Flow action does not use the design-system horizontal padding",
     flowGoalSurface.startPadding,
   );
-  const flowGoalHeader = await page.eval<{ state: string; tone: string; saveDisabled: boolean }>(`(() => {
+  const flowGoalHeader = await page.eval<{
+    state: string;
+    badge: boolean;
+    tone: string;
+    headerHeight: number;
+    aligned: boolean;
+    saveDisabled: boolean;
+  }>(`(() => {
     const state = document.querySelector('[data-testid="flow-goal-state"]');
     const save = document.querySelector('[data-testid="save-flow-goal"]');
+    const header = state?.closest(".flow-goal__header");
+    const title = header?.querySelector(".flow-goal__title");
+    const center = (element) => {
+      const box = element?.getBoundingClientRect();
+      return box === undefined ? Number.NaN : box.top + box.height / 2;
+    };
     return {
       state: state?.textContent?.trim() ?? "",
-      tone: state === null ? "" : getComputedStyle(state).color,
+      badge: state?.classList.contains("badge") ?? false,
+      tone: state?.getAttribute("data-tone") ?? "",
+      headerHeight: Math.round(header?.getBoundingClientRect().height ?? 0),
+      aligned: Math.abs(center(state) - center(title)) <= 1,
       saveDisabled: save?.disabled !== false,
     };
   })()`);
   check(
     flowGoalHeader.state === "Saved" && flowGoalHeader.saveDisabled,
     "the Flow goal header does not state its saved state",
+    flowGoalHeader,
+  );
+  check(
+    flowGoalHeader.badge && flowGoalHeader.tone === "success",
+    "the Flow goal saved state is not a success badge",
+    flowGoalHeader,
+  );
+  check(
+    flowGoalHeader.headerHeight === 44 && flowGoalHeader.aligned,
+    "the Flow goal header does not hold the redesigned single row",
     flowGoalHeader,
   );
   const flowLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-goal-text"] textarea')?.getAttribute("aria-label") ?? ""`);
