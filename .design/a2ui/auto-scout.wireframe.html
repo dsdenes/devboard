@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Auto Scout — wireframe</title>
+    <style>
+      :root {
+        color: #333;
+        background: #f4f4f4;
+        font-family: system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+      }
+      main {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin: 0 auto;
+        max-width: 1400px;
+      }
+      header {
+        align-items: flex-start;
+        background: #fff;
+        border: 2px solid #aaa;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        justify-content: space-between;
+        padding: 12px 16px;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 2px 0;
+      }
+      .eyebrow {
+        color: #666;
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        margin: 0;
+        text-transform: uppercase;
+      }
+      .repo {
+        color: #555;
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+        margin: 0;
+      }
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .badge {
+        border: 1px dashed #777;
+        font-size: 11px;
+        padding: 2px 7px;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+      .action {
+        border: 2px solid #777;
+        font-size: 13px;
+        padding: 6px 14px;
+      }
+      .action.primary {
+        background: #e6e6e6;
+        font-weight: 700;
+      }
+      .alert {
+        border: 2px dashed #888;
+        color: #555;
+        display: none;
+        font-size: 12px;
+        padding: 8px 12px;
+      }
+      .body {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 360px minmax(0, 1fr);
+      }
+      .column {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-width: 0;
+      }
+      .panel {
+        background: #fff;
+        border: 2px solid #aaa;
+      }
+      .panel__head {
+        align-items: center;
+        border-bottom: 1px solid #ccc;
+        display: flex;
+        gap: 8px;
+        justify-content: space-between;
+        padding: 6px 10px;
+      }
+      .panel__head h2 {
+        font-size: 13px;
+        margin: 0;
+      }
+      .panel__head span {
+        color: #666;
+        font-size: 11px;
+      }
+      .panel__body {
+        padding: 10px;
+      }
+      .fact {
+        display: grid;
+        gap: 8px;
+        grid-template-columns: 96px minmax(0, 1fr);
+        padding: 5px 0;
+      }
+      .fact + .fact {
+        border-top: 1px solid #eee;
+      }
+      .fact dt {
+        color: #666;
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        margin: 0;
+        text-transform: uppercase;
+      }
+      .fact dd {
+        font-size: 12px;
+        margin: 0;
+      }
+      .field + .field {
+        margin-top: 10px;
+      }
+      .field label {
+        color: #555;
+        display: block;
+        font-size: 11px;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      .field .input {
+        border: 1px solid #777;
+        height: 28px;
+        width: 100%;
+      }
+      .hint {
+        color: #666;
+        font-size: 11px;
+        margin: 10px 0 0;
+      }
+      .save {
+        border: 1px solid #777;
+        display: inline-block;
+        font-size: 12px;
+        margin-top: 10px;
+        padding: 5px 10px;
+      }
+      .table {
+        border-collapse: collapse;
+        font-size: 12px;
+        width: 100%;
+      }
+      .table th {
+        background: #fafafa;
+        border-bottom: 1px solid #ccc;
+        color: #666;
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        padding: 5px 8px;
+        text-align: left;
+        text-transform: uppercase;
+      }
+      .table td {
+        border-bottom: 1px solid #eee;
+        height: 28px;
+        padding: 0 8px;
+      }
+      .empty {
+        color: #666;
+        font-size: 12px;
+        margin: 0;
+        padding: 16px 8px;
+      }
+      .log {
+        background: #fafafa;
+        border: 1px solid #ddd;
+        color: #666;
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+        margin: 0;
+        min-height: 150px;
+        padding: 8px 10px;
+      }
+      .annotation {
+        color: #777;
+        display: block;
+        font-family: ui-monospace, monospace;
+        font-size: 10px;
+        margin-top: 2px;
+      }
+      @media (max-width: 1100px) {
+        body {
+          padding: 12px;
+        }
+        .body {
+          grid-template-columns: 1fr;
+        }
+        header,
+        .actions,
+        .meta {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+        .action {
+          text-align: center;
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <section aria-label="Page identity">
+          <p class="eyebrow">Issues · region_header</p>
+          <h1>Auto Scout</h1>
+          <p class="repo">owner/repo · C2</p>
+          <div class="meta">
+            <span class="badge">stopped · C3</span>
+            <span class="badge">GitHub read stale · C5</span>
+            <span class="badge">Last read never · C6</span>
+          </div>
+          <span class="annotation">P0 identity · lifecycle and read health share one meta line</span>
+        </section>
+        <div class="actions">
+          <span class="action primary">Start · C4</span>
+          <span class="annotation">one filled action · Stop replaces Start while attached</span>
+        </div>
+      </header>
+
+      <div class="alert" aria-label="Alert region">Error, stale reason, or notice banner · C7 · C21 · C22</div>
+
+      <div class="body">
+        <div class="column">
+          <section class="panel">
+            <div class="panel__head">
+              <h2>Scout worker</h2>
+            </div>
+            <div class="panel__body">
+              <dl>
+                <div class="fact"><dt>Pending issues</dt><dd>0 · C8</dd></div>
+                <div class="fact"><dt>Worker</dt><dd>none · C9</dd></div>
+                <div class="fact"><dt>Next attempt</dt><dd>none · C10</dd></div>
+              </dl>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel__head">
+              <h2>Filing limits</h2>
+            </div>
+            <div class="panel__body">
+              <div class="field">
+                <label>Issues per rolling hour</label>
+                <div class="input">10</div>
+              </div>
+              <div class="field">
+                <label>Open issues</label>
+                <div class="input">5</div>
+              </div>
+              <span class="save">Save limits · C12</span>
+              <p class="hint">Files at most the smaller of the hourly room and the open-issue room, scored 4 or 5. · C13</p>
+              <span class="annotation">C14 error lands here</span>
+            </div>
+          </section>
+        </div>
+
+        <div class="column">
+          <section class="panel">
+            <div class="panel__head">
+              <h2>Filed issues</h2>
+              <span>0 · C17</span>
+            </div>
+            <div class="panel__body">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Title · C15</th>
+                    <th>Created</th>
+                    <th>Category</th>
+                    <th>State</th>
+                    <th>Shipped</th>
+                  </tr>
+                </thead>
+              </table>
+              <p class="empty">No issues filed yet. Auto Scout files scored findings here. · C18</p>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel__head">
+              <h2>Scan activity</h2>
+              <span>No scan yet · C11</span>
+            </div>
+            <div class="panel__body">
+              <pre class="log">No activity yet. · C19 · C20</pre>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

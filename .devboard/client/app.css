@@ -3427,14 +3427,149 @@ a.code-chip--link:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
-  overflow: auto;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 16px;
 }
 
-.issues-scout > .issues-activity-panel {
-  flex: 0 0 190px;
+.issues-scout__alerts {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.issues-scout__body {
+  display: grid;
+  flex: 1;
+  gap: 12px;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.issues-scout__side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.issues-scout__side > .panel {
+  flex: 0 0 auto;
+}
+
+.issues-scout__main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.issues-scout__main > .panel:first-child {
+  flex: 1 1 auto;
+  min-height: 160px;
+}
+
+.issues-scout__main > .issues-activity-panel {
+  flex: 0 0 210px;
   min-height: 150px;
 }
 
+.scout-sync-at {
+  font-size: 11px;
+}
 
+.scout-facts {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+
+.scout-facts > div {
+  align-items: baseline;
+  border-bottom: 1px solid var(--border-subtle);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 6px 0;
+}
+
+.scout-facts > div:first-child {
+  padding-top: 0;
+}
+
+.scout-facts > div:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.scout-facts dt {
+  color: var(--muted);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.scout-facts dd {
+  font-size: 12px;
+  margin: 0;
+  max-width: 220px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.scout-facts__count {
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.scout-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scout-limits__field {
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  font-size: 10.5px;
+  gap: 4px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.scout-limits__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.scout-limits__hint {
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+@media (max-width: 1100px) {
+  .issues-scout {
+    overflow: auto;
+  }
+
+  .issues-scout__body {
+    grid-template-columns: 1fr;
+    grid-template-rows: max-content max-content;
+  }
+
+  .issues-scout__side {
+    overflow: visible;
+  }
+
+  .issues-scout__main > .panel:first-child {
+    flex: 0 1 auto;
+    max-height: 320px;
+  }
+}

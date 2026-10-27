@@ -1534,10 +1534,13 @@ in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="ope
 palette `Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its
 tab, or reloading the dashboard never starts a worker and never files an issue: only
 `data-testid="scout-start"` starts the worker, and that control becomes
-`data-testid="scout-stop"` while a worker is attached. The page shows
-`data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`),
-`data-testid="scout-activity"` for the current or newest scan, `data-testid="scout-error"` for the
-last error, `data-testid="scout-notice"` for the last notice, and `data-testid="scout-repo"`.
+`data-testid="scout-stop"` while a worker is attached. The page header
+(`data-testid="issues-scout-header"`) carries the repository origin,
+`data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`), the read-health
+badge, the last-read time, and the single Start/Stop action. A 360px side rail holds the worker
+facts and the filing limits; the results column holds the filed-issues table and
+`data-testid="scout-activity"` for the current or newest scan. The page also shows
+`data-testid="scout-error"` for the last error and `data-testid="scout-notice"` for the last notice.
 
 There is no review path. While a worker runs, a scan whose items score at least 4 files each
 accepted item directly as a GitHub issue in the host `origin`, in the same scan cycle, with no
@@ -1592,7 +1595,8 @@ names the normalized `knownTitles` and the draft headings, so the agent avoids t
 `data-testid="scout-issues"` renders one `data-testid="scout-issue"` row per Auto Scout issue,
 newest `createdAt` first, carrying `data-number`, `data-state`, and `data-version`. Each row
 renders `data-testid="scout-issue-title"` as an anchor to the issue URL,
-`data-testid="scout-issue-created"` with the ISO creation time, `data-testid="scout-issue-type"`,
+`data-testid="scout-issue-created"` with a local creation time (the raw ISO value stays in the
+cell's `title`), `data-testid="scout-issue-type"`,
 `data-testid="scout-issue-state"`, and `data-testid="scout-issue-version"`. The type is the
 recommendation's category, or the issue body's `## Category` value for an adopted issue, or `—`.
 With no rows, `data-testid="scout-issues-empty"` renders. The sidebar `data-testid="scout-count"`

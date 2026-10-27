@@ -7,6 +7,19 @@
 
   let { issues }: Props = $props();
 
+  /** A local clock reading; the raw ISO value stays in the cell tooltip. */
+  function createdLabel(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
+
   /** Newest creation first; the number breaks a same-instant tie. */
   const rows = $derived(
     [...issues].sort((left, right) => {
@@ -25,9 +38,12 @@
     <h2 class="panel__title">Filed issues</h2>
     <span class="panel__subtitle">{rows.length}</span>
   </div>
-  <div class="panel__body" data-testid="scout-issues">
+  <div class="panel__body panel__body--flush" data-testid="scout-issues">
     {#if rows.length === 0}
-      <p class="muted" data-testid="scout-issues-empty">No issues filed yet.</p>
+      <div class="scout-issues__empty" data-testid="scout-issues-empty">
+        <p class="scout-issues__empty-title">No issues filed yet</p>
+        <p class="muted">Auto Scout files scored findings here.</p>
+      </div>
     {:else}
       <div class="table-wrap">
         <table class="scout-issues-table">
@@ -59,7 +75,9 @@
                     {row.title}
                   </a>
                 </td>
-                <td class="mono" data-testid="scout-issue-created">{row.createdAt}</td>
+                <td class="mono" data-testid="scout-issue-created" title={row.createdAt}>
+                  <time datetime={row.createdAt}>{createdLabel(row.createdAt)}</time>
+                </td>
                 <td data-testid="scout-issue-type">{row.category ?? "—"}</td>
                 <td>
                   <span
@@ -81,9 +99,31 @@
 </section>
 
 <style>
+  .scout-issues__empty {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 100%;
+    padding: 16px 12px;
+  }
+
+  .scout-issues__empty-title {
+    font-size: 12px;
+    font-weight: 600;
+    margin: 0 0 2px;
+  }
+
+  .scout-issues__empty p {
+    margin: 0;
+  }
+
   .table-wrap {
     overflow: auto;
     width: 100%;
+  }
+
+  tbody tr:hover {
+    background: var(--row-hover);
   }
 
   table {
@@ -117,19 +157,19 @@
   }
 
   th:nth-child(1) {
-    width: 44%;
+    width: 40%;
   }
   th:nth-child(2) {
-    width: 22%;
+    width: 20%;
   }
   th:nth-child(3) {
     width: 12%;
   }
   th:nth-child(4) {
-    width: 12%;
+    width: 15%;
   }
   th:nth-child(5) {
-    width: 10%;
+    width: 13%;
   }
 
   .scout-issues-table__title {
