@@ -61,9 +61,10 @@
 ## Checks
 
 - `bun run check`: 0 errors, 0 warnings.
-- `bun run verify:interface`: pass (includes the new empty, header, marker, and clipping checks).
-- `bun run verify:issues`: pass.
-- `bun test`: 535 pass, 0 fail.
+- `bun run verify:interface`: pass on the final merged tree (includes the new empty, header,
+  marker, and clipping checks).
+- `bun run verify:issues`: pass on the final merged tree.
+- `bun test`: 541 pass, 0 fail on the final merged tree.
 
 ## Findings
 
