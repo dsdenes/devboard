@@ -110,7 +110,6 @@
   <section class="issues-overview" data-testid="issues-overview" aria-label="Issues overview">
     <header class="issues-overview__header">
       <div>
-        <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Issue automation</h1>
         <p class="issues-overview__repo mono" data-testid="issues-repo">
           {issues.repo ?? "No GitHub origin"}
