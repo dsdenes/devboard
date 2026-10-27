@@ -89,6 +89,29 @@ export function originRepository(root: string): string | undefined {
   return url === undefined ? undefined : repositoryFromUrl(url);
 }
 
+/**
+ * A live `owner/name` lookup for a process that outlives the origin's setup.
+ * A remote can be added or re-pointed while a dashboard runs, so the answer
+ * is re-read at most every `ttlMs` instead of frozen at startup. The reads
+ * are cached: a dashboard polls its snapshot far more often than an origin
+ * can change.
+ */
+export function cachedRepository(
+  root: string,
+  ttlMs = 10_000,
+): () => string | null {
+  let value: string | null = originRepository(root) ?? null;
+  let checkedAt = Date.now();
+  return () => {
+    const now = Date.now();
+    if (now - checkedAt >= ttlMs) {
+      value = originRepository(root) ?? null;
+      checkedAt = now;
+    }
+    return value;
+  };
+}
+
 export function isRepositoryName(value: string): boolean {
   return REPOSITORY.test(value);
 }

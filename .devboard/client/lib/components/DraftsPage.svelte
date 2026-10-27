@@ -52,7 +52,7 @@
     <section class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Proposed goals</h2>
-        <span class="panel__subtitle">{issues.repo ?? "No GitHub origin"}</span>
+        <span class="panel__subtitle">{issues.repoLabel}</span>
       </div>
       <div class="panel__body panel__body--flush">
         <ol class="issues-drafts" data-testid="issues-draft-list">

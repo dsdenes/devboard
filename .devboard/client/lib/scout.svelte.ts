@@ -60,6 +60,15 @@ export class ScoutStore {
     return this.snapshot?.repo ?? null;
   }
 
+  /**
+   * The header's origin label. A missing snapshot is not evidence that the
+   * checkout has no origin, so only a received snapshot may say so.
+   */
+  get repoLabel(): string {
+    if (this.repo !== null) return this.repo;
+    return this.snapshot === null ? "…" : "No GitHub origin";
+  }
+
   get attached(): boolean {
     return this.snapshot?.attached === true;
   }

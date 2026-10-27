@@ -10,7 +10,7 @@ import {
   statePath,
 } from "../issues/paths";
 import { preflightIssues, type PreflightResult } from "../issues/preflight";
-import { originRepository } from "../issues/repository";
+import { cachedRepository } from "../issues/repository";
 import {
   activityPath,
   parseActivity,
@@ -85,7 +85,7 @@ export class IssuesBridge {
   private readonly harnessDir: string;
   private readonly send: (event: unknown) => void;
   private readonly environment: Record<string, string | undefined>;
-  private readonly repository: string | null;
+  private readonly repository: () => string | null;
   private readonly preflight: NonNullable<IssuesBridgeOptions["preflight"]>;
   private readonly spawnWorker: NonNullable<IssuesBridgeOptions["spawnWorker"]>;
   private readonly log: (line: string) => void;
@@ -105,8 +105,7 @@ export class IssuesBridge {
     this.harnessDir = options.harnessDir;
     this.send = options.send;
     this.environment = options.environment ?? process.env;
-    // Resolving the origin runs git; it cannot change while this server lives.
-    this.repository = originRepository(this.repoDir) ?? null;
+    this.repository = cachedRepository(this.repoDir);
     this.log = options.log ?? (() => undefined);
     this.pollMsValue = Math.max(50, options.pollMs ?? 250);
     this.preflight =
@@ -176,7 +175,7 @@ export class IssuesBridge {
     const owner = this.lockOwner();
     const attached =
       owner !== undefined && resolve(owner.stateDir) === this.stateDir && pidAlive(owner.pid);
-    const repo = state?.repo ?? this.repository;
+    const repo = state !== undefined && state.repo.length > 0 ? state.repo : this.repository();
     const active = attached ? state : undefined;
     const lifecycle = active?.lifecycle === "stopped" || active === undefined ? "stopped" : active.lifecycle;
     const worker = state?.worker ?? null;

@@ -30,7 +30,7 @@
       <p class="muted">Issues</p>
       <h1 class="issues-overview__title">Auto Scout</h1>
       <p class="issues-overview__repo mono" data-testid="scout-repo">
-        {scout.repo ?? "No GitHub origin"}
+        {scout.repoLabel}
       </p>
     </div>
     <span class="badge" data-tone={lifecycleTone} data-testid="scout-lifecycle">

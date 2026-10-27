@@ -101,7 +101,7 @@
       <div>
         <h1 class="issues-overview__title">Issue automation</h1>
         <p class="issues-overview__repo mono" data-testid="issues-repo">
-          {issues.repo ?? "No GitHub origin"}
+          {issues.repoLabel}
         </p>
       </div>
       <span class="badge" data-tone={stateWord === "failed" ? "error" : stateWord === "running" ? "accent" : "warning"} data-testid="issues-state">
@@ -241,7 +241,7 @@
       <div>
         <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Agents</h1>
-        <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
+        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
       <span class="badge" data-tone="accent" data-testid="issues-agents-count">{agents.length} running</span>
     </header>
@@ -305,7 +305,7 @@
       <div>
         <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Open issues</h1>
-        <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
+        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
       <span class="badge" data-tone="warning">{issues.pending} pending</span>
     </header>
@@ -353,7 +353,7 @@
       <div>
         <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Runs</h1>
-        <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
+        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
       <span class="badge" data-tone="accent">{runCount}</span>
     </header>

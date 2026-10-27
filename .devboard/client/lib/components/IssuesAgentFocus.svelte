@@ -32,7 +32,7 @@
     <div>
       <p class="muted">Issues · agent</p>
       <h1 class="issues-overview__title">{tab.title}</h1>
-      <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
+      <p class="issues-overview__repo mono">{issues.repoLabel}</p>
     </div>
     <span class="badge" data-tone={status === "failed" ? "error" : status === "running" ? "accent" : "success"} data-testid="issues-agent-focus-status">
       {status}

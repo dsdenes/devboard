@@ -35,6 +35,8 @@ async function startServer(
       stale: boolean;
     };
     runningVersion?: string | null;
+    /** Installs this checkout's `origin` before the app resolves it. */
+    origin?: string;
   } = {},
 ) {
   const root = await temporaryDirectory();
@@ -44,6 +46,10 @@ async function startServer(
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>ADR overview</title>");
   await writeFile(join(adrDir, "0001-first.md"), fixtureRecord("0001-first.md", "First"));
+  if (options.origin !== undefined) {
+    Bun.spawnSync({ cmd: ["git", "init", "-q", root] });
+    Bun.spawnSync({ cmd: ["git", "-C", root, "remote", "add", "origin", options.origin] });
+  }
   if (options.goalText !== undefined) {
     await writeFile(options.goalFile ?? join(root, "GOAL.md"), options.goalText);
   }
@@ -80,8 +86,16 @@ function exchange(url: string, command: unknown): Promise<unknown> {
       return;
     }
     const type = (message as { type?: unknown }).type;
-    // A connection-level issues replay precedes this client's own reply.
-    if (!answer && (type === "issuesState" || type === "issuesActivity")) return;
+    // A connection-level worker replay precedes this client's own reply.
+    if (
+      !answer &&
+      (type === "issuesState" ||
+        type === "issuesActivity" ||
+        type === "scoutState" ||
+        type === "scoutActivity")
+    ) {
+      return;
+    }
     socket.close();
     resolve(message);
   };
@@ -499,6 +513,44 @@ describe("issues protocol", () => {
       expect(message.attached).toBe(false);
       expect(message.repo).toBeNull();
       expect(serverErrors(join(root, "state"), root)).toEqual([]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("replays the checkout origin on connect before any worker exists", async () => {
+    const { server, url } = await startServer({
+      origin: "https://github.com/acme/fixture.git",
+    });
+
+    try {
+      const frames = await collect(url, { type: "getProject" }, (messages) =>
+        messages.some(
+          (message) =>
+            typeof message === "object" &&
+            message !== null &&
+            "type" in message &&
+            message.type === "scoutState",
+        ),
+      );
+      const issues = frames.find(
+        (frame): frame is { repo?: unknown; present?: unknown } =>
+          typeof frame === "object" &&
+          frame !== null &&
+          "type" in frame &&
+          frame.type === "issuesState",
+      );
+      const scout = frames.find(
+        (frame): frame is { repo?: unknown; present?: unknown } =>
+          typeof frame === "object" &&
+          frame !== null &&
+          "type" in frame &&
+          frame.type === "scoutState",
+      );
+      expect(issues?.repo).toBe("acme/fixture");
+      expect(issues?.present).toBe(false);
+      expect(scout?.repo).toBe("acme/fixture");
+      expect(scout?.present).toBe(false);
     } finally {
       server.stop(true);
     }
