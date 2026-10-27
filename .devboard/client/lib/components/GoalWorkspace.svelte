@@ -4,6 +4,7 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import type { WorkspaceTab } from "../layout.svelte";
   import { recordStatusTone } from "../record-status";
+  import { statusTone } from "../status-tone";
   import type { AdrRecord, Lane } from "../types";
   import AdrTable from "./AdrTable.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
@@ -396,7 +397,7 @@
       >
         <div class="panel__header">
           <h2 class="panel__title">Activity</h2>
-          <span class="badge" data-tone={goal.activityActive ? "accent" : "warning"}>
+          <span class="badge" data-tone={statusTone(goal.activityActive ? "running" : "idle")}>
             {goal.activityActive ? "live" : "idle"}
           </span>
         </div>
@@ -834,7 +835,7 @@
               data-testid="lane-status"
               data-kind={lane.kind}
               data-status={lane.status}
-              data-tone={lane.status === "running" ? "accent" : lane.status === "failed" ? "error" : "warning"}
+              data-tone={statusTone(lane.status)}
             >
               {lane.status}
             </span>
@@ -963,7 +964,7 @@
         <section class="panel goal-activity" data-testid="lane-activity">
           <div class="panel__header">
             <h2 class="panel__title">Activity</h2>
-            <span class="badge" data-tone={lane.status === "running" ? "accent" : "warning"}>
+            <span class="badge" data-tone={statusTone(lane.status)}>
               {lane.status === "running" || lane.status === "retrying" ? "live" : lane.status}
             </span>
           </div>
