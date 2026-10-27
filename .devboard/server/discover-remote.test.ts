@@ -19,6 +19,7 @@ import {
   type RemoteCloneRunner,
 } from "./discover";
 import { readStateFile, stateFile } from "./state";
+import { journalFile } from "./journal";
 
 /**
  * Discover's remote target: the source-checkout gate, URL validation, the one
@@ -1101,6 +1102,21 @@ describe("discover remote target", () => {
       // A target whose clone is gone is not durable: the next start has
       // nothing to restore and nothing to report.
       expect(persistedState(fixture).discoverTarget).toBeNull();
+      const records = readFileSync(journalFile(fixture.stateDir, resolve(fixture.root)), "utf8")
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line) as { kind: string; text: string });
+      expect(
+        records.some(
+          (record) =>
+            record.kind === "lifecycle" && record.text === "discover-remote-missing",
+        ),
+      ).toBe(true);
+      expect(
+        records.some(
+          (record) => record.kind === "server-error" && record.text.includes("missing"),
+        ),
+      ).toBe(false);
       const third = startServer({ fixture, clone: cloneHarness() });
       const again = await connect(third.url);
       try {
