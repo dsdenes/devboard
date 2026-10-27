@@ -506,6 +506,22 @@ describe("issues protocol", () => {
     }
   });
 
+  test("opens stopped when the state is present but no live lock remains", async () => {
+    const { server, root, url } = await startServer();
+    await seedIssues(root);
+    await rm(join(root, ".devboard", ".tmp", "issues", "lock"), { force: true });
+
+    try {
+      const message = (await exchange(url, { type: "getIssues" })) as Record<string, unknown>;
+      expect(message.present).toBe(true);
+      expect(message.attached).toBe(false);
+      expect(message.lifecycle).toBe("stopped");
+      expect(message.enabled).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("refuses Start when this checkout's worker uses another state directory", async () => {
     const { server, root, url } = await startServer();
     const { stateDir } = await seedIssues(root);

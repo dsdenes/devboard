@@ -486,6 +486,8 @@ try {
     "the Issues overview",
     15_000,
   );
+  check(workerPids(a.repo).length === 0, "starting the dashboard started a worker");
+  check(!existsSync(lockPath(a.repo)), "starting the dashboard took the repo lock");
   await click(devtools, "issues-start");
 
   const idle = await waitState(
