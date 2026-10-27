@@ -14,6 +14,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { fixtureRecord } from "../server/fixtures/adr-source";
 import { writeCommand } from "../issues/control";
 import { lockPath, controlDirectory, runsDirectory, statePath } from "../issues/paths";
 import { readState, type IssuesState } from "../issues/state";
@@ -48,7 +49,7 @@ async function repository(name: string, origin: string): Promise<string> {
   await mkdir(join(directory, "adrs"), { recursive: true });
   await mkdir(join(directory, ".devboard"), { recursive: true });
   await writeFile(join(directory, "GOAL.md"), "# Fixture goal\n");
-  await writeFile(join(directory, "adrs", "0001-fixture.md"), "# Fixture\n\n- Status: Accepted\n");
+  await writeFile(join(directory, "adrs", "0001-fixture.md"), fixtureRecord("0001-fixture.md", "Fixture"));
   const git = (args: string[]) => {
     const result = run("git", ["-C", directory, ...args]);
     check(result.code === 0, `git ${args.join(" ")} failed: ${result.stderr}`);

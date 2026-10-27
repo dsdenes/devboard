@@ -1,3 +1,4 @@
+import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -85,7 +86,7 @@ function createFixture(name: string): Fixture {
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "static", "index.html"), "<!doctype html><title>Fixture</title>");
   writeFileSync(join(root, "GOAL.md"), SENTINEL_GOAL);
-  writeFileSync(join(root, "adrs", "0001-fixture.md"), "# Fixture decision\n\n- Status: Accepted\n");
+  writeFileSync(join(root, "adrs", "0001-fixture.md"), fixtureRecord("0001-fixture.md", "Fixture decision"));
   writeFileSync(join(root, ".gitignore"), GITIGNORE);
   writeFileSync(join(root, "src", "main.txt"), "base\n");
   git(root, ["init", "-b", "main"]);

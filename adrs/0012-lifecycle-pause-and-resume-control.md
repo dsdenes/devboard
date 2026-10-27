@@ -1,6 +1,19 @@
+---
+schemaVersion: 0.2.0
+id: "0012"
+title: Lifecycle pause and resume control
+status: accepted
+date: 2026-10-19
+deciders: ["@dsdenes"]
+affects:
+  - type: path
+    pattern: .devboard/server/app.ts
+  - type: path
+    pattern: .devboard/client/lib/goal.svelte.ts
+  - type: path
+    pattern: .devboard/client/lib/components/GoalWorkspace.svelte
+---
 # Lifecycle pause and resume control
-
-- Status: Accepted
 
 ## Context
 

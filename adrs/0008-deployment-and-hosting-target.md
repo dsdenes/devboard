@@ -1,6 +1,15 @@
+---
+schemaVersion: 0.2.0
+id: "0008"
+title: Deployment and hosting target
+status: accepted
+date: 2026-10-19
+deciders: ["@dsdenes"]
+affects:
+  - type: path
+    pattern: .devboard/Dockerfile
+---
 # Deployment and hosting target
-
-- Status: Accepted
 
 ## Context
 

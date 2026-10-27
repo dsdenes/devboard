@@ -1,6 +1,15 @@
+---
+schemaVersion: 0.2.0
+id: "0004"
+title: Agent invocation and interview protocol
+status: accepted
+date: 2026-10-19
+deciders: ["@dsdenes"]
+affects:
+  - type: path
+    pattern: .devboard/server/acp.ts
+---
 # Agent invocation and interview protocol
-
-- Status: Accepted
 
 ## Context
 

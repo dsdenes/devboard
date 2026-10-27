@@ -1,6 +1,15 @@
+---
+schemaVersion: 0.2.0
+id: "0006"
+title: Run and interview state persistence
+status: accepted
+date: 2026-10-19
+deciders: ["@dsdenes"]
+affects:
+  - type: path
+    pattern: .devboard/server/app.ts
+---
 # Run and interview state persistence
-
-- Status: Accepted
 
 ## Context
 

@@ -28,7 +28,7 @@ Shell commands used for research are read-only: directory and file listing (`ls`
 
 A record is pending when either signal says so:
 
-- **Status** — its status is not one of Accepted, Superseded, Rejected, Deprecated (or the directory's own equivalents). A missing status line counts as pending.
+- **Status** — its status is not one the directory treats as resolved. When the records carry YAML frontmatter, that status is the frontmatter `status` field; otherwise it is the status line or bullet the directory already uses. A missing or empty status counts as pending.
 - **Body** — its decision section is empty, a placeholder (`TBD`, `TODO`, `...`, a bare heading), or holds nothing but the question.
 
 Both signals are read; a record settled by one and unsettled by the other is pending. Also pending: a conflict between two records that both read as settled — the pair is one decision to settle (Phase E), however each file's status line reads.
@@ -37,9 +37,11 @@ Order: by file name, ascending. Before starting each record, re-read the directo
 
 ## Phase C — Conventions
 
-Read the records and copy what they already do: numbering, extension, filename pattern, status vocabulary and its spelling, section headings, where the decision lives, whether a date is recorded. Conventions are discovered per directory, never assumed.
+Read the records and copy what they already do: numbering, extension, filename pattern, status vocabulary and its spelling, section headings, where the decision lives, whether a date is recorded, and whether typed metadata lives in YAML frontmatter (a `---` fence with `key: value` fields) or in the body. Conventions are discovered per directory, never assumed.
 
-Never rename, renumber, reorder, restructure, or delete a record. A write touches only: the decision section, the status line (plus a date, only when the convention records one), the supersession pointer on a record that loses (Phase F), and the single open line on a record that stays blocked (Phase F). Nothing else in the file changes.
+A record's status is written where the directory keeps it. When records carry YAML frontmatter with a status field, change that field in place, keep every other frontmatter field as it was, and put a supersession pointer in a field beside it when the directory's records do. When they do not, write the status line or bullet the directory already uses, with the pointer in the directory's own wording. Never write both a status field and a status line into one record.
+
+Never rename, renumber, reorder, restructure, or delete a record. A write touches only: the decision section, the status field or status line (plus a date, only when the convention records one), the supersession pointer on a record that loses (Phase F), and the single open line on a record that stays blocked (Phase F). Nothing else in the file changes.
 
 Records are read as they are; this run never restyles, reflows, or renumbers them, and never creates one. A record with no decision section, in a directory that writes decisions another way, is written where its question sits — the placeholder text replaced, or the decision appended as one paragraph at the end of the file — plus the status line. The file is never restructured to fit another directory's shape.
 
@@ -86,18 +88,18 @@ A decision the developer cannot make yet — it turns on information not yet at 
 Settled record:
 
 - The decision, in the record's existing decision section, in the developer's terms and at the record's own level of detail. Nothing the answer did not establish: no invented rationale, no commentary, no alternatives the developer did not consider.
-- Status set to Accepted, spelled as the directory spells it. A date only when the convention records one.
+- Status set to the directory's resolved status, in the field or line that record already carries (Phase C). A date only when the convention records one.
 - Fill only headings the file already has, and only those the answer directly settles. Never add a section.
 - The file's existing layout survives the write: the text goes where the placeholder or the empty section was, and the blank lines and spacing around it stay as they are. Never reflow, rewrap, or retabulate an existing paragraph.
 
 Blocked record (the developer states the information is not yet at hand):
 
-- Status unchanged.
+- Status unchanged, and the frontmatter untouched when the record has one.
 - One short line inside the section that already holds the question: which piece of information is missing, and how the developer intends to obtain it. Never a new heading, never a status the directory does not use, and never a word about anyone's approval, permission, review, sign-off, or agreement.
 
-Superseded record:
+A record that another record supersedes:
 
-- Status set to Superseded (the directory's spelling) with a pointer to the winning record, in the file's own wording.
+- Status set to the directory's superseded status, with a pointer to the winning record: a supersession field beside the status when the record has YAML frontmatter, otherwise the file's own wording.
 
 Then commit that one file, immediately, so an interrupted run leaves no uncommitted write:
 

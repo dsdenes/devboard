@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { fixtureRecord } from "../server/fixtures/adr-source";
 import { journalKey } from "../server/journal";
 import { REDESIGN_INSTRUCTION as redesignInstruction, REMOVAL_INSTRUCTION as removalInstruction } from "../server/feedback";
 import { stateFile } from "../server/state";
@@ -430,20 +431,25 @@ async function writeFixture(root: string): Promise<string> {
   );
 
   const records = [
-    ["0001-shell-and-layout", "Accepted", "Build one full-viewport shell."],
-    ["0002-tabs-and-panels", "Accepted", "Keep each workspace tab mounted."],
-    ["0003-dense-tables", "Proposed", "Render records with dense table rows."],
-    ["0004-editor-embeds", "Proposed", "Embed Monaco for every text editor."],
-    ["0005-terminal-output", "Proposed", "Stream agent output through xterm."],
-    ["0006-split-panes", "Proposed", "Persist sidebar and detail splits."],
-    ["0007-command-palette", "Proposed", "Expose every command through one palette."],
-    ["0008-notifications", "Proposed", "Keep server notices in one region."],
+    ["0001-shell-and-layout", "accepted", "Build one full-viewport shell."],
+    ["0002-tabs-and-panels", "accepted", "Keep each workspace tab mounted."],
+    ["0003-dense-tables", "proposed", "Render records with dense table rows."],
+    ["0004-editor-embeds", "proposed", "Embed Monaco for every text editor."],
+    ["0005-terminal-output", "proposed", "Stream agent output through xterm."],
+    ["0006-split-panes", "proposed", "Persist sidebar and detail splits."],
+    ["0007-command-palette", "proposed", "Expose every command through one palette."],
+    ["0008-notifications", "proposed", "Keep server notices in one region."],
   ] as const;
   for (const [name, status, decision] of records) {
     const title = name.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
     await writeFile(
       join(adrDir, `${name}.md`),
-      `# ${title}\n\n- Status: ${status}\n\n## Context\n\nThis fixture record exists so the Goal workspace can render eight dense rows.\n\n## Decision\n\n${decision}\n\nThe decision is short on purpose.\n`,
+      fixtureRecord(
+        `${name}.md`,
+        title,
+        status,
+        `## Context\n\nThis fixture record exists so the Goal workspace can render eight dense rows.\n\n## Decision\n\n${decision}\n\nThe decision is short on purpose.\n`,
+      ),
     );
   }
 
@@ -760,7 +766,7 @@ async function createRemoteSource(root: string): Promise<string> {
     join(source, ".github", "workflows", "ci.yml"),
     "name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun test\n",
   );
-  await writeFile(join(source, "adrs", "0001-remote.md"), "# Remote decision\n\n- Status: Accepted\n");
+  await writeFile(join(source, "adrs", "0001-remote.md"), fixtureRecord("0001-remote.md", "Remote decision"));
   await writeFile(join(source, ".gitignore"), ".omp/\nnode_modules/\n");
   await git(source, ["init", "-q"]);
   await git(source, ["add", "-A"]);
@@ -841,7 +847,7 @@ async function writeGateOffHost(root: string): Promise<string> {
   await mkdir(join(host, "adrs"), { recursive: true });
   await writeFile(join(host, "GOAL.md"), "# Gate-off host\n");
   await writeFile(join(host, "package.json"), `${JSON.stringify({ name: "gate-off-host" })}\n`);
-  await writeFile(join(host, "adrs", "0001-gate-off.md"), "# Gate off\n\n- Status: Accepted\n");
+  await writeFile(join(host, "adrs", "0001-gate-off.md"), fixtureRecord("0001-gate-off.md", "Gate off"));
   return host;
 }
 
@@ -2938,7 +2944,7 @@ try {
   for (const file of await readdir(join(host, "adrs"))) {
     const path = join(host, "adrs", file);
     const text = await readFile(path, "utf8");
-    await writeFile(path, text.replace(/- Status: .*/, "- Status: Accepted"));
+    await writeFile(path, text.replace(/^status:\s*[a-z]+\s*$/m, "status: accepted"));
   }
   await page.reload();
   await page.wait(
