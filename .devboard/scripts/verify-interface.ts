@@ -3065,6 +3065,7 @@ try {
     clear: boolean;
     sheet: boolean;
     target: string;
+    first: boolean;
   }>(`(() => {
     const input = document.querySelector('[data-testid="discover-remote-url"]');
     const start = document.querySelector('[data-testid="discover-remote-start"]');
@@ -3080,6 +3081,9 @@ try {
       clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
       sheet: document.querySelector('[data-testid="discover-sheet"]') !== null,
       target: document.querySelector('[data-testid="discover-remote-target"]')?.textContent ?? "",
+      first:
+        document.querySelector('[data-testid="discover-panel"][data-tab="overview"]')
+          ?.firstElementChild?.getAttribute("data-testid") === "discover-remote",
     };
   })()`);
   check(
@@ -3101,6 +3105,11 @@ try {
   );
   check(remoteStrip.clear, "the clear control is missing for a remote target", remoteStrip);
   check(remoteStrip.sheet, "the clone's sheet does not render", remoteStrip);
+  check(
+    remoteStrip.first,
+    "the remote target strip is not the first region of the Discover overview",
+    remoteStrip,
+  );
   const remoteTitle = await page.eval<string>(
     `document.querySelector('#workspace-discover .discover-head__title')?.textContent?.trim() ?? ""`,
   );
