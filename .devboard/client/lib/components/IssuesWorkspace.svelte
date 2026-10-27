@@ -45,7 +45,7 @@
 
   let now = $state(Date.now());
   $effect(() => {
-    if (page !== "agents") return;
+    if (page !== "agents" && page !== "overview") return;
     const timer = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(timer);
   });
@@ -64,6 +64,17 @@
     const seconds = Math.max(0, Math.round((now - start) / 1000));
     const minutes = Math.floor(seconds / 60);
     return minutes === 0 ? `${seconds}s` : `${minutes}m ${seconds % 60}s`;
+  }
+
+  /** One glanceable duration for a summary row: `12s`, `7m`, `2h 5m`. */
+  function elapsedShort(startedAt: string): string {
+    const start = Date.parse(startedAt);
+    if (!Number.isFinite(start)) return startedAt;
+    const seconds = Math.max(0, Math.round((now - start) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   }
 
   function openAgent(runId: string, issueNumber: number): void {
@@ -206,25 +217,31 @@
           <h2 class="panel__title">Running agents</h2>
           <span class="panel__subtitle">{agents.length} active</span>
         </div>
-        <div class="panel__body stack-sm">
-          <ol class="issues-agent-summary">
+        <div class="panel__body panel__body--flush">
+          <ol class="issues-agent-summary" data-testid="issues-agent-summary">
             {#each agents as agent (agent.runId)}
               <li>
                 <button
                   type="button"
-                  class="issues-run"
+                  class="issues-agent-row"
                   data-command="issues.agent.open"
                   data-run={agent.runId}
                   data-issue={agent.issueNumber}
+                  title={issueTitle(agent.issueNumber)}
                   onclick={() => openAgent(agent.runId, agent.issueNumber)}
                 >
-                  <span class="mono">#{agent.issueNumber}</span>
-                  <span>{issueTitle(agent.issueNumber)}</span>
-                  <span class="badge" data-tone="accent">running</span>
+                  <span class="issues-agent-row__issue mono">#{agent.issueNumber}</span>
+                  <span class="issues-agent-row__title">{issueTitle(agent.issueNumber)}</span>
+                  <span class="issues-agent-row__meta">
+                    {#if agent.question !== null}
+                      <span class="badge" data-tone="warning">needs answer</span>
+                    {/if}
+                    <span class="issues-agent-row__elapsed mono">{elapsedShort(agent.startedAt)}</span>
+                  </span>
                 </button>
               </li>
             {:else}
-              <li class="muted">No issue is running.</li>
+              <li class="issues-agent-summary__empty muted">No issue is running.</li>
             {/each}
           </ol>
         </div>
