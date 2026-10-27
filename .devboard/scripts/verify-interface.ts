@@ -3082,6 +3082,17 @@ try {
   );
   const backToPicking = await issueState();
   check(backToPicking.pressed.join(",") === "true,false,false", "a filed report did not return to report selection", backToPicking);
+  const reportToast = await page.eval<{ role: string; text: string; href: string }>(`(() => {
+    const toast = document.querySelector('.feedback-result');
+    return {
+      role: toast?.getAttribute("role") ?? "",
+      text: (toast?.textContent ?? "").replace(/\\s+/g, " ").trim(),
+      href: toast?.querySelector("a")?.getAttribute("href") ?? "",
+    };
+  })()`);
+  check(reportToast.role === "status", "a filed report shows no status toast", reportToast);
+  check(reportToast.text.startsWith("Report filed."), "the report success toast is wrong", reportToast);
+  check(reportToast.href === stubIssueUrl, "the report success toast carries no issue URL", reportToast);
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the report mode to close after filing");
 
@@ -3183,7 +3194,7 @@ try {
   }
   check(goalFiles.length === 1, "the Goal action wrote more than one draft", goalFiles);
   await page.wait(
-    `document.querySelector('.feedback-result[role="status"]') !== null`,
+    `document.querySelector('.feedback-result')?.textContent?.includes("Goal proposed:") === true`,
     "the goal result line",
   );
   const goalStatus = await page.eval<{
@@ -3276,7 +3287,10 @@ try {
   await page.click('[data-testid="status-connection"]');
   await waitForFeedbackCalls(1);
   await delay(150);
-  await page.wait(`document.querySelector('.feedback-result[role="status"] a') !== null`, "the removal success link");
+  await page.wait(
+    `document.querySelector('.feedback-result')?.textContent?.includes("Removal issue filed.") === true`,
+    "the removal success link",
+  );
   const removalStatus = await page.eval<{ role: string; text: string; href: string }>(`(() => {
     const status = document.querySelector('.feedback-result');
     return {
@@ -3399,7 +3413,7 @@ try {
   await delay(200);
   const delayedCalls = await feedbackCalls();
   check(delayedCalls.length === 3, "a double-click filed more than one issue", delayedCalls.length);
-  await page.wait(`document.querySelector('.feedback-result[role="status"]') !== null`, "the delayed filing status");
+  await page.wait(`document.querySelector('.feedback-result')?.textContent?.includes("Redesign issue filed.") === true`, "the delayed filing status");
 
   // A failing filing keeps the mode armed, re-enables the actions, and files nothing.
   await setFeedbackMode("fail");
@@ -3435,6 +3449,13 @@ try {
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "Escape to cancel the shortcut mode");
   check((await issueState()).pressed.every((value) => !value), "Escape left an action pressed");
+  // The outcome toast outlives the mode, and its dismiss control closes it.
+  check(
+    await page.eval<boolean>(`document.querySelector('.feedback-result[role="alert"]') !== null`),
+    "Escape hid the failing filing's toast",
+  );
+  await page.click('.feedback-result__close');
+  await page.wait(`document.querySelector('.feedback-result') === null`, "the dismissed filing toast");
 
   // The result line fits the supported viewport without covering the status
   // bar or the notification region, and the actions stay inside the rail.
@@ -3486,6 +3507,12 @@ try {
   check(issueLayout.insideRail, "an issue action leaves the activity bar", issueLayout);
   check(issueLayout.label.includes("Cancel element removal"), "the armed action is not labelled as a cancel", issueLayout);
   await page.screenshot(join(harnessRoot, ".tmp", "interface", "issue-actions-1024x720.png"));
+  // A successful filing toast dismisses itself, so it never lingers.
+  await page.wait(
+    `document.querySelector('.feedback-result') === null`,
+    "the success toast to dismiss itself",
+    12_000,
+  );
 
   await devtools.send("Emulation.setDeviceMetricsOverride", {
     width: 1440,

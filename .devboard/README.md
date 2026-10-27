@@ -1269,7 +1269,7 @@ systemctl --user daemon-reload
 Every page carries three UI issue controls in the activity bar's application actions, beside
 commands, notifications, and theme: `Report UI issue`, `Remove element`, and `Redesign element`.
 Each is a 28px icon control with an accessible name and `aria-pressed="true"` while its action is
-armed; the result line and its error stay out of element picking. `Esc` cancels a mode that is
+armed; the outcome toast and its error stay out of element picking. `Esc` cancels a mode that is
 not filing, and `app.report.cancel` cancels any active mode from the palette. While one request is
 in flight every control is disabled and the active one is labelled `Filing the UI issue`, so one
 click or one double-click files at most one issue.
@@ -1279,9 +1279,11 @@ click opens a report panel anchored beside it, without filing anything yet. The 
 selected element's selector path; the report text is free-form. `File issue` posts the report and
 the captured context to `POST /api/feedback`, the server files the GitHub issue through the
 operator's authenticated `gh` CLI, and the panel closes back into report selection mode so another
-element can be picked without leaving and re-entering the mode. `Esc`, the control again, or
+element can be picked without leaving and re-entering the mode. A successful filing shows a
+`Report filed.` toast with an `Open issue` link to the created issue. `Esc`, the control again, or
 `Cancel` leaves the mode, a failed report stays in the panel with its error, and a click in
-selection mode never activates the element.
+selection mode never activates the element. The toast survives leaving the mode: a success
+dismisses itself after eight seconds, a failure stays until dismissed or replaced.
 
 The panel also answers questions. `Ask`, or `Enter` in the composer (`Shift+Enter` inserts a
 newline), sends the typed question and the captured element context — route, URL, selector,
@@ -1316,16 +1318,19 @@ and at most six hyphen-separated words, falling back to `ui-goal`; an existing n
 `> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
 text verbatim and the `## Captured UI context` block an issue report carries. A successful click
 closes the panel, stays in report selection mode with an empty composer, and shows the
-`Goal proposed: <path>` result line as plain text with no link; a failed write keeps the panel open
+`Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
 with the server's error and leaves no draft. The drafts are ignored by git.
 
 `Remove element` and `Redesign element` are one-click shortcuts. Selecting one arms it and shows a
 shortcut-specific hint; the next click on any element files the issue immediately, with no panel
-and no text field. Filing does not use client-supplied report text. A successful filing shows
-`Removal issue filed.` or `Redesign issue filed.` with the issue URL and keeps the mode armed, so
-the next element is one click away; a failure shows `Removal issue failed: <message>` or
-`Redesign issue failed: <message>`, creates no issue, and keeps the mode armed with the controls
-re-enabled. The active control, `Esc`, or `app.report.cancel` returns to idle.
+and no text field. Filing does not use client-supplied report text. A successful filing shows a
+`Removal issue filed.` or `Redesign issue filed.` toast with an `Open issue` link to the created
+issue and keeps the mode armed, so the next element is one click away; a failure shows a
+`Removal issue failed: <message>` or `Redesign issue failed: <message>` alert toast, creates no
+issue, and keeps the mode armed with the controls re-enabled. A success toast dismisses itself
+after eight seconds; a failure stays until dismissed or replaced. Either survives `Esc`, the
+active control, or `app.report.cancel`, because leaving the mode is not a reason to hide whether
+the issue was created. The active control, `Esc`, or `app.report.cancel` returns to idle.
 
 Both shortcuts use a fixed title and body, so the implementation agent starts from the captured
 context rather than operator prose. The title is `[ui] Remove element: <selector>` or
@@ -1347,7 +1352,7 @@ Every request carries an `action` of `report`, `remove`, or `redesign`; an absen
 before `gh` runs. Every issue is filed in `dsdenes/devboard`, the harness repository, whatever
 host project the interface is serving; nothing is created in the host's own tracker. `gh` runs in
 `REPO_DIR` and must be authenticated with permission to create issues in `dsdenes/devboard`. A
-missing, unauthenticated, or failing `gh` is reported in the issue result line and still creates
+missing, unauthenticated, or failing `gh` is reported in the filing toast and still creates
 nothing. The endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and
 gives `gh` 60 seconds.
 

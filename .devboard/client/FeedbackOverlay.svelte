@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import Check from "lucide-svelte/icons/check";
+  import TriangleAlert from "lucide-svelte/icons/alert-triangle";
+  import X from "lucide-svelte/icons/x";
   import { connection } from "./lib/connection.svelte";
   import type { AskContext, AskTurn, FeedbackAction, FeedbackPhase } from "./lib/types";
 
@@ -24,7 +27,7 @@
   type Phase = FeedbackPhase;
 
   type Rect = { top: number; left: number; width: number; height: number };
-  type Status = { ok: true; text: string; url?: string } | { ok: false; text: string };
+  type Toast = { ok: boolean; text: string; url?: string };
 
   const PANEL_WIDTH = 380;
   const PANEL_ESTIMATED_HEIGHT = 390;
@@ -37,6 +40,8 @@
   const MAX_URL = 2000;
   const MAX_VIEWPORT = 500;
   const MAX_CAPTURED_AT = 100;
+  /** How long a successful filing toast stays before it dismisses itself. */
+  const TOAST_TIMEOUT = 8000;
 
   let {
     phase = $bindable("idle"),
@@ -59,7 +64,9 @@
   let dragging = $state(false);
   let report = $state("");
   let errorMessage = $state<string | null>(null);
-  let result = $state<Status | null>(null);
+  /** The last filing outcome; outlives `reset()` so cancelling never hides it. */
+  let toast = $state<Toast | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
   let textarea = $state<HTMLTextAreaElement | null>(null);
   /** The one conversation this open panel owns; null before the first ask. */
   let conversationId = $state<string | null>(null);
@@ -332,7 +339,6 @@
     dragging = false;
     report = "";
     errorMessage = null;
-    result = null;
     action = "report";
     phase = "composing";
     document.body.style.cursor = "";
@@ -351,6 +357,29 @@
     }
   }
 
+  /** Shows one outcome toast; a success dismisses itself, an error waits. */
+  function showToast(next: Toast): void {
+    if (toastTimer !== null) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    toast = next;
+    if (next.ok) {
+      toastTimer = setTimeout(() => {
+        toast = null;
+        toastTimer = null;
+      }, TOAST_TIMEOUT);
+    }
+  }
+
+  function dismissToast(): void {
+    if (toastTimer !== null) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    toast = null;
+  }
+
   function reset(): void {
     closeConversation();
     goalPending = false;
@@ -364,7 +393,6 @@
     dragging = false;
     report = "";
     errorMessage = null;
-    result = null;
     document.body.style.cursor = "";
   }
 
@@ -486,13 +514,15 @@
   async function fileShortcut(kind: "remove" | "redesign", element: Element): Promise<void> {
     selector = describeTarget(element);
     marker = null;
-    result = null;
+    dismissToast();
     phase = "sending";
     const response = await post({ action: kind, report: "", ...captured(element) });
     const noun = kind === "remove" ? "Removal" : "Redesign";
-    result = response.ok
-      ? { ok: true, text: `${noun} issue filed.`, url: response.url }
-      : { ok: false, text: `${noun} issue failed: ${response.error}` };
+    if (response.ok) {
+      showToast({ ok: true, text: `${noun} issue filed.`, url: response.url });
+    } else {
+      showToast({ ok: false, text: `${noun} issue failed: ${response.error}` });
+    }
     // The shortcut stays armed so the next element is one click away.
     phase = "picking";
     selector = "";
@@ -542,6 +572,7 @@
     const element = target;
     goalPending = true;
     errorMessage = null;
+    dismissToast();
     const response = await postGoal({ report, ...captured(element) });
     goalPending = false;
     if (!response.ok) {
@@ -552,12 +583,13 @@
     const text = `Goal proposed: ${response.path}`;
     // Stay in selection mode so the next draft starts with one click.
     arm("report");
-    result = { ok: true, text };
+    showToast({ ok: true, text });
   }
 
   async function send(): Promise<void> {
     if (target === null || report.trim().length === 0 || sending) return;
     const element = target;
+    dismissToast();
     phase = "sending";
     errorMessage = null;
     const response = await post({ action: "report", report, ...captured(element) });
@@ -568,6 +600,7 @@
     }
     // Stay in selection mode so the next report starts with one click.
     arm("report");
+    showToast({ ok: true, text: "Report filed.", url: response.url });
   }
 
   // A dropped socket owns no conversation; the server kills its peer.
@@ -594,6 +627,7 @@
     window.addEventListener("resize", onViewportChange);
     return () => {
       document.body.style.cursor = "";
+      if (toastTimer !== null) clearTimeout(toastTimer);
       window.removeEventListener("mousemove", onPointerMove);
       window.removeEventListener("mousedown", onPointerDown, true);
       window.removeEventListener("click", onClick, true);
@@ -717,35 +751,57 @@
   </div>
 {/if}
 
-{#if result !== null}
+{#if toast !== null}
   <div
     class="feedback-result"
+    class:feedback-result--error={!toast.ok}
     data-feedback-overlay
-    role={result.ok ? "status" : "alert"}
-    class:feedback-result--error={!result.ok}
+    data-testid="feedback-result"
+    role={toast.ok ? "status" : "alert"}
   >
-    <span>{result.text}</span>
-    {#if result.ok && result.url !== undefined}
-      <a href={result.url} target="_blank" rel="noreferrer">{result.url}</a>
-    {/if}
+    <span class="feedback-result__icon" aria-hidden="true">
+      {#if toast.ok}
+        <Check size={14} />
+      {:else}
+        <TriangleAlert size={14} />
+      {/if}
+    </span>
+    <div class="feedback-result__body">
+      <p class="feedback-result__text">{toast.text}</p>
+      {#if toast.ok && toast.url !== undefined}
+        <a class="feedback-result__link" href={toast.url} target="_blank" rel="noreferrer">
+          Open issue
+        </a>
+      {/if}
+    </div>
+    <button
+      type="button"
+      class="feedback-result__close"
+      aria-label="Dismiss"
+      title="Dismiss"
+      onclick={dismissToast}
+    >
+      <X size={12} aria-hidden="true" />
+    </button>
   </div>
 {/if}
 
 <style>
   .feedback-result {
-    align-items: baseline;
+    align-items: flex-start;
+    animation: feedback-toast-in 160ms ease-out;
     background: var(--surface-raised);
     border: 1px solid var(--border-strong);
-    border-radius: 4px;
+    border-left: 3px solid var(--success);
+    border-radius: 6px;
     bottom: 40px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.32);
     color: var(--text);
     display: flex;
-    flex-wrap: wrap;
-    font-size: 12px;
-    gap: 2px 8px;
+    gap: 8px;
     left: 50%;
-    max-width: min(420px, calc(100vw - 32px));
-    padding: 6px 8px;
+    max-width: min(460px, calc(100vw - 32px));
+    padding: 10px 12px;
     position: fixed;
     transform: translateX(-50%);
     z-index: 2147483647;
@@ -753,12 +809,68 @@
 
   .feedback-result--error {
     border-color: var(--error);
+    border-left-color: var(--error);
+  }
+
+  .feedback-result__icon {
+    color: var(--success);
+    display: flex;
+    margin-top: 1px;
+  }
+
+  .feedback-result--error .feedback-result__icon {
     color: var(--error);
   }
 
-  .feedback-result a {
-    color: var(--accent);
+  .feedback-result__body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .feedback-result__text {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0;
     overflow-wrap: anywhere;
+  }
+
+  .feedback-result__link {
+    color: var(--accent);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .feedback-result__close {
+    align-items: center;
+    background: none;
+    border: 0;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex;
+    padding: 2px;
+  }
+
+  .feedback-result__close:hover {
+    color: var(--text);
+  }
+
+  @keyframes feedback-toast-in {
+    from {
+      opacity: 0;
+      transform: translate(-50%, 6px);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .feedback-result {
+      animation: none;
+    }
   }
 
   .feedback-marker {
