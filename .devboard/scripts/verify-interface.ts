@@ -682,8 +682,8 @@ async function seedIssuesState(
       : null,
     poll: {
       intervalMs: 2000,
-      lastPollAt: enabled ? "2026-10-27T10:00:00.000Z" : null,
-      nextPollAt: enabled ? "2026-10-27T10:00:02.000Z" : null,
+      lastPollAt: enabled ? new Date(Date.now() - 1_000).toISOString() : null,
+      nextPollAt: enabled ? new Date(Date.now() + 1_000).toISOString() : null,
       etag: enabled ? '"etag"' : null,
       notModified: false,
       rateLimitedUntil: null,
@@ -4215,6 +4215,7 @@ try {
     resume: boolean;
     stop: boolean;
     check: boolean;
+    poll: string;
   }>(`(() => {
     const workspace = document.getElementById("workspace-issues");
     const button = (testid) => document.querySelector('[data-testid="' + testid + '"]');
@@ -4228,15 +4229,47 @@ try {
       resume: button("issues-resume")?.disabled === true,
       stop: button("issues-stop")?.disabled === true,
       check: button("issues-check-now")?.disabled === true,
+      poll: button("issues-poll-text")?.textContent?.trim() ?? "",
     };
   })()`);
   check(stoppedConsole.visible && stoppedConsole.overview, "the Issues pane or overview is missing", stoppedConsole);
   check(stoppedConsole.state === "stopped", "the Issues mode does not open stopped", stoppedConsole);
   check(stoppedConsole.repo === "fixture/host", "the Issues overview does not name the repository", stoppedConsole);
+  check(stoppedConsole.poll === "Not polling", "the stopped poll line does not say it is not polling", stoppedConsole);
   check(
     !stoppedConsole.start && stoppedConsole.pause && stoppedConsole.resume && stoppedConsole.stop && stoppedConsole.check,
     "the stopped controls are not in their exact states",
     stoppedConsole,
+  );
+
+  // With no active agent the Agents page explains the empty fleet and links back.
+  await page.click('[data-testid="open-issues-agents"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-agents-empty"]') !== null`,
+    "the empty Agents page",
+    8_000,
+  );
+  const emptyAgents = await page.eval<{ grid: boolean; text: string; action: string; label: string }>(`(() => {
+    const action = document.querySelector('[data-testid="issues-agents-overview"]');
+    return {
+      grid: document.querySelector('[data-testid="issues-agents"]') !== null,
+      text: document.querySelector('[data-testid="issues-agents-empty"]')?.textContent ?? "",
+      action: action?.getAttribute("data-command") ?? "",
+      label: action?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(!emptyAgents.grid, "the empty Agents page still renders the grid", emptyAgents);
+  check(emptyAgents.text.includes("No agents running"), "the empty Agents page has no explanation", emptyAgents);
+  check(
+    emptyAgents.action === "open.issues.overview" && emptyAgents.label === "Open Overview",
+    "the empty Agents page has no Overview recovery",
+    emptyAgents,
+  );
+  await page.click('[data-testid="issues-agents-overview"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-overview"]') !== null`,
+    "the Overview from the empty Agents page",
+    8_000,
   );
 
   await seedIssuesState(stateDir, host, "idle");
@@ -4289,6 +4322,7 @@ try {
     outputQuestion: string;
     selected: string;
     agentsLinkBeforeSummary: boolean;
+    poll: { text: string; tone: string; title: string; dot: number };
   }>(`(() => {
     const side = document.querySelector('[data-testid="issues-overview-side"]');
     const output = document.querySelector('[data-testid="issues-overview-output"]');
@@ -4299,6 +4333,7 @@ try {
     const outputRect = output?.getBoundingClientRect();
     const linkRect = link?.getBoundingClientRect();
     const summaryRect = summary?.getBoundingClientRect();
+    const poll = document.querySelector('[data-testid="issues-poll"]');
     return {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
       link: link?.getAttribute("data-command") ?? "",
@@ -4318,6 +4353,12 @@ try {
       agentsLinkBeforeSummary:
         link !== null && summary !== null &&
         (link.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      poll: {
+        text: poll?.querySelector(".issues-poll__label")?.textContent?.trim() ?? "",
+        tone: poll?.getAttribute("data-tone") ?? "",
+        title: poll?.getAttribute("title") ?? "",
+        dot: parseFloat(getComputedStyle(poll?.querySelector(".issues-poll__dot") ?? document.body).width),
+      },
     };
   })()`);
   check(
@@ -4326,6 +4367,66 @@ try {
     overview,
   );
   check(overview.link === "open.issues.agents", "the overview has no Agents link", overview);
+  check(
+    overview.poll.tone === "active" &&
+      /^Every 2s · checked .+$/.test(overview.poll.text) &&
+      /Poll interval 2s · last check \d{4}-\d{2}-\d{2}T/.test(overview.poll.title) &&
+      overview.poll.dot === 6,
+    "the poll line does not state the cadence, last check, and active dot",
+    overview.poll,
+  );
+  await saveShot("issues-poll");
+
+  // The poll line is the right end of a 30px header: it must not collide with
+  // the title or lose its dot at the narrow supported viewport.
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024`, "the 1024×720 poll line");
+  const narrowPoll = await page.eval<{
+    header: number;
+    inside: boolean;
+    separated: boolean;
+    labelClipped: boolean;
+  }>(`(() => {
+    const poll = document.querySelector('[data-testid="issues-poll"]');
+    const header = poll?.closest(".panel__header");
+    const title = header?.querySelector(".panel__title");
+    const label = poll?.querySelector(".issues-poll__label");
+    const pollRect = poll?.getBoundingClientRect();
+    const headerRect = header?.getBoundingClientRect();
+    const titleRect = title?.getBoundingClientRect();
+    return {
+      header: headerRect?.height ?? 0,
+      inside: pollRect !== undefined && headerRect !== undefined &&
+        pollRect.top >= headerRect.top - 0.5 && pollRect.bottom <= headerRect.bottom + 0.5 &&
+        pollRect.right <= headerRect.right + 0.5,
+      separated: pollRect !== undefined && titleRect !== undefined && pollRect.left >= titleRect.right,
+      labelClipped: label !== null && label !== undefined && label.scrollWidth > label.clientWidth,
+    };
+  })()`);
+  check(
+    narrowPoll.header === 30 && narrowPoll.inside && narrowPoll.separated && !narrowPoll.labelClipped,
+    "the poll line collides with its title or clips at 1024×720",
+    narrowPoll,
+  );
+  await page.screenshot(join(harnessRoot, ".tmp", "interface", "issues-poll-1024x720.png"));
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the 1440×900 viewport after the poll line");
+  await page.click('[data-testid="theme-toggle"]');
+  await page.wait(`document.documentElement.dataset.theme === "light"`, "the light theme for the poll line");
+  await saveShot("issues-poll-light");
+  await page.click('[data-testid="theme-toggle"]');
+  await page.wait(`document.documentElement.dataset.theme === "dark"`, "the dark theme after the poll line");
+
   check(overview.agentsLinkBeforeSummary, "the agent list is not after the Open Agents button", overview);
   check(
     overview.summaryIssues.join(",") === "17,18,19",
@@ -4482,6 +4583,50 @@ try {
     cards,
   );
   check(cards.every((card) => card.status === "running"), "a card has the wrong status", cards);
+  const agentsHeader = await page.eval<{ count: string; asking: string; title: string; eyebrow: string }>(`(() => ({
+    count: document.querySelector('[data-testid="issues-agents-count"]')?.textContent?.trim() ?? "",
+    asking: document.querySelector('[data-testid="issues-agents-asking"]')?.textContent?.trim() ?? "",
+    title: document.querySelector('[data-testid="issues-agents-header"] h1')?.textContent?.trim() ?? "",
+    eyebrow: document.querySelector('[data-testid="issues-agents-header"] .page-header__eyebrow')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    agentsHeader.count === "3 running" && agentsHeader.asking === "3 need an answer",
+    "the Agents header does not count the fleet and its questions",
+    agentsHeader,
+  );
+  check(agentsHeader.title === "Agents" && agentsHeader.eyebrow === "Issues", "the Agents header identity is wrong", agentsHeader);
+  const cardsFit = await page.eval<Array<{ issue: string; statusInside: boolean; activityInside: boolean; asked: boolean }>>(
+    `[...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => {
+      const cardBox = card.getBoundingClientRect();
+      const statusBox = card.querySelector('.issues-agent__head .badge')?.getBoundingClientRect();
+      const activityBox = card.querySelector('[data-testid="issues-agent-activity"]')?.getBoundingClientRect();
+      return {
+        issue: card.getAttribute("data-issue") ?? "",
+        statusInside: statusBox !== undefined && statusBox.bottom <= cardBox.bottom + 0.5,
+        activityInside: activityBox !== undefined && activityBox.bottom <= cardBox.bottom + 0.5,
+        asked: card.getAttribute("data-asked") === "true",
+      };
+    })`,
+  );
+  check(
+    cardsFit.every((card) => card.statusInside && card.activityInside),
+    "an agent card clips its status or activity",
+    cardsFit,
+  );
+  check(
+    cardsFit.every((card) => card.asked),
+    "a card with a pending question does not mark it",
+    cardsFit,
+  );
+  check(
+    await page.eval<boolean>(
+      `(() => {
+        const grid = document.querySelector('[data-testid="issues-agents"]');
+        return grid !== null && grid.scrollWidth <= grid.clientWidth + 1;
+      })()`,
+    ),
+    "the Agents grid overflows horizontally",
+  );
   check(
     await page.eval<number>(`document.querySelectorAll('[data-testid="issues-activity"]').length`) === 0,
     "the Agents page renders a singular activity log",
@@ -4545,6 +4690,18 @@ try {
       afterAnswer[2]?.asked === true,
     "answering one agent changed another agent's question",
     afterAnswer,
+  );
+  check(
+    await page.eval<string>(
+      `document.querySelector('[data-testid="issues-agents-asking"]')?.textContent?.trim() ?? ""`,
+    ) === "2 need an answer",
+    "the Agents header did not follow the remaining questions",
+  );
+  check(
+    await page.eval<number>(
+      `document.querySelectorAll('[data-testid="issues-agent"][data-asked="true"]').length`,
+    ) === 2,
+    "the question marker did not follow the remaining questions",
   );
 
   // A card opens a focus tab that keeps its own status, activity, and question.
