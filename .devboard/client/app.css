@@ -764,9 +764,18 @@ kbd {
   color: var(--foreground);
 }
 
-.status-item--grow {
-  flex: 1 1 auto;
-  min-width: 0;
+.status-project {
+  color: var(--foreground);
+}
+
+.status-project svg {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+}
+
+.status-project .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .status-dot {

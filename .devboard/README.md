@@ -22,7 +22,7 @@ degrades into a clipped mobile layout.
 |Mode rail|`activity-bar`|Three labeled mode tabs and their Lucide icons|
 |Sidebar|`sidebar`|Mode name, repository, and contextual navigation for the active mode|
 |Workspace|`workspace`|The open surface; absorbs all remaining space|
-|Status bar|`status-bar`|Connection, project, counts, mode status, versions, theme, notifications|
+|Status bar|`status-bar`|Connection, project name, counts, versions, theme, notifications|
 
 The status bar stays visible while panes resize, and the document itself never scrolls
 vertically or horizontally. Each mode's panel keeps its scroll position, focus, open page, and
@@ -158,11 +158,12 @@ severity, text, and dismissal, and remain in a history opened from the status ba
 never replace mode content or steal focus, and several arrivals are all retained. Flow blockers
 and verification results also remain in their mode context.
 
-The status bar shows the WebSocket connection, the project path, running work and lane counts,
-the active mode's status, and the running and installed versions. When `versionState.stale` is
-true it shows the existing reload control (`reload-devboard`), whose accessible name and title
-name both versions; reload behavior is unchanged. It also carries the theme toggle and the
-notification indicator.
+The status bar shows the WebSocket connection, the project's own name (the last path segment,
+with a folder mark and the full path in its tooltip), running work and lane counts, and the
+running and installed versions. A mode states its status in its sidebar and workspace, never a
+second time in the status bar. When `versionState.stale` is true it shows the existing reload
+control (`reload-devboard`), whose accessible name and title name both versions; reload behavior
+is unchanged. It also carries the theme toggle and the notification indicator.
 
 ### Verifying the interface
 
