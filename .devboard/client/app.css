@@ -2449,8 +2449,14 @@ a.code-chip--link:focus-visible {
   height: 100%;
 }
 
+.issues-overview {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .issues-overview__header {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
@@ -2470,8 +2476,11 @@ a.code-chip--link:focus-visible {
 .issues-overview__body {
   display: grid;
   grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.2fr);
+  grid-auto-rows: minmax(0, 1fr);
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
 }
 
 @media (max-width: 1100px) {
@@ -2521,8 +2530,6 @@ a.code-chip--link:focus-visible {
 .issues-activity {
   margin: 0;
   padding: 10px 12px;
-  min-height: 180px;
-  max-height: 440px;
   overflow: auto;
   background: var(--surface-raised);
   border-top: 1px solid var(--border);
@@ -2532,10 +2539,26 @@ a.code-chip--link:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.issues-activity-panel {
+  min-height: 0;
+}
+
+.issues-activity-panel > .issues-activity {
+  flex: 1;
+  min-height: 0;
+}
+
+.issues-run-detail .issues-activity {
+  flex: 0 0 auto;
+  min-height: 180px;
+  max-height: 440px;
+}
+
 .issues-question {
   border-top: 1px solid var(--border);
   padding: 10px 12px;
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 8px;
 }

@@ -587,7 +587,7 @@ async function seedIssuesState(
           pid: process.pid,
           startedAt: "2026-10-27T10:00:00.000Z",
           stateDir,
-          harnessVersion: "0.1.0",
+          harnessVersion: sourceVersion ?? "0.1.0",
           argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
         }
       : null,
@@ -649,7 +649,7 @@ async function seedIssuesState(
       })),
       firstStderrLine: null,
       workerPid: process.pid,
-      harnessVersion: "0.1.0",
+      harnessVersion: sourceVersion ?? "0.1.0",
     }),
   );
   const lockDirectory = join(host, ".devboard", ".tmp", "issues");
@@ -661,7 +661,7 @@ async function seedIssuesState(
       startedAt: "2026-10-27T10:00:00.000Z",
       repo: resolve(host),
       stateDir,
-      harnessVersion: "0.1.0",
+      harnessVersion: sourceVersion ?? "0.1.0",
       argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
     }),
   );
@@ -3088,6 +3088,17 @@ try {
   );
   const backToPicking = await issueState();
   check(backToPicking.pressed.join(",") === "true,false,false", "a filed report did not return to report selection", backToPicking);
+  const reportToast = await page.eval<{ role: string; text: string; href: string }>(`(() => {
+    const toast = document.querySelector('.feedback-result');
+    return {
+      role: toast?.getAttribute("role") ?? "",
+      text: (toast?.textContent ?? "").replace(/\\s+/g, " ").trim(),
+      href: toast?.querySelector("a")?.getAttribute("href") ?? "",
+    };
+  })()`);
+  check(reportToast.role === "status", "a filed report shows no status toast", reportToast);
+  check(reportToast.text.startsWith("Report filed."), "the report success toast is wrong", reportToast);
+  check(reportToast.href === stubIssueUrl, "the report success toast carries no issue URL", reportToast);
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the report mode to close after filing");
 
@@ -3189,7 +3200,7 @@ try {
   }
   check(goalFiles.length === 1, "the Goal action wrote more than one draft", goalFiles);
   await page.wait(
-    `document.querySelector('.feedback-result[role="status"]') !== null`,
+    `document.querySelector('.feedback-result')?.textContent?.includes("Goal proposed:") === true`,
     "the goal result line",
   );
   const goalStatus = await page.eval<{
@@ -3282,7 +3293,10 @@ try {
   await page.click('[data-testid="status-connection"]');
   await waitForFeedbackCalls(1);
   await delay(150);
-  await page.wait(`document.querySelector('.feedback-result[role="status"] a') !== null`, "the removal success link");
+  await page.wait(
+    `document.querySelector('.feedback-result')?.textContent?.includes("Removal issue filed.") === true`,
+    "the removal success link",
+  );
   const removalStatus = await page.eval<{ role: string; text: string; href: string }>(`(() => {
     const status = document.querySelector('.feedback-result');
     return {
@@ -3405,7 +3419,7 @@ try {
   await delay(200);
   const delayedCalls = await feedbackCalls();
   check(delayedCalls.length === 3, "a double-click filed more than one issue", delayedCalls.length);
-  await page.wait(`document.querySelector('.feedback-result[role="status"]') !== null`, "the delayed filing status");
+  await page.wait(`document.querySelector('.feedback-result')?.textContent?.includes("Redesign issue filed.") === true`, "the delayed filing status");
 
   // A failing filing keeps the mode armed, re-enables the actions, and files nothing.
   await setFeedbackMode("fail");
@@ -3441,6 +3455,13 @@ try {
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "Escape to cancel the shortcut mode");
   check((await issueState()).pressed.every((value) => !value), "Escape left an action pressed");
+  // The outcome toast outlives the mode, and its dismiss control closes it.
+  check(
+    await page.eval<boolean>(`document.querySelector('.feedback-result[role="alert"]') !== null`),
+    "Escape hid the failing filing's toast",
+  );
+  await page.click('.feedback-result__close');
+  await page.wait(`document.querySelector('.feedback-result') === null`, "the dismissed filing toast");
 
   // The result line fits the supported viewport without covering the status
   // bar or the notification region, and the actions stay inside the rail.
@@ -3492,6 +3513,12 @@ try {
   check(issueLayout.insideRail, "an issue action leaves the activity bar", issueLayout);
   check(issueLayout.label.includes("Cancel element removal"), "the armed action is not labelled as a cancel", issueLayout);
   await page.screenshot(join(harnessRoot, ".tmp", "interface", "issue-actions-1024x720.png"));
+  // A successful filing toast dismisses itself, so it never lingers.
+  await page.wait(
+    `document.querySelector('.feedback-result') === null`,
+    "the success toast to dismiss itself",
+    12_000,
+  );
 
   await devtools.send("Emulation.setDeviceMetricsOverride", {
     width: 1440,
@@ -3840,6 +3867,174 @@ try {
   );
   const activityDelay = Date.now() - activitySeededAt;
   check(activityDelay <= 1_500, `the activity delta took ${activityDelay}ms`);
+
+  // A long run log fills the page below the header and stays pinned to its
+  // newest line until the operator scrolls back through it.
+  const longActivity = [
+    "Reading the open issues",
+    "Implementing issue 17",
+    "Implementing issue 18",
+    ...Array.from({ length: 160 }, (_, index) => `Step ${index + 1}: implementing the issue`),
+  ];
+  await writeFile(activityPath, JSON.stringify(longActivity));
+
+  interface ActivitySurface {
+    height: number;
+    panelHeight: number;
+    bodyHeight: number;
+    bottomGap: number;
+    viewportGap: number;
+    overflowY: string;
+    pinned: boolean;
+    scrollTop: number;
+    scrollHeight: number;
+    clientHeight: number;
+  }
+
+  const surfaceScript = `(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null || !log.textContent.includes("Step 160")) return null;
+    const panel = log.closest(".issues-activity-panel");
+    const body = log.closest(".issues-overview__body");
+    if (panel === null || body === null) return null;
+    const logRect = log.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const bodyRect = body.getBoundingClientRect();
+    return {
+      height: Math.round(logRect.height),
+      panelHeight: Math.round(panelRect.height),
+      bodyHeight: Math.round(bodyRect.height),
+      bottomGap: Math.round(bodyRect.bottom - panelRect.bottom),
+      viewportGap: Math.round(innerHeight - bodyRect.bottom),
+      overflowY: getComputedStyle(log).overflowY,
+      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
+      scrollTop: Math.round(log.scrollTop),
+      scrollHeight: log.scrollHeight,
+      clientHeight: log.clientHeight,
+    };
+  })()`;
+
+  const activitySurface = await page.wait<ActivitySurface>(
+    surfaceScript,
+    "the long issues activity log",
+    8_000,
+  );
+  check(
+    activitySurface.bottomGap === 0 && activitySurface.panelHeight === activitySurface.bodyHeight,
+    "the agent activity panel does not fill the page body",
+    activitySurface,
+  );
+  check(activitySurface.viewportGap <= 48, "the issues overview leaves the viewport unused", activitySurface);
+  check(activitySurface.overflowY === "auto", "the activity log does not scroll internally", activitySurface);
+  check(
+    activitySurface.height > 440 && activitySurface.scrollHeight > activitySurface.clientHeight,
+    "the activity log is capped instead of using the page height",
+    activitySurface,
+  );
+  check(activitySurface.pinned, "the activity log does not follow its newest line", activitySurface);
+  await saveShot("issues-activity-full-height");
+
+  await page.eval(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null) return false;
+    log.scrollTop = 0;
+    log.dispatchEvent(new Event("scroll"));
+    return true;
+  })()`);
+  await writeFile(activityPath, JSON.stringify([...longActivity, "Step 161: reading back"]));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Step 161")`,
+    "the appended activity line",
+    8_000,
+  );
+  const scrolledBack = await page.eval<{ scrollTop: number; pinned: boolean }>(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null) return { scrollTop: -1, pinned: false };
+    return {
+      scrollTop: Math.round(log.scrollTop),
+      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
+    };
+  })()`);
+  check(scrolledBack.scrollTop < 8 && !scrolledBack.pinned, "an operator reading history is dragged to the bottom", scrolledBack);
+
+  await page.eval(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null) return false;
+    log.scrollTop = log.scrollHeight;
+    log.dispatchEvent(new Event("scroll"));
+    return true;
+  })()`);
+  await writeFile(activityPath, JSON.stringify([...longActivity, "Step 161: reading back", "Step 162: done"]));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Step 162")`,
+    "the second appended activity line",
+    8_000,
+  );
+  const followedAgain = await page.eval<{ pinned: boolean; scrollTop: number; scrollHeight: number }>(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null) return { pinned: false, scrollTop: -1, scrollHeight: -1 };
+    return {
+      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
+      scrollTop: Math.round(log.scrollTop),
+      scrollHeight: log.scrollHeight,
+    };
+  })()`);
+  check(followedAgain.pinned, "the activity log stopped following after the operator returned to the bottom", followedAgain);
+
+  // The narrow layout stacks the panels and still keeps the log pinned while
+  // its viewport changes size.
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the narrow issues viewport");
+  await delay(200);
+  const narrowSurface = await page.wait<{
+    panelHeights: number[];
+    logHeight: number;
+    inside: boolean;
+    pinned: boolean;
+    pageOverflow: boolean;
+  }>(`(() => {
+    const body = document.querySelector(".issues-overview__body");
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    const panels = body === null ? [] : [...body.children];
+    if (body === null || log === null || panels.length !== 2) return null;
+    const rects = panels.map((panel) => panel.getBoundingClientRect());
+    return {
+      panelHeights: rects.map((rect) => Math.round(rect.height)),
+      logHeight: Math.round(log.getBoundingClientRect().height),
+      inside: rects.every((rect) =>
+        rect.left >= -0.5 && rect.right <= innerWidth + 0.5 && rect.bottom <= innerHeight + 0.5
+      ),
+      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
+      pageOverflow: document.documentElement.scrollHeight > innerHeight,
+    };
+  })()`, "the stacked issues panels", 8_000);
+  check(narrowSurface.inside && !narrowSurface.pageOverflow, "the stacked issues panels leave the viewport", narrowSurface);
+  check(
+    narrowSurface.logHeight > 100 && narrowSurface.pinned,
+    "the stacked activity log does not keep its newest line",
+    narrowSurface,
+  );
+  await saveShot("issues-activity-1024");
+
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop issues viewport");
+  await delay(200);
+  const restoredPinned = await page.eval<boolean>(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null) return false;
+    return log.scrollTop + log.clientHeight >= log.scrollHeight - 1;
+  })()`);
+  check(restoredPinned, "the activity log left its newest line after the viewport grew");
 
   await page.click('[data-testid="open-issues-queue"]');
   await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the issues queue");
