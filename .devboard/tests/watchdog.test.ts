@@ -402,6 +402,28 @@ describe("evidence mapping", () => {
     expect(findings[0]?.instances).toEqual([instance]);
   });
 
+  test("a journal question keeps its work-stream scope in the evidence", async () => {
+    const base = await temporaryDirectory("test-watchdog-journal-scope");
+    const harness = join(base, "harness");
+    await mkdir(join(harness, ".tmp", "journal"), { recursive: true });
+    const instance = instanceFor(base, 8080, harness);
+    const journal = openJournal({
+      stateDir: join(harness, ".tmp"),
+      repoDir: base,
+      port: 8080,
+      now: () => fixedNow,
+    });
+    journal.write("question", "Choose an answer", "lane:lane-7");
+
+    const collected = readJournalEvidence(instance, { window, root: base });
+    expect(collected.events).toHaveLength(1);
+    expect(collected.events[0]).toMatchObject({
+      kind: "question",
+      text: "Choose an answer",
+      scope: "lane:lane-7",
+    });
+  });
+
   test("a failed lane-stop is one finding and a closed lane is not", async () => {
     const root = await temporaryDirectory("test-watchdog-lane");
     const owner = instanceFor(root, 8080);
@@ -454,6 +476,27 @@ describe("evidence mapping", () => {
     expect(findings.map((finding) => finding.category)).toEqual(["stall", "question-loop"]);
     expect(findings[1]?.quote).toBe("Choose an answer 3");
     expect(analyzeEvidence(events.slice(0, 2), { window })).toEqual([]);
+  });
+
+  test("questions from separate runs, lanes, and peers are not a loop", async () => {
+    const root = await temporaryDirectory("test-watchdog-loop-scopes");
+    const owner = instanceFor(root, 8080);
+    const scoped = (minutesAgo: number, scope: string): EvidenceEvent => ({
+      ...event(root, minutesAgo, "Choose an answer", "question", owner),
+      scope,
+    });
+    const restartFixture = [
+      scoped(6, "lane:lane-1"),
+      scoped(5, "lane:lane-1"),
+      scoped(4, "run:0001-first.md"),
+      scoped(3, "run:0001-first.md"),
+    ];
+    expect(analyzeEvidence(restartFixture, { window })).toEqual([]);
+
+    const loop = [...restartFixture, scoped(2, "lane:lane-1")];
+    const findings = analyzeEvidence(loop, { window });
+    expect(findings.map((finding) => finding.category)).toEqual(["question-loop"]);
+    expect(findings[0]?.quote).toBe("Choose an answer");
   });
 
   test("a stop at or after the start ends the stall", async () => {

@@ -1121,8 +1121,9 @@ ends inclusive, from:
   value, `<host>/.devboard/.tmp` for an installed host. Each record carries `ts` (UTC ISO
   8601), `repo`, `port`, `pid`, `kind`, and `text`; kinds are `activity`, `question`,
   `run-start`, `run-stop`, `lane-start`, `lane-stop`, `lifecycle`, `acp-stderr`,
-  `server-error`, `update`, and `update-error`. A live journal rotates at 8 MiB instead of
-  truncating.
+  `server-error`, `update`, and `update-error`. A `question` record also carries `scope`, the
+  run, lane, or peer that asked, so questions from separate work streams never accumulate into
+  one finding. A live journal rotates at 8 MiB instead of truncating.
 - omp's own warnings and errors under `~/.omp/logs/omp.*.log`, attributed to an instance only
   when that pid descends from the instance's server process. A shared working directory never
   attributes a line, so an operator's own omp session in the project directory is not dashboard
@@ -1182,7 +1183,8 @@ Findings derive only from machine-checkable evidence: a `server-error`, `update-
 `acp-stderr` journal record; a `lane-stop` whose status token is `failed`; an omp log record at
 `error`, `warn`, or `fatal`; a `run-start` or `lane-start` at least five minutes before window end
 with no `run-stop` or `lane-stop` at or after it for the same instance (a stall); and three or
-more `question` records for one instance in one window (a question loop, quoting the last).
+more `question` records for one instance's run, lane, or peer in one window (a question loop,
+quoting the last).
 `activity`, `lifecycle`, `update`, ordinary run and lane text, and questions below the loop
 threshold never produce a finding, whatever words they contain.
 
