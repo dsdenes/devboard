@@ -69,6 +69,15 @@ export class DiscoverStore {
     return this.state?.target ?? { kind: "host" };
   }
 
+  /** The repository identity the head shows: `owner/name` when it is known. */
+  get repository(): string | null {
+    if (typeof this.state?.repository === "string" && this.state.repository.length > 0) {
+      return this.state.repository;
+    }
+    const target = this.target;
+    return target.kind === "remote" ? `${target.owner}/${target.repo}` : null;
+  }
+
   get remoteTarget(): Extract<DiscoverTarget, { kind: "remote" }> | null {
     const target = this.target;
     return target.kind === "remote" ? target : null;

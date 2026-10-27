@@ -171,6 +171,7 @@ async function fixture(options: {
   root?: string;
   stateDir?: string;
   harnessVersion?: string;
+  now?: () => Date;
   beforeStart?: (root: string, stateDir: string) => void;
 }): Promise<Fixture> {
   const base = await temporaryDirectory(options.label);
@@ -186,6 +187,7 @@ async function fixture(options: {
     stateDir,
     intervalMs: 60_000,
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
+    ...(options.now === undefined ? {} : { now: options.now }),
     listIssues: async () => ({ kind: "issues", issues: [...issues], etag: "etag-1" }),
     connect: (peerOptions) => {
       const peer = new ControlledPeer(peerOptions);

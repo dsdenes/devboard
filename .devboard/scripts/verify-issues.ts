@@ -601,6 +601,20 @@ try {
     );
   }
 
+  // Conditional polling: a later poll carries If-None-Match and gets a 304.
+  await waitFor(
+    () => {
+      try {
+        return readFileSync(a.ghLog, "utf8").includes('"If-None-Match:') ? true : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    "a conditional poll",
+    8_000,
+    50,
+  );
+
   // Two polls later, no issue received a second peer.
   await Bun.sleep(2500);
   const secondStarts = acpLogLines(a).filter((line) => line.startsWith("start "));

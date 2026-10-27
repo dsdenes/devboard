@@ -1,7 +1,7 @@
 # designmd.ai research
 
 - Task: redesign the Discover mode (all pages and states) and the common mode menu of the devboard
-  harness interface. The change is structural: a labeled mode rail, a mode-aware sidebar header,
+  harness interface. The change is structural: a labeled mode rail, a mode-aware sidebar identity,
   a shared page header, and reorganized Discover pages. The visual identity stays the shipped
   GitHub-dark operator console; no palette or type token is replaced.
 - Tools and arguments:
@@ -49,7 +49,7 @@
 - Why: the redesign is an information-structure and navigation change inside an established
   visual system. Borrowing literal palettes, fonts, or radii would be a rebrand, not a redesign.
 - Effect on DESIGN.md / tokens / components:
-  - `DESIGN.md`: the `## Layout` shell dimensions change (mode rail 44px → 64px, sidebar header
+  - `DESIGN.md`: the `## Layout` shell dimensions change (mode rail 44px → 64px, sidebar identity
     34px → 44px), and the `## Components` section documents the labeled mode rail and the page
     header slots. The spacing scale is unchanged, and the shipped Discover values that were
     outside the scale (18px, 22px, 10.5px, 11.5px, 12.5px) are corrected to 24/16/12/11/13.

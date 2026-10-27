@@ -33,7 +33,7 @@ disappears, does the operator lose a decision or a journey step declared in `bri
 | C26 | Last connection error | `connection.lastError` | 13 | Decide to reconnect or retry | Keep | One error per connection attempt |
 | C27 | Upgrade waiting | `connection.upgradePending` | 13 | Know a restart is coming after work ends | Keep | Explains a later restart |
 | C28 | Connection state | `connection.state` | all | Trust the displayed state | Keep | Status bar only |
-| C29 | Project path | `connection.projectPath` | all | Know which checkout this is | Keep | Status bar only; the sidebar header no longer repeats it |
+| C29 | Project path | `connection.projectPath` | all | Know which checkout this is | Keep | Status bar only; the sidebar no longer repeats it |
 | C30 | Current mode | `layout.mode` | all | Locate yourself | Keep | Mode rail selection |
 | C31 | Running and installed versions | `connection.version` | 13 | Know whether a reload is available | Keep | Status bar only |
 | C32 | Theme preference | `layout.theme` | all | Read comfortably; persist | Keep | Rail footer toggle |
@@ -58,5 +58,5 @@ disappears, does the operator lose a decision or a journey step declared in `bri
   `runState === "stopped"` is the only extra fact and is shown once as a notice.
 - **Skills.** `goal.skills.length` is in the sidebar and the skills header. The sidebar keeps the
   count for navigation; the page header states readiness and contradictions, not the count again.
-- **Project path.** Shown in the status bar and previously in the sidebar header. The status bar
-  wins; the sidebar header states mode and lifecycle context instead.
+- **Project path.** Shown in the status bar and previously in the sidebar title block. The status bar
+  wins; the sidebar states mode and lifecycle context instead.

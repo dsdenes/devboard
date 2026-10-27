@@ -35,6 +35,7 @@ import {
   readGoalDraft,
 } from "./goal-drafts";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
+import { originRepository } from "../issues/repository";
 import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import {
@@ -480,6 +481,7 @@ type ClientMessage =
   | { type: "createGoal" }
   | { type: "prepareSkills" }
   | { type: "getSkills" }
+  | { type: "deleteSkill"; name?: unknown }
   | { type: "resetImplementation" }
   | { type: "createFlowGoal" }
   | { type: "startFlowImplementation" }
@@ -583,6 +585,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "prepareSkills" };
     case "getSkills":
       return { type: "getSkills" };
+    case "deleteSkill":
+      return { type: "deleteSkill", name: "name" in value ? value.name : undefined };
     case "resetImplementation":
       return { type: "resetImplementation" };
     case "createFlowGoal":
@@ -1550,6 +1554,8 @@ export function createApp(options: AppOptions) {
   const adrDir = resolve(options.adrDir);
   const repoDir = options.repoDir ?? dirname(adrDir);
   const project = projectLabel(repoDir);
+  // The checkout's origin cannot change while this process lives.
+  const hostRepository = originRepository(repoDir) ?? null;
   const goalFile = options.goalFile ?? defaultGoalPath(repoDir);
   // The creation skill always writes the repository's goal document, while
   // getGoal and saveGoal keep using the configured goal file.
@@ -2223,6 +2229,10 @@ export function createApp(options: AppOptions) {
       busy: discoverBusyReason(),
       error: discoverReadError,
       remoteAvailable,
+      repository:
+        remoteTarget === undefined
+          ? hostRepository
+          : `${remoteTarget.owner}/${remoteTarget.repo}`,
       target:
         remoteTarget === undefined
           ? { kind: "host" }
@@ -3007,6 +3017,71 @@ export function createApp(options: AppOptions) {
         message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
       });
     }
+  }
+
+  async function broadcastSkillsState(): Promise<void> {
+    try {
+      const inspection = await inspectSkills(skillsDir);
+      broadcast({
+        type: "skillsState",
+        skills: inspection.skills,
+        contradictions: inspection.contradictions,
+      });
+    } catch (error) {
+      broadcast({
+        type: "error",
+        message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  /**
+   * Deletes one prepared skill by name. Only the prepare family is removable:
+   * Discover owns its own generated skills through its save/restore controls,
+   * and a hand-authored skill is never touched. The name is matched against the
+   * inspected directories, so a caller cannot name a path.
+   */
+  async function deleteSkill(target: { send(data: string): unknown }, name: unknown): Promise<void> {
+    if (typeof name !== "string" || !SKILL_NAME_PATTERN.test(name) || name.length > SKILL_NAME_MAX) {
+      send(target, { type: "error", message: "Choose a prepared skill to delete." });
+      return;
+    }
+    const work = goalWorkLabel();
+    if (work !== undefined) {
+      send(target, { type: "error", message: `Cannot delete a skill while ${work} is active.` });
+      return;
+    }
+    if (flow.hasActiveWork()) {
+      send(target, { type: "error", message: "Cannot delete a skill while Flow Mode is active." });
+      return;
+    }
+
+    let inspection: SkillsInspection;
+    try {
+      inspection = await inspectSkills(skillsDir);
+    } catch (error) {
+      send(target, {
+        type: "error",
+        message: `Could not read the installed skills: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+    const skill = inspection.managed.get(name);
+    if (skill === undefined || skill.family !== "prepare") {
+      send(target, { type: "error", message: `No prepared skill named "${name}" is installed.` });
+      return;
+    }
+
+    try {
+      await rm(join(skillsDir, name), { recursive: true, force: true });
+    } catch (error) {
+      send(target, {
+        type: "error",
+        message: `Could not delete "${name}": ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+    await broadcastSkillsState();
   }
 
   /**
@@ -5572,6 +5647,8 @@ export function createApp(options: AppOptions) {
             await startSkillsPreparation(ws);
           } else if (command.type === "getSkills") {
             await sendSkillsState(ws);
+          } else if (command.type === "deleteSkill") {
+            await deleteSkill(ws, command.name);
           } else if (command.type === "resetImplementation") {
             startImplementationReset(ws);
           } else if (command.type === "createFlowGoal") {

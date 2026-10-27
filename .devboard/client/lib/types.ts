@@ -147,6 +147,9 @@ export interface GoalDraftRun {
 export interface SkillSummary {
   name: string;
   description: string;
+  /** Which preparation owns the skill; an older server sends neither field. */
+  family?: "prepare" | "discover";
+  state?: "generated" | "edited" | "missing";
   /** The SKILL.md text; absent from an older server. */
   content?: string;
 }
@@ -400,6 +403,8 @@ export interface DiscoverStatePayload {
   error: string | null;
   /** True only when the dashboard serves a harness source checkout. */
   remoteAvailable: boolean;
+  /** `owner/name` of the repository being read, or null outside a GitHub remote. */
+  repository: string | null;
   target: DiscoverTarget;
   cloning: { url: string } | null;
   manifest: unknown;

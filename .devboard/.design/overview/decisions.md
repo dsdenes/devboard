@@ -62,7 +62,7 @@ stored sheet stays unchanged:
 
 - Group labels are short nouns and verbs: `Run and verify`, `Platform`, `Delivery`, `Stack`,
   `Architecture and boundaries`.
-- The sidebar header names the repository, and the Discover section headings carry no `Sections` label.
+- The sidebar has no header; it starts with the mode navigation, and the Discover section headings carry no `Sections` label.
 - The primary action keeps one name per state: `Discover project` with no artifacts, `Re-discover` after.
   It stays disabled with a reason while a run or other mode work is active.
 - Only the `stale` badge remains in the masthead; color is never the only cue.

@@ -369,6 +369,7 @@ interface DiscoverState {
   busy: string | null;
   error: string | null;
   remoteAvailable: boolean;
+  repository: string | null;
   target: Record<string, unknown>;
   cloning: Record<string, unknown> | null;
   manifest: Record<string, unknown> | null;
@@ -486,12 +487,14 @@ describe("discover remote target", () => {
           }
           const initial = await discoverState(client);
           expect(initial.remoteAvailable).toBe(entry.available);
+          expect(initial.repository).toBeNull();
           expect(initial.target).toEqual({ kind: "host" });
           expect(initial.cloning).toBeNull();
 
           if (entry.available) {
             const state = await runRemote(client, "https://github.com/octocat/Hello-World");
             expect(state.target).toMatchObject({ kind: "remote", owner: "octocat" });
+            expect(state.repository).toBe("octocat/Hello-World");
             expect(clones.calls.length).toBe(1);
             continue;
           }

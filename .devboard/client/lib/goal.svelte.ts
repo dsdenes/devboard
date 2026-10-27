@@ -57,6 +57,11 @@ function isSkill(value: unknown): value is SkillSummary {
     isObject(value) &&
     typeof value.name === "string" &&
     typeof value.description === "string" &&
+    (value.family === undefined || value.family === "prepare" || value.family === "discover") &&
+    (value.state === undefined ||
+      value.state === "generated" ||
+      value.state === "edited" ||
+      value.state === "missing") &&
     (value.content === undefined || typeof value.content === "string")
   );
 }
@@ -323,6 +328,15 @@ export class GoalStore {
 
   prepareSkills(): void {
     connection.send({ type: "prepareSkills" });
+  }
+
+  get skillDeleteDisabled(): boolean {
+    return !connection.open || this.controlsDisabled || this.resetting;
+  }
+
+  deleteSkill(name: string): void {
+    if (this.skillDeleteDisabled) return;
+    connection.send({ type: "deleteSkill", name });
   }
 
   start(target?: string): void {

@@ -55,7 +55,7 @@
             : null,
   );
   const issuesState = $derived<ModeState>(
-    issues.lifecycle === "running" || issues.lifecycle === "pausing"
+    issues.lifecycle === "running"
       ? "running"
       : issues.agents.some((agent) => agent.question !== null) || issues.lifecycle === "failed"
         ? "attention"

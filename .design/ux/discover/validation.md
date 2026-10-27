@@ -1,7 +1,7 @@
 # Validation — Discover mode redesign
 
 - Page: Discover mode (Overview, Glossary, term, five skill pages, Warnings, empty, active run,
-  question, error) plus the shared mode rail and sidebar header.
+  question, error) plus the shared mode rail and sidebar identity.
 - Commit/branch: `discover-redesign` worktree, based on `main` at `8e66c26`.
 - Command:
   - `cd .devboard && bun run build`
@@ -35,7 +35,7 @@
     stopped, error, interrupted (verifier fixture replay), partial (`unknown` and `Not observed`
     rows), stale (verifier fixture), filtered-empty, 1024×720 single column.
 - Dependent pages:
-  - Goal and Flow are exercised by `verify:interface` after the rail, sidebar header, and
+  - Goal and Flow are exercised by `verify:interface` after the rail, sidebar identity, and
     `DetailSplit` changes: mode switching, shortcut inertness, ADR table, Flow widget split,
     persistence, palette, and the 1024×720 boundary.
   - `DetailSplit` is shared with Flow; its 2px minimum buffer is covered by the Flow split drag,

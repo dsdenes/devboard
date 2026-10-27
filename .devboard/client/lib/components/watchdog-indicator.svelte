@@ -93,7 +93,8 @@
     onclick={toggle}
   >
     <span class="status-dot" data-state={dot} aria-hidden="true"></span>
-    <span class="mono">watchdog {action} · {age}</span>
+    <span class="status-metric__label">watchdog</span>
+    <span class="mono status-metric__value">{action} · {age}</span>
   </button>
   {#if open}
     <div

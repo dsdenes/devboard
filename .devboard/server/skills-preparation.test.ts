@@ -970,6 +970,62 @@ describe("skills preparation", () => {
     15000,
   );
 
+  test("deletes one prepared skill and refuses every other owner", async () => {
+    const skill = (name: string, family: string | null) =>
+      [
+        "---",
+        `name: ${name}`,
+        `description: The ${name} policy.`,
+        "metadata:",
+        '  devboard-managed: "true"',
+        ...(family === null ? [] : [`  devboard-family: ${family}`]),
+        "---",
+        "",
+        `# ${name}`,
+        "",
+        "- Keep one policy per bullet.",
+        "",
+      ].join("\n");
+    const fixture = await startServer({
+      files: {
+        ".omp/skills/tidy-commits/SKILL.md": skill("tidy-commits", null),
+        ".omp/skills/discover-naming/SKILL.md": skill("discover-naming", "discover"),
+        ".omp/skills/hand-written/SKILL.md": [
+          "---",
+          "name: hand-written",
+          "description: The developer's own policy.",
+          "---",
+          "",
+          "- Do not touch this file.",
+          "",
+        ].join("\n"),
+      },
+    });
+    const client = await connect(fixture.url);
+    try {
+      client.send({ type: "deleteSkill", name: "tidy-commits" });
+      const state = await client.waitFor((message) => message.type === "skillsState");
+      const names = (state.skills as Array<{ name: string }>).map((entry) => entry.name);
+      expect(names).not.toContain("tidy-commits");
+      expect(existsSync(join(fixture.skillsDir, "tidy-commits"))).toBe(false);
+
+      for (const name of ["discover-naming", "hand-written"]) {
+        client.send({ type: "deleteSkill", name });
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(String(error.message)).toContain(`No prepared skill named "${name}"`);
+      }
+      client.send({ type: "deleteSkill", name: "../tidy-commits" });
+      const invalid = await client.waitFor((message) => message.type === "error");
+      expect(String(invalid.message)).toBe("Choose a prepared skill to delete.");
+
+      expect(existsSync(join(fixture.skillsDir, "hand-written", "SKILL.md"))).toBe(true);
+      expect(existsSync(join(fixture.skillsDir, "discover-naming", "SKILL.md"))).toBe(true);
+    } finally {
+      client.close();
+      fixture.server.stop(true);
+    }
+  });
+
   test("the installed command reads the harness prompt", async () => {
     const prompt = await readFile(join(import.meta.dir, "..", "prompts", "prepare-skills.md"), "utf8");
     const command = await readFile(

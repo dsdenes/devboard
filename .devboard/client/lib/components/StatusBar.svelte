@@ -58,42 +58,59 @@
 </script>
 
 <footer class="status-bar" data-testid="status-bar">
-  <span class="status-item" title={`WebSocket ${connection.state}`}>
-    <span class="status-dot" data-state={connection.state} aria-hidden="true"></span>
-    <span data-testid="status-connection">{connectionLabel}</span>
-  </span>
-  <span class="status-item status-project" title={connection.projectPath}>
-    <FolderGit2 size={12} aria-hidden="true" />
-    <span class="mono" data-testid="status-project">{projectName}</span>
-  </span>
+  <div class="status-group">
+    <span class="status-item" title={`WebSocket ${connection.state}`}>
+      <span class="status-dot" data-state={connection.state} aria-hidden="true"></span>
+      <span data-testid="status-connection">{connectionLabel}</span>
+    </span>
+    <span class="status-divider" aria-hidden="true"></span>
+    <span class="status-item status-project" title={connection.projectPath}>
+      <FolderGit2 size={12} aria-hidden="true" />
+      <span class="mono" data-testid="status-project">{projectName}</span>
+    </span>
+  </div>
   <span class="status-bar__spacer" aria-hidden="true"></span>
-  <span class="status-item" title="Running and total agent lanes">
-    <span class="mono">lanes {goal.runningLanes}/{goal.lanes.length}</span>
-  </span>
-  <button
-    type="button"
-    class="status-item status-issues"
-    data-testid="issues-indicator"
-    data-command="view.mode.issues"
-    title={issuesTitle}
-    aria-label={`${issuesLabel}. Open Issues mode.`}
-    onclick={() => layout.setMode("issues")}
-  >
-    {issuesLabel}
-  </button>
-  <WatchdogIndicator />
-  <span class="status-item status-versions" title={versions}>{versions}</span>
-  {#if connection.version?.stale === true}
-    <IconButton
-      label={`Restart devboard, running ${connection.version?.running ?? "unknown"}, installed ${
-        connection.version?.installed ?? "unknown"
-      }`}
-      command="app.reload"
-      data-testid="reload-devboard"
-      disabled={connection.restarting}
-      onclick={() => connection.requestRestart()}
+  <div class="status-group status-group--metrics">
+    <span class="status-item" title="Running and total agent lanes">
+      <span class="status-metric__label">lanes</span>
+      <span class="mono status-metric__value">{goal.runningLanes}/{goal.lanes.length}</span>
+    </span>
+    <button
+      type="button"
+      class="status-item status-item--button status-issues"
+      data-testid="issues-indicator"
+      data-command="view.mode.issues"
+      data-state={issues.lifecycle}
+      title={issuesTitle}
+      aria-label={`${issuesLabel}. Open Issues mode.`}
+      onclick={() => layout.setMode("issues")}
     >
-      <RefreshCw size={14} aria-hidden="true" />
-    </IconButton>
-  {/if}
+      <span class="status-issues__dot" aria-hidden="true"></span>
+      <span class="status-issues__label">{issuesLabel}</span>
+    </button>
+    <WatchdogIndicator />
+    <span class="status-item status-versions" title={versions}>
+      <span class="status-versions__entry">
+        <span class="status-metric__label">running</span>
+        <span class="mono">{connection.version?.running ?? "unknown"}</span>
+      </span>
+      <span class="status-versions__entry">
+        <span class="status-metric__label">installed</span>
+        <span class="mono">{connection.version?.installed ?? "unknown"}</span>
+      </span>
+    </span>
+    {#if connection.version?.stale === true}
+      <IconButton
+        label={`Restart devboard, running ${connection.version?.running ?? "unknown"}, installed ${
+          connection.version?.installed ?? "unknown"
+        }`}
+        command="app.reload"
+        data-testid="reload-devboard"
+        disabled={connection.restarting}
+        onclick={() => connection.requestRestart()}
+      >
+        <RefreshCw size={14} aria-hidden="true" />
+      </IconButton>
+    {/if}
+  </div>
 </footer>

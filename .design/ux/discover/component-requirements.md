@@ -56,7 +56,7 @@ an extension of the existing `ActivityBar` component: the mode rail gains a visi
   `bun run verify:interface` (three tabs, labels, commands, keyboard, 1024×720 clipping).
 - OpenUI: none. The catalog describes the reusable primitives.
 
-### Sidebar header and items
+### Sidebar identity and items
 
 - Decision: **compose**. Add a mode overline above the existing `.sidebar__title`; keep the title
   text equal to the document title (the repository path). Discover items gain an optional meta

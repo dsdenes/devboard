@@ -1,4 +1,4 @@
-import { conceptTitle, TABS } from "./discover-format";
+import { TABS } from "./discover-format";
 import type { GoalStore } from "./goal.svelte";
 import type { FlowStore } from "./flow.svelte";
 import type { DiscoverStore } from "./discover.svelte";
@@ -815,24 +815,5 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
       });
     }
   }
-  for (const context of discover.contexts) {
-    for (const concept of context.concepts) {
-      if (concept.status === "invalidated") continue;
-      add({
-        id: `discover.term.open.${context.boundedContext}.${concept.id}`,
-        title: `Open term ${conceptTitle(concept)}`,
-        group: "Discover terms",
-        keywords: `${context.boundedContext} ${concept.kind}`,
-        run: () =>
-          ctx.openTab("discover", {
-            id: tabId("term", `${context.boundedContext}:${concept.id}`),
-            kind: "term",
-            resourceId: `${context.boundedContext}:${concept.id}`,
-            title: conceptTitle(concept),
-          }),
-      });
-    }
-  }
-
   return commands;
 }

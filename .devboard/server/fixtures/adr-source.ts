@@ -15,6 +15,7 @@ export function fixtureRecord(
   title: string,
   status: AdrStatus = "accepted",
   body = "",
+  extra: Record<string, string> = {},
 ): string {
   const id = /^(\d{4,})-/.exec(basename(file))?.[1];
   if (id === undefined) throw new Error(`Fixture record name needs a numeric id: ${file}`);
@@ -24,6 +25,7 @@ export function fixtureRecord(
     `id: "${id}"`,
     `title: ${title}`,
     `status: ${status}`,
+    ...Object.entries(extra).map(([key, value]) => `${key}: ${value}`),
     "date: 2026-10-19",
     'deciders: ["@dsdenes"]',
     "affects: []",

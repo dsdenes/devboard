@@ -448,7 +448,7 @@ export class IssuesWorker {
     if (this.stopping) return;
     await this.consumeCommands();
     if (this.stopping) return;
-    if (!this.state.enabled || this.state.paused) return;
+    if (!this.state.enabled) return;
     if (this.polling) return;
     if (this.clock().getTime() < this.nextPollDue) return;
     await this.poll();
