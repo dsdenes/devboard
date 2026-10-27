@@ -28,6 +28,12 @@ import {
 } from "./feedback";
 import { FlowController, type FlowOptions } from "./flow";
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
+import {
+  GoalDraftError,
+  GoalDraftManager,
+  listGoalDrafts,
+  readGoalDraft,
+} from "./goal-drafts";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { originRepository } from "../issues/repository";
 import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
@@ -455,7 +461,12 @@ type ClientMessage =
   | { type: "getIssuesRun"; runId?: unknown }
   | { type: "startIssues" }
   | { type: "stopIssues" }
-  | { type: "answerIssues"; id?: unknown; value?: unknown }
+  | { type: "answerIssues"; id?: unknown; value?: unknown; runId?: unknown }
+  | { type: "getGoalDrafts" }
+  | { type: "getGoalDraft"; path?: unknown }
+  | { type: "startGoalDraft"; path?: unknown }
+  | { type: "stopGoalDraft" }
+  | { type: "answerGoalDraft"; id?: unknown; value?: unknown }
   | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
@@ -522,6 +533,21 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
     case "answerIssues":
       return {
         type: "answerIssues",
+        id: "id" in value ? value.id : undefined,
+        value: "value" in value ? value.value : undefined,
+        runId: "runId" in value ? value.runId : undefined,
+      };
+    case "getGoalDrafts":
+      return { type: "getGoalDrafts" };
+    case "getGoalDraft":
+      return { type: "getGoalDraft", path: "path" in value ? value.path : undefined };
+    case "startGoalDraft":
+      return { type: "startGoalDraft", path: "path" in value ? value.path : undefined };
+    case "stopGoalDraft":
+      return { type: "stopGoalDraft" };
+    case "answerGoalDraft":
+      return {
+        type: "answerGoalDraft",
         id: "id" in value ? value.id : undefined,
         value: "value" in value ? value.value : undefined,
       };
@@ -1753,6 +1779,17 @@ export function createApp(options: AppOptions) {
     ...(options.issues?.spawnWorker === undefined ? {} : { spawnWorker: options.issues.spawnWorker }),
   });
   issues.begin();
+
+  /**
+   * The Drafts view's one elaboration peer. It is a dashboard child, not a
+   * detached worker: it lives only while the server that started it is up.
+   */
+  const goalDrafts = new GoalDraftManager({
+    repoDir,
+    command: agentCommand,
+    send: (event) => sendAll(event),
+    log: (line) => process.stderr.write(`${line}\n`),
+  });
 
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
@@ -5297,6 +5334,7 @@ export function createApp(options: AppOptions) {
     try {
       const submission = parseGoalProposalSubmission(guarded.value);
       const proposal = await writeGoalProposal(submission, { repoDir });
+      goalDrafts.publishDrafts();
       return Response.json(proposal, { status: 201 });
     } catch (error) {
       if (error instanceof FeedbackRequestError) {
@@ -5473,6 +5511,8 @@ export function createApp(options: AppOptions) {
           command.type === "getVersion" ||
           command.type === "getIssues" ||
           command.type === "getIssuesRun" ||
+          command.type === "getGoalDrafts" ||
+          command.type === "getGoalDraft" ||
           command.type === "getSkills" ||
           command.type === "getDiscover";
         if (implementationReset !== undefined && !readOnly) {
@@ -5522,8 +5562,43 @@ export function createApp(options: AppOptions) {
                 type: "answer",
                 id: command.id,
                 value: command.value,
+                ...(typeof command.runId === "string" ? { runId: command.runId } : {}),
               });
               if (!result.ok) send(ws, { type: "error", message: result.message });
+            }
+          } else if (command.type === "getGoalDrafts") {
+            send(ws, { type: "issuesDrafts", drafts: listGoalDrafts(repoDir) });
+            send(ws, { type: "issuesDraftState", draft: goalDrafts.snapshot() });
+          } else if (command.type === "getGoalDraft") {
+            try {
+              send(ws, { type: "issuesDraftDetail", draft: readGoalDraft(repoDir, command.path) });
+            } catch (error) {
+              send(ws, {
+                type: "issuesDraftError",
+                message: error instanceof GoalDraftError ? error.message : String(error),
+              });
+            }
+          } else if (command.type === "startGoalDraft") {
+            const started = goalDrafts.start(command.path);
+            if (!started.ok) {
+              send(ws, { type: "issuesDraftError", message: started.message });
+            } else {
+              send(ws, { type: "issuesDraftState", draft: goalDrafts.snapshot() });
+              goalDrafts.publishDrafts();
+            }
+          } else if (command.type === "stopGoalDraft") {
+            goalDrafts.stop();
+          } else if (command.type === "answerGoalDraft") {
+            if (
+              (typeof command.id !== "string" && typeof command.id !== "number") ||
+              typeof command.value !== "string"
+            ) {
+              send(ws, { type: "issuesDraftError", message: "An answer needs its question id and value." });
+            } else if (!goalDrafts.answer(command.id, command.value)) {
+              send(ws, {
+                type: "issuesDraftError",
+                message: "That question is no longer waiting for an answer.",
+              });
             }
           } else if (command.type === "restartServer") {
             restartServer(ws, command.whenIdle === true);
@@ -5641,6 +5716,7 @@ export function createApp(options: AppOptions) {
     ask.dispose();
     flow.dispose();
     issues.dispose();
+    goalDrafts.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);
       restartWhenIdleTimer = undefined;

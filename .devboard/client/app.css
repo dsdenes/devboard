@@ -2606,7 +2606,8 @@ a.code-chip--link:focus-visible {
 /* Issues mode */
 .issues-overview,
 .issues-queue-page,
-.issues-runs-page {
+.issues-runs-page,
+.issues-drafts-page {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -2647,6 +2648,14 @@ a.code-chip--link:focus-visible {
   align-items: stretch;
   flex: 1;
   min-height: 0;
+}
+
+.issues-overview__side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
 }
 
 @media (max-width: 1100px) {
@@ -2784,6 +2793,118 @@ a.code-chip--link:focus-visible {
   gap: 6px;
 }
 
+.issues-drafts__body {
+  display: grid;
+  grid-template-columns: minmax(240px, 340px) minmax(0, 1fr);
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.issues-drafts__body > .panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+@media (max-width: 1100px) {
+  .issues-drafts__body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.issues-drafts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.issues-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 12px;
+  text-align: left;
+}
+
+.issues-draft:hover,
+.issues-draft[aria-current="true"] {
+  background: var(--secondary);
+}
+
+.issues-draft__heading {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issues-draft__blocked {
+  color: var(--warning);
+  font-size: 11px;
+}
+
+.issues-drafts__empty {
+  padding: 10px 12px;
+}
+
+.issues-activity-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.issues-agent {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.issues-agent > .toolbar {
+  padding: 6px 10px;
+}
+
+.issues-agent > .issues-activity {
+  max-height: 220px;
+}
+
+.issues-draft-detail {
+  overflow: auto;
+}
+
+.issues-draft-context {
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-raised);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.issues-draft-text {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-raised);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .status-issues {
   border: 1px solid transparent;
   max-width: 260px;
@@ -2797,8 +2918,7 @@ a.code-chip--link:focus-visible {
   width: 6px;
 }
 
-.status-issues[data-state="running"] .status-issues__dot,
-.status-issues[data-state="pausing"] .status-issues__dot {
+.status-issues[data-state="running"] .status-issues__dot {
   background: var(--success);
 }
 

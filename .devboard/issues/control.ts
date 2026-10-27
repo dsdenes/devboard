@@ -11,7 +11,7 @@ import { isInteger, isRecord } from "./guards";
 
 export type IssuesCommand =
   | { type: "stop" }
-  | { type: "answer"; id: number | string; value: string };
+  | { type: "answer"; id: number | string; value: string; runId?: string };
 
 let sequence = 0;
 
@@ -40,9 +40,15 @@ function parseCommand(text: string): IssuesCommand | undefined {
     case "answer":
       if (
         (typeof parsed.id === "string" || isInteger(parsed.id)) &&
-        typeof parsed.value === "string"
+        typeof parsed.value === "string" &&
+        (parsed.runId === undefined || typeof parsed.runId === "string")
       ) {
-        return { type: "answer", id: parsed.id, value: parsed.value };
+        return {
+          type: "answer",
+          id: parsed.id,
+          value: parsed.value,
+          ...(parsed.runId === undefined ? {} : { runId: parsed.runId }),
+        };
       }
       return undefined;
     default:

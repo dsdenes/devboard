@@ -6,7 +6,6 @@ import { readHarnessVersion } from "../server/version";
 import { takeCommands, type IssuesCommand } from "./control";
 import {
   emptyLedger,
-  handledNumbers,
   loadLedger,
   pruneLedger,
   recordHandled,
@@ -30,26 +29,30 @@ import {
   writeActivity,
   writeRunFile,
   writeState,
+  type IssuesAgent,
   type IssuesIssue,
-  type IssuesLifecycle,
   type IssuesQuestion,
   type IssuesRunStatus,
   type IssuesRunSummary,
   type IssuesState,
+  type QueuedIssue,
   type RunFile,
 } from "./state";
 
 /**
  * The detached worker for exactly one repository. It owns the poll loop, the
- * ACP peer, the ledger, the repository lock, and the activity, so it outlives
- * any dashboard process. A dashboard may start it, read its state, and send
- * it commands; nothing else can create a second worker for the checkout.
+ * ACP peers, the ledger, the repository lock, and the activity, so it outlives
+ * any dashboard process. One peer runs `/implement-all-issues` for the
+ * unlabeled backlog; every open issue carrying the exact `goal` label gets a
+ * separate peer of its own and they run concurrently.
  */
 
 const DEFAULT_INTERVAL_MS = 2000;
 const COOLDOWN_MS = 5 * 60_000;
 const TICK_MS = 100;
-const IMPLEMENT_ALL_PROMPT = "/implement-all-issues";
+const IMPLEMENT_ALL_COMMAND = "/implement-all-issues";
+const IMPLEMENT_GOAL_COMMAND = "/implement-goal-issue";
+const GOAL_LABEL = "goal";
 const DEFAULT_AGENT_COMMAND = "omp acp";
 const FIRST_LINE_MAX = 400;
 
@@ -125,6 +128,10 @@ class FirstLine {
 interface ActiveRun {
   runId: string;
   directory: string;
+  startedAt: string;
+  kind: "implement-all" | "goal";
+  /** The one goal issue this peer serves, or null for the shared backlog. */
+  issue: IssuesIssue | null;
   captured: IssuesIssue[];
   activity: string[];
   peer: AcpPeer;
@@ -182,6 +189,18 @@ export function loadRuns(
   return found;
 }
 
+export function isGoalIssue(issue: IssuesIssue): boolean {
+  return (issue.labels ?? []).includes(GOAL_LABEL);
+}
+
+/** The exact `/implement-all-issues` prompt for the captured non-goal backlog. */
+export function implementAllPrompt(numbers: number[]): string {
+  const list = numbers.map((number) => `#${number}`).join(", ");
+  return (
+    `${IMPLEMENT_ALL_COMMAND} Process exactly these open issue numbers: ${list}. ` +
+    `Do not process, comment on, close, or modify any issue labeled "goal".`
+  );
+}
 
 export class IssuesWorker {
   readonly repoDir: string;
@@ -198,6 +217,7 @@ export class IssuesWorker {
   private state: IssuesState;
   private ledger: Ledger;
   private active: ActiveRun | undefined;
+  private readonly goals = new Map<number, ActiveRun>();
   private runs: Array<{ run: RunFile; directory: string }> = [];
   private followUp = false;
   private finishing = false;
@@ -247,7 +267,7 @@ export class IssuesWorker {
   }
 
   get running(): boolean {
-    return this.active !== undefined;
+    return this.active !== undefined || this.goals.size > 0;
   }
 
   /** Takes the repository lock and publishes the fresh `idle` cycle. */
@@ -287,8 +307,12 @@ export class IssuesWorker {
     }));
     // A worker that died mid-run leaves a recorded child and a `running`
     // record. Only a process the table proves is that child is signalled.
-    const orphan = previous?.acp ?? null;
-    if (orphan !== null && recordedChildAlive(orphan)) {
+    const orphans = [
+      ...(previous?.acp === null || previous?.acp === undefined ? [] : [previous.acp]),
+      ...(previous?.agents ?? []).flatMap((agent) => (agent.acp === null ? [] : [agent.acp])),
+    ];
+    for (const orphan of orphans) {
+      if (!recordedChildAlive(orphan)) continue;
       try {
         process.kill(orphan.pid, "SIGKILL");
         this.log(`terminated orphaned ACP child ${orphan.pid}`);
@@ -296,8 +320,13 @@ export class IssuesWorker {
         // It exited between the proof and the signal.
       }
     }
-    if (previous?.activeRun != null) {
-      this.closeInterruptedRun(previous.activeRun.runId);
+    for (const runId of [
+      ...(previous?.activeRun === null || previous?.activeRun === undefined
+        ? []
+        : [previous.activeRun.runId]),
+      ...(previous?.agents ?? []).map((agent) => agent.runId),
+    ]) {
+      this.closeInterruptedRun(runId);
     }
 
     const now = this.clock();
@@ -384,22 +413,46 @@ export class IssuesWorker {
     }
   }
 
+  private findActive(runId: string): ActiveRun | undefined {
+    if (this.active?.runId === runId) return this.active;
+    for (const run of this.goals.values()) {
+      if (run.runId === runId) return run;
+    }
+    return undefined;
+  }
+
+  private questionFor(run: ActiveRun): IssuesQuestion | null {
+    if (run.kind === "implement-all") return this.state.question;
+    return this.state.agents.find((agent) => agent.runId === run.runId)?.question ?? null;
+  }
+
   private async apply(command: IssuesCommand): Promise<void> {
     switch (command.type) {
       case "answer": {
-        const question = this.state.question;
-        if (question === null || String(question.id) !== String(command.id) || this.active === undefined) {
+        const run = command.runId === undefined ? this.active : this.findActive(command.runId);
+        const question = run === undefined ? null : this.questionFor(run);
+        if (
+          run === undefined ||
+          question === null ||
+          String(question.id) !== String(command.id)
+        ) {
           this.state.notice = "That question is no longer waiting for an answer.";
           this.publish();
           return;
         }
-        const answered = this.active.peer.answer(command.id, command.value);
+        const answered = run.peer.answer(command.id, command.value);
         if (!answered) {
           this.state.notice = "That question is no longer waiting for an answer.";
           this.publish();
           return;
         }
-        this.state.question = null;
+        if (run.kind === "implement-all") {
+          this.state.question = null;
+        } else {
+          this.state.agents = this.state.agents.map((agent) =>
+            agent.runId === run.runId ? { ...agent, question: null } : agent,
+          );
+        }
         this.state.notice = null;
         this.publish();
         return;
@@ -416,6 +469,20 @@ export class IssuesWorker {
     if (until === null) return false;
     const at = Date.parse(until);
     return Number.isFinite(at) && this.clock().getTime() < at;
+  }
+
+  private goalCooldownRemaining(number: number): boolean {
+    const until = this.state.goalCooldowns[String(number)];
+    if (until === undefined) return false;
+    const at = Date.parse(until);
+    return Number.isFinite(at) && this.clock().getTime() < at;
+  }
+
+  private anyGoalCooldownRemaining(): boolean {
+    return Object.values(this.state.goalCooldowns).some((until) => {
+      const at = Date.parse(until);
+      return Number.isFinite(at) && this.clock().getTime() < at;
+    });
   }
 
   /** One conditional poll, then the trigger decision. */
@@ -483,6 +550,12 @@ export class IssuesWorker {
       this.ledger = pruned;
       writeLedger(this.stateDir, this.repoDir, this.ledger);
     }
+    const cooldowns = Object.fromEntries(
+      Object.entries(this.state.goalCooldowns).filter(([key]) => open.has(Number(key))),
+    );
+    if (Object.keys(cooldowns).length !== Object.keys(this.state.goalCooldowns).length) {
+      this.state.goalCooldowns = cooldowns;
+    }
     this.state.queue = issues.map((issue) => {
       const handled = this.ledger.handled[String(issue.number)];
       return {
@@ -494,7 +567,8 @@ export class IssuesWorker {
     if (this.active !== undefined) {
       const captured = new Set(this.active.captured.map((issue) => issue.number));
       const novel = this.state.queue.filter(
-        (issue) => !issue.handled && !captured.has(issue.number),
+        (issue) =>
+          !issue.handled && !captured.has(issue.number) && !isGoalIssue(issue),
       );
       if (novel.length > 0) this.followUp = true;
     }
@@ -512,27 +586,36 @@ export class IssuesWorker {
   }
 
   private maybeTrigger(): void {
-    if (this.stopping || !this.state.enabled) return;
-    if (this.active !== undefined || this.finishing) return;
-    if (this.cooldownRemaining()) {
+    if (this.stopping || !this.state.enabled || this.finishing) return;
+    const unhandled = this.state.queue.filter((issue) => !issue.handled);
+    if (this.active === undefined) {
+      const backlog = unhandled.filter((issue) => !isGoalIssue(issue));
+      if (backlog.length > 0 && !this.cooldownRemaining()) {
+        this.beginImplementAll(backlog);
+      }
+    }
+    for (const issue of unhandled) {
+      if (!isGoalIssue(issue)) continue;
+      if (this.goals.has(issue.number)) continue;
+      if (this.goalCooldownRemaining(issue.number)) continue;
+      this.beginGoal(issue);
+    }
+    if (this.stopping || this.running) return;
+    if (unhandled.length > 0) {
       this.state.lifecycle = "failed";
       return;
     }
-    const unhandled = this.state.queue.filter((issue) => !issue.handled);
-    if (unhandled.length === 0) {
-      if (this.state.lifecycle !== "idle") {
-        this.state.lifecycle = "idle";
-        this.state.lastExitCode = null;
-        this.state.lastError = null;
-        this.state.nextAttemptAt = null;
-        this.publish();
-      }
-      return;
-    }
-    this.begin(unhandled);
+    this.state.lifecycle = "idle";
+    this.state.lastExitCode = null;
+    this.state.lastError = null;
+    this.state.nextAttemptAt = null;
   }
 
-  private begin(captured: IssuesIssue[]): void {
+  private openRun(
+    kind: ActiveRun["kind"],
+    captured: IssuesIssue[],
+    issue: IssuesIssue | null,
+  ): { active: ActiveRun } | { runId: string; directory: string; error: string } {
     const now = this.clock();
     const base = runsDirectory(this.stateDir, this.repoDir);
     mkdirSync(base, { recursive: true });
@@ -559,33 +642,49 @@ export class IssuesWorker {
     this.pruneHistory();
 
     const firstLine = new FirstLine();
+    const active: ActiveRun = {
+      runId: created.runId,
+      directory: created.directory,
+      startedAt: run.startedAt,
+      kind,
+      issue,
+      captured,
+      activity,
+      peer: undefined as unknown as AcpPeer,
+      firstLine,
+      finished: false,
+    };
     let peer: AcpPeer;
     try {
       peer = this.connect({
         command: this.agentCommand,
         cwd: this.repoDir,
-        onActivity: (entry) => this.recordActivity(entry),
-        onQuestion: (question) => this.recordQuestion(question),
+        onActivity: (entry) => this.recordActivity(active, entry),
+        onQuestion: (question) => this.recordQuestion(active, question),
         onStderr: (text) => firstLine.push(text),
       });
     } catch (error) {
-      this.finishFailed(created.runId, created.directory, 1, error instanceof Error ? error.message : String(error));
+      const detail = error instanceof Error ? error.message : String(error);
+      this.updateRun(created.runId, created.directory, "failed", now.toISOString(), 1, detail);
+      this.state.runs = this.summaries();
+      return { runId: created.runId, directory: created.directory, error: detail };
+    }
+    active.peer = peer;
+    return { active };
+  }
+
+  private beginImplementAll(captured: IssuesIssue[]): void {
+    const opened = this.openRun("implement-all", captured, null);
+    if ("error" in opened) {
+      this.finishWithoutPeer(opened.runId, opened.directory, opened.error, null);
       return;
     }
-
-    this.active = {
-      runId: created.runId,
-      directory: created.directory,
-      captured,
-      activity,
-      peer,
-      firstLine,
-      finished: false,
-    };
+    const active = opened.active;
+    this.active = active;
     this.followUp = false;
     this.state.activeRun = {
-      runId: created.runId,
-      startedAt: run.startedAt,
+      runId: active.runId,
+      startedAt: active.startedAt,
       issueNumbers: captured.map((issue) => issue.number),
     };
     this.state.lifecycle = "running";
@@ -594,30 +693,64 @@ export class IssuesWorker {
     this.state.nextAttemptAt = null;
     this.state.question = null;
     this.state.acp =
-      observedChild(peer.pid, this.repoDir) ?? {
-        pid: peer.pid ?? 0,
-        argv: [...peer.argv],
+      observedChild(active.peer.pid, this.repoDir) ?? {
+        pid: active.peer.pid ?? 0,
+        argv: [...active.peer.argv],
         cwd: this.repoDir,
       };
     if (this.state.acp.pid === 0) this.state.acp = null;
     this.state.runs = this.summaries();
     this.publish();
 
-    void peer
-      .run(IMPLEMENT_ALL_PROMPT)
-      .then(() => this.finishSucceeded())
+    void active.peer
+      .run(implementAllPrompt(captured.map((issue) => issue.number)))
+      .then(() => this.finishImplementAllSucceeded(active))
       .catch((error: unknown) => {
         const detail =
           error instanceof Error && error.message.length > 0
             ? error.message
             : "the agent ended its turn with an error";
-        this.finishFailed(this.active?.runId ?? created.runId, created.directory, 1, detail);
+        this.finishImplementAllFailed(active, detail);
       });
   }
 
-  private recordActivity(entry: AcpActivity): void {
-    const active = this.active;
-    if (active === undefined || active.finished) return;
+  private beginGoal(issue: IssuesIssue): void {
+    const opened = this.openRun("goal", [issue], issue);
+    if ("error" in opened) {
+      this.finishWithoutPeer(opened.runId, opened.directory, opened.error, issue);
+      return;
+    }
+    const active = opened.active;
+    this.goals.set(issue.number, active);
+    const agent: IssuesAgent = {
+      runId: active.runId,
+      issueNumber: issue.number,
+      startedAt: active.startedAt,
+      question: null,
+      acp: observedChild(active.peer.pid, this.repoDir),
+    };
+    this.state.agents = [...this.state.agents, agent];
+    this.state.lifecycle = "running";
+    this.state.lastExitCode = null;
+    this.state.lastError = null;
+    this.state.nextAttemptAt = null;
+    this.state.runs = this.summaries();
+    this.publish();
+
+    void active.peer
+      .run(`${IMPLEMENT_GOAL_COMMAND} ${issue.number}`)
+      .then(() => this.finishGoalSucceeded(active))
+      .catch((error: unknown) => {
+        const detail =
+          error instanceof Error && error.message.length > 0
+            ? error.message
+            : "the agent ended its turn with an error";
+        this.finishGoalFailed(active, detail);
+      });
+  }
+
+  private recordActivity(active: ActiveRun, entry: AcpActivity): void {
+    if (active.finished) return;
     appendActivityLine(active.activity, entry.text, entry.append);
     try {
       writeActivity(active.directory, active.activity);
@@ -629,8 +762,8 @@ export class IssuesWorker {
     this.publish();
   }
 
-  private recordQuestion(question: AcpQuestion): void {
-    if (this.active === undefined) return;
+  private recordQuestion(active: ActiveRun, question: AcpQuestion): void {
+    if (active.finished) return;
     const stored: IssuesQuestion = {
       id: question.id,
       message: question.message,
@@ -640,7 +773,13 @@ export class IssuesWorker {
         recommended: option.recommended,
       })),
     };
-    this.state.question = stored;
+    if (active.kind === "implement-all") {
+      this.state.question = stored;
+    } else {
+      this.state.agents = this.state.agents.map((agent) =>
+        agent.runId === active.runId ? { ...agent, question: stored } : agent,
+      );
+    }
     this.publish();
   }
 
@@ -670,9 +809,31 @@ export class IssuesWorker {
     }
   }
 
-  private finishSucceeded(): void {
-    const active = this.active;
-    if (active === undefined || active.finished) return;
+  private finishWithoutPeer(
+    runId: string,
+    directory: string,
+    detail: string,
+    issue: IssuesIssue | null,
+  ): void {
+    const finishedAt = this.clock().toISOString();
+    this.updateRun(runId, directory, "failed", finishedAt, 1, detail);
+    if (issue !== null) {
+      this.state.goalCooldowns[String(issue.number)] = new Date(
+        this.clock().getTime() + COOLDOWN_MS,
+      ).toISOString();
+    } else {
+      this.state.nextAttemptAt = new Date(this.clock().getTime() + COOLDOWN_MS).toISOString();
+    }
+    this.state.lastError = detail;
+    this.state.lastExitCode = 1;
+    this.state.finishedAt = finishedAt;
+    this.state.runs = this.summaries();
+    this.state.lifecycle = this.running ? "running" : "failed";
+    this.publish();
+  }
+
+  private finishImplementAllSucceeded(active: ActiveRun): void {
+    if (active.finished) return;
     active.finished = true;
     this.finishing = true;
     this.closePeer(active);
@@ -681,48 +842,97 @@ export class IssuesWorker {
     this.ledger = recordHandled(this.ledger, active.captured, active.runId, this.clock());
     writeLedger(this.stateDir, this.repoDir, this.ledger);
     this.refreshQueue();
-    this.finishActive(0, null, finishedAt);
-  }
-
-  private finishFailed(runId: string, directory: string, exitCode: number, detail: string): void {
-    if (this.stopping && this.active === undefined) return;
-    this.finishing = true;
-    const active = this.active;
-    if (active !== undefined && active.runId === runId) {
-      active.finished = true;
-      this.closePeer(active);
-    }
-    active?.firstLine.finish();
-    const error = active?.firstLine.value ?? detail;
-    const finishedAt = this.clock().toISOString();
-    this.updateRun(runId, directory, "failed", finishedAt, exitCode, error);
-    this.finishActive(exitCode, error, finishedAt);
-  }
-
-  private finishActive(exitCode: number | null, error: string | null, finishedAt: string): void {
-    const active = this.active;
-    const followUp = this.followUp;
-    this.followUp = false;
     this.state.activeRun = null;
     this.state.acp = null;
     this.state.question = null;
+    this.active = undefined;
+    this.finishAfterPeer(0, null, finishedAt);
+  }
+
+  private finishImplementAllFailed(active: ActiveRun, detail: string): void {
+    if (active.finished) return;
+    active.finished = true;
+    this.finishing = true;
+    this.closePeer(active);
+    active.firstLine.finish();
+    const error = active.firstLine.value ?? detail;
+    const finishedAt = this.clock().toISOString();
+    this.updateRun(active.runId, active.directory, "failed", finishedAt, 1, error);
+    this.state.activeRun = null;
+    this.state.acp = null;
+    this.state.question = null;
+    this.active = undefined;
+    this.state.nextAttemptAt = new Date(this.clock().getTime() + COOLDOWN_MS).toISOString();
+    this.finishAfterPeer(1, error, finishedAt);
+  }
+
+  private finishGoalSucceeded(active: ActiveRun): void {
+    if (active.finished) return;
+    active.finished = true;
+    this.finishing = true;
+    this.closePeer(active);
+    const finishedAt = this.clock().toISOString();
+    this.updateRun(active.runId, active.directory, "succeeded", finishedAt, 0, null);
+    this.ledger = recordHandled(this.ledger, active.captured, active.runId, this.clock());
+    writeLedger(this.stateDir, this.repoDir, this.ledger);
+    this.forgetGoal(active);
+    this.refreshQueue();
+    this.finishAfterPeer(0, null, finishedAt);
+    if (!this.stopping) {
+      this.nextPollDue = this.clock().getTime();
+    }
+  }
+
+  private finishGoalFailed(active: ActiveRun, detail: string): void {
+    if (active.finished) return;
+    active.finished = true;
+    this.finishing = true;
+    this.closePeer(active);
+    active.firstLine.finish();
+    const error = active.firstLine.value ?? detail;
+    const finishedAt = this.clock().toISOString();
+    this.updateRun(active.runId, active.directory, "failed", finishedAt, 1, error);
+    const number = active.issue?.number;
+    if (number !== undefined) {
+      this.state.goalCooldowns[String(number)] = new Date(
+        this.clock().getTime() + COOLDOWN_MS,
+      ).toISOString();
+    }
+    this.forgetGoal(active);
+    this.finishAfterPeer(1, error, finishedAt);
+  }
+
+  private forgetGoal(active: ActiveRun): void {
+    if (active.issue !== null) {
+      this.goals.delete(active.issue.number);
+    }
+    this.state.agents = this.state.agents.filter((agent) => agent.runId !== active.runId);
+  }
+
+  /** Publishes the run outcome and the lifecycle once every peer has settled. */
+  private finishAfterPeer(
+    exitCode: number | null,
+    error: string | null,
+    finishedAt: string,
+  ): void {
     this.state.runs = this.summaries();
     this.state.lastExitCode = exitCode;
     this.state.lastError = error;
     this.state.finishedAt = finishedAt;
     if (this.stopping) {
       this.state.lifecycle = "stopped";
-    } else if (exitCode === 0) {
+    } else if (this.running) {
+      this.state.lifecycle = "running";
+    } else if (exitCode === 0 && !this.cooldownRemaining() && !this.anyGoalCooldownRemaining()) {
       this.state.lifecycle = "idle";
       this.state.nextAttemptAt = null;
     } else {
       this.state.lifecycle = "failed";
-      this.state.nextAttemptAt = new Date(this.clock().getTime() + COOLDOWN_MS).toISOString();
     }
-    this.active = undefined;
     this.finishing = false;
     this.publish();
-    if (followUp && exitCode === 0 && !this.stopping) {
+    if (this.followUp && exitCode === 0 && !this.stopping) {
+      this.followUp = false;
       this.nextPollDue = this.clock().getTime();
     }
   }
@@ -747,26 +957,29 @@ export class IssuesWorker {
     this.runs = this.runs.slice(0, 50);
   }
 
-  /** Stop: end the peer, record `stopped`, leave captured issues unhandled. */
+  /** Stop: end every peer, record `stopped`, leave captured issues unhandled. */
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
     this.state.enabled = false;
     this.state.nextAttemptAt = null;
-    const active = this.active;
-    if (active !== undefined && !active.finished) {
+    this.state.goalCooldowns = {};
+    const runs = [...(this.active === undefined ? [] : [this.active]), ...this.goals.values()];
+    for (const active of runs) {
+      if (active.finished) continue;
       active.finished = true;
       this.closePeer(active);
-      const finishedAt = this.clock().toISOString();
-      this.updateRun(active.runId, active.directory, "stopped", finishedAt, null, null);
-      this.state.activeRun = null;
-      this.state.acp = null;
-      this.state.question = null;
-      this.state.runs = this.summaries();
-      this.state.lastExitCode = null;
-      this.state.lastError = null;
-      this.active = undefined;
+      this.updateRun(active.runId, active.directory, "stopped", this.clock().toISOString(), null, null);
     }
+    this.active = undefined;
+    this.goals.clear();
+    this.state.activeRun = null;
+    this.state.acp = null;
+    this.state.question = null;
+    this.state.agents = [];
+    this.state.runs = this.summaries();
+    this.state.lastExitCode = null;
+    this.state.lastError = null;
     this.state.lifecycle = "stopped";
     this.state.notice = null;
     this.publish();

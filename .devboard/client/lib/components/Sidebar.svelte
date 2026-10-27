@@ -311,6 +311,18 @@
           <span class="sidebar-item__label">Runs</span>
           <span class="sidebar-item__meta">{issues.runs.length}</span>
         </button>
+        <button
+          type="button"
+          class="sidebar-item"
+          aria-current={isActive("drafts")}
+          aria-label="Drafts, Issues mode, Alt+2"
+          data-command="open.issues.drafts"
+          data-testid="open-issues-drafts"
+          onclick={() => open("issues", "drafts", "drafts", "drafts", "Drafts")}
+        >
+          <span class="sidebar-item__label">Drafts</span>
+          <span class="sidebar-item__meta">{issues.drafts.length}</span>
+        </button>
       </section>
     {:else if layout.mode === "flow"}
       <section class="sidebar-group" aria-label="Flow surfaces">

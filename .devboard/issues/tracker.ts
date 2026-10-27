@@ -29,7 +29,7 @@ export type PollResult =
 
 const QUERY =
   ".[] | select(.pull_request == null) | " +
-  "{number, title, url: .html_url, createdAt: .created_at}";
+  "{number, title, url: .html_url, createdAt: .created_at, labels: [.labels[].name]}";
 
 async function gh(argv: string[], environment?: Record<string, string | undefined>): Promise<GhOutcome> {
   try {
@@ -66,8 +66,14 @@ function isIssue(value: unknown): value is IssuesIssue {
     Number.isInteger(issue.number) &&
     typeof issue.title === "string" &&
     typeof issue.url === "string" &&
-    typeof issue.createdAt === "string"
+    typeof issue.createdAt === "string" &&
+    (issue.labels === undefined ||
+      (Array.isArray(issue.labels) && issue.labels.every((label) => typeof label === "string")))
   );
+}
+
+function withLabels(issue: IssuesIssue): IssuesIssue {
+  return { ...issue, labels: Array.isArray(issue.labels) ? [...issue.labels] : [] };
 }
 
 function parseLines(lines: string[]): IssuesIssue[] {
@@ -84,7 +90,7 @@ function parseLines(lines: string[]): IssuesIssue[] {
     const entries = Array.isArray(parsed) ? parsed : [parsed];
     for (const entry of entries) {
       if (!isIssue(entry)) throw new Error("the tracker printed an issue of an unexpected shape");
-      issues.push(entry);
+      issues.push(withLabels(entry));
     }
   }
   const seen = new Set<number>();

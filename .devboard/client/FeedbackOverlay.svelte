@@ -4,6 +4,7 @@
   import TriangleAlert from "lucide-svelte/icons/alert-triangle";
   import X from "lucide-svelte/icons/x";
   import { connection } from "./lib/connection.svelte";
+  import { issues } from "./lib/issues.svelte";
   import type { AskContext, AskTurn, FeedbackAction, FeedbackPhase } from "./lib/types";
 
   /**
@@ -585,6 +586,7 @@
       return;
     }
     const text = `Goal proposed: ${response.path}`;
+    issues.refreshDrafts();
     // Stay in selection mode so the next draft starts with one click.
     arm("report");
     showToast({ ok: true, text });

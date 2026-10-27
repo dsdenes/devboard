@@ -24,6 +24,7 @@ export interface IssuesIssue {
   title: string;
   url: string;
   createdAt: string;
+  labels: string[];
 }
 
 export interface QueuedIssue extends IssuesIssue {
@@ -83,6 +84,7 @@ export interface IssuesSnapshot {
   queue: QueuedIssue[];
   runs: IssuesRunSummary[];
   activeRun: { runId: string; startedAt: string; issueNumbers: number[] } | null;
+  agents: IssuesAgent[];
   question: RunQuestion | null;
   nextAttemptAt: string | null;
   lastError: string | null;
@@ -107,6 +109,37 @@ export interface RunQuestion {
   id: number | string;
   message: string;
   options: RunQuestionOption[];
+}
+
+/** One goal-labeled issue's own concurrent peer. */
+export interface IssuesAgent {
+  runId: string;
+  issueNumber: number;
+  startedAt: string;
+  question: RunQuestion | null;
+  acp: { pid: number; argv: string[]; cwd: string } | null;
+}
+
+export interface GoalDraftSummary {
+  path: string;
+  name: string;
+  heading: string;
+}
+
+export interface GoalDraftDetail extends GoalDraftSummary {
+  text: string;
+}
+
+export type GoalDraftStatus = "idle" | "running" | "succeeded" | "failed" | "stopped";
+
+export interface GoalDraftRun {
+  status: GoalDraftStatus;
+  path: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  activity: string[];
+  question: RunQuestion | null;
 }
 
 export interface SkillSummary {

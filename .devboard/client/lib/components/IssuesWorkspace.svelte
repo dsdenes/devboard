@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { issues } from "../issues.svelte";
+  import { issues, isGoalIssue } from "../issues.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import Button from "./ui/button.svelte";
+  import DraftsPage from "./DraftsPage.svelte";
   import Input from "./ui/input.svelte";
 
   interface Props {
@@ -10,7 +11,15 @@
 
   let { tab }: Props = $props();
 
-  const page = $derived(tab?.kind === "queue" ? "queue" : tab?.kind === "runs" ? "runs" : "overview");
+  const page = $derived(
+    tab?.kind === "drafts"
+      ? "drafts"
+      : tab?.kind === "queue"
+        ? "queue"
+        : tab?.kind === "runs"
+          ? "runs"
+          : "overview",
+  );
 
   const stateWord = $derived(issues.lifecycle);
   const nextCheck = $derived(issues.snapshot?.poll?.nextPollAt ?? null);
@@ -25,6 +34,8 @@
   const activityText = $derived(
     issues.activity.length === 0 ? "No activity yet." : issues.activity.join("\n"),
   );
+  const agents = $derived(issues.agents);
+  let agentAnswers = $state<Record<string, string>>({});
 
   let activityElement = $state<HTMLPreElement | null>(null);
   let followActivity = $state(true);
@@ -77,6 +88,7 @@
     </header>
 
     <div class="issues-overview__body">
+      <div class="issues-overview__side">
       <section class="panel">
         <div class="panel__header">
           <h2 class="panel__title">Automation</h2>
@@ -131,6 +143,105 @@
           {/if}
         </div>
       </section>
+
+      <section class="panel issues-activity-panel">
+        <div class="panel__header">
+          <h2 class="panel__title">Goal agents</h2>
+          <span class="panel__subtitle">{agents.length} active</span>
+        </div>
+        <div class="panel__body stack-sm" data-testid="issues-agents">
+          {#each agents as agent (agent.runId)}
+            <article
+              class="issues-agent"
+              data-testid="issues-agent"
+              data-issue={agent.issueNumber}
+              data-run={agent.runId}
+            >
+              <header class="toolbar toolbar--between">
+                <span class="mono">#{agent.issueNumber}</span>
+                <span class="badge" data-tone="accent">goal</span>
+                <span class="mono muted">{agent.runId}</span>
+              </header>
+              <pre class="issues-activity mono" data-testid="issues-agent-activity" data-run={agent.runId}>{
+                issues.activityFor(agent.runId).length === 0
+                  ? "No activity yet."
+                  : issues.activityFor(agent.runId).join("\n")
+              }</pre>
+              {#if agent.question !== null}
+                <div
+                  class="issues-question"
+                  data-testid="issues-agent-question"
+                  data-run={agent.runId}
+                  data-issue={agent.issueNumber}
+                >
+                  <p>{agent.question.message}</p>
+                  {#if agent.question.options.length > 0}
+                    <div class="choice-list">
+                      {#each agent.question.options as option (option.label)}
+                        <button
+                          type="button"
+                          class="choice"
+                          data-testid="issues-agent-choice"
+                          data-run={agent.runId}
+                          data-command="issues.answer"
+                          onclick={() =>
+                            issues.submitAgentAnswer(agent.runId, agent.question!.id, option.label)}
+                        >
+                          <span class="choice__label">
+                            {option.label}
+                            {#if option.recommended}
+                              <span class="choice__recommended">Recommended</span>
+                            {/if}
+                          </span>
+                          {#if option.description}
+                            <span class="choice__description">{option.description}</span>
+                          {/if}
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                  <form
+                    class="issues-answer"
+                    onsubmit={(event) => {
+                      event.preventDefault();
+                      issues.submitAgentAnswer(
+                        agent.runId,
+                        agent.question!.id,
+                        agentAnswers[agent.runId] ?? "",
+                      );
+                      agentAnswers = { ...agentAnswers, [agent.runId]: "" };
+                    }}
+                  >
+                    <Input
+                      type="text"
+                      value={agentAnswers[agent.runId] ?? ""}
+                      oninput={(event) =>
+                        (agentAnswers = { ...agentAnswers, [agent.runId]: event.currentTarget.value })}
+                      placeholder="Your answer"
+                      aria-label={`Your answer for issue ${agent.issueNumber}`}
+                      data-testid="issues-agent-answer-input"
+                      data-run={agent.runId}
+                    />
+                    <Button
+                      variant="default"
+                      type="submit"
+                      data-command="issues.answer"
+                      data-testid="issues-agent-answer-submit"
+                      data-run={agent.runId}
+                      disabled={(agentAnswers[agent.runId] ?? "").trim().length === 0}
+                    >
+                      Answer
+                    </Button>
+                  </form>
+                </div>
+              {/if}
+            </article>
+          {:else}
+            <p class="muted">No goal-labeled issue is running.</p>
+          {/each}
+        </div>
+      </section>
+      </div>
 
       <section class="panel issues-activity-panel">
         <div class="panel__header">
@@ -212,6 +323,9 @@
         <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
       </div>
       <span class="badge" data-tone="warning">{issues.pending} pending</span>
+      {#if issues.goalPending > 0}
+        <span class="badge" data-tone="accent">{issues.goalPending} goal</span>
+      {/if}
     </header>
     <div class="panel">
       <div class="panel__header">
@@ -226,12 +340,16 @@
               data-testid="issues-queue-item"
               data-number={issue.number}
               data-handled={issue.handled}
+              data-goal={isGoalIssue(issue)}
             >
               <a class="mono" href={issue.url} target="_blank" rel="noreferrer">#{issue.number}</a>
               <span class="issues-queue__title">{issue.title}</span>
+              {#if isGoalIssue(issue)}
+                <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
+              {/if}
               {#if issue.handled}
                 <span class="badge" data-tone="success">handled</span>
-              {:else}
+              {:else if !isGoalIssue(issue)}
                 <span class="badge" data-tone="warning">pending</span>
               {/if}
             </li>
@@ -242,6 +360,8 @@
       </div>
     </div>
   </section>
+{:else if page === "drafts"}
+  <DraftsPage />
 {:else}
   <section class="issues-runs-page" aria-label="Issues runs">
     <header class="issues-overview__header">

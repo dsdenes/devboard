@@ -15,6 +15,7 @@ import {
   appendActivityLine,
   emptyState,
   loadState,
+  parseRunFile,
   parseState,
   readActivity,
   trimActivityLines,
@@ -23,7 +24,13 @@ import {
   type IssuesState,
 } from "../issues/state";
 import { parseResponse, pollOpenIssues } from "../issues/tracker";
-import { IssuesWorker, type AcpPeer, type IssuesPeerOptions } from "../issues/worker";
+import {
+  IssuesWorker,
+  implementAllPrompt,
+  isGoalIssue,
+  type AcpPeer,
+  type IssuesPeerOptions,
+} from "../issues/worker";
 
 /**
  * Durable worker tests. Every fixture lives under `.devboard/.tmp`; the tracker
@@ -52,13 +59,18 @@ async function temporaryDirectory(prefix = "test-issues"): Promise<string> {
   return directory;
 }
 
-function issue(number: number, title = `Issue ${number}`): IssuesIssue {
+function issue(number: number, title = `Issue ${number}`, labels: string[] = []): IssuesIssue {
   return {
     number,
     title,
     url: `https://github.com/acme/fixture/issues/${number}`,
     createdAt: `2026-10-${String(20 + (number % 5)).padStart(2, "0")}T00:00:00Z`,
+    labels,
   };
+}
+
+function goalIssue(number: number, title = `Goal ${number}`): IssuesIssue {
+  return issue(number, title, ["goal"]);
 }
 
 async function waitFor<T>(
@@ -205,7 +217,7 @@ describe("trigger policy", () => {
     const f = await fixture({ issues: [issue(1), issue(2), issue(3)] });
     try {
       const peer = await waitFor(() => f.peers[0], "the first peer");
-      expect(peer.prompts).toEqual(["/implement-all-issues"]);
+      expect(peer.prompts).toEqual([implementAllPrompt([1, 2, 3])]);
       await waitFor(() => (f.state().lifecycle === "running" ? true : undefined), "running");
       expect(f.state().activeRun?.issueNumbers).toEqual([1, 2, 3]);
       peer.emit("working");
@@ -262,7 +274,7 @@ describe("trigger policy", () => {
       first.succeed();
 
       const second = await waitFor(() => f.peers[1], "the follow-up peer");
-      expect(second.prompts).toEqual(["/implement-all-issues"]);
+      expect(second.prompts).toEqual([implementAllPrompt([2])]);
       await waitFor(
         () => (f.state().activeRun?.issueNumbers.join(",") === "2" ? true : undefined),
         "the follow-up capture",
@@ -327,6 +339,206 @@ describe("trigger policy", () => {
       expect(peer.activity.map((entry) => entry.text)).toContain("answered all");
       peer.succeed();
       await waitFor(() => (f.state().lifecycle === "idle" ? true : undefined), "idle");
+    } finally {
+      await stop(f);
+    }
+  });
+});
+
+describe("goal-labeled issues", () => {
+  test("implement-all excludes goal issues and states the exclusion verbatim", async () => {
+    const f = await fixture({ issues: [issue(1), goalIssue(2), issue(3)] });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the backlog peer");
+      const prompt = peer.prompts[0] ?? "";
+      expect(prompt).toBe(implementAllPrompt([1, 3]));
+      expect(prompt).toContain("#1, #3");
+      expect(prompt).not.toContain("#2");
+      expect(prompt).toContain(
+        'Do not process, comment on, close, or modify any issue labeled "goal".',
+      );
+      expect(prompt.startsWith("/implement-all-issues Process exactly these open issue numbers: "))
+        .toBe(true);
+      expect(f.state().activeRun?.issueNumbers).toEqual([1, 3]);
+
+      const goal = await waitFor(
+        () => f.peers.find((candidate) => candidate.prompts[0] === "/implement-goal-issue 2"),
+        "the goal peer",
+      );
+      expect(goal).toBeDefined();
+      expect(f.state().agents.map((agent) => agent.issueNumber)).toEqual([2]);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("starts no implement-all peer when only goal issues are open", async () => {
+    const f = await fixture({ issues: [goalIssue(7)] });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the goal peer");
+      expect(peer.prompts).toEqual(["/implement-goal-issue 7"]);
+      expect(f.state().activeRun).toBeNull();
+      expect(f.state().agents).toHaveLength(1);
+      expect(f.state().agents[0]?.issueNumber).toBe(7);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("runs one concurrent peer per goal issue and never duplicates it", async () => {
+    const f = await fixture({ issues: [goalIssue(1), goalIssue(2)] });
+    try {
+      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two goal peers");
+      const prompts = f.peers.map((peer) => peer.prompts[0]).sort();
+      expect(prompts).toEqual(["/implement-goal-issue 1", "/implement-goal-issue 2"]);
+      const agents = f.state().agents;
+      expect(agents).toHaveLength(2);
+      expect(new Set(agents.map((agent) => agent.runId)).size).toBe(2);
+      expect(agents.map((agent) => agent.issueNumber).sort()).toEqual([1, 2]);
+      expect(f.peers.every((peer) => peer.closed === false)).toBe(true);
+
+      await f.worker.poll();
+      await f.worker.poll();
+      expect(f.peers).toHaveLength(2);
+      expect(f.state().agents).toHaveLength(2);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("routes each answer to the peer that asked it", async () => {
+    const f = await fixture({ issues: [goalIssue(1), goalIssue(2)] });
+    try {
+      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two goal peers");
+      await waitFor(() => (f.state().agents.length === 2 ? true : undefined), "two agents");
+      const [first, second] = f.peers;
+      first!.ask({ id: 9, message: "First scope?", options: [], properties: {}, required: undefined });
+      second!.ask({ id: 9, message: "Second scope?", options: [], properties: {}, required: undefined });
+      const asked = await waitFor(
+        () => (f.state().agents.every((agent) => agent.question !== null) ? f.state() : undefined),
+        "both questions",
+      );
+      const firstAgent = asked.agents.find((agent) => agent.issueNumber === 1)!;
+      const secondAgent = asked.agents.find((agent) => agent.issueNumber === 2)!;
+      expect(firstAgent.question?.message).toBe("First scope?");
+      expect(secondAgent.question?.message).toBe("Second scope?");
+
+      writeCommand(controlDirectory(f.stateDir, f.root), {
+        type: "answer",
+        id: 9,
+        value: "only first",
+        runId: firstAgent.runId,
+      });
+      const answered = await waitFor(
+        () =>
+          f.state().agents.find((agent) => agent.runId === firstAgent.runId)?.question === null
+            ? f.state()
+            : undefined,
+        "the first answer",
+      );
+      expect(answered.agents.find((agent) => agent.runId === secondAgent.runId)?.question).not.toBeNull();
+      expect(first!.activity.map((entry) => entry.text)).toContain("answered only first");
+      expect(second!.activity.map((entry) => entry.text)).not.toContain("answered only first");
+      expect(f.state().question).toBeNull();
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("records a successful goal run as handled", async () => {
+    const f = await fixture({ issues: [goalIssue(4)] });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the goal peer");
+      peer.succeed();
+      const idle = await waitFor(
+        () => (f.state().lifecycle === "idle" ? f.state() : undefined),
+        "idle",
+      );
+      expect(idle.runs[0]?.status).toBe("succeeded");
+      expect(idle.runs[0]?.issueNumbers).toEqual([4]);
+      expect(f.state().queue[0]?.handled).toBe(true);
+      expect(idle.agents).toEqual([]);
+      const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
+      expect(ledger.handled["4"]).toBeDefined();
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a failed goal run gates only its own issue for five minutes", async () => {
+    const f = await fixture({ issues: [goalIssue(1), goalIssue(2)] });
+    try {
+      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two goal peers");
+      const failing = f.peers.find((peer) => peer.prompts[0] === "/implement-goal-issue 1")!;
+      const other = f.peers.find((peer) => peer.prompts[0] === "/implement-goal-issue 2")!;
+      failing.fail("goal exploded");
+      const failed = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(1) && run.status === "failed")
+            ? f.state()
+            : undefined,
+        "the failed goal run",
+      );
+      expect(failed.runs.find((run) => run.issueNumbers.includes(1))?.firstStderrLine).toBe(
+        "goal exploded",
+      );
+      expect(failed.queue.find((issue) => issue.number === 1)?.handled).toBe(false);
+      const until = Date.parse(failed.goalCooldowns["1"] ?? "");
+      expect(until - Date.now()).toBeGreaterThan(4 * 60_000);
+      expect(until - Date.now()).toBeLessThanOrEqual(5 * 60_000);
+      expect(failed.goalCooldowns["2"]).toBeUndefined();
+      expect(other.closed).toBe(false);
+
+      await f.worker.poll();
+      expect(
+        f.peers.filter((peer) => peer.prompts[0] === "/implement-goal-issue 1"),
+      ).toHaveLength(1);
+      const ledger = existsSync(ledgerPath(f.stateDir, f.root))
+        ? JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"))
+        : { handled: {} };
+      expect(ledger.handled["1"]).toBeUndefined();
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("stop closes every peer, stops every run, and writes no cooldown", async () => {
+    const f = await fixture({ issues: [issue(3), goalIssue(1), goalIssue(2)] });
+    try {
+      await waitFor(() => (f.peers.length === 3 ? true : undefined), "every peer");
+      writeCommand(controlDirectory(f.stateDir, f.root), { type: "stop" });
+      const stopped = await waitFor(
+        () => (f.state().lifecycle === "stopped" ? f.state() : undefined),
+        "stopped",
+      );
+      expect(f.peers.every((peer) => peer.closed === true)).toBe(true);
+      expect(stopped.runs.map((run) => run.status)).toEqual([
+        "stopped",
+        "stopped",
+        "stopped",
+      ]);
+      expect(stopped.agents).toEqual([]);
+      expect(stopped.goalCooldowns).toEqual({});
+      expect(stopped.nextAttemptAt).toBeNull();
+      expect(existsSync(lockPath(f.root))).toBe(false);
+      const ledger = existsSync(ledgerPath(f.stateDir, f.root))
+        ? JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"))
+        : { handled: {} };
+      expect(Object.keys(ledger.handled)).toEqual([]);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("an issue closed by its agent leaves the queue on the next poll", async () => {
+    const f = await fixture({ issues: [goalIssue(5)] });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the goal peer");
+      f.issues.splice(0, f.issues.length);
+      peer.succeed();
+      await waitFor(() => (f.state().lifecycle === "idle" ? true : undefined), "idle");
+      await f.worker.poll();
+      expect(f.state().queue).toEqual([]);
     } finally {
       await stop(f);
     }
@@ -576,8 +788,13 @@ describe("tracker", () => {
       "HTTP/2.0 200 OK",
       'etag: "next"',
       "",
-      JSON.stringify(issue(2)),
-      JSON.stringify(issue(1)),
+      JSON.stringify({ ...issue(2), labels: ["goal", "bug"] }),
+      JSON.stringify({
+        number: 1,
+        title: "Issue 1",
+        url: "https://github.com/acme/fixture/issues/1",
+        createdAt: "2026-10-21T00:00:00Z",
+      }),
     ].join("\n");
     const result = await pollOpenIssues({
       repository: "acme/fixture",
@@ -586,6 +803,8 @@ describe("tracker", () => {
     expect(result.kind).toBe("issues");
     if (result.kind !== "issues") return;
     expect(result.issues.map((entry) => entry.number)).toEqual([1, 2]);
+    expect(result.issues[0]?.labels).toEqual([]);
+    expect(result.issues[1]?.labels).toEqual(["goal", "bug"]);
     expect(result.etag).toBe('"next"');
 
     const limited = await pollOpenIssues({
@@ -704,9 +923,11 @@ describe("state document", () => {
       queue: [],
       runs: [],
       activeRun: null,
+      agents: [],
       question: null,
       acp: null,
       nextAttemptAt: null,
+      goalCooldowns: {},
       lastError: null,
       lastExitCode: null,
       finishedAt: null,
@@ -715,6 +936,52 @@ describe("state document", () => {
     };
     expect(parseState(JSON.stringify({ ...state, version: 2 }))).toBeUndefined();
     expect(parseState(JSON.stringify(state))?.lifecycle).toBe("stopped");
+
+    const legacy = {
+      ...state,
+      queue: [
+        {
+          number: 4,
+          title: "Legacy issue",
+          url: "https://github.com/acme/fixture/issues/4",
+          createdAt: "2026-10-21T00:00:00Z",
+          handled: false,
+          runId: null,
+        },
+      ],
+      agents: undefined,
+      goalCooldowns: undefined,
+    };
+    const parsed = parseState(JSON.stringify(legacy));
+    expect(parsed?.queue[0]?.labels).toEqual([]);
+    expect(parsed?.agents).toEqual([]);
+    expect(parsed?.goalCooldowns).toEqual({});
+
+    const legacyRun = parseRunFile(
+      JSON.stringify({
+        version: 1,
+        runId: "run",
+        repo: "acme/fixture",
+        status: "succeeded",
+        argv: [],
+        cwd: "/tmp",
+        startedAt: "2026-10-27T00:00:00Z",
+        finishedAt: "2026-10-27T00:01:00Z",
+        exitCode: 0,
+        issues: [
+          {
+            number: 4,
+            title: "Legacy issue",
+            url: "https://github.com/acme/fixture/issues/4",
+            createdAt: "2026-10-21T00:00:00Z",
+          },
+        ],
+        firstStderrLine: null,
+        workerPid: 1,
+        harnessVersion: null,
+      }),
+    );
+    expect(legacyRun?.issues[0]?.labels).toEqual([]);
 
     const path = join(testRoot, "state-document.json");
     writeState(path, state);
