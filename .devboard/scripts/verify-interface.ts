@@ -4278,7 +4278,7 @@ try {
     return {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
       link: link?.getAttribute("data-command") ?? "",
-      summaryIssues: [...(summary?.querySelectorAll("[data-issue]") ?? [])].map(
+      summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
       ),
       sideBeforeOutput: side !== null && output !== null && side.nextElementSibling === output,
