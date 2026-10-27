@@ -386,7 +386,6 @@
                 >
                   #{agent.issueNumber}
                 </a>
-                <span class="badge" data-tone={statusTone(status)}>{status}</span>
                 {#if agent.question}
                   <span class="badge" data-tone="warning">needs answer</span>
                 {/if}

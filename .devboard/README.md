@@ -1389,7 +1389,7 @@ renders `data-testid="issues-agents-empty"` and an `Open Overview` control
 The grid `data-testid="issues-agents"` holds one card per running agent, sorted by issue number
 ascending. Each card has `data-testid="issues-agent"`, `data-issue`, `data-run`, `data-status`, and
 `data-asked` while its agent waits for an answer; it shows the issue number linked to its tracker
-URL, the issue title, the status word, and one compact elapsed and started-time line whose tooltip
+URL, the issue title, and one compact elapsed and started-time line whose tooltip
 carries the exact timestamp. The run id appears in the Focus tab, not on the card. Every card
 renders its agent's full streamed output in `data-testid="issues-agent-activity"` with `data-run`,
 inside a 96px scroll surface; each log follows its newest line while the operator is at the bottom
