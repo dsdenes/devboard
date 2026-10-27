@@ -12,8 +12,8 @@
 ```bash
 bun install --frozen-lockfile
 bun run build                 # vite build, dist rewritten
-bun test                      # 567 pass, 0 fail, 4034 expect() calls, 45 files
-bun run check                 # svelte-check: 1670 files, 0 errors, 0 warnings
+bun test                      # 581 pass, 0 fail, 4074 expect() calls, 46 files
+bun run check                 # svelte-check: 1672 files, 0 errors, 0 warnings
 bun run verify:interface      # passed, including the new card geometry assertions
 bun run verify:issues         # passed on the merged tree
 ```
@@ -32,7 +32,8 @@ The browser contract now checks, on the three-agent fixture:
 ## Dashboard and viewports
 
 The worktree build was served from `.devboard/dist`, not the installed bundle, against the
-fixture host and the seeded three-agent state:
+fixture host and the seeded three-agent state (opened through the command palette, because the
+Issues sidebar no longer lists Agents):
 
 ```bash
 ADRS_DIR=<fixture>/adrs REPO_DIR=<fixture> GOAL_FILE=<fixture>/GOAL.md \
