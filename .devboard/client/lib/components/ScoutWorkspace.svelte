@@ -41,9 +41,6 @@
   <section class="panel">
     <div class="panel__header">
       <h2 class="panel__title">Scout worker</h2>
-      <span class="panel__subtitle">
-        {scout.scanning ? "One scan is running" : scout.count === 9 ? "Board full" : "Up to nine recommendations"}
-      </span>
     </div>
     <div class="panel__body stack-sm">
       <div class="toolbar">
