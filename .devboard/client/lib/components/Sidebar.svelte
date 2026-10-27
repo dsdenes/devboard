@@ -294,18 +294,6 @@
         <button
           type="button"
           class="sidebar-item"
-          aria-current={isActive("agents")}
-          aria-label="Agents, Issues mode, Alt+2"
-          data-command="open.issues.agents"
-          data-testid="open-issues-agents"
-          onclick={() => open("issues", "agents", "agents", "agents", "Agents")}
-        >
-          <span class="sidebar-item__label">Agents</span>
-          <span class="sidebar-item__meta">{issues.agents.length}</span>
-        </button>
-        <button
-          type="button"
-          class="sidebar-item"
           aria-current={isActive("scout") ? "true" : undefined}
           aria-label={`Auto Scout (${modeLabel})`}
           data-command="open.issues.scout"

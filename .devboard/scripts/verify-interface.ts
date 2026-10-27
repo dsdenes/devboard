@@ -4245,7 +4245,7 @@ try {
   );
 
   // With no active agent the Agents page explains the empty fleet and links back.
-  await page.click('[data-testid="open-issues-agents"]');
+  await runPalette("open.issues.agents");
   await page.wait(
     `document.querySelector('[data-testid="issues-agents-empty"]') !== null`,
     "the empty Agents page",
@@ -4505,31 +4505,13 @@ try {
     closeControls,
   );
 
-  // The sidebar lists Agents directly after Overview and counts the fleet.
-  const agentsEntry = await page.eval<{
-    label: string;
-    command: string;
-    count: string;
-    afterOverview: boolean;
-    accessible: string;
-  }>(`(() => {
-    const entry = document.querySelector('[data-testid="open-issues-agents"]');
-    const overviewEntry = document.querySelector('[data-testid="open-issues-overview"]');
-    return {
-      label: entry?.querySelector(".sidebar-item__label")?.textContent?.trim() ?? "",
-      command: entry?.getAttribute("data-command") ?? "",
-      count: entry?.querySelector(".sidebar-item__meta")?.textContent?.trim() ?? "",
-      afterOverview: overviewEntry !== null && overviewEntry.nextElementSibling === entry,
-      accessible: entry?.getAttribute("aria-label") ?? "",
-    };
-  })()`);
-  check(agentsEntry.label === "Agents", "the sidebar entry is not labeled Agents", agentsEntry);
-  check(agentsEntry.command === "open.issues.agents", "the Agents entry has the wrong command", agentsEntry);
-  check(agentsEntry.count === "3", "the Agents entry does not count the running agents", agentsEntry);
-  check(agentsEntry.afterOverview, "the Agents entry is not directly after Overview", agentsEntry);
-  check(agentsEntry.accessible.includes("Issues"), "the Agents entry does not name its mode", agentsEntry);
+  // The sidebar no longer lists Agents; the palette still opens the tab.
+  check(
+    await page.eval<boolean>(`document.querySelector('[data-testid="open-issues-agents"]') === null`),
+    "the Issues sidebar still lists Agents",
+  );
 
-  await page.click('[data-testid="open-issues-agents"]');
+  await runPalette("open.issues.agents");
   await page.wait(
     `document.querySelector('[data-testid="issues-agents-page"]') !== null &&
      document.querySelectorAll('[data-testid="issues-agent"]').length === 3`,

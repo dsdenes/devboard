@@ -1373,10 +1373,9 @@ systemctl --user daemon-reload
 
 ### The Agents surface
 
-The Issues sidebar lists `Agents` directly after `Overview`, with `data-command="open.issues.agents"`
-and `data-testid="open-issues-agents"`, trailing the running-agent count; its accessible name names
-the Issues mode. The command palette lists `open.issues.agents` in the `Workspace` group with the
-title `Open Agents`.
+The Issues sidebar has no `Agents` entry and the Overview has no Open Agents control; the command
+palette lists `open.issues.agents` in the `Workspace` group with the title `Open Agents` and opens
+the tab from any mode.
 
 The tab is `{ id: "agents", kind: "agents", resourceId: "agents", title: "Agents" }` and is
 restored after a reload. The page renders `data-testid="issues-agents-page"` with a page header
@@ -1524,7 +1523,7 @@ agent leaves the queue on the next poll.
 
 ## Auto Scout
 
-The Issues sidebar lists `Overview`, `Agents`, `Auto Scout`, `Issues`, `Runs`, and then `Drafts`
+The Issues sidebar lists `Overview`, `Auto Scout`, `Issues`, `Runs`, and then `Drafts`
 in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`, palette
 `Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its tab, or
 reloading the dashboard never starts a worker: only `data-testid="scout-start"` does. The page
