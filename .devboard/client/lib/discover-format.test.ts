@@ -4,9 +4,12 @@ import {
   conceptUsage,
   filterContexts,
   glossaryHasSignificance,
+  implementedTiers,
+  pyramidTiers,
+  relativeTime,
   SIGNIFICANCE_FLOOR,
 } from "./discover-format";
-import type { Concept, Glossary, GlossarySignificance, GlossaryUsage } from "./types";
+import type { Concept, Glossary, GlossarySignificance, GlossaryUsage, Leaf } from "./types";
 
 function concept(id: string, status: string, label: string): Concept {
   return {
@@ -168,5 +171,61 @@ describe("glossary significance", () => {
       files: 0,
       examples: [],
     });
+  });
+});
+
+describe("test levels", () => {
+  const levels: Leaf = {
+    value: [
+      { level: "contract", tests: "0", command: "npm run test:contract" },
+      { level: "unit", tests: "118", command: "node --test" },
+      { level: "integration", tests: "4", command: "node --test" },
+    ],
+    evidence: ["package.json"],
+    confidence: "observed",
+  };
+
+  test("lists a level only when it carries a test", () => {
+    expect(pyramidTiers(levels).map((tier) => tier.level)).toEqual([
+      "unit",
+      "integration",
+      "contract",
+    ]);
+    expect(implementedTiers(pyramidTiers(levels)).map((tier) => tier.level)).toEqual([
+      "unit",
+      "integration",
+    ]);
+  });
+
+  test("keeps an unparsable count out of the implemented levels", () => {
+    const unknown: Leaf = {
+      value: [{ level: "unit", tests: "unknown" }],
+      evidence: ["package.json"],
+      confidence: "observed",
+    };
+    expect(implementedTiers(pyramidTiers(unknown))).toEqual([]);
+  });
+});
+
+describe("relative time", () => {
+  const started = "2026-10-27T10:00:00.000Z";
+  const at = Date.parse(started);
+
+  test("reads a recent start as just now", () => {
+    expect(relativeTime(started, at + 5_000)).toBe("just now");
+    expect(relativeTime(started, at - 30_000)).toBe("just now");
+  });
+
+  test("names the elapsed minutes, hours, and days", () => {
+    expect(relativeTime(started, at + 60_000)).toBe("a minute ago");
+    expect(relativeTime(started, at + 5 * 60_000)).toBe("5 minutes ago");
+    expect(relativeTime(started, at + 3 * 3_600_000)).toBe("3 hours ago");
+    expect(relativeTime(started, at + 30 * 3_600_000)).toBe("yesterday");
+    expect(relativeTime(started, at + 5 * 86_400_000)).toBe("5 days ago");
+  });
+
+  test("returns nothing for a timestamp it cannot read", () => {
+    expect(relativeTime("", at)).toBe("");
+    expect(relativeTime("not a date", at)).toBe("");
   });
 });

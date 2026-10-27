@@ -18,8 +18,8 @@
         link: "border-transparent bg-transparent text-[var(--primary)] underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-7 px-2.5",
-        sm: "h-6 px-2 text-[11px]",
+        default: "h-7 px-3",
+        sm: "h-6 px-2.5 text-[11px]",
         icon: "size-7",
       },
     },

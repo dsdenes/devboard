@@ -3,16 +3,19 @@
     COMMAND_LABELS,
     HIDDEN_LEAVES,
     humanize,
+    implementedTiers,
     isLeaf,
     leafLines,
     pyramidTiers,
     pyramidTestCount,
     recordItems,
+    relativeTime,
     scalarText,
     sectionEntries,
     sectionLeaf,
     unknownText,
   } from "../discover-format";
+  import { onMount } from "svelte";
   import { connection } from "../connection.svelte";
   import { discover } from "../discover.svelte";
   import type { Leaf } from "../types";
@@ -30,7 +33,6 @@
   const LEVEL_COLUMNS = [
     { id: "level", header: "Level", accessorKey: "level" },
     { id: "tests", header: "Tests", accessorKey: "tests" },
-    { id: "detail", header: "Paths & fixtures", accessorKey: "detail" },
   ];
   const BOUNDARY_GROUPS = [
     { key: "sharedKernels", label: "Shared kernels", kind: "chips" },
@@ -80,7 +82,8 @@
     typeof sheet?.testing === "object" && sheet.testing !== null ? sheet.testing : null,
   );
   const levels = $derived(sectionLeaf(testingSection, "levels"));
-  const tiers = $derived(pyramidTiers(levels));
+  const recordedTiers = $derived(pyramidTiers(levels));
+  const tiers = $derived(implementedTiers(recordedTiers));
   const testTotal = $derived(pyramidTestCount(tiers));
   const levelRows = $derived(
     tiers.map((tier) => {
@@ -89,13 +92,22 @@
       return {
         level: humanize(tier.level),
         tests: `${tests} ${tests === 1 ? "test" : "tests"}`,
-        detail: tier.detail.length > 0 ? tier.detail.replaceAll(" · ", "\n") : "—",
         rawLevel: tier.level,
       };
     }),
   );
 
   const runtimeSection = $derived(visibleSection(sheet?.runtime, HIDDEN_LEAVES.runtime ?? []));
+  let now = $state(Date.now());
+  const startedLabel = $derived(
+    discover.startedAt === null ? "" : relativeTime(discover.startedAt, now),
+  );
+
+  onMount(() => {
+    const timer = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(timer);
+  });
+
   const deploymentSection = $derived(
     visibleSection(sheet?.deployment, HIDDEN_LEAVES.deployment ?? []),
   );
@@ -337,6 +349,53 @@
   </div>
 {/snippet}
 
+{#snippet sheetRail()}
+  <div class="discover-rail">
+    <section class="discover-block" data-testid="discover-card" data-field="runtime">
+      <div class="discover-block__head">
+        <h2 class="discover-block__title">Platform</h2>
+      </div>
+      {@render factList(runtimeSection)}
+    </section>
+
+    {#if hasDelivery}
+      <section class="discover-block" data-testid="discover-card" data-field="delivery">
+        <div class="discover-block__head">
+          <h2 class="discover-block__title">Delivery</h2>
+        </div>
+        {#if Object.keys(deploymentSection).length > 0}
+          <div class="discover-subblock">
+            <h3 class="discover-subblock__title">Deployment</h3>
+            {@render factList(deploymentSection)}
+          </div>
+        {/if}
+        {#if Object.keys(ciSection).length > 0}
+          <div class="discover-subblock">
+            <h3 class="discover-subblock__title">CI</h3>
+            {@render factList(ciSection)}
+          </div>
+        {/if}
+        {#if Object.keys(branchingSection).length > 0}
+          <div class="discover-subblock">
+            <h3 class="discover-subblock__title">Branching</h3>
+            {@render factList(branchingSection)}
+          </div>
+        {/if}
+      </section>
+    {/if}
+
+    {#if stackLines.length > 0}
+      <section class="discover-block" data-testid="discover-card" data-field="stack">
+        <div class="discover-block__head">
+          <h2 class="discover-block__title">Stack</h2>
+          <span class="discover-block__meta">{stackLines.length} entries</span>
+        </div>
+        {@render chipList(stackLines)}
+      </section>
+    {/if}
+  </div>
+{/snippet}
+
 <div
   class="scroll-column discover-page"
   data-testid="discover-panel"
@@ -346,20 +405,7 @@
   <header class="discover-head" data-testid="discover-card" data-field="definition">
     <div class="discover-head__top">
       <div class="discover-head__identity">
-        <span class="discover-page__eyebrow">Project sheet</span>
-        <div class="discover-head__title-row">
-          <h1 class="discover-head__title" title={projectPath}>{projectName}</h1>
-          {#if discover.stale}
-            <span
-              class="badge"
-              data-tone="stale"
-              data-testid="discover-stale"
-              title="The repository fingerprint changed since this sheet was published."
-            >
-              stale
-            </span>
-          {/if}
-        </div>
+        <h1 class="discover-head__title" title={projectPath}>{projectName}</h1>
       </div>
       <div class="discover-head__actions">
         {#if discover.busy !== null}
@@ -373,8 +419,6 @@
       <p class="discover-head__definition">{definitionText}</p>
       {#if freshness !== null}
         <div class="discover-head__meta" data-testid="discover-freshness">
-          <code>{freshness.commit}</code>
-          <span aria-hidden="true">·</span>
           <span>{discoveredLabel(freshness.discoveredAt)}</span>
         </div>
       {/if}
@@ -400,7 +444,7 @@
         </div>
         <div class="row-sm">
           {#if discover.startedAt !== null}
-            <span class="muted">Started {discover.startedAt}</span>
+            <span class="muted" title={discover.startedAt}>Started {startedLabel}</span>
           {/if}
           <Button
             variant="destructive"
@@ -488,6 +532,7 @@
 
   {#if discover.hasArtifacts && sheet !== null}
     <div class="discover-sheet" data-testid="discover-sheet">
+      {@render sheetRail()}
       <div class="discover-col">
         {#if commandsSection !== null}
           <section class="panel discover-card" data-testid="discover-card" data-field="commands">
@@ -540,7 +585,11 @@
               {:else if levels.confidence === "unknown"}
                 <p class="empty">{unknownText(levels)}</p>
               {:else if tiers.length === 0}
-                <p class="empty">No test level was recorded.</p>
+                <p class="empty">
+                  {recordedTiers.length === 0
+                    ? "No test level was recorded."
+                    : "No recorded level carries a test."}
+                </p>
               {:else}
                 <div class="discover-test-summary">
                   <div class="discover-stats" data-testid="discover-test-summary">
@@ -570,8 +619,6 @@
                   rows={levelRows}
                   rowAttrs={(row) => ({ "data-level": String(row.rawLevel ?? "") })}
                   cellValue={(row, columnId) => String(row[columnId] ?? "")}
-                  cellAttrs={(_row, columnId) =>
-                    columnId === "detail" ? { class: "discover-mono" } : {}}
                   full
                   wrap
                 />
@@ -638,51 +685,6 @@
                 </p>
               {/if}
             </div>
-          </section>
-        {/if}
-      </div>
-
-      <div class="discover-rail">
-        <section class="discover-block" data-testid="discover-card" data-field="runtime">
-          <div class="discover-block__head">
-            <h2 class="discover-block__title">Platform</h2>
-          </div>
-          {@render factList(runtimeSection)}
-        </section>
-
-        {#if hasDelivery}
-          <section class="discover-block" data-testid="discover-card" data-field="delivery">
-            <div class="discover-block__head">
-              <h2 class="discover-block__title">Delivery</h2>
-            </div>
-            {#if Object.keys(deploymentSection).length > 0}
-              <div class="discover-subblock">
-                <h3 class="discover-subblock__title">Deployment</h3>
-                {@render factList(deploymentSection)}
-              </div>
-            {/if}
-            {#if Object.keys(ciSection).length > 0}
-              <div class="discover-subblock">
-                <h3 class="discover-subblock__title">CI</h3>
-                {@render factList(ciSection)}
-              </div>
-            {/if}
-            {#if Object.keys(branchingSection).length > 0}
-              <div class="discover-subblock">
-                <h3 class="discover-subblock__title">Branching</h3>
-                {@render factList(branchingSection)}
-              </div>
-            {/if}
-          </section>
-        {/if}
-
-        {#if stackLines.length > 0}
-          <section class="discover-block" data-testid="discover-card" data-field="stack">
-            <div class="discover-block__head">
-              <h2 class="discover-block__title">Stack</h2>
-              <span class="discover-block__meta">{stackLines.length} entries</span>
-            </div>
-            {@render chipList(stackLines)}
           </section>
         {/if}
       </div>

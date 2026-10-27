@@ -1575,12 +1575,54 @@ try {
 
   await runPalette("open.flow.overview");
   await page.wait(`document.querySelector('[data-testid="dismiss-flow-blocker"]') !== null`, "the Flow blocker control");
-  await page.click('[data-testid="dismiss-flow-blocker"]');
-  await page.wait(`document.querySelector('[data-testid="flow-blocker"]')?.getAttribute("data-dismissed") === "true"`, "the dismissed blocker");
-  await runPalette("open.flow.flow-goal");
-  await page.wait(`document.querySelector('[data-testid="flow-goal-text"] .monaco-editor') !== null`, "the Flow goal editor");
+  const flowGoalSurface = await page.eval<{
+    editor: boolean;
+    collapsed: string;
+    sidebar: number;
+    goalTop: number;
+    pageTop: number;
+    goalHeight: number;
+    pageHeight: number;
+    consoleHeight: number;
+    startPadding: string;
+  }>(`(() => {
+    const goal = document.querySelector('#workspace-flow [data-testid="flow-goal"]');
+    const page = document.querySelector('#workspace-flow .flow-overview');
+    const activity = document.querySelector('#workspace-flow [data-testid="flow-activity-section"]');
+    const start = document.querySelector('[data-testid="start-flow-implementation"]');
+    const goalBox = goal?.getBoundingClientRect();
+    const pageBox = page?.getBoundingClientRect();
+    return {
+      editor: document.querySelector('[data-testid="flow-goal-text"] .monaco-editor') !== null,
+      collapsed: goal?.getAttribute("data-collapsed") ?? "",
+      sidebar: document.querySelectorAll('[data-testid="sidebar"] [data-command="open.flow.flow-goal"]').length,
+      goalTop: Math.round(goalBox?.top ?? -1),
+      pageTop: Math.round(pageBox?.top ?? -1),
+      goalHeight: Math.round(goalBox?.height ?? 0),
+      pageHeight: Math.round(pageBox?.height ?? 0),
+      consoleHeight: Math.round(activity?.getBoundingClientRect().height ?? 0),
+      startPadding: start === null ? "" : getComputedStyle(start).paddingLeft,
+    };
+  })()`);
+  check(flowGoalSurface.editor && flowGoalSurface.collapsed === "false", "the Flow overview does not hold the goal editor", flowGoalSurface);
+  check(flowGoalSurface.sidebar === 0, "the Flow goal is still a separate sidebar entry", flowGoalSurface);
+  check(Math.abs(flowGoalSurface.goalTop - flowGoalSurface.pageTop) <= 1, "the Flow goal does not lead the overview", flowGoalSurface);
+  check(flowGoalSurface.goalHeight >= flowGoalSurface.pageHeight - 1, "the Flow goal does not fill the page", flowGoalSurface);
+  check(flowGoalSurface.consoleHeight >= flowGoalSurface.pageHeight - 1, "the implementation activity console is shorter than the page", flowGoalSurface);
+  check(
+    flowGoalSurface.startPadding === "12px",
+    "a Flow action does not use the design-system horizontal padding",
+    flowGoalSurface.startPadding,
+  );
   const flowLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-goal-text"] textarea')?.getAttribute("aria-label") ?? ""`);
   check(flowLabel.length > 0, "the Flow goal editor has no accessible label", flowLabel);
+  await page.click('[data-testid="dismiss-flow-blocker"]');
+  await page.wait(`document.querySelector('[data-testid="flow-blocker"]')?.getAttribute("data-dismissed") === "true"`, "the dismissed blocker");
+  await page.click('[data-testid="sidebar"] [data-command="flow.blocker.open.block-1"]');
+  await page.wait(
+    `document.activeElement?.id === "flow-blocker-block-1"`,
+    "the sidebar blocker did not open its row",
+  );
   await runPalette("open.flow.decisions");
   await page.wait(`document.querySelector('[data-testid="flow-decisions"] .monaco-editor') !== null`, "the Flow decision editor");
   const decisionLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-decisions"] textarea')?.getAttribute("aria-label") ?? ""`);
@@ -1728,6 +1770,50 @@ try {
   check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
   check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
   check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");
+  const discoverChrome = await page.eval<{
+    eyebrow: boolean;
+    stale: boolean;
+    commit: boolean;
+    railLeft: number;
+    columnLeft: number;
+    headers: string[];
+    subtitle: string;
+    rows: number;
+    versions: boolean;
+  }>(`(() => {
+    const head = document.querySelector('#workspace-discover .discover-head');
+    const sheet = document.querySelector('[data-testid="discover-sheet"]');
+    const rail = sheet?.querySelector('.discover-rail');
+    const column = sheet?.querySelector('.discover-col');
+    const testing = document.querySelector('#workspace-discover [data-field="testing"]');
+    return {
+      eyebrow: head?.querySelector('.discover-page__eyebrow') !== null,
+      stale: document.querySelector('[data-testid="discover-stale"]') !== null,
+      commit: head?.querySelector('.discover-head__meta code') !== null,
+      railLeft: Math.round(rail?.getBoundingClientRect().left ?? -1),
+      columnLeft: Math.round(column?.getBoundingClientRect().left ?? -1),
+      headers: [...document.querySelectorAll('[data-testid="discover-pyramid"] thead th')]
+        .map((header) => header.textContent.trim()),
+      subtitle: testing?.querySelector('.panel__subtitle')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      rows: document.querySelectorAll('[data-testid="discover-pyramid"] tbody tr').length,
+      versions: [...document.querySelectorAll('#workspace-discover [data-field="runtime"] dt')]
+        .some((term) => term.textContent.trim() === "Versions"),
+    };
+  })()`);
+  check(!discoverChrome.eyebrow && !discoverChrome.stale && !discoverChrome.commit, "the sheet still renders removed masthead chrome", discoverChrome);
+  check(discoverChrome.railLeft < discoverChrome.columnLeft, "the sheet column is not to the right of the facts rail", discoverChrome);
+  check(
+    discoverChrome.headers.join("|") === "Level|Tests",
+    "the test level table still renders a paths column",
+    discoverChrome.headers,
+  );
+  check(
+    discoverChrome.subtitle.startsWith(`${discoverChrome.rows} level`) &&
+      !discoverChrome.subtitle.includes("0 tests"),
+    "the level count disagrees with the listed levels",
+    discoverChrome,
+  );
+  check(!discoverChrome.versions, "the Platform rail still repeats the runtime versions", discoverChrome);
   // The fixture sheet fits at 1440×900; prove the page owns its scrolling and
   // keeps the offset in a narrower supported viewport, where it overflows.
   await devtools.send("Emulation.setDeviceMetricsOverride", {
@@ -2112,19 +2198,34 @@ try {
     badge: boolean;
     editor: number;
     panel: number;
+    title: string;
+    eyebrow: boolean;
+    meta: boolean;
+    name: boolean;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
+    const index = document.querySelector('#workspace-discover .discover-skill-page');
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
       badge: document.querySelector('[data-testid="discover-skill-state"]') !== null,
       editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
       panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
+      title: panel?.querySelector('.panel__title')?.textContent?.trim() ?? "",
+      eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
+      meta: index?.querySelector('.discover-skill__meta') !== null,
+      name: panel?.querySelector('.panel__header .muted') !== null,
     };
   })()`);
   check(!skillLayout.preview && skillLayout.split === 0, "the skill tab still renders a preview split", skillLayout);
   check(!skillLayout.badge, "the skill tab still renders a state badge");
+  check(
+    skillLayout.title === "discover-testing-strategy/SKILL.md",
+    "the skill panel is not titled with the relative path",
+    skillLayout.title,
+  );
+  check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);
   check(skillLayout.editor >= skillLayout.panel - 48, "the skill editor does not use the full pane", skillLayout);
 
   // The open surface survives mode switches; only one page exists per mode.
@@ -2425,6 +2526,32 @@ try {
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the issue reporter to cancel");
   const reporterFocus = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="notifications"]') === null`);
   check(reporterFocus, "the issue reporter stole focus into the notification region");
+
+  await runPalette("app.report");
+  await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter picking mode for the drag");
+  await page.click('[data-testid="status-bar"]');
+  await page.wait(`document.querySelector('.feedback-panel') !== null`, "the report panel");
+  const panelBefore = await page.eval<{ top: number; left: number }>(`(() => {
+    const rect = document.querySelector('.feedback-panel').getBoundingClientRect();
+    return { top: Math.round(rect.top), left: Math.round(rect.left) };
+  })()`);
+  await page.eval(`document.querySelector('.feedback-drag')?.focus()`);
+  await page.key("ArrowUp", 3);
+  const panelAfter = await page.eval<{ top: number; left: number; handle: boolean; inside: boolean }>(`(() => {
+    const panel = document.querySelector('.feedback-panel');
+    const rect = panel?.getBoundingClientRect();
+    return {
+      top: Math.round(rect?.top ?? -1),
+      left: Math.round(rect?.left ?? -1),
+      handle: document.activeElement?.classList.contains("feedback-drag") === true,
+      inside: rect === undefined ? false : rect.top >= 0 && rect.left >= 0 && rect.bottom <= innerHeight && rect.right <= innerWidth,
+    };
+  })()`);
+  check(panelAfter.handle, "the report panel has no keyboard drag handle", panelAfter);
+  check(panelAfter.top < panelBefore.top, "the report panel cannot be moved", { panelBefore, panelAfter });
+  check(panelAfter.inside, "a moved report panel leaves the viewport", panelAfter);
+  await page.key("Escape");
+  await page.wait(`document.querySelector('.feedback-panel') === null`, "the report panel to close");
 
   // 15. Orchestrator status item: idle, working, failed, hidden, and live update.
   await seedOrchestrator(stateDir, host, "idle");

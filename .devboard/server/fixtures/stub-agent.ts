@@ -1170,7 +1170,6 @@ interface DiscoverSkill {
 }
 
 function discoverSkills(): DiscoverSkill[] {
-  const paths = discoverEvidencePaths();
   const glossaryPath = ".omp/discover/glossary/orders.glossary.yaml";
   return [
     {
@@ -1179,10 +1178,10 @@ function discoverSkills(): DiscoverSkill[] {
       description:
         "Apply the observed unit-test level and the project's recorded test command before requesting review.",
       body: [
-        `- Run \`bun test\` from the repository root before review; ${paths.manifest} records it as the test command.`,
-        `- Treat ${paths.tests} as the only observed test level and add new cases there.`,
-        `- Add a failing case first and keep one assertion focus per file under ${paths.tests}.`,
-        `- Report untested areas as unknown in the sheet instead of inventing an integration or end-to-end suite; ${paths.manifest} is the only command source.`,
+        "- Run `bun test` from the repository root before review.",
+        "- Treat the unit level as the only implemented test level; add new cases there.",
+        "- Add a failing case first and keep one assertion focus per test file.",
+        "- Report untested areas as unknown instead of inventing an integration or end-to-end suite.",
       ],
     },
     {
@@ -1192,8 +1191,8 @@ function discoverSkills(): DiscoverSkill[] {
         "Name code after the grounded glossary terms and keep the observed casing across the project.",
       body: [
         `- Name domain types and functions after the preferred labels in ${glossaryPath}.`,
-        `- Keep file names kebab-case and exported types PascalCase under ${paths.source}.`,
-        `- Use camelCase for functions, variables, and flags in ${paths.source}.`,
+        "- Keep file names kebab-case and exported types PascalCase.",
+        "- Use camelCase for functions, variables, and flags.",
         `- Reject aliases the glossary does not define; propose new terms through the glossary process in ${glossaryPath}.`,
       ],
     },
@@ -1203,10 +1202,10 @@ function discoverSkills(): DiscoverSkill[] {
       description:
         "Keep typed, explicit code that reuses the dependencies the manifest already records.",
       body: [
-        `- Keep exported functions typed under ${paths.source}; never leave an implicit any boundary.`,
-        `- Handle recoverable errors at the caller in ${paths.source}; never swallow a failure silently.`,
-        `- Prefer APIs already declared in ${paths.manifest} over adding a new dependency.`,
-        `- Run the test command recorded in ${paths.manifest} before claiming a change is complete.`,
+        "- Keep exported functions typed; never leave an implicit any boundary.",
+        "- Handle recoverable errors at the caller; never swallow a failure silently.",
+        "- Prefer an already-installed dependency over adding a new one.",
+        "- Run `bun test` before claiming a change is complete.",
       ],
     },
     {
@@ -1215,10 +1214,10 @@ function discoverSkills(): DiscoverSkill[] {
       description:
         "Keep domain behavior inside its bounded context and preserve the observed dependency direction.",
       body: [
-        `- Keep domain behavior inside its bounded context under ${paths.source}.`,
-        `- Point imports inward toward domain modules under ${paths.source}; never import delivery code from the domain.`,
+        "- Keep domain behavior inside its bounded context.",
+        "- Point imports inward toward domain modules; never import delivery code from the domain.",
         `- Do not add a cross-context import without recording the boundary in ${glossaryPath}.`,
-        `- Treat external services as absent until ${paths.manifest} or ${paths.source} declares one.`,
+        "- Treat an external service as absent until a manifest or source file declares one.",
       ],
     },
     {
@@ -1230,7 +1229,7 @@ function discoverSkills(): DiscoverSkill[] {
         `- Treat ${glossaryPath} as the canonical glossary for every naming decision.`,
         "- Never write a confirmed status into a generated glossary; only a human confirm decision may do that.",
         "- Reject a proposed term with a non-empty reason instead of deleting it.",
-        `- Propose new terms through Discover with grounding under ${paths.source} and let a human confirm them.`,
+        "- Propose new terms through Discover with grounding and let a human confirm them.",
         "- Never label code with an invalidated preferred label; no concept is invalidated in this baseline.",
       ],
     },

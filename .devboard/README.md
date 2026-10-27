@@ -52,8 +52,9 @@ The width survives a reload.
 - **Goal** lists the goal workspace surfaces, a **Skills** entry that discloses every prepared
   skill, the pending ADR records (title, status, next marker, file), and the lifecycle lanes. The
   ADR records group is absent while no record is pending.
-- **Flow** lists the session, PR state, widgets, changed files, checkpoints, steering, decision
-  board, blockers, and history.
+- **Flow** lists the workspace surfaces — overview, decision board, steering, and history — the
+  session and PR state, widgets, changed files, checkpoints, and blockers. The overview entry
+  carries the goal's `unsaved` marker. Blockers open the overview at the blocker they name.
 - **Discover** lists the overview and glossary sections, the five skills under their own group,
   and warnings only while at least one exists. The glossary entry carries the published term
   count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
@@ -61,7 +62,10 @@ The width survives a reload.
   link: it has no disclosure control and no nested per-term menu.
 
 Selecting an entry opens or focuses its workspace surface. Informational entries open the
-surface that holds the same facts.
+surface that holds the same facts. The Flow overview opens with the flow-goal editor, which takes
+the full page height; while a goal interview is running the editor collapses to its header and the
+interview takes the next block. The overview ends with the implementation activity console, which
+also takes a full page height so agent output never shrinks to a thumbnail.
 
 ### Workspace page
 
@@ -540,11 +544,12 @@ keeps no freshness group and no recent-notice list.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the project name
-(the last path segment; the full path stays in the sidebar), the stale marker, the one-line
-definition, the commit and discovery time, and the single filled run action. Below it, an active
-run region (run id, start time, Stop, activity terminal) and a queued question region appear only
-while they exist. The sheet follows: Commands and Testing in the main column, Bounded contexts
-below them, and Platform, Delivery, and Stack in the rail. The manual-testing strip is the last
+(the last path segment; the full path stays in the sidebar), the one-line definition, the discovery
+date, and the single filled run action. Staleness is not repeated on the sheet: the activity bar and
+the status bar report it. Below the frame, an active run region (run id, `Started 3 minutes ago`,
+Stop, activity terminal) and a queued question region appear only while they exist. The sheet
+follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and Testing in the
+main column on the right, and Bounded contexts below them. The manual-testing strip is the last
 region of the page, so a source checkout never pushes it above the project identity. An error,
 an interrupted-run notice, and a stop notice render above the page in one notice stack.
 
@@ -618,14 +623,15 @@ significance sidecar and is read as legacy, with no error.
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint. The
 Overview page is a project sheet, not a card grid. A masthead
-(`data-testid="discover-freshness"`) carries the project name, a `stale` badge, the one-sentence
-definition, the short commit, and the discovery date. The dirty flag stays in the sheet but no
-longer renders a header badge. Below the masthead, `Run and verify` holds the commands and testing
-panels, `Platform` and `Delivery` form a rail, and `Stack` and `Bounded contexts` span the page.
-Every section carries `data-testid="discover-card"` and `data-field`; the commands and testing
-panels are raised surfaces and the remaining sections are flat, separated by hairlines. Below
-1240px viewport the rail collapses into the single column. Tables grow with the page; neither a
-panel nor a card shrinks below its rows, and none scrolls inside the page. Every non-`unknown` leaf
+(`data-testid="discover-freshness"`) carries the project name, the one-sentence definition, and the
+discovery date. The commit, the dirty flag, and the staleness flag stay in the sheet and the state
+payload but render no header badge. Below the masthead the sheet is one bounded two-column spine:
+`Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, and Bounded contexts in
+the main column on the right. Every section carries `data-testid="discover-card"` and
+`data-field`; the commands and testing panels are raised surfaces and the remaining sections are
+flat, separated by hairlines. Below 1240px viewport the columns collapse into one in reading order.
+Tables grow with the page; neither a panel nor a card shrinks below its rows, and none scrolls
+inside the page. Every non-`unknown` leaf
 carries at least one sorted, unique repository-relative evidence path, symbol anchor, or safe git
 fact and a confidence of `observed`, `declared`, `inferred`, or `unknown`; `unknown` carries empty
 evidence and a short reason. Confidence labels, evidence paths, the `Not observed` ledger, the
@@ -643,10 +649,13 @@ copies README prose, or records a configuration value; a claim it cannot ground 
 
 Main commands render as a two-column `Task`/`Command` table of the observed commands, `$`-prefixed,
 with no header row, under an `N of 8 commands found` count; no explanatory note follows the table.
-Testing shows the test and level totals and the whole-suite command
-(`data-testid="discover-suite-command"`), then a `Level`/`Tests`/`Paths & fixtures` table
-(`data-testid="discover-pyramid"`). Every level states an exact test count; a level with evidence
-but no test case reads `0 tests`, never `count unknown`. No pyramid graphic is drawn. Runtime,
+A `tryOut` command is listed only when it is a hands-on entry point that no other recorded command
+aliases. Testing shows the test and level totals and the whole-suite command
+(`data-testid="discover-suite-command"`), then a `Level`/`Tests` table
+(`data-testid="discover-pyramid"`). Only a level that carries a test is listed and counted; a
+recorded level with no test case is omitted, so a sheet cannot claim a second level while its table
+holds none. Every listed level states an exact test count, never `count unknown`. No pyramid
+graphic is drawn. Runtime,
 deployment, CI, and branching use compact `dt`/`dd` facts whose list values are comma-separated.
 Architecture renders under the heading `Bounded contexts` as a table headed `Bounded context` with
 path, responsibility, and entry points, followed by external-boundary and shared-kernel chips.
@@ -658,9 +667,10 @@ with no external system shows `None detected.` in that block instead of an inven
 `unknown`.
 `Stack` renders one full-width chip band after the two columns; a chip whose package is installed
 under `node_modules/` becomes a link to the repository its manifest declares, and every other chip
-stays plain text. Environments is `unknown` here and is not listed. The
-delivery section and the deployment pipeline sources stay hidden because they repeat other facts. A
-sheet with no observed test level and a glossary with no matching term keep an explicit empty state.
+stays plain text. Environments is `unknown` here and is not listed. The delivery section, the
+deployment pipeline sources, and the runtime `versions` fact stay hidden because they repeat other
+facts. A sheet with no observed test level and a glossary with no matching term keep an explicit
+empty state.
 
 The Glossary page and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
 document per bounded context named `<bounded-context>.glossary.yaml`, top-level `boundedContext`,
@@ -744,7 +754,9 @@ A successful run publishes exactly five skills under `.omp/skills/`: `discover-t
 1024 characters, `metadata.devboard-managed: "true"`, `metadata.devboard-family: "discover"`, and
 `metadata.devboard-skill` naming its role. The bodies are project-specific and directive: one
 imperative bullet per rule, and no bullet names a source, test, manifest, or CI path — an exact
-command may still contain one. Testing strategy states levels, pyramid, commands, fixture roles,
+command may still contain one. A bullet never says where a rule was observed: no evidence clause,
+file name, directory name, or path outside an exact command, so the skill carries policy and the
+sheet carries provenance. Testing strategy states levels, pyramid, commands, fixture roles,
 coverage expectations, and how to add a test; naming conventions state canonical terms, casing, and
 rejected aliases; coding conventions state patterns, error handling, typing, async, logging,
 dependencies, formatting, and prohibited constructs; architecture and boundaries state contexts,
@@ -755,11 +767,14 @@ root, a new `omp` session lists the five (`omp skill list`) and loads their bodi
 every implementation agent in that host discovers the set with no extra configuration.
 
 Each skill has a page that is one full-height Monaco Markdown editor for the whole `SKILL.md`
-(`data-testid="discover-skill-text"`), with no rendered preview and no split pane. The header holds
-the skill name, `discover-skill-save`, and, while the live text differs from the generated version
-or the file is missing, `discover-skill-restore`. A `discover-skill-dirty` marker appears while the
-draft has unsaved changes; the page renders no state badge. `saveDiscoverSkill` writes the submitted
-bytes verbatim and updates the manifest's current hash and edited state; it is refused with one
+(`data-testid="discover-skill-text"`), with no rendered preview and no split pane. The page header
+holds only the skill's page title; the editor panel is titled with the skill's relative path,
+`<skill>/SKILL.md`. The panel header also holds `discover-skill-save` and, while the live text
+differs from the generated version or the file is missing, `discover-skill-restore`. A
+`discover-skill-dirty` marker appears while the draft has unsaved changes; the page renders no
+state badge and no purpose line, because the sidebar already flags `edited` or `missing`.
+`saveDiscoverSkill` writes the submitted bytes verbatim and updates the manifest's current hash and
+edited state; it is refused with one
 `discoverError` when the name is not one of the five, the skill is missing, the frontmatter name
 no longer matches the directory, the description is empty or too long, or a marker was removed,
 and invalid text leaves the previous file byte-identical. `restoreDiscoverSkill` copies the current

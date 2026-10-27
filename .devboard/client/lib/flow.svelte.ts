@@ -159,11 +159,6 @@ export class FlowStore {
     this.goalDirty = false;
   }
 
-  discardGoalDraft(): void {
-    this.goalDraft = this.goal;
-    this.goalDirty = false;
-  }
-
   discardDecisionsDraft(): void {
     this.decisionsDraft = this.decisions;
     this.decisionsDirty = false;

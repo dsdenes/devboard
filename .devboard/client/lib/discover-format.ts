@@ -43,18 +43,10 @@ export const SKILL_TABS: DiscoverTab[] = [
 
 export const TABS: DiscoverTab[] = [...SECTION_TABS, ...SKILL_TABS];
 
-/** One line per generated skill: the policy question it answers for this host. */
-export const SKILL_PURPOSE: Record<string, string> = {
-  "discover-testing-strategy": "Which checks to run, at which level, before review.",
-  "discover-naming-conventions": "The names this project uses for the same ideas.",
-  "discover-coding-conventions": "The local rules an edit must follow.",
-  "discover-architecture-boundaries": "What may depend on what, and where a change belongs.",
-  "discover-glossary": "The project's vocabulary, for code and prompts.",
-};
-
 /** Leaves already shown elsewhere or too detailed for the operator's scan. */
 export const HIDDEN_LEAVES: Record<string, string[]> = {
   deployment: ["pipelineSources"],
+  runtime: ["versions"],
 };
 
 export const COMMAND_LABELS: Record<string, string> = {
@@ -98,6 +90,30 @@ export function humanize(key: string): string {
     .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .toLowerCase();
   return spaced.length === 0 ? key : spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/**
+ * Human elapsed time for an ISO timestamp, such as `3 minutes ago`. A future
+ * timestamp (clock skew between the server and the browser) reads `just now`.
+ */
+export function relativeTime(value: string, now: number = Date.now()): string {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "";
+  const elapsed = now - timestamp;
+  if (elapsed < MINUTE) return "just now";
+  if (elapsed < 2 * MINUTE) return "a minute ago";
+  if (elapsed < HOUR) return `${Math.floor(elapsed / MINUTE)} minutes ago`;
+  if (elapsed < 2 * HOUR) return "an hour ago";
+  if (elapsed < DAY) return `${Math.floor(elapsed / HOUR)} hours ago`;
+  if (elapsed < 2 * DAY) return "yesterday";
+  if (elapsed < 30 * DAY) return `${Math.floor(elapsed / DAY)} days ago`;
+  if (elapsed < 60 * DAY) return "a month ago";
+  if (elapsed < 365 * DAY) return `${Math.floor(elapsed / (30 * DAY))} months ago`;
+  return `${Math.floor(elapsed / (365 * DAY))} years ago`;
 }
 
 export function scalarText(value: unknown): string {
@@ -198,32 +214,25 @@ export function recordColumnValues(record: Record<string, unknown>, key: string)
 export interface PyramidTier {
   level: string;
   tests: string;
-  command: string;
-  detail: string;
 }
 
 /** Pyramid tiers ordered from the base to the apex. */
 export function pyramidTiers(leaf: Leaf | null | undefined): PyramidTier[] {
   return recordItems(leaf)
-    .map((record) => {
-      const paths = Array.isArray(record.paths)
-        ? record.paths.map((item) => scalarText(item)).filter(Boolean)
-        : [];
-      const fixtures = Array.isArray(record.fixtures)
-        ? record.fixtures.map((item) => scalarText(item)).filter(Boolean)
-        : [];
-      return {
-        level: scalarText(record.level) || "other",
-        tests: scalarText(record.tests) || "unknown",
-        command: scalarText(record.command),
-        detail: [...paths, ...fixtures].join(" · "),
-      };
-    })
+    .map((record) => ({
+      level: scalarText(record.level) || "other",
+      tests: scalarText(record.tests) || "unknown",
+    }))
     .sort(
       (left, right) =>
         (PYRAMID_LEVELS.indexOf(left.level) + 1 || PYRAMID_LEVELS.length) -
         (PYRAMID_LEVELS.indexOf(right.level) + 1 || PYRAMID_LEVELS.length),
     );
+}
+
+/** Tiers that actually carry tests; a recorded level with zero tests is not implemented. */
+export function implementedTiers(tiers: PyramidTier[]): PyramidTier[] {
+  return tiers.filter((tier) => (Number.parseInt(tier.tests, 10) || 0) > 0);
 }
 
 /** A bounded context's display name; never its raw identifier when a title exists. */

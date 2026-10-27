@@ -205,6 +205,14 @@ Section rules:
   server, a demo entry point, or an example invocation — and is never the test command; when the
   crawl found no such command, write `unknown`. A command the crawl did not observe is `unknown`;
   never execute it and never reconstruct it from another ecosystem's habit.
+  An alias is not a separate command. When a candidate resolves to another recorded command —
+  `npm test` declared as `node --test test/*.test.js`, or a script that only wraps the test,
+  build, lint, typecheck, or release command — it is that command under another name and must not
+  be recorded as `tryOut`. Write `tryOut` only for a command that starts, serves, or opens the
+  project for hands-on use and that no other recorded command subshells into. When the only
+  candidate is an alias, or the crawl cannot tell whether it is one, stage `tryOut` as `unknown`
+  with a reason; never guess a try-out command from a test runner, a demo script name, or the
+  ecosystem's habit.
 - `branching` reports the observed default branch and release branches, the observed or inferred
   merge method, and one of `direct`, `pull-request`, or `git-flow`, supported by git and CI
   evidence. A model the repository does not evidence is `value: null` with `confidence: unknown`
@@ -390,6 +398,13 @@ metadata:
   the convention it applies to directly; the sheet and its evidence already carry the provenance.
   An exact command is allowed even when it contains a path. Never append a path in parentheses to
   show where a claim was derived.
+- Never say where a rule was observed. A bullet carries no evidence clause (`Evidence:`, `See`,
+  `found in`, `declared in`), no file or directory name in any form — bare, backticked, quoted, or
+  in parentheses — and no path outside an exact command. A manifest such as `package.json`, a CI
+  descriptor, a test path, or a configuration file is provenance and never policy. The only two
+  paths a bullet may carry are those inside an exact command and the published glossary paths the
+  `discover-glossary` skill must name. When a directive would need a location to make sense,
+  rewrite it as the rule itself.
 - When a previously published generated baseline exists under
   `<host>/.omp/discover/skills/<name>/SKILL.md`, read it for continuity of scope and structure.
   Always regenerate from the current crawl. Never copy a developer's live edits into the baseline;
@@ -481,11 +496,14 @@ Confirm all of the following:
 - [ ] `glossary/significance.json` exists beside the glossaries and every staged glossary concept
       carries a significance score in it: one integer from `0` to `100` and a one-line reason,
       with no missing, extra, or unscored entry.
+- [ ] `commands.tryOut` is either a hands-on entry point that no recorded command aliases, or
+      `unknown`: it never repeats, wraps, or aliases install, build, test, lint, typecheck,
+      dev/run, or release.
 - [ ] No generic label the glossaries omit is named by a generated skill, and every concept a
       generated skill names appears in the glossary.
 - [ ] All five `skills/<name>/SKILL.md` files exist with matching names, non-empty descriptions of
       at most 1024 characters, and both markers; each body is a heading plus imperative bullets,
-      and no bullet names a source, test, manifest, or CI path.
+      and no bullet names a source, test, manifest, or CI path or cites where a rule was observed.
 - [ ] The five baselines do not contradict each other or the glossary, and no skill recommends an
       invalidated label.
 - [ ] Nothing was written outside `<staging-dir>`; `GOAL.md`, `adrs/`, host source, `.omp/discover`,

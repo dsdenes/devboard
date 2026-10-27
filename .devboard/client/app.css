@@ -1300,6 +1300,41 @@ kbd {
   border-left: 2px solid var(--flow-category-border, var(--border));
 }
 
+/* Flow overview: the goal editor and the activity console each own one page,
+   so a long session never shrinks either into a scrolling thumbnail. */
+.flow-overview > * {
+  flex: 0 0 auto;
+}
+
+.flow-goal-panel {
+  flex: 0 0 auto;
+  height: 100%;
+  min-height: 360px;
+}
+
+.flow-goal-panel--collapsed {
+  height: auto;
+  min-height: 0;
+}
+
+.flow-goal-editor {
+  display: flex;
+}
+
+.flow-goal-activity {
+  height: 180px;
+}
+
+.flow-activity-panel {
+  flex: 0 0 auto;
+  min-height: 100%;
+}
+
+.flow-activity-body {
+  display: flex;
+  padding: 4px;
+}
+
 /* Discover: one page frame, a two-column sheet, and plain rail blocks. */
 .discover-page {
   gap: 24px;
@@ -1401,13 +1436,6 @@ kbd {
   min-width: 0;
 }
 
-.discover-head__title-row {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-}
-
 .discover-head__title {
   font-size: 20px;
   font-weight: 650;
@@ -1449,7 +1477,8 @@ kbd {
   align-items: start;
   display: grid;
   gap: 16px 24px;
-  grid-template-columns: minmax(0, 1.62fr) minmax(0, 1fr);
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  max-width: 1440px;
 }
 
 .discover-col,
@@ -1669,18 +1698,6 @@ kbd {
 .discover-skill__panel {
   flex: 1;
   min-height: 0;
-}
-
-.discover-skill__meta {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0;
-}
-
-.discover-skill__meta code {
-  font-size: 11px;
 }
 
 /* Warnings page. */
@@ -2120,21 +2137,6 @@ a.discover-chip--link:focus-visible {
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-
-.discover-skill__heading {
-  align-items: baseline;
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-}
-
-.discover-skill__heading .muted {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .discover-warning {

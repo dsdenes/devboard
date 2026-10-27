@@ -158,7 +158,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     ["goal", { id: "goal-document", kind: "goal-document", resourceId: "goal-document", title: "Goal document" }],
     ["goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" }],
     ["flow", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
-    ["flow", { id: "flow-goal", kind: "flow-goal", resourceId: "flow-goal", title: "Flow goal" }],
     ["flow", { id: "decisions", kind: "decisions", resourceId: "decisions", title: "Decision board" }],
     ["flow", { id: "steering", kind: "steering", resourceId: "steering", title: "Steering" }],
     ["flow", { id: "history", kind: "history", resourceId: "history", title: "History" }],
@@ -431,7 +430,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     group: "Flow",
     shortcut: "Ctrl+S",
     run: () => {
-      ctx.openTab("flow", { id: "flow-goal", kind: "flow-goal", resourceId: "flow-goal", title: "Flow goal" });
+      ctx.openTab("flow", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" });
       flow.saveGoal();
     },
   });
@@ -635,7 +634,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
       run: () => {
         const tab =
           target === "goal"
-            ? { id: "flow-goal", kind: "flow-goal", resourceId: "flow-goal", title: "Flow goal" }
+            ? { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }
             : target === "conversation" && flow.conversation !== null
               ? {
                   id: `conversation:${flow.conversation.widgetId}`,

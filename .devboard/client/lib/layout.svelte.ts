@@ -57,6 +57,13 @@ function validTab(value: unknown): value is WorkspaceTab {
   );
 }
 
+/** A tab a previous revision could persist but this one no longer renders. */
+function normalizeTab(mode: Mode, tab: WorkspaceTab): WorkspaceTab {
+  if (mode === "flow" && tab.id === "flow-goal") return defaultTab("flow");
+  if (mode === "goal" && tab.id === "overview") return { ...tab, title: "Implementation" };
+  return tab;
+}
+
 function readSnapshot(): LayoutSnapshot | null {
   try {
     const raw = localStorage.getItem(LAYOUT_KEY);
@@ -77,12 +84,9 @@ function readSnapshot(): LayoutSnapshot | null {
         const id = active[mode];
         const chosen = clean.find((tab) => tab.id === id) ?? clean[0];
         if (chosen !== undefined) {
-          nextTabs[mode] = [
-            mode === "goal" && chosen.id === "overview"
-              ? { ...chosen, title: "Implementation" }
-              : chosen,
-          ];
-          nextActive[mode] = chosen.id;
+          const restored = normalizeTab(mode, chosen);
+          nextTabs[mode] = [restored];
+          nextActive[mode] = restored.id;
         }
       }
     }

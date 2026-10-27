@@ -69,7 +69,6 @@
 
   function tabDirty(mode: Mode, tab: WorkspaceTab): boolean {
     if (mode === "goal" && tab.kind === "goal-document") return goal.goalDirty;
-    if (mode === "flow" && tab.kind === "flow-goal") return flow.goalDirty;
     if (mode === "flow" && tab.kind === "decisions") return flow.decisionsDirty;
     if (mode === "discover" && tab.kind === "skill") return discover.skillDirty(tab.resourceId);
     return false;
@@ -99,7 +98,6 @@
     const pending = pendingClose;
     pendingClose = null;
     if (pending.mode === "goal" && pending.tab.kind === "goal-document") goal.discardDraft();
-    if (pending.mode === "flow" && pending.tab.kind === "flow-goal") flow.discardGoalDraft();
     if (pending.mode === "flow" && pending.tab.kind === "decisions") flow.discardDecisionsDraft();
     if (pending.mode === "discover" && pending.tab.kind === "skill") {
       discover.discardDraft(pending.tab.resourceId);
@@ -404,7 +402,7 @@
             maxSize={sidebarMaxPercent}
             class="pane-fill"
           >
-            <Sidebar openTab={openTab} />
+            <Sidebar openTab={openTab} focusLater={focusLater} />
           </Pane>
           <PaneHandle
             orientation="horizontal"

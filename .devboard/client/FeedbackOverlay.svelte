@@ -25,9 +25,15 @@
   let selector = $state("");
   let marker = $state<Rect | null>(null);
   let panel = $state<{ top: number; left: number } | null>(null);
+  let panelElement = $state<HTMLDivElement | null>(null);
+  /** True once the operator has dragged the panel away from its anchor. */
+  let moved = $state(false);
+  let dragging = $state(false);
   let report = $state("");
   let errorMessage = $state<string | null>(null);
   let textarea = $state<HTMLTextAreaElement | null>(null);
+
+  const drag = { pointerId: -1, offsetX: 0, offsetY: 0 };
 
   let picking = $derived(phase === "picking");
   let sending = $derived(phase === "sending");
@@ -49,6 +55,55 @@
         Math.max(MARGIN, window.innerHeight - PANEL_ESTIMATED_HEIGHT - MARGIN),
       ),
     };
+  }
+
+  /** Keeps a dragged panel on screen, never under the viewport edge. */
+  function clampPlacement(top: number, left: number): { top: number; left: number } {
+    const height = panelElement?.getBoundingClientRect().height ?? PANEL_ESTIMATED_HEIGHT;
+    return {
+      left: Math.min(Math.max(left, MARGIN), Math.max(MARGIN, window.innerWidth - PANEL_WIDTH - MARGIN)),
+      top: Math.min(Math.max(top, MARGIN), Math.max(MARGIN, window.innerHeight - height - MARGIN)),
+    };
+  }
+
+  function startDrag(event: PointerEvent): void {
+    if (event.button !== 0 || panel === null) return;
+    const origin = event.target instanceof Element ? event.target : null;
+    if (origin !== null && origin.closest(".feedback-close") !== null) return;
+    const handle = event.currentTarget as HTMLElement;
+    handle.setPointerCapture(event.pointerId);
+    drag.pointerId = event.pointerId;
+    drag.offsetX = event.clientX - panel.left;
+    drag.offsetY = event.clientY - panel.top;
+    dragging = true;
+  }
+
+  function moveDrag(event: PointerEvent): void {
+    if (!dragging || event.pointerId !== drag.pointerId) return;
+    panel = clampPlacement(event.clientY - drag.offsetY, event.clientX - drag.offsetX);
+    moved = true;
+  }
+
+  function endDrag(event: PointerEvent): void {
+    if (event.pointerId !== drag.pointerId) return;
+    dragging = false;
+    drag.pointerId = -1;
+  }
+
+  function moveWithKeys(event: KeyboardEvent): void {
+    if (panel === null) return;
+    const step = event.shiftKey ? 24 : 8;
+    const moves: Record<string, [number, number]> = {
+      ArrowUp: [-step, 0],
+      ArrowDown: [step, 0],
+      ArrowLeft: [0, -step],
+      ArrowRight: [0, step],
+    };
+    const move = moves[event.key];
+    if (move === undefined) return;
+    event.preventDefault();
+    panel = clampPlacement(panel.top + move[0], panel.left + move[1]);
+    moved = true;
   }
 
   function ownOverlay(node: Element | null): boolean {
@@ -101,6 +156,8 @@
     const rect = viewportRect(element);
     marker = rect;
     panel = anchorFor(rect);
+    moved = false;
+    dragging = false;
     report = "";
     errorMessage = null;
     phase = "composing";
@@ -114,6 +171,8 @@
     selector = "";
     marker = null;
     panel = null;
+    moved = false;
+    dragging = false;
     report = "";
     errorMessage = null;
     document.body.style.cursor = "";
@@ -172,7 +231,9 @@
     if (target === null) return;
     const rect = viewportRect(target);
     marker = rect;
-    panel = anchorFor(rect);
+    panel = moved && panel !== null
+      ? clampPlacement(panel.top, panel.left)
+      : anchorFor(rect);
   }
 
   async function send(): Promise<void> {
@@ -254,13 +315,27 @@
 {#if panel !== null && (phase === "composing" || phase === "sending" || phase === "failed")}
   <div
     class="feedback-panel"
+    class:feedback-panel--dragging={dragging}
     data-feedback-overlay
     role="dialog"
     aria-label="Report a UI issue"
     style={`top:${panel.top}px;left:${panel.left}px;width:${PANEL_WIDTH}px`}
+    bind:this={panelElement}
   >
     <header>
-      <strong>Report a UI issue</strong>
+      <button
+        type="button"
+        class="feedback-drag"
+        aria-label="Move the report panel"
+        title="Drag to move, or use the arrow keys"
+        onpointerdown={startDrag}
+        onpointermove={moveDrag}
+        onpointerup={endDrag}
+        onpointercancel={endDrag}
+        onkeydown={moveWithKeys}
+      >
+        <strong>Report a UI issue</strong>
+      </button>
       <button
         type="button"
         class="feedback-close"
@@ -391,6 +466,33 @@
     align-items: center;
     display: flex;
     justify-content: space-between;
+  }
+
+  .feedback-drag {
+    align-items: center;
+    background: none;
+    border: 0;
+    border-radius: 4px;
+    color: inherit;
+    cursor: grab;
+    display: flex;
+    flex: 1;
+    font: inherit;
+    gap: 0.4rem;
+    min-width: 0;
+    padding: 0;
+    text-align: left;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .feedback-drag:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .feedback-panel--dragging .feedback-drag {
+    cursor: grabbing;
   }
 
   .feedback-close {

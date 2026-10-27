@@ -11,9 +11,10 @@
 
   interface Props {
     openTab: (mode: Mode, tab: WorkspaceTab) => void;
+    focusLater?: (mode: Mode, selector: string) => Promise<void>;
   }
 
-  let { openTab }: Props = $props();
+  let { openTab, focusLater }: Props = $props();
 
   const active = $derived(layout.activeTab[layout.mode]);
   let skillsOpen = $state(false);
@@ -287,23 +288,13 @@
         >
           <ChevronRight size={12} aria-hidden="true" />
           <span class="sidebar-item__label">Overview</span>
+          {#if flow.goalDirty}
+            <span class="badge" data-tone="warning">unsaved</span>
+          {/if}
           {#if flow.status !== "none"}
             <span class="badge" data-tone={flow.status === "running" ? "accent" : "warning"}>
               {flow.status}
             </span>
-          {/if}
-        </button>
-        <button
-          type="button"
-          class="sidebar-item"
-          aria-current={isActive("flow-goal")}
-          data-command="open.flow.flow-goal"
-          onclick={() => open("flow", "flow-goal", "flow-goal", "flow-goal", "Flow goal")}
-        >
-          <ChevronRight size={12} aria-hidden="true" />
-          <span class="sidebar-item__label">Flow goal</span>
-          {#if flow.goalDirty}
-            <span class="badge" data-tone="warning">unsaved</span>
           {/if}
         </button>
         <button
@@ -475,7 +466,10 @@
             data-command={`flow.blocker.open.${blocker.id}`}
             data-dismissed={blocker.dismissed ? "true" : "false"}
             title={blocker.text}
-            onclick={() => open("flow", "overview", "overview", "overview", "Overview")}
+            onclick={() => {
+              open("flow", "overview", "overview", "overview", "Overview");
+              void focusLater?.("flow", `#flow-blocker-${blocker.id}`);
+            }}
           >
             <span class="sidebar-item__label">{blocker.text}</span>
             <span class="badge" data-tone={blocker.dismissed ? "success" : "error"}>

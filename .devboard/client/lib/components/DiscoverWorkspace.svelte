@@ -4,7 +4,6 @@
     contextTitle,
     labelText,
     labelTexts,
-    SKILL_PURPOSE,
     TABS,
   } from "../discover-format";
   import { discover } from "../discover.svelte";
@@ -46,9 +45,6 @@
     activeSkill === null ? null : (TABS.find((entry) => entry.skill === activeSkill) ?? null),
   );
   const skillState = $derived(skill?.state ?? "missing");
-  const skillStateLabel = $derived(
-    skillState === "generated" ? "Generated" : skillState === "edited" ? "Edited" : "Missing",
-  );
 
   const term = $derived.by(() => {
     if (tab?.kind !== "term") return null;
@@ -299,32 +295,14 @@
     >
       <header class="discover-page__header discover-page__header--compact">
         <div class="discover-page__heading">
-          <span class="discover-page__eyebrow">Policy skill</span>
           <h1 class="discover-page__title">{skillTab.label}</h1>
-          <p class="discover-skill__meta">
-            <span
-              class="badge"
-              data-tone={skillState === "generated"
-                ? "success"
-                : skillState === "edited"
-                  ? "warning"
-                  : "error"}
-            >
-              {skillStateLabel}
-            </span>
-            <code>{activeSkill}/SKILL.md</code>
-            <span class="muted">{SKILL_PURPOSE[activeSkill] ?? ""}</span>
-          </p>
         </div>
       </header>
 
       <div class="discover-skill" data-testid="discover-skill" data-name={activeSkill}>
         <div class="panel discover-skill__panel">
           <div class="panel__header">
-            <div class="discover-skill__heading">
-              <h2 class="panel__title">SKILL.md</h2>
-              <span class="muted">{activeSkill}</span>
-            </div>
+            <h2 class="panel__title mono">{activeSkill}/SKILL.md</h2>
             <div class="row-sm">
               {#if discover.skillDirty(activeSkill)}
                 <span class="muted" data-testid="discover-skill-dirty">Unsaved changes</span>

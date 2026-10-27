@@ -341,8 +341,72 @@
   </section>
 {/snippet}
 
+{#snippet goalPanel()}
+  <section
+    class="panel flow-goal-panel"
+    class:flow-goal-panel--collapsed={flow.goalCreation !== null}
+    data-testid="flow-goal"
+    data-collapsed={flow.goalCreation === null ? "false" : "true"}
+  >
+    <div class="panel__header">
+      <h2 class="panel__title">Flow goal</h2>
+      <div class="row-sm">
+        <Button
+          variant="secondary"
+          data-command="flow.goal.create"
+          data-testid="create-flow-goal"
+          onclick={() => flow.createGoal()}
+        >
+          {flow.goal.trim().length > 0 ? "Recreate flow goal" : "Create flow goal"}
+        </Button>
+        <Button
+          variant="default"
+          data-command="flow.goal.save"
+          data-testid="save-flow-goal"
+          onclick={() => flow.saveGoal()}
+        >
+          Save
+        </Button>
+      </div>
+    </div>
+    {#if flow.goalCreation === null}
+      <div class="panel__body flow-goal-editor">
+        <MonacoEditor
+          value={flow.goalDraft}
+          label="Flow goal"
+          data-testid="flow-goal-text"
+          dirty={flow.goalDirty}
+          onchange={(text) => flow.setGoalDraft(text)}
+          onsave={() => flow.saveGoal()}
+        />
+      </div>
+    {/if}
+  </section>
+{/snippet}
+
 {#snippet overview()}
-  <div class="scroll-column">
+  <div class="scroll-column flow-overview">
+    {@render goalPanel()}
+
+    {#if flow.goalCreation !== null}
+      {@const creation = flow.goalCreation}
+      <section class="panel" data-testid="flow-goal-active">
+        <div class="panel__header"><h2 class="panel__title">Goal interview</h2></div>
+        <div class="panel__body stack-sm">
+          <div class="flow-goal-activity">
+            <Terminal
+              lines={creation.activity}
+              data-testid="flow-goal-activity"
+              label="Flow goal creation activity"
+            />
+          </div>
+          {#if creation.question !== null}
+            {@render questionPanel(creation.question, "goal", "flow-goal-question")}
+          {/if}
+        </div>
+      </section>
+    {/if}
+
     <section class="panel" data-testid="flow-session">
       <div class="panel__header">
         <h2 class="panel__title">Session</h2>
@@ -354,7 +418,6 @@
           {/if}
           <Button
             variant="default"
-            class="px-4"
             data-command="flow.start"
             data-testid="start-flow-implementation"
             title={flow.startDisabled ? "A flow goal and an idle session are required." : undefined}
@@ -365,7 +428,6 @@
           </Button>
           <Button
             variant="destructive"
-            class="px-4"
             data-command="flow.stop"
             data-testid="stop-flow-implementation"
             disabled={flow.stopDisabled}
@@ -514,6 +576,8 @@
           {#each flow.blockers as blocker (blocker.id)}
             <div
               class="flow-blocker sidebar-item"
+              id={`flow-blocker-${blocker.id}`}
+              tabindex="-1"
               data-testid="flow-blocker"
               data-dismissed={blocker.dismissed ? "true" : "false"}
             >
@@ -538,7 +602,7 @@
       </section>
     {/if}
 
-    <section class="panel" data-testid="flow-activity-section">
+    <section class="panel flow-activity-panel" data-testid="flow-activity-section">
       <div class="panel__header">
         <h2 class="panel__title">Implementation activity</h2>
         {#if flow.status !== "none"}
@@ -547,7 +611,7 @@
           </span>
         {/if}
       </div>
-      <div style="height: 200px;">
+      <div class="panel__body flow-activity-body">
         <Terminal
           lines={flow.activity}
           data-testid="flow-activity"
@@ -574,61 +638,6 @@
     <p class="empty">No tab is open. Choose a surface from the sidebar.</p>
   {:else if tab.kind === "overview"}
     {@render overview()}
-  {:else if tab.kind === "flow-goal"}
-    <div class="scroll-column">
-      <section class="panel" data-testid="flow-goal">
-        <div class="panel__header">
-          <h2 class="panel__title">Flow goal</h2>
-          <div class="row-sm">
-            <Button
-              variant="secondary"
-              data-command="flow.goal.create"
-              data-testid="create-flow-goal"
-              onclick={() => flow.createGoal()}
-            >
-              {flow.goal.trim().length > 0 ? "Recreate flow goal" : "Create flow goal"}
-            </Button>
-            <Button
-              variant="default"
-              data-command="flow.goal.save"
-              data-testid="save-flow-goal"
-              onclick={() => flow.saveGoal()}
-            >
-              Save
-            </Button>
-          </div>
-        </div>
-        <div class="panel__body" style="height: 320px;">
-          <MonacoEditor
-            value={flow.goalDraft}
-            label="Flow goal"
-            data-testid="flow-goal-text"
-            dirty={flow.goalDirty}
-            onchange={(text) => flow.setGoalDraft(text)}
-            onsave={() => flow.saveGoal()}
-          />
-        </div>
-      </section>
-
-      {#if flow.goalCreation !== null}
-        {@const creation = flow.goalCreation}
-        <section class="panel" data-testid="flow-goal-active">
-          <div class="panel__header"><h2 class="panel__title">Goal interview</h2></div>
-          <div class="panel__body stack-sm">
-            <div style="height: 180px;">
-              <Terminal
-                lines={creation.activity}
-                data-testid="flow-goal-activity"
-                label="Flow goal creation activity"
-              />
-            </div>
-            {#if creation.question !== null}
-              {@render questionPanel(creation.question, "goal", "flow-goal-question")}
-            {/if}
-          </div>
-        </section>
-      {/if}
-    </div>
   {:else if tab.kind === "decisions"}
     <div class="scroll-column">
       <section class="panel" data-testid="flow-decisions-section">
