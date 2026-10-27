@@ -84,6 +84,15 @@ function eventKey(event: EvidenceEvent): string {
 }
 
 /**
+ * Questions belong to one run, lane, or peer when the journal recorded a
+ * scope. Separate work streams on one dashboard are separate conversations,
+ * never one loop.
+ */
+function questionKey(event: EvidenceEvent): string {
+  return event.scope === undefined ? eventKey(event) : `${eventKey(event)}\n${event.scope}`;
+}
+
+/**
  * Turns a window of evidence into one finding per distinct signal. Only the
  * evidence kinds in `FINDING_CATEGORIES` can produce one: activity, lifecycle,
  * update, run and lane records, and questions below the loop threshold are
@@ -128,7 +137,7 @@ export function analyzeEvidence(
   for (const event of events) {
     switch (event.kind) {
       case "question":
-        questions.set(eventKey(event), [...(questions.get(eventKey(event)) ?? []), event]);
+        questions.set(questionKey(event), [...(questions.get(questionKey(event)) ?? []), event]);
         continue;
       case "run-start":
       case "lane-start":

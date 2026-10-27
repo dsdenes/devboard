@@ -2430,7 +2430,7 @@ export function createApp(options: AppOptions) {
           );
         },
         onQuestion(question: AcpQuestion) {
-          journal.write("question", question.message);
+          journal.write("question", question.message, "discover");
           if (discoverRun !== run) return;
           run.question = {
             id: question.id,
@@ -3391,7 +3391,7 @@ export function createApp(options: AppOptions) {
           recordActivity(preparation.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
-          journal.write("question", question.message);
+          journal.write("question", question.message, "skills");
           if (skillsPreparation !== preparation) return;
           preparation.question = {
             id: question.id,
@@ -3540,7 +3540,7 @@ export function createApp(options: AppOptions) {
           recordActivity(creation.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
-          journal.write("question", question.message);
+          journal.write("question", question.message, "goal-creation");
           if (goalCreation !== creation) return;
           creation.question = {
             id: question.id,
@@ -3634,7 +3634,7 @@ export function createApp(options: AppOptions) {
           recordActivity(revision.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
-          journal.write("question", question.message);
+          journal.write("question", question.message, "goal-revision");
           if (goalRevision !== revision) return;
           revision.question = {
             id: question.id,
@@ -3678,7 +3678,7 @@ export function createApp(options: AppOptions) {
           recordActivity(run.activity, activity);
         },
         onQuestion(question: AcpQuestion) {
-          journal.write("question", question.message);
+          journal.write("question", question.message, `run:${run.file}`);
           if (!isLiveRun(run)) return;
           run.question = {
             id: question.id,
@@ -4150,7 +4150,7 @@ export function createApp(options: AppOptions) {
           recordLaneActivity(lane, activity);
         },
         onQuestion(question: AcpQuestion) {
-          journal.write("question", question.message);
+          journal.write("question", question.message, `lane:${lane.id}`);
           if (!liveLanes.has(lane)) return;
           lane.question = {
             id: question.id,

@@ -48,6 +48,8 @@ export interface JournalRecord {
   pid: number;
   kind: JournalKind;
   text: string;
+  /** Logical run, lane, or peer the record belongs to, when one is known. */
+  scope?: string;
 }
 
 export interface JournalOptions {
@@ -68,7 +70,7 @@ export interface JournalOptions {
 
 export interface Journal {
   path: string;
-  write(kind: JournalKind, text: string): void;
+  write(kind: JournalKind, text: string, scope?: string): void;
 }
 
 /** The 24-hex project key that names this project's journal. */
@@ -129,7 +131,7 @@ export function openJournal(options: JournalOptions): Journal {
 
   return {
     path,
-    write(kind: JournalKind, text: string) {
+    write(kind: JournalKind, text: string, scope?: string) {
       const record: JournalRecord = {
         ts: (options.now?.() ?? new Date()).toISOString(),
         repo: options.repoDir,
@@ -137,6 +139,7 @@ export function openJournal(options: JournalOptions): Journal {
         pid,
         kind,
         text,
+        ...(scope === undefined ? {} : { scope }),
       };
       const line = journalLine(record);
       const bytes = Buffer.byteLength(line);
