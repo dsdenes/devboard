@@ -1245,7 +1245,10 @@ can read it, bounded at the first of 1,000 entries or 1 MiB with the trimmed mar
 with the active run after a reconnect. A damaged state file is renamed aside and never prevents
 the mode from opening. The worker records the harness version it loaded, its pid, and its argv;
 a mismatched dashboard shows a notice and never kills the worker, and the state also records the
-ACP child's pid, argv, and cwd so Stop or a fresh Start can terminate a proven orphan.
+ACP child's pid, argv, and cwd so Stop or a fresh Start can terminate a proven orphan. The worker
+and the dashboard read that version the same way: a packed release's manifest, or
+`0.1.<commit-count>` for an unpacked source checkout, so Stop then Start brings a worker left on
+an older harness to the dashboard's version.
 
 The first worker to find no repo-keyed ledger imports handled numbers from
 `<STATE_DIR>/orchestrator/state.json` and `ledger.json` when the legacy state parses and its

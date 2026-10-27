@@ -581,7 +581,7 @@ async function seedIssuesState(
           pid: process.pid,
           startedAt: "2026-10-27T10:00:00.000Z",
           stateDir,
-          harnessVersion: "0.1.0",
+          harnessVersion: sourceVersion ?? "0.1.0",
           argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
         }
       : null,
@@ -643,7 +643,7 @@ async function seedIssuesState(
       })),
       firstStderrLine: null,
       workerPid: process.pid,
-      harnessVersion: "0.1.0",
+      harnessVersion: sourceVersion ?? "0.1.0",
     }),
   );
   const lockDirectory = join(host, ".devboard", ".tmp", "issues");
@@ -655,7 +655,7 @@ async function seedIssuesState(
       startedAt: "2026-10-27T10:00:00.000Z",
       repo: resolve(host),
       stateDir,
-      harnessVersion: "0.1.0",
+      harnessVersion: sourceVersion ?? "0.1.0",
       argv: ["bun", join(harnessRoot, "issues", "worker.ts")],
     }),
   );
