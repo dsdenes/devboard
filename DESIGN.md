@@ -411,6 +411,13 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   boundary value: `mono-small` type, `background` fill, 1px `border-subtle` outline, 3px radius,
   2px 6px padding. A runnable command carries a `$` prompt; a path does not. No surface may draw
   a second inline-code style.
+- **Running agent row** (`.issues-agent-row`) — one button row in the Issues overview's running
+  agent list: a 44px mono issue-number column, the issue title on one line with ellipsis and the
+  full title as its tooltip, and a right-aligned meta group. The meta group carries the elapsed
+  run time in `mono-small`, tabular, `muted-foreground`, and a `needs answer` warning badge only
+  while the agent is waiting on a question. Rows are 28px tall with 6px 10px padding, separated by
+  a `border-subtle` rule; hover takes `secondary`. The per-row state word is omitted because the
+  panel is the running list, so color never repeats the header.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The four `role="tab"` controls sit in a `role="tablist"`
   group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px

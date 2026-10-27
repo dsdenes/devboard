@@ -538,6 +538,19 @@ describe("discover mode", () => {
         expect(publishedLevels[0]?.level).toBe("unit");
         expect(publishedLevels[0]?.happyPath).toBe("1");
         expect(publishedLevels[0]?.command).toBe("npm run test:unit");
+
+        // A quality gate carries the one line describing what it checks.
+        const ci = sheet.ci;
+        if (typeof ci !== "object" || ci === null || Array.isArray(ci)) {
+          throw new Error("the published sheet has no ci section");
+        }
+        const gatesLeaf = (ci as Record<string, unknown>).qualityGates;
+        if (typeof gatesLeaf !== "object" || gatesLeaf === null || Array.isArray(gatesLeaf)) {
+          throw new Error("the published sheet has no quality gates");
+        }
+        expect((gatesLeaf as Record<string, unknown>).value).toEqual([
+          { name: "bun test", checks: "Runs the whole fixture test suite in CI." },
+        ]);
         expect(state.commandAliases).toEqual([
           { command: "bun run build:src", alias: "npm run build" },
           { command: "bun test", alias: "npm test" },

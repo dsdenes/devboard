@@ -10,7 +10,6 @@ import { isRecord } from "../guards";
  */
 
 export type ScoutCommand =
-  | { type: "scan" }
   | { type: "stop" }
   | { type: "approve"; id: string }
   | { type: "draft"; id: string }
@@ -40,9 +39,8 @@ export function parseCommand(text: string): ScoutCommand | undefined {
   }
   if (!isRecord(parsed)) return undefined;
   switch (parsed.type) {
-    case "scan":
     case "stop":
-      return { type: parsed.type };
+      return { type: "stop" };
     case "approve":
     case "draft":
     case "reject":
