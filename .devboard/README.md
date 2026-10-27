@@ -935,11 +935,12 @@ Durable state stores the active target as URL, owner, and repository only, and `
 from `STATE_DIR`, so moving the state directory never leaves a stale absolute path. Startup removes
 every leftover `.staging-*` and every clone that is not the stored target's, so the scratch root
 holds at most one clone. A replacement restores a remote target only while `<cloneDir>/.git` exists;
-otherwise it starts on the host target and sends one `discoverError` naming the missing clone to the
-next client. A restart during a remote crawl interrupts it as a host run does: the recorded child
-ends, the clone's staging is removed, its published artifacts stay, and nothing is published or
-resumed. After a restart with an intact clone, `getDiscover` and the Overview render the clone's
-artifacts with `target.kind === "remote"` without a re-crawl.
+otherwise it starts on the host target, drops the stored target so the fallback never repeats, and
+sends one `discoverError` naming the missing clone to the next client. A restart during a remote
+crawl interrupts it as a host run does: the recorded child ends, the clone's staging is removed, its
+published artifacts stay, and nothing is published or resumed. After a restart with an intact clone,
+`getDiscover` and the Overview render the clone's artifacts with `target.kind === "remote"` without a
+re-crawl.
 
 The protocol adds `{ "type": "discoverRemote", "url": string }` and
 `{ "type": "clearDiscoverRemote" }`. A malformed payload, a missing or non-string `url`, and an

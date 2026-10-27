@@ -1063,7 +1063,7 @@ describe("discover remote target", () => {
   );
 
   test(
-    "falls back to the host target and reports a missing clone once",
+    "falls back to the host target, drops the missing target, and reports it once",
     async () => {
       const fixture = createFixture("missing");
       const clones = cloneHarness({ source: createSourceRepository("missing-source") });
@@ -1096,6 +1096,20 @@ describe("discover remote target", () => {
       } finally {
         restored.close();
         second.server.stop(true);
+      }
+
+      // A target whose clone is gone is not durable: the next start has
+      // nothing to restore and nothing to report.
+      expect(persistedState(fixture).discoverTarget).toBeNull();
+      const third = startServer({ fixture, clone: cloneHarness() });
+      const again = await connect(third.url);
+      try {
+        const state = await discoverState(again);
+        expect(state.target).toEqual({ kind: "host" });
+        expect(again.events.filter((event) => event.type === "discoverError")).toHaveLength(0);
+      } finally {
+        again.close();
+        third.server.stop(true);
       }
     },
     60_000,
