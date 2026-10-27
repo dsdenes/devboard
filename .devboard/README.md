@@ -1297,6 +1297,23 @@ buttons are disabled, `Ask` reads `Asking…`, and `Cancel` stays enabled. A fai
 agent, or a rejected prompt shows the error in the panel, keeps the question and earlier answers,
 and accepts the next question. `Ask` never calls `POST /api/feedback` and creates `no GitHub issue`.
 
+`Goal` turns the composer text into a raw proposed goal instead of an issue. With non-whitespace
+text it posts `report` plus the same captured element context to `POST /api/goal-proposals`; the
+server writes one Markdown draft under `<REPO_DIR>/.devboard/goal-proposals/` and answers
+`201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
+from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
+never writes a goal document, `GOAL.md`, or an ADR, never files an issue, never runs `gh`, and
+starts no agent or conversation. The file name is the report's first non-empty line, lowercased,
+with every run of non-alphanumeric characters replaced by `-`, leading and trailing `-` removed,
+and at most six hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`,
+`-3`, … through an exclusive create, so the first draft is never overwritten. The body opens with
+`# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, carries the line
+`> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
+text verbatim and the `## Captured UI context` block an issue report carries. A successful click
+closes the panel, stays in report selection mode with an empty composer, and shows the
+`Goal proposed: <path>` result line as plain text with no link; a failed write keeps the panel open
+with the server's error and leaves no draft. The drafts are ignored by git.
+
 `Remove element` and `Redesign element` are one-click shortcuts. Selecting one arms it and shows a
 shortcut-specific hint; the next click on any element files the issue immediately, with no panel
 and no text field. Filing does not use client-supplied report text. A successful filing shows

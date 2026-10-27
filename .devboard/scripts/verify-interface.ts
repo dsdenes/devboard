@@ -979,6 +979,8 @@ try {
   const requestUrls = new Map<string, string>();
   const feedbackRequests: Array<Record<string, unknown>> = [];
   const feedbackPosts: string[] = [];
+  const goalRequests: Array<Record<string, unknown>> = [];
+  const goalPosts: string[] = [];
 
   devtools.on("Runtime.exceptionThrown", (params) => {
     const details = params.exceptionDetails as Record<string, unknown> | undefined;
@@ -1023,6 +1025,21 @@ try {
         }
       } catch {
         feedbackRequests.push({ unparsed: request.postData });
+      }
+    }
+    if (
+      request?.method === "POST" &&
+      (request.url ?? "").endsWith("/api/goal-proposals") &&
+      typeof request.postData === "string"
+    ) {
+      goalPosts.push(request.url ?? "");
+      try {
+        const parsed = JSON.parse(request.postData) as unknown;
+        if (typeof parsed === "object" && parsed !== null) {
+          goalRequests.push(parsed as Record<string, unknown>);
+        }
+      } catch {
+        goalRequests.push({ unparsed: request.postData });
       }
     }
   });
@@ -2979,7 +2996,7 @@ try {
   check(panelChrome.title === "Report a UI issue", "the report panel title changed", panelChrome);
   check(panelChrome.placeholder === "What is wrong with this element?", "the report panel placeholder changed", panelChrome);
   check(
-    panelChrome.buttons.join("|") === "File issue|Ask|Cancel",
+    panelChrome.buttons.join("|") === "File issue|Ask|Goal|Cancel",
     "the report panel actions changed",
     panelChrome,
   );
@@ -3083,6 +3100,149 @@ try {
   await setFeedbackMode("ok");
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-panel') === null`, "the failed report panel to close");
+
+  // The Goal action writes one raw draft and returns to picking.
+  const goalDir = join(host, ".devboard", "goal-proposals");
+  await rm(goalDir, { recursive: true, force: true });
+  await clearFeedback();
+  goalRequests.length = 0;
+  goalPosts.length = 0;
+  const goalSentence = "The status bar should name the keyboard hints.";
+  await runPalette("app.report");
+  await page.click('[data-testid="status-bar"]');
+  await page.wait(
+    `document.querySelector('.feedback-panel') !== null`,
+    "the report panel for a goal draft",
+  );
+  const goalChrome = await page.eval<{
+    buttons: string[];
+    present: boolean;
+    label: string;
+    disabled: boolean;
+  }>(`(() => {
+    const button = document.querySelector('[data-testid="feedback-goal"]');
+    return {
+      buttons: [...document.querySelectorAll('.feedback-actions button')].map(
+        (entry) => entry.textContent.trim(),
+      ),
+      present: button !== null,
+      label: button?.getAttribute("aria-label") ?? "",
+      disabled: button?.disabled === true,
+    };
+  })()`);
+  check(
+    goalChrome.buttons.join("|") === "File issue|Ask|Goal|Cancel",
+    "the report panel action order changed",
+    goalChrome,
+  );
+  check(
+    goalChrome.present && goalChrome.label.includes("Goal"),
+    "the Goal action has no test id or accessible name",
+    goalChrome,
+  );
+  check(goalChrome.disabled, "the Goal action is enabled without text", goalChrome);
+  await page.fill('.feedback-panel textarea', goalSentence);
+  check(
+    await page.eval<boolean>(
+      `document.querySelector('[data-testid="feedback-goal"]')?.disabled === false`,
+    ),
+    "the Goal action stays disabled with composer text",
+  );
+  await page.click('[data-testid="feedback-goal"]');
+  await page.wait(
+    `document.querySelector('.feedback-panel') === null && document.querySelector('.feedback-hint') !== null`,
+    "the report selection mode after proposing a goal",
+  );
+  const goalDeadline = Date.now() + 20_000;
+  let goalFiles: string[] = [];
+  for (;;) {
+    if (existsSync(goalDir)) {
+      goalFiles = (await readdir(goalDir)).filter((name) => name.endsWith(".md"));
+      if (goalFiles.length > 0) break;
+    }
+    if (Date.now() > goalDeadline) {
+      throw new Error("verify:interface: the Goal action wrote no draft");
+    }
+    await delay(50);
+  }
+  check(goalFiles.length === 1, "the Goal action wrote more than one draft", goalFiles);
+  await page.wait(
+    `document.querySelector('.feedback-result[role="status"]') !== null`,
+    "the goal result line",
+  );
+  const goalStatus = await page.eval<{
+    text: string;
+    role: string;
+    anchor: boolean;
+    hint: string;
+    cursor: string;
+  }>(`(() => {
+    const status = document.querySelector('.feedback-result');
+    return {
+      text: (status?.textContent ?? "").replace(/\\s+/g, " ").trim(),
+      role: status?.getAttribute("role") ?? "",
+      anchor: status?.querySelector("a") !== null,
+      hint: document.querySelector('.feedback-hint')?.textContent ?? "",
+      cursor: document.body.style.cursor,
+    };
+  })()`);
+  const goalPath = `.devboard/goal-proposals/${goalFiles[0]!}`;
+  check(goalStatus.role === "status", "the goal result is not a status surface", goalStatus);
+  check(
+    goalStatus.text === `Goal proposed: ${goalPath}`,
+    "the goal result line does not name the draft",
+    goalStatus,
+  );
+  check(!goalStatus.anchor, "the goal result line rendered an anchor", goalStatus);
+  check(
+    goalStatus.hint.length > 0 && goalStatus.cursor === "crosshair",
+    "a proposed goal left selection mode",
+    goalStatus,
+  );
+  const goalText = await readFile(join(goalDir, goalFiles[0]!), "utf8");
+  check(
+    goalText.startsWith(`# Proposed goal: ${goalSentence}\n`),
+    "the draft heading is wrong",
+    goalText,
+  );
+  check(
+    goalText.includes("Unprocessed draft") && goalText.includes("/goal-spec"),
+    "the draft lost its unprocessed notice",
+    goalText,
+  );
+  check(goalText.includes(goalSentence), "the draft lost the operator text", goalText);
+  check(goalText.includes("## Captured UI context"), "the draft lost its captured context", goalText);
+  check(goalText.includes("- Route: `/`"), "the draft lost its route", goalText);
+  check(goalText.includes("- Selected element: `"), "the draft lost its selector", goalText);
+  check(goalText.includes("### Visible text"), "the draft lost its visible text", goalText);
+  check(goalText.includes("### DOM excerpt"), "the draft lost its DOM excerpt", goalText);
+  check(
+    !/^## (Success criteria|Verification|Boundaries|Stop conditions)$/m.test(goalText),
+    "the draft carries a goal-spec section",
+    goalText,
+  );
+  check(
+    goalRequests.length === 1 &&
+      goalRequests[0]?.report === goalSentence &&
+      typeof goalRequests[0]?.selector === "string" &&
+      String(goalRequests[0]?.selector ?? "").length > 0 &&
+      String(goalRequests[0]?.dom_excerpt ?? "").length > 0 &&
+      String(goalRequests[0]?.captured_at ?? "").length > 0,
+    "the goal request lacks its text or captured context",
+    goalRequests,
+  );
+  check(goalPosts.length === 1, "the Goal action sent more than one request", goalPosts);
+  check(
+    feedbackRequests.length === 0 && (await feedbackCalls()).length === 0,
+    "the Goal action filed an issue or ran gh",
+    feedbackRequests,
+  );
+  check(
+    (await issueState()).pressed.join(",") === "true,false,false",
+    "a proposed goal did not return to report selection",
+  );
+  await page.key("Escape");
+  await page.wait(`document.querySelector('.feedback-hint') === null`, "the goal mode to close");
 
   await runPalette("app.report");
   await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter for the palette cancel");
@@ -3347,8 +3507,8 @@ try {
     `[...document.querySelectorAll('.feedback-panel .feedback-actions button')].map((button) => button.textContent.trim())`,
   );
   check(
-    JSON.stringify(askActions) === JSON.stringify(["File issue", "Ask", "Cancel"]),
-    "the report panel actions are not File issue, Ask, Cancel",
+    JSON.stringify(askActions) === JSON.stringify(["File issue", "Ask", "Goal", "Cancel"]),
+    "the report panel actions are not File issue, Ask, Goal, Cancel",
     askActions,
   );
   const askControl = await page.eval<{ present: boolean; name: string; label: string; disabled: boolean }>(`(() => {
@@ -3390,7 +3550,7 @@ try {
       askDisabled: ask === null || ask.disabled,
       fileDisabled: buttons[0]?.disabled !== false,
       textareaDisabled: textarea?.disabled !== false,
-      cancelDisabled: buttons[2]?.disabled !== false,
+      cancelDisabled: buttons[3]?.disabled !== false,
     };
   })()`, "the pending ask controls", 8_000);
   check(asking.status === "Asking…" && asking.ask === "Asking…", "the pending ask does not read Asking…", asking);

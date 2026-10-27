@@ -27,6 +27,7 @@ import {
   parseFeedbackSubmission,
 } from "./feedback";
 import { FlowController, type FlowOptions } from "./flow";
+import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
 import { openJournal, type Journal, type JournalKind } from "./journal";
@@ -1443,6 +1444,78 @@ async function spawnClone(request: RemoteCloneRequest): Promise<RemoteCloneResul
     };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * The method, origin, size, and JSON guards shared by the mutating browser
+ * endpoints. A cross-origin page must never reach a handler with a side
+ * effect; the body is bounded before it is parsed.
+ */
+async function readMutationBody(
+  request: Request,
+  url: URL,
+): Promise<{ value: unknown } | { response: Response }> {
+  if (request.method !== "POST") {
+    return {
+      response: new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } }),
+    };
+  }
+
+  const origin = request.headers.get("origin");
+  if (origin !== null) {
+    let originHost: string | null = null;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      originHost = null;
+    }
+    if (originHost !== url.host) {
+      return {
+        response: Response.json(
+          { error: "Cross-origin feedback is refused." },
+          { status: 403 },
+        ),
+      };
+    }
+  }
+
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > MAX_FEEDBACK_BYTES) {
+    return {
+      response: Response.json(
+        { error: `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.` },
+        { status: 413 },
+      ),
+    };
+  }
+
+  let raw: string;
+  try {
+    raw = await request.text();
+  } catch (error) {
+    return {
+      response: Response.json(
+        { error: error instanceof Error ? error.message : "The report could not be read." },
+        { status: 400 },
+      ),
+    };
+  }
+  if (raw.length > MAX_FEEDBACK_BYTES) {
+    return {
+      response: Response.json(
+        { error: `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.` },
+        { status: 413 },
+      ),
+    };
+  }
+
+  try {
+    return { value: JSON.parse(raw) };
+  } catch {
+    return {
+      response: Response.json({ error: "The report is not valid JSON." }, { status: 400 }),
+    };
   }
 }
 
@@ -5123,59 +5196,11 @@ export function createApp(options: AppOptions) {
    * the side effect of creating issues, so another page must not reach it.
    */
   async function handleFeedbackRequest(request: Request, url: URL): Promise<Response> {
-    if (request.method !== "POST") {
-      return new Response("Method Not Allowed", {
-        status: 405,
-        headers: { Allow: "POST" },
-      });
-    }
-
-    const origin = request.headers.get("origin");
-    if (origin !== null) {
-      let originHost: string | null = null;
-      try {
-        originHost = new URL(origin).host;
-      } catch {
-        originHost = null;
-      }
-      if (originHost !== url.host) {
-        return Response.json({ error: "Cross-origin feedback is refused." }, { status: 403 });
-      }
-    }
-
-    const declared = Number(request.headers.get("content-length") ?? "0");
-    if (Number.isFinite(declared) && declared > MAX_FEEDBACK_BYTES) {
-      return Response.json(
-        { error: `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.` },
-        { status: 413 },
-      );
-    }
-
-    let raw: string;
-    try {
-      raw = await request.text();
-    } catch (error) {
-      return Response.json(
-        { error: error instanceof Error ? error.message : "The report could not be read." },
-        { status: 400 },
-      );
-    }
-    if (raw.length > MAX_FEEDBACK_BYTES) {
-      return Response.json(
-        { error: `The report is larger than ${MAX_FEEDBACK_BYTES} bytes.` },
-        { status: 413 },
-      );
-    }
-
-    let value: unknown;
-    try {
-      value = JSON.parse(raw);
-    } catch {
-      return Response.json({ error: "The report is not valid JSON." }, { status: 400 });
-    }
+    const guarded = await readMutationBody(request, url);
+    if ("response" in guarded) return guarded.response;
 
     try {
-      const submission = parseFeedbackSubmission(value);
+      const submission = parseFeedbackSubmission(guarded.value);
       const filed = await fileFeedbackIssue(submission, {
         command: feedbackCommand,
         repoDir,
@@ -5194,6 +5219,30 @@ export function createApp(options: AppOptions) {
     }
   }
 
+  /**
+   * Writes one proposed-goal draft. It never reaches `gh`, a tracker, an Ask
+   * peer, or the goal document: the request only creates one Markdown file
+   * under `.devboard/goal-proposals/`.
+   */
+  async function handleGoalProposalRequest(request: Request, url: URL): Promise<Response> {
+    const guarded = await readMutationBody(request, url);
+    if ("response" in guarded) return guarded.response;
+
+    try {
+      const submission = parseGoalProposalSubmission(guarded.value);
+      const proposal = await writeGoalProposal(submission, { repoDir });
+      return Response.json(proposal, { status: 201 });
+    } catch (error) {
+      if (error instanceof FeedbackRequestError) {
+        return Response.json({ error: error.message }, { status: error.status });
+      }
+      return Response.json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  }
+
   const server = Bun.serve({
     hostname: options.hostname,
     port: options.port,
@@ -5203,6 +5252,10 @@ export function createApp(options: AppOptions) {
 
       if (url.pathname === "/api/feedback") {
         return handleFeedbackRequest(request, url);
+      }
+
+      if (url.pathname === "/api/goal-proposals") {
+        return handleGoalProposalRequest(request, url);
       }
 
       if (url.pathname === "/api/watchdog") {

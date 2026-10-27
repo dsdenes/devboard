@@ -10,3 +10,4 @@ dist/
 .design/tmp/
 .design/browsers/
 .devboard/.design/tmp/
+.devboard/goal-proposals/

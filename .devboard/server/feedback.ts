@@ -134,6 +134,35 @@ function feedbackAction(value: unknown): FeedbackAction {
   throw new FeedbackRequestError(400, ACTION_ERROR);
 }
 
+/** The element context every browser request carries. */
+export interface CapturedFields {
+  route: string;
+  url: string;
+  selector: string;
+  domExcerpt: string;
+  visibleText: string;
+  viewport: string;
+  capturedAt: string;
+}
+
+/** Validates the captured element context under the shared per-field limits. */
+export function parseCapturedFields(source: Record<string, unknown>): CapturedFields {
+  return {
+    route: field(source.route, "route", MAX_CONTEXT_FIELD, false),
+    url: field(source.url, "url", MAX_CONTEXT_FIELD, false),
+    selector: field(source.selector, "selector", MAX_CONTEXT_FIELD, false),
+    domExcerpt: field(source.dom_excerpt, "dom_excerpt", MAX_DOM_EXCERPT, false),
+    visibleText: field(source.visible_text, "visible_text", MAX_VISIBLE_TEXT, false),
+    viewport: field(source.viewport, "viewport", MAX_VIEWPORT, false),
+    capturedAt: field(source.captured_at, "captured_at", MAX_CONTEXT_FIELD, false),
+  };
+}
+
+/** Validates the required free text under the shared report limit. */
+export function parseReportText(value: unknown): string {
+  return field(value, "report", MAX_REPORT, true);
+}
+
 /** Validates one JSON body. Unknown fields are ignored for forwards compatibility. */
 export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -145,15 +174,8 @@ export function parseFeedbackSubmission(value: unknown): FeedbackSubmission {
     action,
     // The one-click shortcuts use a fixed instruction, so any text the client
     // still sends is ignored rather than validated or filed.
-    report:
-      action === "report" ? field(source.report, "report", MAX_REPORT, true) : "",
-    route: field(source.route, "route", MAX_CONTEXT_FIELD, false),
-    url: field(source.url, "url", MAX_CONTEXT_FIELD, false),
-    selector: field(source.selector, "selector", MAX_CONTEXT_FIELD, false),
-    domExcerpt: field(source.dom_excerpt, "dom_excerpt", MAX_DOM_EXCERPT, false),
-    visibleText: field(source.visible_text, "visible_text", MAX_VISIBLE_TEXT, false),
-    viewport: field(source.viewport, "viewport", MAX_VIEWPORT, false),
-    capturedAt: field(source.captured_at, "captured_at", MAX_CONTEXT_FIELD, false),
+    report: action === "report" ? parseReportText(source.report) : "",
+    ...parseCapturedFields(source),
   };
 }
 
