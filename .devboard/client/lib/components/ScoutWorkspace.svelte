@@ -2,19 +2,9 @@
   import { scout } from "../scout.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
+  import IssuesAgentLog from "./IssuesAgentLog.svelte";
 
-  const activityText = $derived(
-    scout.activity.length === 0 ? "No activity yet." : scout.activity.join("\n"),
-  );
   const lifecycleTone = $derived(statusTone(scout.lifecycle));
-  let activityElement = $state<HTMLPreElement | null>(null);
-
-  // Reading the tracked values keeps the activity pinned to its newest line.
-  $effect(() => {
-    void activityText;
-    if (activityElement === null) return;
-    activityElement.scrollTop = activityElement.scrollHeight;
-  });
 </script>
 
 <section class="issues-scout" data-testid="issues-scout" aria-label="Auto Scout">
@@ -87,8 +77,7 @@
         {scout.snapshot?.scan?.scanId ?? scout.snapshot?.newestScanId ?? "No scan yet"}
       </span>
     </div>
-    <pre class="issues-activity mono" data-testid="scout-activity" bind:this={activityElement}
-      >{activityText}</pre>
+    <IssuesAgentLog lines={scout.activity} testid="scout-activity" />
   </section>
 
   {#if scout.staged.length > 0}
