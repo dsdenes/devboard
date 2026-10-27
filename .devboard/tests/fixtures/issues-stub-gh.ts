@@ -30,6 +30,12 @@ if (jq === ".permissions.push") {
   process.exit(0);
 }
 
+// The dashboard's startup update check asks for the latest release.
+if (endpoint.endsWith("/releases/latest")) {
+  process.stdout.write(`${JSON.stringify({ tag_name: "v0.0.0", assets: [] })}\n`);
+  process.exit(0);
+}
+
 if (!endpoint.includes("/issues")) {
   process.stderr.write("stub gh: unexpected endpoint\n");
   process.exit(1);
