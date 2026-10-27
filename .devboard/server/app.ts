@@ -11,10 +11,6 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
-import {
-  readStateFile as readOrchestratorState,
-  statePath as orchestratorStatePath,
-} from "../orchestrator/state";
 import { readWatchdogStatus } from "../watchdog/status";
 import {
   AcpConnection,
@@ -32,6 +28,7 @@ import {
 } from "./feedback";
 import { FlowController, type FlowOptions } from "./flow";
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
+import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import {
   DISCOVER_SKILLS,
@@ -142,6 +139,8 @@ export interface AppOptions {
    * default runner spawns it with the bounded environment and timeout.
    */
   discoverClone?: RemoteCloneRunner;
+  /** Issues mode's test seams; production uses the detached worker itself. */
+  issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
 }
 
 type RunAction = "resolving" | "implementing" | "generating";
@@ -450,7 +449,14 @@ type ClientMessage =
   | { type: "getGoal" }
   | { type: "getProject" }
   | { type: "getVersion" }
-  | { type: "getOrchestrator" }
+  | { type: "getIssues" }
+  | { type: "getIssuesRun"; runId?: unknown }
+  | { type: "startIssues" }
+  | { type: "pauseIssues" }
+  | { type: "resumeIssues" }
+  | { type: "stopIssues" }
+  | { type: "checkIssues" }
+  | { type: "answerIssues"; id?: unknown; value?: unknown }
   | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
@@ -505,8 +511,26 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "getProject" };
     case "getVersion":
       return { type: "getVersion" };
-    case "getOrchestrator":
-      return { type: "getOrchestrator" };
+    case "getIssues":
+      return { type: "getIssues" };
+    case "getIssuesRun":
+      return { type: "getIssuesRun", runId: "runId" in value ? value.runId : undefined };
+    case "startIssues":
+      return { type: "startIssues" };
+    case "pauseIssues":
+      return { type: "pauseIssues" };
+    case "resumeIssues":
+      return { type: "resumeIssues" };
+    case "stopIssues":
+      return { type: "stopIssues" };
+    case "checkIssues":
+      return { type: "checkIssues" };
+    case "answerIssues":
+      return {
+        type: "answerIssues",
+        id: "id" in value ? value.id : undefined,
+        value: "value" in value ? value.value : undefined,
+      };
     case "restartServer":
       return {
         type: "restartServer",
@@ -1641,6 +1665,25 @@ export function createApp(options: AppOptions) {
     syncDiscoverBusy();
   }
 
+  /**
+   * Issues mode reads and commands the detached worker for this checkout. The
+   * bridge never owns the worker: starting one is detached, stopping this
+   * server leaves it alive, and a replacement attaches to the same state.
+   */
+  const issues = new IssuesBridge({
+    repoDir,
+    stateDir,
+    agentCommand,
+    runningVersion,
+    harnessDir: runningHarnessDir(),
+    send: (event) => sendAll(event),
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.issues?.pollMs === undefined ? {} : { pollMs: options.issues.pollMs }),
+    ...(options.issues?.preflight === undefined ? {} : { preflight: options.issues.preflight }),
+    ...(options.issues?.spawnWorker === undefined ? {} : { spawnWorker: options.issues.spawnWorker }),
+  });
+  issues.begin();
+
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
     const children: RecordedChild[] = [];
@@ -1980,32 +2023,6 @@ export function createApp(options: AppOptions) {
 
   function sendVersion(ws: { send(data: string): unknown }) {
     send(ws, { type: "versionState", ...readVersion() });
-  }
-
-  /**
-   * The orchestrator's read-only summary. A missing, damaged, foreign, or
-   * other-checkout state file is simply not present: it is never an error, and
-   * it never reaches the journal. The full issue list stays out of the reply.
-   */
-  function sendOrchestratorState(ws: { send(data: string): unknown }) {
-    const state = readOrchestratorState(orchestratorStatePath(stateDir));
-    if (state === undefined || resolve(state.root) !== resolve(repoDir)) {
-      send(ws, { type: "orchestratorState", present: false });
-      return;
-    }
-    send(ws, {
-      type: "orchestratorState",
-      present: true,
-      repo: state.repo,
-      status: state.status,
-      open: state.open,
-      startedAt: state.startedAt,
-      finishedAt: state.finishedAt,
-      lastExitCode: state.lastExitCode,
-      lastError: state.lastError,
-      nextAttemptAt: state.nextAttemptAt,
-      updatedAt: state.updatedAt,
-    });
   }
 
   /** True while any run, lifecycle lane, creation, revision, reset, or Flow work is live. */
@@ -5308,6 +5325,7 @@ export function createApp(options: AppOptions) {
         // Discover replays its published artifacts, then the run a reconnect
         // landed in, before any reply to this client's own commands.
         replayDiscover(ws);
+        if (issues.present) issues.replay(ws);
       },
 
       close(ws) {
@@ -5334,7 +5352,8 @@ export function createApp(options: AppOptions) {
           command.type === "getGoal" ||
           command.type === "getProject" ||
           command.type === "getVersion" ||
-          command.type === "getOrchestrator" ||
+          command.type === "getIssues" ||
+          command.type === "getIssuesRun" ||
           command.type === "getSkills" ||
           command.type === "getDiscover";
         if (implementationReset !== undefined && !readOnly) {
@@ -5352,8 +5371,55 @@ export function createApp(options: AppOptions) {
             send(ws, { type: "project", path: project });
           } else if (command.type === "getVersion") {
             sendVersion(ws);
-          } else if (command.type === "getOrchestrator") {
-            sendOrchestratorState(ws);
+          } else if (command.type === "getIssues") {
+            issues.replay(ws);
+          } else if (command.type === "getIssuesRun") {
+            const detail = issues.run(command.runId);
+            if (detail === undefined) {
+              send(ws, { type: "error", message: "No such issues run." });
+            } else {
+              send(ws, { type: "issuesRun", run: detail });
+            }
+          } else if (
+            command.type === "startIssues" ||
+            command.type === "pauseIssues" ||
+            command.type === "resumeIssues" ||
+            command.type === "stopIssues" ||
+            command.type === "checkIssues"
+          ) {
+            if (command.type === "startIssues") {
+              const started = await issues.start();
+              if (!started.ok) {
+                send(ws, { type: "error", message: started.message });
+              } else {
+                issues.replay(ws);
+              }
+            } else {
+              const type =
+                command.type === "pauseIssues"
+                  ? "pause"
+                  : command.type === "resumeIssues"
+                    ? "resume"
+                    : command.type === "stopIssues"
+                      ? "stop"
+                      : "check";
+              const result = issues.command({ type });
+              if (!result.ok) send(ws, { type: "error", message: result.message });
+            }
+          } else if (command.type === "answerIssues") {
+            if (
+              (typeof command.id !== "string" && typeof command.id !== "number") ||
+              typeof command.value !== "string"
+            ) {
+              send(ws, { type: "error", message: "An answer needs its question id and value." });
+            } else {
+              const result = issues.command({
+                type: "answer",
+                id: command.id,
+                value: command.value,
+              });
+              if (!result.ok) send(ws, { type: "error", message: result.message });
+            }
           } else if (command.type === "restartServer") {
             restartServer(ws, command.whenIdle === true);
           } else if (command.type === "saveGoal") {
@@ -5467,6 +5533,7 @@ export function createApp(options: AppOptions) {
   server.stop = (closeActiveConnections?: boolean) => {
     ask.dispose();
     flow.dispose();
+    issues.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);
       restartWhenIdleTimer = undefined;

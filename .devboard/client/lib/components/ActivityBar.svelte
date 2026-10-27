@@ -3,6 +3,7 @@
   import Bell from "lucide-svelte/icons/bell";
   import Compass from "lucide-svelte/icons/compass";
   import Flag from "lucide-svelte/icons/flag";
+  import ListTodo from "lucide-svelte/icons/list-todo";
   import Moon from "lucide-svelte/icons/moon";
   import Search from "lucide-svelte/icons/search";
   import Sparkles from "lucide-svelte/icons/sparkles";
@@ -12,6 +13,7 @@
   import Workflow from "lucide-svelte/icons/workflow";
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
+  import { issues } from "../issues.svelte";
   import { goal } from "../goal.svelte";
   import { layout } from "../layout.svelte";
   import { notifications } from "../notifications.svelte";
@@ -51,6 +53,15 @@
           : goal.pendingCount > 0
             ? "idle"
             : null,
+  );
+  const issuesState = $derived<ModeState>(
+    issues.lifecycle === "running" || issues.lifecycle === "pausing"
+      ? "running"
+      : issues.question !== null || issues.lifecycle === "failed"
+        ? "attention"
+        : issues.enabled
+          ? "idle"
+          : null,
   );
   const flowState = $derived<ModeState>(
     flow.status === "running"
@@ -140,11 +151,35 @@
     <Tooltip.Root>
       <Tooltip.Trigger
         role="tab"
+        id="mode-issues-tab"
+        aria-controls="workspace-issues"
+        aria-selected={layout.mode === "issues"}
+        aria-label={modeLabel("Issues (Alt+2)", issuesState)}
+        title={modeLabel("Issues — Alt+2", issuesState)}
+        data-testid="mode-issues"
+        data-command="view.mode.issues"
+        class="activity-tab"
+        onclick={() => layout.setMode("issues")}
+      >
+        <ListTodo size={18} strokeWidth={1.7} aria-hidden="true" />
+        <span class="activity-tab__label">Issues</span>
+        {#if issuesState !== null}
+          <span class="activity-tab__state" data-state={issuesState} aria-hidden="true"></span>
+        {/if}
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content sideOffset={6} class={tooltipClass}>Issues — Alt+2</Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        role="tab"
         id="mode-flow-tab"
         aria-controls="workspace-flow"
         aria-selected={layout.mode === "flow"}
-        aria-label={modeLabel("Flow (Alt+2)", flowState)}
-        title={modeLabel("Flow — Alt+2", flowState)}
+        aria-label={modeLabel("Flow (Alt+3)", flowState)}
+        title={modeLabel("Flow — Alt+3", flowState)}
         data-testid="mode-flow"
         data-command="view.mode.flow"
         class="activity-tab"
@@ -157,7 +192,7 @@
         {/if}
       </Tooltip.Trigger>
       <Tooltip.Portal>
-        <Tooltip.Content sideOffset={6} class={tooltipClass}>Flow — Alt+2</Tooltip.Content>
+        <Tooltip.Content sideOffset={6} class={tooltipClass}>Flow — Alt+3</Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
 
@@ -167,8 +202,8 @@
         id="mode-discover-tab"
         aria-controls="workspace-discover"
         aria-selected={layout.mode === "discover"}
-        aria-label={modeLabel("Discover (Alt+3)", discoverState)}
-        title={modeLabel("Discover — Alt+3", discoverState)}
+        aria-label={modeLabel("Discover (Alt+4)", discoverState)}
+        title={modeLabel("Discover — Alt+4", discoverState)}
         data-testid="mode-discover"
         data-command="view.mode.discover"
         class="activity-tab"
@@ -181,7 +216,7 @@
         {/if}
       </Tooltip.Trigger>
       <Tooltip.Portal>
-        <Tooltip.Content sideOffset={6} class={tooltipClass}>Discover — Alt+3</Tooltip.Content>
+        <Tooltip.Content sideOffset={6} class={tooltipClass}>Discover — Alt+4</Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
   </div>

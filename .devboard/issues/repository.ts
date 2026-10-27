@@ -1,9 +1,11 @@
 import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 /**
- * Checkout facts the orchestrator discovers at runtime. Nothing here names a
- * host, a user, or a repository: every value comes from git or the caller.
+ * Checkout facts the issues worker and its dashboard discover at runtime.
+ * Nothing here names a host, a user, or a repository: every value comes from
+ * git, the caller, or the runtime environment.
  */
 
 export interface CommandOutcome {
@@ -59,11 +61,32 @@ export function repositoryFromUrl(url: string): string | undefined {
   return REPOSITORY.test(repository) ? repository : undefined;
 }
 
+/** The remote URL of `origin`, if the checkout has one. */
+export function originRemoteUrl(root: string): string | undefined {
+  const remote = git(root, "remote", "get-url", "origin");
+  return remote.code === 0 && remote.stdout.length > 0 ? remote.stdout : undefined;
+}
+
+/**
+ * True only for a GitHub remote. GitLab, a local path, and an unreadable URL
+ * are all refused: this harness supports one tracker and adds no webhook.
+ */
+export function isGitHubRemote(url: string): boolean {
+  const trimmed = url.trim();
+  const scp = /^[A-Za-z0-9_.-]+@([^:/]+):/.exec(trimmed);
+  if (scp !== null) return scp[1]!.toLowerCase() === "github.com";
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.hostname.toLowerCase() === "github.com";
+  } catch {
+    return false;
+  }
+}
+
 /** The `owner/name` the checkout's origin names, or undefined. */
 export function originRepository(root: string): string | undefined {
-  const remote = git(root, "remote", "get-url", "origin");
-  if (remote.code !== 0 || remote.stdout.length === 0) return undefined;
-  return repositoryFromUrl(remote.stdout);
+  const url = originRemoteUrl(root);
+  return url === undefined ? undefined : repositoryFromUrl(url);
 }
 
 export function isRepositoryName(value: string): boolean {
@@ -75,37 +98,53 @@ export function harnessDirectory(root: string): string {
   return join(root, ".devboard");
 }
 
-export interface RootProblem {
-  message: string;
-}
-
 /**
- * Validates a root for the runner: a git checkout at that exact path, not a
- * linked worktree, carrying `.devboard/`. The message is what the operator
- * sees, so it names the failing fact rather than a generic refusal.
+ * Validates a root exactly as the removed orchestrator did: a git checkout at
+ * that exact path, not a linked worktree, carrying `.devboard/`.
  */
-export function rootProblem(root: string): RootProblem | undefined {
+export function rootProblem(root: string): string | undefined {
   const absolute = resolve(root);
-  if (!existsSync(absolute)) return { message: `${absolute} does not exist` };
+  if (!existsSync(absolute)) return `${absolute} does not exist`;
   const top = topLevel(absolute);
-  if (top === undefined) return { message: `${absolute} is not a git checkout` };
-  if (resolve(top) !== absolute) {
-    return { message: `${absolute} is not the checkout root (${top} is)` };
-  }
+  if (top === undefined) return `${absolute} is not a git checkout`;
+  if (resolve(top) !== absolute) return `${absolute} is not the checkout root (${top} is)`;
   if (isLinkedWorktree(absolute)) {
-    return { message: `${absolute} is a linked git worktree, not the canonical checkout` };
+    return `${absolute} is a linked git worktree, not the canonical checkout`;
   }
   if (!existsSync(harnessDirectory(absolute))) {
-    return { message: `${absolute} has no .devboard directory` };
+    return `${absolute} has no .devboard directory`;
   }
   return undefined;
 }
 
-/** Resolves symlinks so a runner started from a link sees the real harness. */
+/** Resolves symlinks so a worker started from a link sees the real harness. */
 export function realDirectory(path: string): string | undefined {
   try {
     return realpathSync(path);
   } catch {
     return undefined;
   }
+}
+
+/** Finds an executable the way a shell would, using the supplied environment. */
+export function findOnPath(
+  name: string,
+  environment: Record<string, string | undefined> = process.env,
+): string | undefined {
+  const path = environment.PATH ?? "";
+  for (const directory of path.split(":")) {
+    if (directory.length === 0) continue;
+    const candidate = join(directory, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/** The installed `/implement-all-issues` command files for the operator's omp. */
+export function ompCommandPaths(environment: Record<string, string | undefined> = process.env): string[] {
+  const home = environment.HOME ?? homedir();
+  return [
+    join(home, ".omp", "agent", "commands", "implement-all-issues.md"),
+    join(home, ".omp", "commands", "implement-all-issues.md"),
+  ];
 }

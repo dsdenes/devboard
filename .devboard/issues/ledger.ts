@@ -1,19 +1,18 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { orchestratorDirectory } from "./state";
+import { dirname } from "node:path";
+import { isInteger, isRecord } from "./guards";
+import { LEDGER_VERSION, ledgerPath } from "./paths";
 
 /**
- * The ledger remembers which issue numbers a successful run already handled,
- * so a poll never retriggers one while it stays open. It is harness state
- * under the orchestrator directory, never committed, and it survives restarts.
- * It controls triggers only: it never scopes the spawned command.
+ * The ledger records which issue numbers a successful ACP prompt already
+ * handled, keyed by the repository's state directory. It controls triggers
+ * only; the prompt itself is never scoped. A closed issue that reopens is new
+ * again because pruning drops entries that are no longer open.
  */
-
-export const LEDGER_VERSION = 1;
 
 export interface HandledIssue {
   number: number;
-  /** The run directory that handled it, a UTC timestamp name. */
+  /** The run that handled it, or `legacy` for a migrated entry. */
   runId: string;
   at: string;
 }
@@ -23,18 +22,16 @@ export interface Ledger {
   handled: Record<string, HandledIssue>;
 }
 
-export function ledgerPath(stateDir: string): string {
-  return join(orchestratorDirectory(stateDir), "ledger.json");
+export function emptyLedger(): Ledger {
+  return { version: LEDGER_VERSION, handled: {} };
 }
 
 function isEntry(value: unknown): value is HandledIssue {
-  if (typeof value !== "object" || value === null) return false;
-  const entry = value as Record<string, unknown>;
   return (
-    typeof entry.number === "number" &&
-    Number.isInteger(entry.number) &&
-    typeof entry.runId === "string" &&
-    typeof entry.at === "string"
+    isRecord(value) &&
+    isInteger(value.number) &&
+    typeof value.runId === "string" &&
+    typeof value.at === "string"
   );
 }
 
@@ -45,34 +42,28 @@ export function parseLedger(text: string): Ledger | undefined {
   } catch {
     return undefined;
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-  const record = parsed as Record<string, unknown>;
-  if (record.version !== LEDGER_VERSION) return undefined;
-  if (typeof record.handled !== "object" || record.handled === null) return undefined;
+  if (!isRecord(parsed) || parsed.version !== LEDGER_VERSION) return undefined;
+  if (!isRecord(parsed.handled)) return undefined;
   const handled: Record<string, HandledIssue> = {};
-  for (const [key, value] of Object.entries(record.handled as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(parsed.handled)) {
     if (!isEntry(value)) return undefined;
     handled[key] = value;
   }
   return { version: LEDGER_VERSION, handled };
 }
 
-function emptyLedger(): Ledger {
-  return { version: LEDGER_VERSION, handled: {} };
-}
-
-/** A missing or unusable ledger reads as empty and is left exactly as found. */
-export function readLedger(stateDir: string): Ledger {
+/** A missing or unusable ledger reads as empty. */
+export function readLedger(stateDir: string, repoDir: string): Ledger {
   try {
-    return parseLedger(readFileSync(ledgerPath(stateDir), "utf8")) ?? emptyLedger();
+    return parseLedger(readFileSync(ledgerPath(stateDir, repoDir), "utf8")) ?? emptyLedger();
   } catch {
     return emptyLedger();
   }
 }
 
-/** A missing, damaged, or foreign ledger reads as empty and is kept aside. */
-export function loadLedger(stateDir: string): Ledger {
-  const path = ledgerPath(stateDir);
+/** A damaged ledger is renamed aside, preserved, and read as empty. */
+export function loadLedger(stateDir: string, repoDir: string): Ledger {
+  const path = ledgerPath(stateDir, repoDir);
   if (!existsSync(path)) return emptyLedger();
   let text: string;
   try {
@@ -90,10 +81,9 @@ export function loadLedger(stateDir: string): Ledger {
   return emptyLedger();
 }
 
-export function writeLedger(stateDir: string, ledger: Ledger): void {
-  const directory = orchestratorDirectory(stateDir);
-  mkdirSync(directory, { recursive: true });
-  const path = ledgerPath(stateDir);
+export function writeLedger(stateDir: string, repoDir: string, ledger: Ledger): void {
+  const path = ledgerPath(stateDir, repoDir);
+  mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(ledger, null, 2)}\n`);
   renameSync(temporary, path);
@@ -117,10 +107,7 @@ export function recordHandled(
   return { version: LEDGER_VERSION, handled };
 }
 
-/**
- * Drops entries whose issue is no longer open. A closed issue that reopens is
- * therefore new again, while one that stays open is never retriggered.
- */
+/** Drops entries whose issue is no longer open. */
 export function pruneLedger(ledger: Ledger, open: Set<number>): Ledger {
   const handled: Record<string, HandledIssue> = {};
   let changed = false;

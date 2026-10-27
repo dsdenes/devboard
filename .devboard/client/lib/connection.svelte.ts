@@ -1,5 +1,5 @@
 import { notifications } from "./notifications.svelte";
-import type { OrchestratorState, OrchestratorStatus, VersionState } from "./types";
+import type { VersionState } from "./types";
 
 type ConnectionState = "connecting" | "open" | "closed";
 
@@ -22,16 +22,6 @@ function isVersionState(value: Record<string, unknown>): boolean {
   );
 }
 
-function isOrchestratorState(value: Record<string, unknown>): boolean {
-  if (value.type !== "orchestratorState") return false;
-  if (value.present === false) return true;
-  if (value.present !== true) return false;
-  return (
-    typeof value.repo === "string" &&
-    (value.status === "idle" || value.status === "running" || value.status === "failed") &&
-    typeof value.open === "number"
-  );
-}
 
 /**
  * Owns the single WebSocket. Every parsed frame is also forwarded to the
@@ -41,7 +31,6 @@ export class ConnectionStore {
   state = $state<ConnectionState>("connecting");
   projectPath = $state("");
   version = $state<VersionState | null>(null);
-  orchestrator = $state<OrchestratorState | null>(null);
   restarting = $state(false);
   awaitingRestart = $state(false);
   upgradePending = $state(false);
@@ -89,7 +78,6 @@ export class ConnectionStore {
       current.send(JSON.stringify({ type: "getSkills" }));
       current.send(JSON.stringify({ type: "getProject" }));
       current.send(JSON.stringify({ type: "getVersion" }));
-      current.send(JSON.stringify({ type: "getOrchestrator" }));
     };
 
     current.onmessage = (event) => {
@@ -132,24 +120,6 @@ export class ConnectionStore {
         latest: message.latest as string | null,
         stale: message.stale as boolean,
       };
-      return;
-    }
-    if (isOrchestratorState(message)) {
-      this.orchestrator =
-        message.present === false
-          ? { present: false }
-          : {
-              present: true,
-              repo: message.repo as string,
-              status: message.status as OrchestratorStatus,
-              open: message.open as number,
-              startedAt: (message.startedAt as string | null) ?? null,
-              finishedAt: (message.finishedAt as string | null) ?? null,
-              lastExitCode: (message.lastExitCode as number | null) ?? null,
-              lastError: (message.lastError as string | null) ?? null,
-              nextAttemptAt: (message.nextAttemptAt as string | null) ?? null,
-              updatedAt: typeof message.updatedAt === "string" ? message.updatedAt : "",
-            };
       return;
     }
     if (message.type === "serverRestarting") {
@@ -212,7 +182,6 @@ export class ConnectionStore {
     window.setInterval(() => {
       if (this.socket?.readyState === WebSocket.OPEN) {
         this.socket.send(JSON.stringify({ type: "getVersion" }));
-        this.socket.send(JSON.stringify({ type: "getOrchestrator" }));
       }
     }, 3000);
   }

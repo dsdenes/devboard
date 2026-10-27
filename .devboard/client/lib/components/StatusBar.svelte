@@ -3,6 +3,8 @@
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
   import { connection } from "../connection.svelte";
   import { goal } from "../goal.svelte";
+  import { issues } from "../issues.svelte";
+  import { layout } from "../layout.svelte";
   import IconButton from "./ui/icon-button.svelte";
   import WatchdogIndicator from "./watchdog-indicator.svelte";
 
@@ -28,25 +30,24 @@
   });
 
   const issuesLabel = $derived.by(() => {
-    const state = connection.orchestrator;
-    if (state === null || state.present === false) return "";
-    if (state.status === "running") return `issues working (${state.open})`;
-    if (state.status === "failed") return "issues failed";
-    return "issues idle";
+    const pending = issues.pending;
+    if (issues.lifecycle === "running") return `issues working (${issues.activeIssueNumbers.length})`;
+    if (issues.lifecycle === "pausing") return "issues pausing";
+    if (issues.lifecycle === "paused") return "issues paused";
+    if (issues.lifecycle === "failed") return "issues failed";
+    if (issues.enabled) return pending > 0 ? `issues idle (${pending})` : "issues idle";
+    return "issues stopped";
   });
 
   const issuesTitle = $derived.by(() => {
-    const state = connection.orchestrator;
-    if (state === null || state.present === false) return "";
-    if (state.status === "running") {
-      const since = state.startedAt === null ? "" : ` · working since ${state.startedAt}`;
-      return `Issue orchestrator for ${state.repo}${since}`;
-    }
-    if (state.status === "failed") {
-      const reason = state.lastError === null ? "" : ` · ${state.lastError}`;
-      return `Issue orchestrator for ${state.repo} · last run failed${reason}`;
-    }
-    return `Issue orchestrator for ${state.repo} · idle`;
+    const repo = issues.repo ?? "this checkout";
+    const detail =
+      issues.lifecycle === "failed" && issues.snapshot?.lastError !== null
+        ? ` · ${issues.snapshot?.lastError}`
+        : issues.snapshot?.worker === null || issues.snapshot?.worker === undefined
+          ? ""
+          : ` · worker pid ${issues.snapshot.worker.pid}`;
+    return `Issues automation for ${repo} · ${issues.lifecycle}${detail}`;
   });
 
   const versions = $derived(
@@ -69,9 +70,17 @@
   <span class="status-item" title="Running and total agent lanes">
     <span class="mono">lanes {goal.runningLanes}/{goal.lanes.length}</span>
   </span>
-  {#if connection.orchestrator?.present === true}
-    <span class="status-item" data-testid="status-issues" title={issuesTitle}>{issuesLabel}</span>
-  {/if}
+  <button
+    type="button"
+    class="status-item status-issues"
+    data-testid="issues-indicator"
+    data-command="view.mode.issues"
+    title={issuesTitle}
+    aria-label={`${issuesLabel}. Open Issues mode.`}
+    onclick={() => layout.setMode("issues")}
+  >
+    {issuesLabel}
+  </button>
   <WatchdogIndicator />
   <span class="status-item status-versions" title={versions}>{versions}</span>
   {#if connection.version?.stale === true}

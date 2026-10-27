@@ -225,7 +225,7 @@ describe("ask conversations", () => {
       );
       expect(first.type).toBe("askDone");
       const firstAnswer = chunks(client, "conversation-1");
-      expect(firstAnswer.startsWith("The issues label shows")).toBe(true);
+      expect(firstAnswer.startsWith("The issues indicator shows")).toBe(true);
       // Thoughts and tool activity never become answer text.
       expect(firstAnswer.includes("Considering the captured element")).toBe(false);
       expect(firstAnswer.includes("Reading the captured element")).toBe(false);
@@ -463,7 +463,7 @@ describe("ask conversations", () => {
       expect(logged.texts[1]).toContain("Earlier in this conversation:");
       expect(logged.texts[1]).toContain("Developer: What does the issues label mean?");
       const answer = chunks(client, "conversation-exit");
-      expect(answer.includes("The issues label shows")).toBe(true);
+      expect(answer.includes("The issues indicator shows")).toBe(true);
       expect(answer.includes("Considering the captured element")).toBe(false);
     } finally {
       client.close();
