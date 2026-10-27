@@ -278,7 +278,7 @@ describe("window and attribution", () => {
     expect(collected.malformed).toBe(1);
   });
 
-  test("attributes an in-window omp error only through the dashboard's process ancestry", async () => {
+  test("attributes an in-window omp error by dashboard process ancestry", async () => {
     const base = await temporaryDirectory("test-watchdog-omp");
     const logsDir = join(base, "logs");
     await mkdir(logsDir, { recursive: true });

@@ -162,6 +162,10 @@ if (head !== tip) {
   console.log(`publish: main is at ${head.slice(0, 7)}`);
 }
 
+// The fast-forward moved HEAD: every later step must name the revision that
+// this run actually verifies, never the one the checkout had before it.
+const published = mustGit(["rev-parse", "HEAD"], "could not read HEAD after the update");
+
 console.log("publish: installing harness dependencies");
 const install = run(["bun", "install", "--frozen-lockfile"]);
 if (install.code !== 0) fail(`bun install failed: ${install.stderr || install.stdout}`);
@@ -200,7 +204,7 @@ const count = git(["rev-list", "--count", "HEAD"]);
 if (count.code !== 0) fail("could not count commits");
 const version = `0.1.${Number(count.stdout)}`;
 const tag = `v${version}`;
-console.log(`publish: waiting for the release workflow of ${head.slice(0, 7)} (${tag})`);
+console.log(`publish: waiting for the release workflow of ${published.slice(0, 7)} (${tag})`);
 
 const deadline = Date.now() + waitTimeoutMs;
 let workflow: { databaseId: number; status: string; conclusion: string | null } | undefined;
@@ -225,7 +229,7 @@ while (Date.now() < deadline) {
       status: string;
       conclusion: string | null;
     }>;
-    const match = runs.find((candidate) => candidate.headSha === head);
+    const match = runs.find((candidate) => candidate.headSha === published);
     if (match !== undefined) {
       workflow = match;
       if (match.status === "completed") break;
@@ -236,7 +240,9 @@ while (Date.now() < deadline) {
   await Bun.sleep(5000);
 }
 
-if (workflow === undefined) fail(`no devboard-release run for ${head.slice(0, 7)} within the wait`);
+if (workflow === undefined) {
+  fail(`no devboard-release run for ${published.slice(0, 7)} within the wait`);
+}
 if (workflow.status !== "completed") fail("the release workflow did not complete within the wait");
 if (workflow.conclusion !== "success") {
   fail(`the release workflow concluded ${workflow.conclusion ?? "unknown"}`);
