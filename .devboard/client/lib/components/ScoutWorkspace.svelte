@@ -3,8 +3,45 @@
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
+  import ScoutIssues from "./ScoutIssues.svelte";
 
   const lifecycleTone = $derived(statusTone(scout.lifecycle));
+  const sync = $derived(scout.sync);
+
+  let maxPerHourText = $state("10");
+  let maxPendingText = $state("5");
+  let limitsError = $state<string | null>(null);
+  let lastLimits = $state("");
+
+  // A snapshot that changes the saved limits wins over the fields; typing
+  // never changes the snapshot, so an edit in progress is never overwritten.
+  $effect(() => {
+    const limits = scout.limits;
+    const signature = `${limits.maxPerHour}/${limits.maxPending}`;
+    if (signature === lastLimits) return;
+    lastLimits = signature;
+    maxPerHourText = String(limits.maxPerHour);
+    maxPendingText = String(limits.maxPending);
+    limitsError = null;
+  });
+
+  function parseLimit(value: string): number | null {
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    return Number.isInteger(parsed) && parsed >= 1 && parsed <= 100 ? parsed : null;
+  }
+
+  function saveLimits(): void {
+    const perHour = parseLimit(maxPerHourText);
+    const pending = parseLimit(maxPendingText);
+    if (perHour === null || pending === null) {
+      limitsError = "Both limits must be integers from 1 through 100.";
+      return;
+    }
+    limitsError = null;
+    scout.saveLimits(perHour, pending);
+  }
 </script>
 
 <section class="issues-scout" data-testid="issues-scout" aria-label="Auto Scout">
@@ -46,8 +83,8 @@
           </dd>
         </div>
         <div>
-          <dt>Staged</dt>
-          <dd>{scout.count} of 9</dd>
+          <dt>Pending issues</dt>
+          <dd>{scout.count}</dd>
         </div>
         <div>
           <dt>Scan</dt>
@@ -57,18 +94,83 @@
           <dt>Next attempt</dt>
           <dd class="mono">{scout.nextAttemptAt ?? "none"}</dd>
         </div>
+        <div>
+          <dt>GitHub read</dt>
+          <dd>
+            <span data-testid="scout-sync" data-state={sync.state}>{sync.state}</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Last read</dt>
+          <dd class="mono" data-testid="scout-sync-at">{sync.at ?? "never"}</dd>
+        </div>
       </dl>
+      {#if sync.error !== null}
+        <p class="issues-error" data-testid="scout-sync-error" role="alert">{sync.error}</p>
+      {/if}
       {#if scout.notice !== null}
         <p class="issues-notice" data-testid="scout-notice" role="status">{scout.notice}</p>
       {/if}
       {#if scout.error !== null}
         <p class="issues-error" data-testid="scout-error" role="alert">{scout.error}</p>
       {/if}
-      {#if scout.shortfall !== null}
-        <p class="issues-notice" data-testid="scout-shortfall" role="status">{scout.shortfall}</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel__header">
+      <h2 class="panel__title">Filing limits</h2>
+    </div>
+    <div class="panel__body stack-sm">
+      <div class="scout-limits">
+        <label class="scout-limits__field">
+          <span>Issues per rolling hour</span>
+          <input
+            class="scout-limits__input"
+            type="number"
+            min="1"
+            max="100"
+            step="1"
+            inputmode="numeric"
+            data-testid="scout-max-per-hour"
+            value={maxPerHourText}
+            oninput={(event) => (maxPerHourText = event.currentTarget.value)}
+          />
+        </label>
+        <label class="scout-limits__field">
+          <span>Open issues</span>
+          <input
+            class="scout-limits__input"
+            type="number"
+            min="1"
+            max="100"
+            step="1"
+            inputmode="numeric"
+            data-testid="scout-max-pending"
+            value={maxPendingText}
+            oninput={(event) => (maxPendingText = event.currentTarget.value)}
+          />
+        </label>
+        <Button
+          variant="default"
+          data-testid="scout-save-limits"
+          data-command="issues.scout.limits"
+          onclick={saveLimits}
+        >
+          Save limits
+        </Button>
+      </div>
+      <p class="muted scout-limits__hint">
+        Auto Scout files at most the smaller of the hourly room and the open-issue room, and only
+        findings scored 4 or 5.
+      </p>
+      {#if limitsError !== null}
+        <p class="issues-error" data-testid="scout-limits-error" role="alert">{limitsError}</p>
       {/if}
     </div>
   </section>
+
+  <ScoutIssues issues={scout.issues} />
 
   <section class="panel issues-activity-panel">
     <div class="panel__header">
@@ -79,84 +181,42 @@
     </div>
     <IssuesAgentLog lines={scout.activity} testid="scout-activity" />
   </section>
-
-  {#if scout.staged.length > 0}
-    <section class="scout-board" aria-label="Staged recommendations">
-      {#each scout.staged as item (item.id)}
-        <article
-          class="panel scout-widget"
-          data-testid="scout-widget"
-          data-id={item.id}
-          data-category={item.category}
-        >
-          <div class="panel__header">
-            <h2 class="panel__title">{item.title}</h2>
-            <span class="badge" data-tone="accent">{item.category}</span>
-          </div>
-          <div class="panel__body stack-sm">
-            <p class="scout-widget__summary">{item.summary}</p>
-            <p class="scout-widget__impact">
-              <strong>Impact.</strong>
-              {item.impact.length === 0 ? "Not stated." : item.impact}
-            </p>
-            <div class="scout-widget__section">
-              <h3>Evidence</h3>
-              <ul class="scout-widget__list">
-                {#each item.evidence as entry (entry.path + entry.lines)}
-                  <li>
-                    <code class="mono">{entry.path}:{entry.lines}</code>
-                    {#if entry.quote}
-                      <q class="scout-widget__quote">{entry.quote}</q>
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            </div>
-            <div class="scout-widget__section">
-              <h3>Proposed change</h3>
-              <p>{item.proposedChange}</p>
-            </div>
-            <div class="scout-widget__section">
-              <h3>Files</h3>
-              <ul class="scout-widget__list">
-                {#each item.files as file (file)}
-                  <li><code class="mono">{file}</code></li>
-                {/each}
-              </ul>
-            </div>
-            <p class="muted scout-widget__staged mono">Staged {item.stagedAt}</p>
-            <div class="toolbar">
-              <Button
-                variant="default"
-                data-testid="scout-approve"
-                data-command={`issues.scout.approve.${item.id}`}
-                disabled={scout.inFlight(item.id)}
-                onclick={() => scout.approve(item.id)}
-              >
-                Approve
-              </Button>
-              <Button
-                variant="outline"
-                data-testid="scout-draft-goal"
-                data-command={`issues.scout.draft-goal.${item.id}`}
-                disabled={scout.inFlight(item.id)}
-                onclick={() => scout.draftGoal(item.id)}
-              >
-                Draft goal
-              </Button>
-              <Button
-                variant="destructive"
-                data-testid="scout-reject"
-                data-command={`issues.scout.reject.${item.id}`}
-                disabled={scout.inFlight(item.id)}
-                onclick={() => scout.reject(item.id)}
-              >
-                Reject
-              </Button>
-            </div>
-          </div>
-        </article>
-      {/each}
-    </section>
-  {/if}
 </section>
+
+<style>
+  .scout-limits {
+    align-items: flex-end;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .scout-limits__field {
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    font-size: 10.5px;
+    gap: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .scout-limits__input {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--foreground);
+    font: inherit;
+    font-size: 12px;
+    height: 24px;
+    letter-spacing: normal;
+    padding: 0 6px;
+    text-transform: none;
+    width: 96px;
+  }
+
+  .scout-limits__hint {
+    font-size: 11px;
+    margin: 0;
+  }
+</style>

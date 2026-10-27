@@ -69,6 +69,8 @@ export interface DraftRecommendation {
   title: string;
   summary: string;
   impact: string;
+  significance: number;
+  significanceReason: string;
   evidence: Array<{ path: string; lines: string; quote?: string }>;
   proposedChange: string;
   files: string[];
@@ -82,6 +84,10 @@ export function recommendation(index: number): DraftRecommendation {
     title: `Simplify module ${index} control flow`,
     summary: `Module ${index} nests its branches until the intent is hidden.`,
     impact: "A flatter unit is cheaper to change and to test.",
+    significance: 5,
+    significanceReason:
+      `Module ${index} reaches its third nested branch on every call, so an ` +
+      "inverted condition silently skips the second half of the file.",
     evidence: [{ path: `src/module-${index}.ts`, lines: "2-6", quote: "export const" }],
     proposedChange: `Extract the branches of module ${index} into named steps.`,
     files: [`src/module-${index}.ts`],

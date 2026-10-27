@@ -1530,40 +1530,93 @@ agent leaves the queue on the next poll.
 ## Auto Scout
 
 The Issues sidebar lists `Overview`, `Auto Scout`, `Issues`, `Runs`, and then `Drafts`
-in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`, palette
-`Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its tab, or
-reloading the dashboard never starts a worker: only `data-testid="scout-start"` does. The page
-shows
+in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`,
+palette `Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its
+tab, or reloading the dashboard never starts a worker and never files an issue: only
+`data-testid="scout-start"` starts the worker, and that control becomes
+`data-testid="scout-stop"` while a worker is attached. The page shows
 `data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`),
 `data-testid="scout-activity"` for the current or newest scan, `data-testid="scout-error"` for the
-last error, and `data-testid="scout-shortfall"` while fewer than nine are staged. The staging
-board renders only while at least one recommendation is staged; a page with nothing staged shows
-no board and no placeholder text. One control toggles the worker: `data-testid="scout-start"`
-starts it and becomes `data-testid="scout-stop"` while a worker is attached. Stop keeps the
-staged board; the next Start scans immediately, so there is no separate Scan now control.
+last error, `data-testid="scout-notice"` for the last notice, and `data-testid="scout-repo"`.
 
-The staging board holds at most nine significant, evidence-backed recommendations, and nine
-whenever nine exist. Each widget carries `data-testid="scout-widget"`, `data-id`, and
-`data-category`, shows its category, title, summary, impact, `path:lines` evidence with any quote,
-proposed change, files, and staged time, and offers
-`data-testid="scout-approve"`, `data-testid="scout-draft-goal"`, and
-`data-testid="scout-reject"`. Existing widgets keep their position and refills append; a decision
-removes one widget in the same published update that records it and the agent refills the freed
-slot immediately. A decision for an id no longer staged is refused, so one recommendation can
-never file two issues or two drafts, and its three controls are disabled while it is in flight.
+There is no review path. While a worker runs, a scan whose items score at least 4 files each
+accepted item directly as a GitHub issue in the host `origin`, in the same scan cycle, with no
+dashboard command, click, approval, or draft. The page exposes no staged recommendation, no
+`scout-widget`, `scout-approve`, `scout-draft-goal`, `scout-reject`, or `scout-shortfall` element,
+and `approveScout`, `draftScoutGoal`, and `rejectScout` are not accepted commands. Stop keeps the
+filed rows and the limits; the next Start reads GitHub and scans again.
 
-- **Approve** files exactly one issue in the host `origin` (never in the harness repository unless
-  that is the origin). The title is the recommendation's; the body is passed as a file and carries
-  the category, summary, evidence, proposed change, files, and acceptance criteria; the exact
-  label `scout` is created first when absent. The worker resolves forge write access through
-  `lib/forge-auth.ts`. The Issues worker picks the issue up on its next poll while it runs; while
-  it is stopped the issue waits.
-- **Draft goal** writes exactly one Markdown draft under `<REPO_DIR>/.devboard/goal-proposals/`
-  with the existing draft notice, a base name of at most six hyphenated words taken from the
-  title, and `-2`, `-3`, … instead of overwriting. It carries no finalized success criteria,
-  and `/goal-spec` elaborates it later.
-- **Reject** removes the widget and records nothing else. No rejection ledger is consulted, so a
-  later scan may propose the same finding again.
+### Limits
+
+`data-testid="scout-max-per-hour"` (default 10) and `data-testid="scout-max-pending"` (default 5)
+accept integers from 1 through 100. `data-testid="scout-save-limits"` persists both; an invalid
+value renders `data-testid="scout-limits-error"` and sends nothing. A valid save is written
+atomically to `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json`, so it survives a page
+reload and a worker restart, and a running worker receives it as a limits command without
+restarting. A worker start reads that file first, then the last state's limits, then the defaults.
+
+`maxPerHour` counts every Auto Scout issue whose creation time is inside a rolling 60-minute
+window, in any state, including issues adopted from GitHub and issues filed before a restart.
+`maxPending` counts every open `scout` issue. One scan requests and files at most
+`min(maxPerHour - windowCount, maxPending - openCount)` items. A zero batch starts no scan; the
+next attempt is the earlier of the next 60-second read (a close can free a pending slot) and the
+moment the oldest hourly entry expires, so the worker never retries in a tight loop. When an issue
+closes, the 60-second read frees the slot and the next scan starts without any manual action. A
+scan that files fewer items than requested is a normal shortfall, recorded in scan activity, never
+a failure. Immediately before filing, the worker reads every `scout` issue again; a failed read
+files nothing, keeps the last known rows, and blocks filing until a read succeeds.
+
+### Significance
+
+Every recommendation carries an integer `significance` from 1 to 5 and a non-empty
+`significanceReason`. The scan prompt defines the rubric: 4 or 5 requires a named, observable
+impact — a reproducible defect, a real failure mode, or a measured structural cost; polishing
+code that is already correct is at most 2. Items scoring below 4 are dropped before filing and
+recorded in scan activity. A missing or out-of-range score, or a missing reason, fails the whole
+scan atomically and files nothing. Each filed issue body carries `## Significance` with `<n>/5`
+and the reason.
+
+A filed issue carries the exact `scout` label (created first when absent), the recommendation's
+title, and a body with category, summary, impact, significance, evidence, proposed change, files,
+and acceptance criteria; the worker resolves forge write access through `lib/forge-auth.ts`. The
+Issues worker picks it up on its next poll exactly like any other open issue, and its pickup and
+implementation behavior is unchanged.
+
+A scan never files a title whose normalized form (lowercased, whitespace-collapsed, trimmed)
+matches any existing Auto Scout issue in any state, any open issue title, or any draft goal
+heading. A duplicate is dropped, recorded in activity, and consumes no cap slot. The scan request
+names the normalized `knownTitles` and the draft headings, so the agent avoids them too.
+
+### Issue table
+
+`data-testid="scout-issues"` renders one `data-testid="scout-issue"` row per Auto Scout issue,
+newest `createdAt` first, carrying `data-number`, `data-state`, and `data-version`. Each row
+renders `data-testid="scout-issue-title"` as an anchor to the issue URL,
+`data-testid="scout-issue-created"` with the ISO creation time, `data-testid="scout-issue-type"`,
+`data-testid="scout-issue-state"`, and `data-testid="scout-issue-version"`. The type is the
+recommendation's category, or the issue body's `## Category` value for an adopted issue, or `—`.
+With no rows, `data-testid="scout-issues-empty"` renders. The sidebar `data-testid="scout-count"`
+shows the number of rows whose state is `pending`.
+
+An open issue is `pending`. A closed issue is `implemented` regardless of `stateReason`; a
+reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
+the commit that closed it — the timeline's closing commit when present, otherwise the last 7–40
+character hex SHA in the newest comment that contains one — to one unambiguous full commit through
+the checkout or GitHub. It then selects the earliest published GitHub Release tag whose history
+contains that commit, ordered by `publishedAt` and breaking ties by tag name. The row shows `—`
+when no commit resolves or no published release contains it, and a release published later fills a
+blank version on the next read.
+
+### Periodic check
+
+While started, the worker reads every `scout` issue and every published release every 60 seconds,
+and immediately on Start; the table, states, and versions reflect a change within one interval. A
+failed read keeps the last known rows, sets `data-testid="scout-sync"` to `data-state="error"`
+(or `"stale"` when no read has succeeded for two intervals), shows the reason in
+`data-testid="scout-sync-error"`, and shows the last success time in
+`data-testid="scout-sync-at"`. Filing stays blocked until a read succeeds.
+
+### Worker lifecycle
 
 Start proves one set of facts before spawning anything: a canonical checkout root that is not a
 linked worktree, a GitHub `origin`, `STATE_DIR` inside `REPO_DIR`, `omp` and `gh` on `PATH` with
@@ -1573,38 +1626,43 @@ missing fact and writes no scan. The worker is spawned detached from the loaded 
 with `REPO_DIR` as its working directory and holds `<REPO_DIR>/.devboard/.tmp/scout/lock`; a live
 owner is never replaced, a different `STATE_DIR` is refused, a dead owner is reclaimed, and a
 second dashboard with the same repository and state directory attaches. Stop ends the peer,
-records `enabled: false` and `lifecycle: "stopped"`, keeps the staged board, releases the lock, and
-exits; a worker that outlives the command is signalled only after the process table proves it.
-A worker on another harness version is left running with a notice, and Stop then Start is the only
-upgrade path.
+records `enabled: false` and `lifecycle: "stopped"`, keeps every row and the limits, releases the
+lock, and exits; a worker that outlives the command is signalled only after the process table
+proves it. A worker on another harness version is left running with a notice, and Stop then Start
+is the only upgrade path.
 
 State lives under `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/state.json`, written atomically and
-carrying the worker record, lifecycle, staged array, current scan, shortfall, next attempt, last
-error, notice, and the last 200 decisions; a damaged state file is renamed aside. Scan directories
-live under `<REPO_DIR>/.devboard/.tmp/scout/scans/<scanId>/` and hold `request.json`,
-`recommendations.json`, `scan.json`, and `activity.json`, which is bounded at the first of 1,000
-entries or 1 MiB with the trimmed marker. One scan runs at a time and sends exactly one ACP prompt
-from `AGENT_COMMAND` (default `omp acp`) with `cwd = REPO_DIR`:
+carrying the worker record, lifecycle, limits, every Auto Scout issue row, the last read, the
+current scan, next attempt, last error, and notice; a damaged state file is renamed aside. A
+state produced by the previous Auto Scout version loads with its worker and scan facts intact,
+discards every unapproved staged recommendation without filing anything, applies the default
+limits, and publishes a notice naming how many recommendations were discarded; no pre-upgrade
+recommendation is ever filed.
+
+Scan directories live under `<REPO_DIR>/.devboard/.tmp/scout/scans/<scanId>/` and hold
+`request.json`, `recommendations.json`, `scan.json`, and `activity.json`, which is bounded at the
+first of 1,000 entries or 1 MiB with the trimmed marker. One scan runs at a time and sends exactly
+one ACP prompt from `AGENT_COMMAND` (default `omp acp`) with `cwd = REPO_DIR`:
 `/scout-recommendations <absolute scan directory>`. The prompt is
 `prompts/scout-recommendations.md`, wrapped by `omp/commands/scout-recommendations.md`; the
-request carries the repository path, missing count, categories, excluded roots, staged items, open
-issue titles, and draft-goal headings, and the agent writes only `recommendations.json`. A
-permission request is auto-approved, a question is answered with its recommended option (or its
-first), and both sides reach the activity. A scan that exceeds 15 minutes is closed as failed.
+version-2 request carries the repository path, the requested batch, categories, excluded roots,
+normalized known titles, draft-goal headings, and the significance threshold, and the agent writes
+only `recommendations.json`. A permission request is auto-approved, a question is answered with
+its recommended option (or its first), and both sides reach the activity. A scan that exceeds 15
+minutes is closed as failed.
 
-Every result is validated before staging: at most the requested count; a known category; a
-one-line title of at most 200 characters; a summary, proposed change, and at least one acceptance
-criterion; at least one evidence entry whose repository-relative path resolves to an existing
-regular file inside `REPO_DIR` and outside `.git/`, `node_modules/`, `dist/`, `.worktree/`, and
-`.tmp/`, with an in-range `N` or `N-M` span; and a non-empty file list whose entries all appear in
-the evidence. A malformed item, duplicate id, path escape, or over-count fails the whole answer
-atomically, naming the offending item, so the staged board is unchanged. An item's id is the first
-16 hex characters of SHA-256 over its category, sorted evidence paths, and normalized title, so
-the same finding keeps its id. Titles matching a staged item, an open issue, or a draft goal
-heading are dropped and recorded in the activity without failing the scan. Fewer items than
-requested are accepted: the shortfall names the agent's reason and another scan is scheduled after
-the retry interval (ten minutes by default). A full board shows no shortfall, and the worker never
-edits source, tests, configuration, a goal, a draft, a branch, or a pull request.
+Every result is validated before filing: at most the requested count; a known category; a one-line
+title of at most 200 characters; a summary, proposed change, significance from 1 through 5,
+non-empty significance reason, and at least one acceptance criterion; at least one evidence entry
+whose repository-relative path resolves to an existing regular file inside `REPO_DIR` and outside
+`.git/`, `node_modules/`, `dist/`, `.worktree/`, and `.tmp/`, with an in-range `N` or `N-M` span;
+and a non-empty file list whose entries all appear in the evidence. A malformed item, duplicate
+id, path escape, over-count, missing score, or out-of-range score fails the whole answer
+atomically, naming the offending item, so nothing is filed. An item's id is the first 16 hex
+characters of SHA-256 over its category, sorted evidence paths, and normalized title, so the same
+finding keeps its id. Items below significance 4 and duplicate titles are dropped before filing
+and recorded in the activity. The worker never edits source, tests, configuration, a goal, a
+draft, a branch, or a pull request.
 
 ## Report, remove, or redesign a UI element
 
@@ -1746,9 +1804,7 @@ The client sends:
 { "type": "getScout" }
 { "type": "startScout" }
 { "type": "stopScout" }
-{ "type": "approveScout", "id": "84b9c38cdc877035" }
-{ "type": "draftScoutGoal", "id": "84b9c38cdc877035" }
-{ "type": "rejectScout", "id": "84b9c38cdc877035" }
+{ "type": "setScoutLimits", "maxPerHour": 10, "maxPending": 5 }
 { "type": "restartServer" }
 { "type": "restartServer", "whenIdle": true }
 { "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
@@ -1814,13 +1870,14 @@ The client sends:
   `getIssuesRun` answers `issuesRun` with one run's metadata and activity. The client never
   polls: state and activity arrive as events, so switching modes and reconnecting send no frame.
 - `getScout` answers with `scoutState` and the newest scan's `scoutActivity`, on connect and on
-  demand: the worker record, lifecycle, enabled and attached flags, the staged board, the current
-  scan, the shortfall, next attempt, errors, notice, and the last 200 decisions. A connect replays
-  a present state and the newest scan's whole activity before any reply to the client's own
-  commands. `startScout` runs the preflight and spawns or attaches; `stopScout`, `approveScout`,
-  `draftScoutGoal`, and `rejectScout` write one command file to the worker, and a refused command
-  answers with an `error` the notification region shows. The board is pushed to every connected
-  dashboard, so a decision made in one updates another without a reload.
+  demand: the worker record, lifecycle, enabled and attached flags, the persisted limits, every
+  issue row, the last GitHub read, the current scan, next attempt, errors, and notice. A connect
+  replays a present state and the newest scan's whole activity before any reply to the client's
+  own commands. `startScout` runs the preflight and spawns or attaches; `stopScout` writes one
+  stop command; `setScoutLimits` carries `{ maxPerHour, maxPending }`, refuses a value outside
+  1–100, writes `settings.json`, and writes one limits command when a worker is attached. There is
+  no `approveScout`, `draftScoutGoal`, or `rejectScout`. The rows are pushed to every connected
+  dashboard, so a filing or a close in one updates another without a reload.
 - `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
   stops the listener, starts the installed harness package, and exits. It is refused with an
   `error` when no launcher is configured or while a restart is already in progress. A client
@@ -2144,23 +2201,29 @@ legacy-lock refusal, that no `/implement-all-issues` prompt is ever sent, and th
 or timer is written and no `systemctl`/`loginctl` stub is invoked. It writes only under
 `.devboard/.tmp`.
 `bun run verify:scout` drives the built dashboard in headless Chrome against a fixture checkout,
-a stub ACP peer, and a stub `gh`: the sidebar order and palette entry, a short first scan with its
-shortfall, the Start/Stop toggle (with no separate Scan now control), an approval that files one
-issue with the `scout` label and refills to nine, a draft that writes one goal-proposals file, a
-rejection, a second dashboard attaching and deciding, Stop with no surviving worker, and a reload
-that keeps the board and the open tab. It writes only under `.devboard/.tmp`.
+a stub ACP peer, and a stub `gh`: Start files significant items with no click, a duplicate and a
+score below 4 are dropped and named in the activity, the issue table shows the title anchor, the
+creation time, the category, the state, and the shipped version, both limits save and survive a
+reload, an invalid save shows its error and sends nothing, a close flips the row to implemented,
+a release published later fills its blank version, a failed read shows `error` with its reason
+and the last success time while keeping the rows, no review widget or command remains, and Stop
+leaves the table and a released lock. It writes only under `.devboard/.tmp`.
 
-`server/scout.test.ts` covers recommendation identity, result validation (over-count, malformed
-item, multi-line title, path escape, excluded tree, duplicate id, out-of-range span, uncited file,
-shortfall), the request document, the Start preflight refusals, and the activity delta.
-`tests/scout.test.ts` covers the first scan's nine items, an over-count refusal that leaves the
-board unchanged, the shortfall and its retry, duplicate titles against the board, open issues,
-and drafts, a scan that writes nothing, a timeout, question answering, approval, drafting,
-rejection, a failed decision that leaves the widget staged, refills after a decision, an id no
-longer staged, restoring staged items, decisions, and the shortfall across a restart, the live
-lock, Stop keeping the board, a replacement closing an interrupted scan, bridge replay without a
-spawn, another `STATE_DIR` refused, a harness-version notice, and the issue body, label creation,
-and exclusive draft naming.
+`server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
+validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate
+id, out-of-range span, uncited file, shortfall, missing score, out-of-range score, missing
+reason), the version-2 request, the shipped-version rules (earliest release, tie by tag,
+timeline commit, newest comment SHA, open issue, no release), settings and state migration,
+the bridge's limits and absent decision path, the Stop/limits command surface, the Start preflight
+refusals, and the activity delta.
+`tests/scout.test.ts` covers filing without a command, the significance score and issue body,
+duplicates against closed issues, open issues, and drafts, both caps across a restart, the
+effective batch, zero capacity, a close freeing a slot, limits applying live and surviving a
+restart, state mapping and a reopen, a later release filling a blank version, a failed periodic
+read and a failed pre-filing read, migration from a version-1 board, a missing score failing the
+scan atomically, a failed filing, Stop keeping the rows, the live lock, a replacement closing an
+interrupted scan, bridge replay without a spawn, another `STATE_DIR` refused, a harness-version
+notice, the issue body and label creation, and the scan prompt's rubric.
 `tests/issues.test.ts` covers the fleet (four mixed issues, twelve peers with no cap, duplicate
 prevention, an issue opened mid-run, per-issue success and ledger entries, one failure cooling only
 its issue), Check now clearing every cooldown, pause draining every peer, Stop closing every peer

@@ -2,11 +2,27 @@ import { spawn } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { liveLockOwner, pidAlive, type LockOwner } from "../issues/lock";
-import { controlDirectory, lockPath, scanDirectory, statePath } from "../issues/scout/paths";
+import {
+  controlDirectory,
+  lockPath,
+  scanDirectory,
+  settingsPath,
+  statePath,
+} from "../issues/scout/paths";
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
 import { preflightScout, type ScoutPreflightResult } from "../issues/scout/preflight";
 import { cachedRepository } from "../issues/repository";
-import { readState, type ScoutState } from "../issues/scout/state";
+import {
+  DEFAULT_LIMITS,
+  isValidLimit,
+  readSettings,
+  readState,
+  writeSettings,
+  type ScoutIssueRow,
+  type ScoutLimits,
+  type ScoutState,
+  type ScoutSync,
+} from "../issues/scout/state";
 import { readActivity } from "../issues/state";
 import { activityDelta } from "./activity";
 
@@ -25,14 +41,15 @@ export interface ScoutSnapshot {
   enabled: boolean;
   attached: boolean;
   worker: ScoutState["worker"];
-  staged: ScoutState["staged"];
+  /** The limits the dashboard persisted, so a save shows without a worker. */
+  limits: ScoutLimits;
+  issues: ScoutIssueRow[];
+  sync: ScoutSync;
   scan: ScoutState["scan"];
   newestScanId: string | null;
-  shortfall: ScoutState["shortfall"];
   nextAttemptAt: string | null;
   lastError: string | null;
   notice: string | null;
-  decisions: ScoutState["decisions"];
   updatedAt: string | null;
 }
 
@@ -171,6 +188,7 @@ export class ScoutBridge {
           `loaded ${this.runningVersion ?? "unknown"}. It is left running; Stop it to launch the ` +
           "current harness on the next Start."
         : null;
+    const limits = readSettings(settingsPath(this.stateDir, this.repoDir)) ?? state?.limits;
     return {
       present: state !== undefined,
       repo: state !== undefined && state.repo.length > 0 ? state.repo : this.repository(),
@@ -179,14 +197,14 @@ export class ScoutBridge {
       enabled: active?.enabled === true && lifecycle !== "stopped",
       attached,
       worker: active?.worker ?? null,
-      staged: state?.staged ?? [],
+      limits: limits ?? { ...DEFAULT_LIMITS },
+      issues: state?.issues ?? [],
+      sync: state?.sync ?? { state: "stale", at: null, error: null },
       scan: active?.scan ?? null,
       newestScanId: state?.newestScanId ?? null,
-      shortfall: active?.shortfall ?? null,
       nextAttemptAt: active?.nextAttemptAt ?? null,
       lastError: active?.lastError ?? null,
       notice: mismatch ?? active?.notice ?? null,
-      decisions: state?.decisions ?? [],
       updatedAt: state?.updatedAt ?? null,
     };
   }
@@ -317,19 +335,47 @@ export class ScoutBridge {
     return { ok: true, attached: false };
   }
 
-  /** One decision for one staged id; an id no longer staged is refused. */
-  decide(
-    kind: "approve" | "draft" | "reject",
-    id: unknown,
+  /**
+   * Saves both caps. The settings file is the durable source, so a save shows
+   * after a reload and is read by the next worker start; a running worker is
+   * told immediately through its command channel.
+   */
+  setLimits(
+    maxPerHour: unknown,
+    maxPending: unknown,
   ): { ok: true } | { ok: false; message: string } {
-    if (typeof id !== "string" || id.length === 0) {
-      return { ok: false, message: "A decision needs the recommendation's id." };
+    if (!isValidLimit(maxPerHour) || !isValidLimit(maxPending)) {
+      return {
+        ok: false,
+        message: "Both limits must be integers from 1 through 100.",
+      };
     }
-    const state = this.currentState();
-    if (state === undefined || !state.staged.some((item) => item.id === id)) {
-      return { ok: false, message: "That recommendation is no longer staged." };
+    const limits: ScoutLimits = { maxPerHour, maxPending };
+    try {
+      writeSettings(settingsPath(this.stateDir, this.repoDir), limits);
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Could not save the limits: ${error instanceof Error ? error.message : String(error)}`,
+      };
     }
-    return this.command({ type: kind, id });
+    const owner = this.lockOwner();
+    if (owner !== undefined && resolve(owner.stateDir) === this.stateDir) {
+      try {
+        writeCommand(controlDirectory(this.stateDir, this.repoDir), {
+          type: "limits",
+          maxPerHour,
+          maxPending,
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          message: `Could not reach the worker: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+    this.refresh();
+    return { ok: true };
   }
 
   stop(): { ok: true } | { ok: false; message: string } {

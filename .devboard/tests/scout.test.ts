@@ -1,18 +1,21 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
 import { mkdir, rm } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { AcpActivity, AcpQuestion } from "../server/acp";
 import { ScoutBridge } from "../server/scout";
-import { fileScoutIssue, writeScoutDraft, type GhRunner } from "../issues/scout/actions";
+import { fileScoutIssue, issueBody, type GhRunner } from "../issues/scout/actions";
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
+import type { ScoutGitHubClient, ScoutGitHubIssue, ScoutRelease } from "../issues/scout/github";
 import {
   controlDirectory,
   lockPath,
   scanDirectory,
   scansDirectory,
+  settingsPath,
+  statePath,
 } from "../issues/scout/paths";
-import { readScanFile, type ScoutState } from "../issues/scout/state";
+import { readScanFile, readSettings, type ScoutState } from "../issues/scout/state";
 import { ScoutWorker } from "../issues/scout/worker";
 import type { ScoutRecommendation } from "../issues/scout/recommendation";
 import type { AcpPeer, IssuesPeerOptions } from "../issues/worker";
@@ -28,8 +31,8 @@ import {
 
 /**
  * Durable Auto Scout tests. Every fixture lives under `.devboard/.tmp`; the
- * tracker, forge, and ACP peer are fakes, and no test contacts GitHub, starts a
- * real agent, or writes outside the repository.
+ * GitHub client, forge, and ACP peer are fakes, and no test contacts GitHub,
+ * starts a real agent, or writes outside the repository.
  */
 
 const workers: ScoutWorker[] = [];
@@ -117,9 +120,101 @@ class ControlledPeer implements AcpPeer {
   }
 }
 
+class FakeGitHub implements ScoutGitHubClient {
+  readonly issues: ScoutGitHubIssue[] = [];
+  readonly releases: ScoutRelease[] = [];
+  readonly openTitles: string[] = [];
+  readonly closing = new Map<number, string | null>();
+  readonly commits = new Map<string, string>();
+  readonly containing = new Map<string, string[]>();
+  failIssues = false;
+  failReleases = false;
+  nextNumber = 100;
+
+  add(issue: Partial<ScoutGitHubIssue> & { number: number; title: string }): void {
+    const row: ScoutGitHubIssue = {
+      number: issue.number,
+      title: issue.title,
+      url: issue.url ?? `https://github.com/acme/fixture/issues/${issue.number}`,
+      state: issue.state ?? "open",
+      createdAt: issue.createdAt ?? new Date().toISOString(),
+      body: issue.body ?? "",
+    };
+    this.issues.push(row);
+    if (row.state === "open") this.openTitles.push(row.title);
+  }
+
+  async listIssues(): Promise<ScoutGitHubIssue[]> {
+    if (this.failIssues) throw new Error("the GitHub read failed");
+    return this.issues.map((issue) => ({ ...issue }));
+  }
+
+  async listOpenIssueTitles(): Promise<string[]> {
+    if (this.failIssues) throw new Error("the GitHub read failed");
+    return [...this.openTitles];
+  }
+
+  async listReleases(): Promise<ScoutRelease[]> {
+    if (this.failReleases) throw new Error("the release read failed");
+    return this.releases.map((release) => ({ ...release }));
+  }
+
+  async closingCommit(issueNumber: number): Promise<string | null> {
+    return this.closing.get(issueNumber) ?? null;
+  }
+
+  async resolveCommit(short: string): Promise<string | null> {
+    return this.commits.get(short) ?? null;
+  }
+
+  async containingReleaseTags(commit: string, releases: ScoutRelease[]): Promise<string[]> {
+    const tags = this.containing.get(commit) ?? [];
+    return tags.filter((tag) => releases.some((release) => release.tag === tag));
+  }
+}
+
+/** The injected `gh issue create`: records the issue and mirrors it on GitHub. */
+function fakeFiling(f: Fixture): typeof fileScoutIssue {
+  return async (request) => {
+    if (f.failingIssue !== null) throw new Error(f.failingIssue.message);
+    const number = f.github.nextNumber++;
+    const issue: ScoutGitHubIssue = {
+      number,
+      title: request.recommendation.title,
+      url: `https://github.com/acme/fixture/issues/${number}`,
+      state: "open",
+      createdAt: f.clock.now.toISOString(),
+      body: issueBody(request.recommendation),
+    };
+    f.github.issues.push(issue);
+    f.github.openTitles.push(issue.title);
+    f.filed.push({
+      id: request.recommendation.id,
+      number,
+      title: request.recommendation.title,
+      repository: request.repository,
+      body: issue.body,
+      significance: request.recommendation.significance,
+    });
+    return { url: issue.url, number };
+  };
+}
+
 /** The scan directory a prompt names. */
 function scanDirectoryOf(prompt: string): string {
   return prompt.slice("/scout-recommendations ".length);
+}
+
+/** Waits until the scan recorded a terminal status, not a guessed duration. */
+async function waitSettled(root: string, prompt: string, description = "the scan to settle") {
+  const scanId = basename(scanDirectoryOf(prompt));
+  return await waitFor(
+    () => {
+      const file = readScanFile(scanDirectory(root, scanId));
+      return file !== undefined && file.status !== "running" ? file : undefined;
+    },
+    description,
+  );
 }
 
 function writeRecommendations(scanDirectoryPath: string, document: unknown): void {
@@ -133,18 +228,12 @@ function readRequest(scanDirectoryPath: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(scanDirectoryPath, "request.json"), "utf8"));
 }
 
-/** A recommendation stripped of the fields only staging adds. */
-function draftOf(item: ScoutRecommendation): DraftRecommendation {
-  return {
-    category: item.category,
-    title: item.title,
-    summary: item.summary,
-    impact: item.impact,
-    evidence: item.evidence,
-    proposedChange: item.proposedChange,
-    files: item.files,
-    acceptanceCriteria: item.acceptanceCriteria,
-  };
+function activityOf(scanDirectoryPath: string): string {
+  try {
+    return readFileSync(join(scanDirectoryPath, "activity.json"), "utf8");
+  } catch {
+    return "";
+  }
 }
 
 function uniqueItems(from: number, count: number): DraftRecommendation[] {
@@ -154,94 +243,105 @@ function uniqueItems(from: number, count: number): DraftRecommendation[] {
 interface Fixture {
   root: string;
   stateDir: string;
-  worker: ScoutWorker;
+  github: FakeGitHub;
   peers: ControlledPeer[];
-  issues: string[];
-  issued: Array<{ id: string; title: string; repository: string }>;
-  drafted: string[];
+  filed: Array<{
+    id: string;
+    number: number;
+    title: string;
+    repository: string;
+    body: string;
+    significance: number;
+  }>;
   failingIssue: { message: string } | null;
-  failingDraft: { message: string } | null;
+  clock: { now: Date };
   state: () => ScoutState;
+  worker: ScoutWorker;
 }
 
 async function fixture(options: {
   label?: string;
+  github?: FakeGitHub;
   files?: Record<string, string>;
-  issues?: string[];
-  retryMs?: number;
+  syncMs?: number;
   timeoutMs?: number;
+  limit?: { maxPerHour: number; maxPending: number };
   harnessVersion?: string;
-  issueDelayMs?: number;
-  beforeWorker?: (root: string) => Promise<void>;
+  now?: Date;
+  draftHeading?: string;
 }): Promise<Fixture> {
   const base = await temporaryDirectory(options.label ?? "scout");
   const root = await makeRepository({
     files: options.files ?? sourceFiles(12),
     origin: "acme/fixture",
   });
+  if (options.draftHeading !== undefined) {
+    await mkdir(join(root, ".devboard", "goal-proposals"), { recursive: true });
+    writeFileSync(
+      join(root, ".devboard", "goal-proposals", "one.md"),
+      `# ${options.draftHeading}\n`,
+    );
+  }
   const stateDir = join(base, "state");
   await mkdir(stateDir, { recursive: true });
-  await options.beforeWorker?.(root);
+  if (options.limit !== undefined) {
+    await mkdir(dirname(settingsPath(stateDir, root)), { recursive: true });
+    writeFileSync(settingsPath(stateDir, root), `${JSON.stringify(options.limit)}\n`);
+  }
 
   const peers: ControlledPeer[] = [];
-  const issues = [...(options.issues ?? [])];
-  const issued: Array<{ id: string; title: string; repository: string }> = [];
-  const drafted: string[] = [];
+  const github = options.github ?? new FakeGitHub();
+  const filed: Fixture["filed"] = [];
+  const clock = { now: options.now ?? new Date("2026-10-27T10:00:00.000Z") };
 
-  let worker!: ScoutWorker;
   const f = {
     root,
     stateDir,
+    github,
     peers,
-    issues,
-    issued,
-    drafted,
+    filed,
     failingIssue: null as { message: string } | null,
-    failingDraft: null as { message: string } | null,
+    clock,
     state: () => worker.currentState,
     get worker(): ScoutWorker {
       return worker;
     },
   } satisfies Fixture;
+
+  let worker!: ScoutWorker;
   worker = new ScoutWorker({
     repoDir: root,
     stateDir,
-    retryMs: options.retryMs ?? 60_000,
+    syncMs: options.syncMs ?? 900_000,
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
-    listIssues: async () => [...f.issues],
+    now: () => new Date(clock.now),
+    github,
     connect: (peerOptions) => {
       const peer = new ControlledPeer(peerOptions);
       peers.push(peer);
       return peer;
     },
-    fileIssue: async (request) => {
-      if (options.issueDelayMs !== undefined) await Bun.sleep(options.issueDelayMs);
-      if (f.failingIssue !== null) throw new Error(f.failingIssue.message);
-      issued.push({
-        id: request.recommendation.id,
-        title: request.recommendation.title,
-        repository: request.repository,
-      });
-      return { url: `https://github.com/acme/fixture/issues/${issued.length}` };
-    },
-    draftGoal: async (item) => {
-      if (f.failingDraft !== null) throw new Error(f.failingDraft.message);
-      drafted.push(item.id);
-      return { path: `.devboard/goal-proposals/draft-${drafted.length}.md` };
-    },
+    fileIssue: fakeFiling(f),
   });
   workers.push(worker);
   expect(worker.start("acme/fixture")).toBe(true);
   return f;
 }
 
-/** Stages nine recommendations through one completed scan. */
-async function stageNine(f: Fixture): Promise<ControlledPeer> {
-  const peer = await waitFor(() => f.peers[0], "the first scan peer");
-  writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(uniqueItems(1, 9)));
+const startClock = new Date("2026-10-27T10:00:00.000Z");
+
+/** Runs one scan: waits for its peer, writes the document, and settles it. */
+async function scan(
+  f: Fixture,
+  index: number,
+  items: DraftRecommendation[],
+  shortfall?: string,
+): Promise<ControlledPeer> {
+  const peer = await waitFor(() => f.peers[index], `scan peer ${index + 1}`);
+  writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(items, shortfall));
   peer.succeed();
-  await waitFor(() => (f.state().staged.length === 9 ? true : undefined), "nine staged items");
+  await waitSettled(f.root, peer.prompts[0]!, `scan ${index + 1} to settle`);
   return peer;
 }
 
@@ -249,438 +349,568 @@ function decide(f: Fixture, command: ScoutCommand): void {
   writeCommand(controlDirectory(f.stateDir, f.root), command);
 }
 
-describe("scanning", () => {
-  test("the first scan requests nine and stages nine", async () => {
-    const f = await fixture({ label: "first-scan" });
+describe("direct filing", () => {
+  test("a scan files every significant item with no command", async () => {
+    const f = await fixture({ label: "auto-file" });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
       const scanPath = scanDirectoryOf(peer.prompts[0]!);
-      expect(peer.prompts[0]).toBe(`/scout-recommendations ${scanPath}`);
-      expect(scanPath.startsWith(f.root)).toBe(true);
       const request = readRequest(scanPath);
-      expect(request.missing).toBe(9);
-      expect(request.excludedRoots).toContain("node_modules");
-      expect(request.staged).toEqual([]);
-      expect(f.state().lifecycle).toBe("scanning");
-
-      peer.emit("surveying");
-      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 9)));
+      expect(request.requested).toBe(Math.min(10, 5));
+      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 2)));
       peer.succeed();
-      const staged = await waitFor(
-        () => (f.state().staged.length === 9 ? f.state() : undefined),
-        "nine staged items",
+      const settled = await waitFor(
+        () => (f.filed.length === 2 ? f.state() : undefined),
+        "the two filed issues",
       );
-      expect(staged.lifecycle).toBe("idle");
-      expect(staged.staged.map((item) => item.title)).toEqual(
-        uniqueItems(1, 9).map((item) => item.title),
-      );
-      expect(staged.shortfall).toBeNull();
-      expect(readScanFile(scanDirectory(f.root, basename(scanPath)))?.status).toBe("succeeded");
-      const activity = JSON.parse(readFileSync(join(scanPath, "activity.json"), "utf8"));
-      expect(activity).toContain("surveying");
+      expect(settled.issues).toHaveLength(2);
+      expect(settled.issues.map((row) => row.state)).toEqual(["pending", "pending"]);
+      expect(settled.issues[0]?.category).toBe("clarity");
+      expect(settled.notice).toContain("Filed");
+      expect(f.filed[0]?.repository).toBe("acme/fixture");
+      expect(f.filed[0]?.body).toContain("## Significance");
+      expect(f.filed[0]?.body).toContain("5/5");
+      expect(f.filed[0]?.body).toContain("third nested branch");
+      const scanFile = readScanFile(scanDirectory(f.root, basename(scanPath)));
+      expect(scanFile?.status).toBe("succeeded");
+      expect(scanFile?.filed).toBe(2);
+      expect(activityOf(scanPath)).toContain("filed #100");
+      expect(settled.lifecycle).toBe("idle");
     } finally {
       await f.worker.stop();
     }
   });
 
-  test("a scan returning ten items is refused and the staged array is unchanged", async () => {
-    const f = await fixture({ label: "over-count" });
+  test("items below significance 4 are dropped and recorded", async () => {
+    const f = await fixture({ label: "significance-drop" });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(uniqueItems(1, 10)));
+      const low = { ...recommendation(2), significance: 3, significanceReason: "A latent cleanup." };
+      writeRecommendations(
+        scanDirectoryOf(peer.prompts[0]!),
+        scanDocument([recommendation(1), low]),
+      );
+      peer.succeed();
+      await waitSettled(f.root, peer.prompts[0]!);
+      const settled = f.state();
+      expect(f.filed).toHaveLength(1);
+      expect(f.filed[0]?.significance).toBe(5);
+      expect(settled.issues).toHaveLength(1);
+      expect(settled.lastError).toBeNull();
+      expect(activityOf(scanDirectoryOf(peer.prompts[0]!))).toContain(
+        "significance 3/5 is below 4",
+      );
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a missing score fails the whole scan atomically and files nothing", async () => {
+    const f = await fixture({ label: "missing-score" });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      const document = scanDocument(uniqueItems(1, 3));
+      delete (document.recommendations as Record<string, unknown>[])[1]!.significance;
+      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), document);
       peer.succeed();
       const failed = await waitFor(
         () => (f.state().lifecycle === "failed" ? f.state() : undefined),
         "the refused scan",
       );
-      expect(failed.staged).toEqual([]);
-      expect(failed.lastError).toContain("10 recommendations");
-      expect(failed.lastError).toContain("9 requested");
+      expect(f.filed).toEqual([]);
+      expect(failed.issues).toEqual([]);
+      expect(failed.lastError).toContain("significance score from 1 to 5");
+      expect(readScanFile(scanDirectory(f.root, basename(scanDirectoryOf(peer.prompts[0]!))))?.status).toBe(
+        "failed",
+      );
     } finally {
       await f.worker.stop();
     }
   });
 
-  test("fewer valid items set the shortfall and schedule the retry", async () => {
-    const f = await fixture({ label: "shortfall", retryMs: 600_000 });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      writeRecommendations(
-        scanDirectoryOf(peer.prompts[0]!),
-        scanDocument(uniqueItems(1, 3), "Only three real gaps."),
-      );
-      peer.succeed();
-      const short = await waitFor(
-        () => (f.state().staged.length === 3 ? f.state() : undefined),
-        "three staged items",
-      );
-      expect(short.shortfall?.staged).toBe(3);
-      expect(short.shortfall?.missing).toBe(6);
-      expect(short.shortfall?.reason).toBe("Only three real gaps.");
-      expect(short.nextAttemptAt).not.toBeNull();
-      expect(Date.parse(short.nextAttemptAt!) - Date.now()).toBeGreaterThan(5 * 60_000);
-      expect(short.lifecycle).toBe("idle");
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("duplicate titles against staged items, open issues, and drafts are dropped", async () => {
+  test("duplicate titles against closed issues, open issues, and drafts are dropped", async () => {
+    const github = new FakeGitHub();
+    github.add({
+      number: 5,
+      title: "Old closed finding",
+      state: "closed",
+      createdAt: "2026-10-01T00:00:00.000Z",
+      body: "## Category\n\nclarity\n",
+    });
+    github.add({ number: 6, title: "Open finding", createdAt: "2026-10-01T00:00:00.000Z" });
     const f = await fixture({
       label: "duplicates",
-      issues: ["Fix the resolver duplication"],
-      beforeWorker: async (root) => {
-        await mkdir(join(root, ".devboard", "goal-proposals"), { recursive: true });
-        writeFileSync(
-          join(root, ".devboard", "goal-proposals", "tracker.md"),
-          "# Proposed goal: Merge the two trackers\n",
-        );
-      },
+      github,
+      draftHeading: "Proposed goal: Draft finding",
     });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      const accepted = uniqueItems(1, 2);
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      const request = readRequest(scanPath);
+      expect(request.knownTitles).toContain("old closed finding");
+      expect(request.knownTitles).toContain("open finding");
+      expect(request.knownTitles).toContain("proposed goal: draft finding");
       writeRecommendations(
-        scanDirectoryOf(peer.prompts[0]!),
+        scanPath,
         scanDocument([
-          { ...recommendation(3), title: "Fix the resolver duplication" },
-          { ...recommendation(4), title: "Proposed goal: merge the two trackers" },
-          ...accepted,
+          { ...recommendation(1), title: "Old closed finding" },
+          { ...recommendation(2), title: "Open finding" },
+          { ...recommendation(3), title: "Proposed goal: draft finding" },
+          recommendation(4),
         ]),
       );
       peer.succeed();
-      const staged = await waitFor(
-        () => (f.state().staged.length >= 2 ? f.state() : undefined),
-        "the accepted items",
-      );
-      expect(staged.staged.map((item) => item.title)).toEqual(accepted.map((item) => item.title));
-      const activity = readFileSync(
-        join(scanDirectoryOf(peer.prompts[0]!), "activity.json"),
-        "utf8",
-      );
-      expect(activity).toContain("dropped duplicate “Fix the resolver duplication”");
-      expect(activity).toContain("shortfall");
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("a scan that writes no result is closed as failed", async () => {
-    const f = await fixture({ label: "no-result" });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      peer.succeed();
-      const failed = await waitFor(
-        () => (f.state().lifecycle === "failed" ? f.state() : undefined),
-        "the failed scan",
-      );
-      expect(failed.staged).toEqual([]);
-      expect(failed.lastError).toContain("recommendations.json");
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("a scan that outlives its time limit is closed as failed", async () => {
-    const f = await fixture({ label: "timeout", timeoutMs: 200 });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      const failed = await waitFor(
-        () => (f.state().lifecycle === "failed" ? f.state() : undefined),
-        "the timed-out scan",
-      );
-      expect(peer.closed).toBe(true);
-      expect(failed.staged).toEqual([]);
-      expect(failed.lastError).toContain("timed out");
-      const scanPath = scanDirectoryOf(peer.prompts[0]!);
-      const scanFile = readScanFile(scanDirectory(f.root, basename(scanPath)));
-      expect(scanFile?.status).toBe("failed");
-      expect(scanFile?.error).toContain("timed out");
-      expect(readFileSync(join(scanPath, "activity.json"), "utf8")).toContain(
-        "failed: the scan timed out",
-      );
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("a question is answered with its recommended option and recorded", async () => {
-    const f = await fixture({ label: "question" });
-    try {
-      const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      peer.ask({
-        id: 77,
-        message: "Which area first?",
-        options: [
-          { label: "tests", recommended: false },
-          { label: "correctness", recommended: true },
-        ],
-        properties: {},
-        required: undefined,
-      });
-      peer.ask({
-        id: 78,
-        message: "Which area next?",
-        options: [{ label: "structure", recommended: false }],
-        properties: {},
-        required: undefined,
-      });
-      const scanPath = scanDirectoryOf(peer.prompts[0]!);
-      const activity = await waitFor(
-        () => {
-          const text = existsSync(join(scanPath, "activity.json"))
-            ? readFileSync(join(scanPath, "activity.json"), "utf8")
-            : "";
-          return text.includes("answer: correctness") && text.includes("answer: structure")
-            ? text
-            : undefined;
-        },
-        "the recorded question and answer",
-      );
-      expect(activity).toContain("question: Which area first?");
+      await waitSettled(f.root, peer.prompts[0]!);
+      const settled = f.state();
+      expect(f.filed.map((entry) => entry.title)).toEqual(["Simplify module 4 control flow"]);
+      // The two seeded issues are Auto Scout issues too, so the table holds them.
+      expect(settled.issues).toHaveLength(3);
+      const activity = activityOf(scanPath);
+      expect(activity).toContain("dropped duplicate “Old closed finding”");
+      expect(activity).toContain("dropped duplicate “Open finding”");
+      expect(activity).toContain("dropped duplicate “Proposed goal: draft finding”");
     } finally {
       await f.worker.stop();
     }
   });
 });
 
-describe("decisions", () => {
-  test("Approve files one issue, removes one widget, and the refill asks for one slot", async () => {
-    const f = await fixture({ label: "approve" });
-    try {
-      await stageNine(f);
-      const target = f.state().staged[2]!;
-      decide(f, { type: "approve", id: target.id });
-      const after = await waitFor(
-        () => (f.state().staged.length === 8 ? f.state() : undefined),
-        "the approval",
-      );
-      expect(f.issued).toEqual([
-        { id: target.id, title: target.title, repository: "acme/fixture" },
-      ]);
-      expect(after.staged.some((item) => item.id === target.id)).toBe(false);
-      expect(after.decisions.at(-1)).toMatchObject({
-        id: target.id,
-        kind: "approve",
-        url: "https://github.com/acme/fixture/issues/1",
-      });
-      expect(after.notice).toContain("https://github.com/acme/fixture/issues/1");
-
-      const refill = await waitFor(() => f.peers[1], "the refill scan peer");
-      const request = readRequest(scanDirectoryOf(refill.prompts[0]!));
-      expect(request.missing).toBe(1);
-      expect(request.staged).toHaveLength(8);
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("a failed issue creation leaves the widget staged and reports why", async () => {
-    const f = await fixture({ label: "approve-failure" });
-    try {
-      await stageNine(f);
-      const target = f.state().staged[0]!;
-      f.failingIssue = { message: "the label does not exist" };
-      decide(f, { type: "approve", id: target.id });
-      const failed = await waitFor(
-        () => (f.state().lastError !== null ? f.state() : undefined),
-        "the failure",
-      );
-      expect(failed.staged).toHaveLength(9);
-      expect(failed.staged.some((item) => item.id === target.id)).toBe(true);
-      expect(failed.decisions).toEqual([]);
-      expect(failed.lastError).toContain("the label does not exist");
-      expect(failed.notice).toContain("Could not file the issue");
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("Draft goal removes the widget and records its path", async () => {
-    const f = await fixture({ label: "draft" });
-    try {
-      await stageNine(f);
-      const target = f.state().staged[4]!;
-      decide(f, { type: "draft", id: target.id });
-      const after = await waitFor(
-        () => (f.state().staged.length === 8 ? f.state() : undefined),
-        "the draft",
-      );
-      expect(f.drafted).toEqual([target.id]);
-      expect(after.decisions.at(-1)).toMatchObject({
-        kind: "draft",
-        path: ".devboard/goal-proposals/draft-1.md",
-      });
-      expect(after.notice).toContain(".devboard/goal-proposals/draft-1.md");
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("a failed draft write leaves the widget staged", async () => {
-    const f = await fixture({ label: "draft-failure" });
-    try {
-      await stageNine(f);
-      f.failingDraft = { message: "the proposals directory is read-only" };
-      decide(f, { type: "draft", id: f.state().staged[1]!.id });
-      const failed = await waitFor(
-        () => (f.state().lastError !== null ? f.state() : undefined),
-        "the draft failure",
-      );
-      expect(failed.staged).toHaveLength(9);
-      expect(failed.lastError).toContain("read-only");
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("Reject removes the widget and a later scan may propose the same title", async () => {
-    const f = await fixture({ label: "reject" });
-    try {
-      await stageNine(f);
-      const target = f.state().staged[3]!;
-      decide(f, { type: "reject", id: target.id });
-      const after = await waitFor(
-        () => (f.state().staged.length === 8 ? f.state() : undefined),
-        "the rejection",
-      );
-      expect(after.decisions.at(-1)).toMatchObject({ id: target.id, kind: "reject" });
-      const refill = await waitFor(() => f.peers[1], "the refill scan peer");
-      writeRecommendations(scanDirectoryOf(refill.prompts[0]!), scanDocument([draftOf(target)]));
-      refill.succeed();
-      const staged = await waitFor(
-        () => (f.state().staged.length === 9 ? f.state() : undefined),
-        "the resubmitted title",
-      );
-      expect(staged.staged.some((item) => item.title === target.title)).toBe(true);
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("an id no longer staged is refused and never files twice", async () => {
-    const f = await fixture({ label: "double" });
-    try {
-      await stageNine(f);
-      const target = f.state().staged[0]!;
-      decide(f, { type: "approve", id: target.id });
-      await waitFor(() => (f.state().staged.length === 8 ? true : undefined), "the approval");
-      decide(f, { type: "approve", id: target.id });
-      const refused = await waitFor(
-        () =>
-          f.state().notice === "That recommendation is no longer staged."
-            ? f.state()
-            : undefined,
-        "the duplicate refusal",
-      );
-      expect(f.issued).toHaveLength(1);
-      expect(refused.staged).toHaveLength(8);
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("two queued decisions for one id file exactly one issue", async () => {
-    const f = await fixture({ label: "queued", issueDelayMs: 150 });
-    try {
-      await stageNine(f);
-      const target = f.state().staged[0]!;
-      decide(f, { type: "approve", id: target.id });
-      decide(f, { type: "approve", id: target.id });
-      const refused = await waitFor(
-        () =>
-          f.state().notice === "That recommendation is no longer staged." ||
-          f.state().notice === "That decision is already in progress."
-            ? f.state()
-            : undefined,
-        "the duplicate decision's refusal",
-      );
-      expect(f.issued).toHaveLength(1);
-      expect(refused.staged).toHaveLength(8);
-      expect(refused.decisions).toHaveLength(1);
-      expect(refused.decisions[0]?.id).toBe(target.id);
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("a decision during a scan never produces a tenth staged item", async () => {
-    const f = await fixture({ label: "mid-scan" });
-    try {
-      await stageNine(f);
-      decide(f, { type: "reject", id: f.state().staged[0]!.id });
-      const refill = await waitFor(() => f.peers[1], "the refill scan peer");
-      const request = readRequest(scanDirectoryOf(refill.prompts[0]!));
-      expect(request.missing).toBe(1);
-      writeRecommendations(
-        scanDirectoryOf(refill.prompts[0]!),
-        scanDocument(uniqueItems(11, 1)),
-      );
-      refill.succeed();
-      const staged = await waitFor(
-        () => (f.state().scan === null ? f.state() : undefined),
-        "the completed refill",
-      );
-      expect(staged.staged).toHaveLength(9);
-      expect(staged.lifecycle).toBe("idle");
-      expect(staged.shortfall).toBeNull();
-    } finally {
-      await f.worker.stop();
-    }
-  });
-});
-
-describe("persistence and lifecycle", () => {
-  test("a restart restores staged items, decisions, and the shortfall", async () => {
-    const f = await fixture({ label: "restart", retryMs: 600_000 });
+describe("caps", () => {
+  test("the effective batch is the smaller of the hourly and pending rooms", async () => {
+    const github = new FakeGitHub();
+    github.add({ number: 1, title: "Open one", createdAt: "2026-10-27T09:50:00.000Z" });
+    github.add({
+      number: 2,
+      title: "Closed two",
+      state: "closed",
+      createdAt: "2026-10-27T09:40:00.000Z",
+    });
+    github.add({
+      number: 3,
+      title: "Closed three",
+      state: "closed",
+      createdAt: "2026-10-27T09:30:00.000Z",
+    });
+    const f = await fixture({
+      label: "batch",
+      github,
+      limit: { maxPerHour: 10, maxPending: 5 },
+      now: startClock,
+    });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      writeRecommendations(
-        scanDirectoryOf(peer.prompts[0]!),
-        scanDocument(uniqueItems(1, 4), "Four gaps."),
-      );
-      peer.succeed();
+      const request = readRequest(scanDirectoryOf(peer.prompts[0]!));
+      // window 3, open 1: min(10 - 3, 5 - 1) = 4
+      expect(request.requested).toBe(4);
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("zero capacity starts no scan and schedules the earlier unblock", async () => {
+    const github = new FakeGitHub();
+    github.add({ number: 1, title: "The only open one", createdAt: "2026-10-27T09:50:00.000Z" });
+    const f = await fixture({
+      label: "zero",
+      github,
+      limit: { maxPerHour: 10, maxPending: 1 },
+      now: startClock,
+    });
+    try {
       await waitFor(
-        () => (f.state().staged.length === 4 ? true : undefined),
-        "four staged items",
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the first GitHub read",
       );
-      decide(f, { type: "reject", id: f.state().staged[0]!.id });
-      const refill = await waitFor(() => f.peers[1], "the refill scan peer");
-      writeRecommendations(
-        scanDirectoryOf(refill.prompts[0]!),
-        scanDocument([], "No further significant gaps."),
-      );
-      refill.succeed();
-      const before = await waitFor(
-        () => (f.state().shortfall?.reason === "No further significant gaps." ? f.state() : undefined),
-        "the recorded shortfall",
-      );
-      expect(before.decisions).toHaveLength(1);
-      const stagedBefore = before.staged.map((item) => item.id);
-      const decisionsBefore = before.decisions;
-      const shortfallBefore = before.shortfall;
+      expect(f.state().nextAttemptAt).not.toBeNull();
+      expect(Date.parse(f.state().nextAttemptAt!)).toBe(900_000 + startClock.getTime());
+      await f.worker.beginScan();
+      expect(f.peers).toEqual([]);
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("the hourly cap survives a worker restart and expires on time", async () => {
+    const f = await fixture({
+      label: "hourly-restart",
+      limit: { maxPerHour: 2, maxPending: 10 },
+      now: startClock,
+    });
+    let resumed: ScoutWorker | undefined;
+    try {
+      await scan(f, 0, uniqueItems(1, 2));
+      expect(f.filed).toHaveLength(2);
+      await f.worker.beginScan();
+      expect(f.peers).toHaveLength(1);
 
       await f.worker.stop();
-      expect(existsSync(lockPath(f.root))).toBe(false);
-
-      const resumed = new ScoutWorker({
+      resumed = new ScoutWorker({
         repoDir: f.root,
         stateDir: f.stateDir,
-        retryMs: 600_000,
-        listIssues: async () => [],
-        connect: () => new ControlledPeer({
-          command: "stub",
-          cwd: f.root,
-          onActivity: () => undefined,
-          onQuestion: () => undefined,
-          onStderr: () => undefined,
-        }),
+        syncMs: 900_000,
+        now: () => new Date(f.clock.now),
+        github: f.github,
+        fileIssue: fakeFiling(f),
+        connect: (peerOptions) => {
+          const peer = new ControlledPeer(peerOptions);
+          f.peers.push(peer);
+          return peer;
+        },
       });
       workers.push(resumed);
       expect(resumed.start("acme/fixture")).toBe(true);
-      expect(resumed.currentState.staged.map((item) => item.id)).toEqual(stagedBefore);
-      expect(resumed.currentState.decisions).toEqual(decisionsBefore);
-      expect(resumed.currentState.shortfall?.reason).toBe(shortfallBefore?.reason);
+      await waitFor(
+        () => (resumed!.currentState.sync.state === "ok" ? true : undefined),
+        "the restart's GitHub read",
+      );
+      await resumed.beginScan();
+      expect(f.peers).toHaveLength(1);
+      expect(f.filed).toHaveLength(2);
+
+      f.clock.now = new Date(startClock.getTime() + 61 * 60_000);
+      await resumed.refresh();
+      await resumed.beginScan();
+      await waitFor(() => f.peers[1], "the scan after the window opens", 4000);
+      const request = readRequest(scanDirectoryOf(f.peers[1]!.prompts[0]!));
+      expect(request.requested).toBe(2);
+      writeRecommendations(
+        scanDirectoryOf(f.peers[1]!.prompts[0]!),
+        scanDocument(uniqueItems(3, 2)),
+      );
+      f.peers[1]!.succeed();
+      await waitFor(() => (f.filed.length === 4 ? true : undefined), "the next two filings");
+    } finally {
+      await f.worker.stop();
+      await resumed?.stop().catch(() => undefined);
+    }
+  });
+
+  test("the pending cap frees a slot after the issue closes and the next sync scans", async () => {
+    const f = await fixture({
+      label: "pending-close",
+      limit: { maxPerHour: 10, maxPending: 1 },
+      now: startClock,
+    });
+    try {
+      await scan(f, 0, uniqueItems(1, 1));
+      expect(f.filed).toHaveLength(1);
+      await f.worker.beginScan();
+      expect(f.peers).toHaveLength(1);
+
+      const filed = f.github.issues[0]!;
+      filed.state = "closed";
+      f.github.openTitles.length = 0;
+      await f.worker.refresh();
+      const peer = await waitFor(() => f.peers[1], "the scan after the close");
+      writeRecommendations(
+        scanDirectoryOf(peer.prompts[0]!),
+        scanDocument([recommendation(2)]),
+      );
+      peer.succeed();
+      await waitFor(
+        () => (f.filed.length === 2 ? f.state() : undefined),
+        "the second filing",
+      );
+      expect(f.state().issues.filter((row) => row.state === "pending")).toHaveLength(1);
+    } finally {
+      await f.worker.stop();
+    }
+  });
+});
+
+describe("limits", () => {
+  test("a limits command applies to a running worker and survives a restart", async () => {
+    const f = await fixture({ label: "limits" });
+    let resumed: ScoutWorker | undefined;
+    try {
+      decide(f, { type: "limits", maxPerHour: 1, maxPending: 1 });
+      const limited = await waitFor(
+        () =>
+          f.state().limits.maxPerHour === 1 && f.state().limits.maxPending === 1
+            ? f.state()
+            : undefined,
+        "the applied limits",
+      );
+      expect(limited.limits).toEqual({ maxPerHour: 1, maxPending: 1 });
+      expect(readSettings(settingsPath(f.stateDir, f.root))).toEqual({
+        maxPerHour: 1,
+        maxPending: 1,
+      });
+      expect(limited.notice).toContain("Limits saved");
+
+      await f.worker.stop();
+      resumed = new ScoutWorker({
+        repoDir: f.root,
+        stateDir: f.stateDir,
+        syncMs: 900_000,
+        github: f.github,
+        connect: (peerOptions) => new ControlledPeer(peerOptions),
+      });
+      workers.push(resumed);
+      expect(resumed.start("acme/fixture")).toBe(true);
+      expect(resumed.currentState.limits).toEqual({ maxPerHour: 1, maxPending: 1 });
+      await resumed.stop();
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+});
+
+describe("periodic reads and state mapping", () => {
+  test("open is pending, closed is implemented, and a reopen returns to pending", async () => {
+    const github = new FakeGitHub();
+    github.add({ number: 1, title: "Open issue", createdAt: "2026-10-01T00:00:00.000Z" });
+    github.add({
+      number: 2,
+      title: "Closed issue",
+      state: "closed",
+      createdAt: "2026-10-02T00:00:00.000Z",
+      body: "## Category\n\nrobustness\n",
+    });
+    github.add({
+      number: 3,
+      title: "Closed not planned",
+      state: "closed",
+      createdAt: "2026-10-03T00:00:00.000Z",
+    });
+    const f = await fixture({
+      label: "mapping",
+      github,
+      limit: { maxPerHour: 10, maxPending: 1 },
+      now: startClock,
+    });
+    try {
+      const synced = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the first read",
+      );
+      const byNumber = new Map(synced.issues.map((row) => [row.number, row]));
+      expect(byNumber.get(1)?.state).toBe("pending");
+      expect(byNumber.get(2)?.state).toBe("implemented");
+      expect(byNumber.get(3)?.state).toBe("implemented");
+      expect(byNumber.get(2)?.category).toBe("robustness");
+      expect(byNumber.get(3)?.category).toBeNull();
+      expect(synced.issues.map((row) => row.number)).toEqual([3, 2, 1]);
+
+      github.issues[1]!.state = "open";
+      github.openTitles.push("Closed issue");
+      await f.worker.refresh();
+      const reopened = await waitFor(
+        () =>
+          f.state().issues.find((row) => row.number === 2)?.state === "pending"
+            ? f.state()
+            : undefined,
+        "the reopened issue",
+      );
+      expect(reopened.issues.find((row) => row.number === 2)?.state).toBe("pending");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a release published later fills a blank shipped version", async () => {
+    const github = new FakeGitHub();
+    github.add({
+      number: 9,
+      title: "Shipped later",
+      state: "closed",
+      createdAt: "2026-10-27T09:50:00.000Z",
+    });
+    const full = "a".repeat(40);
+    github.closing.set(9, full);
+    github.commits.set(full, full);
+    const f = await fixture({
+      label: "version",
+      github,
+      limit: { maxPerHour: 10, maxPending: 1 },
+      now: startClock,
+    });
+    try {
+      const first = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the first read",
+      );
+      expect(first.issues[0]?.state).toBe("implemented");
+      expect(first.issues[0]?.version).toBeNull();
+
+      github.releases.push({ tag: "v1.2.0", publishedAt: "2026-10-27T11:00:00.000Z" });
+      github.containing.set(full, ["v1.2.0"]);
+      await f.worker.refresh();
+      const released = await waitFor(
+        () => (f.state().issues[0]?.version === "v1.2.0" ? f.state() : undefined),
+        "the shipped version",
+      );
+      expect(released.issues[0]?.version).toBe("v1.2.0");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a failed read keeps the rows, surfaces the reason, and blocks filing", async () => {
+    const github = new FakeGitHub();
+    github.failIssues = true;
+    const f = await fixture({ label: "sync-failure", github });
+    try {
+      const failed = await waitFor(
+        () => (f.state().sync.state === "error" ? f.state() : undefined),
+        "the failed read",
+      );
+      expect(failed.sync.error).toContain("GitHub read failed");
+      expect(failed.lastError).toContain("GitHub read failed");
+      expect(failed.scan).toBeNull();
+      await f.worker.beginScan();
+      expect(f.peers).toEqual([]);
+
+      github.failIssues = false;
+      await f.worker.refresh();
+      const peer = await waitFor(() => f.peers[0], "the scan after a good read");
+      expect(f.state().sync.state).toBe("ok");
+      expect(f.state().sync.at).not.toBeNull();
+      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument([]));
+      peer.succeed();
+      await waitSettled(f.root, peer.prompts[0]!);
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a release read failure fails the sync", async () => {
+    const github = new FakeGitHub();
+    github.failReleases = true;
+    const f = await fixture({ label: "release-failure", github });
+    try {
+      const failed = await waitFor(
+        () => (f.state().sync.state === "error" ? f.state() : undefined),
+        "the failed release read",
+      );
+      expect(failed.sync.error).toContain("release read failed");
+      expect(failed.issues).toEqual([]);
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("the fresh read before filing files nothing when it fails", async () => {
+    const f = await fixture({ label: "fresh-failure" });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      f.github.failIssues = true;
+      writeRecommendations(
+        scanDirectoryOf(peer.prompts[0]!),
+        scanDocument(uniqueItems(1, 3)),
+      );
+      peer.succeed();
+      const failed = await waitFor(
+        () => (f.state().sync.state === "error" ? f.state() : undefined),
+        "the failed pre-filing read",
+      );
+      expect(f.filed).toEqual([]);
+      expect(failed.lastError).toContain("GitHub read failed");
+      expect(failed.sync.error).toContain("GitHub read failed");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+});
+
+describe("migration", () => {
+  test("a version-1 board loads, discards its staged recommendations, and files none", async () => {
+    const base = await temporaryDirectory("scout-migration");
+    const root = await makeRepository({ files: sourceFiles(3), origin: "acme/fixture" });
+    const stateDir = join(base, "state");
+    const legacy = {
+      version: 1,
+      repo: "acme/fixture",
+      root,
+      lifecycle: "idle",
+      enabled: true,
+      worker: {
+        pid: 7,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        stateDir,
+        harnessVersion: null,
+        argv: [],
+      },
+      staged: [
+        { ...recommendation(1), id: "one", stagedAt: "2026-01-01T00:00:00.000Z" },
+        { ...recommendation(2), id: "two", stagedAt: "2026-01-01T00:00:00.000Z" },
+      ],
+      scan: null,
+      newestScanId: "scan-old",
+      shortfall: { staged: 2, missing: 7, reason: "Only two.", at: "2026-01-01T00:00:00.000Z" },
+      nextAttemptAt: null,
+      lastError: null,
+      notice: null,
+      decisions: [],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    await mkdir(dirname(statePath(stateDir, root)), { recursive: true });
+    writeFileSync(statePath(stateDir, root), `${JSON.stringify(legacy, null, 2)}\n`);
+
+    const github = new FakeGitHub();
+    const peers: ControlledPeer[] = [];
+    const worker = new ScoutWorker({
+      repoDir: root,
+      stateDir,
+      syncMs: 900_000,
+      github,
+      now: () => new Date("2026-10-27T10:00:00.000Z"),
+      connect: (peerOptions) => {
+        const peer = new ControlledPeer(peerOptions);
+        peers.push(peer);
+        return peer;
+      },
+      fileIssue: async () => {
+        throw new Error("nothing may be filed from a migrated recommendation");
+      },
+    });
+    workers.push(worker);
+    try {
+      expect(worker.start("acme/fixture")).toBe(true);
+      expect(worker.currentState.issues).toEqual([]);
+      expect(worker.currentState.limits).toEqual({ maxPerHour: 10, maxPending: 5 });
+      expect(worker.currentState.newestScanId).toBe("scan-old");
+      expect(worker.currentState.worker?.pid).toBe(process.pid);
+      expect(worker.currentState.notice).toContain("Discarded 2 staged recommendations");
+      const peer = await waitFor(() => peers[0], "the post-migration scan");
+      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument([]));
+      peer.succeed();
+      await waitSettled(root, peer.prompts[0]!, "the post-migration scan to settle");
+      expect(worker.currentState.issues).toEqual([]);
+    } finally {
+      await worker.stop();
+    }
+  });
+});
+
+describe("lifecycle", () => {
+  test("Stop keeps the rows and the limits, releases the lock, and Start resumes", async () => {
+    const f = await fixture({ label: "stop-start" });
+    let resumed: ScoutWorker | undefined;
+    try {
+      await scan(f, 0, uniqueItems(1, 1));
+      const before = f.state();
+      const rows = before.issues.map((row) => row.number);
+      await f.worker.stop();
+      expect(f.state().lifecycle).toBe("stopped");
+      expect(f.state().enabled).toBe(false);
+      expect(f.state().issues.map((row) => row.number)).toEqual(rows);
+      expect(f.state().limits).toEqual(before.limits);
+      expect(existsSync(lockPath(f.root))).toBe(false);
+
+      resumed = new ScoutWorker({
+        repoDir: f.root,
+        stateDir: f.stateDir,
+        syncMs: 900_000,
+        github: f.github,
+        now: () => new Date(f.clock.now),
+        connect: (peerOptions) => new ControlledPeer(peerOptions),
+      });
+      workers.push(resumed);
+      expect(resumed.start("acme/fixture")).toBe(true);
+      expect(resumed.currentState.issues.map((row) => row.number)).toEqual(rows);
+      expect(resumed.currentState.enabled).toBe(true);
       await resumed.stop();
     } finally {
       await f.worker.stop();
@@ -693,7 +923,7 @@ describe("persistence and lifecycle", () => {
       const second = new ScoutWorker({
         repoDir: f.root,
         stateDir: f.stateDir,
-        listIssues: async () => [],
+        github: f.github,
       });
       workers.push(second);
       expect(second.start("acme/fixture")).toBe(false);
@@ -715,63 +945,23 @@ describe("persistence and lifecycle", () => {
       const replacement = new ScoutWorker({
         repoDir: f.root,
         stateDir: f.stateDir,
-        listIssues: async () => [],
-        connect: () => new ControlledPeer({
-          command: "stub",
-          cwd: f.root,
-          onActivity: () => undefined,
-          onQuestion: () => undefined,
-          onStderr: () => undefined,
-        }),
+        github: f.github,
+        connect: (peerOptions) => new ControlledPeer(peerOptions),
       });
       workers.push(replacement);
       expect(replacement.start("acme/fixture")).toBe(true);
       expect(replacement.currentState.lastError).toContain("interrupted");
       expect(readScanFile(scanDirectory(f.root, scanId))?.status).toBe("failed");
-      expect(replacement.currentState.staged).toEqual([]);
       await replacement.stop();
     } finally {
       await f.worker.stop();
     }
   });
 
-  test("Stop keeps the staged list and Start resumes refilling it", async () => {
-    const f = await fixture({ label: "stop-start" });
-    try {
-      await stageNine(f);
-      const ids = f.state().staged.map((item) => item.id);
-      await f.worker.stop();
-      expect(f.state().lifecycle).toBe("stopped");
-      expect(f.state().enabled).toBe(false);
-      expect(f.state().staged.map((item) => item.id)).toEqual(ids);
-      expect(existsSync(lockPath(f.root))).toBe(false);
-
-      const resumed = new ScoutWorker({
-        repoDir: f.root,
-        stateDir: f.stateDir,
-        listIssues: async () => [],
-        connect: () => new ControlledPeer({
-          command: "stub",
-          cwd: f.root,
-          onActivity: () => undefined,
-          onQuestion: () => undefined,
-          onStderr: () => undefined,
-        }),
-      });
-      workers.push(resumed);
-      expect(resumed.start("acme/fixture")).toBe(true);
-      expect(resumed.currentState.staged.map((item) => item.id)).toEqual(ids);
-      expect(resumed.currentState.enabled).toBe(true);
-      await resumed.stop();
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("stale scans are left on disk under the checkout, never the state directory", async () => {
+  test("stale scans are left under the checkout, never the state directory", async () => {
     const f = await fixture({ label: "scan-paths" });
     try {
-      await stageNine(f);
+      await scan(f, 0, uniqueItems(1, 1));
       const scans = readdirSync(scansDirectory(f.root));
       expect(scans).toHaveLength(1);
       expect(scanDirectory(f.root, scans[0]!).startsWith(f.root)).toBe(true);
@@ -782,10 +972,10 @@ describe("persistence and lifecycle", () => {
 });
 
 describe("dashboard bridge", () => {
-  test("a reload replays the board without starting a worker", async () => {
+  test("a reload replays the rows and limits without starting a worker", async () => {
     const f = await fixture({ label: "replay" });
     try {
-      await stageNine(f);
+      await scan(f, 0, uniqueItems(1, 1));
       let spawned = 0;
       const bridge = new ScoutBridge({
         repoDir: f.root,
@@ -803,7 +993,8 @@ describe("dashboard bridge", () => {
       const messages: Array<Record<string, unknown>> = [];
       bridge.replay({ send: (data: string) => messages.push(JSON.parse(data)) });
       expect(messages[0]?.type).toBe("scoutState");
-      expect((messages[0]?.staged as unknown[] | undefined)?.length).toBe(9);
+      expect((messages[0]?.issues as unknown[] | undefined)?.length).toBe(1);
+      expect(messages[0]?.limits).toEqual({ maxPerHour: 10, maxPending: 5 });
       expect(messages[1]?.type).toBe("scoutActivity");
       expect(spawned).toBe(0);
       bridge.dispose();
@@ -866,7 +1057,7 @@ describe("dashboard bridge", () => {
   });
 });
 
-describe("approve and draft actions", () => {
+describe("filing actions", () => {
   const authExec = async (
     command: string,
     args: string[],
@@ -894,11 +1085,10 @@ describe("approve and draft actions", () => {
     return {
       ...recommendation(1),
       id: "0123456789abcdef",
-      stagedAt: "2026-10-27T10:00:00.000Z",
     };
   }
 
-  test("Approve files one issue in the host origin with the scout label", async () => {
+  test("filing one item creates the label when absent and returns its number", async () => {
     const root = await makeRepository({ files: sourceFiles(2), origin: "acme/fixture" });
     const calls: string[][] = [];
     let labelPresent = false;
@@ -927,24 +1117,25 @@ describe("approve and draft actions", () => {
       exec: authExec,
       run,
     });
-    expect(result.url).toBe("https://github.com/acme/fixture/issues/42");
+    expect(result).toEqual({
+      url: "https://github.com/acme/fixture/issues/42",
+      number: 42,
+    });
     expect(calls.map((argv) => argv.slice(0, 2).join(" "))).toEqual([
       "api repos/acme/fixture/labels/scout",
       "label create",
       "issue create",
     ]);
     const create = calls[2]!;
-    expect(create[create.indexOf("--repo") + 1]).toBe("acme/fixture");
-    expect(create[create.indexOf("--title") + 1]).toBe("Simplify module 1 control flow");
     expect(create[create.indexOf("--label") + 1]).toBe("scout");
     const body = readFileSync(create[create.indexOf("--body-file") + 1]!, "utf8");
     expect(body).toContain("## Category");
-    expect(body).toContain("clarity");
-    expect(body).toContain("src/module-1.ts:2-6");
+    expect(body).toContain("## Significance");
+    expect(body).toContain("5/5");
+    expect(body).toContain("third nested branch");
     expect(body).toContain("## Proposed change");
     expect(body).toContain("## Files");
     expect(body).toContain("## Acceptance criteria");
-    expect(body).toContain("Module 1 has no nested branch deeper than two levels.");
   });
 
   test("an existing scout label is not created again", async () => {
@@ -955,7 +1146,7 @@ describe("approve and draft actions", () => {
       if (argv[0] === "api") return { code: 0, stdout: '{"name":"scout"}', stderr: "" };
       return { code: 0, stdout: "https://github.com/acme/fixture/issues/7", stderr: "" };
     };
-    await fileScoutIssue({
+    const result = await fileScoutIssue({
       repoDir: root,
       repository: "acme/fixture",
       recommendation: preparedItem(),
@@ -963,26 +1154,47 @@ describe("approve and draft actions", () => {
       exec: authExec,
       run,
     });
+    expect(result.number).toBe(7);
     expect(calls.some((argv) => argv[0] === "label")).toBe(false);
     expect(calls.filter((argv) => argv[0] === "issue")).toHaveLength(1);
   });
 
-  test("Draft goal writes one draft with the notice and never overwrites", async () => {
-    const root = await makeRepository({ files: sourceFiles(2), origin: "acme/fixture" });
-    const item = preparedItem();
-    const first = await writeScoutDraft(item, { repoDir: root });
-    const second = await writeScoutDraft(item, { repoDir: root });
-    expect(first.path).toBe(".devboard/goal-proposals/simplify-module-1-control-flow.md");
-    expect(second.path).toBe(".devboard/goal-proposals/simplify-module-1-control-flow-2.md");
-    const body = readFileSync(join(root, first.path), "utf8");
-    expect(body).toContain(
-      "> Unprocessed draft. Refine it with `/goal-spec` before it becomes a goal.",
+  test("the issue body names the significance score and reason", () => {
+    const body = issueBody(preparedItem());
+    expect(body).toContain("## Significance\n\n5/5\n\n");
+    expect(body).toContain("third nested branch");
+  });
+
+  test("a failed filing leaves the rows unchanged and reports the reason", async () => {
+    const f = await fixture({ label: "file-failure" });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      f.failingIssue = { message: "the label does not exist" };
+      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(uniqueItems(1, 2)));
+      peer.succeed();
+      const failed = await waitFor(
+        () => (f.state().lifecycle === "failed" ? f.state() : undefined),
+        "the filing failure",
+      );
+      expect(f.filed).toEqual([]);
+      expect(failed.issues).toEqual([]);
+      expect(failed.lastError).toContain("the label does not exist");
+      expect(failed.notice).toContain("Scan failed");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+});
+
+describe("scan prompt", () => {
+  test("the prompt states the significance rubric and the threshold", () => {
+    const prompt = readFileSync(
+      join(import.meta.dir, "..", "prompts", "scout-recommendations.md"),
+      "utf8",
     );
-    expect(body).toContain("# Proposed goal: Simplify module 1 control flow");
-    expect(body).toContain("## Evidence");
-    expect(body).toContain("## Proposed change");
-    expect(body).toContain("## Acceptance criteria");
-    expect(body).not.toContain("## Success criteria");
-    expect(readdirSync(join(root, ".devboard", "goal-proposals"))).toHaveLength(2);
+    expect(prompt).toContain("`significance` from 1 to 5");
+    expect(prompt).toContain("4 or 5 requires a named, observable impact");
+    expect(prompt).toContain("polishing code that is already correct");
+    expect(prompt).toContain("significanceThreshold");
   });
 });
