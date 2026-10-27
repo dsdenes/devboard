@@ -595,28 +595,27 @@
       <div class="panel__header discover-run__header">
         <div class="discover-run__heading">
           <span class="discover-run__dot" aria-hidden="true"></span>
-          <div class="discover-run__identity">
-            <span class="discover-run__eyebrow">Discover</span>
-            <h2 class="panel__title">Run in progress</h2>
-          </div>
+          <h2 class="panel__title">Run in progress</h2>
         </div>
-        <div class="discover-run__actions">
-          {#if discover.runId !== null}
-            <code class="code-chip discover-run__id" title="Run identifier">{discover.runId}</code>
-          {/if}
+        <div class="discover-run__meta">
           {#if discover.startedAt !== null}
             <span class="muted discover-run__started" title={discover.startedAt}>
               Started {startedLabel}
             </span>
           {/if}
-          <Button
-            variant="destructive"
+          {#if discover.runId !== null}
+            <code class="code-chip discover-run__id" title={discover.runId}>{discover.runId}</code>
+          {/if}
+          <button
+            type="button"
+            class="discover-run__stop"
+            title="Stop this Discover run"
             data-command="discover.stop"
             data-testid="discover-stop"
             onclick={() => discover.stop()}
           >
             Stop
-          </Button>
+          </button>
         </div>
       </div>
       <div class="discover-run__body">

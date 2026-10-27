@@ -1654,14 +1654,9 @@ kbd {
   margin: 0;
 }
 
-/* Active run: a tinted header names the state, the run, its age, and Stop. */
-.discover-run {
-  border-color: var(--accent);
-}
-
+/* Active run: one state line names the run, its age, its id, and the quiet Stop. */
 .discover-run__header {
-  background: var(--accent-surface);
-  border-bottom-color: var(--accent);
+  background: var(--surface-raised);
   gap: 12px;
 }
 
@@ -1672,22 +1667,6 @@ kbd {
   min-width: 0;
 }
 
-.discover-run__identity {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.discover-run__eyebrow {
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
 .discover-run__dot {
   background: var(--accent);
   border-radius: 999px;
@@ -1696,16 +1675,16 @@ kbd {
   width: 6px;
 }
 
-.discover-run__actions {
+.discover-run__meta {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   justify-content: flex-end;
+  min-width: 0;
 }
 
 .discover-run__id {
-  max-width: 220px;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1713,6 +1692,36 @@ kbd {
 
 .discover-run__started {
   font-size: 11px;
+  white-space: nowrap;
+}
+
+.discover-run__stop {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  height: 24px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.discover-run__stop:hover:not(:disabled),
+.discover-run__stop:focus-visible {
+  background: var(--error-surface);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.discover-run__stop:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .discover-run__body {
