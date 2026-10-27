@@ -1900,7 +1900,10 @@ try {
     stackedSections: number;
     staticText: number;
     sidebarTitle: string;
-    projectTitle: string;
+    sidebarHeader: boolean;
+    commandChips: number;
+    suiteChip: boolean;
+    contextPathChip: boolean;
     sectionsHeading: number;
     sectionTabs: number;
     skillTabs: number;
@@ -1914,7 +1917,7 @@ try {
     const skills = document.querySelector('[data-testid="sidebar"] section[aria-label="Skills"]');
     const page = document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="overview"]');
     const card = document.querySelector('#workspace-discover [data-field="stack"]');
-    const stackLink = card === null ? null : card.querySelector('a.discover-chip--link');
+    const stackLink = card === null ? null : card.querySelector('a.code-chip--link');
     return {
       cards: document.querySelectorAll('#workspace-discover [data-testid="discover-card"]').length,
       commands: commands.length,
@@ -1940,7 +1943,7 @@ try {
       innerScrollers: scopes.filter((scope) => scope.scrollHeight > scope.clientHeight + 1).length,
       clippedCards: page === null ? -1 : [...page.children]
         .filter((child) => child.scrollHeight > child.clientHeight + 1).length,
-      stackLinks: card === null ? -1 : card.querySelectorAll('a.discover-chip--link').length,
+      stackLinks: card === null ? -1 : card.querySelectorAll('a.code-chip--link').length,
       stackHref: stackLink?.getAttribute("href") ?? "",
       commandHeaders: document.querySelectorAll('[data-testid="discover-command-list"] thead').length,
       contextHeader: document.querySelector('#workspace-discover [data-field="architecture"] th')?.textContent?.trim() ?? "",
@@ -1954,7 +1957,10 @@ try {
       stackedSections: document.querySelectorAll('#workspace-discover [data-field="unknowns"], #workspace-discover [data-field="dependencyMap"]').length,
       staticText: document.querySelectorAll('#workspace-discover [data-tab="overview"] .discover-lead, #workspace-discover [data-tab="overview"] .discover-note').length,
       sidebarTitle: document.querySelector('[data-testid="sidebar"] .sidebar__title')?.textContent?.trim() ?? "",
-      projectTitle: document.title,
+      sidebarHeader: document.querySelector('[data-testid="sidebar"] .sidebar__header') !== null,
+      commandChips: document.querySelectorAll('[data-testid="discover-command-list"] code.code-chip').length,
+      suiteChip: document.querySelector('[data-testid="discover-suite-command"] code.code-chip') !== null,
+      contextPathChip: document.querySelector('#workspace-discover [data-field="architecture"] code.code-chip') !== null,
       sectionsHeading: sections === null ? -1 : sections.querySelectorAll('.sidebar-group__title').length,
       sectionTabs: sections === null ? -1 : sections.querySelectorAll('[data-testid="discover-tab"]').length,
       skillTabs: skills === null ? -1 : skills.querySelectorAll('[data-testid="discover-tab"]').length,
@@ -1989,7 +1995,17 @@ try {
   check(discoverTables.contextRoles.includes("Dependency direction"), "the boundary map does not label the dependency direction", discoverTables.contextRoles);
   check(discoverTables.externalBoundaries === "None detected.", "the External boundaries block does not render the observed empty list", discoverTables.externalBoundaries);
   check(!(discoverTables.externalBoundaries ?? "").includes("node:"), "the External boundaries block names a runtime built-in", discoverTables.externalBoundaries);
-  check(discoverTables.sidebarTitle === discoverTables.projectTitle, "the sidebar title does not name the repository", discoverTables);
+  check(!discoverTables.sidebarHeader, "the sidebar still repeats the mode and project header", discoverTables);
+  check(
+    discoverTables.commandChips === discoverTables.commands,
+    "a command row is not drawn with the shared code chip",
+    discoverTables,
+  );
+  check(
+    discoverTables.suiteChip && discoverTables.contextPathChip,
+    "commands and paths do not share one inline-code presentation",
+    discoverTables,
+  );
   check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
   check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
   check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");
@@ -2039,7 +2055,7 @@ try {
   check(!discoverChrome.eyebrow && !discoverChrome.stale && !discoverChrome.commit, "the sheet still renders removed masthead chrome", discoverChrome);
   check(discoverChrome.railLeft < discoverChrome.columnLeft, "the sheet column is not to the right of the facts rail", discoverChrome);
   check(
-    discoverChrome.railWidth >= 260,
+    discoverChrome.railWidth >= 320,
     "the Discover facts rail is narrower than its approved track",
     discoverChrome,
   );
@@ -2070,6 +2086,36 @@ try {
     discoverChrome,
   );
   check(!discoverChrome.versions, "the Platform rail still repeats the runtime versions", discoverChrome);
+
+  // The command count discloses every slot, including the ones not found.
+  const collapsedCommands = await page.eval<number>(
+    `document.querySelectorAll('[data-testid="discover-command-list"] tbody tr').length`,
+  );
+  await page.click('[data-testid="discover-command-coverage"]');
+  await page.wait(`document.querySelectorAll('[data-testid="discover-command-list"] tbody tr').length === 8`, "the full command coverage list");
+  const coverage = await page.eval<{ rows: number; missing: number; placeholders: string[]; expanded: string }>(`(() => {
+    const rows = [...document.querySelectorAll('[data-testid="discover-command-list"] tbody tr')];
+    const gaps = rows.filter((row) => row.getAttribute("data-found") === "false");
+    return {
+      rows: rows.length,
+      missing: gaps.length,
+      placeholders: gaps.map((row) => row.textContent.replace(/\\s+/g, " ").trim()),
+      expanded: document.querySelector('[data-testid="discover-command-coverage"]')?.getAttribute("aria-expanded") ?? "",
+    };
+  })()`);
+  check(coverage.rows === 8 && coverage.expanded === "true", "the command count does not disclose every slot", coverage);
+  check(
+    coverage.missing === 8 - collapsedCommands &&
+      coverage.placeholders.every((text) => text.includes("not found")),
+    "a command slot that was not found renders no placeholder",
+    coverage,
+  );
+  await page.click('[data-testid="discover-command-coverage"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="discover-command-list"] tbody tr').length === ${collapsedCommands}`,
+    "the command list to collapse",
+  );
+
   // The fixture sheet fits at 1440×900; prove the page owns its scrolling and
   // keeps the offset in a narrower supported viewport, where it overflows.
   await devtools.send("Emulation.setDeviceMetricsOverride", {

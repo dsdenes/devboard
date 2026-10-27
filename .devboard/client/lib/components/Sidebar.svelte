@@ -1,6 +1,5 @@
 <script lang="ts">
   import ChevronRight from "lucide-svelte/icons/chevron-right";
-  import { connection } from "../connection.svelte";
   import { SECTION_TABS, SKILL_TABS } from "../discover-format";
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
@@ -64,15 +63,6 @@
 </script>
 
 <aside class="sidebar" data-testid="sidebar" aria-label={`${modeLabel} sidebar`}>
-  <div class="sidebar__header">
-    <div class="sidebar__identity">
-      <span class="sidebar__mode">{modeLabel}</span>
-      <span class="sidebar__title" title={connection.projectPath}>
-        {connection.projectPath.trim().length > 0 ? connection.projectPath : "Devboard"}
-      </span>
-    </div>
-  </div>
-
   <div class="sidebar__body">
     {#if layout.mode === "goal"}
       <section class="sidebar-group" aria-label="Plan">

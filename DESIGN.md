@@ -407,6 +407,10 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   header carries one status badge, colored by meaning: `accepted` success, `proposed` pending,
   `superseded`/`deprecated` stale, `rejected` error; the implementation state is never repeated
   as a second resolved/pending badge.
+- **Inline code chip** (`.code-chip`) — one presentation for every command, path, package, and
+  boundary value: `mono-small` type, `background` fill, 1px `border-subtle` outline, 3px radius,
+  2px 6px padding. A runnable command carries a `$` prompt; a path does not. No surface may draw
+  a second inline-code style.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The three `role="tab"` controls sit in a `role="tablist"`
   group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px
@@ -432,7 +436,7 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page
   sections are 24px apart; cards inside a column are 12px apart. The facts rail holds its grid
-  track between 260px and 340px, with 24px to the content column.
+  track between 320px and 420px, with 24px to the content column.
 
 ## Do's and Don'ts
 

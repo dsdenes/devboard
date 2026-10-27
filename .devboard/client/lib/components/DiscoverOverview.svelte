@@ -79,7 +79,13 @@
       ? (sheet.commands as Record<string, unknown>)
       : null,
   );
-  const commandRows = $derived(commandRowsOf(commandsSection, discover.testCommand));
+  let commandsOpen = $state(false);
+  const foundCommandRows = $derived(
+    commandRowsOf(commandsSection, discover.testCommand, { includeMissing: false }),
+  );
+  const commandRows = $derived(commandsOpen
+    ? commandRowsOf(commandsSection, discover.testCommand, { includeMissing: true })
+    : foundCommandRows);
   const recordedTestCommand = $derived.by(() => {
     const leaf = sectionLeaf(commandsSection, "test");
     return leaf === undefined || leaf.confidence === "unknown" ? "" : scalarText(leaf.value);
@@ -209,19 +215,29 @@
   function commandRowsOf(
     section: Record<string, unknown> | null,
     testCommand: string,
+    options: { includeMissing: boolean },
   ): Array<Record<string, unknown>> {
     if (section === null) return [];
     const rows: Array<Record<string, unknown>> = [];
-    for (const [key, leaf] of Object.entries(section)) {
-      if (!isLeaf(leaf) || leaf.confidence === "unknown") continue;
-      const command = discover.aliasFor(scalarText(leaf.value));
-      if (key === "tryOut" && testCommand.length > 0 && command === testCommand) {
+    for (const [key, label] of Object.entries(COMMAND_LABELS)) {
+      const leaf = section[key];
+      const known = isLeaf(leaf) && leaf.confidence !== "unknown";
+      if (known) {
+        const command = discover.aliasFor(scalarText(leaf.value));
+        // A try-out that only aliases the suite is the same command, not a gap.
+        if (key === "tryOut" && testCommand.length > 0 && command === testCommand) continue;
+        rows.push({ key, label, value: command, missing: false });
         continue;
       }
+      if (!options.includeMissing) continue;
       rows.push({
         key,
-        label: COMMAND_LABELS[key] ?? humanize(key),
-        value: `$ ${command}`,
+        label,
+        value: "",
+        missing: true,
+        reason: isLeaf(leaf) && leaf.confidence === "unknown"
+          ? unknownText(leaf)
+          : "No command was recorded.",
       });
     }
     return rows;
@@ -338,10 +354,10 @@
     {#each lines as line, index (index)}
       {@const href = discover.repositoryLink(line)}
       {#if href === null}
-        <code class="discover-chip">{line}</code>
+        <code class="code-chip">{line}</code>
       {:else}
         <a
-          class="discover-chip discover-chip--link"
+          class="code-chip code-chip--link"
           href={href}
           target="_blank"
           rel="noreferrer noopener"
@@ -357,9 +373,23 @@
 {#snippet plainChips(lines: string[])}
   <div class="discover-chips">
     {#each lines as line (line)}
-      <code class="discover-chip">{line}</code>
+      <code class="code-chip">{line}</code>
     {/each}
   </div>
+{/snippet}
+
+{#snippet commandCell(row: Record<string, unknown>, columnId: string)}
+  {#if columnId === "value"}
+    {#if row.missing === true}
+      <span class="muted discover-command-missing" title={String(row.reason ?? "")}>not found</span>
+    {:else}
+      <code class="code-chip">$ {String(row.value ?? "")}</code>
+    {/if}
+  {:else}
+    <span class="discover-command-label" class:muted={row.missing === true}>
+      {String(row.label ?? "")}
+    </span>
+  {/if}
 {/snippet}
 
 {#snippet sheetRail()}
@@ -551,31 +581,41 @@
           <section class="panel discover-card" data-testid="discover-card" data-field="commands">
             <div class="panel__header">
               <h2 class="panel__title">Commands</h2>
-              <span class="panel__subtitle">
-                {commandRows.length} of {COMMAND_TOTAL} found
-              </span>
+              <button
+                type="button"
+                class="discover-coverage"
+                data-testid="discover-command-coverage"
+                aria-expanded={commandsOpen}
+                aria-controls="discover-command-table"
+                title={commandsOpen
+                  ? "Hide the commands that were not found"
+                  : "Show every command slot, including the ones that were not found"}
+                onclick={() => (commandsOpen = !commandsOpen)}
+              >
+                {foundCommandRows.length}
+                of {COMMAND_TOTAL} found
+              </button>
             </div>
             <div class="panel__body">
               {#if isLeaf(commandsSection)}
                 <p class="empty">{unknownText(commandsSection)}</p>
-              {:else if commandRows.length === 0}
-                <p class="empty">No command was declared in the crawled files.</p>
               {:else}
-                <DataTable
-                  data-testid="discover-command-list"
-                  columns={COMMAND_COLUMNS}
-                  rows={commandRows}
-                  rowAttrs={(row) => ({ "data-command-key": String(row.key ?? "") })}
-                  cellValue={(row, columnId) => String(row[columnId] ?? "")}
-                  cellAttrs={(_row, columnId) =>
-                    columnId === "value"
-                      ? { "data-column": "line" }
-                      : { class: "discover-command-label" }}
-                  hideHeader
-                  columnWidths={COMMAND_WIDTHS}
-                  full
-                  wrap
-                />
+                <div id="discover-command-table">
+                  <DataTable
+                    data-testid="discover-command-list"
+                    columns={COMMAND_COLUMNS}
+                    rows={commandRows}
+                    rowAttrs={(row) => ({
+                      "data-command-key": String(row.key ?? ""),
+                      "data-found": row.missing === true ? "false" : "true",
+                    })}
+                    cell={commandCell}
+                    hideHeader
+                    columnWidths={COMMAND_WIDTHS}
+                    full
+                    wrap
+                  />
+                </div>
               {/if}
             </div>
           </section>
@@ -630,7 +670,7 @@
                   {#if discover.testCommand.length > 0}
                     <div class="discover-command-line" data-testid="discover-suite-command">
                       <span class="muted">Whole suite</span>
-                      <code title={recordedTestCommand === discover.testCommand
+                      <code class="code-chip" title={recordedTestCommand === discover.testCommand
                         ? undefined
                         : recordedTestCommand}>{discover.testCommand}</code>
                     </div>
@@ -665,7 +705,7 @@
                       <div class="discover-context__head">
                         <span class="discover-context__name">{context.name}</span>
                         {#if context.path.length > 0}
-                          <code class="discover-context__path">{context.path}</code>
+                          <code class="code-chip discover-context__path">{context.path}</code>
                         {/if}
                       </div>
                       {#if context.responsibility.length > 0}

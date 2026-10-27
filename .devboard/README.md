@@ -20,7 +20,7 @@ degrades into a clipped mobile layout.
 |Region|Test hook|Role|
 |---|---|---|
 |Mode rail|`activity-bar`|Three labeled mode tabs and their Lucide icons|
-|Sidebar|`sidebar`|Mode name, repository, and contextual navigation for the active mode|
+|Sidebar|`sidebar`|Contextual navigation for the active mode|
 |Workspace|`workspace`|The open surface; absorbs all remaining space|
 |Status bar|`status-bar`|Connection, project name, counts, versions, theme, notifications|
 
@@ -650,11 +650,15 @@ dependency map, and delivery and versioning. It never guesses, invents an additi
 copies README prose, or records a configuration value; a claim it cannot ground is `unknown`.
 
 Main commands render as a two-column `Task`/`Command` table of the observed commands, `$`-prefixed,
-with no header row, under an `N of 8 commands found` count; no explanatory note follows the table.
-A `tryOut` command is listed only when it is a hands-on entry point that no other recorded command
-aliases. A command the host manifest declares as a script is shown as its invocation — `npm test`
-for `scripts.test`, `npm run <name>` for any other script — instead of the program the script
-expands to; the recorded program is the row's tooltip. Testing shows the test, level, and
+with no header row, under an `N of 8 commands found` count. That count is a disclosure
+(`data-testid="discover-command-coverage"`): activating it lists every one of the eight command
+slots, and a slot the crawl did not find renders a muted `not found` placeholder whose title
+carries the unknown reason. A `tryOut` command is listed only when it is a hands-on entry point
+that no other recorded command aliases. A command the host manifest declares as a script is shown
+as its invocation — `npm test` for `scripts.test`, `npm run <name>` for any other script — instead
+of the program the script expands to; the recorded program is the chip's tooltip. Every command,
+path, package, and boundary value uses the same inline code chip (`.code-chip`); no surface has a
+second inline-code presentation. Testing shows the test, level, and
 happy-path totals and the whole-suite command (`data-testid="discover-suite-command"`), then a
 `Level`/`Tests`/`Happy path`/`Command` table (`data-testid="discover-pyramid"`). Happy path is the
 part of a level's count that exercises the primary success path, recorded as an exact count from

@@ -37,6 +37,10 @@ new information architecture: each report corrects a specific surface the operat
 | #202 project path removal | Superseded by #205 (same element, 38 seconds later): removal and redesign cannot both hold. The element is redesigned, not deleted. |
 | #203/#204 mode status | Remove the active-mode status from the status bar: the sidebar and workspace already state it, and the status bar is 26px of global facts. #204 is the same report as #203. |
 | #205 project path redesign | The status bar names the project (last path segment) with a folder mark and the full path in the tooltip; the empty tail is closed by a spacer so counts, versions, and reload align right. |
+| #206 sidebar header | Remove the 44px sidebar header: the mode is named in the rail and the project in the status bar, so the header repeated both. |
+| #207 facts rail width | The Discover facts track grows to 320–420px so the facts column balances the content column. |
+| #208 command placeholders | The `N of 8 found` count becomes a disclosure: expanding it lists all eight command slots, and an unrecognized slot renders a muted `not found` placeholder with the unknown reason in its title. |
+| #209 command presentation | One inline code chip (`.code-chip`) for every command, path, package, and boundary value: mono-small, background fill, subtle border, 3px radius, 2px/6px padding. Commands carry a `$`; paths do not. The older plain row, tinted suite chip, and borderless context chips are gone. |
 
 ## Structure
 
@@ -72,7 +76,12 @@ built bundle in headless Chrome, and asserts, among the existing checks:
   `skill-content-text` is non-empty);
 - the status bar shows the project's last path segment with its folder mark and the full path in the
   item's title, carries no `status-mode` item, and right-aligns its tail (versions end within 48px
-  of the bar's right edge).
+  of the bar's right edge);
+- the sidebar renders no mode/project header;
+- the Discover facts rail measures at least 320px, every command row draws the shared `.code-chip`,
+  the suite line and a bounded-context path draw the same chip, and expanding `N of 8 found`
+  renders eight rows with `not found` placeholders whose titles carry the reasons, then collapses
+  back to the found rows.
 
 Screenshots written by the same run: `.devboard/.tmp/interface/discover-overview.png`,
 `goal-overview.png`, `flow-overview.png`, `1024x720.png`.

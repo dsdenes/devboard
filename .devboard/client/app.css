@@ -321,42 +321,6 @@ kbd {
   width: 100%;
 }
 
-.sidebar__header {
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  flex: 0 0 auto;
-  gap: 6px;
-  height: 44px;
-  justify-content: space-between;
-  padding: 0 10px;
-}
-
-.sidebar__identity {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.sidebar__mode {
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.sidebar__title {
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .sidebar__body {
   flex: 1;
   min-height: 0;
@@ -1486,7 +1450,7 @@ kbd {
   align-items: start;
   display: grid;
   gap: 16px 24px;
-  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
   max-width: 1440px;
 }
 
@@ -1756,23 +1720,24 @@ kbd {
   margin: 8px 0 0;
 }
 
-.discover-chip {
+.code-chip {
+  background: var(--background);
   border: 1px solid var(--border-subtle);
   border-radius: 3px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.4;
   margin: 0;
-  padding: 1px 5px;
+  padding: 2px 6px;
 }
 
-a.discover-chip--link {
+a.code-chip--link {
   color: var(--accent);
   text-decoration: none;
 }
 
-a.discover-chip--link:hover,
-a.discover-chip--link:focus-visible {
+a.code-chip--link:hover,
+a.code-chip--link:focus-visible {
   border-color: var(--border-strong);
   text-decoration: underline;
 }
@@ -1802,9 +1767,30 @@ a.discover-chip--link:focus-visible {
   line-height: 1.5;
 }
 
-.discover-page .table-wrap td.discover-command-label {
+.discover-page .table-wrap .discover-command-label {
   color: var(--muted-foreground);
   font-size: 12px;
+}
+
+.discover-command-missing {
+  font-size: 11.5px;
+  font-style: italic;
+}
+
+.discover-coverage {
+  background: none;
+  border: 0;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.discover-coverage:hover,
+.discover-coverage[aria-expanded="true"] {
+  color: var(--foreground);
+  text-decoration: underline;
 }
 
 .discover-page .table-wrap td.discover-mono {
@@ -1858,14 +1844,6 @@ a.discover-chip--link:focus-visible {
   flex-wrap: wrap;
   font-size: 12px;
   gap: 8px;
-}
-
-.discover-command-line code {
-  background: var(--background);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  font-family: var(--font-mono);
-  padding: 2px 6px;
 }
 
 .discover-test-summary {
@@ -1945,8 +1923,6 @@ a.discover-chip--link:focus-visible {
 
 .discover-context__path {
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
   margin-left: auto;
   overflow-wrap: anywhere;
   text-align: right;
