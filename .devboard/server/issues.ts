@@ -10,7 +10,8 @@ import {
   statePath,
 } from "../issues/paths";
 import { preflightIssues, type PreflightResult } from "../issues/preflight";
-import { originRepository } from "../issues/repository";
+import { cachedRepository } from "../issues/repository";
+import { closeIssue as closeTrackerIssue, type CloseIssueRequest } from "./issue-close";
 import {
   activityPath,
   parseActivity,
@@ -74,6 +75,8 @@ export interface IssuesBridgeOptions {
     environment: Record<string, string | undefined>;
   }) => Promise<PreflightResult>;
   spawnWorker?: (argv: string[], environment: Record<string, string | undefined>) => number | undefined;
+  /** Test seam: replace the tracker mutation the close control performs. */
+  closeIssue?: (request: CloseIssueRequest) => Promise<void>;
 }
 
 /** The bits of the state a dashboard may safely publish. */
@@ -85,9 +88,10 @@ export class IssuesBridge {
   private readonly harnessDir: string;
   private readonly send: (event: unknown) => void;
   private readonly environment: Record<string, string | undefined>;
-  private readonly repository: string | null;
+  private readonly repository: () => string | null;
   private readonly preflight: NonNullable<IssuesBridgeOptions["preflight"]>;
   private readonly spawnWorker: NonNullable<IssuesBridgeOptions["spawnWorker"]>;
+  private readonly closeIssueAction: (request: CloseIssueRequest) => Promise<void>;
   private readonly log: (line: string) => void;
   private readonly pollMsValue: number;
 
@@ -105,8 +109,7 @@ export class IssuesBridge {
     this.harnessDir = options.harnessDir;
     this.send = options.send;
     this.environment = options.environment ?? process.env;
-    // Resolving the origin runs git; it cannot change while this server lives.
-    this.repository = originRepository(this.repoDir) ?? null;
+    this.repository = cachedRepository(this.repoDir);
     this.log = options.log ?? (() => undefined);
     this.pollMsValue = Math.max(50, options.pollMs ?? 250);
     this.preflight =
@@ -118,6 +121,7 @@ export class IssuesBridge {
           environment: request.environment,
         }));
     this.spawnWorker = options.spawnWorker ?? ((argv, environment) => this.detach(argv, environment));
+    this.closeIssueAction = options.closeIssue ?? ((request) => closeTrackerIssue(request));
   }
 
   /** Starts observing the worker state; it never starts a worker itself. */
@@ -176,7 +180,7 @@ export class IssuesBridge {
     const owner = this.lockOwner();
     const attached =
       owner !== undefined && resolve(owner.stateDir) === this.stateDir && pidAlive(owner.pid);
-    const repo = state?.repo ?? this.repository;
+    const repo = state !== undefined && state.repo.length > 0 ? state.repo : this.repository();
     const active = attached ? state : undefined;
     const lifecycle = active?.lifecycle === "stopped" || active === undefined ? "stopped" : active.lifecycle;
     const worker = state?.worker ?? null;
@@ -360,6 +364,38 @@ export class IssuesBridge {
     writeCommand(controlDirectory(this.stateDir, this.repoDir), command);
     if (command.type === "stop") this.scheduleStopProof(owner.pid);
     return { ok: true };
+  }
+
+  /**
+   * Closes one open issue on the tracker. The worker is the source of truth for
+   * the origin, so its state names the repository even when the dashboard's own
+   * remote discovery came up empty.
+   */
+  async closeIssue(
+    number: unknown,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (typeof number !== "number" || !Number.isInteger(number) || number <= 0) {
+      return { ok: false, message: "Closing an issue needs a positive issue number." };
+    }
+    const state = this.currentState();
+    const repository = state !== undefined && state.repo.length > 0 ? state.repo : this.repository();
+    if (repository === null || repository === undefined) {
+      return { ok: false, message: "This checkout has no GitHub origin." };
+    }
+    try {
+      await this.closeIssueAction({
+        repoDir: this.repoDir,
+        repository,
+        number,
+        environment: this.environment,
+      });
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   /**
