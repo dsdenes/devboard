@@ -937,14 +937,15 @@ keeps every existing field and adds `remoteAvailable`, `target` (`{ "kind": "hos
 relative and never absolute), and `cloning` (`{ "url" }` or `null`). `getDiscover` answers with the
 same snapshot, and a connecting client still receives it before its own command replies.
 
-While `remoteAvailable` is true the Overview renders a target strip as its last region, below the
-sheet or the empty state: an input (`data-testid="discover-remote-url"`) labelled for a GitHub
-repository URL with the placeholder `https://github.com/owner/repo`, a submit control
-(`data-testid="discover-remote-start"`) labelled `Discover from URL`, a banner
+While `remoteAvailable` is true the Overview renders a target strip as its first region, above the
+project header and the sheet or the empty state: an input (`data-testid="discover-remote-url"`)
+labelled for a GitHub repository URL with the placeholder `https://github.com/owner/repo`, a submit
+control (`data-testid="discover-remote-start"`) labelled `Discover from URL`, a banner
 (`data-testid="discover-remote-target"`) naming the active URL with a `Manual testing` marker, and
 a clear control (`data-testid="discover-remote-clear"`) only while the target is remote. The strip
-is a secondary panel, not a primary action. A source checkout with nothing published still learns
-the gate: the server replays one `discoverState` on connect when `remoteAvailable` is true, even
+is secondary in weight yet first in reading order, so an operator sees the active target before
+anything it affects. A source checkout with nothing published still learns the gate: the server
+replays one `discoverState` on connect when `remoteAvailable` is true, even
 with no artifacts and no run. The submit control is disabled while the socket is closed, `cloning`
 is non-null, a run is active, or `discoverState.busy` is set, and its `title` names the reason; it
 is also disabled for empty or whitespace-only input. Submitting sends exactly one frame with the
