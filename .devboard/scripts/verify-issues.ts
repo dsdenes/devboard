@@ -755,11 +755,54 @@ try {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent?.trim() ?? "",
       singularActivity: document.querySelectorAll('[data-testid="issues-activity"]').length,
       singularQuestion: document.querySelectorAll('[data-testid="issues-question"]').length,
+      rows: [...document.querySelectorAll('[data-testid="issues-agent-summary"] .issues-agent-row')].map((row) => {
+        const box = row.getBoundingClientRect();
+        const issue = row.querySelector('.issues-agent-row__issue').getBoundingClientRect();
+        const title = row.querySelector('.issues-agent-row__title').getBoundingClientRect();
+        const meta = row.querySelector('.issues-agent-row__meta').getBoundingClientRect();
+        return {
+          issue: row.getAttribute('data-issue'),
+          text: row.textContent.trim(),
+          overlapBefore: issue.right > title.left + 0.5,
+          overlapAfter: title.right > meta.left + 0.5,
+          overflow: row.scrollWidth > Math.ceil(box.width),
+        };
+      }),
     }))()`,
-  ) as { agents: string; cooldowns: string; singularActivity: number; singularQuestion: number };
+  ) as {
+    agents: string;
+    cooldowns: string;
+    singularActivity: number;
+    singularQuestion: number;
+    rows: Array<{
+      issue: string;
+      text: string;
+      overlapBefore: boolean;
+      overlapAfter: boolean;
+      overflow: boolean;
+    }>;
+  };
   check(overviewChrome.agents.startsWith("4 running"), "the overview lost the running-agent count", overviewChrome);
   check(overviewChrome.singularActivity === 0, "the overview still renders one activity log", overviewChrome);
   check(overviewChrome.singularQuestion === 0, "the overview still renders one question", overviewChrome);
+  check(overviewChrome.rows.length === 4, "the overview lost a running-agent row", overviewChrome.rows);
+  check(
+    overviewChrome.rows.map((row) => row.issue).join(",") === "1,2,3,4",
+    "the running-agent rows are not sorted by issue",
+    overviewChrome.rows,
+  );
+  for (const row of overviewChrome.rows) {
+    check(
+      !row.overlapBefore && !row.overlapAfter && !row.overflow,
+      `running-agent row #${row.issue} overlaps or overflows`,
+      row,
+    );
+    check(
+      /(^|\s)\d+(s|m|h)(\s|$)/.test(row.text),
+      `running-agent row #${row.issue} lost its elapsed time`,
+      row,
+    );
+  }
 
   await click(devtools, "open-issues-agents");
   await waitFor(

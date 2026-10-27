@@ -133,10 +133,6 @@ export class ScoutStore {
     connection.send({ type: "stopScout" });
   }
 
-  scanNow(): void {
-    connection.send({ type: "scanScout" });
-  }
-
   approve(id: string): void {
     this.decide("approveScout", id);
   }

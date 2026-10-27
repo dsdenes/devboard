@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { liveLockOwner, pidAlive, type LockOwner } from "../issues/lock";
-import { MAX_STAGED, controlDirectory, lockPath, scanDirectory, statePath } from "../issues/scout/paths";
+import { controlDirectory, lockPath, scanDirectory, statePath } from "../issues/scout/paths";
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
 import { preflightScout, type ScoutPreflightResult } from "../issues/scout/preflight";
 import { cachedRepository } from "../issues/repository";
@@ -315,16 +315,6 @@ export class ScoutBridge {
       return { ok: false, message: "the Auto Scout worker could not be started" };
     }
     return { ok: true, attached: false };
-  }
-
-  /** Scan now: refused while a scan runs or the board already holds nine. */
-  scan(): { ok: true } | { ok: false; message: string } {
-    const state = this.currentState();
-    if (state?.scan != null) return { ok: false, message: "A scan is already running." };
-    if ((state?.staged.length ?? 0) >= MAX_STAGED) {
-      return { ok: false, message: "The board already holds nine recommendations." };
-    }
-    return this.command({ type: "scan" });
   }
 
   /** One decision for one staged id; an id no longer staged is refused. */
