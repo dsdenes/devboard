@@ -4064,8 +4064,30 @@ try {
   check(askSpawns === 1, `the ask stub started ${askSpawns} peers`, askLog);
   check(askPrompts === 2, `the ask stub answered ${askPrompts} prompts`, askLog);
 
+  // Filing after asking carries the conversation into the issue as context.
+  const callsBeforeAsking = (await feedbackCalls()).length;
+  await page.click('.feedback-actions button');
+  await page.wait(
+    `document.querySelector('.feedback-panel') === null && document.querySelector('.feedback-hint') !== null`,
+    "the selection mode after filing the asked issue",
+  );
+  await waitForFeedbackCalls(callsBeforeAsking + 1);
+  const askedCall = (await feedbackCalls())[callsBeforeAsking]!;
+  check(askedCall.body.includes("## Ask conversation"), "the issue body lost the ask conversation", askedCall.body);
+  check(
+    askedCall.body.includes("**You:**\n\nWhat does the StatusBar issues label mean?") &&
+      askedCall.body.includes("**Agent:**\n\nThe issues indicator shows"),
+    "the issue body does not carry the visible turns",
+    askedCall.body,
+  );
+  check(
+    askedCall.body.indexOf("## Ask conversation") <
+      askedCall.body.indexOf("## Captured UI context"),
+    "the ask conversation is not context before the captured element",
+    askedCall.body,
+  );
   await page.key("Escape");
-  await page.wait(`document.querySelector('.feedback-panel') === null`, "the ask panel to close");
+  await page.wait(`document.querySelector('.feedback-hint') === null`, "the ask selection mode to close");
 
   // 15. Issues mode: the console, queue, runs, status indicator, and live state.
   await seedIssuesState(stateDir, host, "stopped");

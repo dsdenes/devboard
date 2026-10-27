@@ -144,6 +144,34 @@ describe("goal proposal drafts", () => {
     }
   });
 
+  test("carries the Ask conversation into the draft as context", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const response = await propose(
+        url,
+        proposal({
+          conversation: [
+            { role: "developer", text: "Why is this button clipped?" },
+            { role: "agent", text: "The flex row has no min-width." },
+          ],
+        }),
+      );
+
+      expect(response.status).toBe(201);
+      const path = await responsePath(response);
+      const text = await readFile(join(root, path), "utf8");
+      expect(text).toContain("## Ask conversation");
+      expect(text).toContain("**You:**\n\nWhy is this button clipped?");
+      expect(text).toContain("**Agent:**\n\nThe flex row has no min-width.");
+      expect(text.indexOf("## Ask conversation")).toBeLessThan(
+        text.indexOf("## Captured UI context"),
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("never overwrites a draft and leaves no other side effect", async () => {
     const { server, root, url, recordPath } = await startServer();
     const goalsDir = join(root, ".devboard", "goals");
