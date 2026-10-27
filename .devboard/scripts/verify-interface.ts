@@ -4099,7 +4099,6 @@ try {
   const stoppedConsole = await page.eval<{
     visible: boolean;
     overview: boolean;
-    state: string;
     repo: string;
     start: boolean;
     pause: boolean;
@@ -4112,7 +4111,6 @@ try {
     return {
       visible: workspace !== null && !workspace.hasAttribute("hidden"),
       overview: button("issues-overview") !== null,
-      state: button("issues-state")?.textContent?.trim() ?? "",
       repo: button("issues-repo")?.textContent?.trim() ?? "",
       start: button("issues-start")?.disabled === true,
       pause: button("issues-pause")?.disabled === true,
@@ -4122,8 +4120,12 @@ try {
     };
   })()`);
   check(stoppedConsole.visible && stoppedConsole.overview, "the Issues pane or overview is missing", stoppedConsole);
-  check(stoppedConsole.state === "stopped", "the Issues mode does not open stopped", stoppedConsole);
   check(stoppedConsole.repo === "fixture/host", "the Issues overview does not name the repository", stoppedConsole);
+  check(
+    await page.eval<boolean>(`document.querySelector('[data-testid="issues-state"]') === null`),
+    "the Issues overview kept the lifecycle badge",
+    stoppedConsole,
+  );
   check(
     !stoppedConsole.start && stoppedConsole.pause && stoppedConsole.resume && stoppedConsole.stop && stoppedConsole.check,
     "the stopped controls are not in their exact states",
@@ -4136,12 +4138,11 @@ try {
     "the idle issues indicator",
     8_000,
   );
-  const idleControls = await page.eval<{ state: string; start: boolean; check: boolean }>(`(() => ({
-    state: document.querySelector('[data-testid="issues-state"]')?.textContent?.trim() ?? "",
+  const idleControls = await page.eval<{ start: boolean; check: boolean }>(`(() => ({
     start: document.querySelector('[data-testid="issues-start"]')?.disabled === true,
     check: document.querySelector('[data-testid="issues-check-now"]')?.disabled === true,
   }))()`);
-  check(idleControls.state === "idle" && idleControls.start && !idleControls.check, "the idle controls are wrong", idleControls);
+  check(idleControls.start && !idleControls.check, "the idle controls are wrong", idleControls);
 
   const runningSeededAt = Date.now();
   await seedIssuesState(stateDir, host, "running");
@@ -4676,8 +4677,8 @@ try {
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the overview before the failed state");
   await seedIssuesState(stateDir, host, "failed");
   await page.wait(
-    `document.querySelector('[data-testid="issues-state"]')?.textContent?.trim() === "failed"`,
-    "the failed issues state",
+    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues failed"`,
+    "the failed issues indicator",
     8_000,
   );
   const failed = await page.eval<{ indicator: string; error: string }>(`(() => ({

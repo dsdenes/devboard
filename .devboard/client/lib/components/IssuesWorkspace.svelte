@@ -32,7 +32,6 @@
                 : "overview",
   );
 
-  const stateWord = $derived(issues.lifecycle);
   const nextCheck = $derived(issues.snapshot?.poll?.nextPollAt ?? null);
   const pollLine = $derived(
     issues.snapshot?.poll === null || issues.snapshot?.poll === undefined
@@ -105,9 +104,6 @@
           {issues.repo ?? "No GitHub origin"}
         </p>
       </div>
-      <span class="badge" data-tone={stateWord === "failed" ? "error" : stateWord === "running" ? "accent" : "warning"} data-testid="issues-state">
-        {stateWord}
-      </span>
     </header>
 
     <div class="issues-overview__body">
