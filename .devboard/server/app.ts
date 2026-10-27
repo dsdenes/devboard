@@ -1987,6 +1987,26 @@ export function createApp(options: AppOptions) {
     }
   }
 
+  /**
+   * Drops a stored Discover target whose clone is gone, rewriting only that
+   * field. A full `persistState` here would also replace the recorded
+   * interrupted run before the replacement has read and reported it.
+   */
+  function dropStoredDiscoverTarget(): void {
+    const loaded = readStateFile(statePath);
+    if (loaded.kind !== "loaded") return;
+    const value = loaded.value as Record<string, unknown>;
+    if (value.discoverTarget === null || value.discoverTarget === undefined) return;
+    value.discoverTarget = null;
+    const text = JSON.stringify({ version: STATE_VERSION, state: value });
+    try {
+      writeStateFile(statePath, text);
+      lastSavedState = text;
+    } catch (error) {
+      reportPersistFailure(error);
+    }
+  }
+
   /** Applies a stored state to memory. A peer always spawns after this. */
   function applyRestoredState(stored: StoredState): void {
     lifecycle = stored.lifecycle;
@@ -2000,17 +2020,30 @@ export function createApp(options: AppOptions) {
     // The scratch root holds at most the stored target; staging never survives.
     // An installed host has no remote target, whatever an older state recorded.
     const storedTarget = remoteAvailable ? stored.discoverTarget : null;
+    // A clone is disposable scratch, so a target is restorable only while its
+    // clone is on disk. The durable target never outlives the clone: keeping it
+    // would repeat the fallback notice on every start.
+    const restoredTarget =
+      storedTarget !== null &&
+      existsSync(
+        join(
+          remoteCloneDirectory(remoteRoot, storedTarget.owner, storedTarget.repo),
+          ".git",
+        ),
+      )
+        ? storedTarget
+        : null;
     prepareRemoteScratch(
       remoteRoot,
-      storedTarget === null ? null : remoteCloneName(storedTarget.owner, storedTarget.repo),
+      restoredTarget === null
+        ? null
+        : remoteCloneName(restoredTarget.owner, restoredTarget.repo),
     );
-    if (storedTarget !== null) {
-      const clone = remoteCloneDirectory(remoteRoot, storedTarget.owner, storedTarget.repo);
-      if (existsSync(join(clone, ".git"))) {
-        remoteTarget = storedTarget;
-      } else {
-        discoverTargetNotice = `The remote Discover clone for ${storedTarget.url} is missing, so the host target is active.`;
-      }
+    if (restoredTarget !== null) {
+      remoteTarget = restoredTarget;
+    } else if (storedTarget !== null) {
+      discoverTargetNotice = `The remote Discover clone for ${storedTarget.url} is missing, so the host target is active.`;
+      dropStoredDiscoverTarget();
     }
     if (stored.discover !== null) {
       // The replacement never resumes a crawl: it interrupts it and keeps the
@@ -2166,7 +2199,9 @@ export function createApp(options: AppOptions) {
       if (discoverTargetNotice !== null) {
         const message = discoverTargetNotice;
         discoverTargetNotice = null;
-        journal.write("server-error", message);
+        // The fallback is handled: the durable target is gone and the notice is
+        // sent once. It is not a server failure the watchdog should file.
+        journal.write("lifecycle", "discover-remote-missing");
         startupNotices.push({ type: "discoverError", message });
       }
       // Ends the killed process's peers and continues its work once the
