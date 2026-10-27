@@ -1274,7 +1274,7 @@ dashboard with the same `REPO_DIR` and `STATE_DIR` attaches to that worker. A se
 with the same `REPO_DIR` and another `STATE_DIR` cannot attach and is refused, because the
 repo-anchored lock names the live worker. Different repositories get independent workers.
 
-The poll is the GitHub issues endpoint through the operator's `gh` credential every 2 seconds,
+The poll is the GitHub issues endpoint through the operator's `gh` credential every 10 seconds,
 conditional on the previous `ETag` (`If-None-Match`). A `304` is no change; `403`/`429` honor
 `Retry-After` or `X-RateLimit-Reset`. Pull requests returned by the endpoint are excluded, and
 every issue's labels are part of the poll result. Every open issue in the queue carries `handled`,

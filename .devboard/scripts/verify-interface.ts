@@ -681,7 +681,7 @@ async function seedIssuesState(
         }
       : null,
     poll: {
-      intervalMs: 2000,
+      intervalMs: 10_000,
       lastPollAt: enabled ? new Date(Date.now() - 1_000).toISOString() : null,
       nextPollAt: enabled ? new Date(Date.now() + 1_000).toISOString() : null,
       etag: enabled ? '"etag"' : null,
@@ -4425,8 +4425,8 @@ try {
   );
   check(
     overview.poll.tone === "active" &&
-      /^Every 2s · checked .+$/.test(overview.poll.text) &&
-      /Poll interval 2s · last check \d{4}-\d{2}-\d{2}T/.test(overview.poll.title) &&
+      /^Every 10s · checked .+$/.test(overview.poll.text) &&
+      /Poll interval 10s · last check \d{4}-\d{2}-\d{2}T/.test(overview.poll.title) &&
       overview.poll.dot === 6,
     "the poll line does not state the cadence, last check, and active dot",
     overview.poll,

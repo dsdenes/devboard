@@ -47,7 +47,7 @@ import {
  * same poll, with no concurrency cap, and all of them run at the same time.
  */
 
-const DEFAULT_INTERVAL_MS = 2000;
+const DEFAULT_INTERVAL_MS = 10_000;
 const COOLDOWN_MS = 5 * 60_000;
 const TICK_MS = 100;
 const IMPLEMENT_ISSUE_COMMAND = "/implement-issue";
