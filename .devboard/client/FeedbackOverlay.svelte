@@ -262,7 +262,7 @@
     let total = turns.reduce((sum, turn) => sum + turn.text.length, 0);
     let start = 0;
     while (total > MAX_CONVERSATION_TEXT && start < turns.length - 1) {
-      total -= turns[start].text.length;
+      total -= turns[start]?.text.length ?? 0;
       start += 1;
     }
     return turns.slice(start);
