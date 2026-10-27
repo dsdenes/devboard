@@ -1,19 +1,33 @@
-# Component requirements — Issues / Agents
+# Issues — Agents fleet page component requirements
+
+Catalog read: `openui.json` (Button, IconButton, Input, PageHeader, StageTrack) and the stories
+under `.devboard/.storybook/stories/`. The agent card is a page-level composition, like the
+running-agent row in the Overview; it is not a catalog primitive.
 
 | Need | Decision | OpenUI entry | Storybook story | Data/state requirements | Accessibility | Token needs |
 |---|---|---|---|---|---|---|
-| Page identity and fleet summary | Reuse | `PageHeader` | `stories/page-header.stories.ts` | eyebrow, title, repo subtitle, 0–2 badges; long repo text; 0 or many agents | `h1` once; subtitle text; badges are text | None |
-| Fleet count badge | Reuse | `.badge` (documented under Components) | `stories/design-system.stories.ts` | zero, one, many; count always followed by `running` | Word is present; tone is supplementary | None |
-| Needs-answer badge | Reuse | `.badge` | `stories/design-system.stories.ts` | hidden at zero; 1–N questions | Word states the condition | `warning`, `warning-surface` |
-| Issue action | Reuse | `Button` (`outline`) | `stories/design-system.stories.ts` | one per card; many cards; keyboard tab order | Accessible name `Focus`; issue context from the card heading | None |
-| Issue link | Compose | Native `<a>` (`.mono`) | n/a | missing URL, long URL never shown, external target | Link text `#N` plus `aria-label` with the issue title | `accent`, `mono-small` |
-| Agent card | Compose | `.panel` surface + `border` + radius 4 | n/a | content-sized; failed/running/question states; 1–20 cards | `<article>` with `aria-labelledby`; status word; no click-only card | `surface`, `border`, `error`, `warning`, radius 4 |
-| Card log | Reuse | `IssuesAgentLog` page component | n/a | 0 lines, 1 line, thousands of lines; scrolled-up follow behaviour; failed run absent | `<pre>` remains a scroll region; no focus trap | None |
-| Elapsed time | Compose | `body-small`/`mono-small` text | n/a | <1 minute, hours, invalid timestamp | Exact ISO in `title`; visible word `elapsed` | None |
-| Pending question | Reuse | `IssuesAgentQuestion` page component | n/a | one/many options; recommended marker; free text; submit disabled while empty | Existing labelled input and buttons | Reuses `.choice`, `warning-surface` |
-| Empty state | Compose | `.panel` + `Button` (outline) | n/a | zero agents | Heading and instruction; Overview recovery control | None |
+| Fleet card | **Modify** the page-level `.issues-agent` card: head, fixed two-line title, meta, labeled activity, stretch | None (page composition) | — (covered by `verify:interface` card geometry and content assertions) | 0, 1, 3, many agents; one- and two-line titles; no activity; malformed start; question present/absent; narrow 360px and wide 2101px | `article` + `aria-labelledby`; real link and button | `surface`, `border`, `border-subtle`, `muted-foreground`, `accent`, `warning`, `warning-surface`, `mono-small`, spacing 2/4/6/8/10/12 |
+| Page header with counts | **Reuse** `PageHeader` and `.badge` | PageHeader | `page-header` story | 0/1/many running; 0/1/many waiting; singular/plural copy | Words in each badge; heading is `h1` | existing |
+| Focus action | **Reuse** `Button` `outline` | Button | `design-system` story | 0/1/many cards; disabled never needed | Native button, 28px target | existing |
+| Issue link | **Reuse** the anchor style `.issues-agent__issue` | None (native link) | — | Any issue number; missing tracker URL still renders a link target | Accessible name includes number and title | `accent`, `font-mono` |
+| Activity preview | **Reuse** `IssuesAgentLog` with a new `overflow`-safe wrapper and an overline label | None (page composition) | — | Empty, one line, many lines; appends while visible; narrow card | `<pre>` text, follows newest line | `mono`, `muted-foreground` |
+| Question answer | **Reuse** `IssuesAgentQuestion` unchanged | Input, Button | `design-system` story | No options, one option, many; empty answer disables submit | Native form, input label, text choices | existing |
+| Empty fleet | **Reuse** `.panel` and `Button` | Button | — | Zero agents; start from Overview recovery | Plain text + one action | existing |
 
-Catalog gaps: none. `PageHeader`, `Button`, `Input`, `.badge`, and `.panel` already cover the
-surface. `IssuesAgentLog`, `IssuesAgentQuestion`, and the card itself are page compositions, not
-new design-system primitives. No token addition is needed; every value maps to
-`design/tokens.json`.
+## Data variety
+
+- Agents: zero, one, three fixtures, and the live fleet of more than ten.
+- Titles: one-line fixture titles and 120-character operator sentences; `Issue N` fallback.
+- Time: seconds, minutes, hours; a non-ISO `startedAt` renders verbatim.
+- Activity: no lines, two lines, long command lines; the block clips at the card edge and scrolls
+  internally without widening the card.
+- Questions: absent, one option, two options with descriptions and a recommended label; answers
+  clear only the submitting card.
+- Width: 1024×720 (one column), 1440×900 (two columns), 2101×1017 (four columns).
+
+## Catalog additions
+
+None. Every component is an existing `openui.json` entry or a page-level composition. No token is
+added or changed: every value maps to an existing custom property and the approved spacing scale.
+`DESIGN.md` gains one component entry for the fleet card; `design/tokens.json` stays current
+without regeneration.

@@ -1,29 +1,37 @@
-# Content inventory — Issues / Agents
+# Issues — Agents fleet page content inventory
 
-Current page treated as evidence, not a constraint. Every candidate must serve a journey from
-`brief.md`.
+Scope: the whole `section.issues-agents-page`, including its header, the fleet grid, each agent
+card, and the empty state. The current card was treated as evidence, not a constraint. Every item
+was re-asked whether its removal costs a declared journey.
 
 | ID | Information | Source | Journey | Enables decision/action | Keep? | Reason |
 |---|---|---|---|---|---|---|
-| C1 | Issue number | `issues.queue[].number` via agent | Scan, inspect | Identify the work and open its tracker | Keep | Primary identity of a card |
-| C2 | Issue title | `issues.queue[].title` | Scan, inspect | Decide whether to open the issue | Keep | The number alone does not identify scope |
-| C3 | Tracker URL link | `issues.queue[].url` | Scan | Open the GitHub issue | Keep | The number carries the link |
-| C4 | Run status word | `issues.statusFor(runId)` | Scan | Know whether the agent is running or failed | Keep | Fleet state; always a word, never color alone |
-| C5 | Pending question | `agent.question` | Answer | Act on the agent that is blocked | Keep | The only decision that requires the operator |
-| C6 | Elapsed time | `startedAt` + local clock | Scan | Judge whether a run is stuck | Keep | Compact live signal |
-| C7 | Exact started timestamp | `agent.startedAt` | Scan (edge) | Correlate with logs | Keep compressed | Tooltip on C6; not a second visible line |
-| C8 | Agent activity stream | `issues.activityFor(runId)` | Scan, inspect | See current progress without opening Focus | Keep, bounded | Full text remains scrollable; Focus keeps the tall view |
-| C9 | Run identifier | `agent.runId` | Inspect (edge) | Correlate a run with state files | Drop from card | Internal identifier; equals the start timestamp; Focus shows it |
-| C10 | Repository name | `issues.repo` | Scan (context) | Confirm the host | Keep | Page header context; already in the status bar, so one line only |
-| C11 | Fleet count | `agents.length` | Confirm | Know how many are active | Keep | Header badge |
-| C12 | Count of agents needing answers | derived `question !== null` | Scan | Prioritize | Keep | Header badge when non-zero |
-| C13 | Focus control | card action | Inspect | Open the full run | Keep | Primary card action |
-| C14 | Empty-state explanation | derived | Confirm empty | Know the worker is not running | Keep | Prevents a blank grid |
-| C15 | Overview link in empty state | navigation | Confirm empty | Start the worker | Keep | Recovery action |
+| C1 | Issue number (`#225`) | `agents[].issueNumber` | 1, 2, 3, 5 | Identifies the card against the queue and tracker | Keep | Mono, accent link; the only tracker route on the page |
+| C2 | Issue title | polled queue, `issueTitle()` | 1, 2, 5 | Confirms this is the issue the operator means | Keep | Two lines reserved, ellipsis, full text in the tooltip and heading |
+| C3 | Per-card `running` badge | `issues.statusFor(runId)` | — | Nothing: the page and header are the running fleet | Drop | Repeated one state word on every card and in the header |
+| C4 | Per-card `needs answer` badge | `agent.question` | 2 | Finds the blocked card | Drop | The warning-bordered card and the full question block already name the state; the header counts it once |
+| C5 | Question text, options, answer field | `agent.question`, `IssuesAgentQuestion` | 2 | Answers the blocked agent without leaving the fleet | Keep | Inline warning block; the primary action of the page |
+| C6 | Elapsed run time | `agents[].startedAt` + clock | 3 | Whether an agent has been stuck long enough to act | Keep | `mono-small`, tabular, ticks while the page is open |
+| C7 | Absolute start clock | `agents[].startedAt` | 3 | Anchors the duration to a wall-clock time | Keep | Secondary to the elapsed value; one meta line |
+| C8 | Latest activity preview | run activity stream | 1, 4 | What each agent is doing now | Keep | Labeled `Latest activity`, bounded and newest-first; the focus page owns the full stream |
+| C9 | Link to the GitHub issue | `queue[].url` | 1 | Opens the tracker without leaving the card | Keep | The issue number is the link; the title is not |
+| C10 | `Focus` action | `openAgent()` | 1, 5 | Opens the agent's full output, question, and run identity | Keep | One outline control in the card head |
+| C11 | Running count | `agents.length` | 1 | Whether any agent runs, and how large the fleet is | Keep | Header badge `N running` |
+| C12 | Waiting-question count | `agents.filter(question)` | 2 | Whether any agent is blocked, before scanning | Keep | Header badge `N need an answer`; pluralized |
+| C13 | Page identity: eyebrow, title, repository | `PageHeader`, `repoLabel` | 1 | Confirms the mode and project | Keep | Existing page header |
+| C14 | Empty state | `agents.length === 0` | 1 | Explains why the grid is absent and how to start the worker | Keep | One bounded panel with `Open Overview` |
+| C15 | Run identifier | `agents[].runId` | — | Nothing here: the issue number selects the run | Drop | The card carries it as a DOM key and data attribute only; the focus page renders it |
+| C16 | ACP pid, argv, cwd | `agents[].acp` | — | Diagnostics only; not an operator decision here | Drop | Never rendered |
+| C17 | Per-card status colour | `data-status` | — | Nothing: the page is the running list | Drop | Colour would repeat the header state without a word |
 
-Deduplications:
+Rules applied:
 
-- C1 already links to the tracker; no separate "Open issue" control.
-- C6 absorbs C7; the ISO string and the elapsed value are the same fact in two forms.
-- C9 is not shown; the run id is an implementation detail (and duplicates C7's timestamp).
-- C11 lives once in the header; cards do not repeat a running badge for the page count.
+- The page states the lifecycle once in the header count; a card never repeats `running`.
+- The waiting state is named three ways already (header count, warning block, warning card
+  border); a fourth pill would be noise. The question block carries the text, so colour is never
+  the only signal.
+- The title is the only variable-length text. It reserves two lines so cards in a row align, and
+  truncates with the full text in `title`.
+- Activity is labeled rather than raw: an unlabeled monospace block read as run-on output.
+- Every retained value maps to a declared journey; run identity and ACP diagnostics stay on the
+  surfaces that own them.

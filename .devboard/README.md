@@ -1387,14 +1387,17 @@ renders `data-testid="issues-agents-empty"` and an `Open Overview` control
 
 The grid `data-testid="issues-agents"` holds one card per running agent, sorted by issue number
 ascending. Each card has `data-testid="issues-agent"`, `data-issue`, `data-run`, `data-status`, and
-`data-asked` while its agent waits for an answer; it shows the issue number linked to its tracker
-URL, the issue title, and one compact elapsed and started-time line whose tooltip
-carries the exact timestamp. The run id appears in the Focus tab, not on the card. Every card
-renders its agent's full streamed output in `data-testid="issues-agent-activity"` with `data-run`,
-inside a 96px scroll surface; each log follows its newest line while the operator is at the bottom
-and stays put when scrolled back. A pending question renders inside only that agent's card as
-`data-testid="issues-agent-question"` with `data-run`, its options with a recommended marker, and a
-free-text answer. The controls are `data-testid="issues-agent-choice"`,
+`data-asked` while its agent waits for an answer; its head shows the issue number linked to its
+tracker URL and the `Focus` control, and it does not repeat the fleet's status or waiting state as
+a badge. Below it the issue title reserves two lines, then one compact elapsed and started-time
+line whose tooltip carries the exact timestamp. Cards in one grid row share a height. The run id
+appears in the Focus tab, not on the card. Every card renders its agent's full streamed output in
+`data-testid="issues-agent-activity"` with `data-run`, under the `Latest activity` label; the log
+scrolls, follows its newest line while the operator is at the bottom, and stays put when scrolled
+back. It is 64px on a waiting card and fills the remaining card body otherwise. A pending question
+renders inside only that agent's card as `data-testid="issues-agent-question"` with `data-run`, its
+options with a recommended marker, and a free-text answer. The controls are
+`data-testid="issues-agent-choice"`,
 `data-testid="issues-agent-answer-input"`, and `data-testid="issues-agent-answer-submit"`, each
 carrying `data-run`. Answering sends `{ type: "answerIssues", runId, id, value }`; only the agent
 with that run id receives the value, only its question clears, and a missing or unknown run id is
