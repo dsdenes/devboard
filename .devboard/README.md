@@ -1423,6 +1423,9 @@ panel and, directly after it, the running agents in
 `data-testid="issues-agent-summary"`: one button per agent carrying `data-run` and `data-issue`,
 sorted by issue number, with `aria-current="true"` on
 the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
+The running-agent panel header carries an aggregate `data-testid="issues-overview-asking"` warning
+badge (`<n> needs answer` or `<n> need answers`) only while at least one agent waits; the fleet
+count is not repeated in that header because the Automation panel states it.
 Each row also carries `data-testid="issues-close-issue"` with `data-issue`; it closes that issue on
 the tracker as `not planned`, so an issue the operator does not want implemented leaves the next
 poll without stopping the agent already working it. A refused or failed closure leaves the issue
