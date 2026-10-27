@@ -1638,7 +1638,9 @@ current scan, next attempt, last error, and notice; a damaged state file is rena
 state produced by the previous Auto Scout version loads with its worker and scan facts intact,
 discards every unapproved staged recommendation without filing anything, applies the default
 limits, and publishes a notice naming how many recommendations were discarded; no pre-upgrade
-recommendation is ever filed.
+recommendation is ever filed. The dashboard migrates that file in memory too, so an upgraded
+dashboard reads the lifecycle of a worker it did not start, and Stop acts on the live lock owner
+even when no state file is readable.
 
 Scan directories live under `<REPO_DIR>/.devboard/.tmp/scout/scans/<scanId>/` and hold
 `request.json`, `recommendations.json`, `scan.json`, and `activity.json`, which is bounded at the
