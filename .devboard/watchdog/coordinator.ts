@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pruneJournal } from "../server/journal";
 import { collectEvidence, WINDOW_MS, type Collection, type Window } from "./collect";
+import { coveredStateDirs, runCleanup, type CleanupReport } from "./cleanup";
 import { discoverInstances, type Instance } from "./discovery";
 import { analyzeEvidence } from "./findings";
 import { commentIssue, createIssue, runGh, type GhRun, type IssueInput } from "./github";
@@ -82,6 +83,8 @@ export interface Report {
   reason?: string;
   malformed: number;
   unattributed: number;
+  /** Age-based retention over every covered state directory. */
+  cleanup: CleanupReport;
 }
 
 export interface CycleOptions {
@@ -157,17 +160,35 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
   const instances = deps.discover(root);
   context.log(`discovered ${instances.length} instance(s)`);
 
+  const covered = coveredStateDirs(root, instances);
   if (!dryRun) {
-    const harnesses = new Set([harness, ...instances.map((instance) => instance.harness)]);
-    for (const served of harnesses) {
-      const removed = pruneJournal(join(served, ".tmp"), {
+    for (const entry of covered) {
+      const removed = pruneJournal(entry.stateDir, {
         now,
         windowStart: window.start,
       });
       if (removed.length > 0) {
-        context.log(`pruned ${removed.length} old journal file(s) in ${served}`);
+        context.log(`pruned ${removed.length} old journal file(s) in ${entry.stateDir}`);
       }
     }
+  }
+
+  const cleanup = runCleanup({
+    root,
+    now,
+    dryRun,
+    instances,
+    covered,
+    watchdogRunDir: runDir,
+  });
+  for (const entry of cleanup.roots) {
+    context.log(
+      `cleanup ${entry.stateDir}: ${dryRun ? "would remove" : "removed"} ` +
+        `${entry.files} file(s), ${entry.directories} directory/directories, ` +
+        `${entry.bytes} byte(s)` +
+        (entry.errors.length > 0 ? `, ${entry.errors.length} error(s)` : ""),
+    );
+    for (const error of entry.errors) context.log(`cleanup ${entry.stateDir}: ${error}`);
   }
 
   const collection = deps.collect(root, instances, window);
@@ -212,6 +233,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     reportPath,
     malformed: collection.malformed,
     unattributed: collection.unattributed,
+    cleanup,
   };
 
   if (dryRun) {

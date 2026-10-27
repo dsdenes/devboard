@@ -989,10 +989,47 @@ ends inclusive, from:
   attributes a line, so an operator's own omp session in the project directory is not dashboard
   evidence.
 
-Retention is bounded: the watchdog deletes rotated journal files older than seven days at cycle
-start and enforces a 1 GiB total for `.tmp/journal`, deleting the oldest complete files first. A
-file still holding records inside the live window always wins over that bound, so the current
-cycle never loses evidence.
+Retention is bounded at cycle start. The journal keeps its own rule: journal files older than
+seven days are deleted, and the total under `<STATE_DIR>/journal` is capped at 1 GiB by deleting
+the oldest complete files first. A file still holding records inside the live window always wins
+over that bound, so the current cycle never loses evidence. The target is each install's real
+state directory — `<host>/.devboard/.tmp/journal` for an installed host, never the serving package
+directory under `node_modules`.
+
+### State-directory cleanup
+
+Every cycle also sweeps the rest of each covered state directory. Covered directories are the
+canonical checkout's `.devboard/.tmp`, every `*/.devboard/.tmp` directly under the canonical
+root's parent, and the `STATE_DIR` of every live dashboard the cycle discovers, de-duplicated by
+real path. A symlinked `.tmp` is never followed, and a missing directory is skipped.
+
+An entry is deleted when its last-modified time is older than seven days: files and symlinks
+individually, and a directory only when it is empty after that deletion and its own mtime, read
+before the sweep, is older than the cutoff. A fresh file inside an old directory survives and
+keeps its ancestors. Old watchdog and orchestrator run directories, `orchestrator.log`, legacy
+`devboard-*.{log,state,lock}` files, verification scratch, and stray stale files are therefore
+removed after a week. These entries are never deleted at any age:
+
+- `.tmp/state/` and everything below it.
+- `.tmp/journal/`, which the journal rule above governs.
+- `.tmp/watchdog/state.json`, `.tmp/watchdog/latest.json`, and `.tmp/watchdog/lock`.
+- `.tmp/orchestrator/state.json`, `.tmp/orchestrator/ledger.json`, and `.tmp/orchestrator/lock`.
+- the run directory of the cycle performing the sweep and the orchestrator run directory named by
+  a `running` `state.json`.
+- a `devboard-<pid>.lock` whose pid is still alive.
+
+Run it by hand from `.devboard`:
+
+```bash
+bun run cleanup -- --dry-run --root <root>   # list every candidate path and byte size
+bun run cleanup -- --once --root <root>      # delete and print one summary per directory
+```
+
+`--dry-run` is also the default when neither flag is given, and it writes nothing. The watchdog
+cycle performs the same sweep and appends one `cleanup <state-dir>: removed N file(s), ...` line
+per covered directory to `coordinator.log`, including directories with zero removals. The sweep
+deletes outside the canonical checkout only inside the `.devboard/.tmp` directories it covers;
+it creates nothing outside the checkout.
 
 Discovery scans `/proc` for every process running `server/index.ts` that supplies `REPO_DIR` and
 `PORT`, de-duplicates by `(REPO_DIR, PORT)`, resolves the serving harness from `STATIC_DIR` or

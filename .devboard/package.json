@@ -18,6 +18,7 @@
     "watchdog": "bun run watchdog/main.ts",
     "watchdog:install": "bun run watchdog/install.ts",
     "watchdog:uninstall": "bun run watchdog/uninstall.ts",
+    "cleanup": "bun run watchdog/cleanup-main.ts",
     "orchestrator": "bun run orchestrator/main.ts",
     "orchestrator:install": "bun run orchestrator/install.ts",
     "orchestrator:uninstall": "bun run orchestrator/uninstall.ts",
