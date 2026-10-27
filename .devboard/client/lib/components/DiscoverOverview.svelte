@@ -37,6 +37,11 @@
     { id: "happyPath", header: "Happy path", accessorKey: "happyPath" },
     { id: "command", header: "Command", accessorKey: "command" },
   ];
+  const QUALITY_GATE_COLUMNS = [
+    { id: "gate", header: "Quality gate", accessorKey: "gate" },
+    { id: "checks", header: "What it checks", accessorKey: "checks" },
+  ];
+  const QUALITY_GATE_WIDTHS = { gate: "220px" };
   const BOUNDARY_GROUPS = [
     { key: "sharedKernels", label: "Shared kernels", kind: "chips" },
     { key: "externalBoundaries", label: "External boundaries", kind: "chips" },
@@ -115,6 +120,20 @@
     }),
   );
 
+  const qualityGatesLeaf = $derived(sectionLeaf(sheet?.ci, "qualityGates"));
+  const qualityGateRows = $derived(
+    recordItems(qualityGatesLeaf)
+      .map((record) => ({
+        gate: scalarText(record.name).trim(),
+        checks: scalarText(record.checks).trim(),
+      }))
+      .filter((row) => row.gate.length > 0),
+  );
+  const hasQualityGates = $derived(
+    qualityGatesLeaf !== undefined &&
+      (qualityGatesLeaf.confidence === "unknown" || qualityGateRows.length > 0),
+  );
+
   const runtimeSection = $derived(visibleSection(sheet?.runtime, HIDDEN_LEAVES.runtime ?? []));
   let now = $state(Date.now());
   const startedLabel = $derived(
@@ -129,7 +148,7 @@
   const deploymentSection = $derived(
     visibleSection(sheet?.deployment, HIDDEN_LEAVES.deployment ?? []),
   );
-  const ciSection = $derived(visibleSection(sheet?.ci, []));
+  const ciSection = $derived(visibleSection(sheet?.ci, HIDDEN_LEAVES.ci ?? []));
   const branchingSection = $derived(visibleSection(sheet?.branching, []));
   const hasDelivery =
     $derived(
@@ -390,6 +409,16 @@
   {/if}
 {/snippet}
 
+{#snippet qualityGateCell(row: Record<string, unknown>, columnId: string)}
+  {#if columnId === "gate"}
+    <span class="discover-quality-gate__name">{String(row.gate ?? "")}</span>
+  {:else if String(row.checks ?? "").length > 0}
+    <span class="discover-quality-gate__checks">{String(row.checks)}</span>
+  {:else}
+    <span class="muted">No check was recorded.</span>
+  {/if}
+{/snippet}
+
 {#snippet commandCell(row: Record<string, unknown>, columnId: string)}
   {#if columnId === "value"}
     {#if row.missing === true}
@@ -457,6 +486,68 @@
   data-tab="overview"
   aria-label="Discover overview"
 >
+  {#snippet remotePanel()}
+    {#if discover.remoteAvailable}
+      <section class="panel discover-remote" data-testid="discover-remote" aria-label="Discover remote target">
+        <div class="panel__header">
+          <h2 class="panel__title">Manual testing target</h2>
+          <span class="panel__subtitle">Source checkout only</span>
+        </div>
+        <div class="panel__body stack-sm">
+          {#if discover.remoteTarget !== null}
+            <p class="row-sm" data-testid="discover-remote-target">
+              <span class="badge" data-tone="warning">Manual testing</span>
+              <span>Discover reads <code>{discover.remoteTarget.url}</code>.</span>
+            </p>
+          {/if}
+          <form
+            class="discover-remote__form"
+            onsubmit={(event) => {
+              event.preventDefault();
+              discover.startRemote();
+            }}
+          >
+            <Input
+              type="url"
+              aria-label="GitHub repository URL"
+              placeholder="https://github.com/owner/repo"
+              autocomplete="off"
+              spellcheck="false"
+              value={discover.remoteUrl}
+              oninput={(event) => (discover.remoteUrl = event.currentTarget.value)}
+              data-testid="discover-remote-url"
+            />
+            <Button
+              variant="outline"
+              type="submit"
+              data-testid="discover-remote-start"
+              disabled={discover.remoteStartDisabled}
+              title={discover.remoteStartTitle}
+            >
+              Discover from URL
+            </Button>
+            {#if discover.remoteTarget !== null}
+              <Button
+                variant="ghost"
+                data-testid="discover-remote-clear"
+                onclick={() => discover.clearRemote()}
+              >
+                Clear remote target
+              </Button>
+            {/if}
+          </form>
+          {#if discover.cloning !== null}
+            <p class="muted" data-testid="discover-remote-cloning">
+              Cloning <code>{discover.cloning.url}</code>…
+            </p>
+          {/if}
+        </div>
+      </section>
+    {/if}
+  {/snippet}
+
+  {@render remotePanel()}
+
   <header class="discover-head" data-testid="discover-card" data-field="definition">
     <div class="discover-head__top">
       <div class="discover-head__identity">
@@ -531,66 +622,6 @@
   {/if}
 
   {@render questionPanel()}
-
-{#snippet remotePanel()}
-  {#if discover.remoteAvailable}
-    <section class="panel discover-remote" data-testid="discover-remote" aria-label="Discover remote target">
-      <div class="panel__header">
-        <h2 class="panel__title">Manual testing target</h2>
-        <span class="panel__subtitle">Source checkout only</span>
-      </div>
-      <div class="panel__body stack-sm">
-        {#if discover.remoteTarget !== null}
-          <p class="row-sm" data-testid="discover-remote-target">
-            <span class="badge" data-tone="warning">Manual testing</span>
-            <span>Discover reads <code>{discover.remoteTarget.url}</code>.</span>
-          </p>
-        {/if}
-        <form
-          class="discover-remote__form"
-          onsubmit={(event) => {
-            event.preventDefault();
-            discover.startRemote();
-          }}
-        >
-          <Input
-            type="url"
-            aria-label="GitHub repository URL"
-            placeholder="https://github.com/owner/repo"
-            autocomplete="off"
-            spellcheck="false"
-            value={discover.remoteUrl}
-            oninput={(event) => (discover.remoteUrl = event.currentTarget.value)}
-            data-testid="discover-remote-url"
-          />
-          <Button
-            variant="outline"
-            type="submit"
-            data-testid="discover-remote-start"
-            disabled={discover.remoteStartDisabled}
-            title={discover.remoteStartTitle}
-          >
-            Discover from URL
-          </Button>
-          {#if discover.remoteTarget !== null}
-            <Button
-              variant="ghost"
-              data-testid="discover-remote-clear"
-              onclick={() => discover.clearRemote()}
-            >
-              Clear remote target
-            </Button>
-          {/if}
-        </form>
-        {#if discover.cloning !== null}
-          <p class="muted" data-testid="discover-remote-cloning">
-            Cloning <code>{discover.cloning.url}</code>…
-          </p>
-        {/if}
-      </div>
-    </section>
-  {/if}
-{/snippet}
 
   {#if discover.hasArtifacts && sheet !== null}
     <div class="discover-sheet" data-testid="discover-sheet">
@@ -709,6 +740,42 @@
           </section>
         {/if}
 
+        {#if hasQualityGates}
+          <section
+            class="panel discover-card"
+            data-testid="discover-card"
+            data-field="quality-gates"
+          >
+            <div class="panel__header">
+              <h2 class="panel__title">Quality gates</h2>
+              {#if qualityGatesLeaf !== undefined && qualityGatesLeaf.confidence !== "unknown"}
+                <span class="panel__subtitle">
+                  {qualityGateRows.length}
+                  {qualityGateRows.length === 1 ? "gate" : "gates"}
+                </span>
+              {/if}
+            </div>
+            <div class="panel__body">
+              {#if qualityGatesLeaf === undefined}
+                <p class="empty">No quality gate was recorded.</p>
+              {:else if qualityGatesLeaf.confidence === "unknown"}
+                <p class="empty">{unknownText(qualityGatesLeaf)}</p>
+              {:else}
+                <DataTable
+                  data-testid="discover-quality-gates"
+                  columns={QUALITY_GATE_COLUMNS}
+                  rows={qualityGateRows}
+                  rowAttrs={(row) => ({ "data-gate": String(row.gate ?? "") })}
+                  cell={qualityGateCell}
+                  columnWidths={QUALITY_GATE_WIDTHS}
+                  full
+                  wrap
+                />
+              {/if}
+            </div>
+          </section>
+        {/if}
+
         {#if architectureSection !== undefined && typeof architectureSection === "object" && architectureSection !== null}
           <section class="panel discover-card" data-testid="discover-card" data-field="architecture">
             <div class="panel__header">
@@ -802,6 +869,4 @@
       </div>
     </section>
   {/if}
-
-  {@render remotePanel()}
 </div>

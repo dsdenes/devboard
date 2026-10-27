@@ -59,6 +59,11 @@ if (args[0] === "api") {
     process.stderr.write("HTTP 404: Not Found\n");
     process.exit(1);
   }
+  // The dashboard's startup update check asks for the latest release.
+  if (endpoint.endsWith("/releases/latest")) {
+    process.stdout.write(`${JSON.stringify({ tag_name: "v0.0.0", assets: [] })}\n`);
+    process.exit(0);
+  }
   fail(`unexpected api endpoint ${endpoint}`);
 }
 

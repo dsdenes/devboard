@@ -2257,6 +2257,9 @@ try {
     pyramid: number;
     pyramidText: string[];
     pyramidChart: boolean;
+    qualityGateHeaders: string[];
+    qualityGateRows: string[][];
+    deliveryFacts: string[];
     suite: boolean;
     rowHeights: number[];
     tableFont: string;
@@ -2303,6 +2306,15 @@ try {
       pyramid: rows.length,
       pyramidText: rows.map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim()).join(" | ")),
       pyramidChart: document.querySelector('[data-testid="discover-pyramid-chart"], svg.pyramid__svg') !== null,
+      qualityGateHeaders: [
+        ...document.querySelectorAll('[data-testid="discover-quality-gates"] thead th'),
+      ].map((header) => header.textContent.trim()),
+      qualityGateRows: [
+        ...document.querySelectorAll('[data-testid="discover-quality-gates"] tbody tr'),
+      ].map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent.trim())),
+      deliveryFacts: [
+        ...document.querySelectorAll('#workspace-discover [data-field="delivery"] dt'),
+      ].map((term) => term.textContent.trim()),
       suite: document.querySelector('[data-testid="discover-suite-command"]') !== null,
       rowHeights: rows.map((row) => Math.round(row.getBoundingClientRect().height)),
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
@@ -2351,6 +2363,24 @@ try {
   check(discoverTables.pyramid > 0 && discoverTables.suite, "the Discover testing tables are empty", discoverTables);
   check(discoverTables.pyramidText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover pyramid row renders no values", discoverTables.pyramidText);
   check(discoverTables.pyramidText.every((text) => !text.toLowerCase().includes("unknown")), "a Discover test level still reports an unknown count", discoverTables.pyramidText);
+  check(
+    discoverTables.qualityGateHeaders.join("|") === "Quality gate|What it checks",
+    "the quality gate table does not carry its gate and check columns",
+    discoverTables.qualityGateHeaders,
+  );
+  check(
+    discoverTables.qualityGateRows.length > 0 &&
+      discoverTables.qualityGateRows.every((cells) =>
+        cells[0]?.trim().length > 0 && cells[1]?.trim().length > 0
+      ),
+    "a quality gate row renders no name or check",
+    discoverTables.qualityGateRows,
+  );
+  check(
+    !discoverTables.deliveryFacts.includes("Quality gates"),
+    "the Delivery facts still repeat the quality gates",
+    discoverTables.deliveryFacts,
+  );
   check(!discoverTables.pyramidChart, "the test pyramid graphic is still rendered", discoverTables);
   check(discoverTables.rowHeights.every((height) => height > 0 && height <= 120), "a Discover table row is mis-sized", discoverTables.rowHeights);
   const discoverFont = Number.parseFloat(discoverTables.tableFont);
@@ -2831,6 +2861,21 @@ try {
   await delay(150);
   const skillDirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-text"]').getAttribute("data-dirty") === "true"`);
   check(skillDirty, "the skill editor does not mark unsaved changes");
+  const dirtyHeader = await page.eval<{ enabled: boolean; state: string }>(`(() => {
+    const button = document.querySelector('[data-testid="discover-skill-save"]');
+    return {
+      enabled: button !== null && !button.disabled,
+      state: button
+        ?.closest('.discover-skill__header')
+        ?.querySelector('[data-testid="discover-skill-dirty"]')
+        ?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes",
+    "the skill header does not enable Save for an unsaved draft",
+    dirtyHeader,
+  );
   const editedSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
   const saveClicked = await page.eval<boolean>(`(() => {
     const button = document.querySelector('[data-testid="discover-skill-save"]');
@@ -2907,6 +2952,8 @@ try {
     editor: number;
     panel: number;
     title: string;
+    state: string;
+    saveDisabled: boolean;
     eyebrow: boolean;
     meta: boolean;
     name: boolean;
@@ -2914,6 +2961,7 @@ try {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
     const index = document.querySelector('#workspace-discover .discover-skill-page');
+    const save = document.querySelector('[data-testid="discover-skill-save"]');
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
@@ -2921,6 +2969,10 @@ try {
       editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
       panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
       title: panel?.querySelector('.panel__title')?.textContent?.trim() ?? "",
+      state: panel
+        ?.querySelector('[data-testid="discover-skill-status"]')
+        ?.textContent?.trim() ?? "",
+      saveDisabled: save === null || save.disabled,
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
       name: panel?.querySelector('.panel__header .muted') !== null,
@@ -2932,6 +2984,11 @@ try {
     skillLayout.title === "discover-testing-strategy/SKILL.md",
     "the skill panel is not titled with the relative path",
     skillLayout.title,
+  );
+  check(
+    skillLayout.state === "No unsaved changes" && skillLayout.saveDisabled,
+    "the clean skill header does not state the draft is saved and disable Save",
+    skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);
   check(skillLayout.editor >= skillLayout.panel - 48, "the skill editor does not use the full pane", skillLayout);
@@ -3035,6 +3092,7 @@ try {
     clear: boolean;
     sheet: boolean;
     target: string;
+    first: boolean;
   }>(`(() => {
     const input = document.querySelector('[data-testid="discover-remote-url"]');
     const start = document.querySelector('[data-testid="discover-remote-start"]');
@@ -3050,6 +3108,9 @@ try {
       clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
       sheet: document.querySelector('[data-testid="discover-sheet"]') !== null,
       target: document.querySelector('[data-testid="discover-remote-target"]')?.textContent ?? "",
+      first:
+        document.querySelector('[data-testid="discover-panel"][data-tab="overview"]')
+          ?.firstElementChild?.getAttribute("data-testid") === "discover-remote",
     };
   })()`);
   check(
@@ -3071,6 +3132,11 @@ try {
   );
   check(remoteStrip.clear, "the clear control is missing for a remote target", remoteStrip);
   check(remoteStrip.sheet, "the clone's sheet does not render", remoteStrip);
+  check(
+    remoteStrip.first,
+    "the remote target strip is not the first region of the Discover overview",
+    remoteStrip,
+  );
   const remoteTitle = await page.eval<string>(
     `document.querySelector('#workspace-discover .discover-head__title')?.textContent?.trim() ?? ""`,
   );

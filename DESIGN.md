@@ -411,6 +411,13 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   boundary value: `mono-small` type, `background` fill, 1px `border-subtle` outline, 3px radius,
   2px 6px padding. A runnable command carries a `$` prompt; a path does not. No surface may draw
   a second inline-code style.
+- **Running agent row** (`.issues-agent-row`) — one button row in the Issues overview's running
+  agent list: a 44px mono issue-number column, the issue title on one line with ellipsis and the
+  full title as its tooltip, and a right-aligned meta group. The meta group carries the elapsed
+  run time in `mono-small`, tabular, `muted-foreground`, and a `needs answer` warning badge only
+  while the agent is waiting on a question. Rows are 28px tall with 6px 10px padding, separated by
+  a `border-subtle` rule; hover takes `secondary`. The per-row state word is omitted because the
+  panel is the running list, so color never repeats the header.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The four `role="tab"` controls sit in a `role="tablist"`
   group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px
@@ -445,6 +452,12 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   success, `Unsaved changes` warning, `Interview running` accent, `No goal yet` muted), and an
   action group: the outline `(Re)create flow goal` and a primary `Save` that is disabled until the
   draft differs from the saved goal.
+- **Discover skill header** (`.discover-skill__header`) — follows the Flow goal header: the
+  relative path `<skill>/SKILL.md` in the `panel-title` size, with the skill name in `foreground`
+  and the file name in `muted-foreground`; a second 11px draft line (`No unsaved changes` muted,
+  `Unsaved changes` warning, `Live file missing` error); and a right action group holding the
+  outline restore control and a primary `Save` disabled until the draft differs from the live
+  text. The path truncates with a full-path `title`; the state line and actions never shrink.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page

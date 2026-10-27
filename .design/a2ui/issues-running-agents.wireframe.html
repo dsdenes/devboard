@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Issues overview running agents</title>
+<style>
+  :root { --ink:#2b2b2b; --muted:#6b6b6b; --line:#c9c9c9; --fill:#f4f4f4; --paper:#fdfdfd; --ann:#5a6b7a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; font-size:13px; line-height:1.45; }
+  .wf { max-width:1100px; margin:0 auto; padding:16px; }
+  .wf-title { font-size:15px; font-weight:700; margin:0 0 2px; }
+  .wf-note { color:var(--muted); font-size:11px; margin:0 0 16px; }
+  .wf-ann { color:var(--ann); font-size:9px; font-weight:700; letter-spacing:.06em;
+    text-transform:uppercase; display:block; margin:0 0 4px; }
+  .shell { display:grid; grid-template-columns:64px minmax(0,1fr); border:1px solid var(--line); }
+  .rail { border-right:1px solid var(--line); background:var(--fill); padding:8px 6px; display:flex; flex-direction:column; gap:4px; }
+  .rail button { height:44px; border:1px solid var(--line); background:var(--paper); font:inherit; font-size:10px; }
+  .rail button[aria-current="true"] { border-color:var(--ink); font-weight:700; }
+  .workspace { padding:12px; display:flex; flex-direction:column; gap:12px; }
+  .eyebrow { color:var(--muted); font-size:10px; margin:0; }
+  h1 { font-size:18px; margin:2px 0; }
+  .repo { color:var(--muted); font-size:11px; margin:0; }
+  .body { display:grid; grid-template-columns:minmax(280px,1fr) minmax(340px,1.2fr); gap:12px; align-items:start; }
+  .panel { border:1px solid var(--line); background:var(--paper); border-radius:3px; }
+  .panel-head { display:flex; justify-content:space-between; align-items:center;
+    padding:5px 8px; border-bottom:1px solid var(--line); background:var(--fill); }
+  .panel-head strong { font-size:12px; }
+  .panel-head span { color:var(--muted); font-size:11px; }
+  .panel-body { padding:8px; display:flex; flex-direction:column; gap:8px; }
+  .facts { display:grid; grid-template-columns:repeat(2,minmax(100px,1fr)); gap:8px; }
+  .facts div span { display:block; color:var(--muted); font-size:9px; text-transform:uppercase; letter-spacing:.04em; }
+  .facts div b { font-size:12px; font-weight:400; }
+  .actions { display:flex; gap:6px; flex-wrap:wrap; }
+  .actions span { border:1px solid var(--line); border-radius:3px; padding:3px 10px; font-size:11px; }
+  ol.rows { list-style:none; margin:0; padding:0; }
+  ol.rows li + li { border-top:1px solid var(--line); }
+  .row { display:grid; grid-template-columns:44px minmax(0,1fr) auto; align-items:center; gap:8px;
+    width:100%; padding:6px 10px; border:0; background:transparent; font:inherit; text-align:left; }
+  .row.is-hover { background:var(--fill); }
+  .row .num { color:var(--muted); font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; }
+  .row .title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+  .row .meta { display:inline-flex; align-items:center; gap:6px; }
+  .badge { border:1px solid var(--ink); border-radius:999px; padding:1px 6px; font-size:9px; font-weight:600; white-space:nowrap; }
+  .elapsed { color:var(--muted); font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; }
+  .row-empty { padding:10px 12px; color:var(--muted); font-size:12px; }
+  .status { border-top:1px solid var(--line); background:var(--fill); padding:4px 8px; font-size:10px; color:var(--muted); }
+  .notes { margin-top:16px; display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; }
+  .note { border:1px solid var(--line); padding:8px 10px; font-size:11px; }
+</style>
+</head>
+<body>
+<div class="wf">
+  <h1 class="wf-title">Wireframe — Issues overview · running agent list</h1>
+  <p class="wf-note">Grayscale structure only. No production components, tokens, brand colours, or icons.
+    The selected report (#238) is the row; the panel and page are context.</p>
+
+  <div class="shell">
+    <nav class="rail" aria-label="Mode rail">
+      <button type="button">Goal</button>
+      <button type="button" aria-current="true">Issues</button>
+      <button type="button">Flow</button>
+      <button type="button">Discover</button>
+    </nav>
+    <div class="workspace">
+      <header>
+        <p class="eyebrow">Issues</p>
+        <h1>Issue automation</h1>
+        <p class="repo">owner/repo</p>
+      </header>
+      <div class="body">
+        <section class="panel" aria-label="Automation">
+          <div class="panel-head"><strong>Automation</strong><span>Every 2s</span></div>
+          <div class="panel-body">
+            <div class="actions"><span>Start</span><span>Pause</span><span>Resume</span><span>Stop</span><span>Check now</span></div>
+            <div class="facts">
+              <div><span>Worker</span><b>pid 1234</b></div>
+              <div><span>Agents</span><b>3 running</b></div>
+              <div><span>Queue</span><b>3 pending · 3 open</b></div>
+              <div><span>Cooldowns</span><b>0 cooling</b></div>
+            </div>
+            <div class="actions"><span>Open Agents</span></div>
+          </div>
+        </section>
+
+        <section class="panel" aria-label="Running agents">
+          <div class="panel-head"><strong>Running agents</strong><span>3 active</span></div>
+          <div class="panel-body" style="padding:0">
+            <ol class="rows">
+              <li>
+                <div class="row is-hover">
+                  <span class="num">#224</span>
+                  <span class="title">[ui] Remove element: the automation subtitle duplicates the page state</span>
+                  <span class="meta"><span class="elapsed">5m</span></span>
+                </div>
+              </li>
+              <li>
+                <div class="row">
+                  <span class="num">#225</span>
+                  <span class="title">[ui] Redesign element: running agent summary row overlaps the title</span>
+                  <span class="meta"><span class="badge">needs answer</span><span class="elapsed">5m</span></span>
+                </div>
+              </li>
+              <li>
+                <div class="row">
+                  <span class="num">#226</span>
+                  <span class="title">[ui] Redesign element: the activity panel subtitle repeats the state</span>
+                  <span class="meta"><span class="elapsed">12m</span></span>
+                </div>
+              </li>
+            </ol>
+          </div>
+        </section>
+      </div>
+      <div class="status">Connected · host</div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note"><span class="wf-ann">Identity</span>44px mono number column, then the title. The
+      number keeps titles aligned across rows; the title is the only flexible column.</div>
+    <div class="note"><span class="wf-ann">Long title</span>One line, ellipsis, full text in the row
+      tooltip. It never pushes the number or the meta group.</div>
+    <div class="note"><span class="wf-ann">Meta group</span>Elapsed time always; a `needs answer` badge
+      only while the agent waits on a question. No per-row `running` word: the panel states it.</div>
+    <div class="note"><span class="wf-ann">Interaction</span>The whole row is one button. Hover fills the
+      row; focus draws the ring; Enter or Space opens the agent focus page.</div>
+    <div class="note"><span class="wf-ann">Empty</span>One muted line `No issue is running.` with the
+      same horizontal padding; no interactive target.</div>
+    <div class="note"><span class="wf-ann">Narrow</span>Below 1100px the two panels stack; the row keeps
+      its three columns and its height.</div>
+  </div>
+</div>
+</body>
+</html>

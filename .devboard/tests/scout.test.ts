@@ -301,7 +301,7 @@ describe("scanning", () => {
     }
   });
 
-  test("fewer valid items set the shortfall, and Scan now clears the retry", async () => {
+  test("fewer valid items set the shortfall and schedule the retry", async () => {
     const f = await fixture({ label: "shortfall", retryMs: 600_000 });
     try {
       const peer = await waitFor(() => f.peers[0], "the first scan peer");
@@ -320,13 +320,6 @@ describe("scanning", () => {
       expect(short.nextAttemptAt).not.toBeNull();
       expect(Date.parse(short.nextAttemptAt!) - Date.now()).toBeGreaterThan(5 * 60_000);
       expect(short.lifecycle).toBe("idle");
-
-      decide(f, { type: "scan" });
-      const second = await waitFor(() => f.peers[1], "the forced scan peer");
-      const request = readRequest(scanDirectoryOf(second.prompts[0]!));
-      expect(request.missing).toBe(6);
-      expect(request.staged).toHaveLength(3);
-      expect(f.state().nextAttemptAt).toBeNull();
     } finally {
       await f.worker.stop();
     }
@@ -866,38 +859,6 @@ describe("dashboard bridge", () => {
       expect(snapshot.attached).toBe(true);
       expect(snapshot.notice).toContain("0.0.9");
       expect(snapshot.notice).toContain("0.1.0");
-      bridge.dispose();
-    } finally {
-      await f.worker.stop();
-    }
-  });
-
-  test("Scan now is refused while a scan runs or the board is full", async () => {
-    const f = await fixture({ label: "scan-refusal" });
-    try {
-      await waitFor(
-        () => (f.state().lifecycle === "scanning" ? true : undefined),
-        "the first scan to start",
-      );
-      const bridge = new ScoutBridge({
-        repoDir: f.root,
-        stateDir: f.stateDir,
-        agentCommand: "stub",
-        runningVersion: null,
-        harnessDir: join(import.meta.dir, ".."),
-        send: () => undefined,
-        pollMs: 60_000,
-      });
-      const running = bridge.scan();
-      expect(running.ok).toBe(false);
-      if (!running.ok) expect(running.message).toContain("already running");
-      const peer = await waitFor(() => f.peers[0], "the first scan peer");
-      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(uniqueItems(1, 9)));
-      peer.succeed();
-      await waitFor(() => (f.state().staged.length === 9 ? true : undefined), "nine staged");
-      const full = bridge.scan();
-      expect(full.ok).toBe(false);
-      if (!full.ok) expect(full.message).toContain("nine");
       bridge.dispose();
     } finally {
       await f.worker.stop();
