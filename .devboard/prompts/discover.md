@@ -156,7 +156,10 @@ Sections and required keys:
     "provider": { "value": "provider or none detected", "evidence": ["path"], "confidence": "observed" },
     "triggers": { "value": ["trigger"], "evidence": ["path"], "confidence": "observed" },
     "jobs": { "value": ["job name"], "evidence": ["path"], "confidence": "observed" },
-    "qualityGates": { "value": ["required gate"], "evidence": ["path"], "confidence": "declared" },
+    "qualityGates": {
+      "value": [{ "name": "required gate", "checks": "what the gate checks, in one short line" }],
+      "evidence": ["path"], "confidence": "declared"
+    },
     "artifacts": { "value": ["artifact"], "evidence": ["path"], "confidence": "observed" }
   },
   "runtime": {
@@ -237,7 +240,10 @@ Section rules:
   points, allowed dependency direction, shared kernels, and `externalBoundaries`, which carries
   external systems only and never internal architecture. `ci` reports provider, triggers, jobs,
   required quality gates, and artifacts; with no CI configuration use `none detected`, never
-  invented jobs.
+  invented jobs. A quality gate is one required check with its name and a `checks` line that says
+  what the gate verifies, such as `pre-commit` checking formatting and lint on staged files. Ground
+  that line in the gate's configuration, hook id, or script; keep it to one short sentence and never
+  list checks the configuration does not name.
 - `runtime`, `dependencyMap`, and `delivery` are mandatory cards. Report languages, runtimes,
   package managers, versions, and manifests; binaries, packages, routes, jobs, external services,
   data stores, and key dependencies; artifact target, release channels, version scheme, and

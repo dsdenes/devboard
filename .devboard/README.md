@@ -663,10 +663,11 @@ Overview page is a project sheet, not a card grid. A masthead
 (`data-testid="discover-freshness"`) carries the project name, the one-sentence definition, and the
 discovery date. The commit, the dirty flag, and the staleness flag stay in the sheet and the state
 payload but render no header badge. Below the masthead the sheet is one bounded two-column spine:
-`Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, and Bounded contexts in
-the main column on the right. Every section carries `data-testid="discover-card"` and
-`data-field`; the commands and testing panels are raised surfaces and the remaining sections are
-flat, separated by hairlines. Below 1240px viewport the columns collapse into one in reading order.
+`Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates, and
+Bounded contexts in the main column on the right. Every section carries
+`data-testid="discover-card"` and `data-field`; the commands, testing, and quality-gate panels are
+raised surfaces and the remaining sections are flat, separated by hairlines. Below 1240px viewport
+the columns collapse into one in reading order.
 Tables grow with the page; neither a panel nor a card shrinks below its rows, and none scrolls
 inside the page. Every non-`unknown` leaf
 carries at least one sorted, unique repository-relative evidence path, symbol anchor, or safe git
@@ -701,8 +702,11 @@ part of a level's count that exercises the primary success path, recorded as an 
 `Command` is the narrowest declared invocation for that level. Only a level that carries a test is
 listed and counted; a recorded level with no test case is omitted, so a sheet cannot claim a
 second level while its table holds none. Every listed level states an exact test count, never
-`count unknown`. No pyramid graphic is drawn. Runtime,
-deployment, CI, and branching use compact `dt`/`dd` facts whose list values are comma-separated.
+`count unknown`. No pyramid graphic is drawn. Quality gates render as a `Quality gate`/`What it
+checks` table (`data-testid="discover-quality-gates"`): one row per required CI gate, its name, and
+one short line saying what it verifies. A gate recorded without a check states `No check was
+recorded.`, and the gates are not repeated among the Delivery facts. Runtime, deployment, CI, and
+branching use compact `dt`/`dd` facts whose list values are comma-separated.
 Architecture renders under the heading `Bounded contexts` as a table headed `Bounded context` with
 path, responsibility, and entry points, followed by external-boundary and shared-kernel chips.
 External boundaries name only external systems — a remote API or service, a message broker, a
@@ -1490,10 +1494,10 @@ shows
 `data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`),
 `data-testid="scout-activity"` for the current or newest scan, `data-testid="scout-error"` for the
 last error, `data-testid="scout-shortfall"` while fewer than nine are staged, and
-`data-testid="scout-empty"` with the next action when nothing is staged.
-`data-testid="scout-stop"` appears only while a worker is attached, and
-`data-testid="scout-scan-now"` clears a pending retry and starts one scan; while a scan runs or the
-board already holds nine it is refused with a notice.
+`data-testid="scout-empty"` with the next action when nothing is staged. One control toggles the
+worker: `data-testid="scout-start"` starts it and becomes `data-testid="scout-stop"` while a worker
+is attached. Stop keeps the staged board; the next Start scans immediately, so there is no
+separate Scan now control.
 
 The staging board holds at most nine significant, evidence-backed recommendations, and nine
 whenever nine exist. Each widget carries `data-testid="scout-widget"`, `data-id`, and
@@ -1698,7 +1702,6 @@ The client sends:
 { "type": "getScout" }
 { "type": "startScout" }
 { "type": "stopScout" }
-{ "type": "scanScout" }
 { "type": "approveScout", "id": "84b9c38cdc877035" }
 { "type": "draftScoutGoal", "id": "84b9c38cdc877035" }
 { "type": "rejectScout", "id": "84b9c38cdc877035" }
@@ -1766,10 +1769,10 @@ The client sends:
   demand: the worker record, lifecycle, enabled and attached flags, the staged board, the current
   scan, the shortfall, next attempt, errors, notice, and the last 200 decisions. A connect replays
   a present state and the newest scan's whole activity before any reply to the client's own
-  commands. `startScout` runs the preflight and spawns or attaches; `stopScout`, `scanScout`,
-  `approveScout`, `draftScoutGoal`, and `rejectScout` write one command file to the worker, and a
-  refused command answers with an `error` the notification region shows. The board is pushed to
-  every connected dashboard, so a decision made in one updates another without a reload.
+  commands. `startScout` runs the preflight and spawns or attaches; `stopScout`, `approveScout`,
+  `draftScoutGoal`, and `rejectScout` write one command file to the worker, and a refused command
+  answers with an `error` the notification region shows. The board is pushed to every connected
+  dashboard, so a decision made in one updates another without a reload.
 - `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
   stops the listener, starts the installed harness package, and exits. It is refused with an
   `error` when no launcher is configured or while a restart is already in progress. A client
@@ -2094,22 +2097,22 @@ or timer is written and no `systemctl`/`loginctl` stub is invoked. It writes onl
 `.devboard/.tmp`.
 `bun run verify:scout` drives the built dashboard in headless Chrome against a fixture checkout,
 a stub ACP peer, and a stub `gh`: the sidebar order and palette entry, a short first scan with its
-shortfall, Scan now, an approval that files one issue with the `scout` label and refills to nine, a
-draft that writes one goal-proposals file, a rejection, a second dashboard attaching and deciding,
-Stop with no surviving worker, and a reload that keeps the board and the open tab. It writes only
-under `.devboard/.tmp`.
+shortfall, the Start/Stop toggle (with no separate Scan now control), an approval that files one
+issue with the `scout` label and refills to nine, a draft that writes one goal-proposals file, a
+rejection, a second dashboard attaching and deciding, Stop with no surviving worker, and a reload
+that keeps the board and the open tab. It writes only under `.devboard/.tmp`.
 
 `server/scout.test.ts` covers recommendation identity, result validation (over-count, malformed
 item, multi-line title, path escape, excluded tree, duplicate id, out-of-range span, uncited file,
 shortfall), the request document, the Start preflight refusals, and the activity delta.
 `tests/scout.test.ts` covers the first scan's nine items, an over-count refusal that leaves the
-board unchanged, the shortfall retry and Scan now, duplicate titles against the board, open issues,
+board unchanged, the shortfall and its retry, duplicate titles against the board, open issues,
 and drafts, a scan that writes nothing, a timeout, question answering, approval, drafting,
 rejection, a failed decision that leaves the widget staged, refills after a decision, an id no
 longer staged, restoring staged items, decisions, and the shortfall across a restart, the live
 lock, Stop keeping the board, a replacement closing an interrupted scan, bridge replay without a
-spawn, another `STATE_DIR` refused, a harness-version notice, Scan now refusals, and the issue
-body, label creation, and exclusive draft naming.
+spawn, another `STATE_DIR` refused, a harness-version notice, and the issue body, label creation,
+and exclusive draft naming.
 `tests/issues.test.ts` covers the fleet (four mixed issues, twelve peers with no cap, duplicate
 prevention, an issue opened mid-run, per-issue success and ledger entries, one failure cooling only
 its issue), Check now clearing every cooldown, pause draining every peer, Stop closing every peer
