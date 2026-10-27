@@ -2284,7 +2284,7 @@ try {
     sidebarHeader: boolean;
     commandChips: number;
     suiteChip: boolean;
-    contextPathChip: boolean;
+    contextPathChips: number;
     sectionsHeading: number;
     sectionTabs: number;
     skillTabs: number;
@@ -2350,7 +2350,7 @@ try {
       sidebarHeader: document.querySelector('[data-testid="sidebar"] .sidebar__header') !== null,
       commandChips: document.querySelectorAll('[data-testid="discover-command-list"] code.code-chip').length,
       suiteChip: document.querySelector('[data-testid="discover-suite-command"] code.code-chip') !== null,
-      contextPathChip: document.querySelector('#workspace-discover [data-field="architecture"] code.code-chip') !== null,
+      contextPathChips: document.querySelectorAll('#workspace-discover [data-testid="discover-contexts"] .discover-context__head code').length,
       sectionsHeading: sections === null ? -1 : sections.querySelectorAll('.sidebar-group__title').length,
       sectionTabs: sections === null ? -1 : sections.querySelectorAll('[data-testid="discover-tab"]').length,
       skillTabs: skills === null ? -1 : skills.querySelectorAll('[data-testid="discover-tab"]').length,
@@ -2409,11 +2409,8 @@ try {
     "a command row is not drawn with the shared code chip",
     discoverTables,
   );
-  check(
-    discoverTables.suiteChip && discoverTables.contextPathChip,
-    "commands and paths do not share one inline-code presentation",
-    discoverTables,
-  );
+  check(discoverTables.suiteChip, "the whole-suite command is not drawn with the shared code chip", discoverTables);
+  check(discoverTables.contextPathChips === 0, "a bounded context still renders its repository path", discoverTables);
   check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
   check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
   check(!discoverTables.sidebarFreshness, "the sidebar still renders a freshness group");

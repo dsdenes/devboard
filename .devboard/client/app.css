@@ -2042,13 +2042,6 @@ a.code-chip--link:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.discover-context__path {
-  color: var(--muted-foreground);
-  margin-left: auto;
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
 .discover-context__responsibility {
   color: var(--muted-foreground);
   font-size: 12px;

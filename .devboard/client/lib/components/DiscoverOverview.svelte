@@ -788,9 +788,6 @@
                     <li class="discover-context" data-context={context.name}>
                       <div class="discover-context__head">
                         <span class="discover-context__name">{context.name}</span>
-                        {#if context.path.length > 0}
-                          <code class="code-chip discover-context__path">{context.path}</code>
-                        {/if}
                       </div>
                       {#if context.responsibility.length > 0}
                         <p class="discover-context__responsibility">{context.responsibility}</p>

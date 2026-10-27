@@ -707,8 +707,9 @@ checks` table (`data-testid="discover-quality-gates"`): one row per required CI 
 one short line saying what it verifies. A gate recorded without a check states `No check was
 recorded.`, and the gates are not repeated among the Delivery facts. Runtime, deployment, CI, and
 branching use compact `dt`/`dd` facts whose list values are comma-separated.
-Architecture renders under the heading `Bounded contexts` as a table headed `Bounded context` with
-path, responsibility, and entry points, followed by external-boundary and shared-kernel chips.
+Architecture renders under the heading `Bounded contexts` as context rows showing the name,
+responsibility, and entry points, followed by external-boundary and shared-kernel chips. The
+repository path of a bounded context is not rendered.
 External boundaries name only external systems — a remote API or service, a message broker, a
 database, or an identity provider the host integrates with across its own process and artifact.
 Language and runtime built-ins describe internal architecture, so `node:child_process`,
