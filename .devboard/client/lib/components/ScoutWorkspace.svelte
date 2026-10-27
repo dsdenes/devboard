@@ -27,7 +27,6 @@
 <section class="issues-scout" data-testid="issues-scout" aria-label="Auto Scout">
   <header class="issues-overview__header">
     <div>
-      <p class="muted">Issues</p>
       <h1 class="issues-overview__title">Auto Scout</h1>
       <p class="issues-overview__repo mono" data-testid="scout-repo">
         {scout.repo ?? "No GitHub origin"}
