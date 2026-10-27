@@ -271,7 +271,7 @@ export function emptyState(options: {
     enabled: false,
     paused: false,
     worker: null,
-    poll: emptyPoll(options.intervalMs ?? 2000),
+    poll: emptyPoll(options.intervalMs ?? 10_000),
     queue: [],
     runs: [],
     agents: [],

@@ -559,8 +559,10 @@ try {
   );
   check(idle.worker!.pid !== dashboardA.child.pid, "the worker is the dashboard process", idle.worker);
   check(existsSync(lockPath(a.repo)), "the repo-anchored lock is missing");
-  check(idle.poll.intervalMs === 2000, "the poll interval is not two seconds", idle.poll);
+  check(idle.poll.intervalMs === 10_000, "the poll interval is not ten seconds", idle.poll);
   check(workerPids(a.repo).length === 1, "Start did not spawn exactly one worker");
+  // Every wait that depends on a scheduled poll allows one interval plus slack.
+  const pollBudget = idle.poll.intervalMs + 5_000;
 
   /* ---------------------------------------------------------- */
   /* 2. Four open issues start four peers in one poll            */
@@ -570,7 +572,7 @@ try {
     a,
     "four peers in one poll",
     (state) => state.lifecycle === "running" && state.agents.length === 4,
-    5000,
+    pollBudget,
   );
   const issueNumbers = fleet.agents.map((agent) => agent.issueNumber).sort((left, right) => left - right);
   check(
@@ -636,22 +638,28 @@ try {
     );
   }
 
-  // Conditional polling: a later poll carries If-None-Match and gets a 304.
+  // After the first poll every request carries If-None-Match and gets a 304.
+  const conditionalPolls = (): number => {
+    try {
+      return readFileSync(a.ghLog, "utf8").split('"If-None-Match:').length - 1;
+    } catch {
+      return 0;
+    }
+  };
   await waitFor(
-    () => {
-      try {
-        return readFileSync(a.ghLog, "utf8").includes('"If-None-Match:') ? true : undefined;
-      } catch {
-        return undefined;
-      }
-    },
+    () => (conditionalPolls() >= 1 ? true : undefined),
     "a conditional poll",
-    8_000,
+    pollBudget,
     50,
   );
 
   // Two polls later, no issue received a second peer.
-  await Bun.sleep(2500);
+  await waitFor(
+    () => (conditionalPolls() >= 3 ? true : undefined),
+    "two more polls",
+    pollBudget * 2,
+    100,
+  );
   const secondStarts = acpLogLines(a).filter((line) => line.startsWith("start "));
   check(secondStarts.length === 4, "a second poll started a duplicate peer", secondStarts);
 
@@ -872,7 +880,7 @@ try {
     a,
     "the newly opened issue to get its own peer",
     (state) => state.agents.length === 5,
-    8000,
+    pollBudget,
   );
   await waitFor(
     () => (promptLines(a).includes("/implement-issue 5") ? true : undefined),
@@ -904,7 +912,7 @@ try {
     a,
     "issue 6's per-issue cooldown",
     (state) => typeof state.cooldowns["6"] === "string",
-    8000,
+    pollBudget,
   );
   check(
     Object.keys(cooled.cooldowns).join(",") === "6",
