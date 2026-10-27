@@ -22,6 +22,39 @@
         } · next ${nextCheck ?? "not scheduled"}`,
   );
   const runCount = $derived(issues.runs.length);
+  const activityText = $derived(
+    issues.activity.length === 0 ? "No activity yet." : issues.activity.join("\n"),
+  );
+
+  let activityElement = $state<HTMLPreElement | null>(null);
+  let followActivity = $state(true);
+
+  // Reading the tracked values keeps the activity pinned to its newest line
+  // unless the operator scrolled back through the log.
+  $effect(() => {
+    void activityText;
+    void issues.question;
+    if (!followActivity || activityElement === null) return;
+    activityElement.scrollTop = activityElement.scrollHeight;
+  });
+
+  // A taller or shorter viewport changes how much of the log fits; a follower
+  // stays on the newest line instead of drifting away from it.
+  $effect(() => {
+    const element = activityElement;
+    if (element === null) return;
+    const observer = new ResizeObserver(() => {
+      if (!followActivity) return;
+      element.scrollTop = element.scrollHeight;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  });
+
+  function trackActivityFollow(event: Event & { currentTarget: HTMLPreElement }): void {
+    const element = event.currentTarget;
+    followActivity = element.scrollHeight - element.scrollTop - element.clientHeight <= 8;
+  }
 
   function runStatus(runId: string): string {
     return issues.runs.find((run) => run.runId === runId)?.status ?? "unknown";
@@ -139,9 +172,12 @@
               : `Run ${issues.snapshot.activeRun.runId}`}
           </span>
         </div>
-        <pre class="issues-activity mono" data-testid="issues-activity">{issues.activity.length === 0
-            ? "No activity yet."
-            : issues.activity.join("\n")}</pre>
+        <pre
+          class="issues-activity mono"
+          data-testid="issues-activity"
+          bind:this={activityElement}
+          onscroll={trackActivityFollow}
+        >{activityText}</pre>
         {#if issues.question !== null}
           <div class="issues-question" data-testid="issues-question">
             <p>{issues.question.message}</p>

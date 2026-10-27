@@ -3819,6 +3819,174 @@ try {
   const activityDelay = Date.now() - activitySeededAt;
   check(activityDelay <= 1_500, `the activity delta took ${activityDelay}ms`);
 
+  // A long run log fills the page below the header and stays pinned to its
+  // newest line until the operator scrolls back through it.
+  const longActivity = [
+    "Reading the open issues",
+    "Implementing issue 17",
+    "Implementing issue 18",
+    ...Array.from({ length: 160 }, (_, index) => `Step ${index + 1}: implementing the issue`),
+  ];
+  await writeFile(activityPath, JSON.stringify(longActivity));
+
+  interface ActivitySurface {
+    height: number;
+    panelHeight: number;
+    bodyHeight: number;
+    bottomGap: number;
+    viewportGap: number;
+    overflowY: string;
+    pinned: boolean;
+    scrollTop: number;
+    scrollHeight: number;
+    clientHeight: number;
+  }
+
+  const surfaceScript = `(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null || !log.textContent.includes("Step 160")) return null;
+    const panel = log.closest(".issues-activity-panel");
+    const body = log.closest(".issues-overview__body");
+    if (panel === null || body === null) return null;
+    const logRect = log.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const bodyRect = body.getBoundingClientRect();
+    return {
+      height: Math.round(logRect.height),
+      panelHeight: Math.round(panelRect.height),
+      bodyHeight: Math.round(bodyRect.height),
+      bottomGap: Math.round(bodyRect.bottom - panelRect.bottom),
+      viewportGap: Math.round(innerHeight - bodyRect.bottom),
+      overflowY: getComputedStyle(log).overflowY,
+      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
+      scrollTop: Math.round(log.scrollTop),
+      scrollHeight: log.scrollHeight,
+      clientHeight: log.clientHeight,
+    };
+  })()`;
+
+  const activitySurface = await page.wait<ActivitySurface>(
+    surfaceScript,
+    "the long issues activity log",
+    8_000,
+  );
+  check(
+    activitySurface.bottomGap === 0 && activitySurface.panelHeight === activitySurface.bodyHeight,
+    "the agent activity panel does not fill the page body",
+    activitySurface,
+  );
+  check(activitySurface.viewportGap <= 48, "the issues overview leaves the viewport unused", activitySurface);
+  check(activitySurface.overflowY === "auto", "the activity log does not scroll internally", activitySurface);
+  check(
+    activitySurface.height > 440 && activitySurface.scrollHeight > activitySurface.clientHeight,
+    "the activity log is capped instead of using the page height",
+    activitySurface,
+  );
+  check(activitySurface.pinned, "the activity log does not follow its newest line", activitySurface);
+  await saveShot("issues-activity-full-height");
+
+  await page.eval(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null) return false;
+    log.scrollTop = 0;
+    log.dispatchEvent(new Event("scroll"));
+    return true;
+  })()`);
+  await writeFile(activityPath, JSON.stringify([...longActivity, "Step 161: reading back"]));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Step 161")`,
+    "the appended activity line",
+    8_000,
+  );
+  const scrolledBack = await page.eval<{ scrollTop: number; pinned: boolean }>(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null) return { scrollTop: -1, pinned: false };
+    return {
+      scrollTop: Math.round(log.scrollTop),
+      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
+    };
+  })()`);
+  check(scrolledBack.scrollTop < 8 && !scrolledBack.pinned, "an operator reading history is dragged to the bottom", scrolledBack);
+
+  await page.eval(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null) return false;
+    log.scrollTop = log.scrollHeight;
+    log.dispatchEvent(new Event("scroll"));
+    return true;
+  })()`);
+  await writeFile(activityPath, JSON.stringify([...longActivity, "Step 161: reading back", "Step 162: done"]));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-activity"]')?.textContent?.includes("Step 162")`,
+    "the second appended activity line",
+    8_000,
+  );
+  const followedAgain = await page.eval<{ pinned: boolean; scrollTop: number; scrollHeight: number }>(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null) return { pinned: false, scrollTop: -1, scrollHeight: -1 };
+    return {
+      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
+      scrollTop: Math.round(log.scrollTop),
+      scrollHeight: log.scrollHeight,
+    };
+  })()`);
+  check(followedAgain.pinned, "the activity log stopped following after the operator returned to the bottom", followedAgain);
+
+  // The narrow layout stacks the panels and still keeps the log pinned while
+  // its viewport changes size.
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the narrow issues viewport");
+  await delay(200);
+  const narrowSurface = await page.wait<{
+    panelHeights: number[];
+    logHeight: number;
+    inside: boolean;
+    pinned: boolean;
+    pageOverflow: boolean;
+  }>(`(() => {
+    const body = document.querySelector(".issues-overview__body");
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    const panels = body === null ? [] : [...body.children];
+    if (body === null || log === null || panels.length !== 2) return null;
+    const rects = panels.map((panel) => panel.getBoundingClientRect());
+    return {
+      panelHeights: rects.map((rect) => Math.round(rect.height)),
+      logHeight: Math.round(log.getBoundingClientRect().height),
+      inside: rects.every((rect) =>
+        rect.left >= -0.5 && rect.right <= innerWidth + 0.5 && rect.bottom <= innerHeight + 0.5
+      ),
+      pinned: log.scrollTop + log.clientHeight >= log.scrollHeight - 1,
+      pageOverflow: document.documentElement.scrollHeight > innerHeight,
+    };
+  })()`, "the stacked issues panels", 8_000);
+  check(narrowSurface.inside && !narrowSurface.pageOverflow, "the stacked issues panels leave the viewport", narrowSurface);
+  check(
+    narrowSurface.logHeight > 100 && narrowSurface.pinned,
+    "the stacked activity log does not keep its newest line",
+    narrowSurface,
+  );
+  await saveShot("issues-activity-1024");
+
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop issues viewport");
+  await delay(200);
+  const restoredPinned = await page.eval<boolean>(`(() => {
+    const log = document.querySelector('[data-testid="issues-activity"]');
+    if (log === null) return false;
+    return log.scrollTop + log.clientHeight >= log.scrollHeight - 1;
+  })()`);
+  check(restoredPinned, "the activity log left its newest line after the viewport grew");
+
   await page.click('[data-testid="open-issues-queue"]');
   await page.wait(`document.querySelector('[data-testid="issues-queue"]') !== null`, "the issues queue");
   const queue = await page.eval<Array<{ number: string; handled: string }>>(
