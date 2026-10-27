@@ -287,25 +287,6 @@ export class ScoutWorker {
         await this.stop();
         return;
       }
-      case "scan": {
-        if (this.active !== undefined || this.starting) {
-          this.state.notice = "A scan is already running.";
-          this.state.lastError = null;
-          this.publish();
-          return;
-        }
-        if (this.state.staged.length >= MAX_STAGED) {
-          this.state.notice = "The board already holds nine recommendations.";
-          this.state.lastError = null;
-          this.publish();
-          return;
-        }
-        this.state.nextAttemptAt = null;
-        this.state.notice = null;
-        this.publish();
-        await this.beginScan();
-        return;
-      }
       case "approve":
       case "draft":
       case "reject": {
