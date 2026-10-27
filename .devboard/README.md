@@ -1373,10 +1373,9 @@ systemctl --user daemon-reload
 
 ### The Agents surface
 
-The Issues sidebar lists `Agents` directly after `Overview`, with `data-command="open.issues.agents"`
-and `data-testid="open-issues-agents"`, trailing the running-agent count; its accessible name names
-the Issues mode. The command palette lists `open.issues.agents` in the `Workspace` group with the
-title `Open Agents`.
+The Issues sidebar has no `Agents` entry and the Overview has no Open Agents control; the command
+palette lists `open.issues.agents` in the `Workspace` group with the title `Open Agents` and opens
+the tab from any mode.
 
 The tab is `{ id: "agents", kind: "agents", resourceId: "agents", title: "Agents" }` and is
 restored after a reload. The page renders `data-testid="issues-agents-page"` with a page header
@@ -1389,7 +1388,7 @@ renders `data-testid="issues-agents-empty"` and an `Open Overview` control
 The grid `data-testid="issues-agents"` holds one card per running agent, sorted by issue number
 ascending. Each card has `data-testid="issues-agent"`, `data-issue`, `data-run`, `data-status`, and
 `data-asked` while its agent waits for an answer; it shows the issue number linked to its tracker
-URL, the issue title, the status word, and one compact elapsed and started-time line whose tooltip
+URL, the issue title, and one compact elapsed and started-time line whose tooltip
 carries the exact timestamp. The run id appears in the Focus tab, not on the card. Every card
 renders its agent's full streamed output in `data-testid="issues-agent-activity"` with `data-run`,
 inside a 96px scroll surface; each log follows its newest line while the operator is at the bottom
@@ -1419,11 +1418,14 @@ no-longer-available state linking to Runs when the run has been pruned.
 The Overview keeps the Start, Pause, Resume, Stop, and Check now controls, the poll and worker
 facts, and `data-testid="issues-overview"`. It shows the running-agent count as
 `data-testid="issues-running-agents"`, the pending count, the number of issues in cooldown and the
-earliest cooldown time as `data-testid="issues-cooldowns"`, and links to the Agents tab with
-`data-testid="issues-agents-link"`. The left column holds the Automation panel and, directly after
-the Open Agents button, the running agents in `data-testid="issues-agent-summary"`: one button per
-agent carrying `data-run` and `data-issue`, sorted by issue number, with `aria-current="true"` on
+earliest cooldown time as `data-testid="issues-cooldowns"`. The left column holds the Automation
+panel and, directly after it, the running agents in
+`data-testid="issues-agent-summary"`: one button per agent carrying `data-run` and `data-issue`,
+sorted by issue number, with `aria-current="true"` on
 the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
+The running-agent panel header carries an aggregate `data-testid="issues-overview-asking"` warning
+badge (`<n> needs answer` or `<n> need answers`) only while at least one agent waits; the fleet
+count is not repeated in that header because the Automation panel states it.
 Each row also carries `data-testid="issues-close-issue"` with `data-issue`; it closes that issue on
 the tracker as `not planned`, so an issue the operator does not want implemented leaves the next
 poll without stopping the agent already working it. A refused or failed closure leaves the issue
@@ -1524,7 +1526,7 @@ agent leaves the queue on the next poll.
 
 ## Auto Scout
 
-The Issues sidebar lists `Overview`, `Agents`, `Auto Scout`, `Issues`, `Runs`, and then `Drafts`
+The Issues sidebar lists `Overview`, `Auto Scout`, `Issues`, `Runs`, and then `Drafts`
 in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`,
 palette `Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its
 tab, or reloading the dashboard never starts a worker and never files an issue: only

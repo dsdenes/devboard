@@ -4245,7 +4245,7 @@ try {
   );
 
   // With no active agent the Agents page explains the empty fleet and links back.
-  await page.click('[data-testid="open-issues-agents"]');
+  await runPalette("open.issues.agents");
   await page.wait(
     `document.querySelector('[data-testid="issues-agents-empty"]') !== null`,
     "the empty Agents page",
@@ -4304,8 +4304,8 @@ try {
     runningIndicatorTitle,
   );
 
-  // The Overview counts the fleet, lists it in the left column after Open
-  // Agents, and streams the selected agent's output on the right.
+  // The Overview counts the fleet, lists it in the left column below the
+  // Automation panel, and streams the selected agent's output on the right.
   await page.wait(
     `document.querySelector('[data-testid="issues-running-agents"]')?.textContent?.trim() === "3 running"`,
     "the overview running-agent count",
@@ -4313,31 +4313,30 @@ try {
   );
   const overview = await page.eval<{
     cooldowns: string;
-    link: string;
     summaryIssues: string[];
     sideBeforeOutput: boolean;
     leftOfOutput: boolean;
-    linkBeforeSummary: boolean;
+    summaryBelowAutomation: boolean;
     outputRun: string;
     outputActivity: string;
     outputQuestion: string;
     selected: string;
-    agentsLinkBeforeSummary: boolean;
+    asking: { text: string; tone: string };
     poll: { text: string; tone: string; title: string; dot: number };
   }>(`(() => {
     const side = document.querySelector('[data-testid="issues-overview-side"]');
     const output = document.querySelector('[data-testid="issues-overview-output"]');
     const summary = document.querySelector('[data-testid="issues-agent-summary"]');
-    const link = document.querySelector('[data-testid="issues-agents-link"]');
+    const automation = side?.querySelector(".panel");
     const selected = summary?.querySelector('[aria-current="true"]');
     const sideRect = side?.getBoundingClientRect();
     const outputRect = output?.getBoundingClientRect();
-    const linkRect = link?.getBoundingClientRect();
+    const automationRect = automation?.getBoundingClientRect();
     const summaryRect = summary?.getBoundingClientRect();
     const poll = document.querySelector('[data-testid="issues-poll"]');
+    const asking = document.querySelector('[data-testid="issues-overview-asking"]');
     return {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
-      link: link?.getAttribute("data-command") ?? "",
       summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
       ),
@@ -4345,15 +4344,17 @@ try {
       leftOfOutput:
         sideRect !== undefined && outputRect !== undefined &&
         sideRect.left < outputRect.left && sideRect.right <= outputRect.left + 1,
-      linkBeforeSummary:
-        linkRect !== undefined && summaryRect !== undefined && summaryRect.top >= linkRect.bottom - 1,
+      summaryBelowAutomation:
+        automationRect !== undefined && summaryRect !== undefined &&
+        summaryRect.top >= automationRect.bottom - 1,
       outputRun: output?.getAttribute("data-run") ?? "",
       outputActivity: document.querySelector('[data-testid="issues-overview-activity"]')?.textContent ?? "",
       outputQuestion: document.querySelector('[data-testid="issues-overview-question"]')?.textContent ?? "",
       selected: selected?.getAttribute("data-run") ?? "",
-      agentsLinkBeforeSummary:
-        link !== null && summary !== null &&
-        (link.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      asking: {
+        text: asking?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+        tone: asking?.getAttribute("data-tone") ?? "",
+      },
       poll: {
         text: poll?.querySelector(".issues-poll__label")?.textContent?.trim() ?? "",
         tone: poll?.getAttribute("data-tone") ?? "",
@@ -4367,7 +4368,11 @@ try {
     "the overview does not name the cooldown count and earliest time",
     overview,
   );
-  check(overview.link === "open.issues.agents", "the overview has no Agents link", overview);
+  check(
+    overview.asking.text === "3 need answers" && overview.asking.tone === "warning",
+    "the running-agent header does not count the blocked agents",
+    overview.asking,
+  );
   check(
     overview.poll.tone === "active" &&
       /^Every 2s · checked .+$/.test(overview.poll.text) &&
@@ -4428,7 +4433,6 @@ try {
   await page.click('[data-testid="theme-toggle"]');
   await page.wait(`document.documentElement.dataset.theme === "dark"`, "the dark theme after the poll line");
 
-  check(overview.agentsLinkBeforeSummary, "the agent list is not after the Open Agents button", overview);
   check(
     overview.summaryIssues.join(",") === "17,18,19",
     "the overview does not list every running agent",
@@ -4437,8 +4441,8 @@ try {
   check(overview.sideBeforeOutput, "the agent list is not in the left column", overview);
   check(overview.leftOfOutput, "the side column does not sit to the left of the output", overview);
   check(
-    overview.linkBeforeSummary,
-    "the agent list is not directly after the Open Agents button",
+    overview.summaryBelowAutomation,
+    "the agent list is not directly after the Automation panel",
     overview,
   );
   check(
@@ -4512,31 +4516,13 @@ try {
     closeControls,
   );
 
-  // The sidebar lists Agents directly after Overview and counts the fleet.
-  const agentsEntry = await page.eval<{
-    label: string;
-    command: string;
-    count: string;
-    afterOverview: boolean;
-    accessible: string;
-  }>(`(() => {
-    const entry = document.querySelector('[data-testid="open-issues-agents"]');
-    const overviewEntry = document.querySelector('[data-testid="open-issues-overview"]');
-    return {
-      label: entry?.querySelector(".sidebar-item__label")?.textContent?.trim() ?? "",
-      command: entry?.getAttribute("data-command") ?? "",
-      count: entry?.querySelector(".sidebar-item__meta")?.textContent?.trim() ?? "",
-      afterOverview: overviewEntry !== null && overviewEntry.nextElementSibling === entry,
-      accessible: entry?.getAttribute("aria-label") ?? "",
-    };
-  })()`);
-  check(agentsEntry.label === "Agents", "the sidebar entry is not labeled Agents", agentsEntry);
-  check(agentsEntry.command === "open.issues.agents", "the Agents entry has the wrong command", agentsEntry);
-  check(agentsEntry.count === "3", "the Agents entry does not count the running agents", agentsEntry);
-  check(agentsEntry.afterOverview, "the Agents entry is not directly after Overview", agentsEntry);
-  check(agentsEntry.accessible.includes("Issues"), "the Agents entry does not name its mode", agentsEntry);
+  // The sidebar no longer lists Agents; the palette still opens the tab.
+  check(
+    await page.eval<boolean>(`document.querySelector('[data-testid="open-issues-agents"]') === null`),
+    "the Issues sidebar still lists Agents",
+  );
 
-  await page.click('[data-testid="open-issues-agents"]');
+  await runPalette("open.issues.agents");
   await page.wait(
     `document.querySelector('[data-testid="issues-agents-page"]') !== null &&
      document.querySelectorAll('[data-testid="issues-agent"]').length === 3`,
@@ -4830,16 +4816,6 @@ try {
   await page.wait(
     `document.querySelector('[data-testid="issues-agents-page"]') !== null`,
     "the Agents page after closing the focus tab",
-    8_000,
-  );
-
-  // The Overview link opens the Agents tab too.
-  await page.click('[data-testid="open-issues-overview"]');
-  await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview");
-  await page.click('[data-testid="issues-agents-link"]');
-  await page.wait(
-    `document.querySelector('[data-testid="issues-agents-page"]') !== null`,
-    "the Agents tab from the overview link",
     8_000,
   );
 
