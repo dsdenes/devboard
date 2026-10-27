@@ -47,6 +47,7 @@ export const TABS: DiscoverTab[] = [...SECTION_TABS, ...SKILL_TABS];
 export const HIDDEN_LEAVES: Record<string, string[]> = {
   deployment: ["pipelineSources"],
   runtime: ["versions"],
+  ci: ["qualityGates"],
 };
 
 export const COMMAND_LABELS: Record<string, string> = {
