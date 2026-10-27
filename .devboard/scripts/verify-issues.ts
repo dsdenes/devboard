@@ -434,6 +434,41 @@ async function click(devtools: Devtools, testid: string): Promise<void> {
   );
 }
 
+async function runCommand(devtools: Devtools, command: string): Promise<void> {
+  await devtools.evaluate(
+    `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })), true`,
+  );
+  await waitFor(
+    async () =>
+      (await devtools
+        .evaluate(`document.querySelector('[data-testid="command-palette"]') !== null`)
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the command palette",
+    10_000,
+  );
+  const clicked = await devtools.evaluate(
+    `(() => {
+      const item = document.querySelector('[data-testid="command-item"][data-command="${command}"]');
+      if (item === null) return false;
+      item.click();
+      return true;
+    })()`,
+  );
+  if (clicked !== true) throw new Error(`verify:issues: the palette has no ${command} item`);
+  await waitFor(
+    async () =>
+      (await devtools
+        .evaluate(`document.querySelector('[data-testid="command-palette"]') === null`)
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the command palette to close",
+    10_000,
+  );
+}
+
 async function stopWorker(paths: FixturePaths): Promise<void> {
   const state = stateOf(paths);
   if (state !== undefined && state.enabled) {
@@ -804,7 +839,7 @@ try {
     );
   }
 
-  await click(devtools, "open-issues-agents");
+  await runCommand(devtools, "open.issues.agents");
   await waitFor(
     async () =>
       (await devtools!
