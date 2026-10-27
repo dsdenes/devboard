@@ -668,13 +668,32 @@
   {:else if tab.kind === "decisions"}
     <div class="scroll-column">
       <section class="panel" data-testid="flow-decisions-section">
-        <div class="panel__header">
-          <h2 class="panel__title">Decision board</h2>
-          <div class="row-sm">
+        <div class="panel__header flow-decisions__header">
+          <div class="flow-decisions__identity">
+            <h2 class="panel__title">Decision board</h2>
+            <span
+              class="flow-decisions__state"
+              data-state={flow.decisionsDirty
+                ? "dirty"
+                : flow.decisions.trim().length > 0
+                  ? "saved"
+                  : "empty"}
+              data-testid="flow-decisions-state"
+            >
+              {flow.decisionsDirty
+                ? "Unsaved changes"
+                : flow.decisions.trim().length > 0
+                  ? "Saved"
+                  : "No decisions yet"}
+            </span>
+          </div>
+          <div class="row-sm flow-decisions__actions">
             <Button
               variant="default"
               data-command="flow.decisions.save"
               data-testid="save-flow-decisions"
+              disabled={!flow.decisionsDirty}
+              title={flow.decisionsDirty ? "Save the decision board." : "No unsaved changes."}
               onclick={() => flow.saveDecisions()}
             >
               Save

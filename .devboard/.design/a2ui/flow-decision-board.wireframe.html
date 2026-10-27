@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Flow / Decision board header — wireframe</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        background: #f4f4f4;
+        color: #222;
+        font: 13px/1.4 system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+      }
+      .wireframe {
+        width: 640px;
+      }
+      .note {
+        color: #666;
+        font-size: 11px;
+        margin: 0 0 12px;
+      }
+      .panel {
+        background: #fff;
+        border: 1px solid #bbb;
+        border-radius: 4px;
+        margin-bottom: 16px;
+      }
+      .panel__header {
+        align-items: flex-start;
+        border-bottom: 1px solid #ccc;
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        padding: 8px;
+      }
+      .identity {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .panel__title {
+        font-size: 12px;
+        font-weight: 600;
+        margin: 0;
+      }
+      .state {
+        color: #666;
+        font-size: 11px;
+      }
+      .state--dirty {
+        color: #8a6d00;
+      }
+      .state--saved {
+        color: #2f6f3a;
+      }
+      .action {
+        align-self: center;
+        border: 1px solid #333;
+        border-radius: 4px;
+        font-size: 12px;
+        padding: 4px 10px;
+      }
+      .action--disabled {
+        border-color: #bbb;
+        color: #999;
+      }
+      .editor {
+        background: #fafafa;
+        height: 88px;
+        margin: 8px;
+        outline: 1px dashed #ccc;
+      }
+      .label {
+        color: #666;
+        font-size: 11px;
+        margin: 0 0 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wireframe">
+      <p class="note">
+        Structure only: grayscale primitives, no production tokens, components, or type.
+      </p>
+
+      <p class="label">Saved</p>
+      <div class="panel">
+        <div class="panel__header">
+          <div class="identity">
+            <h2 class="panel__title">Decision board</h2>
+            <span class="state state--saved">Saved</span>
+          </div>
+          <span class="action action--disabled">Save</span>
+        </div>
+        <div class="editor"></div>
+      </div>
+
+      <p class="label">Unsaved changes</p>
+      <div class="panel">
+        <div class="panel__header">
+          <div class="identity">
+            <h2 class="panel__title">Decision board</h2>
+            <span class="state state--dirty">Unsaved changes</span>
+          </div>
+          <span class="action">Save</span>
+        </div>
+        <div class="editor"></div>
+      </div>
+
+      <p class="label">No decisions yet</p>
+      <div class="panel">
+        <div class="panel__header">
+          <div class="identity">
+            <h2 class="panel__title">Decision board</h2>
+            <span class="state">No decisions yet</span>
+          </div>
+          <span class="action action--disabled">Save</span>
+        </div>
+        <div class="editor"></div>
+      </div>
+    </div>
+  </body>
+</html>

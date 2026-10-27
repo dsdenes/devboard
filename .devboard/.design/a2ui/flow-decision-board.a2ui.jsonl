@@ -1,0 +1,5 @@
+{"version":"v0.9.1","createSurface":{"surfaceId":"flow-decision-board","catalogId":"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json","sendDataModel":false}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"flow-decision-board","components":[{"id":"root","component":"Column","children":["header","editor"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"flow-decision-board","components":[{"id":"header","component":"Row","children":["identity","save"]},{"id":"identity","component":"Column","children":["title","state"]},{"id":"title","component":"Text","text":"Decision board","variant":"h2"},{"id":"state","component":"Text","text":"Saved","variant":"caption"},{"id":"save","component":"Button","text":"Save"}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"flow-decision-board","components":[{"id":"editor","component":"Text","text":"Decision board editor","variant":"body"}]}}
+{"version":"v0.9.1","updateDataModel":{"surfaceId":"flow-decision-board","path":"/","value":{"states":[{"state":"Saved","saveDisabled":true},{"state":"Unsaved changes","saveDisabled":false},{"state":"No decisions yet","saveDisabled":true}]}}}

@@ -2259,10 +2259,31 @@ try {
   await page.wait(`document.querySelector('[data-testid="flow-decisions"] .monaco-editor') !== null`, "the Flow decision editor");
   const decisionLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-decisions"] textarea')?.getAttribute("aria-label") ?? ""`);
   check(decisionLabel.length > 0, "the decision board has no accessible label", decisionLabel);
+  const decisionHeader = () =>
+    page.eval<{ state: string; saveDisabled: boolean }>(`(() => {
+      const state = document.querySelector('[data-testid="flow-decisions-state"]');
+      const save = document.querySelector('[data-testid="save-flow-decisions"]');
+      return {
+        state: state?.textContent?.trim() ?? "",
+        saveDisabled: save?.disabled !== false,
+      };
+    })()`);
+  const decisionSaved = await decisionHeader();
+  check(
+    decisionSaved.state === "Saved" && decisionSaved.saveDisabled,
+    "the decision board header does not state its saved state",
+    decisionSaved,
+  );
   await page.eval(`window.__devboardEditors.get("flow-decisions").focus()`);
   await page.key("End", 2);
   await page.typeText("\n- Decision from the check.");
   await delay(100);
+  const decisionDirty = await decisionHeader();
+  check(
+    decisionDirty.state === "Unsaved changes" && !decisionDirty.saveDisabled,
+    "the decision board header does not state its unsaved state",
+    decisionDirty,
+  );
   const decisionText = await page.eval<string>(`window.__devboardEditors.get("flow-decisions").getValue()`);
   await page.key("s", 2);
   const decisionFrame = await waitFor(

@@ -484,6 +484,11 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   a full-width textarea followed by a right-aligned primary `Send` at 6px, disabled while the draft
   is blank, so the action sits with the field it acts on instead of the header bar. Notes follow
   as left-ruled rows with source, timestamp, and status words.
+- **Decision board header** (`.flow-decisions__header`) — the Decision board's header: the
+  `panel-title` word with an 11px state line (`Saved` success, `Unsaved changes` warning,
+  `No decisions yet` muted), and a right-aligned primary `Save` disabled until the draft differs
+  from the saved text, matching the Discover skill header's draft line. The two-line identity is
+  sized to the 30px panel header.
 - **Discover skill header** (`.discover-skill__header`) — the skill editor's header: the
   relative path `<skill>/SKILL.md` in the `panel-title` size, with the skill name in `foreground`
   and the file name in `muted-foreground`; a second 11px draft line (`No unsaved changes` muted,

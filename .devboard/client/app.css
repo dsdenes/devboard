@@ -1398,6 +1398,44 @@ kbd {
   padding: 4px;
 }
 
+/* The decision board header pairs its title with a draft-state line and the save action. */
+.flow-decisions__header {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.flow-decisions__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Two 12px and 11px lines plus the 2px gap fit the panel header's 30px. */
+.flow-decisions__header .panel__title {
+  line-height: 1.2;
+}
+
+.flow-decisions__state {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.flow-decisions__state[data-state="dirty"] {
+  color: var(--warning);
+}
+
+.flow-decisions__state[data-state="saved"] {
+  color: var(--success);
+}
+
+.flow-decisions__actions {
+  align-self: center;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
 /* Discover: one page frame, a two-column sheet, and plain rail blocks. */
 .discover-page {
   gap: 24px;
