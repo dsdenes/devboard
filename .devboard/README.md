@@ -1511,11 +1511,11 @@ reloading the dashboard never starts a worker: only `data-testid="scout-start"` 
 shows
 `data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`),
 `data-testid="scout-activity"` for the current or newest scan, `data-testid="scout-error"` for the
-last error, `data-testid="scout-shortfall"` while fewer than nine are staged, and
-`data-testid="scout-empty"` with the next action when nothing is staged. One control toggles the
-worker: `data-testid="scout-start"` starts it and becomes `data-testid="scout-stop"` while a worker
-is attached. Stop keeps the staged board; the next Start scans immediately, so there is no
-separate Scan now control.
+last error, and `data-testid="scout-shortfall"` while fewer than nine are staged. The staging
+board renders only while at least one recommendation is staged; a page with nothing staged shows
+no board and no placeholder text. One control toggles the worker: `data-testid="scout-start"`
+starts it and becomes `data-testid="scout-stop"` while a worker is attached. Stop keeps the
+staged board; the next Start scans immediately, so there is no separate Scan now control.
 
 The staging board holds at most nine significant, evidence-backed recommendations, and nine
 whenever nine exist. Each widget carries `data-testid="scout-widget"`, `data-id`, and
@@ -1621,9 +1621,17 @@ buttons are disabled, `Ask` reads `Asking…`, and `Cancel` stays enabled. A fai
 agent, or a rejected prompt shows the error in the panel, keeps the question and earlier answers,
 and accepts the next question. `Ask` never calls `POST /api/feedback` and creates `no GitHub issue`.
 
+Filing or proposing from a panel that has answered questions carries the visible Ask conversation
+into the issue or draft as a `## Ask conversation` block between the request and
+`## Captured UI context`, labelled `You:` and `Agent:` per turn. The conversation is bounded to 40
+turns, 4000 characters per turn, and 12000 characters in total; when it exceeds that, the newest
+whole turns are kept and the oldest dropped. A panel without a conversation produces no block, and
+a conversation is never resumed from storage.
+
 `Goal` turns the composer text into a raw proposed goal instead of an issue. With non-whitespace
-text it posts `report` plus the same captured element context to `POST /api/goal-proposals`; the
-server writes one Markdown draft under `<REPO_DIR>/.devboard/goal-proposals/` and answers
+text it posts `report`, the Ask conversation when the panel has one, and the same captured element
+context to `POST /api/goal-proposals`; the server writes one Markdown draft under
+`<REPO_DIR>/.devboard/goal-proposals/` and answers
 `201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, never runs `gh`, and
@@ -1633,8 +1641,9 @@ and at most six hyphen-separated words, falling back to `ui-goal`; an existing n
 `-3`, … through an exclusive create, so the first draft is never overwritten. The body opens with
 `# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, carries the line
 `> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
-text verbatim and the `## Captured UI context` block an issue report carries. A successful click
-closes the panel, stays in report selection mode with an empty composer, and shows the
+text verbatim, the `## Ask conversation` block when the panel has one, and the
+`## Captured UI context` block an issue report carries. A successful click closes the panel,
+stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
 with the server's error and leaves no draft. The drafts are ignored by git.
 
