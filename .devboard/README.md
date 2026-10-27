@@ -1445,9 +1445,9 @@ active agent. The Runs page lists every run with its status and issue,
 and a run's detail shows only that run's activity. The status bar's issues indicator reports the
 lifecycle and the running-agent count in its title and still opens Issues mode.
 
-## Drafts and proposed goals
+## Draft goals and proposed goals
 
-The Issues sidebar carries a fourth entry after Runs: `Drafts`, with `data-command="open.issues.drafts"`
+The Issues sidebar carries a fourth entry after Runs: `Draft goals`, with `data-command="open.issues.drafts"`
 and `data-testid="open-issues-drafts"`. It trails the number of listed drafts, its accessible
 name names the Issues mode and the `Alt+2` shortcut, and the command palette lists it under the
 same command id. Opening it renders `data-testid="issues-drafts"`: every regular `.md` file
@@ -1462,7 +1462,7 @@ opens, after the report panel writes a draft through `POST /api/goal-proposals`,
 elaboration finishes or stops, and when a listed draft disappears. The page polls the list every
 two seconds while it is mounted, so an external deletion is visible without a reload, and the
 report panel's write broadcast reaches an open page immediately. A browser reload restores the
-Drafts page and the selected path; when the file no longer exists, the page opens the list.
+Draft goals page and the selected path; when the file no longer exists, the page opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
@@ -1529,7 +1529,7 @@ agent leaves the queue on the next poll.
 
 ## Auto Scout
 
-The Issues sidebar lists `Overview`, `Auto Scout`, `Issues`, `Runs`, and then `Drafts`
+The Issues sidebar lists `Overview`, `Auto Scout`, `Issues`, `Runs`, and then `Draft goals`
 in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`,
 palette `Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its
 tab, or reloading the dashboard never starts a worker and never files an issue: only

@@ -40,7 +40,7 @@
   <header class="issues-overview__header">
     <div>
       <p class="muted">Issues</p>
-      <h1 class="issues-overview__title">Drafts</h1>
+      <h1 class="issues-overview__title">Draft goals</h1>
       <p class="issues-overview__repo mono">
         {issues.draftStatus} · {issues.drafts.length} draft(s)
       </p>
