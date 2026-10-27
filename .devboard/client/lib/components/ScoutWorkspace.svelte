@@ -124,14 +124,6 @@
                 {/each}
               </ul>
             </div>
-            <div class="scout-widget__section">
-              <h3>Acceptance criteria</h3>
-              <ul class="scout-widget__list">
-                {#each item.acceptanceCriteria as criterion (criterion)}
-                  <li>{criterion}</li>
-                {/each}
-              </ul>
-            </div>
             <p class="muted scout-widget__staged mono">Staged {item.stagedAt}</p>
             <div class="toolbar">
               <Button

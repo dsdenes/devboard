@@ -612,6 +612,15 @@ try {
     `document.querySelector('[data-testid="scout-count"]')?.textContent?.trim() ?? ''`,
   );
   check(count === "3", "the staged count does not match the widgets", count);
+  const widgetSections = await devtools.evaluate(
+    `Array.from(document.querySelectorAll('[data-testid="scout-widget"] .scout-widget__section h3')).map((heading) => heading.textContent.trim())`,
+  );
+  check(
+    Array.isArray(widgetSections) &&
+      !widgetSections.some((heading) => /acceptance criteria/i.test(String(heading))),
+    "a widget still shows acceptance criteria",
+    widgetSections,
+  );
   await waitState(fixture, "the shortfall state", (state) => state.staged.length === 3);
   check(workerPids(fixture.repo).length === 1, "Start did not spawn exactly one worker");
   await waitFor(

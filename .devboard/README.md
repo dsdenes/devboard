@@ -1540,7 +1540,7 @@ staged board; the next Start scans immediately, so there is no separate Scan now
 The staging board holds at most nine significant, evidence-backed recommendations, and nine
 whenever nine exist. Each widget carries `data-testid="scout-widget"`, `data-id`, and
 `data-category`, shows its category, title, summary, impact, `path:lines` evidence with any quote,
-proposed change, files, acceptance criteria, and staged time, and offers
+proposed change, files, and staged time, and offers
 `data-testid="scout-approve"`, `data-testid="scout-draft-goal"`, and
 `data-testid="scout-reject"`. Existing widgets keep their position and refills append; a decision
 removes one widget in the same published update that records it and the agent refills the freed
