@@ -9,6 +9,7 @@
   import IssuesAgentQuestion from "./IssuesAgentQuestion.svelte";
   import PageHeader from "./ui/page-header.svelte";
   import ScoutWorkspace from "./ScoutWorkspace.svelte";
+  import { pollStatus } from "../poll-status";
 
   interface Props {
     tab: WorkspaceTab | null;
@@ -34,14 +35,6 @@
                 : "overview",
   );
 
-  const nextCheck = $derived(issues.snapshot?.poll?.nextPollAt ?? null);
-  const pollLine = $derived(
-    issues.snapshot?.poll === null || issues.snapshot?.poll === undefined
-      ? "Not polling"
-      : `Every ${Math.round(issues.snapshot.poll.intervalMs / 100) / 10}s · last ${
-          issues.snapshot.poll.lastPollAt ?? "never"
-        } · next ${nextCheck ?? "not scheduled"}`,
-  );
   const runCount = $derived(issues.runs.length);
   const agents = $derived(issues.agents);
   const asking = $derived(agents.filter((agent) => agent.question !== null).length);
@@ -54,6 +47,7 @@
   );
 
   let now = $state(Date.now());
+  const poll = $derived(pollStatus(issues.snapshot, now));
   $effect(() => {
     if (page !== "agents" && page !== "overview") return;
     const timer = setInterval(() => (now = Date.now()), 1000);
@@ -146,7 +140,15 @@
       <section class="panel">
         <div class="panel__header">
           <h2 class="panel__title">Automation</h2>
-          <span class="panel__subtitle">{pollLine}</span>
+          <span
+            class="panel__subtitle issues-poll"
+            data-tone={poll.tone}
+            data-testid="issues-poll"
+            title={poll.title}
+          >
+            <span class="issues-poll__dot" aria-hidden="true"></span>
+            <span class="issues-poll__label" data-testid="issues-poll-text">{poll.text}</span>
+          </span>
         </div>
         <div class="panel__body stack-sm">
           <div class="toolbar">
