@@ -11,13 +11,13 @@
 - Playwright source: OMP browser (Playwright-backed Chromium), plus
   `bun run verify:scout` and `bun run verify:interface`.
 - States exercised:
-  - Empty/stopped, dark: `.design/ux/auto-scout/empty-dark-2101.webp`
-  - Empty/stopped, light: `.design/ux/auto-scout/empty-light-2101.webp`
+  - Empty/stopped, dark: `.devboard/.design/auto-scout/empty-dark-2101.webp`
+  - Empty/stopped, light: `.devboard/.design/auto-scout/empty-light-2101.webp`
   - Populated (three rows, pending and implemented, activity log):
-    `.design/ux/auto-scout/populated-dark-2101.webp`
-  - Populated at 1024×720: `.design/ux/auto-scout/populated-dark-1024.webp`
+    `.devboard/.design/auto-scout/populated-dark-2101.webp`
+  - Populated at 1024×720: `.devboard/.design/auto-scout/populated-dark-1024.webp`
   - Failed read plus invalid limits:
-    `.design/ux/auto-scout/error-dark-2101.webp`
+    `.devboard/.design/auto-scout/error-dark-2101.webp`
 - Journeys exercised end to end by `bun run verify:scout`: start a scan and
   file significant items, save both limits and survive a reload, read the
   filed rows, update a closed row with a release, surface a failed read, and
@@ -51,7 +51,7 @@
     (`scrollWidth === clientWidth` at both widths).
 - Not run / blocked:
   - designmd MCP research could not run because no MCP manager is configured;
-    see `.design/research/2026-10-27-auto-scout.md`. No token, OpenUI, or
+    see `.devboard/.design/research/2026-10-27-auto-scout.md`. No token, OpenUI, or
     Storybook mutation was made.
   - A live worker process was not left running for the screenshots; the
     populated and error states were replayed from valid `state.json` fixtures,
