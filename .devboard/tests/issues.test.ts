@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AcpActivity, AcpQuestion } from "../server/acp";
 import { recordedChildAlive } from "../server/state";
+import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { writeCommand } from "../issues/control";
 import { migrateLegacyLedger, legacyLiveLock, legacyLockRefusal } from "../issues/legacy";
 import { pruneLedger } from "../issues/ledger";
@@ -172,7 +173,7 @@ async function fixture(options: {
     repoDir: root,
     stateDir,
     intervalMs: 60_000,
-    harnessVersion: options.harnessVersion ?? "0.1.test",
+    ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
     listIssues: async () => ({ kind: "issues", issues: [...issues], etag: "etag-1" }),
     connect: (peerOptions) => {
       const peer = new ControlledPeer(peerOptions);
@@ -476,6 +477,17 @@ describe("state and isolation", () => {
       expect(liveLockOwner(lockPath(root))?.stateDir).toBe(stateDir);
     } finally {
       if (held.acquired) held.release();
+    }
+  });
+
+  test("records the source checkout's commit-count version by default", async () => {
+    const f = await fixture({ issues: [] });
+    try {
+      await waitFor(() => (f.state().poll.lastPollAt !== null ? true : undefined), "the first poll");
+      expect(f.state().worker?.harnessVersion).toBe(readHarnessVersion(runningHarnessDir()));
+      expect(f.state().worker?.harnessVersion).not.toBe("0.1.0");
+    } finally {
+      await stop(f);
     }
   });
 
