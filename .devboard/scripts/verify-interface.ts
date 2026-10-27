@@ -4559,11 +4559,25 @@ try {
     activity: string;
     question: string;
     closeCommand: string;
+    runLabel: string;
+    runId: string;
+    runIdTitle: string;
+    runIdClass: string;
+    runStarted: string;
+    runStartedTitle: string;
+    rawSubtitle: string;
   }>(`(() => ({
     status: document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() ?? "",
     activity: document.querySelector('[data-testid="issues-agent-focus-activity"]')?.textContent ?? "",
     question: document.querySelector('[data-testid="issues-agent-focus-question"]')?.textContent ?? "",
     closeCommand: document.querySelector('[data-testid="issues-agent-focus-close"]')?.getAttribute("data-command") ?? "",
+    runLabel: document.querySelector('[data-testid="issues-agent-focus-run"] .issues-run-identity__label')?.textContent?.trim() ?? "",
+    runId: document.querySelector('[data-testid="issues-agent-focus-run-id"]')?.textContent?.trim() ?? "",
+    runIdTitle: document.querySelector('[data-testid="issues-agent-focus-run-id"]')?.getAttribute("title") ?? "",
+    runIdClass: document.querySelector('[data-testid="issues-agent-focus-run-id"]')?.getAttribute("class") ?? "",
+    runStarted: document.querySelector('[data-testid="issues-agent-focus-run-started"]')?.textContent?.trim() ?? "",
+    runStartedTitle: document.querySelector('[data-testid="issues-agent-focus-run-started"]')?.getAttribute("title") ?? "",
+    rawSubtitle: document.querySelector('.issues-agent-focus .panel__subtitle')?.textContent?.trim() ?? "",
   }))()`);
   check(focus.status === "running", "the focus tab lost the run status", focus);
   check(focus.activity.includes("Implementing issue 17"), "the focus tab lost the run activity", focus);
@@ -4573,6 +4587,73 @@ try {
     focus,
   );
   check(focus.closeCommand === "tab.close", "the focus tab has no close control", focus);
+  check(
+    focus.runLabel === "Run" &&
+      focus.runId === "2026-10-27T10-00-01-000Z" &&
+      focus.runIdTitle.includes("2026-10-27T10-00-01-000Z") &&
+      focus.runIdClass.includes("code-chip"),
+    "the focus tab does not name its run as a chip",
+    focus,
+  );
+  check(
+    focus.runStarted.startsWith("Started ") &&
+      focus.runStartedTitle === "Started 2026-10-27T10:00:01.000Z",
+    "the focus tab does not state when the run started",
+    focus,
+  );
+  check(focus.rawSubtitle === "", "the focus tab still renders a bare run-id subtitle", focus);
+  await saveShot("issues-agent-focus");
+  await page.click('[data-testid="theme-toggle"]');
+  await page.wait(
+    `document.documentElement.dataset.theme === "light"`,
+    "the light theme for the focus screenshot",
+  );
+  await saveShot("issues-agent-focus-light");
+  await page.click('[data-testid="theme-toggle"]');
+  await page.wait(
+    `document.documentElement.dataset.theme === "dark"`,
+    "the dark theme after the focus screenshot",
+  );
+
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024`, "the focus tab at 1024×720");
+  const narrowIdentity = await page.eval<{
+    right: number;
+    headerRight: number;
+    chip: number;
+    title: number;
+  }>(`(() => {
+    const header = document.querySelector('[data-testid="issues-agent-focus"] .panel__header');
+    const identity = document.querySelector('[data-testid="issues-agent-focus-run"]');
+    const chip = document.querySelector('[data-testid="issues-agent-focus-run-id"]');
+    return {
+      right: identity?.getBoundingClientRect().right ?? 0,
+      headerRight: header?.getBoundingClientRect().right ?? 0,
+      chip: chip?.getBoundingClientRect().width ?? 0,
+      title: document.querySelector('[data-testid="issues-agent-focus"] .panel__title')
+        ?.getBoundingClientRect().width ?? 0,
+    };
+  })()`);
+  check(
+    narrowIdentity.title > 0 &&
+      narrowIdentity.right <= narrowIdentity.headerRight &&
+      narrowIdentity.chip <= 220.5,
+    "the run identity breaks the panel header at 1024×720",
+    narrowIdentity,
+  );
+  await saveShot("issues-agent-focus-1024x720");
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop viewport after the focus check");
 
   await page.reload();
   await page.wait(

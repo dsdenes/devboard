@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { relativeTime } from "../discover-format";
   import { issues } from "../issues.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import { statusTone } from "../status-tone";
@@ -20,6 +22,15 @@
   const lines = $derived(agent !== null ? issues.activityFor(runId) : (detail?.activityLines ?? []));
   const status = $derived(agent !== null ? "running" : (detail?.status ?? "unknown"));
   const unavailable = $derived(agent === null && detail === null && issues.runError !== null);
+  const startedAt = $derived(agent?.startedAt ?? detail?.startedAt ?? null);
+
+  let now = $state(Date.now());
+  const startedLabel = $derived(startedAt === null ? "" : relativeTime(startedAt, now));
+
+  onMount(() => {
+    const timer = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(timer);
+  });
 
   // A finished run's final status and activity come from run history.
   $effect(() => {
@@ -67,7 +78,25 @@
     <div class="panel issues-activity-panel">
       <div class="panel__header">
         <h2 class="panel__title">Output</h2>
-        <span class="panel__subtitle mono">{runId}</span>
+        <span class="issues-run-identity" data-testid="issues-agent-focus-run">
+          <span class="issues-run-identity__label">Run</span>
+          <code
+            class="code-chip issues-run-identity__id"
+            title={`Run identifier: ${runId}`}
+            data-testid="issues-agent-focus-run-id"
+          >
+            {runId}
+          </code>
+          {#if startedAt !== null}
+            <span
+              class="issues-run-identity__started"
+              title={`Started ${startedAt}`}
+              data-testid="issues-agent-focus-run-started"
+            >
+              Started {startedLabel}
+            </span>
+          {/if}
+        </span>
       </div>
       <div class="panel__body stack-sm">
         <IssuesAgentLog lines={lines} testid="issues-agent-focus-activity" {runId} />
