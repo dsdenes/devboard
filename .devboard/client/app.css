@@ -3022,6 +3022,18 @@ a.code-chip--link:focus-visible {
   min-height: 120px;
 }
 
+.issues-agent-summary > .issues-agent-summary__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 8px;
+}
+
+.issues-agent-summary__item > .issues-agent-row {
+  flex: 1;
+  min-width: 0;
+}
+
 .issues-agent-focus {
   min-height: 0;
   overflow: hidden;

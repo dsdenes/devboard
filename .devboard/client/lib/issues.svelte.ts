@@ -1,4 +1,5 @@
 import { connection } from "./connection.svelte";
+import { notifications } from "./notifications.svelte";
 import type {
   GoalDraftDetail,
   GoalDraftRun,
@@ -94,6 +95,8 @@ export class IssuesStore {
   runError = $state<string | null>(null);
   selectedRun = $state<string | null>(null);
   private requestedRun: string | null = null;
+  /** Issue numbers whose close request is still unanswered. */
+  closing = $state<number[]>([]);
 
   drafts = $state<GoalDraftSummary[]>([]);
   draftRun = $state<GoalDraftRun | null>(null);
@@ -108,6 +111,15 @@ export class IssuesStore {
 
   get repo(): string | null {
     return this.snapshot?.repo ?? null;
+  }
+
+  /**
+   * The header's origin label. A missing snapshot is not evidence that the
+   * checkout has no origin, so only a received snapshot may say so.
+   */
+  get repoLabel(): string {
+    if (this.repo !== null) return this.repo;
+    return this.snapshot === null ? "…" : "No GitHub origin";
   }
 
   get enabled(): boolean {
@@ -273,6 +285,20 @@ export class IssuesStore {
     connection.send({ type: "checkIssues" });
   }
 
+  canClose(number: number): boolean {
+    return connection.open && !this.closing.includes(number);
+  }
+
+  /** Closes one issue on the tracker as not planned. */
+  closeIssue(number: number): void {
+    if (!Number.isInteger(number) || number <= 0) return;
+    if (!this.canClose(number)) return;
+    this.closing = [...this.closing, number];
+    if (!connection.send({ type: "closeIssue", number })) {
+      this.closing = this.closing.filter((entry) => entry !== number);
+    }
+  }
+
   submitAgentAnswer(runId: string, questionId: number | string, value: string): void {
     if (value.trim().length === 0) return;
     connection.send({
@@ -315,6 +341,8 @@ export class IssuesStore {
         if (live.has(runId)) kept[runId] = lines;
       }
       this.agentActivity = kept;
+      const open = new Set((next.queue ?? []).map((issue) => issue.number));
+      this.closing = this.closing.filter((number) => open.has(number));
       return;
     }
     if (message.type === "issuesActivity" && typeof message.runId === "string") {
@@ -333,6 +361,18 @@ export class IssuesStore {
         this.run = run;
         this.runError = null;
         this.selectedRun = run.runId;
+      }
+      return;
+    }
+    if (message.type === "issuesClosed" && typeof message.number === "number") {
+      const number = message.number;
+      // A successful closure stays pending until the queue no longer lists the
+      // issue, so a paused or stopped worker cannot invite a duplicate call.
+      if (message.ok === true) {
+        notifications.push("success", `Closed issue #${number}.`);
+      } else {
+        this.closing = this.closing.filter((entry) => entry !== number);
+        if (typeof message.message === "string") notifications.push("error", message.message);
       }
       return;
     }

@@ -35,6 +35,15 @@ async function startServer(
       stale: boolean;
     };
     runningVersion?: string | null;
+    /** Installs this checkout's `origin` before the app resolves it. */
+    origin?: string;
+    issues?: {
+      closeIssue?: (request: {
+        repoDir: string;
+        repository: string;
+        number: number;
+      }) => Promise<void>;
+    };
   } = {},
 ) {
   const root = await temporaryDirectory();
@@ -44,6 +53,10 @@ async function startServer(
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>ADR overview</title>");
   await writeFile(join(adrDir, "0001-first.md"), fixtureRecord("0001-first.md", "First"));
+  if (options.origin !== undefined) {
+    Bun.spawnSync({ cmd: ["git", "init", "-q", root] });
+    Bun.spawnSync({ cmd: ["git", "-C", root, "remote", "add", "origin", options.origin] });
+  }
   if (options.goalText !== undefined) {
     await writeFile(options.goalFile ?? join(root, "GOAL.md"), options.goalText);
   }
@@ -60,6 +73,7 @@ async function startServer(
     restart: options.restart,
     versionState: options.versionState,
     runningVersion: options.runningVersion,
+    ...(options.issues === undefined ? {} : { issues: options.issues }),
   });
   return { server, adrDir, root, url: `127.0.0.1:${server.port}` };
 }
@@ -80,8 +94,16 @@ function exchange(url: string, command: unknown): Promise<unknown> {
       return;
     }
     const type = (message as { type?: unknown }).type;
-    // A connection-level issues replay precedes this client's own reply.
-    if (!answer && (type === "issuesState" || type === "issuesActivity")) return;
+    // A connection-level worker replay precedes this client's own reply.
+    if (
+      !answer &&
+      (type === "issuesState" ||
+        type === "issuesActivity" ||
+        type === "scoutState" ||
+        type === "scoutActivity")
+    ) {
+      return;
+    }
     socket.close();
     resolve(message);
   };
@@ -504,6 +526,44 @@ describe("issues protocol", () => {
     }
   });
 
+  test("replays the checkout origin on connect before any worker exists", async () => {
+    const { server, url } = await startServer({
+      origin: "https://github.com/acme/fixture.git",
+    });
+
+    try {
+      const frames = await collect(url, { type: "getProject" }, (messages) =>
+        messages.some(
+          (message) =>
+            typeof message === "object" &&
+            message !== null &&
+            "type" in message &&
+            message.type === "scoutState",
+        ),
+      );
+      const issues = frames.find(
+        (frame): frame is { repo?: unknown; present?: unknown } =>
+          typeof frame === "object" &&
+          frame !== null &&
+          "type" in frame &&
+          frame.type === "issuesState",
+      );
+      const scout = frames.find(
+        (frame): frame is { repo?: unknown; present?: unknown } =>
+          typeof frame === "object" &&
+          frame !== null &&
+          "type" in frame &&
+          frame.type === "scoutState",
+      );
+      expect(issues?.repo).toBe("acme/fixture");
+      expect(issues?.present).toBe(false);
+      expect(scout?.repo).toBe("acme/fixture");
+      expect(scout?.present).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("opens stopped for damaged bytes without a journal error", async () => {
     const { server, root, url } = await startServer();
     const stateDir = join(root, "state");
@@ -748,6 +808,78 @@ describe("issues protocol", () => {
         "Issues worker 0.1.0 is running; this dashboard loaded 0.2.0. " +
           "It is left running; Stop it to launch the current harness on the next Start.",
       );
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("closes one issue through the bridge with the worker's repository", async () => {
+    const calls: Array<{ repoDir: string; repository: string; number: number }> = [];
+    const { server, root, url } = await startServer({
+      issues: {
+        closeIssue: async (request) => {
+          calls.push({
+            repoDir: request.repoDir,
+            repository: request.repository,
+            number: request.number,
+          });
+        },
+      },
+    });
+    await seedIssues(root);
+
+    try {
+      const message = (await exchange(url, { type: "closeIssue", number: 8 })) as Record<
+        string,
+        unknown
+      >;
+      expect(message).toEqual({ type: "issuesClosed", number: 8, ok: true });
+      expect(calls).toEqual([{ repoDir: resolve(root), repository: "acme/fixture", number: 8 }]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("reports a refused closure without a generic error", async () => {
+    const { server, root, url } = await startServer({
+      issues: {
+        closeIssue: async () => {
+          throw new Error("Could not close issue #8: HTTP 403: Resource not accessible");
+        },
+      },
+    });
+    await seedIssues(root);
+
+    try {
+      const message = (await exchange(url, { type: "closeIssue", number: 8 })) as Record<
+        string,
+        unknown
+      >;
+      expect(message).toEqual({
+        type: "issuesClosed",
+        number: 8,
+        ok: false,
+        message: "Could not close issue #8: HTTP 403: Resource not accessible",
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a close request without a number or without an origin", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      expect(await exchange(url, { type: "closeIssue" })).toEqual({
+        type: "error",
+        message: "Closing an issue needs its number.",
+      });
+      expect(await exchange(url, { type: "closeIssue", number: 8 })).toEqual({
+        type: "issuesClosed",
+        number: 8,
+        ok: false,
+        message: "This checkout has no GitHub origin.",
+      });
     } finally {
       server.stop(true);
     }

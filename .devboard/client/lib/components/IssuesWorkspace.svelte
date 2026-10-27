@@ -119,7 +119,7 @@
       <div>
         <h1 class="issues-overview__title">Issue automation</h1>
         <p class="issues-overview__repo mono" data-testid="issues-repo">
-          {issues.repo ?? "No GitHub origin"}
+          {issues.repoLabel}
         </p>
       </div>
       <span class="badge" data-tone={statusTone(stateWord)} data-testid="issues-state">
@@ -232,7 +232,7 @@
         <div class="panel__body panel__body--flush">
           <ol class="issues-agent-summary" data-testid="issues-agent-summary">
             {#each agents as agent (agent.runId)}
-              <li>
+              <li class="issues-agent-summary__item">
                 <button
                   type="button"
                   class="issues-agent-row"
@@ -252,6 +252,18 @@
                     <span class="issues-agent-row__elapsed mono">{elapsedShort(agent.startedAt)}</span>
                   </span>
                 </button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  data-testid="issues-close-issue"
+                  data-issue={agent.issueNumber}
+                  title={`Close issue #${agent.issueNumber} as not planned`}
+                  aria-label={`Close issue #${agent.issueNumber}`}
+                  disabled={!issues.canClose(agent.issueNumber)}
+                  onclick={() => issues.closeIssue(agent.issueNumber)}
+                >
+                  Close
+                </Button>
               </li>
             {:else}
               <li class="issues-agent-summary__empty muted">No issue is running.</li>
@@ -310,7 +322,7 @@
       <div>
         <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Agents</h1>
-        <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
+        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
       <span class="badge" data-tone="accent" data-testid="issues-agents-count">{agents.length} running</span>
     </header>
@@ -374,7 +386,7 @@
       <div>
         <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Open issues</h1>
-        <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
+        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
       <span class="badge" data-tone={statusTone("pending")}>{issues.pending} pending</span>
     </header>
@@ -428,7 +440,7 @@
       <div>
         <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Runs</h1>
-        <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
+        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
       <span class="badge" data-tone="accent">{runCount}</span>
     </header>
