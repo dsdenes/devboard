@@ -29,9 +29,9 @@ an extension of the existing `ActivityBar` component: the mode rail gains a visi
 | Glossary filtered-empty | Compose (`.empty` + `Button`) | Button | `Shell/EmptyFiltered` | active query and threshold, reset action | reset button named | `body-small` |
 | Term main pane | Reuse (`.panel` + `.discover-facts`) | n/a | `Data/FactList` | long definition, missing definition, 0 uses, many examples | heading, definition list | `body`, `mono-small` |
 | Term detail pane with split | Reuse (`DetailSplit`) | n/a | `Shell/DetailSplit` | labels missing, 0–n related terms, narrow pane | separator is keyboard-resizable; panes labelled | `panel` |
-| Skill header | Compose (`.discover-page__header` + `.badge`) | n/a | `Shell/PageHeader` | state generated/edited/missing, file path, purpose | heading, state carries the word | `page-title`, `mono-small`, `badge` |
+| Skill editor header | Compose (`.discover-skill__header`) | n/a | n/a; `verify:interface` covers it | relative path, draft state (clean, dirty, missing), live text | heading; the state line carries the word | `panel-title`, `mono`, `warning`, `error` |
 | Skill editor with dirty marker | Reuse (`MonacoEditor`) | n/a | `Editor/Monaco` | empty text, long text, dirty, save failure | labelled editor, `data-dirty`, Ctrl+S | `mono` |
-| Skill save/restore | Reuse (`Button`) | Button | `Button/Primary`, `Button/Outline` | dirty, generated, missing, save in flight | disabled states carry a title | `button-primary`, `button-outline` |
+| Skill save/restore | Reuse (`Button`) | Button | `Button/Primary`, `Button/Outline` | dirty, generated, missing, save in flight | disabled Save carries a title naming the reason | `button-primary`, `button-outline` |
 | Warnings list | Compose (`.panel` + numbered rows) | n/a | `Shell/WarningList` | 0–n warnings, long text | ordered list semantics | `body-small`, `warning-surface` |
 | Empty explanation and written paths | Compose (`.panel`, `code`, list) | n/a | `Shell/EmptyState` | no artifacts, run disabled reason | heading + description; list of paths | `body`, `mono-small` |
 

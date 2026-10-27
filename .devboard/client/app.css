@@ -1739,6 +1739,49 @@ kbd {
   min-height: 0;
 }
 
+/* The skill header pairs the file identity with a draft-state line and the actions. */
+.discover-skill__header {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.discover-skill__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.discover-skill__title {
+  line-height: 1.2;
+  max-width: 100%;
+}
+
+.discover-skill__file {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+.discover-skill__state {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.discover-skill__state[data-state="dirty"] {
+  color: var(--warning);
+}
+
+.discover-skill__state[data-state="missing"] {
+  color: var(--error);
+}
+
+.discover-skill__actions {
+  align-self: center;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
 /* Warnings page. */
 .discover-warning-list {
   list-style: none;

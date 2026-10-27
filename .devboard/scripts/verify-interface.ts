@@ -2861,6 +2861,21 @@ try {
   await delay(150);
   const skillDirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-text"]').getAttribute("data-dirty") === "true"`);
   check(skillDirty, "the skill editor does not mark unsaved changes");
+  const dirtyHeader = await page.eval<{ enabled: boolean; state: string }>(`(() => {
+    const button = document.querySelector('[data-testid="discover-skill-save"]');
+    return {
+      enabled: button !== null && !button.disabled,
+      state: button
+        ?.closest('.discover-skill__header')
+        ?.querySelector('[data-testid="discover-skill-dirty"]')
+        ?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes",
+    "the skill header does not enable Save for an unsaved draft",
+    dirtyHeader,
+  );
   const editedSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
   const saveClicked = await page.eval<boolean>(`(() => {
     const button = document.querySelector('[data-testid="discover-skill-save"]');
@@ -2937,6 +2952,8 @@ try {
     editor: number;
     panel: number;
     title: string;
+    state: string;
+    saveDisabled: boolean;
     eyebrow: boolean;
     meta: boolean;
     name: boolean;
@@ -2944,6 +2961,7 @@ try {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
     const index = document.querySelector('#workspace-discover .discover-skill-page');
+    const save = document.querySelector('[data-testid="discover-skill-save"]');
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
@@ -2951,6 +2969,10 @@ try {
       editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
       panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
       title: panel?.querySelector('.panel__title')?.textContent?.trim() ?? "",
+      state: panel
+        ?.querySelector('[data-testid="discover-skill-status"]')
+        ?.textContent?.trim() ?? "",
+      saveDisabled: save === null || save.disabled,
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
       name: panel?.querySelector('.panel__header .muted') !== null,
@@ -2962,6 +2984,11 @@ try {
     skillLayout.title === "discover-testing-strategy/SKILL.md",
     "the skill panel is not titled with the relative path",
     skillLayout.title,
+  );
+  check(
+    skillLayout.state === "No unsaved changes" && skillLayout.saveDisabled,
+    "the clean skill header does not state the draft is saved and disable Save",
+    skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);
   check(skillLayout.editor >= skillLayout.panel - 48, "the skill editor does not use the full pane", skillLayout);

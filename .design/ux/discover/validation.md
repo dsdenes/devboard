@@ -80,3 +80,30 @@
     existing `Design System/Overview` story still matches `design/tokens.json` (export diff empty).
 - Verdict: pass for the structural, visual, interaction, and accessibility checks listed above;
   live-crawl behavior remains covered by the server suite and the documented operator procedure.
+
+## Issue #228 — skill editor header
+
+- Element: `#workspace-discover .discover-skill__panel .panel__header`.
+- Change: the header is now a two-line identity block — the relative path with the skill name in
+  `foreground` and `/SKILL.md` muted in `muted-foreground`, over an 11px draft line — with the
+  restore and Save controls right-aligned. Save is disabled and titled while the draft matches the
+  live text. The path keeps `mono` type and a full-path `title`.
+- Commands: `cd .devboard && bun run build`; `cd .devboard && bun run verify:interface`.
+- Fixture: the verifier's seeded host served on port 8091 with the worktree `dist`.
+- States and viewports:
+  - clean, 1440×900 dark — `after-228-header-1440-dark.webp`;
+  - clean, 1024×720 dark — `after-228-header-1024-dark.webp`;
+  - unsaved draft, 1024×720 dark — `after-228-header-dirty-1024-dark.webp`;
+  - unsaved draft, 1024×720 light — `after-228-header-dirty-1024-light.webp`;
+  - live file missing, 1024×720 light — `after-228-header-missing-1024-light.webp`;
+  - previous header, 1024×720 dark — `before-228-header-1024-dark.webp`.
+- Checks: the identity block and actions both fit the 30px header with no clipped text
+  (`scrollHeight − clientHeight ≤ 1`); the path stays on one line; the state line changes
+  `No unsaved changes` → `Unsaved changes` (warning) → `Live file missing` (error) as the state
+  changes; Save is disabled with a reason while clean or missing and enabled while dirty; the
+  restore control renders for edited and missing skills only. No console or network error appeared
+  in the observed states. `verify:interface` passed, including its updated assertions for the
+  draft line and the disabled Save.
+- Not run: no OpenUI primitive or DTCG token changed, so no Storybook story or catalog entry was
+  required.
+- Verdict: pass.
