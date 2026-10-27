@@ -448,7 +448,6 @@
     <div class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Queue</h2>
-        <span class="panel__subtitle">Sorted by number</span>
       </div>
       <div class="panel__body panel__body--flush">
         <ol class="issues-queue" data-testid="issues-queue">
