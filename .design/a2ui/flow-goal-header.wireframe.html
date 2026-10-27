@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flow goal header — wireframe</title>
+    <style>
+      :root {
+        color: #333;
+        background: #f7f7f7;
+        font-family: system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+      }
+      main {
+        max-width: 1200px;
+        margin: 0 auto;
+        background: #fff;
+        border: 2px solid #bbb;
+      }
+      header {
+        border-bottom: 2px solid #bbb;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px;
+      }
+      .identity {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0;
+      }
+      .state {
+        border: 1px dashed #888;
+        padding: 3px 8px;
+        font-size: 12px;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .action {
+        border: 2px solid #777;
+        padding: 8px 14px;
+        font-size: 13px;
+      }
+      .action.primary {
+        border-style: solid;
+        background: #e8e8e8;
+        font-weight: 700;
+      }
+      .action.disabled {
+        border-style: dashed;
+        color: #999;
+      }
+      .annotation {
+        color: #666;
+        display: block;
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+        margin-top: 4px;
+      }
+      .body {
+        padding: 20px;
+      }
+      .editor {
+        border: 2px dashed #bbb;
+        min-height: 240px;
+        padding: 16px;
+      }
+      .placeholder {
+        background: #eee;
+        height: 10px;
+        margin-bottom: 10px;
+      }
+      .placeholder.short {
+        width: 42%;
+      }
+      @media (max-width: 768px) {
+        body {
+          padding: 12px;
+        }
+        header,
+        .identity,
+        .actions {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+        .actions {
+          width: 100%;
+        }
+        .action {
+          text-align: center;
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <section class="identity" aria-label="Goal identity">
+          <div>
+            <h1>Flow goal</h1>
+            <span class="annotation">surface_title · P0</span>
+          </div>
+          <div>
+            <span class="state">No goal yet</span>
+            <span class="annotation">goal_state · P0</span>
+          </div>
+        </section>
+        <section class="actions" aria-label="Goal actions">
+          <div>
+            <div class="action primary">Create flow goal</div>
+            <span class="annotation">create_goal · P0</span>
+          </div>
+          <div>
+            <div class="action disabled">Save</div>
+            <span class="annotation">save_goal · P0</span>
+          </div>
+        </section>
+        <span class="annotation">region_header · P0</span>
+      </header>
+      <div class="body">
+        <div class="editor">
+          <span class="annotation">Goal text editor (out of scope)</span>
+          <div class="placeholder"></div>
+          <div class="placeholder short"></div>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

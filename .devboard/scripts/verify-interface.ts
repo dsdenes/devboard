@@ -2206,18 +2206,44 @@ try {
     "a Flow action does not use the design-system horizontal padding",
     flowGoalSurface.startPadding,
   );
-  const flowGoalHeader = await page.eval<{ state: string; tone: string; saveDisabled: boolean }>(`(() => {
+  const flowGoalHeader = await page.eval<{
+    state: string;
+    badge: boolean;
+    tone: string;
+    headerHeight: number;
+    aligned: boolean;
+    saveDisabled: boolean;
+  }>(`(() => {
     const state = document.querySelector('[data-testid="flow-goal-state"]');
     const save = document.querySelector('[data-testid="save-flow-goal"]');
+    const header = state?.closest(".flow-goal__header");
+    const title = header?.querySelector(".flow-goal__title");
+    const center = (element) => {
+      const box = element?.getBoundingClientRect();
+      return box === undefined ? Number.NaN : box.top + box.height / 2;
+    };
     return {
       state: state?.textContent?.trim() ?? "",
-      tone: state === null ? "" : getComputedStyle(state).color,
+      badge: state?.classList.contains("badge") ?? false,
+      tone: state?.getAttribute("data-tone") ?? "",
+      headerHeight: Math.round(header?.getBoundingClientRect().height ?? 0),
+      aligned: Math.abs(center(state) - center(title)) <= 1,
       saveDisabled: save?.disabled !== false,
     };
   })()`);
   check(
     flowGoalHeader.state === "Saved" && flowGoalHeader.saveDisabled,
     "the Flow goal header does not state its saved state",
+    flowGoalHeader,
+  );
+  check(
+    flowGoalHeader.badge && flowGoalHeader.tone === "success",
+    "the Flow goal saved state is not a success badge",
+    flowGoalHeader,
+  );
+  check(
+    flowGoalHeader.headerHeight === 44 && flowGoalHeader.aligned,
+    "the Flow goal header does not hold the redesigned single row",
     flowGoalHeader,
   );
   const flowLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-goal-text"] textarea')?.getAttribute("aria-label") ?? ""`);
@@ -4267,6 +4293,7 @@ try {
     "the empty Agents page has no Overview recovery",
     emptyAgents,
   );
+  await saveShot("issues-agents-page-empty");
   await page.click('[data-testid="issues-agents-overview"]');
   await page.wait(
     `document.querySelector('[data-testid="issues-overview"]') !== null`,
@@ -4582,22 +4609,38 @@ try {
     agentsHeader,
   );
   check(agentsHeader.title === "Agents" && agentsHeader.eyebrow === "Issues", "the Agents header identity is wrong", agentsHeader);
-  const cardsFit = await page.eval<Array<{ issue: string; statusInside: boolean; activityInside: boolean; asked: boolean }>>(
+  const cardsFit = await page.eval<
+    Array<{
+      issue: string;
+      activityInside: boolean;
+      asked: boolean;
+      stateBadge: string;
+      activityLabel: string;
+      titleHeight: number;
+      cardHeight: number;
+      cardBottom: number;
+      logHeight: number;
+    }>
+  >(
     `[...document.querySelectorAll('[data-testid="issues-agent"]')].map((card) => {
       const cardBox = card.getBoundingClientRect();
-      const statusBox = card.querySelector('.issues-agent__head .badge')?.getBoundingClientRect();
       const activityBox = card.querySelector('[data-testid="issues-agent-activity"]')?.getBoundingClientRect();
       return {
         issue: card.getAttribute("data-issue") ?? "",
-        statusInside: statusBox !== undefined && statusBox.bottom <= cardBox.bottom + 0.5,
         activityInside: activityBox !== undefined && activityBox.bottom <= cardBox.bottom + 0.5,
         asked: card.getAttribute("data-asked") === "true",
+        stateBadge: card.querySelector(".issues-agent__head .badge")?.textContent?.trim() ?? "",
+        activityLabel: card.querySelector(".issues-agent__activity-label")?.textContent?.trim() ?? "",
+        titleHeight: card.querySelector(".issues-agent__title")?.getBoundingClientRect().height ?? 0,
+        cardHeight: cardBox.height,
+        cardBottom: cardBox.bottom,
+        logHeight: activityBox?.height ?? 0,
       };
     })`,
   );
   check(
-    cardsFit.every((card) => card.statusInside && card.activityInside),
-    "an agent card clips its status or activity",
+    cardsFit.every((card) => card.activityInside),
+    "an agent card clips its activity",
     cardsFit,
   );
   check(
@@ -4605,6 +4648,33 @@ try {
     "a card with a pending question does not mark it",
     cardsFit,
   );
+  check(
+    cardsFit.every((card) => card.stateBadge === ""),
+    "a card repeats the fleet state in a badge",
+    cardsFit,
+  );
+  check(
+    cardsFit.every((card) => card.activityLabel === "Latest activity"),
+    "an agent card does not label its activity",
+    cardsFit,
+  );
+  check(
+    new Set(cardsFit.map((card) => Math.round(card.titleHeight))).size === 1,
+    "agent titles do not reserve the same height",
+    cardsFit,
+  );
+  check(
+    Math.round(cardsFit[0]?.cardHeight ?? 0) === Math.round(cardsFit[1]?.cardHeight ?? 0) &&
+      Math.abs((cardsFit[0]?.cardBottom ?? 0) - (cardsFit[1]?.cardBottom ?? 0)) <= 0.5,
+    "agent cards in one row do not share a height",
+    cardsFit,
+  );
+  check(
+    cardsFit.every((card) => Math.round(card.logHeight) === 64),
+    "a waiting card's activity log is not the compact 64px block",
+    cardsFit,
+  );
+  await saveShot("issues-agents-page");
   check(
     await page.eval<boolean>(
       `(() => {
@@ -4614,6 +4684,36 @@ try {
     ),
     "the Agents grid overflows horizontally",
   );
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the supported floor on the Agents page");
+  check(
+    await page.eval<number>(
+      `getComputedStyle(document.querySelector('[data-testid="issues-agents"]')).gridTemplateColumns.split(" ").length`,
+    ) === 1,
+    "the Agents grid does not fall to one column at 1024px",
+  );
+  check(
+    await page.eval<boolean>(
+      `(() => {
+        const grid = document.querySelector('[data-testid="issues-agents"]');
+        return grid !== null && grid.scrollWidth <= grid.clientWidth + 1;
+      })()`,
+    ),
+    "the Agents grid overflows horizontally at 1024px",
+  );
+  await saveShot("issues-agents-page-1024");
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop viewport after the Agents check");
   check(
     await page.eval<number>(`document.querySelectorAll('[data-testid="issues-activity"]').length`) === 0,
     "the Agents page renders a singular activity log",

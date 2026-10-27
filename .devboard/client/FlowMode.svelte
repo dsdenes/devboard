@@ -51,6 +51,20 @@
   function submitAnswer(pending: RunQuestion, target: "goal" | "implementation" | "conversation"): void {
     flow.answerQuestion(pending, flow.answers[target], target);
   }
+
+  const hasGoal = $derived(flow.goal.trim().length > 0);
+  const goalHeaderState = $derived.by(() => {
+    if (flow.goalCreation !== null) {
+      return { state: "running", tone: "accent", label: "Interview running" };
+    }
+    if (flow.goalDirty) {
+      return { state: "dirty", tone: "warning", label: "Unsaved changes" };
+    }
+    if (hasGoal) {
+      return { state: "saved", tone: "success", label: "Saved" };
+    }
+    return { state: "empty", tone: null, label: "No goal yet" };
+  });
 </script>
 
 {#snippet questionPanel(
@@ -352,38 +366,27 @@
   >
     <div class="panel__header flow-goal__header">
       <div class="flow-goal__identity">
-        <h2 class="panel__title">Flow goal</h2>
+        <h2 class="panel__title flow-goal__title">Flow goal</h2>
         <span
-          class="flow-goal__state"
-          data-state={flow.goalCreation !== null
-            ? "running"
-            : flow.goalDirty
-              ? "dirty"
-              : flow.goal.trim().length > 0
-                ? "saved"
-                : "empty"}
+          class="badge flow-goal__state"
+          data-state={goalHeaderState.state}
+          data-tone={goalHeaderState.tone}
           data-testid="flow-goal-state"
         >
-          {flow.goalCreation !== null
-            ? "Interview running"
-            : flow.goalDirty
-              ? "Unsaved changes"
-              : flow.goal.trim().length > 0
-                ? "Saved"
-                : "No goal yet"}
+          {goalHeaderState.label}
         </span>
       </div>
       <div class="row-sm flow-goal__actions">
         <Button
-          variant="outline"
+          variant={hasGoal ? "outline" : "default"}
           data-command="flow.goal.create"
           data-testid="create-flow-goal"
           onclick={() => flow.createGoal()}
         >
-          {flow.goal.trim().length > 0 ? "Recreate flow goal" : "Create flow goal"}
+          {hasGoal ? "Recreate flow goal" : "Create flow goal"}
         </Button>
         <Button
-          variant="default"
+          variant={flow.goalDirty ? "default" : "secondary"}
           data-command="flow.goal.save"
           data-testid="save-flow-goal"
           disabled={!flow.goalDirty}

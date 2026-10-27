@@ -1,94 +1,109 @@
 # Validation — Issues / Agents
 
 - Page: Issues → Agents (`#workspace-issues > section.issues-agents-page`).
-- Branch: `issue-240`; commit: the revision that carries this file (merge to `main` after review).
-- Command: `cd .devboard && bun run build`, `bun run check`, `bun run verify:interface`,
-  `bun run verify:issues`, `bun test`.
-- Base URL: `http://127.0.0.1:8141/` (three-agent fixture) and `http://127.0.0.1:8142/`
-  (empty fixture), launched from the worktree with `STATIC_DIR` pointing at the final build. An
-  earlier 12-agent fixture at `http://127.0.0.1:8137/` covered the many-card layout.
-- Playwright source: OMP browser (Playwright-backed Chromium), plus the repository's
-  `verify-interface.ts` CDP contract.
-- Viewports: 2101×1017 (the issue capture), 1440×900, 1024×720. 390×844 is not supported: the
-  app replaces the workspace with the viewport guard below 1024×720 by design.
+- Issue: #240 (second redesign of the card surface; the first redesign is `fdda380`).
+- Worktree: `.worktree/issue-240`, branch `issue-240`. All commands ran from `.devboard` in the
+  worktree; no path left the repository.
+- This run also merged the concurrent `origin/main` changes: `96b1161` dropped the per-card
+  `running` badge, and `9e638f9` reworked the Overview rows; it keeps the removal of the remaining
+  `needs answer` pill on the fleet cards.
+
+## Commands
+
+```bash
+bun install --frozen-lockfile
+bun run build                 # vite build, dist rewritten
+bun test                      # 581 pass, 0 fail, 4070 expect() calls, 46 files
+bun run check                 # svelte-check: 1672 files, 0 errors, 0 warnings
+bun run verify:interface      # passed, including the new card geometry assertions
+bun run verify:issues         # passed on the merged tree
+```
+
+The browser contract now checks, on the three-agent fixture:
+
+- every card has no `running`/`needs answer` badge in its head;
+- every card labels its activity `Latest activity`;
+- the three title slots have one rounded height;
+- cards in a row share a height and a bottom edge;
+- each waiting card's activity log is the compact 64px block;
+- the grid falls to one column at 1024×720 and does not overflow at either width;
+- `issues-agents-page.png`, `issues-agents-page-1024.png`, `issues-agents-page-empty.png`
+  captures are written under `.devboard/.tmp/interface/`.
+
+## Dashboard and viewports
+
+The worktree build was served from `.devboard/dist`, not the installed bundle, against the
+fixture host and the seeded three-agent state (opened through the command palette, because the
+Issues sidebar no longer lists Agents):
+
+```bash
+ADRS_DIR=<fixture>/adrs REPO_DIR=<fixture> GOAL_FILE=<fixture>/GOAL.md \
+STATIC_DIR=<worktree>/.devboard/dist STATE_DIR=<fixture>/.devboard/.tmp/state \
+AGENT_COMMAND=true PORT=8190 bun run server/index.ts
+```
+
+- 2101×1017 — the reported capture width; four-column grid with the three fixture cards.
+- 1440×900 — two cards per row, question blocks with two and one option.
+- 1024×720 — one column; each card keeps its head on one line and does not overflow.
+- Light theme at 1440×900 — warning border and question surface keep their own foreground.
 
 ## Journeys exercised
 
 | Journey | Evidence |
 |---|---|
-| Scan the fleet | 12 cards in the wide fixture and 3 in the final fixture; 4 columns at 2101, 2 at 1440, 1 at 1024; status and log inside every card box; no horizontal overflow |
-| Find the blocked agent | 3-agent fixture: header badge `3 need an answer`, every card `data-asked="true"`, warning border, `needs answer` badge, question block |
-| Answer and clear one question | `verify-interface.ts`: answer carries the run id, only that agent's question clears, header falls to `2 need an answer` |
-| Focus one agent | `verify-interface.ts`: Focus opens the existing focus tab with the full log and returns to the grid |
-| Empty fleet | `issues-agents-empty` panel, `0 running`, `Open Overview` control; the control returns to Overview |
-| Long title | two-line clamp with the full title in the heading tooltip (card `#233` in the fixture) |
-| Failed run | `#237` renders `failed` with the error badge tone |
-| Zero/one/many | empty fixture, one-card edit iteration, 12-card fixture |
-
-## Rendered evidence
-
-- `shots/agents-baseline-2101-dark.png` — before: 167px cards, status clipped below the card,
-  activity collapsed to 21px (`scrollHeight 4143`).
-- `shots/agents-2101-dark.png` — after at 2101×1017.
-- `shots/agents-1440-dark.png` — after at 1440×900.
-- `shots/agents-1024-dark.png` — after at 1024×720.
-- `shots/agents-empty-1440-dark.png` — empty fleet with the recovery control.
-- Shots are ignored by `.devboard/.design/.gitignore`; they are local evidence, reproduced by the
-  preview fixture.
+| Survey the fleet | Three cards show the mono issue link, two-line title slot, elapsed/start line, labeled activity, and `Focus`; no card repeats the fleet state |
+| Find the blocked agent | Header badge `3 need an answer`, warning card borders, and the question block; no per-card pill |
+| Answer and clear one question | `verify-interface.ts`: the answer carries the run id, only that agent's question clears, header falls to `2 need an answer` |
+| Open one agent | `Focus` opens the existing focus tab with the full log and returns to the grid |
+| Empty fleet | `issues-agents-empty` panel, `0 running`, `Open Overview` control back to Overview |
+| Long title | Two-line clamp with the full title in the heading tooltip |
+| Narrow / wide | 1024 one column; 2101 four columns; no grid or document overflow |
 
 ## Measurements
 
-- 2101: cards 415×397, 4 columns; grid `scrollWidth === clientWidth`.
-- 1440: cards 511×397, 2 columns; no page or grid horizontal overflow.
-- 1024: card 619×397, 1 column; no horizontal overflow.
-- Status badge and activity bottom are inside the card rect on every card (asserted in
-  `verify-interface.ts`).
-- Activity surface: 96px visible, own scroll (`scrollHeight 155`, `clientHeight 94` in the final
-  fixture), newest line followed by the shared `IssuesAgentLog`; command rows keep their accent
-  prompt and chip from the merged activity-log design.
-- Console: no errors or warnings on either fixture page (`tab.errors()` and `tab.console()` empty).
-- Wireframe: `.design/a2ui/issues-agents.wireframe.html` has no horizontal overflow at 1440×900
-  and 390×844; it is a structure rendering, not the product surface.
-- Focus: native controls keep the 2px ring; the issue link has a 2px outline-offset ring from the
-  shared rule. Card heading is the `aria-labelledby` target.
+- 1440: cards 511px wide, the three waiting cards share a 399px height and a bottom edge; each
+  waiting log is 64px; the title slots are 38px.
+- 1024: card 619px wide, one column; grid `scrollWidth === clientWidth`.
+- 2101: cards 415px wide, four columns; grid `scrollWidth === clientWidth`.
+- A waiting card's question block starts at the same y as its neighbour's; a card with fewer
+  options leaves card surface below the question rather than stretching the log.
+- Console: no page exception, console error, or failed asset request (`verify:interface` gates
+  all three). No horizontal document scroll at either width.
+
+## Rendered evidence
+
+Under `.devboard/.design/issues-agents/shots/` (ignored by `.devboard/.design/.gitignore`):
+
+- `agents-page-1440-dark.png` — two-column grid with three waiting cards; one has two options.
+- `agents-page-1440-light.png` — the same state in light theme.
+- `agents-page-1024-dark.png` — supported floor, one column.
+- `agents-page-2101-dark.png` — the reported viewport width, four-column grid.
+- `agents-page-empty-1440-dark.png` — empty fleet with the recovery control.
+
+The older `agents-*.png` shots remain as the previous redesign's evidence; they are not used for
+this run's verdict.
 
 ## Dependent pages
 
-- `PageHeader` is reused unchanged; Goal pages keep their stories and `verify-interface.ts`
-  coverage.
-- `IssuesAgentQuestion` is unchanged. `IssuesAgentLog` gained the shared terminal treatment from
-  `main`; the Focus-tab, Scout, and overview usages pass `verify:interface` and `verify:issues`.
-- The card CSS is scoped to `.issues-agent*`; the merged `.issues-activity` base is exercised by
+- `PageHeader` is reused unchanged.
+- `IssuesAgentQuestion` is unchanged. `IssuesAgentLog` is reused with the new label wrapper; the
+  Focus tab, Overview, and Scout usages pass `verify:interface` and `verify:issues`.
+- The card CSS is scoped to `.issues-agent*`; the shared `.issues-activity` base is exercised by
   Focus, Scout, and Overview.
+- `DESIGN.md` gains the fleet-card entry; `design/tokens.json` and `openui.json` are unchanged.
 
-## Checks
+## Not run
 
-- `bun run check`: 0 errors, 0 warnings.
-- `bun run verify:interface`: pass on the final merged tree (includes the new empty, header,
-  marker, and clipping checks).
-- `bun run verify:issues`: pass on the final merged tree.
-- `bun test`: 567 pass, 0 fail on the final merged tree.
-
-## Findings
-
-- Before the change the grid forced every card to a 167px row while `overflow: hidden` clipped the
-  status at `y=267` and the activity to 21px; the surface therefore hid its own status. The
-  content-sized card plus `grid-auto-rows: max-content` resolves it.
-- The empty-state button initially stretched to the panel width inside the flex column; wrapping it
-  in `.toolbar` restored the 28px control width (112×28 measured).
-- No duplicate fact found in the rendered redesign: fleet count once in the header, status once per
-  card, start time once per card, activity once per card, question once on its card.
-
-## Not run / blocked
-
-- Light theme was not captured for this page. Tokens are unchanged and both themes map through the
-  same custom properties; dark is normative in `DESIGN.md`.
-- designmd MCP research could not run (no MCP manager in this session); no design-system artifact
-  was mutated, so the gate is not bypassed. See
-  `.devboard/.design/research/2026-10-27-issues-agents.md`.
+- Storybook: the card is a page-level composition, not an `openui.json` primitive, and no token
+  changed; no story was added.
+- Mobile: the interface requires 1024×720 and replaces the workspace with a viewport notice
+  below it; there is no mobile layout to capture.
+- Live designmd MCP: not configured in this session. The research receipt records that gap and
+  relies on the repository's existing designmd.ai receipts; no token or kit value was invented.
+- The production dashboard on port 8081 was not used for the after evidence; every capture above
+  comes from the worktree build.
 
 ## Verdict
 
-pass — default, empty, long-title, failed, question, and narrow states were exercised in the
-browser; the primary scan/focus/answer journeys pass both the live fixture and the repository
-contract suite.
+pass — default, waiting, empty, long-title, narrow, wide, and light-theme states were exercised;
+the scan, answer, and focus journeys pass the live fixture and the repository contract suites.

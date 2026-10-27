@@ -429,6 +429,18 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   stopping the running agent. The panel header carries one aggregate warning badge,
   `<n> need answers`, only while an agent waits; the fleet size is not repeated there because the
   Automation panel owns it.
+- **Agent fleet card** (`.issues-agent`) — one card per running agent in the Agents page grid: a
+  360px-minimum `surface` card with 1px `border`, 4px radius, 10px padding, and an 8px internal
+  rhythm. Its head holds the mono `accent` issue-number link to the tracker and one outline
+  `Focus` control, both on a 28px line. The title reserves exactly two lines at 13px/600 so the
+  meta row aligns across a row of cards. The meta row carries the elapsed time and the absolute
+  start clock in `mono-small`, muted, tabular figures. A labeled `Latest activity` `overline`
+  sits above the shared `.issues-activity` block, which follows the newest line and fills the
+  remaining card body, except on a waiting card where it stays a 64px block. A card waiting on a
+  question takes a `warning` border, and its question block takes a 2px `warning` left edge on
+  `warning-surface`; it carries no `running` or `needs answer` pill because the page header counts
+  the fleet and the question text names the state. Grid rows stretch and the activity absorbs the
+  slack, so cards in one row share a height.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The four `role="tab"` controls sit in a `role="tablist"`
   group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px
@@ -459,17 +471,20 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   confirmation dialog that names what is deleted and confirms with the `destructive` variant; no
   permanent danger panel exists. Progress and the result render as one warning message under the
   header.
-- **Flow goal header** (`.flow-goal__header`) — the panel title with a 11px state line (`Saved`
-  success, `Unsaved changes` warning, `Interview running` accent, `No goal yet` muted), and an
-  action group: the outline `(Re)create flow goal` and a primary `Save` that is disabled until the
-  draft differs from the saved goal.
+- **Flow goal header** (`.flow-goal__header`) — the lead surface's header: one 44px row
+  with an 18px `section-title` word and a 10px status badge (`No goal yet` muted, `Saved`
+  success, `Unsaved changes` warning, `Interview running` accent), then a right-aligned
+  action group that stays on one line. The single filled primary follows the state:
+  `Create flow goal` while no goal exists, `Save` while the draft is unsaved; the other
+  control is outline or secondary, and a disabled Save is never the only emphasis. The
+  badge always states the meaning in words.
 - **Flow steering panel** (`.steering-composer`) — the panel header carries the title and an 11px
   state line (`Read at the next checkpoint` muted while empty, `N notes waiting for the next
   checkpoint` warning while any note is new, `All notes read` success otherwise). The composer is
   a full-width textarea followed by a right-aligned primary `Send` at 6px, disabled while the draft
   is blank, so the action sits with the field it acts on instead of the header bar. Notes follow
   as left-ruled rows with source, timestamp, and status words.
-- **Discover skill header** (`.discover-skill__header`) — follows the Flow goal header: the
+- **Discover skill header** (`.discover-skill__header`) — the skill editor's header: the
   relative path `<skill>/SKILL.md` in the `panel-title` size, with the skill name in `foreground`
   and the file name in `muted-foreground`; a second 11px draft line (`No unsaved changes` muted,
   `Unsaved changes` warning, `Live file missing` error); and a right action group holding the
