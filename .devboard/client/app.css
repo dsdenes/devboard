@@ -2711,6 +2711,10 @@ a.code-chip--link:focus-visible {
   overflow: auto;
 }
 
+.issues-overview__side > .panel {
+  flex: 0 0 auto;
+}
+
 @media (max-width: 1100px) {
   .issues-overview__body {
     grid-template-columns: 1fr;
@@ -2985,7 +2989,8 @@ a.code-chip--link:focus-visible {
   cursor: pointer;
 }
 
-.issues-agent-row:hover {
+.issues-agent-row:hover,
+.issues-agent-row[aria-current="true"] {
   background: var(--secondary);
 }
 
@@ -3010,6 +3015,18 @@ a.code-chip--link:focus-visible {
   color: var(--muted-foreground);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+}
+
+.issues-agent-output > .panel__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.issues-agent-output .issues-activity {
+  flex: 1;
+  min-height: 120px;
 }
 
 .issues-agent-focus {

@@ -1398,10 +1398,19 @@ linking to Runs when the run has been pruned.
 The Overview keeps the Start, Pause, Resume, Stop, and Check now controls, the poll and worker
 facts, and `data-testid="issues-overview"`. It shows the running-agent count as
 `data-testid="issues-running-agents"`, the pending count, the number of issues in cooldown and the
-earliest cooldown time as `data-testid="issues-cooldowns"`, and links to the Agents tab. It no
-longer renders a single `issues-activity` log or a singular `issues-question`. The queue keeps
-every open issue, its `goal` badge, and its handled state, and shows `data-run` and a running
-marker for an issue with an active agent. The Runs page lists every run with its status and issue,
+earliest cooldown time as `data-testid="issues-cooldowns"`, and links to the Agents tab with
+`data-testid="issues-agents-link"`. The left column holds the Automation panel and, directly after
+the Open Agents button, the running agents in `data-testid="issues-agent-summary"`: one button per
+agent carrying `data-run` and `data-issue`, sorted by issue number, with `aria-current="true"` on
+the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
+The right column renders only the selected agent's output in
+`data-testid="issues-overview-output"` with `data-run`, its stream in
+`data-testid="issues-overview-activity"`, and its question in
+`data-testid="issues-overview-question"`. The first agent is selected by default, clicking another
+row switches the output, and the pane falls back to the first live agent when the selected run
+ends; the overview list selects instead of opening a tab. The queue keeps every open issue, its
+`goal` badge, and its handled state, and shows `data-run` and a running marker for an issue with an
+active agent. The Runs page lists every run with its status and issue,
 and a run's detail shows only that run's activity. The status bar's issues indicator reports the
 lifecycle and the running-agent count in its title and still opens Issues mode.
 
