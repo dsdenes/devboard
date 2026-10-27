@@ -909,9 +909,10 @@ function validateSectionRecord(
   raw: Record<string, unknown>,
   key: string,
   fields: Record<string, (node: unknown, path: string) => Leaf>,
+  optionalFields: Record<string, (node: unknown, path: string) => Leaf> = {},
 ): Record<string, Leaf> {
   const section = sheetSection(raw, key, key);
-  const known = new Set(Object.keys(fields));
+  const known = new Set([...Object.keys(fields), ...Object.keys(optionalFields)]);
   for (const field of Object.keys(section)) {
     if (!known.has(field)) invalid(`${key}.${field}`, "is not a declared field");
   }
@@ -920,11 +921,58 @@ function validateSectionRecord(
     if (section[field] === undefined) invalid(`${key}.${field}`, "is required");
     result[field] = validate(section[field], `${key}.${field}`);
   }
+  for (const [field, validate] of Object.entries(optionalFields)) {
+    if (section[field] === undefined) continue;
+    result[field] = validate(section[field], `${key}.${field}`);
+  }
   return result;
 }
 
 function commandLeaf(entry: unknown, path: string): Leaf {
   return leafText(entry, path);
+}
+
+/**
+ * Rejects an architecture dependency graph that points anywhere but at the
+ * bounded contexts the same sheet records. Edges are directed: `from` depends
+ * on `to`.
+ */
+function validateDependencyEdges(architecture: Record<string, Leaf>): void {
+  const dependencies = architecture.dependencies;
+  if (dependencies === undefined || dependencies.confidence === "unknown") return;
+  const contextLeaf = architecture.contexts;
+  if (contextLeaf === undefined) return;
+  const contextRecords = Array.isArray(contextLeaf.value)
+    ? contextLeaf.value.filter(isRecord)
+    : [];
+  const names = new Set(contextRecords.map((context) => String(context.name)));
+  const edgeRecords = Array.isArray(dependencies.value) ? dependencies.value : [];
+  const seen = new Set<string>();
+  for (const [index, record] of edgeRecords.entries()) {
+    if (!isRecord(record) || typeof record.from !== "string" || typeof record.to !== "string") {
+      invalid(`architecture.dependencies.value[${index}]`, "must carry a from and a to context");
+    }
+    const { from, to } = record;
+    if (from === to) {
+      invalid(`architecture.dependencies.value[${index}].to`, "must differ from the source context");
+    }
+    for (const [field, name] of [["from", from], ["to", to]] as const) {
+      if (!names.has(name)) {
+        invalid(
+          `architecture.dependencies.value[${index}].${field}`,
+          `must name a bounded context; "${name}" is not one`,
+        );
+      }
+    }
+    const key = `${from}\u0000${to}`;
+    if (seen.has(key)) {
+      invalid(
+        `architecture.dependencies.value[${index}]`,
+        `repeats the dependency ${from} -> ${to}`,
+      );
+    }
+    seen.add(key);
+  }
 }
 
 const COMMAND_NAMES = [
@@ -958,6 +1006,45 @@ export function normalizeSheet(raw: unknown, freshness: Freshness): Sheet {
   for (const section of DISCOVER_SHEET_SECTIONS) {
     if (raw[section] === undefined) invalid(section, "is required");
   }
+
+  const architecture = validateSectionRecord(
+    raw,
+    "architecture",
+    {
+      contexts: (node, path) =>
+        leafRecords(
+          node,
+          path,
+          (entry, entryPath) =>
+            recordFields(entry, entryPath, {
+              name: textValue,
+              path: textValue,
+              responsibility: textValue,
+              entryPoints: recordTexts,
+            }),
+          (entry) => String((entry as { name: string }).name),
+        ),
+      dependencyDirection: leafText,
+      externalBoundaries: leafTexts,
+      sharedKernels: leafTexts,
+    },
+    {
+      // Optional so a sheet published before the dependency graph existed
+      // still loads; the current prompt records it for every crawl.
+      dependencies: (node, path) =>
+        leafRecords(
+          node,
+          path,
+          (entry, entryPath) =>
+            recordFields(entry, entryPath, {
+              from: textValue,
+              to: textValue,
+            }),
+          (entry) => `${String((entry as { from: string }).from)}\u0000${String((entry as { to: string }).to)}`,
+        ),
+    },
+  );
+  validateDependencyEdges(architecture);
 
   const sheet: Sheet = {
     schemaVersion: DISCOVER_SCHEMA_VERSION,
@@ -1034,24 +1121,7 @@ export function normalizeSheet(raw: unknown, freshness: Freshness): Sheet {
         ),
       pyramid: leafText,
     }),
-    architecture: validateSectionRecord(raw, "architecture", {
-      contexts: (node, path) =>
-        leafRecords(
-          node,
-          path,
-          (entry, entryPath) =>
-            recordFields(entry, entryPath, {
-              name: textValue,
-              path: textValue,
-              responsibility: textValue,
-              entryPoints: recordTexts,
-            }),
-          (entry) => String((entry as { name: string }).name),
-        ),
-      dependencyDirection: leafText,
-      externalBoundaries: leafTexts,
-      sharedKernels: leafTexts,
-    }),
+    architecture,
     ci: validateSectionRecord(raw, "ci", {
       provider: leafText,
       triggers: leafTexts,

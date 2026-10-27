@@ -148,6 +148,7 @@ Sections and required keys:
   },
   "architecture": {
     "contexts": { "value": [{ "name": "context name", "path": "repo-relative path", "responsibility": "short responsibility", "entryPoints": ["repo-relative path"] }], "evidence": ["path"], "confidence": "observed" },
+    "dependencies": { "value": [{ "from": "context name", "to": "context name" }], "evidence": ["path"], "confidence": "observed" },
     "dependencyDirection": { "value": "short direction statement", "evidence": ["path"], "confidence": "inferred" },
     "externalBoundaries": { "value": ["external system"], "evidence": ["path"], "confidence": "observed" },
     "sharedKernels": { "value": ["kernel and path"], "evidence": ["path"], "confidence": "observed" }
@@ -237,8 +238,14 @@ Section rules:
   `npm run test:unit`, `pytest tests/unit`, or `cargo test --test contract`; when the level has no
   separate entry point, it is the whole-suite invocation.
 - `architecture` reports detected bounded contexts or modules with path and responsibility, entry
-  points, allowed dependency direction, shared kernels, and `externalBoundaries`, which carries
-  external systems only and never internal architecture. `ci` reports provider, triggers, jobs,
+  points, the directed dependencies between them, allowed dependency direction, shared kernels, and
+  `externalBoundaries`, which carries external systems only and never internal architecture.
+  `dependencies` records one `{ from, to }` entry per edge where the context named `from` imports,
+  calls, or otherwise reaches the context named `to`; both names are contexts in this same sheet,
+  `from` is never `to`, and one edge appears once. Record an edge only when a file in the source
+  proves it; a project whose contexts never reach each other records `[]` with `confidence:
+  observed` and evidence naming the context paths, and a crawl that cannot determine the edges
+  records `unknown` with a reason. `ci` reports provider, triggers, jobs,
   required quality gates, and artifacts; with no CI configuration use `none detected`, never
   invented jobs. A quality gate is one required check with its name and a `checks` line that says
   what the gate verifies, such as `pre-commit` checking formatting and lint on staged files. Ground
@@ -503,6 +510,8 @@ Confirm all of the following:
 - [ ] `architecture.externalBoundaries` names external systems only: each entry is an external
       system, no runtime built-in, `node:` module, or concurrency primitive appears, and a host with
       none stages `[]` with `confidence: observed` and evidence.
+- [ ] Every `architecture.dependencies` entry names one context in `from` and one in `to`, never the
+      same context twice in an edge, never repeats an edge, and is grounded in a source file.
 - [ ] No staged file contains an absolute path, a secret value, a URL with user info, a paragraph,
       a timestamp, or a run id.
 - [ ] At least one `glossary/<boundedContext>.glossary.yaml` exists, parses as YAML, has the

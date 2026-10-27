@@ -18,9 +18,11 @@
   } from "../discover-format";
   import { onMount } from "svelte";
   import { connection } from "../connection.svelte";
+  import { dependencyChart, dependencyEdges } from "../dependency-diagram";
   import { discover } from "../discover.svelte";
   import type { Leaf } from "../types";
   import DataTable from "./DataTable.svelte";
+  import MermaidDiagram from "./MermaidDiagram.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
@@ -180,6 +182,14 @@
       })
       .filter((row) => row.name.length > 0 || row.path.length > 0),
   );
+  const dependencyDiagram = $derived.by(() => {
+    const leaf = sectionLeaf(architectureSection, "dependencies");
+    if (leaf === undefined || leaf.confidence === "unknown") return null;
+    return dependencyChart(
+      contextRows.map((row) => row.name),
+      dependencyEdges(leaf.value),
+    );
+  });
   const boundaryRows: BoundaryRow[] = $derived.by(() => {
     const rows: BoundaryRow[] = [];
     for (const group of BOUNDARY_GROUPS) {
@@ -822,6 +832,16 @@
                     </div>
                   {/each}
                 </dl>
+              {/if}
+
+              {#if dependencyDiagram !== null}
+                <div class="discover-subblock" data-testid="discover-dependency-graph">
+                  <h3 class="discover-subblock__title">Dependency graph</h3>
+                  <MermaidDiagram
+                    chart={dependencyDiagram}
+                    label={`Dependency graph for ${projectName}`}
+                  />
+                </div>
               {/if}
 
               {#if unknownBoundaryGroups.labels.length > 0}

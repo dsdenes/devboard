@@ -680,10 +680,11 @@ sheet covers the short platform stack (languages, runtimes, package managers, fr
 major tools, not individual dependencies), customer-facing deployment (artifact class, artifact,
 target, and pipeline sources), every environment (at least `production`, whose purpose states how
 changes reach it), exact main commands (with `unknown` for an unobserved command), branching
-strategy and model, test levels and pyramid, architecture boundaries, CI provider, triggers, jobs,
-and quality gates, and the three mandatory sections: runtime inventory, entry-point and
-dependency map, and delivery and versioning. It never guesses, invents an additional environment,
-copies README prose, or records a configuration value; a claim it cannot ground is `unknown`.
+strategy and model, test levels and pyramid, architecture contexts and their directed dependencies
+plus boundaries, CI provider, triggers, jobs, and quality gates, and the three mandatory sections:
+runtime inventory, entry-point and dependency map, and delivery and versioning. It never guesses,
+invents an additional environment, copies README prose, or records a configuration value; a claim
+it cannot ground is `unknown`.
 
 Main commands render as a two-column `Task`/`Command` table of the observed commands, `$`-prefixed,
 with no header row, under an `N of 8 commands found` count. That count is a disclosure
@@ -708,8 +709,11 @@ one short line saying what it verifies. A gate recorded without a check states `
 recorded.`, and the gates are not repeated among the Delivery facts. Runtime, deployment, CI, and
 branching use compact `dt`/`dd` facts whose list values are comma-separated.
 Architecture renders under the heading `Bounded contexts` as context rows showing the name,
-responsibility, and entry points, followed by external-boundary and shared-kernel chips. The
-repository path of a bounded context is not rendered.
+responsibility, and entry points, followed by external-boundary and shared-kernel chips and a
+rendered Mermaid dependency graph. The repository path of a bounded context is not rendered. The
+graph draws one node per bounded context and one arrow for every `architecture.dependencies` edge,
+pointing from the context that depends to the context it reaches; it is drawn with `flowchart LR`
+through Mermaid at render time, and a sheet without recorded edges draws no graph.
 External boundaries name only external systems — a remote API or service, a message broker, a
 database, or an identity provider the host integrates with across its own process and artifact.
 Language and runtime built-ins describe internal architecture, so `node:child_process`,
