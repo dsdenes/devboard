@@ -217,16 +217,26 @@ describe("scan request", () => {
 });
 
 describe("preflight", () => {
-  const environment = {
-    PATH: process.env.PATH ?? "",
-    HOME: "",
-  };
+  /**
+   * A PATH that always carries the two tools preflight looks up, so the test
+   * exercises the fact it names rather than the host's installed binaries.
+   */
+  async function pathWithTools(): Promise<string> {
+    const bin = await temporaryDirectory("scout-bin");
+    await writeFile(join(bin, "omp"), "");
+    await writeFile(join(bin, "gh"), "");
+    return bin;
+  }
 
   test("a state directory outside the repository is refused by name", async () => {
     const root = await repository();
     const outside = await temporaryDirectory("scout-state");
     expect(stateInsideRepository(root, outside)).toBe(false);
-    const result = await preflightScout({ repoDir: root, stateDir: outside, environment });
+    const result = await preflightScout({
+      repoDir: root,
+      stateDir: outside,
+      environment: { PATH: await pathWithTools(), HOME: outside },
+    });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.message).toContain("STATE_DIR");
@@ -236,15 +246,16 @@ describe("preflight", () => {
   test("a missing scan command is named with the paths it looked in", async () => {
     const root = await repository();
     const home = await temporaryDirectory("scout-home");
+    const environment = { PATH: await pathWithTools(), HOME: home };
     const result = await preflightScout({
       repoDir: root,
       stateDir: join(root, ".devboard", ".tmp", "state"),
-      environment: { ...environment, HOME: home },
+      environment,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.message).toContain("/scout-recommendations command is not installed");
-    expect(result.message).toContain(scoutCommandPaths(root, { ...environment, HOME: home })[0]!);
+    expect(result.message).toContain(scoutCommandPaths(root, environment)[0]!);
   });
 
   test("a checkout with no GitHub origin is refused", async () => {
@@ -252,7 +263,7 @@ describe("preflight", () => {
     const result = await preflightScout({
       repoDir: root,
       stateDir: join(root, ".devboard", ".tmp", "state"),
-      environment,
+      environment: { PATH: await pathWithTools(), HOME: root },
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -264,10 +275,11 @@ describe("preflight", () => {
     const home = await temporaryDirectory("scout-home");
     await mkdir(join(home, ".omp", "commands"), { recursive: true });
     await writeFile(join(home, ".omp", "commands", "scout-recommendations.md"), "# command\n");
+    const environment = { PATH: await pathWithTools(), HOME: home };
     const deny = await preflightScout({
       repoDir: root,
       stateDir: join(root, ".devboard", ".tmp", "state"),
-      environment: { ...environment, HOME: home },
+      environment,
       run: async () => ({ code: 0, stdout: "false", stderr: "" }),
     });
     expect(deny.ok).toBe(false);
@@ -275,7 +287,7 @@ describe("preflight", () => {
     const allow = await preflightScout({
       repoDir: root,
       stateDir: join(root, ".devboard", ".tmp", "state"),
-      environment: { ...environment, HOME: home },
+      environment,
       run: async () => ({ code: 0, stdout: "true", stderr: "" }),
     });
     expect(allow).toEqual({ ok: true, repository: "acme/fixture" });
