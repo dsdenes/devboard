@@ -10,6 +10,9 @@
     "publish": "bun run scripts/publish.ts",
     "release": "bun run scripts/release.ts",
     "test": "bun test",
+    "adr:lint": "adr lint --dir ../adrs",
+    "adr:graph": "adr graph --dir ../adrs",
+    "adr:queue": "adr queue --dir ../adrs",
     "verify:install": "bun run scripts/verify-install.ts",
     "verify:update": "bun run scripts/verify-update.ts",
     "verify:ui": "bun run scripts/verify-ui.ts",
@@ -44,6 +47,8 @@
     "tsconfig.json"
   ],
   "devDependencies": {
+    "@adrkit/cli": "0.20.0",
+    "@adrkit/mcp": "0.20.0",
     "@playwright/test": "1.64.1",
     "@storybook/svelte": "10.6.4",
     "@storybook/svelte-vite": "10.6.4",
@@ -71,6 +76,7 @@
     "vite": "^8.3.4"
   },
   "dependencies": {
+    "@adrkit/core": "0.20.0",
     "diff2html": "^3.4.56",
     "dompurify": "^3.4.17",
     "marked": "^18.1.1"

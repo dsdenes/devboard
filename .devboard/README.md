@@ -193,9 +193,10 @@ failed requests, and overflow. It writes screenshots under `.devboard/.tmp/inter
   Monaco Editor, xterm.js, and Lucide icons. All workers and assets are bundled locally; the
   page makes no network request beyond its WebSocket.
 - Density: 13 px body text with 12 px tables and monospace paths, code, diffs, terminals, and IDs.
-- Records: read from `adrs/` on every `listRecords` command and after every run, so files added,
-  removed, or resolved while the server runs appear without a restart. Each record carries the
-  first paragraph of its `Decision` section as a short summary.
+- Records: read from `adrs/` through adrkit on every `listRecords` command and after every run, so
+  files added, removed, or resolved while the server runs appear without a restart. Only records
+  adrkit accepts are listed. Each record carries the first paragraph of its `Decision` section as
+  a short summary.
 - State: the dashboard's server-owned state is written atomically to
   `<stateDir>/state/<24-hex hash of REPO_DIR>.json` (default `stateDir` is `<harness>/.tmp`), so it
   survives a backend restart without leaking between repositories that share one harness install.
@@ -276,6 +277,33 @@ ADRS_DIR="<host>/adrs" bun run start
 
 Open `http://127.0.0.1:8080/`. The server binds to `127.0.0.1` by default.
 
+## Decision records
+
+`adrs/` is an adrkit corpus. Every record opens with YAML frontmatter — `schemaVersion: 0.2.0`,
+`id`, `title`, `status`, `date`, `deciders`, and `affects` — and keeps its markdown body below the
+closing fence. The server reads the corpus through `@adrkit/core`'s `lintCorpus`, so a `.md` file
+whose frontmatter adrkit rejects never appears in the listing, in `pending`, or in `next`.
+
+A record is pending when its frontmatter `status` is `draft` or `proposed`; every other status is
+resolved. Records are ordered by file name, `next` is the first pending file in that order, and the
+interface renders the status with a capital first letter.
+
+Run the corpus tooling from `.devboard`:
+
+```bash
+bun run adr:lint     # adr lint --dir ../adrs
+bun run adr:graph    # adr graph --dir ../adrs
+bun run adr:queue    # adr queue --dir ../adrs
+```
+
+`.github/workflows/adr.yml` installs the harness dependencies and runs `bun run adr:lint` on every
+push to `main` and every pull request. On a pull request it also runs the `mbeacom/adrkit` action
+with `dir: adrs`, which comments the pull request's governing decisions.
+
+`.devboard/omp/mcp.json` declares a stdio MCP server named `adrkit` that runs
+`bunx @adrkit/mcp --cwd . --dir adrs`. It answers `tools/list` with `search_decisions`,
+`get_decision`, `get_decision_context`, and `list_superseded`.
+
 ## Durable state
 
 The dashboard keeps the state that drives the page in one file per host repository and restores
@@ -318,7 +346,7 @@ replay status `paused`, no stage transition, tracker read, retry, generation pas
 happens until `resumeLifecycle`, and the resume then re-spawns each interrupted lane.
 
 Foreground work that was live at death resumes with its original input. A manual ADR sequence
-continues from its persisted record, re-spawning that record only while it is still `Proposed`
+continues from its persisted record, re-spawning that record only while it is still pending
 and otherwise advancing to the next pending record; goal creation re-spawns `/goal-outcome`; a
 revision re-spawns the same prompt including its original guidance; skills preparation re-spawns
 `/prepare-skills` after restoring the same pre-run snapshot, so a resumed preparation that ends in
@@ -1440,7 +1468,7 @@ The client sends:
 - `startRun` with `file` starts that record first only when it is pending; the sequence then
   continues with the lowest-numbered remaining pending records.
 - Every accepted start resolves one record at a time until no pending record remains or a run
-  ends without resolving its record. A still-`Proposed` or removed active record ends the
+  ends without resolving its record. A still-pending or removed active record ends the
   sequence.
 - A manual start is accepted while a lifecycle run is active. When the lifecycle is advancing,
   the server first pauses it at its interrupted stage and then starts the sequence; a start that
@@ -1554,7 +1582,7 @@ The client sends:
   stops the other lanes. With no lane active, a generation pass that files
   nothing, and only parked epics remaining, the run sends an `error` naming every parked epic,
   reports the idle `goal` stage, and leaves those epics open; a new run clears the parked set.
-- When no epic remains, a generation pass files nothing, and no ADR is still `Proposed`, the
+- When no epic remains, a generation pass files nothing, and no ADR is still pending, the
   lifecycle resolves each pending record in ascending file-name order and then reports
   `finished`. A pass that leaves the same pending record set as the previous one without an epic
   sends an `error` and stops. Every stop before `finished` reports the idle `goal` stage with
@@ -1666,8 +1694,9 @@ The server answers with events:
 - A `question` event carries one option per choice. Each option has a `label`, an optional
   `description` stating the consequence of choosing it, and `recommended`, true for the answer
   the agent suggests. `answer` names the selected label as `value`.
-- A record's title is its first level-one heading.
-- A record is pending exactly when its status is `Proposed`; every other status is resolved.
+- A record's title and status come from its YAML frontmatter `title` and `status` fields.
+- A record is pending exactly when its status is `draft` or `proposed`; every other status is
+  resolved.
 - Records are ordered by file name, and `next` is the first pending record in that order (the lowest-numbered pending file).
 - `lifecycleState` reports `stage` (`goal`, `epic`, `adr`, `implementation`, or `finished`),
   the `pass` number, `work` (`null`, an ADR filename, or an epic issue number), and `paused`.

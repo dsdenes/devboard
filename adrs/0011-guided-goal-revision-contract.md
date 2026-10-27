@@ -1,6 +1,21 @@
+---
+schemaVersion: 0.2.0
+id: "0011"
+title: Guided goal revision contract
+status: deprecated
+date: 2026-10-19
+deciders: ["@dsdenes"]
+affects:
+  - type: path
+    pattern: .devboard/server/app.ts
+  - type: path
+    pattern: .devboard/client/lib/goal.svelte.ts
+  - type: path
+    pattern: .devboard/client/lib/components/GoalWorkspace.svelte
+---
 # Guided goal revision contract
 
-- Status: Superseded by `GOAL.md`: “The goal cannot be edited or rewritten while the lifecycle is running; both remain available whenever the lifecycle is not running or is paused.”
+Superseded by `GOAL.md`: “The goal cannot be edited or rewritten while the lifecycle is running; both remain available whenever the lifecycle is not running or is paused.”
 
 ## Context
 

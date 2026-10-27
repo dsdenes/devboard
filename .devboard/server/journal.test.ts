@@ -1,3 +1,4 @@
+import { pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, utimesSync } from "node:fs";
@@ -105,7 +106,7 @@ function connect(url: string): Promise<TestClient> {
   return promise;
 }
 
-const PENDING = "# First decision\n\n- Status: Proposed\n\n## Context\n\nFirst.\n\n## Decision\n\n";
+const PENDING = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
 
 async function startServer(options: {
   stateDir: string;

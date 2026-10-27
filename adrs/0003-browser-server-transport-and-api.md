@@ -1,6 +1,15 @@
+---
+schemaVersion: 0.2.0
+id: "0003"
+title: Browser-to-backend transport and API shape
+status: accepted
+date: 2026-10-19
+deciders: ["@dsdenes"]
+affects:
+  - type: path
+    pattern: .devboard/server/app.ts
+---
 # Browser-to-backend transport and API shape
-
-- Status: Accepted
 
 ## Context
 

@@ -1,6 +1,15 @@
+---
+schemaVersion: 0.2.0
+id: "0007"
+title: Access and security boundary
+status: accepted
+date: 2026-10-19
+deciders: ["@dsdenes"]
+affects:
+  - type: path
+    pattern: .devboard/Dockerfile
+---
 # Access and security boundary
-
-- Status: Accepted
 
 ## Context
 

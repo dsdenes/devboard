@@ -62,7 +62,7 @@ import {
   type RemoteCloneRunner,
   type RemoteRepository,
 } from "./discover";
-import { parseRecord, readRecords, type AdrRecord } from "./records";
+import { readRecords, type AdrRecord } from "./records";
 import {
   appendActivity,
   preserveStateFile,
@@ -2847,7 +2847,7 @@ export function createApp(options: AppOptions) {
 
   async function readRecord(file: string): Promise<AdrRecord | undefined> {
     try {
-      return parseRecord(file, await readFile(join(adrDir, file), "utf8"));
+      return (await readRecords(adrDir)).records.find((record) => record.file === file);
     } catch {
       return undefined;
     }

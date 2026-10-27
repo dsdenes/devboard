@@ -1,3 +1,4 @@
+import { fixtureRecord, pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -203,8 +204,8 @@ afterAll(async () => {
   );
 });
 
-const PENDING_ONE = "# First decision\n\n- Status: Proposed\n\n## Context\n\nFirst.\n\n## Decision\n\n";
-const PENDING_TWO = "# Second decision\n\n- Status: Proposed\n\n## Context\n\nSecond.\n\n## Decision\n\n";
+const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
+const PENDING_TWO = pendingRecord("0002-second.md", "Second decision", "Second.", "Choose the second.");
 
 describe("guided goal revision", () => {
   test(
@@ -314,7 +315,7 @@ describe("guided goal revision", () => {
         url: "https://example.test/issues/42",
       };
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           agentArguments: "--delay-ms=1200",
           goalText: "# Active goal\n\nImplement the active epic.\n",

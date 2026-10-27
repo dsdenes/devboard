@@ -1,6 +1,17 @@
+---
+schemaVersion: 0.2.0
+id: "0010"
+title: Lifecycle control protocol
+status: accepted
+date: 2026-10-19
+deciders: ["@dsdenes"]
+affects:
+  - type: path
+    pattern: .devboard/client/App.svelte
+  - type: path
+    pattern: .devboard/server/app.ts
+---
 # Lifecycle control protocol
-
-- Status: Accepted
 
 ## Context
 

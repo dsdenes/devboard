@@ -524,6 +524,6 @@ export function agentPrompt(adrDir: string, file: string): string {
     `/adr-resolve ${path}`,
     "",
     `Resolve only ${path}.`,
-    "Do not open, read, or resolve any other record. Stop as soon as this record's status is no longer Proposed.",
+    "Do not open, read, or resolve any other record. Stop as soon as this record's `status` is no longer `proposed` or `draft`.",
   ].join("\n");
 }

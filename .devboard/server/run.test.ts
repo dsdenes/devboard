@@ -1,3 +1,4 @@
+import { fixtureRecord, frontmatterStatus, pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -163,9 +164,9 @@ afterAll(async () => {
   );
 });
 
-const PENDING_ONE = "# First decision\n\n- Status: Proposed\n\n## Context\n\nFirst.\n\n## Decision\n\n";
-const PENDING_TWO = "# Second decision\n\n- Status: Proposed\n\n## Context\n\nSecond.\n\n## Decision\n\n";
-const PENDING_THREE = "# Third decision\n\n- Status: Proposed\n\n## Context\n\nThird.\n\n## Decision\n\n";
+const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
+const PENDING_TWO = pendingRecord("0002-second.md", "Second decision", "Second.", "Choose the second.");
+const PENDING_THREE = pendingRecord("0003-third.md", "Third decision", "Third.", "Choose the third.");
 
 describe("agent runs", () => {
   test(
@@ -228,7 +229,7 @@ describe("agent runs", () => {
         expect(spawnCount(logPath)).toBe(3);
 
         for (const file of ["0001-first.md", "0002-second.md", "0003-third.md"]) {
-          expect(await readFile(join(adrDir, file), "utf8")).toContain("- Status: Accepted");
+          expect(frontmatterStatus(await readFile(join(adrDir, file), "utf8"))).toBe("accepted");
         }
       } finally {
         client.close();
@@ -452,12 +453,8 @@ describe("agent runs", () => {
         await Bun.sleep(300);
         expect(starts(client)).toEqual(["0001-first.md"]);
         expect(spawnCount(logPath)).toBe(1);
-        expect(await readFile(join(adrDir, "0001-first.md"), "utf8")).toContain(
-          "- Status: Proposed",
-        );
-        expect(await readFile(join(adrDir, "0002-second.md"), "utf8")).toContain(
-          "- Status: Proposed",
-        );
+        expect(frontmatterStatus(await readFile(join(adrDir, "0001-first.md"), "utf8"))).toBe("proposed");
+        expect(frontmatterStatus(await readFile(join(adrDir, "0002-second.md"), "utf8"))).toBe("proposed");
       } finally {
         client.close();
         server.stop(true);
@@ -493,9 +490,7 @@ describe("agent runs", () => {
         expect(starts(client)).toEqual(["0001-first.md"]);
         expect(spawnCount(logPath)).toBe(1);
         expect(existsSync(join(adrDir, "0001-first.md"))).toBe(false);
-        expect(await readFile(join(adrDir, "0002-second.md"), "utf8")).toContain(
-          "- Status: Proposed",
-        );
+        expect(frontmatterStatus(await readFile(join(adrDir, "0002-second.md"), "utf8"))).toBe("proposed");
       } finally {
         client.close();
         server.stop(true);
@@ -529,11 +524,11 @@ describe("agent runs", () => {
           statuses = await Promise.all(
             files.map((file) => readFile(join(adrDir, file), "utf8")),
           );
-          if (statuses.every((source) => source.includes("- Status: Accepted"))) break;
+          if (statuses.every((source) => frontmatterStatus(source) === "accepted")) break;
           await Bun.sleep(100);
         }
 
-        expect(statuses.every((source) => source.includes("- Status: Accepted"))).toBe(true);
+        expect(statuses.every((source) => frontmatterStatus(source) === "accepted")).toBe(true);
         expect(spawnCount(logPath)).toBe(3);
       } finally {
         server.stop(true);
@@ -546,7 +541,7 @@ describe("agent runs", () => {
     "refuses to start when no ADR is pending and spawns no process",
     async () => {
       const { server, logPath, url } = await startServer({
-        "0001-first.md": "# First decision\n\n- Status: Accepted\n",
+        "0001-first.md": fixtureRecord("0001-first.md", "First decision"),
       });
       const client = await connect(url);
 
@@ -567,7 +562,7 @@ describe("agent runs", () => {
     "refuses an explicitly selected ADR that is not pending",
     async () => {
       const { server, logPath, url } = await startServer({
-        "0001-first.md": "# First decision\n\n- Status: Accepted\n",
+        "0001-first.md": fixtureRecord("0001-first.md", "First decision"),
       });
       const client = await connect(url);
 

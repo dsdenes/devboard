@@ -1,3 +1,4 @@
+import { fixtureRecord, frontmatterStatus, pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -218,9 +219,9 @@ afterAll(async () => {
   );
 });
 
-const PENDING_ONE = "# First decision\n\n- Status: Proposed\n\n## Context\n\nFirst.\n\n## Decision\n\n";
-const PENDING_TWO = "# Second decision\n\n- Status: Proposed\n\n## Context\n\nSecond.\n\n## Decision\n\n";
-const PENDING_THREE = "# Third decision\n\n- Status: Proposed\n\n## Context\n\nThird.\n\n## Decision\n\n";
+const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
+const PENDING_TWO = pendingRecord("0002-second.md", "Second decision", "Second.", "Choose the second.");
+const PENDING_THREE = pendingRecord("0003-third.md", "Third decision", "Third.", "Choose the third.");
 
 describe("lifecycle runs", () => {
   test(
@@ -232,7 +233,7 @@ describe("lifecycle runs", () => {
         url: "https://example.test/issues/55",
       };
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           agentArguments: "--delay-ms=5000",
           tracker: async () => epic,
@@ -330,7 +331,7 @@ describe("lifecycle runs", () => {
     "starts one epic-generation peer and reports the initial state first",
     async () => {
       const { server, logPath, url } = await startServer({
-        "0001-done.md": "# Done\n\n- Status: Accepted\n",
+        "0001-done.md": fixtureRecord("0001-done.md", "Done"),
       });
       const client = await connect(url);
 
@@ -531,7 +532,7 @@ describe("lifecycle runs", () => {
     "refuses startLifecycle, an empty startRun, and saveGoal while the epic peer runs",
     async () => {
       const { server, goalFile, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         { agentArguments: "--delay-ms=800" },
       );
       const client = await connect(url);
@@ -637,7 +638,7 @@ describe("lifecycle runs", () => {
         ]);
 
         for (const file of ["0001-first.md", "0002-second.md", "0003-third.md"]) {
-          expect(await readFile(join(adrDir, file), "utf8")).toContain("- Status: Accepted");
+          expect(frontmatterStatus(await readFile(join(adrDir, file), "utf8"))).toBe("accepted");
         }
 
         const deadline = Date.now() + 5000;
@@ -672,7 +673,7 @@ describe("lifecycle runs", () => {
       };
       let lookups = 0;
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           agentArguments: "--delay-ms=1200",
           tracker: async () => {
@@ -748,7 +749,7 @@ describe("lifecycle runs", () => {
       };
       let lookups = 0;
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           tracker: async () => {
             lookups += 1;
@@ -830,7 +831,7 @@ describe("lifecycle runs", () => {
       };
       let lookups = 0;
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           trackerSettle: { attempts: 4, delayMs: 10 },
           tracker: async () => {
@@ -890,7 +891,7 @@ describe("lifecycle runs", () => {
       };
       let lookups = 0;
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           trackerSettle: { attempts: 4, delayMs: 10 },
           tracker: async () => {
@@ -944,7 +945,7 @@ describe("lifecycle runs", () => {
     async () => {
       let lookups = 0;
       const { server, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           trackerSettle: { attempts: 3, delayMs: 10 },
           tracker: async () => {
@@ -978,7 +979,7 @@ describe("lifecycle runs", () => {
         url: "https://example.test/issues/9",
       };
       const { server, goalFile, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           agentArguments: "--delay-ms=1200",
           trackerSettle: { attempts: 1, delayMs: 0 },
@@ -1056,7 +1057,7 @@ describe("lifecycle runs", () => {
       };
       let lookups = 0;
       const { server, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           agentArguments: "--delay-ms=1500",
           tracker: async () => {
@@ -1120,7 +1121,7 @@ describe("lifecycle runs", () => {
         url: "https://example.test/issues/11",
       };
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           trackerSettle: { attempts: 1, delayMs: 0 },
           tracker: async () => epic,
@@ -1177,7 +1178,7 @@ describe("lifecycle runs", () => {
       };
       let lookups = 0;
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           trackerSettle: { attempts: 1, delayMs: 0 },
           tracker: async () => {
@@ -1237,7 +1238,7 @@ describe("lifecycle runs", () => {
       };
       let lookups = 0;
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           trackerSettle: { attempts: 1, delayMs: 0 },
           tracker: async () => {
@@ -1283,7 +1284,7 @@ describe("lifecycle runs", () => {
       };
       let epicOpen = true;
       const { server, goalFile, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           agentArguments: "--blocker-epic=21",
           trackerSettle: { attempts: 1, delayMs: 0 },
@@ -1468,7 +1469,7 @@ describe("lifecycle runs", () => {
         url: "https://example.test/issues/7",
       };
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           trackerSettle: { attempts: 1, delayMs: 0 },
           tracker: async () => {
@@ -1516,7 +1517,7 @@ describe("lifecycle runs", () => {
     "replays the current lifecycle state first to a client that connects during a stage",
     async () => {
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         { agentArguments: "--delay-ms=1200" },
       );
       const client = await connect(url);

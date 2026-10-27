@@ -1,3 +1,4 @@
+import { pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -34,34 +35,8 @@ const MANAGED_SKILL = [
   "- Prefer observable behavior over implementation details.",
   "",
 ].join("\n");
-const PENDING_ONE = [
-  "# First decision",
-  "",
-  "- Status: Proposed",
-  "",
-  "## Context",
-  "",
-  "First.",
-  "",
-  "## Decision",
-  "",
-  "Choose the first.",
-  "",
-].join("\n");
-const PENDING_TWO = [
-  "# Second decision",
-  "",
-  "- Status: Proposed",
-  "",
-  "## Context",
-  "",
-  "Second.",
-  "",
-  "## Decision",
-  "",
-  "Choose the second.",
-  "",
-].join("\n");
+const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
+const PENDING_TWO = pendingRecord("0002-second.md", "Second decision", "Second.", "Choose the second.");
 
 async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "devboard-persistence-"));

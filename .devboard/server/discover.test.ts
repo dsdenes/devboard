@@ -1,3 +1,4 @@
+import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
@@ -119,7 +120,7 @@ function createFixture(name: string, options: { goal?: boolean; dirty?: boolean 
     join(root, ".github", "workflows", "ci.yml"),
     "name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun test\n",
   );
-  writeFileSync(join(root, "adrs", "0001-fixture.md"), "# Fixture decision\n\n- Status: Accepted\n");
+  writeFileSync(join(root, "adrs", "0001-fixture.md"), fixtureRecord("0001-fixture.md", "Fixture decision"));
   if (options.goal !== false) writeFileSync(join(root, "GOAL.md"), GOAL_TEXT);
   writeFileSync(join(root, ".gitignore"), GITIGNORE);
   git(root, ["init", "-b", "main"]);

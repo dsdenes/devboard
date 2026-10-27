@@ -1,6 +1,17 @@
+---
+schemaVersion: 0.2.0
+id: "0001"
+title: Interface runtime and language
+status: accepted
+date: 2026-10-19
+deciders: ["@dsdenes"]
+affects:
+  - type: path
+    pattern: .devboard/Dockerfile
+  - type: path
+    pattern: .devboard/package.json
+---
 # Interface runtime and language
-
-- Status: Accepted
 
 ## Context
 

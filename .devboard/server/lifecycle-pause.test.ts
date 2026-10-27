@@ -1,3 +1,4 @@
+import { fixtureRecord, frontmatterStatus, pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -218,8 +219,8 @@ async function waitForAt(
   return client.events[index] as Record<string, unknown>;
 }
 
-const PENDING_ONE = "# First decision\n\n- Status: Proposed\n\n## Context\n\nFirst.\n\n## Decision\n\n";
-const PENDING_TWO = "# Second decision\n\n- Status: Proposed\n\n## Context\n\nSecond.\n\n## Decision\n\n";
+const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
+const PENDING_TWO = pendingRecord("0002-second.md", "Second decision", "Second.", "Choose the second.");
 
 /** Covers the revision start/stop and replay, then resumes the suspended peer. */
 async function exercisePausedRevision(request: string | undefined) {
@@ -437,7 +438,7 @@ describe("lifecycle pause and resume", () => {
         url: "https://example.test/issues/5",
       };
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           agentArguments: "--delay-ms=6000",
           tracker: async () => {
@@ -616,8 +617,7 @@ describe("lifecycle pause and resume", () => {
           "the suspended peer did not receive the answer",
         );
         await waitUntil(
-          () =>
-            readFileSync(join(adrDir, "0001-first.md"), "utf8").includes("- Status: Accepted"),
+          () => frontmatterStatus(readFileSync(join(adrDir, "0001-first.md"), "utf8")) === "accepted",
           "the suspended peer did not finish the ADR",
         );
 
@@ -651,7 +651,7 @@ describe("lifecycle pause and resume", () => {
       const releaseSecondQuery = Promise.withResolvers<void>();
       let lookups = 0;
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           tracker: async () => {
             lookups += 1;
@@ -909,7 +909,7 @@ describe("lifecycle pause and resume", () => {
         url: "https://example.test/issues/4",
       };
       const { server, goalFile, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         { agentArguments: "--delay-ms=1500", tracker: async () => epic },
       );
       const client = await connect(url);
@@ -1075,12 +1075,8 @@ describe("lifecycle pause and resume", () => {
           10000,
         );
 
-        expect(await readFile(join(adrDir, "0001-first.md"), "utf8")).toContain(
-          "- Status: Accepted",
-        );
-        expect(await readFile(join(adrDir, "0002-second.md"), "utf8")).toContain(
-          "- Status: Accepted",
-        );
+        expect(frontmatterStatus(await readFile(join(adrDir, "0001-first.md"), "utf8"))).toBe("accepted");
+        expect(frontmatterStatus(await readFile(join(adrDir, "0002-second.md"), "utf8"))).toBe("accepted");
         expect(
           await client.waitFor((message) => message.type === "records" && message.next === null),
         ).toMatchObject({ next: null });
@@ -1216,9 +1212,7 @@ describe("lifecycle pause and resume", () => {
           10000,
         );
 
-        expect(await readFile(join(adrDir, "0001-first.md"), "utf8")).toContain(
-          "- Status: Accepted",
-        );
+        expect(frontmatterStatus(await readFile(join(adrDir, "0001-first.md"), "utf8"))).toBe("accepted");
         expect(spawnCount(logPath)).toBeGreaterThanOrEqual(2);
         expect(prompts(logPath)[0]).toBe("/implement-next-epic 32");
         expect(prompts(logPath)[1]?.startsWith("/adr-resolve ")).toBe(true);
@@ -1324,7 +1318,7 @@ describe("lifecycle pause and resume", () => {
         url: "https://example.test/issues/41",
       };
       const { server, logPath, url } = await startServer(
-        { "0001-done.md": "# Done\n\n- Status: Accepted\n" },
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
         {
           agentArguments: "--delay-ms=5000",
           tracker: async () => epic,
