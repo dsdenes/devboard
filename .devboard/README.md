@@ -985,7 +985,9 @@ ends inclusive, from:
   `server-error`, `update`, and `update-error`. A live journal rotates at 8 MiB instead of
   truncating.
 - omp's own warnings and errors under `~/.omp/logs/omp.*.log`, attributed to an instance only
-  through that pid's working directory or process ancestry.
+  when that pid descends from the instance's server process. A shared working directory never
+  attributes a line, so an operator's own omp session in the project directory is not dashboard
+  evidence.
 
 Retention is bounded: the watchdog deletes rotated journal files older than seven days at cycle
 start and enforces a 1 GiB total for `.tmp/journal`, deleting the oldest complete files first. A

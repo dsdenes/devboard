@@ -100,7 +100,7 @@ export function readJournalEvidence(
 }
 
 export interface ProcessInfo {
-  cwd?: string;
+  /** Process ids from the parent upward, nearest first. */
   ancestors: number[];
 }
 
@@ -129,6 +129,13 @@ function describeOmpLine(record: OmpRecord): string {
   return parts.length > 0 ? parts : JSON.stringify(record);
 }
 
+/**
+ * An omp line belongs to an instance only when its pid descends from that
+ * dashboard's server process. A shared working directory never attributes a
+ * line: an operator's own omp session in the project runs from the same
+ * directory while being unrelated to the dashboard, and its warnings are not
+ * dashboard evidence.
+ */
 function attribution(
   pid: number,
   instance: Instance[],
@@ -136,18 +143,13 @@ function attribution(
 ): Instance | undefined {
   const info = processInfo(pid);
   if (info === undefined) return undefined;
-  const cwd = info.cwd === undefined ? undefined : resolve(info.cwd);
-  return instance.find(
-    (candidate) =>
-      (cwd !== undefined && resolve(candidate.repoDir) === cwd) ||
-      info.ancestors.includes(candidate.pid),
-  );
+  return instance.find((candidate) => info.ancestors.includes(candidate.pid));
 }
 
 /**
  * Reads omp's own process logs. A line is evidence for an instance only when
- * its pid worked in that instance's project or descends from that instance's
- * server; the watchdog's own pids never become evidence.
+ * its pid descends from that instance's server; a shared working directory
+ * never attributes a line, and the watchdog's own pids never become evidence.
  */
 export function readOmpEvidence(options: OmpOptions): {
   events: EvidenceEvent[];
@@ -159,9 +161,7 @@ export function readOmpEvidence(options: OmpOptions): {
     options.processInfo ??
     ((pid: number) => {
       const snapshot = processSnapshot(pid);
-      return snapshot === undefined
-        ? undefined
-        : { cwd: snapshot.cwd, ancestors: snapshot.ancestors };
+      return snapshot === undefined ? undefined : { ancestors: snapshot.ancestors };
     });
   let names: string[];
   try {

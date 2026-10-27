@@ -278,7 +278,7 @@ describe("window and attribution", () => {
     expect(collected.malformed).toBe(1);
   });
 
-  test("includes an in-window omp error and drops self and unrelated lines", async () => {
+  test("attributes an in-window omp error only through the dashboard's process ancestry", async () => {
     const base = await temporaryDirectory("test-watchdog-omp");
     const logsDir = join(base, "logs");
     await mkdir(logsDir, { recursive: true });
@@ -296,6 +296,14 @@ describe("window and attribution", () => {
         level: "warn",
         pid: 501,
         message: "unrelated warning",
+      }),
+      line({
+        timestamp: new Date(window.end.getTime() - 3 * 60_000).toISOString(),
+        level: "warn",
+        pid: 502,
+        message: "ui.loop-blocked",
+        blockedMs: 1314,
+        cpuMs: 252,
       }),
       line({
         timestamp: new Date(window.start.getTime() - 60_000).toISOString(),
@@ -325,18 +333,21 @@ describe("window and attribution", () => {
       window,
       instances: [instance],
       selfPids: new Set([42]),
+      // 500 is a dashboard peer; 501 is a stranger; 502 is the operator's own
+      // omp session in the project directory, a child of a shell, not the
+      // dashboard — its warnings are not dashboard evidence.
       processInfo: (pid) =>
         pid === 500
-          ? { cwd: base, ancestors: [] }
-          : pid === 501
-            ? { cwd: "/elsewhere", ancestors: [] }
-            : { cwd: base, ancestors: [] },
+          ? { ancestors: [instance.pid, 1] }
+          : pid === 502
+            ? { ancestors: [3180812, 247286] }
+            : { ancestors: [] },
     });
 
     expect(collected.events.map((item) => item.text)).toEqual(["connection error"]);
     expect(collected.events[0]?.level).toBe("error");
     expect(collected.events[0]?.instance).toEqual(instance);
-    expect(collected.unattributed).toBe(1);
+    expect(collected.unattributed).toBe(2);
     expect(collected.malformed).toBe(1);
   });
 });
