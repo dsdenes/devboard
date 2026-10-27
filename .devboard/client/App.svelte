@@ -352,7 +352,7 @@
         id: "drafts",
         kind: "drafts",
         resourceId: "drafts",
-        title: "Drafts",
+        title: "Draft goals",
       });
     }
     viewport.update();
