@@ -1,6 +1,7 @@
 <script lang="ts">
   import { issues, isGoalIssue } from "../issues.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
+  import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
   import DraftsPage from "./DraftsPage.svelte";
   import IssuesAgentFocus from "./IssuesAgentFocus.svelte";
@@ -46,6 +47,13 @@
   const agents = $derived(issues.agents);
   const asking = $derived(agents.filter((agent) => agent.question !== null).length);
 
+  let selectedRunId = $state<string | null>(null);
+  // The newest selection wins; when that run ends, the first live agent takes
+  // the output pane so it never shows a stale stream.
+  const selectedAgent = $derived(
+    agents.find((agent) => agent.runId === selectedRunId) ?? agents[0] ?? null,
+  );
+
   let now = $state(Date.now());
   $effect(() => {
     if (page !== "agents" && page !== "overview") return;
@@ -78,11 +86,6 @@
       second: "2-digit",
       hour12: false,
     });
-  }
-
-  function statusTone(status: string): "accent" | "error" | "success" {
-    if (status === "failed") return "error";
-    return status === "running" ? "accent" : "success";
   }
 
   /** One glanceable duration for a summary row: `12s`, `7m`, `2h 5m`. */
@@ -137,12 +140,13 @@
           {issues.repo ?? "No GitHub origin"}
         </p>
       </div>
-      <span class="badge" data-tone={stateWord === "failed" ? "error" : stateWord === "running" ? "accent" : "warning"} data-testid="issues-state">
+      <span class="badge" data-tone={statusTone(stateWord)} data-testid="issues-state">
         {stateWord}
       </span>
     </header>
 
     <div class="issues-overview__body">
+      <div class="issues-overview__side" data-testid="issues-overview-side">
       <section class="panel">
         <div class="panel__header">
           <h2 class="panel__title">Automation</h2>
@@ -254,7 +258,8 @@
                   data-run={agent.runId}
                   data-issue={agent.issueNumber}
                   title={issueTitle(agent.issueNumber)}
-                  onclick={() => openAgent(agent.runId, agent.issueNumber)}
+                  aria-current={selectedAgent?.runId === agent.runId}
+                  onclick={() => (selectedRunId = agent.runId)}
                 >
                   <span class="issues-agent-row__issue mono">#{agent.issueNumber}</span>
                   <span class="issues-agent-row__title">{issueTitle(agent.issueNumber)}</span>
@@ -272,6 +277,49 @@
           </ol>
         </div>
       </section>
+      </div>
+
+      {#if selectedAgent !== null}
+        <section
+          class="panel issues-agent-output"
+          data-testid="issues-overview-output"
+          data-run={selectedAgent.runId}
+          data-issue={selectedAgent.issueNumber}
+        >
+          <div class="panel__header">
+            <h2 class="panel__title" data-testid="issues-overview-output-title">
+              #{selectedAgent.issueNumber} · {issueTitle(selectedAgent.issueNumber)}
+            </h2>
+            <span class="badge" data-tone="accent" data-testid="issues-overview-output-status">
+              running
+            </span>
+          </div>
+          <div class="panel__body stack-sm">
+            <IssuesAgentLog
+              lines={issues.activityFor(selectedAgent.runId)}
+              testid="issues-overview-activity"
+              runId={selectedAgent.runId}
+            />
+            {#if selectedAgent.question}
+              <IssuesAgentQuestion
+                runId={selectedAgent.runId}
+                question={selectedAgent.question}
+                testid="issues-overview-question"
+              />
+            {/if}
+          </div>
+        </section>
+      {:else}
+        <section class="panel" data-testid="issues-overview-output">
+          <div class="panel__header">
+            <h2 class="panel__title">Agent output</h2>
+            <span class="panel__subtitle">No active run</span>
+          </div>
+          <div class="panel__body">
+            <p class="muted">No issue is running.</p>
+          </div>
+        </section>
+      {/if}
     </div>
   </section>
 {:else if page === "agents"}
@@ -385,7 +433,7 @@
         <h1 class="issues-overview__title">Open issues</h1>
         <p class="issues-overview__repo mono">{issues.repo ?? "No GitHub origin"}</p>
       </div>
-      <span class="badge" data-tone="warning">{issues.pending} pending</span>
+      <span class="badge" data-tone={statusTone("pending")}>{issues.pending} pending</span>
     </header>
     <div class="panel">
       <div class="panel__header">
@@ -409,11 +457,17 @@
                 <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
               {/if}
               {#if issue.handled}
-                <span class="badge" data-tone="success">handled</span>
+                <span class="badge" data-tone={statusTone("handled")}>handled</span>
               {:else if issue.agentRunId !== null}
-                <span class="badge" data-tone="accent" data-testid="issues-running-marker">running</span>
+                <span
+                  class="badge"
+                  data-tone={statusTone("running")}
+                  data-testid="issues-running-marker"
+                >
+                  running
+                </span>
               {:else}
-                <span class="badge" data-tone="warning">pending</span>
+                <span class="badge" data-tone={statusTone("pending")}>pending</span>
               {/if}
             </li>
           {:else}
@@ -455,7 +509,7 @@
                 onclick={() => issues.openRun(run.runId)}
               >
                 <span class="mono">{run.runId}</span>
-                <span class="badge" data-tone={run.status === "failed" ? "error" : run.status === "running" ? "accent" : "success"}>
+                <span class="badge" data-tone={statusTone(run.status)}>
                   {run.status}
                 </span>
                 <span class="muted">{run.issueNumbers.map((number) => `#${number}`).join(" ")}</span>
@@ -469,7 +523,9 @@
           <div class="issues-run-detail" data-testid="issues-run-detail" data-run={issues.run.runId}>
             <div class="toolbar toolbar--between">
               <h3 class="mono">{issues.run.runId}</h3>
-              <span class="badge" data-tone="accent">{runStatus(issues.run.runId)}</span>
+              <span class="badge" data-tone={statusTone(runStatus(issues.run.runId))}>
+                {runStatus(issues.run.runId)}
+              </span>
             </div>
             <p class="muted mono">{issues.run.cwd}</p>
             <p class="muted">{issues.run.issues.map((issue) => `#${issue.number}`).join(" ")}</p>
