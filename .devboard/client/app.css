@@ -3077,15 +3077,11 @@ a.code-chip--link:focus-visible {
   width: 6px;
 }
 
-.status-issues[data-state="running"] .status-issues__dot {
-  background: var(--success);
+.status-issues[data-tone="accent"] .status-issues__dot {
+  background: var(--accent);
 }
 
-.status-issues[data-state="idle"] .status-issues__dot {
-  background: var(--warning);
-}
-
-.status-issues[data-state="failed"] .status-issues__dot {
+.status-issues[data-tone="error"] .status-issues__dot {
   background: var(--error);
 }
 

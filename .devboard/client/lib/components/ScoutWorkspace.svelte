@@ -1,19 +1,12 @@
 <script lang="ts">
   import { scout } from "../scout.svelte";
+  import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
 
   const activityText = $derived(
     scout.activity.length === 0 ? "No activity yet." : scout.activity.join("\n"),
   );
-  const lifecycleTone = $derived(
-    scout.lifecycle === "failed"
-      ? "error"
-      : scout.lifecycle === "scanning"
-        ? "accent"
-        : scout.lifecycle === "idle"
-          ? "success"
-          : "warning",
-  );
+  const lifecycleTone = $derived(statusTone(scout.lifecycle));
   let activityElement = $state<HTMLPreElement | null>(null);
 
   // Reading the tracked values keeps the activity pinned to its newest line.
