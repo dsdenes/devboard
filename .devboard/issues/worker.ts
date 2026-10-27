@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AcpConnection, type AcpActivity, type AcpQuestion } from "../server/acp";
 import { recordedChildAlive } from "../server/state";
+import { readHarnessVersion } from "../server/version";
 import { takeCommands, type IssuesCommand } from "./control";
 import {
   emptyLedger,
@@ -129,16 +130,6 @@ interface ActiveRun {
   peer: AcpPeer;
   firstLine: FirstLine;
   finished: boolean;
-}
-
-function readHarnessVersion(harnessDir: string): string | null {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(join(harnessDir, "package.json"), "utf8"));
-    if (typeof parsed !== "object" || parsed === null || !("version" in parsed)) return null;
-    return typeof parsed.version === "string" ? parsed.version : null;
-  } catch {
-    return null;
-  }
 }
 
 /** The child as the process table sees it, for a later proven termination. */

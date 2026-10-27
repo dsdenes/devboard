@@ -963,6 +963,8 @@ that staging directory, and the dashboard starts from the host root rather than 
 package directory, so replacing the package never leaves a child with a deleted working
 directory. `versionState` reports `running`, `installed`, `latest`, and `stale`; the reload
 control appears while `stale` is true and restarts the server from the installed package. A
+dashboard serving the canonical source checkout reports `0.1.<commit-count>` on both sides, the
+version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder. A
 failed check, checksum, authentication, or npm install leaves the previous package and server
 intact, writes `update-error` to the journal, and is retried with exponential backoff
 (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it).
@@ -1243,7 +1245,10 @@ can read it, bounded at the first of 1,000 entries or 1 MiB with the trimmed mar
 with the active run after a reconnect. A damaged state file is renamed aside and never prevents
 the mode from opening. The worker records the harness version it loaded, its pid, and its argv;
 a mismatched dashboard shows a notice and never kills the worker, and the state also records the
-ACP child's pid, argv, and cwd so Stop or a fresh Start can terminate a proven orphan.
+ACP child's pid, argv, and cwd so Stop or a fresh Start can terminate a proven orphan. The worker
+and the dashboard read that version the same way: a packed release's manifest, or
+`0.1.<commit-count>` for an unpacked source checkout, so Stop then Start brings a worker left on
+an older harness to the dashboard's version.
 
 The first worker to find no repo-keyed ledger imports handled numbers from
 `<STATE_DIR>/orchestrator/state.json` and `ledger.json` when the legacy state parses and its
@@ -1264,7 +1269,7 @@ systemctl --user daemon-reload
 Every page carries three UI issue controls in the activity bar's application actions, beside
 commands, notifications, and theme: `Report UI issue`, `Remove element`, and `Redesign element`.
 Each is a 28px icon control with an accessible name and `aria-pressed="true"` while its action is
-armed; the result line and its error stay out of element picking. `Esc` cancels a mode that is
+armed; the outcome toast and its error stay out of element picking. `Esc` cancels a mode that is
 not filing, and `app.report.cancel` cancels any active mode from the palette. While one request is
 in flight every control is disabled and the active one is labelled `Filing the UI issue`, so one
 click or one double-click files at most one issue.
@@ -1274,9 +1279,11 @@ click opens a report panel anchored beside it, without filing anything yet. The 
 selected element's selector path; the report text is free-form. `File issue` posts the report and
 the captured context to `POST /api/feedback`, the server files the GitHub issue through the
 operator's authenticated `gh` CLI, and the panel closes back into report selection mode so another
-element can be picked without leaving and re-entering the mode. `Esc`, the control again, or
+element can be picked without leaving and re-entering the mode. A successful filing shows a
+`Report filed.` toast with an `Open issue` link to the created issue. `Esc`, the control again, or
 `Cancel` leaves the mode, a failed report stays in the panel with its error, and a click in
-selection mode never activates the element.
+selection mode never activates the element. The toast survives leaving the mode: a success
+dismisses itself after eight seconds, a failure stays until dismissed or replaced.
 
 The panel also answers questions. `Ask`, or `Enter` in the composer (`Shift+Enter` inserts a
 newline), sends the typed question and the captured element context — route, URL, selector,
@@ -1311,16 +1318,19 @@ and at most six hyphen-separated words, falling back to `ui-goal`; an existing n
 `> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
 text verbatim and the `## Captured UI context` block an issue report carries. A successful click
 closes the panel, stays in report selection mode with an empty composer, and shows the
-`Goal proposed: <path>` result line as plain text with no link; a failed write keeps the panel open
+`Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
 with the server's error and leaves no draft. The drafts are ignored by git.
 
 `Remove element` and `Redesign element` are one-click shortcuts. Selecting one arms it and shows a
 shortcut-specific hint; the next click on any element files the issue immediately, with no panel
-and no text field. Filing does not use client-supplied report text. A successful filing shows
-`Removal issue filed.` or `Redesign issue filed.` with the issue URL and keeps the mode armed, so
-the next element is one click away; a failure shows `Removal issue failed: <message>` or
-`Redesign issue failed: <message>`, creates no issue, and keeps the mode armed with the controls
-re-enabled. The active control, `Esc`, or `app.report.cancel` returns to idle.
+and no text field. Filing does not use client-supplied report text. A successful filing shows a
+`Removal issue filed.` or `Redesign issue filed.` toast with an `Open issue` link to the created
+issue and keeps the mode armed, so the next element is one click away; a failure shows a
+`Removal issue failed: <message>` or `Redesign issue failed: <message>` alert toast, creates no
+issue, and keeps the mode armed with the controls re-enabled. A success toast dismisses itself
+after eight seconds; a failure stays until dismissed or replaced. Either survives `Esc`, the
+active control, or `app.report.cancel`, because leaving the mode is not a reason to hide whether
+the issue was created. The active control, `Esc`, or `app.report.cancel` returns to idle.
 
 Both shortcuts use a fixed title and body, so the implementation agent starts from the captured
 context rather than operator prose. The title is `[ui] Remove element: <selector>` or
@@ -1342,7 +1352,7 @@ Every request carries an `action` of `report`, `remove`, or `redesign`; an absen
 before `gh` runs. Every issue is filed in `dsdenes/devboard`, the harness repository, whatever
 host project the interface is serving; nothing is created in the host's own tracker. `gh` runs in
 `REPO_DIR` and must be authenticated with permission to create issues in `dsdenes/devboard`. A
-missing, unauthenticated, or failing `gh` is reported in the issue result line and still creates
+missing, unauthenticated, or failing `gh` is reported in the filing toast and still creates
 nothing. The endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and
 gives `gh` 60 seconds.
 
@@ -1402,8 +1412,11 @@ The client sends:
 - `getVersion` answers with `versionState`: `running` is the harness package version the
   backend loaded, `installed` is the version its prefix holds now, `latest` is the newest
   release an update check has seen, and `stale` is true only when `running` and `installed` are
-  readable and differ. A client that connects, and the page every few seconds, asks for it; a
-  stale answer makes the reload control appear with both versions in its title.
+  readable and differ. A dashboard that serves the canonical source checkout reads neither side
+  from the checked-in manifest: it reports `0.1.<commit-count>` over the full history, the same
+  version a release packs, so an unpacked checkout never claims `0.1.0`. A client that connects,
+  and the page every few seconds, asks for it; a stale answer makes the reload control appear
+  with both versions in its title.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
   lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
   next attempt, errors, and the harness version the worker loaded. A missing state and no live
@@ -1586,7 +1599,7 @@ The server answers with events:
 { "type": "runStopped", "lane": "lane-2", "file": "", "title": "Add export", "resolved": true, "status": "closed" }
 { "type": "records", "records": [ { "file": "0001-example.md", "title": "Example", "status": "Accepted", "pending": false, "summary": "Use the simplest runtime." } ], "next": null }
 { "type": "project", "path": "projects/devboard" }
-{ "type": "versionState", "running": "0123456789abcdef0123456789abcdef01234567", "current": "fedcba9876543210fedcba9876543210fedcba98", "stale": true }
+{ "type": "versionState", "running": "0.1.200", "installed": "0.1.201", "latest": "0.1.201", "stale": true }
 { "type": "serverRestarting" }
 { "type": "upgradePending" }
 { "type": "goal", "text": "# Goal\n\nThe complete goal text." }

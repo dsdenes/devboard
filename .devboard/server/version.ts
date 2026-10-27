@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -12,6 +13,14 @@ export interface ServerVersion {
   stale: boolean;
 }
 
+const HARNESS_NAME = "@dsdenes/devboard-harness";
+/**
+ * The version the checked-in manifest records. A release writes its real
+ * version into the packed copy, so this value marks an unpacked source tree.
+ */
+const SOURCE_VERSION = "0.1.0";
+const GIT_TIMEOUT_MS = 5_000;
+
 /** The installed package a host prefix holds. */
 export function installedPackageDir(prefix: string): string {
   return join(prefix, "node_modules", "@dsdenes", "devboard-harness");
@@ -22,29 +31,79 @@ export function runningHarnessDir(): string {
   return resolve(import.meta.dir, "..");
 }
 
-export function readHarnessVersion(directory: string): string | null {
+interface HarnessManifest {
+  name: string | null;
+  version: string | null;
+}
+
+function readManifest(directory: string): HarnessManifest | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
     if (typeof parsed !== "object" || parsed === null) return null;
-    if (!("version" in parsed)) return null;
-    return typeof parsed.version === "string" && parsed.version.length > 0 ? parsed.version : null;
+    return {
+      name: "name" in parsed && typeof parsed.name === "string" ? parsed.name : null,
+      version:
+        "version" in parsed && typeof parsed.version === "string" && parsed.version.length > 0
+          ? parsed.version
+          : null,
+    };
   } catch {
     return null;
   }
 }
 
-function isHarnessSource(directory: string): boolean {
+function git(directory: string, args: string[]): string | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
-    return (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "name" in parsed &&
-      parsed.name === "@dsdenes/devboard-harness"
-    );
+    const result = spawnSync("git", args, {
+      cwd: directory,
+      encoding: "utf8",
+      timeout: GIT_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    if (result.error !== undefined || result.status !== 0) return null;
+    const output = result.stdout.trim();
+    return output.length > 0 ? output : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** Git roots never move while a process runs, so the lookup is cached. */
+const gitRoots = new Map<string, string | null>();
+
+/**
+ * The release version an unpacked source tree represents: `0.1.<commit-count>`,
+ * the same value the release script writes into the packed manifest. Only the
+ * canonical `<repo>/.devboard` source tree derives it; an npm prefix under a
+ * host's `node_modules` keeps the packed version, so the host's own commit
+ * count can never leak into a dashboard version.
+ */
+function sourceVersion(directory: string): string | null {
+  const harness = resolve(directory);
+  let root = gitRoots.get(harness);
+  if (root === undefined) {
+    const top = git(harness, ["rev-parse", "--show-toplevel"]);
+    root = top === null ? null : resolve(top);
+    gitRoots.set(harness, root);
+  }
+  if (root === null || resolve(root, ".devboard") !== harness) return null;
+  const count = git(harness, ["rev-list", "--count", "HEAD"]);
+  if (count === null || !/^[0-9]+$/.test(count)) return null;
+  const commits = Number(count);
+  return Number.isSafeInteger(commits) && commits > 0 ? `0.1.${commits}` : null;
+}
+
+export function readHarnessVersion(directory: string): string | null {
+  const manifest = readManifest(directory);
+  if (manifest === null) return null;
+  if (manifest.name === HARNESS_NAME && manifest.version === SOURCE_VERSION) {
+    return sourceVersion(directory) ?? manifest.version;
+  }
+  return manifest.version;
+}
+
+function isHarnessSource(directory: string): boolean {
+  return readManifest(directory)?.name === HARNESS_NAME;
 }
 
 /**
