@@ -435,8 +435,8 @@ async function writeFixture(root: string): Promise<string> {
     ["0003-dense-tables", "Proposed", "Render records with dense table rows."],
     ["0004-editor-embeds", "Proposed", "Embed Monaco for every text editor."],
     ["0005-terminal-output", "Proposed", "Stream agent output through xterm."],
-    ["0006-split-panes", "Proposed", "Persist sidebar and detail splits."],
-    ["0007-command-palette", "Proposed", "Expose every command through one palette."],
+    ["0006-split-panes", "Superseded", "Persist sidebar and detail splits."],
+    ["0007-command-palette", "Rejected", "Expose every command through one palette."],
     ["0008-notifications", "Proposed", "Keep server notices in one region."],
   ] as const;
   for (const [name, status, decision] of records) {
@@ -447,6 +447,26 @@ async function writeFixture(root: string): Promise<string> {
     );
   }
 
+  // One prepare-family managed skill, so the Goal skills panel has a row the
+  // delete control owns; the five Discover skills are managed by Discover.
+  await mkdir(join(host, ".omp", "skills", "fixture-conventions"), { recursive: true });
+  await writeFile(
+    join(host, ".omp", "skills", "fixture-conventions", "SKILL.md"),
+    [
+      "---",
+      "name: fixture-conventions",
+      "description: Conventions every fixture implementation agent follows.",
+      "metadata:",
+      '  devboard-managed: "true"',
+      "  devboard-family: prepare",
+      "---",
+      "",
+      "# Fixture conventions",
+      "",
+      "- Prefer the smallest observable change.",
+      "",
+    ].join("\n"),
+  );
   await git(host, ["init", "-q"]);
   await git(host, ["add", "-A"]);
   await git(host, ["commit", "-q", "-m", "fixture"]);
@@ -539,7 +559,7 @@ async function seedFlow(stateDir: string, host: string): Promise<void> {
 async function seedIssuesState(
   stateDir: string,
   host: string,
-  lifecycle: "stopped" | "idle" | "running" | "paused" | "failed",
+  lifecycle: "stopped" | "idle" | "running" | "failed",
 ): Promise<void> {
   const directory = join(stateDir, "issues", journalKey(host));
   await mkdir(join(directory, "runs", "2026-10-27T10-00-00-000Z"), { recursive: true });
@@ -575,7 +595,6 @@ async function seedIssuesState(
     root: resolve(host),
     lifecycle,
     enabled,
-    paused: lifecycle === "paused",
     worker: enabled
       ? {
           pid: process.pid,
@@ -1321,6 +1340,11 @@ try {
     themeLabel: string;
     notificationLabel: string;
     shortcuts: Array<string | null>;
+    groups: number;
+    divider: boolean;
+    labels: string[];
+    issuesDot: string;
+    barHeight: number;
   }>(`(() => {
     const text = (selector) => document.querySelector(selector)?.textContent?.replace(/\\s+/g, " ").trim() ?? "";
     const reload = document.querySelector('[data-testid="reload-devboard"]');
@@ -1341,6 +1365,15 @@ try {
       themeLabel: document.querySelector('[data-testid="theme-toggle"]')?.getAttribute("aria-label") ?? "",
       notificationLabel: document.querySelector('[data-testid="notification-indicator"]')?.getAttribute("aria-label") ?? "",
       shortcuts: [...document.querySelectorAll('[data-testid="command-item"]')].map((item) => item.querySelector(".palette__shortcut")?.textContent ?? null),
+      groups: document.querySelectorAll('[data-testid="status-bar"] .status-group').length,
+      divider: document.querySelector('[data-testid="status-bar"] .status-divider') !== null,
+      labels: [...document.querySelectorAll('[data-testid="status-bar"] .status-metric__label')]
+        .map((label) => label.textContent?.trim() ?? ""),
+      issuesDot: (() => {
+        const dot = document.querySelector('[data-testid="issues-indicator"] .status-issues__dot');
+        return dot === null ? "" : getComputedStyle(dot).backgroundColor;
+      })(),
+      barHeight: Math.round(bar?.getBoundingClientRect().height ?? -1),
     };
   })()`);
   check(statusBar.connection === "Connected", "the status bar does not show the connection", statusBar);
@@ -1371,6 +1404,19 @@ try {
     "the reload title does not name both versions",
     { sourceVersion, reload: statusBar.reload },
   );
+  check(
+    statusBar.groups === 2 && statusBar.divider && statusBar.barHeight === 26,
+    "the status bar is not two grouped regions in its 26px bar",
+    statusBar,
+  );
+  check(
+    statusBar.labels.includes("lanes") &&
+      statusBar.labels.filter((label) => label === "running").length === 1 &&
+      statusBar.labels.filter((label) => label === "installed").length === 1,
+    "a status metric does not state its meaning",
+    statusBar,
+  );
+  check(statusBar.issuesDot.length > 0, "the issues indicator has no state dot", statusBar);
   check(statusBar.themeLabel.length > 0 && statusBar.notificationLabel.includes("Notifications"), "a status-bar icon lacks a name", statusBar);
   const sidebarToggle = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar-toggle"]') !== null`);
   check(!sidebarToggle, "the sidebar still renders a hide control");
@@ -1415,7 +1461,7 @@ try {
   const ids = new Set(palette.items.map((item) => item.id));
   const requiredCommands = [
     "view.mode.goal", "view.mode.issues", "view.mode.flow", "view.mode.discover",
-    "issues.start", "issues.pause", "issues.resume", "issues.stop", "issues.check",
+    "issues.toggle",
     "open.issues.overview", "open.issues.issues", "open.issues.runs",
     "view.theme.toggle", "view.layout.reset",
     "app.reload", "app.report", "app.notifications.open",
@@ -1622,6 +1668,42 @@ try {
   check(adr.rows === 8, "the fixture does not render eight ADR rows", adr);
   const stateText = await page.eval<string>(`document.querySelector('[data-testid="record"] td:nth-child(3)')?.textContent?.trim() ?? ""`);
   check(stateText === "Resolved" || stateText === "Pending", "the ADR state is conveyed by color alone", stateText);
+  const tableTones = await page.eval<Array<{ file: string; text: string; tone: string }>>(`(() => {
+    return [...document.querySelectorAll('[data-testid="record"]')].map((row) => {
+      const badge = row.querySelector('[data-testid="record-status-badge"]');
+      return {
+        file: row.getAttribute("data-file") ?? "",
+        text: badge?.textContent?.trim() ?? "",
+        tone: badge?.getAttribute("data-tone") ?? "",
+      };
+    });
+  })()`);
+  const toneOf = (file: string) => tableTones.find((entry) => entry.file.startsWith(file));
+  check(
+    toneOf("0001")?.text === "Accepted" && toneOf("0001")?.tone === "success",
+    "an accepted record is not colored as accepted",
+    tableTones,
+  );
+  check(
+    toneOf("0003")?.text === "Proposed" && toneOf("0003")?.tone === "pending",
+    "a proposed record is not colored as pending",
+    tableTones,
+  );
+  check(
+    toneOf("0006")?.text === "Superseded" && toneOf("0006")?.tone === "stale",
+    "a superseded record is not colored as stale",
+    tableTones,
+  );
+  check(
+    toneOf("0007")?.text === "Rejected" && toneOf("0007")?.tone === "error",
+    "a rejected record is not colored as rejected",
+    tableTones,
+  );
+  check(
+    tableTones.every((entry) => entry.tone !== "resolved"),
+    "the table still colors its status badge by implementation state",
+    tableTones,
+  );
   check(adr.heights.every((height) => height > 0 && height <= 32), "a table row exceeds 32px", adr.heights);
   const bodyFont = Number.parseFloat(adr.font);
   const tableFont = Number.parseFloat(adr.tableFont);
@@ -1705,28 +1787,67 @@ try {
     "selecting a prepared skill does not open its document",
     { clickedSkill, skillDocument },
   );
+  const deletion = await page.eval<{ rows: number; controls: string[]; discoverControls: number }>(`(() => {
+    const rows = [...document.querySelectorAll('[data-testid="skill"]')];
+    const controls = rows
+      .map((row) => row.closest("li")?.querySelector('[data-testid="delete-skill"]')?.getAttribute("data-name") ?? "")
+      .filter((name) => name.length > 0);
+    return {
+      rows: rows.length,
+      controls,
+      discoverControls: rows.filter(
+        (row) =>
+          (row.getAttribute("data-name") ?? "").startsWith("discover-") &&
+          row.closest("li")?.querySelector('[data-testid="delete-skill"]') !== null,
+      ).length,
+    };
+  })()`);
+  check(
+    deletion.rows > 1 && deletion.controls.join(",") === "fixture-conventions" && deletion.discoverControls === 0,
+    "the delete control does not belong only to prepared skills",
+    deletion,
+  );
+  await page.click('[data-testid="skill"][data-name="fixture-conventions"]');
+  await page.wait(
+    `document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() === "fixture-conventions"`,
+    "the prepared skill detail",
+  );
+  const skillsBeforeDelete = await page.eval<number>(`document.querySelectorAll('[data-testid="skill"]').length`);
+  await page.click('[data-testid="delete-skill"][data-name="fixture-conventions"]');
+  await page.wait(`document.querySelector('[data-testid="delete-skill-confirmation"]') !== null`, "the skill deletion confirmation");
+  await page.click('[data-command="goal.skills.delete.confirm"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="skill"]').length === ${skillsBeforeDelete - 1}`,
+    "the deleted skill",
+  );
+  const afterDelete = await page.eval<{ names: string[]; detail: boolean; files: number }>(`(() => ({
+    names: [...document.querySelectorAll('[data-testid="skill"]')].map((row) => row.getAttribute("data-name") ?? ""),
+    detail: document.querySelector('[data-testid="skill-content"]') !== null,
+    files: Number(window.__viSkillFiles ?? -1),
+  }))()`);
+  check(
+    !afterDelete.names.includes("fixture-conventions") && !afterDelete.detail,
+    "deleting a skill left its row or its detail open",
+    afterDelete,
+  );
 
   // 9. Goal editor: reset arm/cancel, dirty marker, save, unsaved survival, close prompt.
   await runPalette("open.goal.overview");
   await page.wait(`document.querySelector('[data-testid="reset-implementation"]') !== null`, "the reset control");
-  const dangerZone = await page.eval<{ tone: string; border: string; tint: string }>(`(() => {
-    const zone = document.querySelector('[data-testid="danger-zone"]');
-    const label = document.querySelector('[data-testid="danger-zone-label"]');
-    const header = zone?.querySelector('.panel__header');
-    return {
-      tone: label?.getAttribute("data-tone") ?? "",
-      border: zone === null || zone === undefined ? "" : getComputedStyle(zone).borderTopColor,
-      tint: header === null || header === undefined ? "" : getComputedStyle(header).backgroundColor,
-    };
-  })()`);
+  const resetPlacement = await page.eval<{ inHeader: boolean; danger: boolean; eyebrow: boolean }>(`(() => ({
+    inHeader: document.querySelector('[data-testid="implementation-header"] [data-testid="reset-implementation"]') !== null,
+    danger: document.querySelector('[data-testid="danger-zone"]') !== null,
+    eyebrow: document.querySelector('[data-testid="implementation-header"] .page-header__eyebrow') !== null,
+  }))()`);
   check(
-    dangerZone.tone === "error" && dangerZone.border !== dangerZone.tint,
-    "the danger zone is not colour-coded",
-    dangerZone,
+    resetPlacement.inHeader && !resetPlacement.danger,
+    "the reset control is not in the page header",
+    resetPlacement,
   );
+  check(!resetPlacement.eyebrow, "the implementation header still carries its Goal eyebrow", resetPlacement);
   await page.click('[data-testid="reset-implementation"]');
   await page.wait(`document.querySelector('[data-testid="reset-confirmation"]') !== null`, "the reset confirmation");
-  await page.click('[data-testid="cancel-reset"]');
+  await page.click('[data-command="goal.reset.cancel"]');
   await page.wait(`document.querySelector('[data-testid="reset-confirmation"]') === null`, "the reset confirmation to close");
   await runPalette("goal.document.open");
   await page.wait(`document.querySelector('[data-testid="goal-text"] .monaco-editor') !== null`, "the Goal Monaco editor");
@@ -1965,6 +2086,20 @@ try {
     "a Flow action does not use the design-system horizontal padding",
     flowGoalSurface.startPadding,
   );
+  const flowGoalHeader = await page.eval<{ state: string; tone: string; saveDisabled: boolean }>(`(() => {
+    const state = document.querySelector('[data-testid="flow-goal-state"]');
+    const save = document.querySelector('[data-testid="save-flow-goal"]');
+    return {
+      state: state?.textContent?.trim() ?? "",
+      tone: state === null ? "" : getComputedStyle(state).color,
+      saveDisabled: save?.disabled !== false,
+    };
+  })()`);
+  check(
+    flowGoalHeader.state === "Saved" && flowGoalHeader.saveDisabled,
+    "the Flow goal header does not state its saved state",
+    flowGoalHeader,
+  );
   const flowLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-goal-text"] textarea')?.getAttribute("aria-label") ?? ""`);
   check(flowLabel.length > 0, "the Flow goal editor has no accessible label", flowLabel);
   await page.click('[data-testid="dismiss-flow-blocker"]');
@@ -2150,6 +2285,9 @@ try {
     versions: boolean;
     suite: string;
     levelCommand: string;
+    suiteLeft: number;
+    commandLeft: number;
+    levelChips: number;
     happyPath: string;
   }>(`(() => {
     const head = document.querySelector('#workspace-discover .discover-head');
@@ -2161,7 +2299,9 @@ try {
       value: stat.querySelector('.discover-stat__value')?.textContent?.trim() ?? "",
       label: stat.querySelector('.discover-stat__label')?.textContent?.trim() ?? "",
     }));
-    const commandCell = testing?.querySelector('[data-testid="discover-pyramid"] tbody td.discover-mono');
+    const commandCell = testing?.querySelector('[data-testid="discover-pyramid"] tbody td code.code-chip');
+    const suiteChip = document.querySelector('[data-testid="discover-suite-command"] code.code-chip');
+    const commandChip = document.querySelector('[data-testid="discover-command-list"] tbody tr code.code-chip');
     return {
       eyebrow: head?.querySelector('.discover-page__eyebrow') !== null,
       stale: document.querySelector('[data-testid="discover-stale"]') !== null,
@@ -2175,8 +2315,11 @@ try {
       rows: document.querySelectorAll('[data-testid="discover-pyramid"] tbody tr').length,
       versions: [...document.querySelectorAll('#workspace-discover [data-field="runtime"] dt')]
         .some((term) => term.textContent.trim() === "Versions"),
-      suite: testing?.querySelector('[data-testid="discover-suite-command"] code')?.textContent?.trim() ?? "",
+      suite: suiteChip?.textContent?.trim() ?? "",
       levelCommand: commandCell?.textContent?.trim() ?? "",
+      suiteLeft: Math.round(suiteChip?.getBoundingClientRect().left ?? -1),
+      commandLeft: Math.round(commandChip?.getBoundingClientRect().left ?? -1),
+      levelChips: testing?.querySelectorAll('[data-testid="discover-pyramid"] tbody td code.code-chip').length ?? 0,
       happyPath: stats.find((stat) => stat.label === "happy path")?.value ?? "",
     };
   })()`);
@@ -2193,13 +2336,23 @@ try {
     discoverChrome.headers,
   );
   check(
-    discoverChrome.suite === "npm test",
-    "the whole-suite line does not show the manifest's own invocation",
+    discoverChrome.suite === "$ npm test",
+    "the whole-suite line does not carry the runnable prompt",
     discoverChrome,
   );
   check(
     discoverChrome.levelCommand === "$ npm run test:unit",
     "a test level does not show the declared command that runs it",
+    discoverChrome,
+  );
+  check(
+    discoverChrome.levelChips === discoverChrome.rows && discoverChrome.rows > 0,
+    "a test level command is not drawn with the shared code chip",
+    discoverChrome,
+  );
+  check(
+    discoverChrome.suiteLeft === discoverChrome.commandLeft,
+    "the suite command does not start on the commands' own column",
     discoverChrome,
   );
   check(
@@ -2305,6 +2458,8 @@ try {
     clippedCards: number;
     rowsOutside: number;
     searchPadding: string[];
+    toolbar: { background: string; border: string };
+    filterRows: number[];
   }>(`(() => {
     const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
     const kindCells = rows.map((row) => row.querySelector('td:nth-child(1)'));
@@ -2344,6 +2499,19 @@ try {
         return card !== null && row.getBoundingClientRect().bottom > card.getBoundingClientRect().bottom + 0.5;
       }).length,
       searchPadding: searchStyle === null ? [] : [searchStyle.paddingTop, searchStyle.paddingBottom],
+      toolbar: (() => {
+        const controls = document.querySelector('#workspace-discover .discover-glossary-controls');
+        const style = controls === null ? null : getComputedStyle(controls);
+        return { background: style?.backgroundColor ?? "", border: style?.borderTopWidth ?? "" };
+      })(),
+      filterRows: [
+        search,
+        document.querySelector('[data-testid="discover-glossary-significant"]')?.closest(".discover-toggle"),
+        document.querySelector('[data-testid="discover-glossary-threshold"]')?.closest(".discover-floor"),
+      ].map((element) => {
+        const box = element?.getBoundingClientRect();
+        return box === undefined ? -1 : Math.round(box.top + box.height / 2);
+      }),
     };
   })()`);
   check(glossary.contexts > 0 && glossary.terms > 0, "the glossary tables are empty", glossary);
@@ -2393,6 +2561,16 @@ try {
   check(glossary.clippedCards === 0, "a glossary card clips its rows", glossary.clippedCards);
   check(glossary.rowsOutside === 0, "a glossary term falls outside its card", glossary.rowsOutside);
   check(glossary.searchPadding.every((value) => value === "0px"), "the glossary search placeholder is not vertically centered", glossary.searchPadding);
+  check(
+    glossary.toolbar.background !== "rgba(0, 0, 0, 0)" && glossary.toolbar.border === "1px",
+    "the glossary filters are not one bounded toolbar",
+    glossary.toolbar,
+  );
+  check(
+    glossary.filterRows.every((center) => Math.abs(center - glossary.filterRows[0]!) <= 1),
+    "the glossary search, switch, and floor do not sit on one row",
+    glossary.filterRows,
+  );
   const warningsSection = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="Warnings"]') !== null`);
   check(!warningsSection, "the sidebar still shows an empty warnings section");
 
@@ -2509,39 +2687,24 @@ try {
     "the restored scored glossary",
   );
 
-  const termCommand = await page.eval<string>(`(() => {
-    const element = [...document.querySelectorAll('#workspace-discover [data-command^="discover.term.open."]')]
-      .find((entry) => entry.getClientRects().length > 0);
-    return element?.getAttribute("data-command") ?? "";
-  })()`);
-  check(termCommand.length > 0, "no glossary term entry is available");
-  await runPalette(termCommand);
-  await page.wait(`document.querySelector('#workspace-discover [data-testid="discover-term"][data-id]') !== null`, "the term detail page");
-  const termChrome = await page.eval<{ headerBadges: number; badges: number; workspaceBadges: number; closeButtons: number }>(`(() => {
-    const panel = document.querySelector('#workspace-discover [data-testid="discover-term"][data-id]');
+  const glossaryActivation = await page.eval<{ commands: number; tabindex: number }>(`(() => {
+    const rows = [...document.querySelectorAll('#workspace-discover [data-testid="discover-term"]')];
     return {
-      headerBadges: panel?.querySelectorAll('.panel__header .badge').length ?? 0,
-      badges: panel?.querySelectorAll('.badge').length ?? 0,
-      workspaceBadges: document.querySelectorAll('#workspace-discover [data-testid="discover-panel"] .badge').length,
-      closeButtons: [...(panel?.querySelectorAll('button') ?? [])].filter((button) => button.textContent?.trim() === "Close").length,
+      commands: document.querySelectorAll('#workspace-discover [data-command^="discover.term.open."]').length,
+      tabindex: rows.filter((row) => row.getAttribute("tabindex") !== null).length,
     };
   })()`);
-  check(termChrome.headerBadges === 0, "the term detail still renders a status badge", termChrome);
-  check(termChrome.badges === 0 && termChrome.workspaceBadges === 0, "the term detail still renders status labels", termChrome);
-  check(termChrome.closeButtons === 0, "the term detail still renders a Close control", termChrome);
-  const termSignificance = await page.eval<string>(`document.querySelector('[data-testid="discover-term-significance"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? ""`);
   check(
-    termSignificance.includes("90") && termSignificance.includes("order total"),
-    "the term detail does not show the score and its reason",
-    termSignificance,
+    glossaryActivation.commands === 0 && glossaryActivation.tabindex === 0,
+    "a glossary row is still an interactive term page",
+    glossaryActivation,
   );
-  const termSplit = await page.eval<{ handles: number; panes: number[]; orientation: string }>(`(() => {
-    const handles = [...document.querySelectorAll('#workspace-discover [data-testid="pane-handle"]')];
-    const panes = [...document.querySelectorAll('#workspace-discover [data-pane]')].map((pane) => Math.round(pane.getBoundingClientRect().width));
-    return { handles: handles.length, panes, orientation: handles[0]?.getAttribute("aria-orientation") ?? "" };
-  })()`);
-  check(termSplit.handles >= 1 && termSplit.orientation === "vertical", "the Discover term detail has no split pane", termSplit);
-  check(termSplit.panes.length >= 2 && termSplit.panes.every((width) => width >= 160), "a Discover split pane is below 160px", termSplit);
+  await page.click('#workspace-discover [data-testid="discover-term"] td:nth-child(2)');
+  await delay(100);
+  const stillGlossary = await page.eval<boolean>(
+    `document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="glossary"]') !== null`,
+  );
+  check(stillGlossary, "clicking a glossary row navigated away from the table");
 
   await runPalette("discover.tab.testing-strategy");
   await page.wait(`document.querySelector('[data-testid="discover-skill-text"] .monaco-editor') !== null`, "the Discover skill editor");
@@ -2793,6 +2956,14 @@ try {
   );
   check(remoteStrip.clear, "the clear control is missing for a remote target", remoteStrip);
   check(remoteStrip.sheet, "the clone's sheet does not render", remoteStrip);
+  const remoteTitle = await page.eval<string>(
+    `document.querySelector('#workspace-discover .discover-head__title')?.textContent?.trim() ?? ""`,
+  );
+  check(
+    remoteTitle === "octocat/Hello-World",
+    "the Discover head does not name the repository as owner/name",
+    remoteTitle,
+  );
 
   await runPalette("discover.tab.glossary");
   await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the clone's glossary");
@@ -3581,6 +3752,7 @@ try {
     fileDisabled: boolean;
     textareaDisabled: boolean;
     cancelDisabled: boolean;
+    value: string;
   }>(`(() => {
     const status = document.querySelector('.feedback-panel [role="status"]');
     if (status?.textContent?.trim() !== "Asking…") return null;
@@ -3594,6 +3766,7 @@ try {
       fileDisabled: buttons[0]?.disabled !== false,
       textareaDisabled: textarea?.disabled !== false,
       cancelDisabled: buttons[3]?.disabled !== false,
+      value: textarea?.value ?? "",
     };
   })()`, "the pending ask controls", 8_000);
   check(asking.status === "Asking…" && asking.ask === "Asking…", "the pending ask does not read Asking…", asking);
@@ -3602,6 +3775,7 @@ try {
     "the pending ask controls are wrong",
     asking,
   );
+  check(asking.value === "", "the composer did not clear when the question was sent", asking);
 
   const streaming = await page.wait<{ text: string; pending: boolean; first: string }>(`(() => {
     const agent = document.querySelector('.feedback-panel .feedback-turn--agent');
@@ -3684,20 +3858,50 @@ try {
   );
   check(feedbackPosts.length === postsBeforeAsk, "an ask posted to /api/feedback", feedbackPosts);
 
-  const transcriptSurface = await page.eval<{ role: string; name: string; maxHeight: string; overflow: string; turns: number }>(`(() => {
+  const transcriptSurface = await page.eval<{
+    role: string;
+    name: string;
+    maxHeight: string;
+    overflow: string;
+    turns: number;
+    roles: string[];
+    who: string[];
+    developerFill: string;
+    agentFill: string;
+  }>(`(() => {
     const log = document.querySelector('.feedback-panel [role="log"]');
     const style = log === null ? null : getComputedStyle(log);
+    const messages = [...document.querySelectorAll('.feedback-panel .feedback-message')];
+    const developer = document.querySelector('.feedback-panel .feedback-turn--developer');
+    const agent = document.querySelector('.feedback-panel .feedback-turn--agent');
     return {
       role: log?.getAttribute("role") ?? "",
       name: log?.getAttribute("aria-label") ?? "",
       maxHeight: style?.maxHeight ?? "",
       overflow: style?.overflowY ?? "",
       turns: log?.querySelectorAll('.feedback-turn').length ?? 0,
+      roles: messages.map((message) => message.getAttribute("data-role") ?? ""),
+      who: messages.map((message) => message.querySelector('.feedback-message__who')?.textContent?.trim() ?? ""),
+      developerFill: developer === null ? "" : getComputedStyle(developer).backgroundColor,
+      agentFill: agent === null ? "" : getComputedStyle(agent).backgroundColor,
     };
   })()`);
   check(transcriptSurface.role === "log" && transcriptSurface.name.length > 0, "the transcript is not an accessible log", transcriptSurface);
   check(transcriptSurface.maxHeight === "180px" && transcriptSurface.overflow === "auto", "the transcript does not scroll inside 180px", transcriptSurface);
   check(transcriptSurface.turns === 4, "the transcript lost a turn", transcriptSurface);
+  check(
+    transcriptSurface.roles.join(",") === "developer,agent,developer,agent" &&
+      transcriptSurface.who.join(",") === "You,Agent,You,Agent",
+    "the transcript does not label who spoke",
+    transcriptSurface,
+  );
+  check(
+    transcriptSurface.developerFill.length > 0 &&
+      transcriptSurface.agentFill.length > 0 &&
+      transcriptSurface.developerFill !== transcriptSurface.agentFill,
+    "the question and answer bubbles look the same",
+    transcriptSurface,
+  );
 
   const panelFits = (): Promise<{ inside: boolean; width: number; top: number; bottom: number; scroll: boolean }> =>
     page.eval<{ inside: boolean; width: number; top: number; bottom: number; scroll: boolean }>(`(() => {
@@ -3782,11 +3986,9 @@ try {
     overview: boolean;
     state: string;
     repo: string;
-    start: boolean;
-    pause: boolean;
-    resume: boolean;
-    stop: boolean;
-    check: boolean;
+    toggle: string;
+    toggleEnabled: boolean;
+    controls: number;
   }>(`(() => {
     const workspace = document.getElementById("workspace-issues");
     const button = (testid) => document.querySelector('[data-testid="' + testid + '"]');
@@ -3795,19 +3997,19 @@ try {
       overview: button("issues-overview") !== null,
       state: button("issues-state")?.textContent?.trim() ?? "",
       repo: button("issues-repo")?.textContent?.trim() ?? "",
-      start: button("issues-start")?.disabled === true,
-      pause: button("issues-pause")?.disabled === true,
-      resume: button("issues-resume")?.disabled === true,
-      stop: button("issues-stop")?.disabled === true,
-      check: button("issues-check-now")?.disabled === true,
+      toggle: button("issues-toggle")?.textContent?.trim() ?? "",
+      toggleEnabled: button("issues-toggle")?.disabled === false,
+      controls: document.querySelectorAll(
+        '[data-testid="issues-start"], [data-testid="issues-stop"], [data-testid="issues-pause"], [data-testid="issues-resume"], [data-testid="issues-check-now"]',
+      ).length,
     };
   })()`);
   check(stoppedConsole.visible && stoppedConsole.overview, "the Issues pane or overview is missing", stoppedConsole);
   check(stoppedConsole.state === "stopped", "the Issues mode does not open stopped", stoppedConsole);
   check(stoppedConsole.repo === "fixture/host", "the Issues overview does not name the repository", stoppedConsole);
   check(
-    !stoppedConsole.start && stoppedConsole.pause && stoppedConsole.resume && stoppedConsole.stop && stoppedConsole.check,
-    "the stopped controls are not in their exact states",
+    stoppedConsole.toggle === "Start" && stoppedConsole.toggleEnabled && stoppedConsole.controls === 0,
+    "the stopped state does not offer exactly one enabled Start control",
     stoppedConsole,
   );
 
@@ -3817,12 +4019,16 @@ try {
     "the idle issues indicator",
     8_000,
   );
-  const idleControls = await page.eval<{ state: string; start: boolean; check: boolean }>(`(() => ({
+  const idleControls = await page.eval<{ state: string; toggle: string; toggleEnabled: boolean }>(`(() => ({
     state: document.querySelector('[data-testid="issues-state"]')?.textContent?.trim() ?? "",
-    start: document.querySelector('[data-testid="issues-start"]')?.disabled === true,
-    check: document.querySelector('[data-testid="issues-check-now"]')?.disabled === true,
+    toggle: document.querySelector('[data-testid="issues-toggle"]')?.textContent?.trim() ?? "",
+    toggleEnabled: document.querySelector('[data-testid="issues-toggle"]')?.disabled === false,
   }))()`);
-  check(idleControls.state === "idle" && idleControls.start && !idleControls.check, "the idle controls are wrong", idleControls);
+  check(
+    idleControls.state === "idle" && idleControls.toggle === "Stop" && idleControls.toggleEnabled,
+    "the idle state does not offer a single enabled Stop control",
+    idleControls,
+  );
 
   const runningSeededAt = Date.now();
   await seedIssuesState(stateDir, host, "running");
@@ -4266,8 +4472,6 @@ try {
   await saveShot("discover-glossary");
   await runPalette("discover.tab.testing-strategy");
   await saveShot("discover-skill");
-  await runPalette(termCommand);
-  await saveShot("discover-term");
   await runPalette("open.flow.overview");
   await saveShot("flow-overview");
   await page.key("1", 1);

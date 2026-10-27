@@ -281,7 +281,12 @@
       askPending = false;
       askError = "Not connected to the server.";
       focusComposer();
+      return;
     }
+    // The question now lives in the transcript: clear the composer at once so
+    // the next message never starts from the previous one.
+    report = "";
+    focusComposer();
   }
 
   /** Enter sends; Shift+Enter and an IME composition keep their newline. */
@@ -313,7 +318,6 @@
     if (message.type === "askDone") {
       askPending = false;
       askError = null;
-      report = "";
       focusComposer();
       return;
     }
@@ -684,15 +688,20 @@
     </header>
     <code class="feedback-selector" title={selector}>{selector}</code>
     {#if transcript.length > 0}
-      <div class="feedback-transcript" role="log" aria-label="Ask conversation" aria-live="polite">
+      <ul class="feedback-transcript" role="log" aria-label="Ask conversation" aria-live="polite">
         {#each transcript as turn, index (index)}
-          <p
-            class="feedback-turn"
-            class:feedback-turn--developer={turn.role === "developer"}
-            class:feedback-turn--agent={turn.role === "agent"}
-          >{turn.text}</p>
+          <li class="feedback-message" data-role={turn.role}>
+            <span class="feedback-message__who" aria-hidden="true">
+              {turn.role === "developer" ? "You" : "Agent"}
+            </span>
+            <p
+              class="feedback-turn"
+              class:feedback-turn--developer={turn.role === "developer"}
+              class:feedback-turn--agent={turn.role === "agent"}
+            >{turn.text}</p>
+          </li>
         {/each}
-      </div>
+      </ul>
     {/if}
     <textarea
       bind:this={textarea}
@@ -973,18 +982,59 @@
     border-radius: 6px;
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 0.5rem;
+    list-style: none;
+    margin: 0;
     max-height: 180px;
     overflow-y: auto;
-    padding: 0.45rem;
+    padding: 0.5rem;
+  }
+
+  .feedback-message {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-width: 92%;
+  }
+
+  .feedback-message[data-role="developer"] {
+    align-items: flex-end;
+    align-self: flex-end;
+  }
+
+  .feedback-message[data-role="agent"] {
+    align-items: flex-start;
+    align-self: flex-start;
+  }
+
+  .feedback-message__who {
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
+    text-transform: uppercase;
   }
 
   .feedback-turn {
+    border: 1px solid var(--border);
+    border-radius: 6px;
     color: var(--text);
     font-size: 0.8rem;
     margin: 0;
     overflow-wrap: anywhere;
+    padding: 0.4rem 0.55rem;
     white-space: pre-wrap;
+  }
+
+  .feedback-turn--developer {
+    background: var(--accent-surface);
+    border-color: var(--accent);
+  }
+
+  .feedback-turn--agent {
+    background: var(--surface-raised);
+    border-color: var(--border-subtle);
   }
 
   .feedback-panel textarea {

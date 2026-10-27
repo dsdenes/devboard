@@ -35,7 +35,6 @@ export interface IssuesSnapshot {
   root: string;
   lifecycle: IssuesState["lifecycle"];
   enabled: boolean;
-  paused: boolean;
   attached: boolean;
   worker: IssuesState["worker"];
   poll: IssuesState["poll"] | null;
@@ -192,7 +191,6 @@ export class IssuesBridge {
       root: this.repoDir,
       lifecycle,
       enabled: active?.enabled === true && lifecycle !== "stopped",
-      paused: active?.paused === true && lifecycle !== "stopped",
       attached,
       worker: active?.worker ?? null,
       poll: active?.poll ?? null,

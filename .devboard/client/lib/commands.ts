@@ -1,4 +1,4 @@
-import { conceptTitle, TABS } from "./discover-format";
+import { TABS } from "./discover-format";
 import type { GoalStore } from "./goal.svelte";
 import type { FlowStore } from "./flow.svelte";
 import type { DiscoverStore } from "./discover.svelte";
@@ -222,44 +222,16 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
 
   // Issues mode.
   add({
-    id: "issues.start",
-    title: "Start issue automation",
+    id: "issues.toggle",
+    title: issues.enabled ? "Stop issue automation" : "Start issue automation",
     group: "Issues",
-    keywords: "worker begin poll implement all issues",
-    disabled: () => disabledWhen(!issues.canStart, "Start is unavailable while the worker is enabled."),
-    run: () => issues.start(),
-  });
-  add({
-    id: "issues.pause",
-    title: "Pause issue automation",
-    group: "Issues",
-    keywords: "drain active run stop polling",
-    disabled: () => disabledWhen(!issues.canPause, "Pause is unavailable."),
-    run: () => issues.pause(),
-  });
-  add({
-    id: "issues.resume",
-    title: "Resume issue automation",
-    group: "Issues",
-    keywords: "continue poll",
-    disabled: () => disabledWhen(!issues.canResume, "Resume is unavailable."),
-    run: () => issues.resume(),
-  });
-  add({
-    id: "issues.stop",
-    title: "Stop issue automation",
-    group: "Issues",
-    keywords: "kill peer release lock",
-    disabled: () => disabledWhen(!issues.canStop, "Stop is unavailable."),
-    run: () => issues.stop(),
-  });
-  add({
-    id: "issues.check",
-    title: "Check issues now",
-    group: "Issues",
-    keywords: "poll immediately bypass cooldown",
-    disabled: () => disabledWhen(!issues.canCheck, "Check now is unavailable while paused or stopped."),
-    run: () => issues.check(),
+    keywords: "worker poll implement all issues start stop",
+    disabled: () =>
+      disabledWhen(
+        !issues.canStart && !issues.canStop,
+        issues.enabled ? "Stop is unavailable." : "Start is unavailable while the worker is enabled.",
+      ),
+    run: () => issues.toggle(),
   });
   add({
     id: "issues.answer",
@@ -824,24 +796,5 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
       });
     }
   }
-  for (const context of discover.contexts) {
-    for (const concept of context.concepts) {
-      if (concept.status === "invalidated") continue;
-      add({
-        id: `discover.term.open.${context.boundedContext}.${concept.id}`,
-        title: `Open term ${conceptTitle(concept)}`,
-        group: "Discover terms",
-        keywords: `${context.boundedContext} ${concept.kind}`,
-        run: () =>
-          ctx.openTab("discover", {
-            id: tabId("term", `${context.boundedContext}:${concept.id}`),
-            kind: "term",
-            resourceId: `${context.boundedContext}:${concept.id}`,
-            title: conceptTitle(concept),
-          }),
-      });
-    }
-  }
-
   return commands;
 }

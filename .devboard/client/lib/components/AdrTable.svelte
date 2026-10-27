@@ -2,6 +2,7 @@
   import { createTable } from "@tanstack/svelte-table";
   import { tableFeatures } from "@tanstack/table-core";
   import { goal } from "../goal.svelte";
+  import { recordStatusTone } from "../record-status";
   import type { AdrRecord } from "../types";
 
   interface Props {
@@ -77,7 +78,11 @@
             {/if}
           </td>
           <td>
-            <span class="badge" data-tone={record.pending ? "pending" : "resolved"}>
+            <span
+              class="badge"
+              data-tone={recordStatusTone(record.status)}
+              data-testid="record-status-badge"
+            >
               {record.status || "Unknown"}
             </span>
           </td>

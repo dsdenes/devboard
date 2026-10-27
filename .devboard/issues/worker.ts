@@ -370,7 +370,7 @@ export class IssuesWorker {
     if (this.stopping) return;
     await this.consumeCommands();
     if (this.stopping) return;
-    if (!this.state.enabled || this.state.paused) return;
+    if (!this.state.enabled) return;
     if (this.polling) return;
     if (this.clock().getTime() < this.nextPollDue) return;
     await this.poll();
@@ -386,40 +386,6 @@ export class IssuesWorker {
 
   private async apply(command: IssuesCommand): Promise<void> {
     switch (command.type) {
-      case "pause": {
-        this.state.paused = true;
-        this.state.notice = null;
-        this.state.lifecycle = this.active === undefined ? "paused" : "pausing";
-        this.publish();
-        return;
-      }
-      case "resume": {
-        this.state.paused = false;
-        this.state.notice = null;
-        this.state.lifecycle =
-          this.active !== undefined ? "running" : this.cooldownRemaining() ? "failed" : "idle";
-        this.nextPollDue = this.clock().getTime();
-        this.publish();
-        return;
-      }
-      case "check": {
-        if (this.state.paused) {
-          this.state.notice = "Check now is unavailable while paused.";
-          this.publish();
-          return;
-        }
-        if (!this.state.enabled) {
-          this.state.notice = "Start the issues worker before checking now.";
-          this.publish();
-          return;
-        }
-        this.state.nextAttemptAt = null;
-        this.state.notice = null;
-        if (this.state.lifecycle === "failed") this.state.lifecycle = "idle";
-        this.nextPollDue = this.clock().getTime();
-        this.publish();
-        return;
-      }
       case "answer": {
         const question = this.state.question;
         if (question === null || String(question.id) !== String(command.id) || this.active === undefined) {
@@ -546,7 +512,7 @@ export class IssuesWorker {
   }
 
   private maybeTrigger(): void {
-    if (this.stopping || this.state.paused || !this.state.enabled) return;
+    if (this.stopping || !this.state.enabled) return;
     if (this.active !== undefined || this.finishing) return;
     if (this.cooldownRemaining()) {
       this.state.lifecycle = "failed";
@@ -746,8 +712,6 @@ export class IssuesWorker {
     this.state.finishedAt = finishedAt;
     if (this.stopping) {
       this.state.lifecycle = "stopped";
-    } else if (this.state.paused) {
-      this.state.lifecycle = "paused";
     } else if (exitCode === 0) {
       this.state.lifecycle = "idle";
       this.state.nextAttemptAt = null;
@@ -758,7 +722,7 @@ export class IssuesWorker {
     this.active = undefined;
     this.finishing = false;
     this.publish();
-    if (followUp && exitCode === 0 && !this.stopping && !this.state.paused) {
+    if (followUp && exitCode === 0 && !this.stopping) {
       this.nextPollDue = this.clock().getTime();
     }
   }
@@ -788,7 +752,6 @@ export class IssuesWorker {
     if (this.stopping) return;
     this.stopping = true;
     this.state.enabled = false;
-    this.state.paused = false;
     this.state.nextAttemptAt = null;
     const active = this.active;
     if (active !== undefined && !active.finished) {

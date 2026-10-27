@@ -72,7 +72,7 @@
   const projectPath = $derived(
     freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : ""),
   );
-  const projectName = $derived(baseName(projectPath) || "Discover");
+  const projectName = $derived(discover.repository ?? (baseName(projectPath) || "Discover"));
 
   const commandsSection = $derived(
     typeof sheet?.commands === "object" && sheet.commands !== null
@@ -109,7 +109,7 @@
         level: humanize(tier.level),
         tests: `${tests} ${tests === 1 ? "test" : "tests"}`,
         happyPath: happyLabel,
-        command: tier.command.length > 0 ? `$ ${discover.aliasFor(tier.command)}` : "—",
+        command: tier.command.length > 0 ? discover.aliasFor(tier.command) : "",
         rawLevel: tier.level,
       };
     }),
@@ -378,6 +378,18 @@
   </div>
 {/snippet}
 
+{#snippet levelCell(row: Record<string, unknown>, columnId: string)}
+  {#if columnId === "command"}
+    {#if String(row.command ?? "").length > 0}
+      <code class="code-chip">$ {String(row.command)}</code>
+    {:else}
+      <span class="muted">—</span>
+    {/if}
+  {:else}
+    {String(row[columnId] ?? "")}
+  {/if}
+{/snippet}
+
 {#snippet commandCell(row: Record<string, unknown>, columnId: string)}
   {#if columnId === "value"}
     {#if row.missing === true}
@@ -479,15 +491,22 @@
 
   {#if discover.active}
     <section class="panel discover-run" data-testid="discover-active">
-      <div class="panel__header">
+      <div class="panel__header discover-run__header">
         <div class="discover-run__heading">
           <span class="discover-run__dot" aria-hidden="true"></span>
-          <h2 class="panel__title">Discover run in progress</h2>
-          {#if discover.runId !== null}<code class="discover-run__id">{discover.runId}</code>{/if}
+          <div class="discover-run__identity">
+            <span class="discover-run__eyebrow">Discover</span>
+            <h2 class="panel__title">Run in progress</h2>
+          </div>
         </div>
-        <div class="row-sm">
+        <div class="discover-run__actions">
+          {#if discover.runId !== null}
+            <code class="code-chip discover-run__id" title="Run identifier">{discover.runId}</code>
+          {/if}
           {#if discover.startedAt !== null}
-            <span class="muted" title={discover.startedAt}>Started {startedLabel}</span>
+            <span class="muted discover-run__started" title={discover.startedAt}>
+              Started {startedLabel}
+            </span>
           {/if}
           <Button
             variant="destructive"
@@ -672,7 +691,7 @@
                       <span class="muted">Whole suite</span>
                       <code class="code-chip" title={recordedTestCommand === discover.testCommand
                         ? undefined
-                        : recordedTestCommand}>{discover.testCommand}</code>
+                        : recordedTestCommand}>$ {discover.testCommand}</code>
                     </div>
                   {/if}
                 </div>
@@ -681,9 +700,7 @@
                   columns={LEVEL_COLUMNS}
                   rows={levelRows}
                   rowAttrs={(row) => ({ "data-level": String(row.rawLevel ?? "") })}
-                  cellValue={(row, columnId) => String(row[columnId] ?? "")}
-                  cellAttrs={(_row, columnId) =>
-                    columnId === "command" ? { class: "discover-mono" } : {}}
+                  cell={levelCell}
                   full
                   wrap
                 />

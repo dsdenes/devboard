@@ -10,10 +10,7 @@ import { isInteger, isRecord } from "./guards";
  */
 
 export type IssuesCommand =
-  | { type: "pause" }
-  | { type: "resume" }
   | { type: "stop" }
-  | { type: "check" }
   | { type: "answer"; id: number | string; value: string };
 
 let sequence = 0;
@@ -38,10 +35,7 @@ function parseCommand(text: string): IssuesCommand | undefined {
   }
   if (!isRecord(parsed)) return undefined;
   switch (parsed.type) {
-    case "pause":
-    case "resume":
     case "stop":
-    case "check":
       return { type: parsed.type };
     case "answer":
       if (

@@ -159,6 +159,7 @@ async function fixture(options: {
   root?: string;
   stateDir?: string;
   harnessVersion?: string;
+  now?: () => Date;
   beforeStart?: (root: string, stateDir: string) => void;
 }): Promise<Fixture> {
   const base = await temporaryDirectory(options.label);
@@ -174,6 +175,7 @@ async function fixture(options: {
     stateDir,
     intervalMs: 60_000,
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
+    ...(options.now === undefined ? {} : { now: options.now }),
     listIssues: async () => ({ kind: "issues", issues: [...issues], etag: "etag-1" }),
     connect: (peerOptions) => {
       const peer = new ControlledPeer(peerOptions);
@@ -277,7 +279,8 @@ describe("trigger policy", () => {
   });
 
   test("a failed run publishes the first stderr line and a five-minute cooldown", async () => {
-    const f = await fixture({ issues: [issue(1)] });
+    let now = new Date("2026-10-27T00:00:00Z");
+    const f = await fixture({ issues: [issue(1)], now: () => now });
     try {
       const peer = await waitFor(() => f.peers[0], "the first peer");
       peer.fail("tracker said no");
@@ -287,7 +290,7 @@ describe("trigger policy", () => {
       );
       expect(failed.lastError).toBe("tracker said no");
       expect(failed.runs[0]?.status).toBe("failed");
-      const remaining = Date.parse(failed.nextAttemptAt!) - Date.now();
+      const remaining = Date.parse(failed.nextAttemptAt!) - now.getTime();
       expect(remaining).toBeGreaterThan(4 * 60_000);
       expect(remaining).toBeLessThanOrEqual(5 * 60_000);
       expect(
@@ -299,8 +302,10 @@ describe("trigger policy", () => {
       await f.worker.poll();
       expect(f.peers).toHaveLength(1);
 
-      writeCommand(controlDirectory(f.stateDir, f.root), { type: "check" });
-      const retry = await waitFor(() => f.peers[1], "the check-now retry");
+      // Only elapsed time lifts the cooldown: there is no check-now control.
+      now = new Date(now.getTime() + 6 * 60_000);
+      await f.worker.poll();
+      const retry = await waitFor(() => f.peers[1], "the retry after the cooldown");
       retry.succeed();
       await waitFor(() => (f.state().lifecycle === "idle" ? true : undefined), "the retry success");
       expect(f.state().nextAttemptAt).toBeNull();
@@ -329,39 +334,19 @@ describe("trigger policy", () => {
 });
 
 describe("lifecycle", () => {
-  test("pause drains the active run, resume polls, and stop ends the peer", async () => {
+  test("stop ends the active run and leaves its issue unhandled", async () => {
     const f = await fixture({ issues: [issue(1)] });
     try {
-      const peer = await waitFor(() => f.peers[0], "the active peer");
-      writeCommand(controlDirectory(f.stateDir, f.root), { type: "pause" });
-      await waitFor(() => (f.state().lifecycle === "pausing" ? true : undefined), "pausing");
-      expect(peer.closed).toBe(false);
-
-      peer.succeed();
-      const paused = await waitFor(
-        () => (f.state().lifecycle === "paused" ? f.state() : undefined),
-        "paused",
-      );
-      expect(paused.paused).toBe(true);
-      const polls = f.state().poll.lastPollAt;
-      f.issues.push(issue(2));
-      // Integration proof against the worker's real poll timer: a paused worker
-      // must not read the tracker, so waiting past one tick is the assertion.
-      await Bun.sleep(200);
-      expect(f.state().poll.lastPollAt).toBe(polls);
-      expect(f.peers).toHaveLength(1);
-
-      writeCommand(controlDirectory(f.stateDir, f.root), { type: "resume" });
-      const running = await waitFor(() => f.peers[1], "the resumed peer");
-      running.succeed();
+      const first = await waitFor(() => f.peers[0], "the first peer");
+      first.succeed();
       await waitFor(
         () => (f.state().lifecycle === "idle" && f.state().queue.every((entry) => entry.handled) ? true : undefined),
-        "the resumed success",
+        "the first success",
       );
 
       f.issues.push(issue(3));
       await f.worker.poll();
-      const stopping = await waitFor(() => f.peers[2], "the peer to stop");
+      const stopping = await waitFor(() => f.peers[1], "the peer to stop");
       await waitFor(() => (f.state().lifecycle === "running" ? true : undefined), "running");
       writeCommand(controlDirectory(f.stateDir, f.root), { type: "stop" });
       const stopped = await waitFor(
@@ -376,21 +361,6 @@ describe("lifecycle", () => {
       const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
       expect(ledger.handled["3"]).toBeUndefined();
       expect(stopped.nextAttemptAt).toBeNull();
-    } finally {
-      await stop(f);
-    }
-  });
-
-  test("check now is refused while paused with a notice and no poll", async () => {
-    const f = await fixture({ issues: [] });
-    try {
-      writeCommand(controlDirectory(f.stateDir, f.root), { type: "pause" });
-      await waitFor(() => (f.state().lifecycle === "paused" ? true : undefined), "paused");
-      const last = f.state().poll.lastPollAt;
-      writeCommand(controlDirectory(f.stateDir, f.root), { type: "check" });
-      const notice = await waitFor(() => f.state().notice, "the refusal notice");
-      expect(notice).toBe("Check now is unavailable while paused.");
-      expect(f.state().poll.lastPollAt).toBe(last);
     } finally {
       await stop(f);
     }
@@ -729,7 +699,6 @@ describe("state document", () => {
       root: "/tmp/repo",
       lifecycle: "stopped",
       enabled: false,
-      paused: false,
       worker: null,
       poll: { intervalMs: 2000, lastPollAt: null, nextPollAt: null, etag: null, notModified: false, rateLimitedUntil: null, error: null },
       queue: [],

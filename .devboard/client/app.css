@@ -34,7 +34,6 @@
   --terminal-background: #0d1117;
   --activity-bar: #0a0d12;
   --badge-pending: #d29922;
-  --badge-confirmed: #3fb950;
   --badge-stale: #d29922;
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
@@ -76,7 +75,6 @@
   --terminal-background: #ffffff;
   --activity-bar: #f6f8fa;
   --badge-pending: #9a6700;
-  --badge-confirmed: #1a7f37;
   --badge-stale: #9a6700;
   --selection-background: #b6d7ff;
   --flow-contract-border: #0969da;
@@ -422,11 +420,9 @@ kbd {
   border-color: var(--badge-pending);
   color: var(--badge-pending);
 }
-.badge[data-tone="confirmed"],
-.badge[data-tone="resolved"],
 .badge[data-tone="success"] {
-  border-color: var(--badge-confirmed);
-  color: var(--badge-confirmed);
+  border-color: var(--success);
+  color: var(--success);
 }
 .badge[data-tone="stale"],
 .badge[data-tone="warning"] {
@@ -689,17 +685,31 @@ kbd {
 
 .status-bar {
   align-items: center;
-  background: var(--surface);
+  background: var(--surface-raised);
   border-top: 1px solid var(--border);
   display: flex;
   flex: 0 0 26px;
   font-size: 11px;
-  gap: 4px;
+  gap: 8px;
   height: 26px;
   overflow: hidden;
   padding: 0 6px;
   white-space: nowrap;
   z-index: 20;
+}
+
+.status-group {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.status-group--metrics {
+  flex: 0 1 auto;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .status-item {
@@ -726,6 +736,25 @@ kbd {
 .status-item--button:hover {
   background: var(--secondary);
   color: var(--foreground);
+}
+
+.status-divider {
+  background: var(--border);
+  flex: 0 0 1px;
+  height: 12px;
+}
+
+.status-metric__label {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.status-metric__value {
+  color: var(--foreground);
+  font-size: 11px;
 }
 
 .status-project {
@@ -765,8 +794,18 @@ kbd {
 }
 
 .status-versions {
-  font-family: var(--font-mono);
-  font-size: 10px;
+  gap: 8px;
+}
+
+.status-versions__entry {
+  align-items: baseline;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.status-versions .mono {
+  color: var(--foreground);
+  font-size: 10.5px;
 }
 
 .notification-region {
@@ -1285,6 +1324,40 @@ kbd {
   min-height: 360px;
 }
 
+.flow-goal__header {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.flow-goal__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.flow-goal__state {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.flow-goal__state[data-state="dirty"] {
+  color: var(--warning);
+}
+
+.flow-goal__state[data-state="saved"] {
+  color: var(--success);
+}
+
+.flow-goal__state[data-state="running"] {
+  color: var(--accent);
+}
+
+.flow-goal__actions {
+  flex: 0 0 auto;
+}
+
 .flow-goal-panel--collapsed {
   height: auto;
   min-height: 0;
@@ -1526,12 +1599,38 @@ kbd {
   margin: 0;
 }
 
-/* Active run. */
+/* Active run: a tinted header names the state, the run, its age, and Stop. */
+.discover-run {
+  border-color: var(--accent);
+}
+
+.discover-run__header {
+  background: var(--accent-surface);
+  border-bottom-color: var(--accent);
+  gap: 12px;
+}
+
 .discover-run__heading {
   align-items: center;
   display: flex;
   gap: 8px;
   min-width: 0;
+}
+
+.discover-run__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.discover-run__eyebrow {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
 }
 
 .discover-run__dot {
@@ -1542,11 +1641,23 @@ kbd {
   width: 6px;
 }
 
+.discover-run__actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .discover-run__id {
-  font-size: 11px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.discover-run__started {
+  font-size: 11px;
 }
 
 .discover-run__body {
@@ -1605,51 +1716,6 @@ kbd {
 
 .discover-filter-empty .empty {
   padding: 0;
-}
-
-/* Term page: a frame above the resizable main and detail panes. */
-.discover-term-page {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.discover-back {
-  align-self: flex-start;
-  background: transparent;
-  border: 0;
-  border-radius: 3px;
-  color: var(--accent);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 2px 0;
-}
-
-.discover-back:hover {
-  text-decoration: underline;
-}
-
-.discover-term-definition {
-  font-size: 13px;
-  line-height: 1.45;
-  margin: 0;
-  max-width: 72ch;
-}
-
-.discover-detail-value {
-  font-size: 12px;
-  margin: 2px 0 0;
-  overflow-wrap: anywhere;
-}
-
-.discover-related {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
 }
 
 /* Skill page: the editor owns the remaining pane height. */
@@ -1839,11 +1905,15 @@ a.code-chip--link:focus-visible {
 }
 
 .discover-command-line {
-  align-items: baseline;
-  display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  display: grid;
   font-size: 12px;
   gap: 8px;
+  grid-template-columns: 96px minmax(0, 1fr);
+}
+
+.discover-command-line .code-chip {
+  justify-self: start;
 }
 
 .discover-test-summary {
@@ -2060,40 +2130,123 @@ a.code-chip--link:focus-visible {
 }
 
 .discover-search {
-  max-width: 280px;
+  flex: 1 1 200px;
+  max-width: 240px;
   width: 100%;
 }
 
-.discover-glossary-controls {
+/* One filter toolbar: a search field, a state switch, and a valued floor. */
+.discover-page__actions.discover-glossary-controls {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px;
+}
+
+.discover-glossary-filters {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  justify-content: flex-end;
+  gap: 8px;
 }
 
-.discover-threshold {
+.discover-glossary-divider {
+  background: var(--border);
+  flex: 0 0 1px;
+  height: 18px;
+}
+
+.discover-toggle {
+  align-items: center;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.discover-toggle input {
+  height: 1px;
+  opacity: 0;
+  position: absolute;
+  width: 1px;
+}
+
+.discover-toggle__track {
+  background: var(--background);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 14px;
+  position: relative;
+  width: 26px;
+}
+
+.discover-toggle__track::after {
+  background: var(--muted-foreground);
+  border-radius: 999px;
+  content: "";
+  height: 8px;
+  left: 2px;
+  position: absolute;
+  top: 2px;
+  transition: left 120ms ease, background 120ms ease;
+  width: 8px;
+}
+
+.discover-toggle input:checked + .discover-toggle__track {
+  background: var(--accent-surface);
+  border-color: var(--accent);
+}
+
+.discover-toggle input:checked + .discover-toggle__track::after {
+  background: var(--accent);
+  left: 14px;
+}
+
+.discover-toggle input:focus-visible + .discover-toggle__track {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.discover-toggle input:disabled + .discover-toggle__track,
+.discover-toggle input:disabled ~ .discover-toggle__label {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.discover-floor {
   align-items: center;
   display: flex;
   gap: 8px;
 }
 
-.discover-threshold__label {
+.discover-floor__label {
   color: var(--muted-foreground);
   font-size: 10px;
-  letter-spacing: 0.03em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.discover-threshold__input {
+.discover-floor__input {
   accent-color: var(--accent);
-  width: 140px;
+  width: 120px;
 }
 
-.discover-threshold__value {
+.discover-floor__value {
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
   font-family: var(--font-mono);
   font-size: 11px;
-  min-width: 2.6em;
+  min-width: 46px;
+  padding: 2px 6px;
+  text-align: center;
 }
 
 .discover-uses {
@@ -2112,14 +2265,6 @@ a.code-chip--link:focus-visible {
 .discover-examples__item {
   align-items: baseline;
   display: inline-flex;
-}
-
-.discover-examples code {
-  background: var(--background);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  padding: 1px 4px;
-  white-space: nowrap;
 }
 
 .discover-skill {
@@ -2385,6 +2530,12 @@ a.code-chip--link:focus-visible {
   gap: 6px;
 }
 
+.skill {
+  align-items: flex-start;
+  display: flex;
+  gap: 4px;
+}
+
 .skill__button {
   align-items: flex-start;
   background: transparent;
@@ -2393,11 +2544,39 @@ a.code-chip--link:focus-visible {
   color: var(--foreground);
   cursor: pointer;
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
   padding: 4px 6px;
   text-align: left;
-  width: 100%;
+}
+
+.skill__delete {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  width: 28px;
+}
+
+.skill__delete:hover:not(:disabled),
+.skill__delete:focus-visible {
+  background: var(--error-surface);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.skill__delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .skill__button:hover {
@@ -2422,19 +2601,6 @@ a.code-chip--link:focus-visible {
 
 .goal-skill-detail {
   flex: 0 0 auto;
-}
-
-.goal-danger {
-  border-color: var(--error);
-}
-
-.goal-danger > .panel__header {
-  background: var(--error-surface);
-  border-bottom-color: var(--error);
-}
-
-.goal-danger > .panel__header .panel__title {
-  color: var(--error);
 }
 
 /* Issues mode */
@@ -2619,14 +2785,32 @@ a.code-chip--link:focus-visible {
 }
 
 .status-issues {
-  background: transparent;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  padding: 0 6px;
+  border: 1px solid transparent;
+  max-width: 260px;
 }
 
-.status-issues:hover {
-  color: var(--accent);
+.status-issues__dot {
+  background: var(--border-strong);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 6px;
+  width: 6px;
+}
+
+.status-issues[data-state="running"] .status-issues__dot,
+.status-issues[data-state="pausing"] .status-issues__dot {
+  background: var(--success);
+}
+
+.status-issues[data-state="idle"] .status-issues__dot {
+  background: var(--warning);
+}
+
+.status-issues[data-state="failed"] .status-issues__dot {
+  background: var(--error);
+}
+
+.status-issues__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

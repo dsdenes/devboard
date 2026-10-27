@@ -373,10 +373,7 @@
                 closeTab={(tab) => closeTab("flow", tab)}
               />
             {:else}
-              <DiscoverWorkspace
-                tab={workspaceTab("discover")}
-                openTab={(tab) => openTab("discover", tab)}
-              />
+              <DiscoverWorkspace tab={workspaceTab("discover")} />
             {/if}
           </div>
         {/each}

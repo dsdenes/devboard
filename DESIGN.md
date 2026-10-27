@@ -258,7 +258,7 @@ with the dark set.
 | `accent-surface` | `#16233a` | `#eef4ff` | Selected row tint |
 | `destructive` | `#da3633` | `#cf222e` | Destructive action |
 | `destructive-foreground` | `#ffffff` | `#ffffff` | Text on destructive |
-| `success` | `#3fb950` | `#1a7f37` | Pass, resolved, confirmed |
+| `success` | `#3fb950` | `#1a7f37` | Pass, accepted, ready |
 | `success-surface` | `#16251b` | `#f0f7f2` | Success tint |
 | `warning` | `#d29922` | `#9a6700` | Pending, stale, dirty |
 | `warning-surface` | `#2b2411` | `#fff8e5` | Warning tint |
@@ -412,7 +412,7 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   2px 6px padding. A runnable command carries a `$` prompt; a path does not. No surface may draw
   a second inline-code style.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
-  fill, 1px `border` on its right edge. The three `role="tab"` controls sit in a `role="tablist"`
+  fill, 1px `border` on its right edge. The four `role="tab"` controls sit in a `role="tablist"`
   group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px
   `overline` label, 4px apart. Resting color is `muted-foreground`; hover and the selected tab use
   `secondary`, a `border-strong` outline, and `foreground` text; the selected tab carries a 2px
@@ -430,14 +430,40 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   link; `role="status"` on success and `role="alert"` with `error` text on failure. A proposed
   goal's `Goal proposed: .devboard/goal-proposals/<file>.md` result carries no link. It clears the
   notification region, which stays in the lower-right corner.
-- **Danger zone** (`.goal-danger`) — the destructive panel reuses the error pair: `error` border,
-  `error-surface` header, `error` title, and a `Destructive` badge; the action inside stays the
-  `destructive` button variant.
+- **Status bar** (`.status-bar`) — a 26px two-group strip on `surface-raised` with a 1px `border`
+  top edge. The left group states connection (7px dot plus word) and the project (folder icon plus
+  the last path segment in mono), divided by a 1px `border` rule. The right group holds the lane
+  count, the issues worker with a 6px state dot, the watchdog, and the running and installed
+  versions; every metric pairs a 10px `overline` label with an 11px value, so no meaning rests on
+  color. Items are 20px tall with 5px horizontal padding; a hovered control takes `secondary`.
+- **Reset implementation** — the destructive action is the outline button in the Goal
+  implementation header, beside `Resolve next ADR` and `Start implementation`. It arms a
+  confirmation dialog that names what is deleted and confirms with the `destructive` variant; no
+  permanent danger panel exists. Progress and the result render as one warning message under the
+  header.
+- **Flow goal header** (`.flow-goal__header`) — the panel title with a 11px state line (`Saved`
+  success, `Unsaved changes` warning, `Interview running` accent, `No goal yet` muted), and an
+  action group: the outline `(Re)create flow goal` and a primary `Save` that is disabled until the
+  draft differs from the saved goal.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page
   sections are 24px apart; cards inside a column are 12px apart. The facts rail holds its grid
   track between 320px and 420px, with 24px to the content column.
+- **Discover run header** (`.discover-run__header`) — a tinted `accent-surface` header with an
+  `accent` `overline` eyebrow and `Run in progress`, and a right action group holding the run
+  identifier as a `.code-chip`, the relative start time, and the `destructive` Stop. The panel
+  border takes `accent`.
+- **Glossary filter toolbar** (`.discover-glossary-controls`) — one bounded `surface-raised`
+  toolbar with 4px padding and 8px gaps: a search field up to 240px, a 26×14px switch for
+  `Significant only`, a 1px `border` divider, and a 120px floor slider whose value renders in a
+  `mono-small` chip. All three controls sit on one row at 1440px and wrap together when narrow.
+- **Ask transcript** (`.feedback-transcript`) — an accessible `role="log"` list inside 180px of
+  scroll. A developer turn aligns right with a `You` overline and an `accent-surface` bubble with
+  an `accent` border; an agent turn aligns left with an `Agent` overline and a `surface-raised`
+  bubble. Sending clears the composer immediately; the question is already in the transcript.
+- **Prepared skills** (`.skill`) — each row is the skill disclosure button plus a 28px delete
+  control that takes `error-surface` on hover and opens one confirmation dialog.
 
 ## Do's and Don'ts
 

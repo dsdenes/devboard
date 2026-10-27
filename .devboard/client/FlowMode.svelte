@@ -348,11 +348,32 @@
     data-testid="flow-goal"
     data-collapsed={flow.goalCreation === null ? "false" : "true"}
   >
-    <div class="panel__header">
-      <h2 class="panel__title">Flow goal</h2>
-      <div class="row-sm">
+    <div class="panel__header flow-goal__header">
+      <div class="flow-goal__identity">
+        <h2 class="panel__title">Flow goal</h2>
+        <span
+          class="flow-goal__state"
+          data-state={flow.goalCreation !== null
+            ? "running"
+            : flow.goalDirty
+              ? "dirty"
+              : flow.goal.trim().length > 0
+                ? "saved"
+                : "empty"}
+          data-testid="flow-goal-state"
+        >
+          {flow.goalCreation !== null
+            ? "Interview running"
+            : flow.goalDirty
+              ? "Unsaved changes"
+              : flow.goal.trim().length > 0
+                ? "Saved"
+                : "No goal yet"}
+        </span>
+      </div>
+      <div class="row-sm flow-goal__actions">
         <Button
-          variant="secondary"
+          variant="outline"
           data-command="flow.goal.create"
           data-testid="create-flow-goal"
           onclick={() => flow.createGoal()}
@@ -363,6 +384,7 @@
           variant="default"
           data-command="flow.goal.save"
           data-testid="save-flow-goal"
+          disabled={!flow.goalDirty}
           onclick={() => flow.saveGoal()}
         >
           Save

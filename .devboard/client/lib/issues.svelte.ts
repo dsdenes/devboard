@@ -59,12 +59,8 @@ export class IssuesStore {
     return this.snapshot?.enabled === true;
   }
 
-  get paused(): boolean {
-    return this.snapshot?.paused === true;
-  }
-
   get running(): boolean {
-    return this.lifecycle === "running" || this.lifecycle === "pausing";
+    return this.lifecycle === "running";
   }
 
   get queue(): QueuedIssue[] {
@@ -95,40 +91,21 @@ export class IssuesStore {
     return connection.open && !this.enabled;
   }
 
-  get canPause(): boolean {
-    return this.enabled && !this.paused && this.lifecycle !== "pausing";
-  }
-
-  get canResume(): boolean {
-    return this.enabled && this.paused && this.lifecycle !== "stopped";
-  }
-
   get canStop(): boolean {
-    return this.enabled;
-  }
-
-  get canCheck(): boolean {
-    return this.enabled && !this.paused;
+    return connection.open && this.enabled;
   }
 
   start(): void {
     connection.send({ type: "startIssues" });
   }
 
-  pause(): void {
-    connection.send({ type: "pauseIssues" });
-  }
-
-  resume(): void {
-    connection.send({ type: "resumeIssues" });
-  }
-
   stop(): void {
     connection.send({ type: "stopIssues" });
   }
 
-  check(): void {
-    connection.send({ type: "checkIssues" });
+  toggle(): void {
+    if (this.enabled) this.stop();
+    else this.start();
   }
 
   submitAnswer(value: string): void {

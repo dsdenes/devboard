@@ -488,7 +488,7 @@ try {
   );
   check(workerPids(a.repo).length === 0, "starting the dashboard started a worker");
   check(!existsSync(lockPath(a.repo)), "starting the dashboard took the repo lock");
-  await click(devtools, "issues-start");
+  await click(devtools, "issues-toggle");
 
   const idle = await waitState(
     a,
@@ -572,32 +572,48 @@ try {
   );
 
   /* ------------------------------------------------------- */
-  /* 3. Pause drains the run without killing the ACP peer     */
+  /* 3. One control: Stop ends the run and the worker         */
   /* ------------------------------------------------------- */
   const acpPid = running.acp?.pid ?? 0;
   check(acpPid > 0, "the state does not record the ACP child", running.acp);
-  await click(devtools, "issues-pause");
-  await waitState(a, "pausing", (state) => state.lifecycle === "pausing");
-  check(processAlive(acpPid), "Pause killed the ACP peer");
-  await writeFile(a.finish, "finish\n");
-  const paused = await waitState(a, "paused after the drain", (state) => state.lifecycle === "paused");
-  check(paused.paused, "the worker is not paused", paused);
-  check(paused.runs.some((entry) => entry.status === "succeeded"), "the drained run did not succeed", paused.runs);
-  await waitFor(() => (!processAlive(acpPid) ? true : undefined), "the ACP peer to finish", 5_000, 50);
+  const toggleWhileRunning = await devtools.evaluate(
+    `document.querySelector('[data-testid="issues-toggle"]')?.textContent?.trim() ?? ""`,
+  );
+  check(toggleWhileRunning === "Stop", "the running control does not read Stop", toggleWhileRunning);
+  const stoppedPid = stateOf(a)!.worker!.pid;
+  await click(devtools, "issues-toggle");
+  const stoppedMidRun = await waitState(a, "stopped", (state) => state.lifecycle === "stopped", 10_000);
+  check(stoppedMidRun.enabled === false, "Stop left the worker enabled", stoppedMidRun);
+  check(stoppedMidRun.runs.some((entry) => entry.status === "stopped"), "Stop did not record a stopped run", stoppedMidRun.runs);
+  await waitFor(() => (!processAlive(acpPid) ? true : undefined), "the ACP peer to end", 5_000, 50);
+  await waitFor(() => (!existsSync(lockPath(a.repo)) ? true : undefined), "the stopped worker's lock", 5_000, 50);
+  await waitFor(() => (!processAlive(stoppedPid) ? true : undefined), "the stopped worker to exit", 5_000, 50);
   await rm(a.finish, { force: true });
+  const toggleWhileStopped = await waitFor(
+    async () => {
+      const text = await devtools!.evaluate(
+        `document.querySelector('[data-testid="issues-toggle"]')?.textContent?.trim() ?? ""`,
+      );
+      return text === "Start" ? text : undefined;
+    },
+    "the stopped control to read Start",
+    10_000,
+    50,
+  );
+  check(toggleWhileStopped === "Start", "the stopped control does not read Start", toggleWhileStopped);
 
   /* ------------------------------------------------------- */
-  /* 4. Resume polls, and an issue opened then runs           */
+  /* 4. Start polls again, and an issue opened then runs      */
   /* ------------------------------------------------------- */
-  await click(devtools, "issues-resume");
+  await click(devtools, "issues-toggle");
+  await waitState(a, "the restarted worker", (state) => state.lifecycle === "idle" && state.enabled, 15_000);
   await writeStore(a.store, [issue(1), issue(2)]);
-  const resumed = await waitState(
+  const restarted = await waitState(
     a,
-    "the resumed run",
-    (state) => state.lifecycle === "running" && state.activeRun?.issueNumbers.join(",") === "2",
+    "the restarted run",
+    (state) => state.lifecycle === "running" && state.activeRun?.issueNumbers.includes(2) === true,
     10_000,
   );
-  check(resumed.paused === false, "Resume did not clear the pause", resumed);
   await writeFile(a.finish, "finish\n");
   const bothHandled = await waitState(
     a,
@@ -608,7 +624,8 @@ try {
       state.queue.every((entry) => entry.handled),
     10_000,
   );
-  check(bothHandled.lastExitCode === 0, "the resumed run did not succeed", bothHandled);
+  check(bothHandled.lastExitCode === 0, "the restarted run did not succeed", bothHandled);
+  check(restarted.worker?.pid !== stoppedPid, "Start reused the stopped worker", restarted.worker);
   await rm(a.finish, { force: true });
 
   /* ------------------------------------------------------- */
@@ -622,7 +639,7 @@ try {
     10_000,
   );
   const stoppingPid = stateOf(a)!.worker!.pid;
-  await click(devtools, "issues-stop");
+  await click(devtools, "issues-toggle");
   const stopped = await waitState(a, "stopped", (state) => state.lifecycle === "stopped", 10_000);
   check(stopped.enabled === false, "Stop left the worker enabled", stopped);
   check(stopped.nextAttemptAt === null, "Stop recorded a cooldown", stopped);
@@ -798,7 +815,7 @@ try {
   check(!existsSync(unit), "a systemd unit was written");
 
   console.log(
-    "verify:issues: Start, 2-second pickup, live ACP activity, pause drain, resume, stop, " +
+    "verify:issues: one Start/Stop control, 2-second pickup, live ACP activity, stop, " +
       "server-restart reattach, per-repository isolation, same-repository attach, " +
       "other-state-directory refusal, legacy-lock refusal, and no systemd write passed",
   );

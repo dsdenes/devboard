@@ -16,7 +16,7 @@ import {
  * A file this module cannot understand is renamed aside, never deleted.
  */
 
-export type IssuesLifecycle = "stopped" | "idle" | "running" | "pausing" | "paused" | "failed";
+export type IssuesLifecycle = "stopped" | "idle" | "running" | "failed";
 export type IssuesRunStatus = "running" | "succeeded" | "failed" | "stopped";
 
 export interface IssuesIssue {
@@ -88,7 +88,6 @@ export interface IssuesState {
   root: string;
   lifecycle: IssuesLifecycle;
   enabled: boolean;
-  paused: boolean;
   worker: IssuesWorkerRecord | null;
   poll: IssuesPollState;
   queue: QueuedIssue[];
@@ -218,7 +217,6 @@ export function emptyState(options: {
     root: options.root,
     lifecycle: options.lifecycle ?? "stopped",
     enabled: false,
-    paused: false,
     worker: null,
     poll: emptyPoll(options.intervalMs ?? 2000),
     queue: [],
@@ -245,18 +243,26 @@ export function parseState(text: string): IssuesState | undefined {
   }
   if (!isRecord(parsed) || parsed.version !== STATE_VERSION) return undefined;
   if (typeof parsed.repo !== "string" || typeof parsed.root !== "string") return undefined;
-  const lifecycle = parsed.lifecycle;
+  const storedLifecycle = parsed.lifecycle;
   if (
-    lifecycle !== "stopped" &&
-    lifecycle !== "idle" &&
-    lifecycle !== "running" &&
-    lifecycle !== "pausing" &&
-    lifecycle !== "paused" &&
-    lifecycle !== "failed"
+    storedLifecycle !== "stopped" &&
+    storedLifecycle !== "idle" &&
+    storedLifecycle !== "running" &&
+    storedLifecycle !== "pausing" &&
+    storedLifecycle !== "paused" &&
+    storedLifecycle !== "failed"
   ) {
     return undefined;
   }
-  if (typeof parsed.enabled !== "boolean" || typeof parsed.paused !== "boolean") return undefined;
+  if (typeof parsed.enabled !== "boolean") return undefined;
+  // `pausing` and `paused` belonged to the removed pause control: a worker
+  // still enabled by such a state resumes polling instead of staying parked.
+  const lifecycle: IssuesLifecycle =
+    storedLifecycle === "pausing" || storedLifecycle === "paused"
+      ? parsed.enabled
+        ? "idle"
+        : "stopped"
+      : storedLifecycle;
   if (parsed.worker !== null && !isWorker(parsed.worker)) return undefined;
   if (!isPoll(parsed.poll)) return undefined;
   if (!Array.isArray(parsed.queue) || !parsed.queue.every(isQueued)) return undefined;
@@ -286,7 +292,6 @@ export function parseState(text: string): IssuesState | undefined {
     root: parsed.root,
     lifecycle,
     enabled: parsed.enabled,
-    paused: parsed.paused,
     worker: parsed.worker as IssuesWorkerRecord | null,
     poll: parsed.poll,
     queue: parsed.queue,

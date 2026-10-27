@@ -85,50 +85,19 @@
         <div class="panel__body stack-sm">
           <div class="toolbar">
             <Button
-              variant="default"
-              data-testid="issues-start"
-              data-command="issues.start"
-              disabled={!issues.canStart}
-              onclick={() => issues.start()}
+              variant={issues.enabled ? "destructive" : "default"}
+              data-testid="issues-toggle"
+              data-command="issues.toggle"
+              disabled={!issues.canStart && !issues.canStop}
+              onclick={() => issues.toggle()}
             >
-              Start
+              {issues.enabled ? "Stop" : "Start"}
             </Button>
-            <Button
-              variant="outline"
-              data-testid="issues-pause"
-              data-command="issues.pause"
-              disabled={!issues.canPause}
-              onclick={() => issues.pause()}
-            >
-              Pause
-            </Button>
-            <Button
-              variant="outline"
-              data-testid="issues-resume"
-              data-command="issues.resume"
-              disabled={!issues.canResume}
-              onclick={() => issues.resume()}
-            >
-              Resume
-            </Button>
-            <Button
-              variant="destructive"
-              data-testid="issues-stop"
-              data-command="issues.stop"
-              disabled={!issues.canStop}
-              onclick={() => issues.stop()}
-            >
-              Stop
-            </Button>
-            <Button
-              variant="outline"
-              data-testid="issues-check-now"
-              data-command="issues.check"
-              disabled={!issues.canCheck}
-              onclick={() => issues.check()}
-            >
-              Check now
-            </Button>
+            <span class="muted">
+              {issues.enabled
+                ? "The worker polls and starts one run for the open issues."
+                : "Start the worker to poll the open issues and implement them."}
+            </span>
           </div>
           <dl class="issues-facts">
             <div>

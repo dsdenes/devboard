@@ -1,10 +1,12 @@
 <script lang="ts">
   import { connection } from "../connection.svelte";
   import { goal } from "../goal.svelte";
+  import Trash2 from "lucide-svelte/icons/trash-2";
   import type { WorkspaceTab } from "../layout.svelte";
   import { recordStatusTone } from "../record-status";
   import type { AdrRecord, Lane } from "../types";
   import AdrTable from "./AdrTable.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import MonacoEditor from "./MonacoEditor.svelte";
   import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
@@ -24,6 +26,7 @@
   let filterMode = $state<FilterMode>("all");
   let filterQuery = $state("");
   let skillsList = $state<HTMLUListElement | undefined>();
+  let deleteTarget = $state<string | null>(null);
   const selectedSkill = $derived(
     goal.selectedSkill === null
       ? null
@@ -291,7 +294,6 @@
       {/if}
 
       <PageHeader
-        eyebrow="Goal"
         title="Implementation"
         subtitle="Drive the lifecycle, or resolve a single decision record by hand."
         testid="implementation-header"
@@ -325,6 +327,15 @@
             Resolve next ADR
           </Button>
           <Button
+            variant="outline"
+            data-command="goal.reset"
+            data-testid="reset-implementation"
+            disabled={goal.resetDisabled}
+            onclick={() => goal.armReset()}
+          >
+            Reset implementation
+          </Button>
+          <Button
             variant={goal.lifecycleActive ? "destructive" : "default"}
             data-command="goal.lifecycle.toggle"
             data-testid="lifecycle-control"
@@ -336,6 +347,17 @@
           </Button>
         {/snippet}
       </PageHeader>
+
+      {#if goal.resetting || goal.resetStatus !== null}
+        <p
+          class="message"
+          data-severity="warning"
+          data-testid={goal.resetting ? "reset-running" : "reset-status"}
+          role="status"
+        >
+          {goal.resetting ? "Resetting implementation…" : goal.resetStatus}
+        </p>
+      {/if}
 
       {@render runQuestion()}
 
@@ -407,62 +429,6 @@
         {/if}
       </section>
 
-      <section class="panel goal-danger" data-testid="danger-zone">
-        <div class="panel__header">
-          <h2 class="panel__title">Danger zone</h2>
-          <span class="badge" data-tone="error" data-testid="danger-zone-label">Destructive</span>
-        </div>
-        <div class="panel__body stack-sm">
-          {#if !goal.resetArmed}
-            <div class="row-sm">
-              <Button
-                variant="outline"
-                data-command="goal.reset"
-                data-testid="reset-implementation"
-                disabled={goal.resetDisabled}
-                onclick={() => goal.armReset()}
-              >
-                Reset implementation
-              </Button>
-              <span class="muted">Deletes the working tree, not the goal or the records.</span>
-            </div>
-          {:else}
-            <div class="message" data-testid="reset-confirmation" data-severity="warning">
-              <p class="message__text" data-testid="reset-keep-set">
-                Reset deletes every top-level entry except <code>.devboard</code>, <code>.omp</code>,
-                <code>AGENTS.md</code>, <code>.gitignore</code>, and <code>GOAL.md</code>. The
-                internal <code>.git</code> and <code>.worktree</code> directories are preserved. Any
-                active run, lifecycle, goal creation, revision, or skills preparation stops first.
-              </p>
-              <div class="row-sm" style="margin-top: 6px;">
-                <Button
-                  variant="destructive"
-                  data-command="goal.reset.confirm"
-                  data-testid="confirm-reset"
-                  disabled={goal.resetDisabled}
-                  onclick={() => goal.confirmReset()}
-                >
-                  Confirm reset
-                </Button>
-                <Button
-                  variant="outline"
-                  data-command="goal.reset.cancel"
-                  data-testid="cancel-reset"
-                  onclick={() => goal.cancelReset()}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          {/if}
-          {#if goal.resetting}
-            <p class="muted" data-testid="reset-running" role="status">Resetting implementation…</p>
-          {/if}
-          {#if goal.resetStatus !== null}
-            <p data-testid="reset-status" role="status">{goal.resetStatus}</p>
-          {/if}
-        </div>
-      </section>
     </div>
   {:else if tab.kind === "adrs"}
     <div class="goal-page">
@@ -689,6 +655,21 @@
                     <span class="mono skill__name">{skill.name}</span>
                     <span class="muted skill__description">{skill.description}</span>
                   </button>
+                  {#if (skill.family ?? "prepare") === "prepare"}
+                    <button
+                      type="button"
+                      class="skill__delete"
+                      data-command={`goal.skills.delete.${skill.name}`}
+                      data-testid="delete-skill"
+                      data-name={skill.name}
+                      aria-label={`Delete ${skill.name}`}
+                      title={`Delete ${skill.name} from .omp/skills/`}
+                      disabled={goal.skillDeleteDisabled}
+                      onclick={() => (deleteTarget = skill.name)}
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -1014,3 +995,34 @@
     {/if}
   {/if}
 </div>
+
+<ConfirmDialog
+  open={goal.resetArmed}
+  title="Reset implementation"
+  message="Reset deletes every top-level entry except .devboard, .omp, AGENTS.md, .gitignore, and GOAL.md. The internal .git and .worktree directories are preserved. Any active run, lifecycle, goal creation, revision, or skills preparation stops first."
+  confirmLabel="Confirm reset"
+  destructive
+  testid="reset-confirmation"
+  confirmCommand="goal.reset.confirm"
+  cancelCommand="goal.reset.cancel"
+  onconfirm={() => goal.confirmReset()}
+  oncancel={() => goal.cancelReset()}
+/>
+
+<ConfirmDialog
+  open={deleteTarget !== null}
+  title="Delete skill"
+  message={deleteTarget === null
+    ? ""
+    : `Delete "${deleteTarget}" from .omp/skills/? Implementing agents will no longer read it.`}
+  confirmLabel="Delete skill"
+  destructive
+  testid="delete-skill-confirmation"
+  confirmCommand="goal.skills.delete.confirm"
+  cancelCommand="goal.skills.delete.cancel"
+  onconfirm={() => {
+    if (deleteTarget !== null) goal.deleteSkill(deleteTarget);
+    deleteTarget = null;
+  }}
+  oncancel={() => (deleteTarget = null)}
+/>

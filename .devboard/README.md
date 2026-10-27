@@ -22,7 +22,7 @@ degrades into a clipped mobile layout.
 |Mode rail|`activity-bar`|Three labeled mode tabs and their Lucide icons|
 |Sidebar|`sidebar`|Contextual navigation for the active mode|
 |Workspace|`workspace`|The open surface; absorbs all remaining space|
-|Status bar|`status-bar`|Connection, project name, counts, issues state, versions, theme, notifications|
+|Status bar|`status-bar`|Connection, project name, lane count, issues state, watchdog, versions, reload|
 
 The status bar stays visible while panes resize, and the document itself never scrolls
 vertically or horizontally. Each mode's panel keeps its scroll position, focus, open page, and
@@ -30,17 +30,17 @@ unsaved editor text while another mode is shown.
 
 ### Mode rail
 
-The 64px rail presents exactly four modes in this order as `role="tab"` controls:
+The 72px rail presents exactly four modes in this order as `role="tab"` controls:
 `data-testid="mode-goal"`, `data-testid="mode-issues"`, `data-testid="mode-flow"`, and
-`data-testid="mode-discover"`. Each is a 56×48px control with a Lucide icon above a visible 10px
+`data-testid="mode-discover"`. Each is a 64×52px control with a Lucide icon above a visible 10px
 uppercase label (`Goal`, `Issues`, `Flow`, `Discover`), an accessible name that also names the
 shortcut, `aria-selected`, and `aria-controls` naming its workspace panel. The labels never
 collapse to icon-only and never overflow the tab at the 1024×720 boundary. A fresh profile starts
 on Goal. Clicking a tab or pressing Alt+1, Alt+2, Alt+3, or Alt+4 changes only which mounted view
 is shown; it never sends a WebSocket frame.
 
-The sidebar header repeats the active mode as a small overline above the repository path, so the
-checkout stays identifiable from every surface; the path keeps its full value in the `title`.
+The sidebar has no header: it starts with the active mode's navigation, because the rail already
+names the mode and the status bar names the project.
 
 ### Sidebar
 
@@ -70,11 +70,10 @@ also takes a full page height so agent output never shrinks to a thumbnail.
 ### Workspace page
 
 Each mode shows exactly one page at a time and renders no tab strip. Opening an ADR, a Flow
-widget, changed file, or checkpoint, a Discover term, or a Discover skill replaces the visible
-page; the previous selection is reachable again from the sidebar or the palette. A Discover term
-page carries a back control to the glossary at the start of its header. Close controls inside a
-page return to an empty page, and a dirty page closes only after the confirmation dialog restores
-or discards the draft.
+widget, changed file, or checkpoint, or a Discover skill replaces the visible page; the previous
+selection is reachable again from the sidebar or the palette. Close controls inside a page return
+to an empty page, and a dirty page closes only after the confirmation dialog restores or discards
+the draft.
 
 A reload restores the active mode, each mode's open page, sidebar and split sizes, and theme. All
 of that state lives in `localStorage`; none of it is sent to the server.
@@ -82,7 +81,7 @@ of that state lives in `localStorage`; none of it is sent to the server.
 ### Split panes
 
 PaneForge groups provide the sidebar/workspace split and the workspace/detail split used by Flow
-widgets and diffs and by Discover term and skill detail. Separators are focusable, carry
+widgets and diffs and by the Discover skill detail. Separators are focusable, carry
 `role="separator"` with `aria-orientation`, `aria-valuemin`, `aria-valuemax`, and `aria-valuenow`,
 resize by drag and arrow keys, reset to their defaults on double-click, keep both panes at least
 160 CSS px wide, persist their sizes, and never cover the status bar.
@@ -158,14 +157,17 @@ severity, text, and dismissal, and remain in a history opened from the status ba
 never replace mode content or steal focus, and several arrivals are all retained. Flow blockers
 and verification results also remain in their mode context.
 
-The status bar shows the WebSocket connection, the project's own name (the last path segment,
-with a folder mark and the full path in its tooltip), running lane counts, the issues worker
-state, and the running and installed versions. A mode states its status in its sidebar and
-workspace, never a second time in the status bar, except the issues worker, which is detached
-from every dashboard and reports through `issues-indicator`. When `versionState.stale` is true it
-shows the existing reload
-control (`reload-devboard`), whose accessible name and title name both versions; reload behavior
-is unchanged. It also carries the theme toggle and the notification indicator.
+The 26px status bar is two groups. The left group states the WebSocket connection and the
+project's own name (the last path segment, with a folder mark and the full path in its tooltip),
+separated by a hairline rule. The right group states the running lane count, the issues worker
+state with a state dot, the watchdog's last action and age, and the running and installed
+versions; each metric carries a 10px uppercase label so its meaning never rests on color. When
+`versionState.stale` is true it shows the existing reload control (`reload-devboard`), whose
+accessible name and title name both versions; reload behavior is unchanged. A mode states its
+status in its sidebar and workspace, never a second time in the status bar, except the issues
+worker, which is detached from every dashboard and reports through `issues-indicator`. The theme
+toggle and the notification indicator live in the activity bar's action group, not the status
+bar.
 
 ### Verifying the interface
 
@@ -540,18 +542,21 @@ The Discover sidebar opens pages for `Overview` and `Glossary` without a group h
 skills `Testing Strategy`, `Naming Conventions`, `Coding Conventions`,
 `Architecture & Boundaries`, and `Glossary` under **Skills** (`data-testid="discover-tab"` with
 `data-tab` values `overview`, `glossary`, `testing-strategy`, `naming-conventions`,
-`coding-conventions`, `architecture-boundaries`, and `glossary-skill`). The sidebar header names
-the active mode above the repository, so both the mode and the checkout are identifiable from
-every surface. The active panel carries `data-testid="discover-panel"` and the same `data-tab`.
+`coding-conventions`, `architecture-boundaries`, and `glossary-skill`). The sidebar has no header,
+so its first entry is its mode's navigation. The active panel carries `data-testid="discover-panel"`
+and the same `data-tab`.
 Warnings appears as its own group with a count only while at least one warning exists; the sidebar
 keeps no freshness group and no recent-notice list.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
-optional meta row, and a right-aligned action group. The Overview frame holds the project name
-(the last path segment; the full path stays in the sidebar), the one-line definition, the discovery
-date, and the single filled run action. Staleness is not repeated on the sheet: the activity bar and
-the status bar report it. Below the frame, an active run region (run id, `Started 3 minutes ago`,
-Stop, activity terminal) and a queued question region appear only while they exist. The sheet
+optional meta row, and a right-aligned action group. The Overview frame holds the repository as
+`owner/name` from its GitHub remote (falling back to the directory name when no remote names one;
+the full path stays in the tooltip), the one-line definition, the discovery date, and the single
+filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
+report it. Below the frame, an active run region appears only while a run exists: a tinted header
+with a `Discover` eyebrow, `Run in progress`, the run identifier as a code chip, `Started 3 minutes
+ago`, and Stop, followed by the activity terminal and its ownership note. A queued question region
+follows while a question waits. The sheet
 follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and Testing in the
 main column on the right, and Bounded contexts below them. The manual-testing strip is the last
 region of the page, so a source checkout never pushes it above the project identity. An error,
@@ -741,12 +746,13 @@ floor slider (`data-testid="discover-glossary-threshold"`) spans `min="0"` to `m
 either has no score or scores at or above the slider value; clearing it lists every term matching
 the search and disables the slider. The subtitle reports the visible terms, the total terms, and the
 active floor, the sidebar glossary count stays the published term count, and the search, filter, and
-slider compose. A glossary published before the sidecar existed keeps its concepts and stays
-unfiltered: every term is visible, each Significance cell reads `—`, and the control and slider are
-disabled. An invalidated term never appears. Selecting a term opens its detail page without a
-status badge or Close control; the detail page states its uses, file count, examples, and, for a
-scored concept, its significance score and reason. The server still measures per-concept usage and
-examples for that page, but `glossaryUsage` never decides which term is listed or in which order.
+slider compose. The search field, the `Significant only` switch, and the valued floor sit in one
+bounded toolbar row. A glossary published before the sidecar existed keeps its concepts and stays
+unfiltered: every term is visible, each Significance cell reads `—`, and the switch and slider are
+disabled. An invalidated term never appears. A glossary row is read-only: it carries no activation
+command, no focus target, and no single-term page. The server still measures per-concept usage and
+examples for the row's examples cell, but `glossaryUsage` never decides which term is listed or in
+which order.
 
 Confirmation is automatic, so the Glossary page offers no `Confirm` or `Reject` control.
 `confirmGlossaryTerm` still succeeds only for a term that is proposed or unconfirmed, and
@@ -802,7 +808,8 @@ The goal lifecycle's skill prerequisite accepts a managed skill from either fami
 prepare-family or Discover skill is enough for `Start implementation`. `getSkills` and `skillsState`
 carry `name`, `description`, `family` (`prepare` or `discover`), and `state` (`generated`, `edited`,
 or `missing`), and a managed skill with no `devboard-family` field belongs to `prepare`. The Skills
-panel lists both families with their family and Discover state. Prepare Skills replaces only its
+panel lists both families with their family and Discover state, and every prepare-family row
+carries a Delete control that confirms before removing that one skill. Prepare Skills replaces only its
 own family, and its contradiction review covers its family plus hand-authored unmanaged skills, so
 a project-specific Discover directive cannot fail a project-agnostic preparation. Discover's
 generated baselines must agree with each other and with the glossary; a contradiction there fails
@@ -1228,13 +1235,11 @@ every worktree, commit, push, issue closure, and repository mutation.
 The trigger policy is unchanged. One run covers every open issue not in the ledger, an issue
 created during a run earns exactly one follow-up run, a handled issue is never retriggered while
 it stays open, a closed issue that reopens is new again, and a failed run publishes `failed`
-with the first stderr line and a five-minute cooldown. Pause lets the active run finish and stops
-new polls and triggers, reporting `pausing` until the run ends and then `paused`; it never kills
-the peer. Resume polls immediately, but an unexpired cooldown still delays a new run. Check now
-is accepted only while the worker is enabled and not paused, forces a poll, and clears the
-cooldown; while paused it writes a notice and polls nothing. Stop ends the peer and the worker,
-records the run as `stopped`, releases the lock, leaves captured issues unhandled, and never
-records a cooldown. No two ACP peers run concurrently for one repository.
+with the first stderr line and a five-minute cooldown. The mode offers one Start/Stop control:
+Start spawns the worker when none is enabled, and Stop ends the peer and the worker, records the
+run as `stopped`, releases the lock, leaves captured issues unhandled, and never records a
+cooldown. There is no pause, resume, or check-now control, and none of them exists on the wire.
+No two ACP peers run concurrently for one repository.
 
 State, ledger, runs, and activity live under `<STATE_DIR>/issues/<journalKey(REPO_DIR)>/`:
 `state.json` is atomic and carries the worker record, lifecycle, poll state, queue, run
@@ -1380,10 +1385,7 @@ The client sends:
 { "type": "getIssues" }
 { "type": "getIssuesRun", "runId": "2026-10-27T10-00-00-000Z" }
 { "type": "startIssues" }
-{ "type": "pauseIssues" }
-{ "type": "resumeIssues" }
 { "type": "stopIssues" }
-{ "type": "checkIssues" }
 { "type": "answerIssues", "id": 7, "value": "all" }
 { "type": "restartServer" }
 { "type": "restartServer", "whenIdle": true }
@@ -1398,6 +1400,7 @@ The client sends:
 { "type": "createGoal" }
 { "type": "prepareSkills" }
 { "type": "getSkills" }
+{ "type": "deleteSkill", "name": "test-strategy" }
 { "type": "resetImplementation" }
 { "type": "answer", "id": 1, "value": "Gamma" }
 { "type": "ask", "conversationId": "…", "question": "What does this label mean?", "context": { … } }
@@ -1418,7 +1421,7 @@ The client sends:
   and the page every few seconds, asks for it; a stale answer makes the reload control appear
   with both versions in its title.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
-  lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
+  lifecycle, enabled, repository, poll times, queue, run summaries, active run, question,
   next attempt, errors, and the harness version the worker loaded. A missing state and no live
   lock answer `present: false`, `attached: false`, and `lifecycle: "stopped"`. A live worker from
   another harness version adds a non-blocking `notice` naming both versions. A connect also
@@ -1500,7 +1503,11 @@ The client sends:
   and sends `skillsState`; the client issues it on every connection, so the panel is rebuilt after
   a reload or restart instead of starting a run. While preparation is active, `startRun`,
   `startLifecycle`, `resumeLifecycle`, `reviseGoal`, `saveGoal`, `createGoal`, and a second
-  `prepareSkills` are each refused with an `error` and spawn no peer.
+  `prepareSkills` are each refused with an `error` and spawn no peer. `deleteSkill` (with `name`)
+  removes exactly one installed managed skill of the prepare family from `<REPO_DIR>/.omp/skills/`,
+  is accepted only while that directory is installed and no run, lifecycle, goal creation,
+  revision, or preparation is active, and answers by broadcasting a fresh `skillsState`; it
+  refuses an unmanaged skill, a Discover-family skill, and a name that is not in the managed set.
 - `resetImplementation` deletes and commits the implementation as described above. The server
   broadcasts `implementationResetStarted` when it accepts the command, performs the reset
   itself, and broadcasts `implementationResetStopped` with `completed: true` and the 40-hex
@@ -1733,7 +1740,7 @@ reload contracts end to end. They never touch a real host.
 
 `bun run verify:issues` is the deterministic end-to-end gate. It starts a source dashboard
 against a throwaway checkout with stub `gh` and ACP commands, starts the worker, proves the 2-second
-pickup, live activity, pause drain, resume, stop, server-restart reattachment, per-repository
+pickup, live activity, the single Start/Stop control, server-restart reattachment, per-repository
 isolation, same-repository attach, refusal with another `STATE_DIR`, legacy-lock refusal, and that
 no systemd unit or timer is written and no `systemctl`/`loginctl` stub is invoked. It writes only
 under `.devboard/.tmp`.
