@@ -1419,10 +1419,10 @@ no-longer-available state linking to Runs when the run has been pruned.
 The Overview keeps the Start, Pause, Resume, Stop, and Check now controls, the poll and worker
 facts, and `data-testid="issues-overview"`. It shows the running-agent count as
 `data-testid="issues-running-agents"`, the pending count, the number of issues in cooldown and the
-earliest cooldown time as `data-testid="issues-cooldowns"`, and links to the Agents tab with
-`data-testid="issues-agents-link"`. The left column holds the Automation panel and, directly after
-the Open Agents button, the running agents in `data-testid="issues-agent-summary"`: one button per
-agent carrying `data-run` and `data-issue`, sorted by issue number, with `aria-current="true"` on
+earliest cooldown time as `data-testid="issues-cooldowns"`. The left column holds the Automation
+panel and, directly after it, the running agents in
+`data-testid="issues-agent-summary"`: one button per agent carrying `data-run` and `data-issue`,
+sorted by issue number, with `aria-current="true"` on
 the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
 Each row also carries `data-testid="issues-close-issue"` with `data-issue`; it closes that issue on
 the tracker as `not planned`, so an issue the operator does not want implemented leaves the next
