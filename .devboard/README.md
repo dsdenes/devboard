@@ -646,9 +646,8 @@ the full path stays in the tooltip), the one-line definition, the discovery date
 filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
 report it. While a run exists, every Discover page carries a run tag above its notice stack: a
 status dot, `Discover run in progress`, the age, the run identifier as a code chip, the latest
-activity line, and Stop. Below the Overview frame, the active run region adds the full activity
-terminal: a tinted header with `Run in progress`, `Started 3 minutes ago`, and Stop, followed by
-the terminal. A queued question region follows while a question waits.
+activity line, and Stop. The tag is the only run surface: the Overview frame adds no second run
+panel and no separate activity terminal. A queued question region follows while a question waits.
 The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and
 Testing in the main column on the right, and Bounded contexts below them. The manual-testing strip
 is the last region of the page, so a source checkout never pushes it above the project identity. An
@@ -670,7 +669,7 @@ with one `discoverError` and spawns no peer. A start requires no `GOAL.md`, no p
 clean tree, or a forge account; it is accepted on a host with a dirty tree and no goal document.
 
 The run is server-owned: closing the browser or switching views does not stop it. The view shows
-an active marker (`data-testid="discover-active"`) and the xterm activity output, and a reconnect receives
+the run tag (`data-testid="discover-run-tag"`) while a run is active, and a reconnect receives
 `discoverState`, `discoverStarted`, every recorded activity line, and any pending question before
 its own command replies. The crawl is not an interview: an ambiguity is recorded as `unknown` with
 a reason, never a blocking question. `answerDiscover` with the pending id and a non-empty value
