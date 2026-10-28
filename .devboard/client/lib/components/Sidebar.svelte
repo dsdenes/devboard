@@ -8,6 +8,7 @@
   import { scout } from "../scout.svelte";
   import { statusTone } from "../status-tone";
   import { layout } from "../layout.svelte";
+  import { renderSkillDocument } from "../skill-document";
   import type { WorkspaceTab } from "../layout.svelte";
   import type { Mode } from "../types";
 
@@ -62,6 +63,10 @@
     return discover.skill(name)?.state ?? "missing";
   }
 
+  function skillContentId(name: string): string {
+    return `goal-skill-content-${name.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  }
+
   function isActive(id: string): boolean {
     return active === id;
   }
@@ -99,41 +104,24 @@
           <span class="sidebar-item__label">ADRs</span>
           <span class="sidebar-item__meta">{goal.pendingCount} pending</span>
         </button>
-        <div class="sidebar-tab-row">
-          <button
-            type="button"
-            class="sidebar-item"
-            aria-current={isActive("skills")}
-            aria-expanded={skillsOpen}
-            aria-controls={skillsOpen ? "goal-skills-menu" : undefined}
-            data-command="goal.skills.open"
-            data-testid="goal-skills-toggle"
-            onclick={() => {
-              skillsOpen = !skillsOpen;
-              open("goal", "skills", "skills", "skills", "Skills");
-            }}
-          >
-            <span class="sidebar-item__label">Skills</span>
-            <span class="sidebar-item__meta">{goal.skills.length}</span>
-          </button>
-          <button
-            type="button"
-            class="sidebar-disclosure"
-            aria-expanded={skillsOpen}
-            aria-controls={skillsOpen ? "goal-skills-menu" : undefined}
-            aria-label={`${skillsOpen ? "Hide" : "Show"} prepared skills`}
-            data-testid="goal-skills-disclosure"
-            onclick={() => (skillsOpen = !skillsOpen)}
-          >
-            <ChevronRight
-              size={12}
-              aria-hidden="true"
-              class={skillsOpen
-                ? "sidebar-disclosure__icon sidebar-disclosure__icon--open"
-                : "sidebar-disclosure__icon"}
-            />
-          </button>
-        </div>
+        <button
+          type="button"
+          class="sidebar-item"
+          aria-expanded={skillsOpen}
+          aria-controls={skillsOpen ? "goal-skills-menu" : undefined}
+          data-testid="goal-skills-toggle"
+          onclick={() => (skillsOpen = !skillsOpen)}
+        >
+          <span class="sidebar-item__label">Skills</span>
+          <span class="sidebar-item__meta">{goal.skills.length}</span>
+          <ChevronRight
+            size={12}
+            aria-hidden="true"
+            class={skillsOpen
+              ? "sidebar-item__chevron sidebar-item__chevron--open"
+              : "sidebar-item__chevron"}
+          />
+        </button>
         {#if skillsOpen}
           <div
             class="sidebar-submenu"
@@ -143,23 +131,76 @@
             aria-label="Prepared skills"
           >
             {#each goal.skills as skill (skill.name)}
+              {@const expanded = goal.selectedSkill === skill.name}
+              {@const panelId = skillContentId(skill.name)}
+              {@const skillHtml =
+                skill.content === undefined ? "" : renderSkillDocument(skill.content)}
               <button
                 type="button"
                 class="sidebar-item sidebar-item--nested"
+                aria-expanded={expanded}
+                aria-controls={expanded ? panelId : undefined}
                 data-command={`goal.skill.open.${skill.name}`}
                 data-testid="goal-skill"
                 data-name={skill.name}
                 title={skill.description}
-                onclick={() => {
-                  goal.selectSkill(skill.name);
-                  open("goal", "skills", "skills", "skills", "Skills");
-                }}
+                onclick={() => goal.selectSkill(expanded ? null : skill.name)}
               >
                 <span class="sidebar-item__label">{skill.name}</span>
+                <ChevronRight
+                  size={12}
+                  aria-hidden="true"
+                  class={expanded
+                    ? "sidebar-item__chevron sidebar-item__chevron--open"
+                    : "sidebar-item__chevron"}
+                />
               </button>
+              {#if expanded}
+                <div
+                  class="sidebar-skill"
+                  id={panelId}
+                  data-testid="goal-skill-content"
+                  data-name={skill.name}
+                  role="region"
+                  aria-label={`${skill.name} content`}
+                >
+                  <p class="sidebar-skill__path" title={`.omp/skills/${skill.name}/SKILL.md`}>
+                    .omp/skills/{skill.name}/SKILL.md
+                  </p>
+                  {#if skill.content !== undefined && skill.content.length > 0}
+                    {#if skillHtml.length > 0}
+                      <div
+                        class="skill__document sidebar-skill__document"
+                        data-testid="goal-skill-content-text"
+                      >
+                        {@html skillHtml}
+                      </div>
+                    {:else}
+                      <p class="sidebar-empty">
+                        This skill's file carries only preparation metadata; there are no
+                        instructions to read.
+                      </p>
+                    {/if}
+                  {:else}
+                    <p class="sidebar-empty">
+                      This skill has no file on disk; prepare the skills again to write it.
+                    </p>
+                  {/if}
+                </div>
+              {/if}
             {:else}
               <p class="sidebar-empty">No skills prepared.</p>
             {/each}
+            <button
+              type="button"
+              class="sidebar-item sidebar-item--nested"
+              aria-current={isActive("skills")}
+              data-command="goal.skills.open"
+              data-testid="goal-skills-page"
+              onclick={() => open("goal", "skills", "skills", "skills", "Skills")}
+            >
+              <span class="sidebar-item__label">All skills</span>
+            </button>
           </div>
         {/if}
       </section>
@@ -322,17 +363,6 @@
         >
           <span class="sidebar-item__label">Issues</span>
           <span class="sidebar-item__meta">{issues.pending} pending</span>
-        </button>
-        <button
-          type="button"
-          class="sidebar-item"
-          aria-current={isActive("runs")}
-          data-command="open.issues.runs"
-          data-testid="open-issues-runs"
-          onclick={() => open("issues", "runs", "runs", "runs", "Runs")}
-        >
-          <span class="sidebar-item__label">Runs</span>
-          <span class="sidebar-item__meta">{issues.runs.length}</span>
         </button>
         <button
           type="button"

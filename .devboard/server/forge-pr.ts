@@ -266,10 +266,18 @@ export class CommandFlowForge implements FlowPrAdapter {
 
   async update(input: ForgePrInput & { number: number }): Promise<void> {
     if (input.target.forge === "gitea") {
+      const gitea = await this.#gitea(input.target, input.cwd);
+      // Gitea records draft state in the title. A checkpoint after Ready must
+      // not send the WIP: prefix back and silently turn the request into a
+      // draft again, so the current state decides the title.
+      const current = await giteaPull(gitea, input.number, this.#giteaFetch);
       await giteaEditPull(
-        await this.#gitea(input.target, input.cwd),
+        gitea,
         input.number,
-        { title: draftTitle(input.title), body: input.body },
+        {
+          title: current.draft ? draftTitle(input.title) : readyTitle(input.title),
+          body: input.body,
+        },
         this.#giteaFetch,
       );
       return;

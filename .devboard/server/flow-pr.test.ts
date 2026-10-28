@@ -4,7 +4,8 @@ import { join } from "node:path";
 import type { Server } from "bun";
 import type { Exec } from "../lib/forge-auth.ts";
 import { createApp } from "./app";
-import { CommandFlowForge, type ForgeTarget } from "./forge-pr";
+import { CommandFlowForge, type FlowPrAdapter, type ForgeTarget } from "./forge-pr";
+import { fakeGiteaPull } from "./fixtures/fake-gitea-pull";
 import { StubForge } from "./fixtures/stub-forge";
 import { journalKey } from "./journal";
 import { testProviderService } from "./fixtures/test-providers";
@@ -20,6 +21,12 @@ const TEST_ROOT = join(import.meta.dir, "..", ".tmp", "flow-pr-tests");
 const FLOW_GOAL = "# Flow goal\n\nMake the fixture behavior observable.";
 const TARGET: ForgeTarget = { forge: "github", host: "github.com", project: "acme/project" };
 const GITLAB: ForgeTarget = { forge: "gitlab", host: "gitlab.example.test", project: "group/project" };
+const GITEA: ForgeTarget = {
+  forge: "gitea",
+  host: "localhost",
+  project: "acme/fixture",
+  baseUrl: "http://gitea.test",
+};
 
 mkdirSync(TEST_ROOT, { recursive: true });
 const cleanup: (() => void)[] = [];
@@ -334,14 +341,14 @@ function createFixture(name: string): Fixture {
 interface TestServer {
   server: Server<unknown>;
   fixture: Fixture;
-  forge: StubForge;
+  forge: FlowPrAdapter;
   url: string;
   calls: Recorded[];
 }
 
 interface StartOptions {
   stub?: string[];
-  forge?: StubForge;
+  forge?: FlowPrAdapter;
   exec?: Exec;
   /** `null` leaves the real origin classification in place. */
   forgeTarget?: ForgeTarget | null;
@@ -471,6 +478,13 @@ async function waitUntil(predicate: () => boolean, description: string, timeout 
 
 function latest(client: TestClient, type: string): Event | undefined {
   return [...client.events].reverse().find((event) => event.type === type);
+}
+
+/** The pull request's state on a `flowPr` event, without trusting its shape. */
+function pullRequestState(event: Event): string | undefined {
+  const pr = event.pr;
+  if (typeof pr !== "object" || pr === null || !("state" in pr)) return undefined;
+  return typeof pr.state === "string" ? pr.state : undefined;
 }
 
 async function waitForStub(fixture: Fixture, predicate: (line: string) => boolean, timeout = 10_000) {
@@ -636,6 +650,72 @@ describe("Flow pull-request lifecycle", () => {
     await stopFlow(client);
     client.close();
   }, 60_000);
+
+  test("a checkpoint after Ready keeps the Gitea pull request live so it merges", async () => {
+    const fixture = createFixture("pr-ready-checkpoint-gitea");
+    const fake = fakeGiteaPull();
+    const giteaForge = new CommandFlowForge(
+      async () => ({ code: 1, stdout: "", stderr: "" }),
+      {},
+      async () => ({
+        forge: "gitea",
+        host: "localhost",
+        project: "acme/fixture",
+        login: "fixture",
+        token: "fixture-secret-token",
+        source: "test",
+        baseUrl: "http://gitea.test",
+        active: true,
+        permission: "push",
+        canWrite: true,
+      }),
+      fake.fetch,
+    );
+    const server = startServer(fixture, {
+      forge: giteaForge,
+      forgeTarget: GITEA,
+      stub: ["--flow-goal", "--flow-implement", "--flow-change", "--flow-checkpoints=1"],
+    });
+    const client = await connect(server);
+    await connected(client);
+    await createGoal(client);
+    const session = await startFlow(client, fixture);
+    await client.waitFor(
+      (event) => event.type === "flowPr" && pullRequestState(event) === "draft",
+    );
+    await client.waitFor((event) => event.type === "flowStopped");
+
+    client.send({ type: "markFlowPrReady" });
+    await client.waitFor(
+      (event) => event.type === "flowPr" && pullRequestState(event) === "live",
+    );
+    expect(fake.title()).not.toContain("WIP:");
+
+    // A checkpoint after Ready is an ordinary commit: the watcher pushes it and
+    // updates the live request, which must stay live.
+    writeFileSync(join(session.worktree, "src", "later.txt"), "later checkpoint\n");
+    git(session.worktree, ["add", "-A"]);
+    git(session.worktree, ["commit", "-m", "checkpoint after ready"]);
+    await waitUntil(
+      () => fake.calls.filter((call) => call.method === "PATCH").length >= 2,
+      "the post-Ready pull request update",
+      40_000,
+    );
+    expect(fake.title()).not.toContain("WIP:");
+
+    client.send({ type: "mergeFlowPr" });
+    await client.waitFor(
+      (event) => event.type === "flowPr" && pullRequestState(event) === "merged",
+    );
+    expect(
+      client.events.some(
+        (event) =>
+          event.type === "flowError" && String(event.message).includes("not an open, live"),
+      ),
+    ).toBe(false);
+    expect(fake.merged()).toBe(true);
+    client.close();
+  }, 90_000);
 
   test("Ready refuses a running or dirty session and accepts a stopped, clean draft", async () => {
     const fixture = createFixture("pr-ready");
