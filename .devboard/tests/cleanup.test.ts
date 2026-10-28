@@ -203,7 +203,7 @@ describe("sweepStateDir", () => {
     await mkdir(stateDir, { recursive: true });
 
     writeAt(join(stateDir, "state", "project.json"), "{}", old);
-    const journal = join(stateDir, "journal", `${"c".repeat(24)}.jsonl.1`);
+    const journal = join(stateDir, "journal", `${"c".repeat(24)}.jsonl.1000-1`);
     writeAt(journal, "rotated", old);
     writeAt(join(stateDir, "watchdog", "state.json"), "{}", old);
     writeAt(join(stateDir, "watchdog", "latest.json"), "{}", old);
@@ -392,7 +392,7 @@ describe("watchdog cycle integration", () => {
     await mkdir(join(root, ".devboard", ".tmp"), { recursive: true });
     const host = join(base, "elsewhere", "host");
     const stateDir = join(host, ".devboard", ".tmp");
-    const journal = join(stateDir, "journal", `${"d".repeat(24)}.jsonl.1`);
+    const journal = join(stateDir, "journal", `${"d".repeat(24)}.jsonl.1000-1`);
     await mkdir(join(stateDir, "journal"), { recursive: true });
     writeAt(journal, "rotated", old);
     const harness = join(host, ".devboard", "node_modules", "@dsdenes", "devboard-harness");
