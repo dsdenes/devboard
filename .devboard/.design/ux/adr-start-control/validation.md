@@ -3,7 +3,7 @@
 - Page: Goal mode → Decision records, `#workspace-goal`,
   `section.panel.goal-adrs-panel` (`[data-testid="adrs-overlay"]`).
 - Commit/branch: worktree `.worktree/issue-401`, branch `issue-401`, integrated with `main` at
-  `2406727`.
+  `b29c972`.
 - Commands: `cd .devboard && bun install --frozen-lockfile && bun run build`, then the source
   server at `http://127.0.0.1:8942/` with `PORT=8942`, `STATIC_DIR` in the worktree, `STATE_DIR`
   under the worktree, and `REPO_DIR`, `ADRS_DIR`, `GOAL_FILE` pointing at a fixture host under
