@@ -60,8 +60,6 @@
   const nextRecord = $derived(
     goal.next === null ? null : (goal.records.find((record) => record.file === goal.next) ?? null),
   );
-  const nextLabel = $derived(nextRecord?.title ?? goal.next ?? "none");
-
   const query = $derived(filterQuery.trim().toLowerCase());
   const filteredRecords = $derived(
     goal.records.filter((record) => {
@@ -441,7 +439,6 @@
       >
         {#snippet meta()}
           <span class="muted" data-testid="pending-summary">{progressLine}</span>
-          <span class="muted">Next: <span class="mono">{nextLabel}</span></span>
         {/snippet}
       </PageHeader>
 
