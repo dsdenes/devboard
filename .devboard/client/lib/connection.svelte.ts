@@ -41,6 +41,7 @@ export class ConnectionStore {
   private disposed = false;
   private notifiedLoss = false;
   private handlers: Array<(message: Envelope) => void> = [];
+  private openHandlers: Array<() => void> = [];
 
   get open(): boolean {
     return this.state === "open";
@@ -48,6 +49,15 @@ export class ConnectionStore {
 
   onMessage(handler: (message: Envelope) => void): void {
     this.handlers.push(handler);
+  }
+
+  /**
+   * Runs before the state requests below on every open, including reconnects.
+   * Stores reconcile operation flags here so a stop frame lost while the
+   * socket was down cannot leave a control disabled for the session.
+   */
+  onOpen(handler: () => void): void {
+    this.openHandlers.push(handler);
   }
 
   send(command: unknown): boolean {
@@ -73,6 +83,7 @@ export class ConnectionStore {
       this.lastError = null;
       this.notifiedLoss = false;
       this.upgradePending = false;
+      for (const handler of this.openHandlers) handler();
       current.send(JSON.stringify({ type: "listRecords" }));
       current.send(JSON.stringify({ type: "getGoal" }));
       current.send(JSON.stringify({ type: "getSkills" }));
