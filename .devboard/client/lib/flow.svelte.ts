@@ -155,7 +155,7 @@ export class FlowStore {
   }
 
   saveGoal(): void {
-    connection.send({ type: "saveFlowGoal", text: this.goalDraft });
+    if (!connection.send({ type: "saveFlowGoal", text: this.goalDraft })) return;
     this.goalDirty = false;
   }
 
@@ -165,7 +165,7 @@ export class FlowStore {
   }
 
   saveDecisions(): void {
-    connection.send({ type: "saveFlowDecisions", text: this.decisionsDraft });
+    if (!connection.send({ type: "saveFlowDecisions", text: this.decisionsDraft })) return;
     this.decisionsDirty = false;
   }
 
