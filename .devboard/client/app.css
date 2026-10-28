@@ -1719,13 +1719,6 @@ kbd {
   min-width: 0;
 }
 
-.discover-run__id {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .discover-run__started {
   font-size: 11px;
   white-space: nowrap;
@@ -2299,58 +2292,6 @@ a.code-chip--link:focus-visible {
   fill: var(--foreground);
 }
 
-.discover-empty__body {
-  align-items: start;
-  display: grid;
-  gap: 16px 24px;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  padding: 16px;
-}
-
-@media (max-width: 1100px) {
-  .discover-empty__body {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-.discover-empty__body h2 {
-  font-size: 13px;
-  font-weight: 600;
-  margin: 0 0 6px;
-}
-
-.discover-empty__body p {
-  color: var(--foreground);
-  font-size: 12px;
-  line-height: 1.45;
-  margin: 0 0 8px;
-}
-
-.discover-empty__body p.muted {
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-
-.discover-writes {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.discover-writes li {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.discover-writes span {
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-
 .discover-search {
   flex: 1 1 200px;
   max-width: 240px;
@@ -2753,13 +2694,19 @@ a.code-chip--link:focus-visible {
 }
 
 .skill {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill__row {
   align-items: flex-start;
   display: flex;
   gap: 4px;
 }
 
 .skill__button {
-  align-items: flex-start;
+  align-items: center;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -2767,11 +2714,29 @@ a.code-chip--link:focus-visible {
   cursor: pointer;
   display: flex;
   flex: 1;
-  flex-direction: column;
-  gap: 2px;
+  gap: 8px;
+  justify-content: space-between;
   min-width: 0;
   padding: 4px 6px;
   text-align: left;
+}
+
+.skill__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skill__chevron {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  transition: transform 120ms ease;
+}
+
+.skill__chevron--open {
+  transform: rotate(90deg);
 }
 
 .skill__delete {
@@ -2814,15 +2779,17 @@ a.code-chip--link:focus-visible {
   font-size: 11px;
 }
 
+.skill__detail {
+  border-left: 2px solid var(--border-strong);
+  margin: 0 0 4px 8px;
+  padding: 4px 0 4px 8px;
+}
+
 .skill__content {
   font-size: 11.5px;
   margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-}
-
-.goal-skill-detail {
-  flex: 0 0 auto;
 }
 
 /* Issues mode */

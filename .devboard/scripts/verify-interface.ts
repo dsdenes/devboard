@@ -1870,23 +1870,58 @@ try {
   await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the disclosure");
   const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
   check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
-  const goalSkillSurface = await page.eval<{ selected: string; current: string }>(`(() => {
+  const goalSkillSurface = await page.eval<{ selected: string; current: string; expanded: string }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
     return {
       selected: item?.getAttribute("data-name") ?? "",
       current: item?.getAttribute("aria-current") ?? "",
+      expanded: item?.getAttribute("aria-expanded") ?? "",
     };
   })()`);
-  check(goalSkillSurface.selected === clickedSkill && goalSkillSurface.current === "true", "clicking a prepared skill does not select it", { clickedSkill, goalSkillSurface });
-  const skillDocument = await page.eval<{ name: string; text: string; description: boolean }>(`(() => ({
-    name: document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() ?? "",
-    text: document.querySelector('[data-testid="skill-content-text"]')?.textContent?.trim() ?? "",
-    description: document.querySelector('[data-testid="skill-content"] .panel__header .muted') !== null,
+  check(
+    goalSkillSurface.selected === clickedSkill &&
+      goalSkillSurface.current === "true" &&
+      goalSkillSurface.expanded === "true",
+    "clicking a prepared skill does not expand it",
+    { clickedSkill, goalSkillSurface },
+  );
+  const skillDocument = await page.eval<{ name: string; text: string; inline: boolean; description: boolean }>(`(() => {
+    const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
+    const detail = item?.closest("li")?.querySelector('[data-testid="skill-content"]') ?? null;
+    return {
+      name: detail?.getAttribute("data-name") ?? "",
+      text: detail?.querySelector('[data-testid="skill-content-text"]')?.textContent?.trim() ?? "",
+      inline: detail !== null,
+      description: detail?.querySelector(".muted") !== null,
+    };
+  })()`);
+  check(
+    skillDocument.inline &&
+      skillDocument.name === clickedSkill &&
+      skillDocument.text.length > 0 &&
+      !skillDocument.description,
+    "expanding a prepared skill does not show its document in the list without a description",
+    { clickedSkill, skillDocument },
+  );
+  const collapsingSkill = await page.eval<string>(`document.querySelector('[data-testid="skill"][data-selected="true"]')?.getAttribute("data-name") ?? ""`);
+  await page.click(`[data-testid="skill"][data-name="${collapsingSkill}"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="skill-content"]') === null`,
+    "the collapsed skill document",
+  );
+  const collapsedSurface = await page.eval<{ selected: number; expanded: string }>(`(() => ({
+    selected: document.querySelectorAll('[data-testid="skill"][data-selected="true"]').length,
+    expanded: document.querySelector('[data-testid="skill"][aria-expanded="true"]')?.getAttribute("data-name") ?? "",
   }))()`);
   check(
-    skillDocument.name === clickedSkill && skillDocument.text.length > 0 && !skillDocument.description,
-    "selecting a prepared skill does not open its document without a description",
-    { clickedSkill, skillDocument },
+    collapsedSurface.selected === 0 && collapsedSurface.expanded === "",
+    "clicking an expanded skill does not collapse it",
+    collapsedSurface,
+  );
+  await page.click(`[data-testid="skill"][data-name="${collapsingSkill}"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="skill-content"]') !== null`,
+    "the reopened skill document",
   );
   const deletion = await page.eval<{ rows: number; controls: string[]; discoverControls: number }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="skill"]')];
@@ -1910,8 +1945,8 @@ try {
   );
   await page.click('[data-testid="skill"][data-name="fixture-conventions"]');
   await page.wait(
-    `document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() === "fixture-conventions"`,
-    "the prepared skill detail",
+    `document.querySelector('[data-testid="skill"][data-name="fixture-conventions"]')?.getAttribute("aria-expanded") === "true"`,
+    "the prepared skill accordion",
   );
   const skillsBeforeDelete = await page.eval<number>(`document.querySelectorAll('[data-testid="skill"]').length`);
   await page.click('[data-testid="delete-skill"][data-name="fixture-conventions"]');
@@ -4392,7 +4427,9 @@ try {
   check(fitsRestored.inside && fitsRestored.width === 380, "the ask panel leaves the restored viewport", fitsRestored);
 
   const askLog = await readFile(agentLog, "utf8");
-  const askSpawns = askLog.split("\n").filter((line) => line.startsWith("ask-spawn ")).length;
+  // Every peer in this run starts with --ask, so count the peers that answered
+  // a first ask turn rather than the ask-start marker on process startup.
+  const askSpawns = askLog.split("\n").filter((line) => line.startsWith("ask-prompt 1 ")).length;
   const askPrompts = askLog.split("\n").filter((line) => line.startsWith("ask-prompt ")).length;
   check(askSpawns === 1, `the ask stub started ${askSpawns} peers`, askLog);
   check(askPrompts === 2, `the ask stub answered ${askPrompts} prompts`, askLog);

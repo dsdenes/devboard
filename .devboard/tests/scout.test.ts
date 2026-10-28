@@ -1505,6 +1505,46 @@ describe("bounded commands", () => {
       await f.worker.stop();
     }
   });
+
+  test("agent activity keeps a scan alive past the scan deadline", async () => {
+    const f = await fixture({ label: "scan-idle-reset", timeoutMs: 1000 });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      // The worker's deadline is a real timer; crossing it needs elapsed time.
+      const started = Date.now();
+      while (Date.now() - started < 1600) {
+        peer.emit("still scanning\n");
+        await Bun.sleep(200);
+      }
+      expect(f.state().lifecycle).toBe("scanning");
+
+      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(uniqueItems(1, 1)));
+      peer.succeed();
+      const settled = await waitSettled(f.root, peer.prompts[0]!);
+      expect(settled.status).toBe("succeeded");
+      expect(settled.filed).toBe(1);
+      expect(f.state().lastError).toBeNull();
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a silent agent is abandoned at the scan deadline", async () => {
+    const f = await fixture({ label: "scan-idle-timeout", timeoutMs: 1000 });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      const failed = await waitFor(
+        () => (f.state().lifecycle === "failed" ? f.state() : undefined),
+        "the idle scan deadline",
+        5000,
+      );
+      expect(failed.lastError).toContain("the scan timed out");
+      expect(peer.closed).toBe(true);
+      expect(readScanFile(scanDirectoryOf(peer.prompts[0]!))?.status).toBe("failed");
+    } finally {
+      await f.worker.stop();
+    }
+  });
 });
 
 describe("scan prompt", () => {
