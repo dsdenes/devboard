@@ -522,11 +522,9 @@
   <section class="issues-runs-page" aria-label="Issues runs">
     <header class="issues-overview__header">
       <div>
-        <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Runs</h1>
         <p class="issues-overview__repo mono" title={issues.repoLabel}>{issues.repoLabel}</p>
       </div>
-      <span class="badge" data-tone="accent">{runCount}</span>
     </header>
     <div class="panel">
       <div class="panel__header">

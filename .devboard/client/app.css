@@ -1720,38 +1720,13 @@ kbd {
   white-space: nowrap;
 }
 
-/* Active run: one state line names the run, its age, its id, and the quiet Stop. */
-.discover-run__header {
-  background: var(--surface-raised);
-  gap: 12px;
-}
-
-.discover-run__heading {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-}
-
+/* Run tag: the live status dot and the quiet Stop. */
 .discover-run__dot {
   background: var(--accent);
   border-radius: 999px;
   flex: 0 0 6px;
   height: 6px;
   width: 6px;
-}
-
-.discover-run__meta {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-  min-width: 0;
-}
-
-.discover-run__started {
-  font-size: 11px;
-  white-space: nowrap;
 }
 
 .discover-run__stop {
@@ -1781,17 +1756,6 @@ kbd {
 .discover-run__stop:disabled {
   cursor: not-allowed;
   opacity: 0.45;
-}
-
-.discover-run__body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px;
-}
-
-.discover-run__terminal {
-  height: 180px;
 }
 
 /* Queued question. */
