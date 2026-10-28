@@ -32,8 +32,6 @@ const BODY_VISIBLE_TEXT = 1500;
 /** Bounds the `-2`, `-3`, … search; far past any real click count. */
 const MAX_NAME_ATTEMPTS = 1000;
 
-export const DRAFT_NOTICE = "> Unprocessed draft. Refine it with `/goal-spec` before it becomes a goal.";
-
 export interface GoalProposalSubmission extends CapturedFields {
   report: string;
   /** The Ask conversation the operator had about this element, if any. */
@@ -170,17 +168,15 @@ function capturedContext(submission: GoalProposalSubmission): string[] {
 }
 
 /**
- * The draft body: the proposed goal, the draft notice, the operator's text
- * verbatim, the Ask conversation, then the captured context. It carries no
- * success criteria, verification, boundaries, or stop conditions; elaboration
- * does that.
+ * The draft body: the proposed goal, the operator's text verbatim, the Ask
+ * conversation, then the captured context. It carries no notice line, success
+ * criteria, verification, boundaries, or stop conditions; elaboration does
+ * that.
  */
 export function goalProposalBody(submission: GoalProposalSubmission): string {
   const conversation = conversationSection(submission.conversation);
   return [
     `# Proposed goal: ${goalProposalHeading(submission.report)}`,
-    "",
-    DRAFT_NOTICE,
     "",
     submission.report,
     "",

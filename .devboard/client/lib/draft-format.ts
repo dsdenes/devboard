@@ -23,7 +23,7 @@ const CONTEXT_MARKER = "## Captured UI context";
 
 /**
  * Splits a draft into its proposal and captured context. Both writers put the
- * evidence after this one marker; the proposal keeps the writer's own note.
+ * evidence after this one marker; the proposal keeps the writer's own text.
  */
 export function splitDraftText(text: string): { proposal: string; rawContext: string } {
   const index = text.indexOf(CONTEXT_MARKER);

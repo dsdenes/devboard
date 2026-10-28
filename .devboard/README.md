@@ -1856,10 +1856,10 @@ unusable answer falls back to the report's first non-empty line, lowercased, wit
 non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
 hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
 exclusive create, so the first draft is never overwritten. The body opens with
-`# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, carries the line
-`> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
+`# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the
-`## Captured UI context` block an issue report carries. A successful click closes the panel,
+`## Captured UI context` block an issue report carries. It carries no notice line or other prose
+the operator did not write. A successful click closes the panel,
 stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
 with the server's error and leaves no draft. The drafts are ignored by git.
