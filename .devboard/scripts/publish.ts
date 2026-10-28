@@ -28,7 +28,7 @@ interface CommandResult {
 const harnessRoot = resolve(import.meta.dir, "..");
 const args = process.argv.slice(2);
 const RELEASE_REPO = "dsdenes/devboard";
-const LAUNCHER_PACKAGE = "@dsdenes/devboard";
+const PACKAGE_NAME = "@dsdenes/devboard";
 
 function optionValue(name: string): string | undefined {
   const index = args.indexOf(name);
@@ -262,37 +262,37 @@ if (concluded !== "success") {
 console.log(`publish: release workflow ${workflow.id} succeeded`);
 
 let releaseOk = false;
-let launcherOk = false;
+let packageOk = false;
 while (Date.now() < deadline) {
   if (!releaseOk) {
     const release = await giteaReleaseByTag(target, tag).catch(() => undefined);
     if (release !== undefined) {
       const names = new Set((release.assets ?? []).map((asset) => asset.name));
       releaseOk =
-        names.has(`devboard-harness-${version}.tgz`) &&
-        names.has(`devboard-harness-${version}.tgz.sha256`);
+        names.has(`devboard-${version}.tgz`) &&
+        names.has(`devboard-${version}.tgz.sha256`);
     }
   }
-  if (!launcherOk) {
+  if (!packageOk) {
     const viewed = run([
       "npm",
       "view",
-      `${LAUNCHER_PACKAGE}@${version}`,
+      `${PACKAGE_NAME}@${version}`,
       "version",
       "--cache",
       join(harnessRoot, ".tmp", "npm-cache"),
       "--prefer-online",
     ]);
-    launcherOk = viewed.code === 0 && viewed.stdout === version;
+    packageOk = viewed.code === 0 && viewed.stdout === version;
   }
-  if (releaseOk && launcherOk) break;
+  if (releaseOk && packageOk) break;
   await Bun.sleep(5000);
 }
-if (!releaseOk) fail(`Gitea release ${tag} is missing its harness tarball or checksum`);
-if (!launcherOk) fail(`${LAUNCHER_PACKAGE}@${version} is not visible on npmjs`);
+if (!releaseOk) fail(`Gitea release ${tag} is missing its fallback tarball or checksum`);
+if (!packageOk) fail(`${PACKAGE_NAME}@${version} is not visible on npmjs`);
 
-console.log(`publish: ${tag} carries the harness tarball and checksum`);
-console.log(`publish: ${LAUNCHER_PACKAGE}@${version} is published`);
+console.log(`publish: ${tag} carries the fallback tarball and checksum`);
+console.log(`publish: ${PACKAGE_NAME}@${version} is published`);
 
 if (remotes.includes("github")) {
   console.log("publish: pushing the GitHub mirror");

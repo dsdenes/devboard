@@ -111,11 +111,14 @@ export interface TrackerSettle {
 }
 
 export interface FeedbackOptions {
-  /** Executable plus leading arguments that can create GitHub issues. */
-  ghCommand?: string[];
+  /** Gitea HTTP origin; reporting is disabled when absent. */
+  baseUrl?: string;
+  /** `owner/name` repository that receives reported issues. */
+  repo?: string;
+  token?: string;
   timeoutMs?: number;
-  /** Extra environment for the `gh` child. */
-  env?: Record<string, string>;
+  /** Test seam; production uses the global fetch. */
+  fetchImpl?: typeof fetch;
 }
 
 export interface AppOptions {
@@ -1621,9 +1624,11 @@ export function createApp(options: AppOptions) {
   const laneBackoffMs = Math.max(0, options.laneBackoffMs ?? LANE_BACKOFF_MS);
   const laneRetentionMs = Math.max(0, options.laneRetentionMs ?? LANE_RETENTION_MS);
   const mainPollMs = Math.max(10, options.mainPollMs ?? MAIN_POLL_MS);
-  const feedbackCommand = options.feedback?.ghCommand ?? ["gh"];
+  const feedbackBaseUrl = options.feedback?.baseUrl ?? "";
+  const feedbackEnabled = feedbackBaseUrl.length > 0;
+  const feedbackRepo = options.feedback?.repo ?? "dsdenes/devboard";
   const feedbackTimeoutMs = Math.max(1, options.feedback?.timeoutMs ?? FEEDBACK_TIMEOUT_MS);
-  const feedbackEnv = options.feedback?.env;
+  const feedbackFetch = options.feedback?.fetchImpl;
   // The state belongs to this checkout, not to the harness installation: hosts
   // share one harness through a symlink, so the repository path keys the file.
   const stateDir = resolve(options.stateDir ?? join(import.meta.dir, "..", ".tmp"));
@@ -2269,7 +2274,7 @@ export function createApp(options: AppOptions) {
   }
 
   function sendVersion(ws: { send(data: string): unknown }) {
-    send(ws, { type: "versionState", ...readVersion() });
+    send(ws, { type: "versionState", ...readVersion(), feedbackEnabled });
   }
 
   /** True while any run, lifecycle lane, creation, revision, reset, or Flow work is live. */
@@ -5626,21 +5631,35 @@ export function createApp(options: AppOptions) {
   }
 
   /**
-   * Files one browser report as a GitHub issue. The request is bounded before
+   * Files one browser report as a Gitea issue. The request is bounded before
    * parsing, and a cross-origin browser request is refused: this endpoint has
    * the side effect of creating issues, so another page must not reach it.
+   * Without DEVBOARD_GITEA_URL the endpoint refuses before parsing and makes
+   * no request.
    */
   async function handleFeedbackRequest(request: Request, url: URL): Promise<Response> {
+    if (!feedbackEnabled) {
+      return Response.json(
+        {
+          error:
+            "Harness reporting is disabled. Set DEVBOARD_GITEA_URL and GITEA_TOKEN to file issues.",
+        },
+        { status: 503 },
+      );
+    }
     const guarded = await readMutationBody(request, url);
     if ("response" in guarded) return guarded.response;
 
     try {
       const submission = parseFeedbackSubmission(guarded.value);
       const filed = await fileFeedbackIssue(submission, {
-        command: feedbackCommand,
-        repoDir,
+        baseUrl: feedbackBaseUrl,
+        repo: feedbackRepo,
+        ...(options.feedback?.token === undefined || options.feedback.token.length === 0
+          ? {}
+          : { token: options.feedback.token }),
         timeoutMs: feedbackTimeoutMs,
-        env: feedbackEnv,
+        ...(feedbackFetch === undefined ? {} : { fetchImpl: feedbackFetch }),
       });
       return Response.json(filed, { status: 201 });
     } catch (error) {

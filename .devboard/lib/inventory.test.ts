@@ -33,7 +33,7 @@ describe("dashboardInventory", () => {
     const running = join(host, "running");
     await writePackage(running, "0.1.7");
     await writePackage(
-      join(host, ".devboard", "node_modules", "@dsdenes", "devboard-harness"),
+      join(host, ".devboard", "node_modules", "@dsdenes", "devboard"),
       "0.1.8",
     );
 
@@ -53,7 +53,7 @@ describe("dashboardInventory", () => {
 
   test("reports a current dashboard without a stale flag", async () => {
     const host = await temporaryDirectory();
-    const prefix = join(host, ".devboard", "node_modules", "@dsdenes", "devboard-harness");
+    const prefix = join(host, ".devboard", "node_modules", "@dsdenes", "devboard");
     await writePackage(prefix, "0.1.8");
 
     const [entry] = dashboardInventory([{ pid: 42, port: 8085, repoDir: host, harness: prefix }]);
@@ -68,7 +68,7 @@ describe("dashboardInventory", () => {
     const running = join(host, "running");
     await writePackage(running, "0.1.7");
     await writePackage(
-      join(host, ".devboard", "node_modules", "@dsdenes", "devboard-harness"),
+      join(host, ".devboard", "node_modules", "@dsdenes", "devboard"),
       "0.1.8",
     );
 

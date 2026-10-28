@@ -14,7 +14,6 @@ import {
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
-const STUB_GH = join(import.meta.dir, "fixtures", "stub-gh.ts");
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
 
 interface StartOptions {
@@ -70,11 +69,6 @@ async function startServer(options: StartOptions = {}) {
     stateDir: join(root, "state"),
     ...(agentCommand === undefined ? {} : { agentCommand }),
     ...(goalSlug === undefined ? {} : { goalSlug }),
-    feedback: {
-      ghCommand: ["bun", STUB_GH],
-      timeoutMs: 5_000,
-      env: { STUB_GH_RECORD: recordPath, STUB_GH_MODE: "ok" },
-    },
   });
   return { server, root, url: `127.0.0.1:${server.port}`, recordPath };
 }

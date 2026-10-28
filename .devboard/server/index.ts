@@ -1,5 +1,6 @@
 import { dirname, join, resolve } from "node:path";
 import type { Server } from "bun";
+import { configuredGiteaToken } from "../lib/forge";
 import { createApp, type FeedbackOptions } from "./app";
 import type { ForgeTarget } from "./forge-pr";
 import { StubForge } from "./fixtures/stub-forge";
@@ -84,22 +85,20 @@ function flowOptions() {
 }
 
 /**
- * A deterministic issue store for browser verification:
- * `DEVBOARD_FEEDBACK_STUB=stub` replaces `gh` with the recording stub, so no
- * automated test creates a real GitHub issue.
+ * Harness-owned reporting is disabled unless `DEVBOARD_GITEA_URL` names the
+ * Gitea instance. `GITEA_URL` alone is not enough: it is host-forge context,
+ * not permission to file harness issues.
  */
 function feedbackOptions(): FeedbackOptions | undefined {
-  if (process.env.DEVBOARD_FEEDBACK_STUB !== "stub") return undefined;
-  const recordDir = process.env.DEVBOARD_FEEDBACK_RECORD_DIR;
-  const modeFile = process.env.DEVBOARD_FEEDBACK_MODE_FILE;
+  const baseUrl = process.env.DEVBOARD_GITEA_URL?.trim();
+  if (baseUrl === undefined || baseUrl.length === 0) return undefined;
+  const token = configuredGiteaToken(process.env);
   const timeoutMs = Number(process.env.DEVBOARD_FEEDBACK_TIMEOUT_MS ?? "");
   return {
-    ghCommand: ["bun", join(import.meta.dir, "fixtures", "stub-gh.ts")],
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    repo: process.env.DEVBOARD_RELEASE_REPO ?? "dsdenes/devboard",
+    ...(token === undefined ? {} : { token }),
     ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
-    env: {
-      ...(recordDir === undefined ? {} : { STUB_GH_RECORD_DIR: recordDir }),
-      ...(modeFile === undefined ? {} : { STUB_GH_MODE_FILE: modeFile }),
-    },
   };
 }
 

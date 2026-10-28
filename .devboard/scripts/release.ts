@@ -1,15 +1,16 @@
 #!/usr/bin/env bun
 /**
- * Publishes one harness release from a `main` commit.
+ * Publishes one Devboard release from a `main` commit.
  *
  * The version is `0.1.<commit-count>` over the full history, so every commit
- * has its own immutable version. The harness tarball and its `.sha256` go to
- * the canonical Gitea release; the public launcher tarball goes to npmjs.
- * Re-running the same commit is a no-op: an existing npm version and an
- * existing release with both assets are left untouched.
+ * has its own immutable version. One public npm package carries the launcher,
+ * server, client sources, built bundle, prompts, wrappers, extensions,
+ * templates, and installer. The canonical Gitea release records the same tag
+ * with notes plus the npm tarball and its `.sha256`, kept as a fallback when
+ * npm cannot serve the artifact. Re-running the same commit is a no-op.
  */
 
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   configuredGiteaToken,
@@ -26,9 +27,8 @@ import {
 import { createReleaseDirectory, harnessRoot, repoRoot } from "./harness-package";
 
 const RELEASE_REPO = "dsdenes/devboard";
-const LAUNCHER_PACKAGE = "@dsdenes/devboard";
+const PACKAGE_NAME = "@dsdenes/devboard";
 const releaseRoot = join(harnessRoot, ".tmp", "release");
-const launcherRoot = join(harnessRoot, "launcher");
 
 interface Result {
   code: number;
@@ -89,13 +89,13 @@ const target = releaseTarget(token);
 
 const publishable = run("npm", [
   "view",
-  `${LAUNCHER_PACKAGE}@${version}`,
+  `${PACKAGE_NAME}@${version}`,
   "version",
   "--cache",
   join(harnessRoot, ".tmp", "npm-cache"),
   "--prefer-online",
 ]);
-const launcherExists = publishable.code === 0 && publishable.stdout === version;
+const packageExists = publishable.code === 0 && publishable.stdout === version;
 
 let existing;
 try {
@@ -109,25 +109,16 @@ console.log(`release: ${tag} at ${head.stdout.slice(0, 7)}`);
 
 await rm(releaseRoot, { recursive: true, force: true });
 await mkdir(releaseRoot, { recursive: true });
-const { tarball, checksum } = await createReleaseDirectory(version, join(releaseRoot, "harness"));
+const { tarball, checksum } = await createReleaseDirectory(version, releaseRoot);
 console.log(`release: packed ${tarball}`);
 
-if (launcherExists) {
-  console.log(`release: ${LAUNCHER_PACKAGE}@${version} already exists on npm; skipping publish`);
+if (packageExists) {
+  console.log(`release: ${PACKAGE_NAME}@${version} already exists on npm; skipping publish`);
 } else {
   if (process.env.NPM_TOKEN === undefined && process.env.NODE_AUTH_TOKEN === undefined) {
-    fail("no npm token in NPM_TOKEN or NODE_AUTH_TOKEN; cannot publish the launcher");
+    fail("no npm token in NPM_TOKEN or NODE_AUTH_TOKEN; cannot publish the package");
   }
-  const staged = join(releaseRoot, `launcher-${version}`);
-  await mkdir(join(staged, "bin"), { recursive: true });
-  await cp(join(launcherRoot, "package.json"), join(staged, "package.json"));
-  await cp(join(launcherRoot, "README.md"), join(staged, "README.md"));
-  await cp(join(launcherRoot, "bin", "devboard.mjs"), join(staged, "bin", "devboard.mjs"));
-  const manifestPath = join(staged, "package.json");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  manifest.version = version;
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(`release: publishing ${LAUNCHER_PACKAGE}@${version}`);
+  console.log(`release: publishing ${PACKAGE_NAME}@${version}`);
   // npm reads ~/.npmrc, which can hold a stale token that shadows the release
   // credential. Use an explicit, private userconfig for this publish instead.
   const npmToken = process.env.NPM_TOKEN ?? process.env.NODE_AUTH_TOKEN ?? "";
@@ -135,8 +126,8 @@ if (launcherExists) {
   await writeFile(npmrc, `//registry.npmjs.org/:_authToken=${npmToken}\n`, { mode: 0o600 });
   const published = run(
     "npm",
-    ["publish", "--access", "public", "--userconfig", npmrc],
-    staged,
+    ["publish", tarball, "--access", "public", "--userconfig", npmrc],
+    harnessRoot,
   );
   await rm(npmrc, { force: true });
   if (published.code !== 0) {
@@ -144,29 +135,36 @@ if (launcherExists) {
   }
 }
 
+const assets = new Set((existing?.assets ?? []).map((asset) => asset.name));
+const names = [tarball, checksum].map((path) => path.split("/").pop() ?? "");
+
 if (releaseExists) {
-  const assets = new Set((existing?.assets ?? []).map((asset) => asset.name));
-  const missing = [tarball, checksum].filter((path) => !assets.has(path.split("/").pop() ?? ""));
+  const missing = names.filter((name) => !assets.has(name));
   if (missing.length > 0) {
     if (token === undefined) fail("GITEA_TOKEN is required to add a missing release asset");
     if (existing?.id === undefined) fail(`release ${tag} has no identifier`);
-    for (const path of missing) {
-      await giteaUploadAsset(target, existing.id, path.split("/").pop() ?? "", await readFile(path));
-      console.log(`release: uploaded missing asset ${path.split("/").pop()}`);
+    for (const name of missing) {
+      const path = name === names[0] ? tarball : checksum;
+      await giteaUploadAsset(target, existing.id, name, await readFile(path));
+      console.log(`release: uploaded missing asset ${name}`);
     }
+  } else {
+    console.log(`release: ${tag} already exists; its assets are intact`);
   }
-  console.log(`release: ${tag} already exists; its assets are intact`);
 } else {
   if (token === undefined) fail("GITEA_TOKEN is required to create a release");
   const created = await giteaCreateRelease(target, {
     tag,
-    title: `Devboard harness ${version}`,
-    notes: `Harness package ${version}\n\nLauncher: ${LAUNCHER_PACKAGE}@${version}`,
+    title: `Devboard ${version}`,
+    notes:
+      `Devboard ${version}\n\n` +
+      `npm: ${PACKAGE_NAME}@${version}\n` +
+      `Fallback: the attached tarball and its .sha256`,
   });
   if (created.id === undefined) fail("the created release has no identifier");
-  await giteaUploadAsset(target, created.id, tarball.split("/").pop() ?? "", await readFile(tarball));
-  await giteaUploadAsset(target, created.id, checksum.split("/").pop() ?? "", await readFile(checksum));
-  console.log(`release: created ${tag} with the harness tarball and checksum`);
+  await giteaUploadAsset(target, created.id, names[0] ?? "", await readFile(tarball));
+  await giteaUploadAsset(target, created.id, names[1] ?? "", await readFile(checksum));
+  console.log(`release: created ${tag} with the tarball and checksum`);
 }
 
 console.log(`release: v${version} is published`);

@@ -27,7 +27,7 @@ const stubAgent = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
 // manifest's placeholder.
 const sourceVersion = readHarnessVersion(runningHarnessDir());
 // The deterministic `gh` stub always answers with this issue URL.
-const stubIssueUrl = "https://github.com/example/host/issues/42";
+const stubIssueUrl = "https://gitea.example/dsdenes/devboard/issues/42";
 const chromeCandidates = [
   "/usr/bin/google-chrome",
   "/usr/bin/google-chrome-stable",
@@ -432,7 +432,7 @@ async function writeFixture(root: string): Promise<string> {
   // status bar exercise the stale reload control without invoking a restart.
   await writeFile(
     join(host, ".devboard", "package.json"),
-    `${JSON.stringify({ name: "@dsdenes/devboard-harness", version: "9.9.9" }, null, 2)}\n`,
+    `${JSON.stringify({ name: "@dsdenes/devboard", version: "9.9.9" }, null, 2)}\n`,
   );
 
   const records = [
@@ -759,7 +759,9 @@ async function seedIssuesState(
     join(lockDirectory, "lock"),
     JSON.stringify({
       pid: process.pid,
-      startedAt: "2026-10-27T10:00:00.000Z",
+      // The lock owner must look alive: its recorded start has to match the
+      // process's real start within the lock's tolerance.
+      startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
       repo: resolve(host),
       stateDir,
       harnessVersion: sourceVersion ?? "0.1.0",
@@ -959,17 +961,19 @@ interface Problem {
   text: string;
 }
 
-/** One recorded call of the deterministic `gh` stub. */
+/** One recorded call of the deterministic Gitea API stub. */
 interface FeedbackCall {
-  args: string[];
-  cwd: string;
+  url: string;
+  title: string;
   body: string;
 }
 
 const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
 let serverProcess: ReturnType<typeof spawn> | undefined;
+let feedbackApi: ReturnType<typeof Bun.serve> | undefined;
 let gateOffProcess: ReturnType<typeof spawn> | undefined;
+let feedbackOffProcess: ReturnType<typeof spawn> | undefined;
 let chromeProcess: ReturnType<typeof spawn> | undefined;
 
 try {
@@ -991,6 +995,42 @@ try {
   const logHandle = Bun.file(serverLog);
   const logWriter = logHandle.writer();
 
+  const feedbackCalls: FeedbackCall[] = [];
+  let feedbackMode = "ok";
+  const feedbackServer = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (
+        request.method !== "POST" ||
+        !/^\/api\/v1\/repos\/[^/]+\/[^/]+\/issues$/.test(url.pathname)
+      ) {
+        return new Response("not found", { status: 404 });
+      }
+      const payload = (await request.json().catch(() => ({}))) as {
+        title?: unknown;
+        body?: unknown;
+      };
+      const record = {
+        url: request.url,
+        title: typeof payload.title === "string" ? payload.title : "",
+        body: typeof payload.body === "string" ? payload.body : "",
+      };
+      feedbackCalls.push(record);
+      if (feedbackMode === "fail") {
+        return Response.json({ message: "boom" }, { status: 500 });
+      }
+      if (feedbackMode === "delay") await delay(500);
+      return Response.json({
+        number: feedbackCalls.length + 41,
+        title: record.title,
+        html_url: stubIssueUrl,
+        state: "open",
+      });
+    },
+  });
+  feedbackApi = feedbackServer;
   const serverEnv = {
     ...process.env,
     HOST: "127.0.0.1",
@@ -1001,11 +1041,11 @@ try {
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
     AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --ask --ask-delay-ms=600 --goal-draft`,
-    // Every feedback action is filed through the recording stub, never through
-    // the operator's real `gh`, and the recorded requests stay under `.tmp`.
-    DEVBOARD_FEEDBACK_STUB: "stub",
-    DEVBOARD_FEEDBACK_RECORD_DIR: join(root, "feedback"),
-    DEVBOARD_FEEDBACK_MODE_FILE: join(root, "feedback-mode"),
+    // Harness-owned reporting goes through the local Gitea API stub, never
+    // through `gh`, and the recorded requests stay under `.tmp`.
+    DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
+    GITEA_TOKEN: "verify-token",
+    DEVBOARD_RELEASE_REPO: "dsdenes/devboard",
     DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
     GIT_TERMINAL_PROMPT: "0",
     GIT_ASKPASS: "true",
@@ -1215,40 +1255,22 @@ try {
     })()`);
   };
 
-  // The deterministic feedback store: the stub appends every filing to
-  // `calls.jsonl`, and a mode file switches its answer between calls.
-  const feedbackRecordDir = join(root, "feedback");
-  const feedbackModePath = join(root, "feedback-mode");
-  const feedbackCalls = async (): Promise<FeedbackCall[]> => {
-    const file = Bun.file(join(feedbackRecordDir, "calls.jsonl"));
-    if (!(await file.exists())) return [];
-    const calls: FeedbackCall[] = [];
-    for (const line of (await file.text()).split("\n")) {
-      if (line.trim().length === 0) continue;
-      try {
-        calls.push(JSON.parse(line) as FeedbackCall);
-      } catch {
-        // A call still being written; the next read sees it whole.
-      }
-    }
-    return calls;
-  };
+  // The deterministic feedback store: the in-process Gitea stub records every
+  // filing, and a mode variable switches its answer between calls.
   const clearFeedback = async (): Promise<void> => {
-    await rm(feedbackRecordDir, { recursive: true, force: true });
-    await mkdir(feedbackRecordDir, { recursive: true });
+    feedbackCalls.length = 0;
     feedbackRequests.length = 0;
   };
   const setFeedbackMode = async (mode: string): Promise<void> => {
-    await writeFile(feedbackModePath, `${mode}\n`);
+    feedbackMode = mode;
   };
   const waitForFeedbackCalls = async (count: number): Promise<void> => {
     const deadline = Date.now() + 20_000;
     for (;;) {
-      const recorded = await feedbackCalls();
-      if (recorded.length >= count) return;
+      if (feedbackCalls.length >= count) return;
       if (Date.now() > deadline) {
         throw new Error(
-          `verify:interface: the feedback stub recorded ${recorded.length} of ${count} calls`,
+          `verify:interface: the feedback stub recorded ${feedbackCalls.length} of ${count} calls`,
         );
       }
       await delay(50);
@@ -3612,6 +3634,61 @@ try {
     "the gate-off host renders a remote control",
     gateOff,
   );
+
+  // Harness-owned reporting is absent without DEVBOARD_GITEA_URL: the client
+  // renders no report control and the endpoint refuses without a request.
+  const feedbackOffHost = await writeGateOffHost(join(root, "feedback-off"));
+  const feedbackOffPort = await freePort();
+  const feedbackOffWriter = Bun.file(join(root, "feedback-off-server.log")).writer();
+  const feedbackOffEnv = { ...serverEnv, PORT: String(feedbackOffPort) };
+  delete feedbackOffEnv.DEVBOARD_GITEA_URL;
+  delete feedbackOffEnv.GITEA_TOKEN;
+  feedbackOffProcess = spawn("bun", ["run", "server/index.ts"], {
+    cwd: harnessRoot,
+    env: {
+      ...feedbackOffEnv,
+      ADRS_DIR: join(feedbackOffHost, "adrs"),
+      REPO_DIR: feedbackOffHost,
+      GOAL_FILE: join(feedbackOffHost, "GOAL.md"),
+      STATE_DIR: join(root, "feedback-off-state"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  feedbackOffProcess.stdout?.on("data", (chunk) => feedbackOffWriter.write(chunk));
+  feedbackOffProcess.stderr?.on("data", (chunk) => feedbackOffWriter.write(chunk));
+  await waitForHttp(`http://127.0.0.1:${feedbackOffPort}/`);
+  await page.navigate(`http://127.0.0.1:${feedbackOffPort}/`);
+  await page.wait(
+    `document.readyState === "complete" && document.querySelector('[data-testid="app-shell"]') !== null`,
+    "the shell without harness reporting",
+    30_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the connection without harness reporting",
+    20_000,
+  );
+  const reportingOff = await page.eval<Record<string, boolean>>(`({
+    report: document.querySelector('[data-testid="activity-report"]') !== null,
+    remove: document.querySelector('[data-testid="activity-remove"]') !== null,
+    redesign: document.querySelector('[data-testid="activity-redesign"]') !== null,
+  })`);
+  check(
+    !reportingOff.report && !reportingOff.remove && !reportingOff.redesign,
+    "the client rendered a reporting control without DEVBOARD_GITEA_URL",
+    reportingOff,
+  );
+  const refused = await fetch(`http://127.0.0.1:${feedbackOffPort}/api/feedback`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "report", report: "disabled check" }),
+  });
+  const refusal = await refused.text();
+  check(
+    refused.status === 503 && refusal.includes("DEVBOARD_GITEA_URL"),
+    "the disabled feedback endpoint did not name DEVBOARD_GITEA_URL",
+    { status: refused.status, refusal },
+  );
   check(!gateOff.skills, "the host without Discover artifacts renders a Skills group", gateOff);
   check(
     !existsSync(join(root, "gate-off-state", "discover-remote")),
@@ -3746,7 +3823,7 @@ try {
     composing,
   );
   check(
-    (await feedbackCalls()).length === 0 && feedbackRequests.length === 0,
+    feedbackCalls.length === 0 && feedbackRequests.length === 0,
     "a report request was sent before File issue",
   );
   const panelBefore = await page.eval<{ top: number; left: number }>(`(() => {
@@ -3782,18 +3859,17 @@ try {
   );
   await waitForFeedbackCalls(1);
   await delay(150);
-  const reportCall = (await feedbackCalls())[0]!;
+  const reportCall = feedbackCalls[0]!;
   check(
-    reportCall.args.join(" ").includes("[ui] The status bar is clipped at the boundary."),
+    reportCall.title.includes("[ui] The status bar is clipped at the boundary."),
     "the report title is wrong",
-    reportCall.args,
+    reportCall.title,
   );
   check(reportCall.body.startsWith("## Operator report"), "the report body lost its heading", reportCall.body);
   check(
-    reportCall.args.includes("--repo") &&
-      reportCall.args[reportCall.args.indexOf("--repo") + 1] === "dsdenes/devboard",
+    reportCall.url.includes("/repos/dsdenes/devboard/issues"),
     "the report was filed in another repository",
-    reportCall.args,
+    reportCall.url,
   );
   check(
     feedbackRequests.length === 1 &&
@@ -3982,7 +4058,7 @@ try {
   );
   check(goalPosts.length === 1, "the Goal action sent more than one request", goalPosts);
   check(
-    feedbackRequests.length === 0 && (await feedbackCalls()).length === 0,
+    feedbackRequests.length === 0 && feedbackCalls.length === 0,
     "the Goal action filed an issue or ran gh",
     feedbackRequests,
   );
@@ -4052,13 +4128,11 @@ try {
     "selecting an element in removal mode activated it",
     { selectionTheme, themeAfterSelection },
   );
-  const removalCalls = await feedbackCalls();
+  const removalCalls = feedbackCalls;
   check(removalCalls.length === 2, "the second removal was not filed", removalCalls.length);
   for (const call of removalCalls) {
-    const repoIndex = call.args.indexOf("--repo");
-    check(repoIndex > -1 && call.args[repoIndex + 1] === "dsdenes/devboard", "a removal was filed in another repository", call.args);
-    check(call.args.join(" ").includes("[ui] Remove element: "), "a removal title is wrong", call.args);
-    check(!call.args.join(" ").includes("## Removal request"), "a removal body leaked into argv", call.args);
+    check(call.url.includes("/repos/dsdenes/devboard/issues"), "a removal was filed in another repository", call.url);
+    check(call.title.startsWith("[ui] Remove element: "), "a removal title is wrong", call.title);
     check(call.body.startsWith("## Removal request\n\n"), "a removal body lost its heading", call.body);
     check(call.body.includes(`\n${removalInstruction}\n`), "a removal body lost its instruction", call.body);
     check(call.body.includes("## Captured UI context"), "a removal body lost the captured context", call.body);
@@ -4086,20 +4160,18 @@ try {
   await page.wait(`document.querySelector('.feedback-hint')?.textContent?.includes("to redesign") === true`, "the redesign hint");
   const redesignArmed = await issueState();
   check(redesignArmed.pressed.join(",") === "false,false,true", "switching the action did not arm the redesign", redesignArmed);
-  check((await feedbackCalls()).length === 0, "switching actions filed an issue");
+  check(feedbackCalls.length === 0, "switching actions filed an issue");
   await page.click('[data-testid="status-connection"]');
   await waitForFeedbackCalls(1);
   await delay(150);
   await page.click('[data-testid="status-bar"]');
   await waitForFeedbackCalls(2);
   await delay(150);
-  const redesignCalls = await feedbackCalls();
+  const redesignCalls = feedbackCalls;
   check(redesignCalls.length === 2, "the second redesign was not filed", redesignCalls.length);
   for (const call of redesignCalls) {
-    const repoIndex = call.args.indexOf("--repo");
-    check(repoIndex > -1 && call.args[repoIndex + 1] === "dsdenes/devboard", "a redesign was filed in another repository", call.args);
-    check(call.args.join(" ").includes("[ui] Redesign element: "), "a redesign title is wrong", call.args);
-    check(!call.args.join(" ").includes("## Redesign request"), "a redesign body leaked into argv", call.args);
+    check(call.url.includes("/repos/dsdenes/devboard/issues"), "a redesign was filed in another repository", call.url);
+    check(call.title.startsWith("[ui] Redesign element: "), "a redesign title is wrong", call.title);
     check(call.body.startsWith("## Redesign request\n\n"), "a redesign body lost its heading", call.body);
     check(call.body.includes(redesignInstruction), "a redesign body lost its instruction", call.body);
     check(call.body.includes("## Captured UI context"), "a redesign body lost the captured context", call.body);
@@ -4139,7 +4211,7 @@ try {
   );
   await waitForFeedbackCalls(3);
   await delay(200);
-  const delayedCalls = await feedbackCalls();
+  const delayedCalls = feedbackCalls;
   check(delayedCalls.length === 3, "a double-click filed more than one issue", delayedCalls.length);
   await page.wait(`document.querySelector('.feedback-result')?.textContent?.includes("Redesign issue filed.") === true`, "the delayed filing status");
 
@@ -4165,7 +4237,8 @@ try {
     };
   })()`);
   check(
-    failure.text.startsWith("Redesign issue failed: Issue creation failed: boom"),
+    failure.text.startsWith("Redesign issue failed: Issue creation failed:") &&
+      failure.text.includes("boom"),
     "the redesign failure alert is wrong",
     failure,
   );
@@ -4509,14 +4582,14 @@ try {
   check(askPrompts === 2, `the ask stub answered ${askPrompts} prompts`, askLog);
 
   // Filing after asking carries the conversation into the issue as context.
-  const callsBeforeAsking = (await feedbackCalls()).length;
+  const callsBeforeAsking = feedbackCalls.length;
   await page.click('.feedback-actions button');
   await page.wait(
     `document.querySelector('.feedback-panel') === null && document.querySelector('.feedback-hint') !== null`,
     "the selection mode after filing the asked issue",
   );
   await waitForFeedbackCalls(callsBeforeAsking + 1);
-  const askedCall = (await feedbackCalls())[callsBeforeAsking]!;
+  const askedCall = feedbackCalls[callsBeforeAsking]!;
   check(askedCall.body.includes("## Ask conversation"), "the issue body lost the ask conversation", askedCall.body);
   check(
     askedCall.body.includes("**You:**\n\nWhat does the StatusBar issues label mean?") &&
@@ -5900,12 +5973,12 @@ try {
     "the notification issue link",
     20_000,
   );
-  const notificationCall = (await feedbackCalls())[1]!;
+  const notificationCall = feedbackCalls[1]!;
   check(
-    notificationCall.args.join(" ").includes("[ui] Error notification: ") &&
-      notificationCall.args.join(" ").includes("Not connected"),
+    notificationCall.title.includes("[ui] Error notification: ") &&
+      notificationCall.title.includes("Not connected"),
     "a notification issue has the wrong title",
-    notificationCall.args,
+    notificationCall.title,
   );
   check(
     notificationCall.body.startsWith("## Operator report") &&
@@ -6124,8 +6197,14 @@ try {
     // Already gone.
   }
   try {
+    feedbackOffProcess?.kill("SIGTERM");
+  } catch {
+    // Already gone.
+  }
+  try {
     serverProcess?.kill("SIGTERM");
   } catch {
     // Already gone.
   }
+  feedbackApi?.stop(true);
 }

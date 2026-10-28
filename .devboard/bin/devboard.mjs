@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /**
- * @dsdenes/devboard launcher.
+ * @dsdenes/devboard command line: install, update, and doctor.
  *
- * Bootstrap only: this package resolves and installs the private harness
- * package, keeps a host's npm prefix and wrapper copies in sync, and reports
- * diagnostics. The harness server, client, prompts, and omp wrappers live in
- * the separately released @dsdenes/devboard-harness tarball and never in this
- * package.
+ * npm is the authority for the version and artifact. The package installed
+ * into a host prefix is this same package, so it carries the server, client,
+ * built bundle, prompts, wrappers, and templates. When npm cannot resolve or
+ * serve the artifact and a Gitea release address is configured, the release
+ * tarball and its `.sha256` are used instead. The CLI never reads another
+ * checkout, another local installation, or a running dashboard belonging to
+ * a different host.
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -16,6 +18,7 @@ import {
   createWriteStream,
   existsSync,
   lstatSync,
+  mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -38,10 +41,13 @@ import { pipeline } from "node:stream/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const HARNESS_PACKAGE = "@dsdenes/devboard-harness";
-const HARNESS_SCOPE = "@dsdenes";
+const PACKAGE_NAME = "@dsdenes/devboard";
+const PACKAGE_SCOPE = "@dsdenes";
+const PACKAGE_DIR = "devboard";
+/** The package directory the old two-package layout used; migration removes it. */
+const LEGACY_DIR = "devboard-harness";
 const RELEASE_REPO = process.env.DEVBOARD_RELEASE_REPO ?? "dsdenes/devboard";
-const RELEASE_PREFIX = "devboard-harness-";
+const RELEASE_PREFIX = "devboard-";
 const UPDATE_INTERVAL_MS = 60_000;
 const DEFAULT_PORT = 8080;
 const START_TIMEOUT_MS = 30_000;
@@ -49,8 +55,8 @@ const START_TIMEOUT_MS = 30_000;
 const usage = `Usage: devboard <command> [options]
 
 Commands:
-  install   Install or refresh the harness for a host and start its dashboard.
-  update    Install the newest harness release without touching the dashboard.
+  install   Install or refresh Devboard for a host and start its dashboard.
+  update    Install the newest npm version without touching the dashboard.
   doctor    Check one host installation and print one PASS or FAIL line per check.
 
 Options:
@@ -286,6 +292,20 @@ async function waitForHttp(port, timeoutMs = START_TIMEOUT_MS) {
   return false;
 }
 
+function npmBinary() {
+  return process.env.DEVBOARD_NPM ?? "npm";
+}
+
+function npmCache(prefix) {
+  return join(prefix, ".tmp", "npm-cache");
+}
+
+function npmEnv(prefix) {
+  const cache = npmCache(prefix);
+  mkdirSync(cache, { recursive: true });
+  return { npm_config_cache: cache };
+}
+
 function configuredReleaseUrl() {
   for (const name of ["DEVBOARD_RELEASE_URL", "DEVBOARD_GITEA_URL", "GITEA_URL"]) {
     const value = process.env[name];
@@ -296,15 +316,25 @@ function configuredReleaseUrl() {
   return undefined;
 }
 
-function releaseSourceFromEnv(prefix) {
-  if (process.env.DEVBOARD_RELEASE_DIR !== undefined && process.env.DEVBOARD_RELEASE_DIR.length > 0) {
-    return { kind: "dir", directory: resolve(process.env.DEVBOARD_RELEASE_DIR) };
+/**
+ * The optional release fallback. npm is tried first; this source is used only
+ * when npm cannot resolve or serve the artifact. Without one of these
+ * variables there is no fallback and npm failure is final.
+ */
+function releaseSourceFromEnv() {
+  const directory = process.env.DEVBOARD_RELEASE_DIR;
+  if (typeof directory === "string" && directory.length > 0) {
+    return { kind: "dir", directory: resolve(directory) };
   }
-  const persisted = prefix === undefined ? {} : readInstallState(prefix).release ?? {};
-  const baseUrl = configuredReleaseUrl() ?? persisted.url ?? "";
-  const repo = process.env.DEVBOARD_RELEASE_REPO ?? persisted.repo ?? RELEASE_REPO;
+  const baseUrl = configuredReleaseUrl();
+  if (baseUrl === undefined) return undefined;
+  const repo = process.env.DEVBOARD_RELEASE_REPO ?? RELEASE_REPO;
   const token = process.env.GITEA_TOKEN ?? process.env.DEVBOARD_GITEA_TOKEN;
   return { kind: "gitea", baseUrl, repo, ...(token === undefined ? {} : { token }) };
+}
+
+function describeSource(source) {
+  return source.kind === "dir" ? source.directory : `${source.baseUrl}/${source.repo}`;
 }
 
 function tarballName(version) {
@@ -332,9 +362,71 @@ function versionFromTarball(name) {
   return match?.[1];
 }
 
+function versionFromTag(tag) {
+  return tag.replace(/^v/, "");
+}
+
+async function npmLatest(prefix) {
+  const result = run(
+    npmBinary(),
+    ["view", PACKAGE_NAME, "version", "--prefer-online"],
+    { env: npmEnv(prefix), timeoutMs: 120_000 },
+  );
+  if (result.code !== 0) {
+    throw new LauncherError(
+      `npm could not resolve ${PACKAGE_NAME}: ${firstLine(result.stderr || result.stdout)}`,
+    );
+  }
+  const lines = result.stdout.trim().split("\n").filter((line) => line.trim().length > 0);
+  const version = lines.at(-1)?.trim() ?? "";
+  if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new LauncherError(`npm returned an unreadable version: ${firstLine(result.stdout)}`);
+  }
+  return version;
+}
+
+async function npmArtifact(prefix, version) {
+  const result = run(
+    npmBinary(),
+    ["view", `${PACKAGE_NAME}@${version}`, "dist.tarball", "--prefer-online"],
+    { env: npmEnv(prefix), timeoutMs: 120_000 },
+  );
+  if (result.code !== 0) {
+    throw new LauncherError(
+      `npm could not serve ${PACKAGE_NAME}@${version}: ${firstLine(result.stderr || result.stdout)}`,
+    );
+  }
+  const value = result.stdout.trim().split("\n").filter((line) => line.length > 0).at(-1) ?? "";
+  if (!/^https?:\/\//.test(value)) {
+    throw new LauncherError(`npm returned no tarball for ${PACKAGE_NAME}@${version}`);
+  }
+  return value;
+}
+
 async function latestRelease(source) {
-  if (source.kind === "dir") return directoryRelease(source.directory);
-  return giteaRelease(source);
+  return source.kind === "dir" ? directoryRelease(source.directory) : giteaLatest(source);
+}
+
+async function releaseForVersion(source, version) {
+  if (source.kind === "dir") {
+    const tarball = join(source.directory, tarballName(version));
+    const checksum = join(source.directory, checksumName(version));
+    if (!existsSync(tarball) || !existsSync(checksum)) {
+      throw new LauncherError(
+        `the release directory has no ${tarballName(version)} and checksum for ${version}`,
+      );
+    }
+    return {
+      version,
+      tag: `v${version}`,
+      assets: [{ name: tarballName(version) }, { name: checksumName(version) }],
+    };
+  }
+  const release = await giteaReleaseByTag(source, version);
+  if (release === undefined) {
+    throw new LauncherError(`the release feed has no ${PACKAGE_NAME}@${version}`);
+  }
+  return release;
 }
 
 async function directoryRelease(directory) {
@@ -376,7 +468,7 @@ function apiHeaders(source, accept) {
   };
 }
 
-async function giteaRelease(source) {
+async function giteaLatest(source) {
   if (typeof source.baseUrl !== "string" || source.baseUrl.length === 0) {
     throw new LauncherError("the Gitea release address is not configured; set DEVBOARD_GITEA_URL");
   }
@@ -386,8 +478,24 @@ async function giteaRelease(source) {
     const detail = firstLine(await response.text().catch(() => ""));
     throw new LauncherError(`the release feed answered HTTP ${response.status}: ${detail}`);
   }
-  const parsed = await response.json();
-  if (typeof parsed.tag_name !== "string") throw new LauncherError("the latest release has no tag");
+  return releaseFromDocument(await response.json());
+}
+
+async function giteaReleaseByTag(source, version) {
+  const url =
+    `${source.baseUrl}/api/v1/repos/${apiPath(source.repo, "/releases/tags")}/` +
+    encodeURIComponent(`v${version}`);
+  const response = await fetch(url, { headers: apiHeaders(source, "application/json") });
+  if (response.status === 404) return undefined;
+  if (!response.ok) {
+    const detail = firstLine(await response.text().catch(() => ""));
+    throw new LauncherError(`the release feed answered HTTP ${response.status}: ${detail}`);
+  }
+  return releaseFromDocument(await response.json());
+}
+
+function releaseFromDocument(parsed) {
+  if (typeof parsed.tag_name !== "string") throw new LauncherError("the release has no tag");
   const assets = Array.isArray(parsed.assets)
     ? parsed.assets
         .filter((asset) => asset !== null && typeof asset === "object" && typeof asset.name === "string")
@@ -398,7 +506,7 @@ async function giteaRelease(source) {
           browser_download_url: asset.browser_download_url,
         }))
     : [];
-  return { version: parsed.tag_name.replace(/^v/, ""), tag: parsed.tag_name, assets };
+  return { version: versionFromTag(parsed.tag_name), tag: parsed.tag_name, assets };
 }
 
 async function downloadRelease(source, release, destination) {
@@ -439,7 +547,6 @@ async function downloadRelease(source, release, destination) {
       throw new LauncherError(`downloading ${name} failed (HTTP ${response.status}): ${detail}`);
     }
     if (response.body === null) throw new LauncherError(`downloading ${name} returned no body`);
-    await mkdir(destination, { recursive: true });
     try {
       await pipeline(
         Readable.fromWeb(response.body),
@@ -472,13 +579,27 @@ function verifyChecksum(tarball, checksumFile) {
   }
 }
 
-function harnessDir(prefix) {
-  return join(prefix, "node_modules", HARNESS_SCOPE, "devboard-harness");
+function packageDir(prefix) {
+  return join(prefix, "node_modules", PACKAGE_SCOPE, PACKAGE_DIR);
+}
+
+function legacyPackageDir(prefix) {
+  return join(prefix, "node_modules", PACKAGE_SCOPE, LEGACY_DIR);
 }
 
 function installedVersion(prefix) {
   try {
-    const parsed = JSON.parse(readFileSync(join(harnessDir(prefix), "package.json"), "utf8"));
+    const parsed = JSON.parse(readFileSync(join(packageDir(prefix), "package.json"), "utf8"));
+    return typeof parsed.version === "string" ? parsed.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The version the old two-package layout left in the prefix, if any. */
+function legacyInstalledVersion(prefix) {
+  try {
+    const parsed = JSON.parse(readFileSync(join(legacyPackageDir(prefix), "package.json"), "utf8"));
     return typeof parsed.version === "string" ? parsed.version : null;
   } catch {
     return null;
@@ -498,7 +619,8 @@ async function writePrefixManifest(prefix, version) {
     existing.dependencies !== null && typeof existing.dependencies === "object"
       ? { ...existing.dependencies }
       : {};
-  dependencies[HARNESS_PACKAGE] = version;
+  delete dependencies[`${PACKAGE_SCOPE}/${LEGACY_DIR}`];
+  dependencies[PACKAGE_NAME] = version;
   await writeFile(
     path,
     `${JSON.stringify(
@@ -514,55 +636,80 @@ async function writePrefixManifest(prefix, version) {
   );
 }
 
-async function installTarball(prefix, tarball, version) {
+/**
+ * Replaces the prefix's whole dependency tree with the staged one. The package
+ * and its runtime dependencies move together, so the installed server never
+ * depends on modules that were discarded with the staging directory.
+ */
+async function swapNodeModules(prefix, stagedNodeModules) {
+  const target = join(prefix, "node_modules");
+  const backup = join(prefix, ".tmp", "updates", `previous-${Date.now()}-${randomUUID()}`);
+  let moved = false;
+  if (existsSync(target)) {
+    await rename(target, backup);
+    moved = true;
+  }
+  try {
+    await rename(stagedNodeModules, target);
+  } catch (error) {
+    if (moved) await rename(backup, target).catch(() => undefined);
+    throw error;
+  }
+  await rm(backup, { recursive: true, force: true });
+}
+
+async function stagedInstall(prefix, spec, version) {
   const updates = join(prefix, ".tmp", "updates");
   await mkdir(updates, { recursive: true });
   const staging = join(updates, `stage-${version}-${randomUUID()}`);
   await mkdir(staging, { recursive: true });
   try {
     mustRun(
-      "npm",
-      ["install", "--prefix", staging, "--ignore-scripts", "--no-audit", "--no-fund",
-        "--no-save", tarball],
+      npmBinary(),
+      [
+        "install",
+        "--prefix",
+        staging,
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--no-save",
+        spec,
+      ],
       "npm install",
-      { cwd: staging, timeoutMs: 10 * 60_000 },
+      { cwd: staging, env: npmEnv(prefix), timeoutMs: 10 * 60_000 },
     );
-    const staged = harnessDir(staging);
-    const stagedVersion = installedVersion(staging);
+    const staged = packageDir(staging);
+    let stagedVersion = null;
+    try {
+      stagedVersion = JSON.parse(readFileSync(join(staged, "package.json"), "utf8")).version;
+    } catch {
+      stagedVersion = null;
+    }
     if (stagedVersion !== version) {
       throw new LauncherError(
         `npm installed ${stagedVersion ?? "no version"}, expected ${version}`,
       );
     }
-    const parent = join(prefix, "node_modules", HARNESS_SCOPE);
-    await mkdir(parent, { recursive: true });
-    const target = join(parent, "devboard-harness");
-    const backup = join(updates, `previous-${Date.now()}-${randomUUID()}`);
-    let moved = false;
-    if (existsSync(target)) {
-      await rename(target, backup);
-      moved = true;
-    }
-    try {
-      await rename(staged, target);
-    } catch (error) {
-      if (moved) await rename(backup, target).catch(() => undefined);
-      throw error;
-    }
-    await rm(backup, { recursive: true, force: true });
-    return target;
+    await swapNodeModules(prefix, join(staging, "node_modules"));
+    await writePrefixManifest(prefix, version);
+    return packageDir(prefix);
   } finally {
     await rm(staging, { recursive: true, force: true });
   }
 }
 
-async function installRelease(source, release, prefix, stateDir) {
+async function installFromNpm(prefix, version) {
+  return stagedInstall(prefix, `${PACKAGE_NAME}@${version}`, version);
+}
+
+async function installFromRelease(source, release, prefix, stateDir) {
   const downloadDir = join(stateDir, "updates", `download-${randomUUID()}`);
   try {
     const files = await downloadRelease(source, release, downloadDir);
     verifyChecksum(files.tarball, files.checksum);
-    const target = await installTarball(prefix, files.tarball, release.version);
-    await writePrefixManifest(prefix, release.version);
+    const target = await stagedInstall(prefix, files.tarball, release.version);
+    console.log(`devboard: used release tarball ${files.tarball} from ${describeSource(source)}`);
     return target;
   } finally {
     await rm(downloadDir, { recursive: true, force: true });
@@ -621,18 +768,7 @@ async function replacePathWithDirectory(path) {
 }
 
 async function ensureFixedDirectory(path) {
-  const info = lstatOrUndefined(path);
-  if (info === undefined) {
-    await mkdir(path, { recursive: true });
-    return;
-  }
-  if (info.isDirectory()) return;
-  if (info.isSymbolicLink()) {
-    await unlink(path);
-    await mkdir(path, { recursive: true });
-    return;
-  }
-  throw new LauncherError(`${path} exists and is not a directory`);
+  await replacePathWithDirectory(path);
 }
 
 function trackedPaths(host, paths) {
@@ -783,16 +919,6 @@ async function writeInstallState(prefix, state) {
   await writeFile(installStatePath(prefix), `${JSON.stringify(state, null, 2)}\n`);
 }
 
-/** Persist the release coordinates so the dashboard feed needs no environment. */
-async function persistRelease(prefix, source) {
-  if (source.kind !== "gitea") return;
-  const state = readInstallState(prefix);
-  await writeInstallState(prefix, {
-    ...state,
-    release: { url: source.baseUrl, repo: source.repo },
-  });
-}
-
 function isDashboardFrom(pid, harness) {
   const entry = processInfo(pid);
   if (entry === undefined) return false;
@@ -817,7 +943,7 @@ function canonicalSource(host) {
   if (info === undefined || info.isSymbolicLink()) return false;
   try {
     const parsed = JSON.parse(readFileSync(join(prefix, "package.json"), "utf8"));
-    if (parsed.name !== HARNESS_PACKAGE) return false;
+    if (parsed.name !== PACKAGE_NAME) return false;
   } catch {
     return false;
   }
@@ -893,16 +1019,44 @@ async function ensureOneDashboard(host, harness, version, requestedPort) {
   return { port, pid, reused: false };
 }
 
+/**
+ * Installs one version. npm is tried first; a configured release source is
+ * used only after npm resolution or installation fails.
+ */
+async function installResolved(prefix, version, fallback, stateDir, npmFailure) {
+  if (npmFailure === undefined) {
+    try {
+      await installFromNpm(prefix, version);
+      return { version, via: "npm" };
+    } catch (error) {
+      if (fallback === undefined) throw error;
+      console.log(`devboard: npm could not install ${version}: ${firstLine(error.message)}`);
+    }
+  } else {
+    if (fallback === undefined) {
+      throw new LauncherError(
+        `${npmFailure.message}; set DEVBOARD_GITEA_URL to enable the release-tarball fallback`,
+      );
+    }
+    console.log(`devboard: npm could not resolve a version: ${firstLine(npmFailure.message)}`);
+  }
+  const release =
+    version === undefined
+      ? await latestRelease(fallback)
+      : await releaseForVersion(fallback, version);
+  await installFromRelease(fallback, release, prefix, stateDir);
+  return { version: release.version, via: "release" };
+}
+
 async function installCommand(options) {
   const host = resolveHost(options.host);
   if (canonicalSource(host)) {
     throw new LauncherError(
-      `${host} is the canonical harness source checkout; install runs in a host project instead`,
+      `${host} is the canonical devboard source checkout; install runs in a host project instead`,
     );
   }
   const prefix = join(host, ".devboard");
-  const source = releaseSourceFromEnv(prefix);
-  const release = await latestRelease(source);
+  const fallback = releaseSourceFromEnv();
   const skip = trackedPaths(host, [".omp/commands", ".omp/extensions", "AGENTS.md"]);
   const trackedHarness = [...trackedPaths(host, [".devboard"])].filter(
     (path) => path === prefix || path.startsWith(`${prefix}${sep}`),
@@ -918,7 +1072,34 @@ async function installCommand(options) {
   await replacePathWithDirectory(prefix);
   if (captured.length > 0) await restoreTemporaryState(prefix, captured);
   await ensureFixedDirectory(join(prefix, ".tmp"));
-  const harness = await installRelease(source, release, prefix, join(prefix, ".tmp"));
+
+  let version;
+  let npmFailure;
+  try {
+    version = await npmLatest(prefix);
+  } catch (error) {
+    npmFailure = error;
+    version = undefined;
+    if (fallback === undefined) {
+      throw new LauncherError(
+        `${error.message}; set DEVBOARD_GITEA_URL to enable the release-tarball fallback`,
+      );
+    }
+  }
+  const resolved = await installResolved(
+    prefix,
+    version,
+    fallback,
+    join(prefix, ".tmp"),
+    npmFailure,
+  );
+  const installed = installedVersion(prefix);
+  if (installed !== resolved.version) {
+    throw new LauncherError(
+      `installed ${installed ?? "no version"}, expected ${resolved.version}`,
+    );
+  }
+  const harness = packageDir(prefix);
   await syncWrappers(host, harness, skip);
   const agents = await syncAgents(host, harness, skip);
   const ignored = await ensureGitignore(host);
@@ -926,15 +1107,16 @@ async function installCommand(options) {
   const dashboard = await ensureOneDashboard(
     host,
     harness,
-    release.version,
+    resolved.version,
     Number.isInteger(portOption) ? portOption : undefined,
   );
-  await persistRelease(prefix, source);
-  console.log(`devboard: installed ${HARNESS_PACKAGE}@${release.version} in ${prefix}`);
+  console.log(
+    `devboard: installed ${PACKAGE_NAME}@${resolved.version} in ${prefix} (${resolved.via})`,
+  );
   if (agents === "drift") {
-    console.log("devboard: AGENTS.md differs from the harness template; left unchanged (drift)");
+    console.log("devboard: AGENTS.md differs from the template; left unchanged (drift)");
   } else if (agents === "installed") {
-    console.log("devboard: installed AGENTS.md from the harness template");
+    console.log("devboard: installed AGENTS.md from the package template");
   } else if (agents === "tracked-missing") {
     console.log("devboard: AGENTS.md is tracked and deleted; left absent (drift)");
   }
@@ -951,22 +1133,57 @@ async function updateCommand(options) {
   if (lstatOrUndefined(prefix)?.isSymbolicLink() ?? false) {
     throw new LauncherError(`${prefix} is a symlink; run install first`);
   }
-  const before = installedVersion(prefix);
+  const current = installedVersion(prefix);
+  const legacy = current === null ? legacyInstalledVersion(prefix) : null;
+  const before = current ?? legacy;
   if (before === null) {
-    throw new LauncherError(`no harness is installed in ${prefix}; run install`);
+    throw new LauncherError(`no devboard is installed in ${prefix}; run install`);
   }
-  const source = releaseSourceFromEnv(prefix);
-  const release = await latestRelease(source);
-  if (!newerVersion(release.version, before) && release.version !== before) {
-    // An older latest release is still installed as asked, never downgraded.
-    console.log(`devboard: installed ${before}; latest release is ${release.version}`);
-    return;
+  if (legacy !== null) {
+    console.log(`devboard: migrating the legacy ${legacy} install to ${PACKAGE_NAME}`);
   }
-  const harness = await installRelease(source, release, prefix, join(prefix, ".tmp"));
-  const skip = trackedPaths(host, [".omp/commands", ".omp/extensions"]);
-  await syncWrappers(host, harness, skip);
-  await persistRelease(prefix, source);
-  console.log(`devboard: harness ${before} -> ${release.version}`);
+  const fallback = releaseSourceFromEnv();
+  let latest;
+  let npmFailure;
+  try {
+    latest = await npmLatest(prefix);
+  } catch (error) {
+    npmFailure = error;
+    if (fallback === undefined) {
+      throw new LauncherError(
+        `${error.message}; set DEVBOARD_GITEA_URL to enable the release-tarball fallback`,
+      );
+    }
+  }
+  const targetVersion = latest ?? (await latestRelease(fallback)).version;
+  if (legacy === null) {
+    if (!newerVersion(targetVersion, before) && targetVersion !== before) {
+      // An older latest release is still installed as asked, never downgraded.
+      console.log(`devboard: installed ${before}; newest version is ${targetVersion}`);
+      return;
+    }
+    if (targetVersion === before) {
+      console.log(`devboard: ${PACKAGE_NAME}@${before} is already installed`);
+      return;
+    }
+  }
+  const resolved = await installResolved(
+    prefix,
+    latest,
+    fallback,
+    join(prefix, ".tmp"),
+    npmFailure,
+  );
+  const harness = packageDir(prefix);
+  if (legacy === null) {
+    const skip = trackedPaths(host, [".omp/commands", ".omp/extensions"]);
+    await syncWrappers(host, harness, skip);
+  } else {
+    // A legacy host keeps its wrapper copies and AGENTS.md; migration only
+    // replaces the package and leaves local content byte-for-byte intact.
+    console.log("devboard: kept the existing omp wrappers and AGENTS.md");
+  }
+  console.log(`devboard: ${PACKAGE_NAME} ${before} -> ${resolved.version} (${resolved.via})`);
   console.log("devboard: the dashboard keeps running; reload it to restart on the new version");
 }
 
@@ -1046,6 +1263,17 @@ function lastUpdateFailure(prefix, host) {
   return typeof last.text === "string" ? last.text : "update failed";
 }
 
+async function latestForDoctor(prefix) {
+  try {
+    return { version: await npmLatest(prefix), via: "npm" };
+  } catch (error) {
+    const fallback = releaseSourceFromEnv();
+    if (fallback === undefined) throw error;
+    const release = await latestRelease(fallback);
+    return { version: release.version, via: describeSource(fallback) };
+  }
+}
+
 async function readReleaseDigest(source, release, prefix) {
   await mkdir(join(prefix, ".tmp"), { recursive: true });
   const scratch = join(prefix, ".tmp", `release-check-${randomUUID()}`);
@@ -1093,28 +1321,34 @@ const CHECKS = [
   {
     name: "release access",
     run: async (_host, prefix) => {
-      const source = releaseSourceFromEnv(prefix);
-      const release = await latestRelease(source);
-      return `the public feed serves ${release.tag}`;
+      const latest = await latestForDoctor(prefix);
+      return `${latest.via} serves ${PACKAGE_NAME}@${latest.version}`;
     },
   },
   {
     name: "release",
     run: async (_host, prefix) => {
-      const source = releaseSourceFromEnv(prefix);
-      const release = await latestRelease(source);
-      await readReleaseDigest(source, release, prefix);
-      return `${release.tag} with a matching digest`;
+      try {
+        const version = await npmLatest(prefix);
+        const tarball = await npmArtifact(prefix, version);
+        return `${PACKAGE_NAME}@${version} is served by npm (${tarball})`;
+      } catch (error) {
+        const fallback = releaseSourceFromEnv();
+        if (fallback === undefined) throw error;
+        const release = await latestRelease(fallback);
+        await readReleaseDigest(fallback, release, prefix);
+        return `${release.tag} with a matching digest`;
+      }
     },
   },
   {
-    name: "harness install",
+    name: "package install",
     run: async (_host, prefix) => {
       const version = installedVersion(prefix);
       if (version === null) {
-        throw new LauncherError(`${harnessDir(prefix)} is missing; run install`);
+        throw new LauncherError(`${packageDir(prefix)} is missing; run install`);
       }
-      return `${HARNESS_PACKAGE}@${version}`;
+      return `${PACKAGE_NAME}@${version}`;
     },
   },
   {
@@ -1122,11 +1356,11 @@ const CHECKS = [
     run: async (_host, prefix) => {
       const version = installedVersion(prefix);
       if (version === null) throw new LauncherError("no installed version");
-      const release = await latestRelease(releaseSourceFromEnv(prefix));
-      if (version !== release.version) {
-        throw new LauncherError(`stale install: installed ${version}, latest ${release.version}`);
+      const latest = await latestForDoctor(prefix);
+      if (version !== latest.version) {
+        throw new LauncherError(`stale install: installed ${version}, latest ${latest.version}`);
       }
-      return `${version} matches the latest release`;
+      return `${version} matches ${latest.via}`;
     },
   },
   {
@@ -1143,7 +1377,7 @@ const CHECKS = [
   {
     name: "wrappers",
     run: async (host, prefix) => {
-      const { failures, drift } = wrapperMismatches(host, harnessDir(prefix));
+      const { failures, drift } = wrapperMismatches(host, packageDir(prefix));
       if (failures.length > 0) {
         throw new LauncherError(`does not match the installed package: ${failures.join(", ")}`);
       }
@@ -1160,7 +1394,7 @@ const CHECKS = [
       const info = lstatOrUndefined(target);
       if (info === undefined) throw new LauncherError("AGENTS.md is missing; run install");
       if (info.isSymbolicLink()) throw new LauncherError("AGENTS.md is a symlink; run install");
-      const template = join(harnessDir(prefix), "templates", "host-AGENTS.md");
+      const template = join(packageDir(prefix), "templates", "host-AGENTS.md");
       if (!readFileSync(target).equals(readFileSync(template))) {
         return "drift: AGENTS.md differs from the template (left unchanged)";
       }
@@ -1176,7 +1410,7 @@ const CHECKS = [
         throw new LauncherError(`${dashboards.length} dashboards run for this host`);
       }
       const [dashboard] = dashboards;
-      const harness = harnessDir(join(host, ".devboard"));
+      const harness = packageDir(join(host, ".devboard"));
       if (!isDashboardFrom(dashboard.pid, harness)) {
         throw new LauncherError(`pid ${dashboard.pid} does not run the installed package`);
       }

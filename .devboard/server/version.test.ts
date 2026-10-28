@@ -62,7 +62,7 @@ describe("serverVersion", () => {
     const host = await temporaryDirectory();
     await writePackage(
       installedPackageDir(join(host, ".devboard")),
-      "@dsdenes/devboard-harness",
+      "@dsdenes/devboard",
       "0.1.9",
     );
 
@@ -78,7 +78,7 @@ describe("serverVersion", () => {
     const host = await temporaryDirectory();
     await writePackage(
       installedPackageDir(join(host, ".devboard")),
-      "@dsdenes/devboard-harness",
+      "@dsdenes/devboard",
       "0.1.9",
     );
 
@@ -92,7 +92,7 @@ describe("serverVersion", () => {
 
   test("uses the source tree as the harness of a canonical checkout", async () => {
     const host = await temporaryDirectory();
-    await writePackage(join(host, ".devboard"), "@dsdenes/devboard-harness", "0.1.0");
+    await writePackage(join(host, ".devboard"), "@dsdenes/devboard", "0.1.0");
 
     expect(hostHarnessDir(host)).toBe(join(host, ".devboard"));
     expect(serverVersion(host, "0.1.0")).toEqual({
@@ -106,7 +106,7 @@ describe("serverVersion", () => {
   test("derives an unpacked source version from the commit count", async () => {
     const host = await temporaryDirectory();
     git(host, ["init", "-q"]);
-    await writePackage(join(host, ".devboard"), "@dsdenes/devboard-harness", "0.1.0");
+    await writePackage(join(host, ".devboard"), "@dsdenes/devboard", "0.1.0");
     await commit(host, "first");
 
     expect(readHarnessVersion(join(host, ".devboard"))).toBe("0.1.1");
@@ -126,7 +126,7 @@ describe("serverVersion", () => {
     git(host, ["init", "-q"]);
     await commit(host, "first");
     const installed = installedPackageDir(join(host, ".devboard"));
-    await writePackage(installed, "@dsdenes/devboard-harness", "0.1.0");
+    await writePackage(installed, "@dsdenes/devboard", "0.1.0");
 
     expect(readHarnessVersion(installed)).toBe("0.1.0");
   });

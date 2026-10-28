@@ -22,7 +22,7 @@ import { join, resolve } from "node:path";
 
 export const harnessRoot = resolve(import.meta.dir, "..");
 export const repoRoot = resolve(harnessRoot, "..");
-export const launcherBin = join(harnessRoot, "launcher", "bin", "devboard.mjs");
+export const launcherBin = join(harnessRoot, "bin", "devboard.mjs");
 export const templateAgents = join(harnessRoot, "templates", "host-AGENTS.md");
 
 export interface CommandResult {
@@ -109,7 +109,7 @@ export function releaseDirectory(root: string, version: string): string {
 }
 
 export function installedPackage(prefix: string): string {
-  return join(prefix, "node_modules", "@dsdenes", "devboard-harness");
+  return join(prefix, "node_modules", "@dsdenes", "devboard");
 }
 
 export function installedVersion(prefix: string): string | null {
@@ -445,7 +445,7 @@ export async function copyRelease(
   const names = await readdir(source);
   const tarball = names.find((name) => name.endsWith(".tgz"));
   if (tarball === undefined) throw new Error(`no tarball in ${source}`);
-  const target = `devboard-harness-${version}.tgz`;
+  const target = `devboard-${version}.tgz`;
   await cp(join(source, tarball), join(destination, target));
   if (options.omitChecksum === true) return;
   const checksum =

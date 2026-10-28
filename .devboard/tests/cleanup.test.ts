@@ -105,7 +105,7 @@ describe("covered state directories", () => {
       ".devboard",
       "node_modules",
       "@dsdenes",
-      "devboard-harness",
+      "devboard",
     );
     const key = "a".repeat(24);
     const instance = {
@@ -509,7 +509,7 @@ describe("watchdog cycle integration", () => {
     const journal = join(stateDir, "journal", `${"d".repeat(24)}.jsonl.1000-1`);
     await mkdir(join(stateDir, "journal"), { recursive: true });
     writeAt(journal, "rotated", old);
-    const harness = join(host, ".devboard", "node_modules", "@dsdenes", "devboard-harness");
+    const harness = join(host, ".devboard", "node_modules", "@dsdenes", "devboard");
     const instance: Instance = {
       pid: 1234,
       port: 47473,

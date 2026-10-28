@@ -461,6 +461,7 @@
           onredesignelement={() => feedbackOverlay?.toggleAction("redesign")}
           reportphase={reportPhase}
           reportaction={reportAction}
+          feedbackenabled={connection.feedbackEnabled}
         />
         <PaneGroup
           direction="horizontal"
@@ -513,7 +514,7 @@
   oncancel={cancelDiscard}
 />
 
-<NotificationRegion />
+<NotificationRegion feedbackenabled={connection.feedbackEnabled} />
 
 <FeedbackOverlay
   bind:this={feedbackOverlay}

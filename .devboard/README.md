@@ -206,15 +206,17 @@ failed requests, and overflow. It writes screenshots under `.devboard/.tmp/inter
 
 ## Install
 
-The harness ships as the private `@dsdenes/devboard-harness` release on the canonical Gitea
-instance at `http://localhost:3001`. The public npmjs package `@dsdenes/devboard` is a launcher:
-it resolves the newest release from Gitea's public API, installs it through npm, copies the
-wrapper files, and runs diagnostics. It contains no harness code, needs no token to read the
-public release, and never spawns `gh`. GitHub carries only a push mirror of this repository.
+The harness is the public npm package `@dsdenes/devboard`. One tarball carries the launcher, the
+server, the client sources and built bundle, the prompts, the omp wrappers and extensions, the
+templates, and the installer. `install`, `update`, and the running dashboard resolve versions and
+artifacts from npm; no local checkout, running dashboard, or release tarball is required. When npm
+cannot resolve or serve the artifact and `DEVBOARD_GITEA_URL` is configured, the canonical Gitea
+release tarball and its `.sha256` are used for the same version. GitHub carries only a push mirror
+of this repository.
 
 ```bash
 npx @dsdenes/devboard install    # install or refresh this host
-npx @dsdenes/devboard update     # install the newest release; do not restart
+npx @dsdenes/devboard update     # install the newest npm version; do not restart
 npx @dsdenes/devboard doctor     # one PASS or FAIL line per check
 ```
 
@@ -226,14 +228,16 @@ and reported as drift), adds the three ignored paths to `.gitignore`, and leaves
 dashboard running from the installed package. A reinstall keeps the version and `.tmp`; `update`
 never starts, stops, or restarts the dashboard.
 
-`doctor` checks Node 20+, Bun, npm, the git root, `gh` access to the release repository, the
-release metadata and digest, the installed package, the installed version against the latest
-release, `omp` and its authenticated probe, wrapper byte-equality, `AGENTS.md`, the dashboard's
-package and HTTP response, a non-symlinked `.devboard`, and a recorded update failure. Drift in a
-regular `AGENTS.md` is reported without failing the check; every other mismatch exits nonzero.
+`doctor` checks Node 20+, Bun, npm, the git root, npm's version and artifact metadata (or the
+configured Gitea fallback and its digest), the installed package, the installed version against
+the newest version, `omp` and its authenticated probe, wrapper byte-equality, `AGENTS.md`, the
+dashboard's package and HTTP response, a non-symlinked `.devboard`, and a recorded update failure.
+Drift in a regular `AGENTS.md` is reported without failing the check; every other mismatch exits
+nonzero. Gitea is never required: with no address configured the checks consult npm only.
 
 `--host <path>` targets another repository. `DEVBOARD_RELEASE_DIR` points the launcher and the
-server at a local directory of tarballs for offline verification.
+server at a local directory of tarballs for offline verification and CI fixtures. `DEVBOARD_NPM`
+selects a different npm executable for those fixtures.
 
 `install.sh` still copies the agent wrappers under `omp/` into an existing host:
 
@@ -904,8 +908,8 @@ run leaves the previous artifacts readable, and a later start uses a fresh stagi
 ### Remote targets for manual testing
 
 When the dashboard serves a harness source checkout — `<REPO_DIR>/.devboard/package.json` names
-`@dsdenes/devboard-harness` and `<REPO_DIR>/.devboard/node_modules/@dsdenes/devboard-harness` does
-not exist — Discover's Overview offers one extra target: a public GitHub repository supplied as a
+`@dsdenes/devboard` and `<REPO_DIR>/.devboard/node_modules/@dsdenes/devboard` does not exist —
+Discover's Overview offers one extra target: a public GitHub repository supplied as a
 URL. An installed host renders no such control and both new commands are refused. The predicate
 reads no repository name, remote, or other host fact.
 
@@ -1040,11 +1044,11 @@ from the repository root before and after; the two hashes match.
 Merging into `main` and pushing to the canonical Gitea remote triggers
 `.gitea/workflows/devboard-release.yml`, which runs on the repository's registered Gitea
 `act_runner` — never a hosted runner, and never a fallback — and builds the client, runs the
-harness suite and typecheck, packs `dist/`, `server/`, `templates/`, the prompts and omp wrappers
-into the private harness tarball, publishes the launcher version to npmjs, and creates the Gitea
-release `v<version>` with the tarball and its `.sha256`. The version is `0.1.<commit-count>` over
-the full history; a rerun on the same commit leaves the existing npm version and release assets
-untouched.
+harness suite and typecheck, packs the complete public package, publishes
+`@dsdenes/devboard@<version>` to npmjs, and creates the Gitea release `v<version>` with notes and
+the same tarball plus its `.sha256` as a fallback. The version is `0.1.<commit-count>` over the
+full history; a rerun on the same commit leaves the existing npm version and release assets
+untouched. Nothing is published under `@dsdenes/devboard-harness`.
 
 After the push, verify from the integration checkout:
 
@@ -1062,9 +1066,11 @@ every running dashboard's running and installed version. It never restarts a das
 writes into a host. `--wait-timeout N` bounds the workflow and propagation wait (default 1800
 seconds).
 
-Installed dashboards update themselves: each checks the newest release at startup and every
-60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), verifies the `.sha256`, installs the
-tarball through a staging prefix, and keeps serving its loaded code. The npm child always runs in
+Installed dashboards update themselves: each checks the newest npm version at startup and every
+60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
+staging prefix, and keeps serving its loaded code. If npm cannot serve the artifact and
+`DEVBOARD_GITEA_URL` is configured, the same version's Gitea tarball is verified against its
+`.sha256` and installed instead. The npm child always runs in
 that staging directory, and the dashboard starts from the host root rather than the replaceable
 package directory, so replacing the package never leaves a child with a deleted working
 directory. `versionState` reports `running`, `installed`, `latest`, and `stale`; the reload
@@ -1823,8 +1829,11 @@ edits source, tests, configuration, a goal, a draft, a branch, or a pull request
 
 ## Report, remove, or redesign a UI element
 
-Every page carries three UI issue controls in the activity bar's application actions, beside
-commands, notifications, and theme: `Report UI issue`, `Remove element`, and `Redesign element`.
+When the server has a Gitea address for harness-owned reporting, every page carries three UI issue
+controls in the activity bar's application actions, beside commands, notifications, and theme:
+`Report UI issue`, `Remove element`, and `Redesign element`. Without `DEVBOARD_GITEA_URL` they are
+not rendered and their palette commands are disabled, so no page offers a filing control that
+cannot work.
 Each is a 28px icon control with an accessible name and `aria-pressed="true"` while its action is
 armed; the outcome toast and its error stay out of element picking. `Esc` cancels a mode that is
 not filing, and `app.report.cancel` cancels any active mode from the palette. While one request is
@@ -1834,8 +1843,8 @@ click or one double-click files at most one issue.
 `Report UI issue` enters element-selection mode: the element under the pointer is outlined, and a
 click opens a report panel anchored beside it, without filing anything yet. The panel shows the
 selected element's selector path; the report text is free-form. `File issue` posts the report and
-the captured context to `POST /api/feedback`, the server files the GitHub issue through the
-operator's authenticated `gh` CLI, and the panel closes back into report selection mode so another
+the captured context to `POST /api/feedback`, the server files the issue through the configured
+Gitea API, and the panel closes back into report selection mode so another
 element can be picked without leaving and re-entering the mode. A successful filing shows a
 `Report filed.` toast with an `Open issue` link to the created issue. `Esc`, the control again, or
 `Cancel` leaves the mode, a failed report stays in the panel with its error, and a click in
@@ -1859,7 +1868,7 @@ different element never resumes the previous one, nothing is written to `localSt
 state directory, and a page reload loses it. While a turn is pending the composer and both action
 buttons are disabled, `Ask` reads `Asking…`, and `Cancel` stays enabled. A failed start, an exited
 agent, or a rejected prompt shows the error in the panel, keeps the question and earlier answers,
-and accepts the next question. `Ask` never calls `POST /api/feedback` and creates `no GitHub issue`.
+and accepts the next question. `Ask` never calls `POST /api/feedback` and creates no issue.
 
 Filing or proposing from a panel that has answered questions carries the visible Ask conversation
 into the issue or draft as a `## Ask conversation` block between the request and
@@ -1919,12 +1928,14 @@ without a model in the loop.
 
 Every request carries an `action` of `report`, `remove`, or `redesign`; an absent `action` means
 `report`, the only action that requires report text, and any other value is refused with HTTP 400
-before `gh` runs. Every issue is filed in `dsdenes/devboard`, the harness repository, whatever
-host project the interface is serving; nothing is created in the host's own tracker. `gh` runs in
-`REPO_DIR` and must be authenticated with permission to create issues in `dsdenes/devboard`. A
-missing, unauthenticated, or failing `gh` is reported in the filing toast and still creates
-nothing. The endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and
-gives `gh` 60 seconds.
+before the Gitea request. Harness-owned reporting uses only the Gitea API: `DEVBOARD_GITEA_URL`
+names the instance, `GITEA_TOKEN` (or `DEVBOARD_GITEA_TOKEN`) authenticates it, and
+`DEVBOARD_RELEASE_REPO` selects the repository (default `dsdenes/devboard`), whatever host project
+the interface is serving. Nothing is created in the host's own tracker, and no `github.com`
+repository is used for filing. Without `DEVBOARD_GITEA_URL` the endpoint answers HTTP 503 naming
+that variable and performs no request. A refused or failing request is reported in the filing
+toast and creates nothing. The endpoint accepts only same-origin `POST` requests, bounds the body
+to 64 KB, and gives the request 60 seconds.
 
 ## Container
 
@@ -2398,9 +2409,8 @@ state, ledger migration, the activity bounds, and the conditional tracker. `test
 proves the watchdog preserves repo-scoped issues state, the repo-anchored lock, and Flow session
 records that Flow restore still reads, while sweeping legacy orchestrator run files. Every fixture
 stays under `.devboard/.tmp`.
-`tests/launcher.test.ts` covers the launcher and harness package boundaries: the help output,
-the launcher's file list and size, the harness tarball's required and forbidden paths, its size,
-and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`
+`tests/launcher.test.ts` covers the single public package: the manifest, the help output, the
+tarball's required and forbidden paths, the fallback asset name, and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`
 covers installing a release when the process working directory has been deleted.
 `server/updates.test.ts` covers the startup check, the interval, backoff, single-flight, and
 failure journaling.

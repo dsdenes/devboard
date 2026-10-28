@@ -40,9 +40,9 @@ function harnessTarball(directory: string): string {
   mkdirSync(packageDirectory, { recursive: true });
   writeFileSync(
     join(packageDirectory, "package.json"),
-    `${JSON.stringify({ name: "@dsdenes/devboard-harness", version: "9.9.9" })}\n`,
+    `${JSON.stringify({ name: "@dsdenes/devboard", version: "9.9.9" })}\n`,
   );
-  const tarball = join(directory, "devboard-harness-9.9.9.tgz");
+  const tarball = join(directory, "devboard-9.9.9.tgz");
   const packed = Bun.spawnSync({
     cmd: ["tar", "-czf", tarball, "-C", directory, "package"],
     stdout: "pipe",
@@ -79,8 +79,8 @@ describe("parseReleaseDescription", () => {
       JSON.stringify({
         tag_name: "v0.1.12",
         assets: [
-          { name: "devboard-harness-0.1.12.tgz", id: 7, size: 9 },
-          { name: "devboard-harness-0.1.12.tgz.sha256" },
+          { name: "devboard-0.1.12.tgz", id: 7, size: 9 },
+          { name: "devboard-0.1.12.tgz.sha256" },
           { id: 8 },
         ],
       }),
@@ -89,8 +89,8 @@ describe("parseReleaseDescription", () => {
       version: "0.1.12",
       tag: "v0.1.12",
       assets: [
-        { name: "devboard-harness-0.1.12.tgz", id: 7, size: 9 },
-        { name: "devboard-harness-0.1.12.tgz.sha256" },
+        { name: "devboard-0.1.12.tgz", id: 7, size: 9 },
+        { name: "devboard-0.1.12.tgz.sha256" },
       ],
     });
   });
@@ -158,7 +158,7 @@ console.log(installed);
       child.exitCode,
       `${child.stderr.toString()}${child.stdout.toString()}`,
     ).toBe(0);
-    const target = join(prefix, "node_modules", "@dsdenes", "devboard-harness");
+    const target = join(prefix, "node_modules", "@dsdenes", "devboard");
     expect(existsSync(target)).toBe(true);
     expect(JSON.parse(readFileSync(join(target, "package.json"), "utf8")).version).toBe("9.9.9");
   }, 60_000);

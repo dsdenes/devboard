@@ -9,7 +9,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createReleaseDirectory } from "./harness-package";
 import {
@@ -60,8 +60,11 @@ try {
   const newRelease = releaseDirectory(root, NEW);
   await createReleaseDirectory(OLD, oldRelease);
   await createReleaseDirectory(NEW, newRelease);
-  const oldEnv = { DEVBOARD_RELEASE_DIR: oldRelease };
-  const newEnv = { DEVBOARD_RELEASE_DIR: newRelease };
+  const failingNpm = join(root, "failing-npm");
+  await writeFile(failingNpm, "#!/bin/sh\ncase \"$1\" in view) echo 'simulated npm outage' >&2; exit 1;; esac\nexec npm \"$@\"\n");
+  await chmod(failingNpm, 0o755);
+  const oldEnv = { DEVBOARD_RELEASE_DIR: oldRelease, DEVBOARD_NPM: failingNpm };
+  const newEnv = { DEVBOARD_RELEASE_DIR: newRelease, DEVBOARD_NPM: failingNpm };
 
   step("refusing the canonical source checkout");
   const refusal = launcher(["install", "--host", repoRoot], oldEnv);
@@ -105,7 +108,9 @@ try {
     existsSync(join(host.directory, ".omp", "extensions", "implement-goal-issue.ts")),
     ".omp/extensions/implement-goal-issue.ts is missing",
   );
-  assertEquals(symlinkTargetsUnder(prefix), [], "no symlinks under the installed prefix");
+  for (const name of ["server", "dist", "templates", "omp"]) {
+    assertEquals(symlinkTargetsUnder(join(prefix, name)), [], `no symlinks under ${name}/`);
+  }
   assertEquals(
     installedVersion(prefix),
     OLD,
@@ -113,10 +118,10 @@ try {
   );
   assertEquals(
     JSON.parse(readFileSync(join(prefix, "package.json"), "utf8")).dependencies[
-      "@dsdenes/devboard-harness"
+      "@dsdenes/devboard"
     ],
     OLD,
-    "the prefix records the harness dependency",
+    "the prefix records the devboard dependency",
   );
   assertTrue(existsSync(join(prefix, ".tmp")) && isDirectory(join(prefix, ".tmp")), ".tmp exists");
   const harness = installedPackage(prefix);
@@ -188,6 +193,51 @@ try {
     "the running dashboard reports the installed version as stale",
   );
 
+  step("migrating a legacy two-package prefix");
+  const legacyHost = await makeHost(root, "legacy");
+  const legacyPrefix = join(legacyHost.directory, ".devboard");
+  const legacyPackage = join(legacyPrefix, "node_modules", "@dsdenes", "devboard-harness");
+  await mkdir(legacyPackage, { recursive: true });
+  await writeFile(
+    join(legacyPackage, "package.json"),
+    `${JSON.stringify({ name: "@dsdenes/devboard-harness", version: OLD })}\n`,
+  );
+  await writeFile(
+    join(legacyPrefix, "package.json"),
+    `${JSON.stringify({ name: "devboard-host", private: true, dependencies: { "@dsdenes/devboard-harness": OLD } })}\n`,
+  );
+  await mkdir(join(legacyPrefix, ".tmp"), { recursive: true });
+  await writeFile(join(legacyPrefix, ".tmp", "sentinel"), "state kept\n");
+  await writeFile(join(legacyHost.directory, "AGENTS.md"), "host AGENTS sentinel\n");
+  await mkdir(join(legacyHost.directory, ".omp", "commands"), { recursive: true });
+  await mkdir(join(legacyHost.directory, ".omp", "extensions"), { recursive: true });
+  await writeFile(join(legacyHost.directory, ".omp", "commands", "sentinel.md"), "command kept\n");
+  await writeFile(join(legacyHost.directory, ".omp", "extensions", "sentinel.ts"), "extension kept\n");
+  const migrated = launcher(["update", "--host", legacyHost.directory], newEnv);
+  assertTrue(migrated.code === 0, `legacy update failed:\n${migrated.stdout}\n${migrated.stderr}`);
+  assertEquals(installedVersion(legacyPrefix), NEW, "migration installs the new package");
+  assertTrue(!existsSync(legacyPackage), "migration removes the legacy package directory");
+  assertEquals(
+    readFileSync(join(legacyPrefix, ".tmp", "sentinel"), "utf8"),
+    "state kept\n",
+    "migration preserves .tmp",
+  );
+  assertEquals(
+    readFileSync(join(legacyHost.directory, "AGENTS.md"), "utf8"),
+    "host AGENTS sentinel\n",
+    "migration preserves AGENTS.md",
+  );
+  assertEquals(
+    readFileSync(join(legacyHost.directory, ".omp", "commands", "sentinel.md"), "utf8"),
+    "command kept\n",
+    "migration preserves omp commands",
+  );
+  assertEquals(
+    readFileSync(join(legacyHost.directory, ".omp", "extensions", "sentinel.ts"), "utf8"),
+    "extension kept\n",
+    "migration preserves omp extensions",
+  );
+
   step("doctor passing");
   const doctor = launcher(["doctor", "--host", host.directory], newEnv);
   assertTrue(doctor.code === 0, `doctor failed:\n${doctor.stdout}\n${doctor.stderr}`);
@@ -204,13 +254,16 @@ try {
 
   const missing = await makeHost(root, "missing");
   await Bun.spawnSync({ cmd: ["mkdir", "-p", join(missing.directory, ".devboard")] });
-  expectFailure(launcher(["doctor", "--host", missing.directory], newEnv), "harness install");
+  expectFailure(launcher(["doctor", "--host", missing.directory], newEnv), "package install");
 
   const emptyRelease = join(root, "empty-release");
   await Bun.spawnSync({ cmd: ["mkdir", "-p", emptyRelease] });
   expectFailure(
-    launcher(["doctor", "--host", host.directory], { DEVBOARD_RELEASE_DIR: emptyRelease }),
-    "release",
+    launcher(["doctor", "--host", host.directory], {
+      DEVBOARD_RELEASE_DIR: emptyRelease,
+      DEVBOARD_NPM: failingNpm,
+    }),
+    "release access",
   );
 
   const linkedOnly = await makeHost(root, "linked-only");
@@ -224,9 +277,7 @@ try {
   expectFailure(launcher(["doctor", "--host", host.directory], { ...newEnv, PATH: noOmp }), "omp");
 
   expectFailure(
-    launcher(["doctor", "--host", host.directory], {
-      DEVBOARD_RELEASE_URL: "http://127.0.0.1:1",
-    }),
+    launcher(["doctor", "--host", host.directory], { DEVBOARD_NPM: failingNpm }),
     "release access",
   );
 

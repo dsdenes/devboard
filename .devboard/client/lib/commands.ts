@@ -116,6 +116,11 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     title: "Report a UI issue",
     group: "Application",
     keywords: "element selection feedback panel",
+    disabled: () =>
+      disabledWhen(
+        !connection.feedbackEnabled,
+        "Harness reporting is disabled; set DEVBOARD_GITEA_URL.",
+      ),
     run: () => ctx.reportIssue(),
   });
   add({
@@ -123,6 +128,11 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     title: "Remove a UI element",
     group: "Application",
     keywords: "delete element issue one click",
+    disabled: () =>
+      disabledWhen(
+        !connection.feedbackEnabled,
+        "Harness reporting is disabled; set DEVBOARD_GITEA_URL.",
+      ),
     run: () => ctx.removeElement(),
   });
   add({
@@ -130,6 +140,11 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     title: "Redesign a UI element",
     group: "Application",
     keywords: "restyle element issue design system one click",
+    disabled: () =>
+      disabledWhen(
+        !connection.feedbackEnabled,
+        "Harness reporting is disabled; set DEVBOARD_GITEA_URL.",
+      ),
     run: () => ctx.redesignElement(),
   });
   add({

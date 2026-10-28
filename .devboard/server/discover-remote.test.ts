@@ -151,14 +151,14 @@ function createFixture(name: string, gate: Gate = "source"): Fixture {
     mkdirSync(join(root, ".devboard"), { recursive: true });
     writeFileSync(
       join(root, ".devboard", "package.json"),
-      `${JSON.stringify({ name: "@dsdenes/devboard-harness", version: "0.0.0" }, null, 2)}\n`,
+      `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.0.0" }, null, 2)}\n`,
     );
     if (gate === "installed") {
-      const installed = join(root, ".devboard", "node_modules", "@dsdenes", "devboard-harness");
+      const installed = join(root, ".devboard", "node_modules", "@dsdenes", "devboard");
       mkdirSync(installed, { recursive: true });
       writeFileSync(
         join(installed, "package.json"),
-        `${JSON.stringify({ name: "@dsdenes/devboard-harness", version: "9.9.9" }, null, 2)}\n`,
+        `${JSON.stringify({ name: "@dsdenes/devboard", version: "9.9.9" }, null, 2)}\n`,
       );
     }
   }

@@ -77,33 +77,41 @@ exclude `.devboard/` and `.worktree/` from every survey and every write.
 
 ## Releases and installation
 
-The harness is the private package `@dsdenes/devboard-harness`, published as a release on the
-project's canonical Gitea instance at `http://localhost:3001`, never from a registry. The public
-npmjs package `@dsdenes/devboard` is a launcher only: it runs `install`, `update`, and `doctor`,
-and carries no server, client, prompt, or omp code. GitHub is only a push mirror of this
-repository; it carries no release the launcher or dashboard reads.
+The harness is the public npm package `@dsdenes/devboard`. One tarball carries the launcher, the
+server, the client sources and built bundle, the prompts, the omp wrappers and extensions, the
+templates, and the installer. npm is the authority for install and update versions and artifacts;
+no local checkout, running dashboard, or required release tarball is involved. GitHub is only a
+push mirror of this repository; it carries no release the dashboard reads.
 
 A host installs a real npm prefix at `<host>/.devboard` with
 `npx @dsdenes/devboard install`. `<host>/.omp/commands`, `<host>/.omp/extensions`, and
 `<host>/AGENTS.md` are real copies from the installed package; no harness path is a symlink.
 The canonical `.devboard/` in this checkout is the source tree and is never an npm install.
 
-Every running dashboard checks the newest release at startup and every 60 seconds, installs a
-newer tarball after verifying its `.sha256`, and keeps serving the version it loaded. It reports
-`versionState` (`running`, `installed`, `latest`, `stale`) and shows the reload control while
-`stale` is true. Only clicking that control restarts the server from the installed package and
-reloads the page. A failed download, checksum, authentication, or install leaves the installed
-package and the running server intact; the journal records the failure and doctor reports it.
+Every running dashboard checks the newest npm version at startup and every 60 seconds, installs a
+newer artifact, and keeps serving the version it loaded. It reports `versionState` (`running`,
+`installed`, `latest`, `stale`) and shows the reload control while `stale` is true. Only clicking
+that control restarts the server from the installed package and reloads the page. When npm cannot
+resolve or serve the artifact and `DEVBOARD_GITEA_URL` is configured, install and update fall back
+to the Gitea release tarball and its `.sha256` for the same version. A failed download, checksum,
+authentication, or install leaves the installed package and the running server intact; the
+journal records the failure and doctor reports it.
+
+Harness-owned issue reporting uses only the configured Gitea API. Without `DEVBOARD_GITEA_URL`
+the report controls are not rendered and `POST /api/feedback` answers HTTP 503 naming that
+variable; no GitHub request is made. Host-forge behavior for GitHub, GitLab, and Gitea origins is
+unchanged.
 
 ## Publish after every change
 
 Publishing is a release, not a restart. Merging into `main` and pushing triggers the
-`.gitea/workflows/devboard-release.yml` workflow, which builds, tests, packs the harness tarball
-with `templates/host-AGENTS.md`, publishes the launcher version to npmjs, and creates the Gitea
-release with the tarball and its `.sha256`.
+`.gitea/workflows/devboard-release.yml` workflow, which builds, tests, packs the complete public
+package, publishes `@dsdenes/devboard@<version>` to npmjs, and creates the Gitea release with
+notes plus the same tarball and its `.sha256` as a fallback. Nothing is published under
+`@dsdenes/devboard-harness`.
 
-A change is not finished until the workflow for the pushed commit succeeds, the release and
-launcher version exist, and the installed hosts have picked the release up. After the push, run
+A change is not finished until the workflow for the pushed commit succeeds, the npm package and
+Gitea release assets exist, and the installed hosts have picked the release up. After the push, run
 from the integration checkout — never from a worktree:
 
 ```bash
@@ -120,13 +128,13 @@ bun run publish
 3. runs `bun install --frozen-lockfile` and `bun run build`, then proves `dist/index.html` is
    newer than every client source and that every referenced asset exists;
 4. waits for the `devboard-release.yml` run of `HEAD` and requires a successful conclusion;
-5. verifies the Gitea release assets and `npm view @dsdenes/devboard@<version> version`;
+5. verifies the npm package and the Gitea release's fallback tarball and `.sha256`;
 6. pushes the `github` mirror remote and proves its `main` names the published commit;
 7. reports every running dashboard's running and installed versions without restarting it.
 
 Options: `--wait-timeout N` bounds the workflow and propagation wait (default 1800 seconds).
-It never restarts a dashboard, never writes into a host, and exits nonzero when the release or
-launcher version is missing. Installed dashboards update themselves; an operator clicks the
+It never restarts a dashboard, never writes into a host, and exits nonzero when the npm package
+or the release assets are missing. Installed dashboards update themselves; an operator clicks the
 reload control when they want the new code.
 
 The integration checkout is advanced and rebuilt after a push; it is never a place for feature
@@ -203,7 +211,7 @@ never hand-edit them.
   removed. Local-only main is never done.
 - Host mode: host build/tests run; `.devboard/` unchanged.
 - Harness mode: the pushed commit's release workflow succeeded and `bun run publish` verified
-  the release and launcher version; installed dashboards report the release through
+  the npm package and release assets; installed dashboards report the release through
   `versionState` and restart only from the reload control; the changed entry point runs from the
   repo root against a supplied host path; no absolute paths or host specifics under
   `.devboard/`; nothing created outside `.devboard/`.
@@ -212,10 +220,9 @@ never hand-edit them.
 
 - `.devboard/` — harness root: interface, toolchain, prompts, extensions, goals, tests,
   `omp/`, `install.sh`, `scripts/publish.ts`.
-- `.devboard/scripts/publish.ts` — verifies `main`, waits for the release workflow, and reports
-  dashboards without restarting them.
-- `.devboard/scripts/release.ts` — publishes the launcher and the private harness release.
-- `.devboard/launcher/` — the public `@dsdenes/devboard` launcher package.
+- `.devboard/scripts/publish.ts` — verifies `main`, waits for the release workflow, proves the
+  npm package and release assets, and reports dashboards without restarting them.
+- `.devboard/scripts/release.ts` — publishes the public package and the Gitea fallback release.
 - `.devboard/templates/host-AGENTS.md` — host contract copied at release time; byte-identical to
   this file.
 - `.gitea/workflows/devboard-release.yml` — CI on the canonical Gitea instance: install, build,

@@ -5,6 +5,12 @@
   import { notifications, type AppNotification } from "../notifications.svelte";
   import Button from "./ui/button.svelte";
 
+  interface Props {
+    feedbackenabled: boolean;
+  }
+
+  let { feedbackenabled }: Props = $props();
+
   const visible = $derived(notifications.items.slice(0, 4));
   /** Bounds shared with the server's report context. */
   const MAX_DOM_EXCERPT = 4000;
@@ -88,7 +94,7 @@
       >
         Open issue
       </a>
-    {:else if item.severity === "error" || item.severity === "warning"}
+    {:else if feedbackenabled && (item.severity === "error" || item.severity === "warning")}
       <Button
         variant="ghost"
         size="sm"

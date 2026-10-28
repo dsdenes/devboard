@@ -262,6 +262,7 @@ describe("createApp", () => {
         installed: "new",
         latest: "new",
         stale: true,
+        feedbackEnabled: false,
       });
     } finally {
       server.stop(true);

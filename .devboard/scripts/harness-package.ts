@@ -4,21 +4,22 @@ import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/pro
 import { basename, join, resolve } from "node:path";
 
 /**
- * Stages and packs the harness exactly as a release must contain it. The
- * harness package is private: `npm pack` produces the tarball that GitHub
- * Releases carries, and the manifest's version is set in the staging copy so
- * the checked-in package metadata never records a release number.
+ * Stages and packs the complete Devboard package. npm carries the same
+ * package; `npm pack` also produces the fallback tarball the canonical Gitea
+ * release keeps, and the manifest's version is set in the staging copy so the
+ * checked-in package metadata never records a release number.
  */
 
 export const harnessRoot = resolve(import.meta.dir, "..");
 export const repoRoot = resolve(harnessRoot, "..");
-export const HARNESS_PACKAGE = "@dsdenes/devboard-harness";
+export const HARNESS_PACKAGE = "@dsdenes/devboard";
 
 const FILE_ALLOWLIST = [
   "package.json",
   "AGENTS.md",
   "README.md",
   "install.sh",
+  "bin",
   "templates",
   "server",
   "client",
@@ -37,7 +38,7 @@ const FILE_ALLOWLIST = [
 ];
 
 export function releaseTarballName(version: string): string {
-  return `devboard-harness-${version}.tgz`;
+  return `devboard-${version}.tgz`;
 }
 
 function assertTemplateMatches(): void {
