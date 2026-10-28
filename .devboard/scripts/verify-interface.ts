@@ -5495,12 +5495,128 @@ try {
   startServer();
   await waitForHttp(baseUrl);
   await page.wait(`document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`, "reconnection", 30_000);
+  await clearFeedback();
+  await saveShot("notification-issue-file");
+  const notificationFile = await page.eval<{
+    present: boolean;
+    label: string;
+    text: string;
+    disabled: boolean;
+  }>(`(() => {
+    const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+      (item) => item.textContent.includes("Not connected"),
+    );
+    const button = entry?.querySelector(".notification__file");
+    return {
+      present: button instanceof HTMLButtonElement,
+      label: button?.getAttribute("aria-label") ?? "",
+      text: button?.textContent?.trim() ?? "",
+      disabled: button instanceof HTMLButtonElement ? button.disabled : true,
+    };
+  })()`);
+  check(
+    notificationFile.present &&
+      notificationFile.label === "File an issue from this notification" &&
+      notificationFile.text === "File issue" &&
+      !notificationFile.disabled,
+    "an error notification has no filing control",
+    notificationFile,
+  );
+  const clickNotificationFile = (): Promise<unknown> =>
+    page.eval(`(() => {
+      const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+        (item) => item.textContent.includes("Not connected"),
+      );
+      entry?.querySelector(".notification__file")?.click();
+    })()`);
+
+  // A failed filing keeps the card and returns the button for a retry.
+  await setFeedbackMode("fail");
+  await clickNotificationFile();
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some(
+      (entry) =>
+        entry.textContent.includes("Not connected") &&
+        entry.querySelector(".notification__error")?.textContent?.includes("Issue creation failed") === true,
+    )`,
+    "the notification filing error",
+    20_000,
+  );
+  const notificationFailure = await page.eval<{ text: string; retry: boolean }>(`(() => {
+    const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+      (item) => item.textContent.includes("Not connected"),
+    );
+    const retry = entry?.querySelector(".notification__file");
+    return {
+      text: entry?.querySelector(".notification__error")?.textContent?.trim() ?? "",
+      retry: retry instanceof HTMLButtonElement && !retry.disabled && retry.textContent?.trim() === "File issue",
+    };
+  })()`);
+  check(
+    notificationFailure.text.startsWith("Issue not filed: Issue creation failed") &&
+      notificationFailure.retry,
+    "a failed notification filing does not offer a retry",
+    notificationFailure,
+  );
+
+  await setFeedbackMode("ok");
+  await clickNotificationFile();
+  await waitForFeedbackCalls(2);
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some(
+      (entry) => entry.textContent.includes("Not connected") && entry.querySelector(".notification__link") !== null,
+    )`,
+    "the notification issue link",
+    20_000,
+  );
+  const notificationCall = (await feedbackCalls())[1]!;
+  check(
+    notificationCall.args.join(" ").includes("[ui] Error notification: ") &&
+      notificationCall.args.join(" ").includes("Not connected"),
+    "a notification issue has the wrong title",
+    notificationCall.args,
+  );
+  check(
+    notificationCall.body.startsWith("## Operator report") &&
+      notificationCall.body.includes("Not connected") &&
+      notificationCall.body.includes("### DOM excerpt") &&
+      notificationCall.body.includes(`- Selected element: \`.notification[data-notification-id=`) &&
+      notificationCall.body.includes("- Route: `/"),
+    "a notification issue lost its text or captured context",
+    notificationCall.body,
+  );
+  check(
+    feedbackRequests.length === 2 &&
+      feedbackRequests.every((request) => request.action === "report") &&
+      String(feedbackRequests[1]?.report).startsWith("Error notification: ") &&
+      String(feedbackRequests[1]?.report).includes("Raised at: "),
+    "the notification filing request is wrong",
+    feedbackRequests,
+  );
+  const notificationLink = await page.eval<{ text: string; href: string }>(`(() => {
+    const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+      (item) => item.textContent.includes("Not connected"),
+    );
+    const link = entry?.querySelector(".notification__link");
+    return {
+      text: link?.textContent?.trim() ?? "",
+      href: link?.getAttribute("href") ?? "",
+    };
+  })()`);
+  await saveShot("notification-issue-filed");
+  check(
+    notificationLink.text === "Open issue" && notificationLink.href === stubIssueUrl,
+    "the notification does not link to the filed issue",
+    notificationLink,
+  );
   await page.click('[data-testid="notification-indicator"]');
   await page.wait(`document.querySelector('[data-testid="notification-history"]') !== null`, "the notification history");
   await page.key("Escape");
   await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
   const dismiss = await page.eval<boolean>(`(() => {
-    const button = document.querySelector('[data-testid="notifications"] .notification button');
+    const button = document.querySelector(
+      '[data-testid="notifications"] .notification [aria-label="Dismiss notification"]',
+    );
     if (button === null) return false;
     button.click();
     return true;
