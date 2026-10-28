@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Decision board header — wireframe</title>
+    <style>
+      :root {
+        color: #333;
+        background: #f7f7f7;
+        font-family: system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+      }
+      main {
+        max-width: 1200px;
+        margin: 0 auto;
+        display: grid;
+        gap: 20px;
+      }
+      section {
+        background: #fff;
+        border: 2px solid #bbb;
+      }
+      header {
+        border-bottom: 2px solid #bbb;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 20px;
+      }
+      .identity {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0;
+      }
+      .state {
+        border: 1px dashed #888;
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 12px;
+      }
+      .state.saved {
+        border-style: solid;
+      }
+      .state.dirty {
+        border-style: double;
+        font-weight: 700;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .action {
+        border: 2px solid #777;
+        padding: 6px 14px;
+        font-size: 13px;
+      }
+      .action.primary {
+        background: #e8e8e8;
+        font-weight: 700;
+      }
+      .action.disabled {
+        border-style: dashed;
+        color: #999;
+      }
+      .body {
+        padding: 20px;
+      }
+      .editor {
+        border: 2px dashed #bbb;
+        min-height: 140px;
+        padding: 12px;
+        color: #888;
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+      }
+      .caption {
+        color: #666;
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+        margin: 0 0 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <p class="caption" style="margin: 8px 20px 0">State: empty</p>
+        <header>
+          <div class="identity">
+            <h1>Decision board</h1>
+            <span class="state">No decisions yet</span>
+          </div>
+          <div class="actions">
+            <span class="action disabled">Save</span>
+          </div>
+        </header>
+        <div class="body"><div class="editor">Markdown editor (unchanged)</div></div>
+      </section>
+      <section>
+        <p class="caption" style="margin: 8px 20px 0">State: saved</p>
+        <header>
+          <div class="identity">
+            <h1>Decision board</h1>
+            <span class="state saved">Saved</span>
+          </div>
+          <div class="actions">
+            <span class="action disabled">Save</span>
+          </div>
+        </header>
+        <div class="body"><div class="editor">Markdown editor (unchanged)</div></div>
+      </section>
+      <section>
+        <p class="caption" style="margin: 8px 20px 0">State: unsaved changes</p>
+        <header>
+          <div class="identity">
+            <h1>Decision board</h1>
+            <span class="state dirty">Unsaved changes</span>
+          </div>
+          <div class="actions">
+            <span class="action primary">Save</span>
+          </div>
+        </header>
+        <div class="body"><div class="editor">Markdown editor (unchanged)</div></div>
+      </section>
+    </main>
+  </body>
+</html>
