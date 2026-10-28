@@ -127,9 +127,16 @@
   aria-live="polite"
 >
   {#each visible as item (item.id)}
-    <div class="notification" data-severity={item.severity} data-notification-id={item.id}>
+    <div
+      class="notification"
+      data-severity={item.severity}
+      data-source={item.source}
+      data-notification-id={item.id}
+    >
       <div class="notification__body">
-        <div class="notification__meta">{item.severity} · {timestamp(item.at)}</div>
+        <div class="notification__meta">
+          {item.severity} · {item.source} · {timestamp(item.at)}
+        </div>
         <p class="notification__text" role={item.severity === "error" ? "alert" : "status"}>
           {item.text}
         </p>
@@ -161,11 +168,12 @@
               <div
                 class="notification"
                 data-severity={item.severity}
+                data-source={item.source}
                 data-notification-id={item.id}
               >
                 <div class="notification__body">
                   <div class="notification__meta">
-                    {item.severity} · {timestamp(item.at)}
+                    {item.severity} · {item.source} · {timestamp(item.at)}
                   </div>
                   <p class="notification__text">{item.text}</p>
                   {#if failed[item.id]}

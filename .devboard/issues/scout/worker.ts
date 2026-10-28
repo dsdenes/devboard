@@ -126,6 +126,8 @@ interface ActiveScan {
   firstLine: string | null;
   /** Issues filed so far, so a failed settle records the real count. */
   filed: number;
+  /** Numbers this scan filed, in filing order, so the notice names them. */
+  filedNumbers: number[];
   /** Correction turns already requested for a rejected answer; at most one. */
   repairs: number;
   /** Present while reading and filing, where the scan timer no longer guards. */
@@ -665,6 +667,7 @@ export class ScoutWorker {
         timer: undefined,
         firstLine: null,
         filed: 0,
+        filedNumbers: [],
         repairs: 0,
       };
       this.active = active;
@@ -1122,6 +1125,7 @@ export class ScoutWorker {
         }
         known.add(key);
         active.filed += 1;
+        active.filedNumbers.push(created.number);
         lastFiled = { number: created.number, title: item.title };
         const createdAt = this.clock().toISOString();
         this.state.issues = newestFirst([
@@ -1153,7 +1157,8 @@ export class ScoutWorker {
         this.state.notice =
           active.filed === 1
             ? `Filed #${lastFiled.number} “${lastFiled.title}”`
-            : `Filed ${active.filed} issues.`;
+            : `Filed ${active.filed} issues in ${this.state.repo}: ` +
+              active.filedNumbers.map((number) => `#${number}`).join(", ");
       }
 
       const shortfall =

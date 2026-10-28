@@ -440,7 +440,7 @@ describe("direct filing", () => {
       expect(settled.issues).toHaveLength(2);
       expect(settled.issues.map((row) => row.state)).toEqual(["pending", "pending"]);
       expect(settled.issues[0]?.category).toBe("clarity");
-      expect(settled.notice).toContain("Filed");
+      expect(settled.notice).toBe("Filed 2 issues in acme/fixture: #100, #101");
       expect(f.filed[0]?.repository).toBe("acme/fixture");
       expect(f.filed[0]?.body).toContain("## Significance");
       expect(f.filed[0]?.body).toContain("5/5");
@@ -470,6 +470,7 @@ describe("direct filing", () => {
       expect(f.filed).toHaveLength(1);
       expect(f.filed[0]?.significance).toBe(5);
       expect(settled.issues).toHaveLength(1);
+      expect(settled.notice).toBe("Filed #100 “Simplify module 1 control flow”");
       expect(settled.lastError).toBeNull();
       expect(activityOf(scanDirectoryOf(peer.prompts[0]!))).toContain(
         "significance 3/5 is below 4",
