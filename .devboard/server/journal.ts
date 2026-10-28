@@ -82,8 +82,31 @@ export function journalFile(stateDir: string, repoDir: string): string {
   return join(stateDir, "journal", `${journalKey(repoDir)}.jsonl`);
 }
 
-/** A rotated journal is named `<live>.<rotation instant>-<counter>`. */
-const ROTATED_JOURNAL = /^(\d+)-(\d+)$/;
+/**
+ * A journal filename: `<24-hex project key>.jsonl`, rotated aside as
+ * `<key>.jsonl.<rotation instant>-<counter>`. Rotation and pruning share this
+ * one definition so a name the writer produces is a name the pruner accepts.
+ */
+const JOURNAL_NAME = /^([0-9a-f]{24})\.jsonl(?:\.(\d+)-(\d+))?$/;
+
+interface JournalName {
+  /** The project key that names the journal. */
+  key: string;
+  /** Rotation instant and counter; absent on the live journal. */
+  rotation?: { ms: number; counter: number };
+}
+
+/** Parses a journal filename; `null` for any other file in the directory. */
+function parseJournalName(name: string): JournalName | null {
+  const match = JOURNAL_NAME.exec(name);
+  if (match === null) return null;
+  const key = match[1];
+  const ms = match[2];
+  const counter = match[3];
+  if (key === undefined) return null;
+  if (ms === undefined || counter === undefined) return { key };
+  return { key, rotation: { ms: Number(ms), counter: Number(counter) } };
+}
 
 /**
  * Every journal file of one project: rotated journals oldest first, then the
@@ -96,22 +119,21 @@ const ROTATED_JOURNAL = /^(\d+)-(\d+)$/;
  */
 export function journalFiles(livePath: string, since?: Date): string[] {
   const directory = dirname(livePath);
-  const prefix = `${basename(livePath)}.`;
+  const live = parseJournalName(basename(livePath));
   let names: string[];
   try {
     names = readdirSync(directory);
   } catch {
     return [livePath];
   }
+  if (live === null) return [livePath];
   const cutoff = since?.getTime();
   const rotated: { path: string; ms: number; counter: number; name: string }[] = [];
   for (const name of names) {
-    if (!name.startsWith(prefix)) continue;
-    const match = ROTATED_JOURNAL.exec(name.slice(prefix.length));
-    if (match === null) continue;
-    const ms = Number(match[1]);
-    const counter = Number(match[2]);
-    if (!Number.isFinite(ms) || !Number.isFinite(counter)) continue;
+    const parsed = parseJournalName(name);
+    if (parsed === null || parsed.rotation === undefined) continue;
+    if (parsed.key !== live.key) continue;
+    const { ms, counter } = parsed.rotation;
     const path = join(directory, name);
     if (cutoff !== undefined) {
       try {
@@ -218,7 +240,6 @@ export interface PruneOptions {
 interface JournalFile {
   path: string;
   name: string;
-  complete: boolean;
   size: number;
   mtimeMs: number;
 }
@@ -241,7 +262,7 @@ export function pruneJournal(stateDir: string, options: PruneOptions): string[] 
 
   const files: JournalFile[] = [];
   for (const name of names) {
-    if (!/^[0-9a-f]{24}\.jsonl(\.\d+)?$/.test(name)) continue;
+    if (parseJournalName(name) === null) continue;
     const path = join(directory, name);
     try {
       const info = statSync(path);
@@ -249,7 +270,6 @@ export function pruneJournal(stateDir: string, options: PruneOptions): string[] 
       files.push({
         path,
         name,
-        complete: /\.jsonl\.\d+$/.test(name),
         size: info.size,
         mtimeMs: info.mtimeMs,
       });

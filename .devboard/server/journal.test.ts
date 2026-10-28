@@ -1,9 +1,9 @@
 import { pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, utimesSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, utimesSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import {
@@ -237,17 +237,30 @@ describe("journal", () => {
     expect(readFileSync(join(stateDir, "journal", live), "utf8")).toContain("line 5");
   });
 
-  test("prunes journals older than seven days", async () => {
+  test("prunes journals rotated by the live writer past seven days", async () => {
     const stateDir = await temporaryDirectory();
+    const journal = openJournal({
+      stateDir,
+      repoDir: "/fixture/project",
+      port: 8080,
+      rotateBytes: 200,
+    });
+    for (let index = 0; index < 3; index += 1) {
+      journal.write("activity", `line ${index} ${"x".repeat(80)}`);
+    }
     const directory = join(stateDir, "journal");
-    await mkdir(directory, { recursive: true });
-    const old = join(directory, `${"a".repeat(24)}.jsonl.1000`);
-    const fresh = join(directory, `${"b".repeat(24)}.jsonl.2000`);
-    await writeFile(old, "old\n");
-    await writeFile(fresh, "fresh\n");
+    const rotated = readdirSync(directory)
+      .filter((name) => name !== basename(journal.path))
+      .sort();
+    const [oldName, freshName] = rotated;
+    if (oldName === undefined || freshName === undefined) {
+      throw new Error("rotation did not produce two journals");
+    }
     const now = new Date("2026-10-24T12:00:00.000Z");
     const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
     const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const old = join(directory, oldName);
+    const fresh = join(directory, freshName);
     utimesSync(old, eightDaysAgo, eightDaysAgo);
     utimesSync(fresh, oneDayAgo, oneDayAgo);
 
@@ -256,34 +269,51 @@ describe("journal", () => {
       windowStart: new Date(now.getTime() - 10 * 60 * 1000),
     });
 
-    expect(removed).toEqual([`${"a".repeat(24)}.jsonl.1000`]);
+    expect(removed).toEqual([oldName]);
     expect(existsSync(old)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
   });
 
-  test("enforces the size bound without deleting the live window", async () => {
+  test("counts rotated journals toward the size bound outside the live window", async () => {
     const stateDir = await temporaryDirectory();
+    const journal = openJournal({
+      stateDir,
+      repoDir: "/fixture/project",
+      port: 8080,
+      rotateBytes: 200,
+    });
+    for (let index = 0; index < 4; index += 1) {
+      journal.write("activity", `line ${index} ${"y".repeat(80)}`);
+    }
     const directory = join(stateDir, "journal");
-    await mkdir(directory, { recursive: true });
+    const names = readdirSync(directory);
+    const rotated = names.filter((name) => name !== basename(journal.path)).sort();
+    const [coldName, ...inside] = rotated;
+    if (coldName === undefined || inside.length === 0) {
+      throw new Error("rotation did not produce enough journals");
+    }
     const now = new Date("2026-10-24T12:00:00.000Z");
     const windowStart = new Date(now.getTime() - 10 * 60 * 1000);
-    const cold = join(directory, `${"c".repeat(24)}.jsonl.1000`);
-    const inWindow = join(directory, `${"d".repeat(24)}.jsonl.2000`);
-    await writeFile(cold, "x".repeat(400));
-    await writeFile(inWindow, "y".repeat(400));
-    const old = new Date(now.getTime() - 60 * 60 * 1000);
-    utimesSync(cold, old, old);
-    utimesSync(inWindow, now, now);
+    const cold = join(directory, coldName);
+    const coldTime = new Date(now.getTime() - 60 * 60 * 1000);
+    utimesSync(cold, coldTime, coldTime);
+    for (const name of [...inside, basename(journal.path)]) {
+      utimesSync(join(directory, name), now, now);
+    }
+    const total = names.reduce((sum, name) => sum + statSync(join(directory, name)).size, 0);
+    const coldSize = statSync(cold).size;
+    expect(coldSize).toBeGreaterThan(1);
 
     const removed = pruneJournal(stateDir, {
       now,
       windowStart,
-      maxBytes: 500,
+      maxBytes: total - coldSize + 1,
     });
 
-    expect(removed).toContain(`${"c".repeat(24)}.jsonl.1000`);
+    expect(removed).toEqual([coldName]);
     expect(existsSync(cold)).toBe(false);
-    expect(existsSync(inWindow)).toBe(true);
+    for (const name of inside) expect(existsSync(join(directory, name))).toBe(true);
+    expect(existsSync(journal.path)).toBe(true);
     expect(JOURNAL_MAX_BYTES).toBe(1024 * 1024 * 1024);
   });
 });
