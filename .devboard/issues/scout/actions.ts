@@ -5,7 +5,7 @@ import {
   resolveForgeAuth,
   type Exec,
 } from "../../lib/forge-auth";
-import { ghCommand } from "./preflight";
+import { ghCommand, runCommand } from "./preflight";
 import { issueBodyDirectory } from "./paths";
 import { writeAtomic } from "./state";
 import type { ScoutRecommendation } from "./recommendation";
@@ -96,32 +96,27 @@ export interface FileIssueOptions {
   run?: GhRunner;
   exec?: Exec;
   now?: () => Date;
+  /**
+   * Absolute epoch deadline for the whole filing. Every probe and command is
+   * killed when it elapses; commands before it are bounded by what remains.
+   */
+  deadline?: number;
+  /** Aborting cancels an in-flight probe or command. */
+  signal?: AbortSignal;
 }
 
 const bunExec: Exec = async (commandName, args, options) => {
-  try {
-    const child = Bun.spawn({
-      cmd: [commandName, ...args],
-      cwd: options.cwd,
-      env: options.env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return { stdout, stderr, code };
-  } catch (error) {
-    return {
-      stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-      code: -1,
-      killed: false,
-    };
-  }
+  const result = await runCommand([commandName, ...args], options.env, {
+    cwd: options.cwd,
+    ...(options.timeout === undefined ? {} : { timeoutMs: options.timeout }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    code: result.code,
+    killed: result.killed ?? false,
+  };
 };
 
 /**
@@ -138,10 +133,20 @@ export async function fileScoutIssue(options: FileIssueOptions): Promise<{ url: 
     cwd: options.repoDir,
     required: "write",
     env: environment,
+    ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   if (isAuthFailure(auth)) throw new Error(auth.error.split("\n")[0] ?? auth.error);
   const forgeEnvironment = authEnvironment(auth, environment);
-  const run = options.run ?? ((argv, env) => ghCommand(argv, env));
+  const run =
+    options.run ??
+    ((argv, env) =>
+      ghCommand(argv, env, {
+        ...(options.deadline === undefined
+          ? {}
+          : { timeoutMs: Math.max(1, options.deadline - Date.now()) }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      }));
 
   const existing = await run(["api", `repos/${options.repository}/labels/${SCOUT_LABEL}`], forgeEnvironment);
   if (existing.code !== 0) {
