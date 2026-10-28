@@ -1287,6 +1287,8 @@ try {
     labels: string[];
     pressed: boolean[];
     disabled: boolean[];
+    backgrounds: string[];
+    marker: boolean[];
     inside: boolean;
   }> =>
     page.eval(`(() => {
@@ -1299,6 +1301,10 @@ try {
         labels: buttons.map((button) => button?.getAttribute("aria-label") ?? ""),
         pressed: buttons.map((button) => button?.getAttribute("aria-pressed") === "true"),
         disabled: buttons.map((button) => button?.disabled === true),
+        backgrounds: buttons.map((button) => getComputedStyle(button).backgroundColor),
+        marker: buttons.map(
+          (button) => getComputedStyle(button, "::before").content !== "none",
+        ),
         inside: buttons.every((button) => {
           const rect = button?.getBoundingClientRect();
           return (
@@ -1765,6 +1771,7 @@ try {
     next: string;
     pending: string;
     tabStrips: number;
+    eyebrow: boolean;
   }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="record"]')];
     const table = document.querySelector('[data-testid="adr-table"]');
@@ -1782,9 +1789,11 @@ try {
       next: document.querySelector('[data-testid="next-marker"]')?.textContent?.trim() ?? "",
       pending: document.querySelector('[data-testid="pending-summary"]')?.textContent?.trim() ?? "",
       tabStrips: document.querySelectorAll('[data-testid="workspace-tabs"]').length,
+      eyebrow: document.querySelector('[data-testid="adrs-header"] .page-header__eyebrow') !== null,
     };
   })()`);
   check(adr.rows === 8, "the fixture does not render eight ADR rows", adr);
+  check(!adr.eyebrow, "the ADRs header still carries its Plan eyebrow", adr);
   const stateText = await page.eval<string>(`document.querySelector('[data-testid="record"] td:nth-child(3)')?.textContent?.trim() ?? ""`);
   check(stateText === "Resolved" || stateText === "Pending", "the ADR state is conveyed by color alone", stateText);
   const tableTones = await page.eval<Array<{ file: string; text: string; tone: string }>>(`(() => {
@@ -1906,14 +1915,26 @@ try {
     "clicking a prepared skill does not expand it",
     { clickedSkill, goalSkillSurface },
   );
-  const skillDocument = await page.eval<{ name: string; text: string; inline: boolean; description: boolean }>(`(() => {
+  const skillDocument = await page.eval<{
+    name: string;
+    text: string;
+    inline: boolean;
+    description: boolean;
+    blocks: number;
+    path: string;
+    frontmatter: boolean;
+  }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
     const detail = item?.closest("li")?.querySelector('[data-testid="skill-content"]') ?? null;
+    const doc = detail?.querySelector('[data-testid="skill-content-text"]') ?? null;
     return {
       name: detail?.getAttribute("data-name") ?? "",
-      text: detail?.querySelector('[data-testid="skill-content-text"]')?.textContent?.trim() ?? "",
+      text: doc?.textContent?.trim() ?? "",
       inline: detail !== null,
       description: detail?.querySelector(".muted") !== null,
+      blocks: doc?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
+      path: detail?.querySelector('.skill__path')?.textContent?.trim() ?? "",
+      frontmatter: (doc?.textContent ?? "").includes("devboard-managed"),
     };
   })()`);
   check(
@@ -1923,6 +1944,16 @@ try {
       !skillDocument.description,
     "expanding a prepared skill does not show its document in the list without a description",
     { clickedSkill, skillDocument },
+  );
+  check(
+    skillDocument.blocks > 0 && !skillDocument.frontmatter,
+    "the skill document is not rendered as a document without its frontmatter",
+    skillDocument,
+  );
+  check(
+    skillDocument.path === `.omp/skills/${clickedSkill}/SKILL.md`,
+    "the skill document does not name its file",
+    skillDocument,
   );
   const collapsingSkill = await page.eval<string>(`document.querySelector('[data-testid="skill"][data-selected="true"]')?.getAttribute("data-name") ?? ""`);
   await page.click(`[data-testid="skill"][data-name="${collapsingSkill}"]`);
@@ -1943,6 +1974,16 @@ try {
   await page.wait(
     `document.querySelector('[data-testid="skill-content"]') !== null`,
     "the reopened skill document",
+  );
+  check(
+    skillDocument.blocks > 0 && !skillDocument.frontmatter,
+    "the skill document is not rendered as a document without its frontmatter",
+    skillDocument,
+  );
+  check(
+    skillDocument.path === `.omp/skills/${clickedSkill}/SKILL.md`,
+    "the skill document does not name its file",
+    skillDocument,
   );
   const deletion = await page.eval<{ rows: number; controls: string[]; discoverControls: number }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="skill"]')];
@@ -2300,18 +2341,52 @@ try {
   const decisionLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-decisions"] textarea')?.getAttribute("aria-label") ?? ""`);
   check(decisionLabel.length > 0, "the decision board has no accessible label", decisionLabel);
   const decisionHeader = () =>
-    page.eval<{ state: string; saveDisabled: boolean }>(`(() => {
+    page.eval<{
+      state: string;
+      saveDisabled: boolean;
+      badge: boolean;
+      tone: string;
+      headerHeight: number;
+      aligned: boolean;
+      startPadding: string;
+    }>(`(() => {
       const state = document.querySelector('[data-testid="flow-decisions-state"]');
       const save = document.querySelector('[data-testid="save-flow-decisions"]');
+      const header = state?.closest(".flow-decisions__header");
+      const title = header?.querySelector(".flow-decisions__title");
+      const center = (element) => {
+        const box = element?.getBoundingClientRect();
+        return box === undefined ? Number.NaN : box.top + box.height / 2;
+      };
       return {
         state: state?.textContent?.trim() ?? "",
         saveDisabled: save?.disabled !== false,
+        badge: state?.classList.contains("badge") ?? false,
+        tone: state?.getAttribute("data-tone") ?? "",
+        headerHeight: Math.round(header?.getBoundingClientRect().height ?? 0),
+        aligned: Math.abs(center(state) - center(title)) <= 1,
+        startPadding: header ? getComputedStyle(header).paddingLeft : "",
       };
     })()`);
   const decisionSaved = await decisionHeader();
   check(
     decisionSaved.state === "Saved" && decisionSaved.saveDisabled,
     "the decision board header does not state its saved state",
+    decisionSaved,
+  );
+  check(
+    decisionSaved.badge && decisionSaved.tone === "success",
+    "the decision board saved state is not a success badge",
+    decisionSaved,
+  );
+  check(
+    decisionSaved.headerHeight === 44 && decisionSaved.aligned,
+    "the decision board header is not a 44px row aligned on one line",
+    decisionSaved,
+  );
+  check(
+    decisionSaved.startPadding === "12px",
+    "the decision board header does not use the design-system horizontal padding",
     decisionSaved,
   );
   await page.eval(`window.__devboardEditors.get("flow-decisions").focus()`);
@@ -2322,6 +2397,11 @@ try {
   check(
     decisionDirty.state === "Unsaved changes" && !decisionDirty.saveDisabled,
     "the decision board header does not state its unsaved state",
+    decisionDirty,
+  );
+  check(
+    decisionDirty.badge && decisionDirty.tone === "warning",
+    "the decision board unsaved state is not a warning badge",
     decisionDirty,
   );
   const decisionText = await page.eval<string>(`window.__devboardEditors.get("flow-decisions").getValue()`);
@@ -3604,10 +3684,28 @@ try {
     `document.querySelector('.feedback-hint') !== null`,
     "the activity-bar report control picking mode",
   );
+  await page.wait(
+    `(() => {
+      const report = document.querySelector('[data-testid="activity-report"]');
+      const remove = document.querySelector('[data-testid="activity-remove"]');
+      return report !== null && remove !== null &&
+        getComputedStyle(report).backgroundColor !== getComputedStyle(remove).backgroundColor;
+    })()`,
+    "the armed report action to paint its active surface",
+  );
   const reportActive = await issueState();
   check(
     reportActive.pressed.join(",") === "true,false,false",
     "the report action is not pressed in selection mode",
+    reportActive,
+  );
+  check(
+    reportActive.marker[0] &&
+      !reportActive.marker[1] &&
+      !reportActive.marker[2] &&
+      reportActive.backgrounds[0] !== reportActive.backgrounds[1] &&
+      reportActive.backgrounds[0] !== reportActive.backgrounds[2],
+    "the armed report action does not read as active",
     reportActive,
   );
   await page.click('[data-testid="activity-report"]');
@@ -3632,7 +3730,9 @@ try {
     idleIssue,
   );
   check(
-    idleIssue.pressed.every((value) => !value) && idleIssue.inside,
+    idleIssue.pressed.every((value) => !value) &&
+      idleIssue.marker.every((value) => !value) &&
+      idleIssue.inside,
     "the issue actions are not idle inside the rail",
     idleIssue,
   );
@@ -3924,7 +4024,13 @@ try {
   await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter for the palette cancel");
   await runPalette("app.report.cancel");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the palette to cancel the issue reporter");
-  check((await issueState()).pressed.every((value) => !value), "a canceled mode is still pressed");
+  const canceledIssue = await issueState();
+  check(
+    canceledIssue.pressed.every((value) => !value) &&
+      canceledIssue.marker.every((value) => !value),
+    "a canceled mode is still pressed",
+    canceledIssue,
+  );
 
   // Two removals from one uninterrupted mode, the second on a control whose
   // activation the selection mode must swallow.

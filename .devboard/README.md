@@ -588,9 +588,11 @@ optional meta row, and a right-aligned action group. The Overview frame holds th
 `owner/name` from its GitHub remote (falling back to the directory name when no remote names one;
 the full path stays in the tooltip), the one-line definition, the discovery date, and the single
 filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
-report it. Below the frame, an active run region appears only while a run exists: a tinted header
-with a `Discover` eyebrow, `Run in progress`, `Started 3 minutes ago`, and Stop, followed by the
-activity terminal and its ownership note. A queued question region follows while a question waits.
+report it. While a run exists, every Discover page carries a run tag above its notice stack: a
+status dot, `Discover run in progress`, the age, the run identifier as a code chip, the latest
+activity line, and Stop. Below the Overview frame, the active run region adds the full activity
+terminal: a tinted header with `Run in progress`, `Started 3 minutes ago`, and Stop, followed by
+the terminal. A queued question region follows while a question waits.
 The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and
 Testing in the main column on the right, and Bounded contexts below them. The manual-testing strip
 is the last region of the page, so a source checkout never pushes it above the project identity. An
@@ -1285,20 +1287,29 @@ it stays the Issues mode's active tab until another Issues page is opened. The p
 `GET /api/watchdog` and sends no command that files, comments, closes, starts, stops, or fixes
 anything.
 
+The page is one framed header, one full-width `watchdog-last-cycle` summary band, and two panels
+under it. The summary leads with the action badge and the reason, then states the exact start, the
+findings, and the pending filings as one compact facts row. The filed-issue table takes the wider
+column on a viewport at least 1501px wide; below that the two panels stack as flexible rows. Below
+1100px the issue `Category` column is hidden before any value is clipped (the category repeats
+inside the generated title); it stays in the DOM. Both panels own their scrolling, so the 100-row
+history never pushes the filed issues below the page.
+
 `watchdog-last-cycle` is the newest cycle from `latest.json`: `watchdog-last-cycle-at` (a `<time>`,
 or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findings`,
 `watchdog-last-pending`, and `watchdog-last-reason` only when the report carries a reason. The
 panel's `watchdog-last-age` shows that cycle's age.
 
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
-first, capped at the newest 100 directories. Every `watchdog-cycle` row carries `data-action` and
-renders `watchdog-cycle-at`, `watchdog-cycle-action`, and, only when the cycle's findings map to a
-filed issue, a `watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to those GitHub
-issues. Each anchor reads `#<number>` and opens in a new tab; the row repeats no issue and keeps
-the finding order. A cycle row renders no window interval, finding count, or reason. A run
-directory whose `report.json` is missing or unparsable is skipped without hiding the other rows.
-With no run directory at all, the `latest.json` cycle is the single row; with no cycle anywhere,
-`watchdog-cycles-empty` is rendered.
+first, capped at the newest 100 directories. Its table labels the three columns `Started`, `Action`,
+and `Issues`, and its header sticks while the panel scrolls. Every `watchdog-cycle` row carries
+`data-action` and renders `watchdog-cycle-at`, `watchdog-cycle-action`, and, only when the cycle's
+findings map to a filed issue, a `watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to
+those GitHub issues. Each anchor reads `#<number>` and opens in a new tab; the row repeats no issue
+and keeps the finding order. A cycle row renders no window interval, finding count, or reason. A
+run directory whose `report.json` is missing or unparsable is skipped without hiding the other
+rows. With no run directory at all, the `latest.json` cycle is the single row; with no cycle
+anywhere, `watchdog-cycles-empty` renders `No cycles yet` and the ten-minute cadence.
 
 `watchdog-issues` lists every ledger entry whose disposition is `filed:<url>`, newest `filedAt`
 first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `data-state`, and

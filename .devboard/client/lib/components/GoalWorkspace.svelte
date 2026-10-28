@@ -5,6 +5,7 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import type { WorkspaceTab } from "../layout.svelte";
   import { recordStatusTone } from "../record-status";
+  import { renderSkillDocument } from "../skill-document";
   import { statusTone } from "../status-tone";
   import type { AdrRecord, Lane } from "../types";
   import AdrTable from "./AdrTable.svelte";
@@ -426,7 +427,6 @@
   {:else if tab.kind === "adrs"}
     <div class="goal-page">
       <PageHeader
-        eyebrow="Plan"
         title="Decision records"
         testid="adrs-header"
       >
@@ -631,6 +631,8 @@
               {#each goal.skills as skill (skill.name)}
                 {@const expanded = goal.selectedSkill === skill.name}
                 {@const panelId = skillPanelId(skill.name)}
+                {@const skillHtml =
+                  skill.content === undefined ? "" : renderSkillDocument(skill.content)}
                 <li class="skill">
                   <div class="skill__row">
                     <button
@@ -679,8 +681,20 @@
                       role="region"
                       aria-label={`${skill.name} content`}
                     >
+                      <p class="skill__path" title={`.omp/skills/${skill.name}/SKILL.md`}>
+                        .omp/skills/{skill.name}/SKILL.md
+                      </p>
                       {#if skill.content !== undefined && skill.content.length > 0}
-                        <pre class="skill__content mono" data-testid="skill-content-text">{skill.content}</pre>
+                        {#if skillHtml.length > 0}
+                          <div class="skill__document" data-testid="skill-content-text">
+                            {@html skillHtml}
+                          </div>
+                        {:else}
+                          <p class="empty" style="padding: 0;">
+                            This skill's file carries only preparation metadata; there are no
+                            instructions to read.
+                          </p>
+                        {/if}
                       {:else}
                         <p class="empty" style="padding: 0;">
                           This skill has no file on disk; prepare the skills again to write it.
@@ -706,6 +720,7 @@
           {/if}
         </div>
       </section>
+
 
     </div>
   {:else if tab.kind === "adr"}
