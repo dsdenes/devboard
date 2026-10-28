@@ -297,19 +297,28 @@ export async function latestRelease(source: ReleaseSource): Promise<ReleaseInfo>
   return source.kind === "dir" ? directoryRelease(source.directory) : githubRelease(source.repo);
 }
 
+/** How long one release asset download may run before it is killed. */
+export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
+/** Grace between SIGTERM and SIGKILL for a download that ignores the first signal. */
+const DOWNLOAD_KILL_GRACE_MS = 1_000;
+
 async function downloadAsset(
   repo: string,
   asset: ReleaseAsset,
   destination: string,
+  timeoutMs: number,
+  command: string[],
 ): Promise<void> {
   if (asset.id === undefined) {
     throw new ReleaseError(`release asset ${asset.name} has no id`);
   }
   await mkdir(dirname(destination), { recursive: true });
-  await new Promise<void>((settle, reject) => {
+  const download = Promise.withResolvers<void>();
+  try {
     const child = spawn(
-      "gh",
+      command[0] ?? "gh",
       [
+        ...command.slice(1),
         "api",
         "-H",
         "Accept: application/octet-stream",
@@ -323,23 +332,76 @@ async function downloadAsset(
     );
     const sink = createWriteStream(destination);
     const err: Buffer[] = [];
+    let settled = false;
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const deadline = setTimeout(() => {
+      // A stalled network leaves gh blocked on the response, so the child owns
+      // its own deadline: SIGTERM, then SIGKILL once the grace expires.
+      timedOut = true;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), DOWNLOAD_KILL_GRACE_MS);
+      killTimer.unref?.();
+    }, timeoutMs);
+    deadline.unref?.();
+    const clearTimers = () => {
+      clearTimeout(deadline);
+      clearTimeout(killTimer);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      sink.destroy();
+      download.reject(error);
+    };
     child.stdout.pipe(sink);
     child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
-    child.on("error", (error) => {
-      sink.destroy();
-      reject(error);
+    child.on("error", fail);
+    sink.on("error", (error) => {
+      child.kill("SIGKILL");
+      fail(error);
     });
-    sink.on("error", reject);
+    // Settling only after `close` proves the child is gone before the caller
+    // is told the download failed, so no downloader outlives it.
     child.on("close", (code) => {
+      if (settled) return;
+      // The child is gone; only the write-sink flush may still be pending.
+      clearTimers();
+      if (timedOut) {
+        fail(
+          new ReleaseError(
+            `gh asset download timed out after ${timeoutMs} ms: ${asset.name}`,
+          ),
+        );
+        return;
+      }
       sink.end(() => {
-        if (code === 0) settle();
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        if (code === 0) download.resolve();
         else {
           const detail = Buffer.concat(err).toString("utf8").trim().split("\n")[0] ?? "";
-          reject(new ReleaseError(`gh asset download failed: ${detail || `exit ${code}`}`));
+          download.reject(
+            new ReleaseError(`gh asset download failed: ${detail || `exit ${code}`}`),
+          );
         }
       });
     });
-  });
+    await download.promise;
+  } catch (error) {
+    // A partial asset is never left behind for a later checksum or install.
+    await rm(destination, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+export interface DownloadReleaseOptions {
+  /** Deadline for each asset download; defaults to `DEFAULT_DOWNLOAD_TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** Command that fetches an asset; defaults to `gh`. */
+  ghCommand?: string[];
 }
 
 /** Copies the release tarball and checksum into `destination`. */
@@ -347,6 +409,7 @@ export async function downloadRelease(
   source: ReleaseSource,
   release: ReleaseInfo,
   destination: string,
+  options: DownloadReleaseOptions = {},
 ): Promise<{ tarball: string; checksum: string }> {
   const tarball = join(destination, tarballName(release.version));
   const checksum = join(destination, checksumName(release.version));
@@ -367,8 +430,10 @@ export async function downloadRelease(
   if (tarballAsset === undefined || checksumAsset === undefined) {
     throw new ReleaseError(`release ${release.tag} lacks a required asset`);
   }
-  await downloadAsset(source.repo, tarballAsset, tarball);
-  await downloadAsset(source.repo, checksumAsset, checksum);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
+  const command = options.ghCommand ?? ["gh"];
+  await downloadAsset(source.repo, tarballAsset, tarball, timeoutMs, command);
+  await downloadAsset(source.repo, checksumAsset, checksum, timeoutMs, command);
   return { tarball, checksum };
 }
 
@@ -527,11 +592,20 @@ export async function installRelease(options: {
   prefix: string;
   stateDir: string;
   env?: NodeJS.ProcessEnv;
+  /** Deadline for each asset download; defaults to `DEFAULT_DOWNLOAD_TIMEOUT_MS`. */
+  downloadTimeoutMs?: number;
+  /** Command that fetches an asset; defaults to `gh`. */
+  ghCommand?: string[];
 }): Promise<string> {
   const downloadDir = join(options.stateDir, "updates", `download-${randomUUID()}`);
   await mkdir(downloadDir, { recursive: true });
   try {
-    const files = await downloadRelease(options.source, options.release, downloadDir);
+    const files = await downloadRelease(options.source, options.release, downloadDir, {
+      ...(options.downloadTimeoutMs === undefined
+        ? {}
+        : { timeoutMs: options.downloadTimeoutMs }),
+      ...(options.ghCommand === undefined ? {} : { ghCommand: options.ghCommand }),
+    });
     await verifyChecksum(files.tarball, files.checksum);
     await installHarnessTarball({
       prefix: options.prefix,

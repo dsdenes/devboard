@@ -2,7 +2,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import { ReleaseFeedError, type ReleaseInfo } from "../lib/release";
+import {
+  checksumName,
+  installRelease,
+  ReleaseFeedError,
+  tarballName,
+  type ReleaseInfo,
+} from "../lib/release";
 import type { Journal, JournalKind } from "./journal";
 import {
   DEFAULT_UPDATE_INTERVAL_MS,
@@ -12,6 +18,7 @@ import {
 } from "./updates";
 
 const harnessRoot = resolve(import.meta.dir, "..");
+const HANG_GH = join(import.meta.dir, "fixtures", "hang-download.ts");
 const testRoot = join(harnessRoot, ".tmp");
 const temporaryDirectories: string[] = [];
 
@@ -172,6 +179,59 @@ describe("startUpdater", () => {
       updater.stop();
     }
   });
+
+  test("journals a stalled download as an update-error and reschedules the check", async () => {
+    const prefix = await installedPrefix("0.1.0");
+    const stateDir = await temporaryDirectory();
+    const pidFile = join(stateDir, "gh.pid");
+    const previous = process.env.STUB_GH_PID_FILE;
+    process.env.STUB_GH_PID_FILE = pidFile;
+    const { journal, records } = journalRecorder();
+    const manual = manualSchedule();
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir,
+      currentVersion: "0.1.0",
+      journal,
+      intervalMs: 1000,
+      schedule: manual.schedule,
+      fetchRelease: async () => ({
+        version: "0.1.2",
+        tag: "v0.1.2",
+        assets: [
+          { name: tarballName("0.1.2"), id: 11 },
+          { name: checksumName("0.1.2"), id: 12 },
+        ],
+      }),
+      install: (info) =>
+        installRelease({
+          source: { kind: "gh", repo: "dsdenes/devboard" },
+          release: info,
+          prefix,
+          stateDir,
+          downloadTimeoutMs: 500,
+          ghCommand: [process.execPath, HANG_GH],
+        }),
+    });
+    try {
+      await manual.fire(0);
+      expect(records).toEqual([
+        [
+          "update-error",
+          "could not install 0.1.2: gh asset download timed out after 500 ms: " +
+            "devboard-harness-0.1.2.tgz",
+        ],
+      ]);
+      // The failed check schedules its own backoff retry, so a stalled
+      // download never turns the update loop off.
+      expect(manual.delays).toEqual([0, 2000]);
+    } finally {
+      updater.stop();
+      if (previous === undefined) delete process.env.STUB_GH_PID_FILE;
+      else process.env.STUB_GH_PID_FILE = previous;
+    }
+  }, 20_000);
 
   test("journals an unreachable feed as context, never an update-error", async () => {
     const prefix = await installedPrefix("0.1.0");

@@ -1,13 +1,19 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  checksumName,
+  DEFAULT_DOWNLOAD_TIMEOUT_MS,
+  downloadRelease,
   exec,
   installHarnessTarball,
+  installRelease,
   isReleaseUnreachable,
   parseReleaseDescription,
   ReleaseError,
   ReleaseFeedError,
+  tarballName,
+  type ReleaseInfo,
 } from "./release";
 
 /** Release transport behaviour that needs a real npm install. */
@@ -153,4 +159,92 @@ console.log(installed);
     expect(existsSync(target)).toBe(true);
     expect(JSON.parse(readFileSync(join(target, "package.json"), "utf8")).version).toBe("9.9.9");
   }, 60_000);
+});
+
+const HANG_GH = join(import.meta.dir, "..", "server", "fixtures", "hang-download.ts");
+
+function stalledRelease(version: string): ReleaseInfo {
+  return {
+    version,
+    tag: `v${version}`,
+    assets: [
+      { name: tarballName(version), id: 11 },
+      { name: checksumName(version), id: 12 },
+    ],
+  };
+}
+
+/** Runs `body` with the fixture pid file path exported to the download child. */
+async function withPidFile(
+  pidFile: string,
+  body: () => Promise<void>,
+): Promise<void> {
+  const previous = process.env.STUB_GH_PID_FILE;
+  process.env.STUB_GH_PID_FILE = pidFile;
+  try {
+    await body();
+  } finally {
+    if (previous === undefined) delete process.env.STUB_GH_PID_FILE;
+    else process.env.STUB_GH_PID_FILE = previous;
+  }
+}
+
+function expectGone(pidFile: string): void {
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  expect(Number.isInteger(pid) && pid > 0).toBe(true);
+  expect(() => process.kill(pid, 0)).toThrow();
+}
+
+describe("release download deadline", () => {
+  test("uses the same ten minute budget as an install", () => {
+    expect(DEFAULT_DOWNLOAD_TIMEOUT_MS).toBe(10 * 60_000);
+  });
+
+  test("kills a stalled download at the deadline and removes the partial asset", async () => {
+    const root = workspace("stalled-download");
+    const destination = join(root, "download");
+    const pidFile = join(root, "gh.pid");
+    await withPidFile(pidFile, async () => {
+      const started = Date.now();
+      const error = await downloadRelease(
+        { kind: "gh", repo: "dsdenes/devboard" },
+        stalledRelease("1.2.3"),
+        destination,
+        { timeoutMs: 500, ghCommand: [process.execPath, HANG_GH] },
+      ).catch((reason: unknown) => reason);
+      const elapsed = Date.now() - started;
+      expect(error).toBeInstanceOf(ReleaseError);
+      expect((error as Error).message).toContain(
+        "gh asset download timed out after 500 ms: devboard-harness-1.2.3.tgz",
+      );
+      expect(elapsed).toBeLessThan(10_000);
+      expect(existsSync(join(destination, tarballName("1.2.3")))).toBe(false);
+      expectGone(pidFile);
+    });
+  }, 20_000);
+
+  test("installRelease rejects at the deadline and leaves no staged download", async () => {
+    const root = workspace("stalled-install");
+    const prefix = join(root, "prefix");
+    mkdirSync(prefix, { recursive: true });
+    const stateDir = join(root, "state");
+    const pidFile = join(root, "gh.pid");
+    await withPidFile(pidFile, async () => {
+      const started = Date.now();
+      const error = await installRelease({
+        source: { kind: "gh", repo: "dsdenes/devboard" },
+        release: stalledRelease("1.2.3"),
+        prefix,
+        stateDir,
+        downloadTimeoutMs: 500,
+        ghCommand: [process.execPath, HANG_GH],
+      }).catch((reason: unknown) => reason);
+      const elapsed = Date.now() - started;
+      expect(error).toBeInstanceOf(ReleaseError);
+      expect((error as Error).message).toContain("timed out after 500 ms");
+      expect(elapsed).toBeLessThan(10_000);
+      expect(readdirSync(join(stateDir, "updates"))).toEqual([]);
+      expectGone(pidFile);
+    });
+  }, 20_000);
 });
