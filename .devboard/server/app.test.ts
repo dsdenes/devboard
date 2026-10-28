@@ -239,6 +239,36 @@ describe("createApp", () => {
     }
   });
 
+  test("keeps serving after a failed restart", async () => {
+    const { server, url } = await startServer({
+      restart: () => {
+        throw new Error("spawn failed");
+      },
+    });
+
+    try {
+      const messages = await collect(
+        url,
+        { type: "restartServer" },
+        (frames) =>
+          frames.some(
+            (frame) =>
+              typeof frame === "object" &&
+              frame !== null &&
+              "type" in frame &&
+              frame.type === "error",
+          ),
+      );
+      expect(messages.at(-1)).toEqual({
+        type: "error",
+        message: "Could not restart the server: spawn failed",
+      });
+      expect(await listRecords(url)).toMatchObject({ type: "records" });
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("reports that restarting is unavailable without a launcher", async () => {
     const { server, url } = await startServer();
 
