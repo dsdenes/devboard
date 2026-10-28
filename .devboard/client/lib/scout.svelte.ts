@@ -104,10 +104,6 @@ export class ScoutStore {
     return this.snapshot?.lastError ?? null;
   }
 
-  get nextAttemptAt(): string | null {
-    return this.snapshot?.nextAttemptAt ?? null;
-  }
-
   get canStart(): boolean {
     return connection.open && !this.attached;
   }
