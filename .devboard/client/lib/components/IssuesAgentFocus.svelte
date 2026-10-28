@@ -6,7 +6,7 @@
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
-  import IssuesAgentQuestion from "./IssuesAgentQuestion.svelte";
+  import IssuesQuestion from "./IssuesQuestion.svelte";
 
   interface Props {
     tab: WorkspaceTab;
@@ -101,7 +101,7 @@
       <div class="panel__body stack-sm">
         <IssuesAgentLog lines={lines} testid="issues-agent-focus-activity" {runId} />
         {#if agent?.question}
-          <IssuesAgentQuestion
+          <IssuesQuestion
             runId={runId}
             question={agent.question}
             testid="issues-agent-focus-question"

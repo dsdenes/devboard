@@ -103,7 +103,6 @@ export class IssuesStore {
   draft = $state<GoalDraftDetail | null>(null);
   draftPath = $state<string | null>(readDraftPath());
   draftError = $state<string | null>(null);
-  draftAnswer = $state("");
 
   get lifecycle(): string {
     return this.snapshot?.lifecycle ?? "stopped";
@@ -242,7 +241,6 @@ export class IssuesStore {
     const question = this.draftRun?.question ?? null;
     if (question === null || value.trim().length === 0) return;
     connection.send({ type: "answerGoalDraft", id: question.id, value: value.trim() });
-    this.draftAnswer = "";
   }
 
   get canStart(): boolean {

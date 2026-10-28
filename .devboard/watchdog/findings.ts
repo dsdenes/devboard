@@ -93,6 +93,24 @@ function questionKey(event: EvidenceEvent): string {
 }
 
 /**
+ * A start is finished only by a stop of the same work stream on the same
+ * dashboard. Lane records begin with the lane id; run records begin with the
+ * run file before the `file: title` separator. A lane and a run never share a
+ * stream, so a `run-stop` cannot end a lane and a sibling lane's stop cannot
+ * end another lane's stall.
+ */
+function streamKey(event: EvidenceEvent): string {
+  const text = normalizeEvidenceLine(event.text);
+  if (event.kind.startsWith("lane-")) {
+    const lane = text.split(/\s+/, 1)[0] ?? "";
+    return `${eventKey(event)}\nlane\n${lane}`;
+  }
+  const separator = text.indexOf(":");
+  const file = separator === -1 ? "" : text.slice(0, separator).trim();
+  return `${eventKey(event)}\nrun\n${file}`;
+}
+
+/**
  * Turns a window of evidence into one finding per distinct signal. Only the
  * evidence kinds in `FINDING_CATEGORIES` can produce one: activity, lifecycle,
  * update, run and lane records, and questions below the loop threshold are
@@ -141,13 +159,13 @@ export function analyzeEvidence(
         continue;
       case "run-start":
       case "lane-start":
-        starts.set(eventKey(event), [...(starts.get(eventKey(event)) ?? []), event]);
+        starts.set(streamKey(event), [...(starts.get(streamKey(event)) ?? []), event]);
         continue;
       case "run-stop":
       case "lane-stop": {
         const parsed = parseTimestamp(event.ts);
-        stops.set(eventKey(event), [
-          ...(stops.get(eventKey(event)) ?? []),
+        stops.set(streamKey(event), [
+          ...(stops.get(streamKey(event)) ?? []),
           ...(parsed === undefined ? [] : [parsed]),
         ]);
         // A stop is only a stall terminator; a failed lane is a finding.
@@ -181,7 +199,6 @@ export function analyzeEvidence(
       if (started === undefined || started > stallCutoff) continue;
       if (finished.some((stopped) => stopped >= started)) continue;
       add("stall", event);
-      break;
     }
   }
 

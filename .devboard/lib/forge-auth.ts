@@ -24,6 +24,8 @@ export interface ExecOptions {
   cwd: string;
   env?: Record<string, string>;
   timeout?: number;
+  /** Aborting kills the child; the probe then counts as failed. */
+  signal?: AbortSignal;
 }
 
 /** Runs one command with an explicit environment; never throws for exit status. */
@@ -67,6 +69,13 @@ export interface ResolveOptions {
   cwd: string;
   required?: RequiredAccess;
   env?: Record<string, string | undefined>;
+  /**
+   * Absolute epoch deadline for the whole resolution. Every probe is bounded
+   * by what remains, so one stalled credential helper cannot outlive it.
+   */
+  deadline?: number;
+  /** Aborting kills the in-flight probe. */
+  signal?: AbortSignal;
 }
 
 const GITHUB_TOKEN_KEYS = [
@@ -144,6 +153,20 @@ function firstLine(value: string): string {
       .map((line) => line.trim())
       .find((line) => line.length > 0) ?? "no diagnostic"
   );
+}
+
+function probeOptions(
+  options: ResolveOptions,
+  env: Record<string, string>,
+): ExecOptions {
+  return {
+    cwd: options.cwd,
+    env,
+    ...(options.deadline === undefined
+      ? {}
+      : { timeout: Math.max(1, options.deadline - Date.now()) }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
 }
 
 async function attempt(
@@ -360,7 +383,7 @@ async function inspectGithub(
       exec,
       "gh",
       ["api", "--hostname", options.host, "user", "--jq", ".login"],
-      { cwd: options.cwd, env: environment },
+      probeOptions(options, environment),
     );
     if (user.code !== 0) {
       return {
@@ -385,7 +408,7 @@ async function inspectGithub(
       "--jq",
       ".permissions",
     ],
-    { cwd: options.cwd, env: environment },
+    probeOptions(options, environment),
   );
   if (repository.code !== 0) {
     const detail = firstLine(repository.stderr);
@@ -429,7 +452,7 @@ async function resolveGithub(
     exec,
     "gh",
     ["auth", "status", "--hostname", options.host, "--json", "hosts"],
-    { cwd: options.cwd, env: withoutTokens(base, "github") },
+    probeOptions(options, withoutTokens(base, "github")),
   );
   if (status.code !== 0 && status.stdout.trim().length === 0) {
     return { error: `gh is unavailable or failed: ${firstLine(status.stderr)}` };
@@ -450,7 +473,7 @@ async function resolveGithub(
       exec,
       "gh",
       ["auth", "token", "--hostname", options.host, "--user", account.login],
-      { cwd: options.cwd, env: withoutTokens(base, "github") },
+      probeOptions(options, withoutTokens(base, "github")),
     );
     if (token.code !== 0 || token.stdout.trim().length === 0) {
       diagnostics.push({
@@ -528,7 +551,7 @@ async function gitlabStatus(
     exec,
     "glab",
     ["auth", "status", "--hostname", options.host, "--show-token"],
-    { cwd: options.cwd, env: environment },
+    probeOptions(options, environment),
   );
   if (status.code !== 0 && status.stdout.trim().length === 0) {
     return {
@@ -608,7 +631,7 @@ async function inspectGitlab(
     exec,
     "glab",
     ["api", "--hostname", options.host, "user"],
-    { cwd: options.cwd, env: environment },
+    probeOptions(options, environment),
   );
   if (user.code !== 0) {
     return {
@@ -630,7 +653,7 @@ async function inspectGitlab(
     exec,
     "glab",
     ["api", "--hostname", options.host, endpoint],
-    { cwd: options.cwd, env: environment },
+    probeOptions(options, environment),
   );
   if (project.code !== 0) {
     const detail = firstLine(project.stderr);

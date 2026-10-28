@@ -74,7 +74,7 @@ export function goalProposalHeading(report: string): string {
   return line.length <= MAX_HEADING ? line : line.slice(0, MAX_HEADING);
 }
 
-/** The draft's base name: lowercase, hyphenated, at most six words. */
+/** The draft's deterministic fallback name: lowercase, hyphenated, at most six words. */
 export function goalProposalName(report: string): string {
   const slug = firstReportLine(report)
     .toLowerCase()
@@ -86,6 +86,51 @@ export function goalProposalName(report: string): string {
     .slice(0, MAX_NAME_WORDS)
     .join("-");
   return name.length === 0 ? FALLBACK_NAME : name;
+}
+
+/** The bounds a naming agent's answer must respect before it becomes a file name. */
+const MAX_SLUG_WORDS = MAX_NAME_WORDS;
+const MAX_SLUG_LENGTH = 64;
+
+const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * Validates one naming agent's answer. Every non-fence line is considered with
+ * surrounding backticks and quotes, an optional `slug:` label, a leading list
+ * marker, and trailing punctuation removed; the last line that is a complete
+ * lowercase kebab-case slug within the word and length bounds wins, so short
+ * framing like "Here is the slug:" does not discard a good answer. Returns
+ * `null` when no line qualifies, so a malformed answer falls back to the
+ * deterministic name instead of producing an unusable file name.
+ */
+export function normalizeGoalSlug(value: string): string | null {
+  let slug: string | null = null;
+  for (const line of value.split("\n")) {
+    const entry = line.trim();
+    if (entry.length === 0 || entry.startsWith("```")) continue;
+    const candidate = entry
+      .replace(/^[-*]\s+/, "")
+      .replace(/^[`'"*_~]+/, "")
+      .replace(/[`'"*_~.,;:!?]+$/, "")
+      .replace(/^slug\s*[:=]\s*/i, "")
+      .trim()
+      .toLowerCase();
+    if (!SLUG_PATTERN.test(candidate)) continue;
+    if (candidate.length > MAX_SLUG_LENGTH) continue;
+    if (candidate.split("-").length > MAX_SLUG_WORDS) continue;
+    slug = candidate;
+  }
+  return slug;
+}
+
+/** Resolves the draft's base name from a naming agent, with a deterministic fallback. */
+async function chooseGoalName(
+  report: string,
+  slugger: ((report: string) => Promise<string>) | undefined,
+): Promise<string> {
+  if (slugger === undefined) return goalProposalName(report);
+  const suggestion = await slugger(report).catch(() => undefined);
+  return (suggestion === undefined ? null : normalizeGoalSlug(suggestion)) ?? goalProposalName(report);
 }
 
 function collapse(value: string, limit: number): string {
@@ -174,13 +219,13 @@ export async function createExclusive(directory: string, name: string, content: 
 /** Writes one draft under `<repoDir>/.devboard/goal-proposals/`. */
 export async function writeGoalProposal(
   submission: GoalProposalSubmission,
-  options: { repoDir: string },
+  options: { repoDir: string; slugger?: (report: string) => Promise<string> },
 ): Promise<GoalProposal> {
   const directory = join(options.repoDir, GOAL_PROPOSALS_DIRECTORY);
   await mkdir(directory, { recursive: true });
   const filename = await createExclusive(
     directory,
-    goalProposalName(submission.report),
+    await chooseGoalName(submission.report, options.slugger),
     goalProposalBody(submission),
   );
   return { path: `${GOAL_PROPOSALS_DIRECTORY}/${filename}` };

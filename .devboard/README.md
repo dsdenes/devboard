@@ -1016,10 +1016,10 @@ control appears while `stale` is true and restarts the server from the installed
 dashboard serving the canonical source checkout reports `0.1.<commit-count>` on both sides, the
 version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder.
 
-A check that cannot reach the feed at all — an offline host, a DNS or proxy failure, a refused
-or reset connection, or a timeout — leaves the previous package and server intact, writes an
-`activity` record naming the skipped check, and retries with exponential backoff
-(`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for the operator, never an
+A check that cannot reach the feed at all — an offline host, a missing `gh` executable, a DNS
+or proxy failure, a refused or reset connection, or a timeout — leaves the previous package and
+server intact, writes an `activity` record naming the skipped check, and retries with exponential
+backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for the operator, never an
 `update-error` finding. A check that reaches the feed and fails, a checksum mismatch, an
 authentication failure, or a failed npm install writes `update-error` and is retried the same
 way.
@@ -1483,9 +1483,11 @@ facts, and `data-testid="issues-overview"`. It shows the running-agent count as
 `data-testid="issues-running-agents"`, the pending count, the number of issues in cooldown and the
 earliest cooldown time as `data-testid="issues-cooldowns"`. The left column holds the Automation
 panel and, directly after it, the running agents in
-`data-testid="issues-agent-summary"`: one button per agent carrying `data-run` and `data-issue`,
+`data-testid="issues-agent-summary"`: one row per agent carrying `data-run` and `data-issue`,
 sorted by issue number, with `aria-current="true"` on
 the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
+The row's issue number is a tracker link (`data-testid="issues-agent-row-issue"`, opening the
+issue URL from the queue in a new tab) next to a control that selects the agent's output.
 The running-agent panel header carries an aggregate `data-testid="issues-overview-asking"` warning
 badge (`<n> needs answer` or `<n> need answers`) only while at least one agent waits; the fleet
 count is not repeated in that header because the Automation panel states it.
@@ -1497,8 +1499,8 @@ open and reports the reason as an error notification; a successful one reports
 The right column renders only the selected agent's output in
 `data-testid="issues-overview-output"` with `data-run`, its stream in
 `data-testid="issues-overview-activity"`, and its question in
-`data-testid="issues-overview-question"`. The first agent is selected by default, clicking another
-row switches the output, and the pane falls back to the first live agent when the selected run
+`data-testid="issues-overview-question"`. The first agent is selected by default, the row's select
+control switches the output, and the pane falls back to the first live agent when the selected run
 ends; the overview list selects instead of opening a tab. The queue keeps every open issue, its
 `goal` badge, and its handled state, and shows `data-run` and a running marker for an issue with an
 active agent. The Runs page lists every run with its status and issue,
@@ -1515,14 +1517,21 @@ directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each 
 `data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
 and its first Markdown heading. An empty directory shows `No drafts exist.`.
 
-Selecting one opens `data-testid="issues-draft-detail"` with the draft's bytes exactly, its
-`## Captured UI context` block, and `issues-draft-start` (`issues.draft.start`) plus, while an
-elaboration runs, `issues-draft-stop` (`issues.draft.stop`). The detail refreshes when the page
-opens, after the report panel writes a draft through `POST /api/goal-proposals`, after an
-elaboration finishes or stops, and when a listed draft disappears. The page polls the list every
-two seconds while it is mounted, so an external deletion is visible without a reload, and the
-report panel's write broadcast reaches an open page immediately. A browser reload restores the
-Draft goals page and the selected path; when the file no longer exists, the page opens the list.
+Selecting one opens `data-testid="issues-draft-detail"`: a two-line header carries the draft's
+first heading and its file name, the state badge for this draft's run only, `issues-draft-start`
+(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
+body reads the proposal before the `## Captured UI context` marker, then the activity stream in
+`issues-draft-activity` once a run exists, then `issues-draft-context`: the captured facts as a
+compact grid and the visible text and DOM excerpt behind a `Captured evidence` disclosure. A
+pending elaboration question (`issues-draft-question`) renders above the proposal, with
+`issues-draft-choice`, `issues-draft-answer-input`, and `issues-draft-answer-submit`. The exact
+draft bytes remain in `issues-draft-text`, collapsed under `Draft source`. The detail refreshes
+when the page opens, after the report panel writes a draft through `POST /api/goal-proposals`,
+after an elaboration finishes or stops, and when a listed draft disappears. The page polls the
+list every two seconds while it is mounted, so an external deletion is visible without a reload,
+and the report panel's write broadcast reaches an open page immediately. A browser reload
+restores the Draft goals page and the selected path; when the file no longer exists, the page
+opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
@@ -1659,8 +1668,11 @@ renders `data-testid="scout-issue-title"` as an anchor to the issue URL,
 cell's `title`), `data-testid="scout-issue-type"`,
 `data-testid="scout-issue-state"`, and `data-testid="scout-issue-version"`. The type is the
 recommendation's category, or the issue body's `## Category` value for an adopted issue, or `—`.
-With no rows, `data-testid="scout-issues-empty"` renders. The sidebar `data-testid="scout-count"`
-shows the number of rows whose state is `pending`.
+With no rows, `data-testid="scout-issues-empty"` renders a centered stack: a decorative inbox
+mark, `No issues filed yet`, and one line stating that Auto Scout files significant findings after
+each scan. The empty state adds no control of its own; Start/Stop stays in the page header and the
+row count stays in the panel header. The sidebar `data-testid="scout-count"` shows the number of
+rows whose state is `pending`.
 
 An open issue is `pending`. A closed issue is `implemented` regardless of `stateReason`; a
 reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
@@ -1783,11 +1795,15 @@ context to `POST /api/goal-proposals`; the server writes one Markdown draft unde
 `<REPO_DIR>/.devboard/goal-proposals/` and answers
 `201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
-never writes a goal document, `GOAL.md`, or an ADR, never files an issue, never runs `gh`, and
-starts no agent or conversation. The file name is the report's first non-empty line, lowercased,
-with every run of non-alphanumeric characters replaced by `-`, leading and trailing `-` removed,
-and at most six hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`,
-`-3`, … through an exclusive create, so the first draft is never overwritten. The body opens with
+never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
+The file name is chosen by one bounded naming turn: an ACP peer starts with `AGENT_COMMAND` in
+`REPO_DIR`, receives the operator report marked as data with a read-only instruction, and must
+answer with only a lowercase kebab-case slug, at most six hyphen-separated words, `[a-z0-9-]`, and
+at most 64 characters. A start failure, an exited peer, a question, a 15-second timeout, or an
+unusable answer falls back to the report's first non-empty line, lowercased, with every run of
+non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
+hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
+exclusive create, so the first draft is never overwritten. The body opens with
 `# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, carries the line
 `> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the

@@ -1,21 +1,27 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { draftParts } from "../draft-format";
   import { issues, markDraftsPage } from "../issues.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
-  import Input from "./ui/input.svelte";
+  import IssuesAgentLog from "./IssuesAgentLog.svelte";
+  import IssuesQuestion from "./IssuesQuestion.svelte";
 
   /**
    * The Draft goals surface. It mounts only while the Draft goals tab is active, so its
    * refresh loop stops with the page. Opening the page restores the stored
    * draft path; a path whose file vanished resolves to the list.
    */
-  const draftContext = $derived.by(() => {
-    const text = issues.draft?.text ?? "";
-    const marker = "## Captured UI context";
-    const index = text.indexOf(marker);
-    return index === -1 ? "" : text.slice(index + marker.length).trim();
-  });
+  const parts = $derived(draftParts(issues.draft?.text ?? ""));
+
+  // The header reports this draft's run only; another draft's run is not this draft's state.
+  const run = $derived(
+    issues.draft !== null && issues.draftRun?.path === issues.draft.path ? issues.draftRun : null,
+  );
+  const status = $derived(run?.status ?? "idle");
+  const running = $derived(run?.status === "running");
+  const question = $derived(run?.question ?? null);
+  const error = $derived(issues.draftError ?? run?.error ?? null);
 
   onMount(() => {
     markDraftsPage(true);
@@ -87,18 +93,26 @@
         data-testid="issues-draft-detail"
         data-path={issues.draft.path}
       >
-        <div class="panel__header">
-          <h2 class="panel__title mono">{issues.draft.name}</h2>
-          <span
-            class="badge"
-            data-tone={statusTone(issues.draftStatus)}
-            data-testid="issues-draft-state"
-          >
-            {issues.draftStatus}
-          </span>
-        </div>
-        <div class="panel__body stack-sm">
-          <div class="toolbar">
+        <div class="issues-draft-detail__header">
+          <div class="issues-draft-detail__identity">
+            <h2
+              class="issues-draft-detail__title"
+              title={issues.draft.heading || issues.draft.name}
+            >
+              {issues.draft.heading || issues.draft.name}
+            </h2>
+            <span class="issues-draft-detail__path mono" title={issues.draft.path}>
+              {issues.draft.name}
+            </span>
+          </div>
+          <div class="issues-draft-detail__actions">
+            <span
+              class="badge"
+              data-tone={statusTone(status)}
+              data-testid="issues-draft-state"
+            >
+              {status}
+            </span>
             <Button
               variant="default"
               data-testid="issues-draft-start"
@@ -109,9 +123,10 @@
             >
               Start elaboration
             </Button>
-            {#if issues.draftRunning}
+            {#if running}
               <Button
-                variant="destructive"
+                variant="ghost"
+                class="issues-draft-detail__stop"
                 data-testid="issues-draft-stop"
                 data-command="issues.draft.stop"
                 onclick={() => issues.stopDraft()}
@@ -120,77 +135,84 @@
               </Button>
             {/if}
           </div>
-          {#if issues.draftError ?? issues.draftRun?.error ?? null}
-            <p class="issues-error" data-testid="issues-draft-error" role="alert">
-              {issues.draftError ?? issues.draftRun?.error}
-            </p>
+        </div>
+        <div class="issues-draft-detail__body">
+          {#if error !== null}
+            <p class="issues-error" data-testid="issues-draft-error" role="alert">{error}</p>
           {/if}
-          <div class="issues-draft-context" data-testid="issues-draft-context">
-            {draftContext.length > 0 ? draftContext : "No captured UI context."}
-          </div>
-          <pre class="issues-draft-text mono" data-testid="issues-draft-text">{issues.draft.text}</pre>
-          <div class="panel__header">
-            <h3 class="panel__title">Activity</h3>
-            <span class="panel__subtitle mono">{issues.draftRun?.path ?? "no elaboration"}</span>
-          </div>
-          <pre class="issues-activity mono" data-testid="issues-draft-activity">{
-            issues.draftRun === null || issues.draftRun.activity.length === 0
-              ? "No elaboration activity yet."
-              : issues.draftRun.activity.join("\n")
-          }</pre>
-          {#if issues.draftRun?.question !== null && issues.draftRun?.question !== undefined}
-            <div class="issues-question" data-testid="issues-draft-question">
-              <p>{issues.draftRun.question.message}</p>
-              {#if issues.draftRun.question.options.length > 0}
-                <div class="choice-list">
-                  {#each issues.draftRun.question.options as option (option.label)}
-                    <button
-                      type="button"
-                      class="choice"
-                      data-testid="issues-draft-choice"
-                      data-command="issues.draft.answer"
-                      onclick={() => issues.submitDraftAnswer(option.label)}
-                    >
-                      <span class="choice__label">
-                        {option.label}
-                        {#if option.recommended}
-                          <span class="choice__recommended">Recommended</span>
-                        {/if}
-                      </span>
-                      {#if option.description}
-                        <span class="choice__description">{option.description}</span>
-                      {/if}
-                    </button>
+          {#if question !== null}
+            <section
+              class="issues-draft-detail__question"
+              aria-label="Elaboration question"
+            >
+              <h3 class="issues-draft-detail__label issues-draft-detail__label--warning">
+                Elaboration question
+              </h3>
+              <IssuesQuestion
+                question={question}
+                testid="issues-draft-question"
+                onanswer={(value) => issues.submitDraftAnswer(value)}
+                choiceTestid="issues-draft-choice"
+                inputTestid="issues-draft-answer-input"
+                submitTestid="issues-draft-answer-submit"
+                command="issues.draft.answer"
+              />
+            </section>
+          {/if}
+          <section class="issues-draft-detail__section" aria-label="Draft">
+            <h3 class="issues-draft-detail__label">Draft</h3>
+            {#if parts.proposal.length > 0}
+              <pre class="issues-draft-detail__prose mono">{parts.proposal}</pre>
+            {:else}
+              <p class="issues-draft-detail__empty">This draft holds no proposal text yet.</p>
+            {/if}
+          </section>
+          {#if run !== null}
+            <section
+              class="issues-draft-detail__section issues-draft-detail__section--activity"
+              aria-label="Elaboration activity"
+            >
+              <h3 class="issues-draft-detail__label">Elaboration activity</h3>
+              <IssuesAgentLog lines={run.activity} testid="issues-draft-activity" />
+            </section>
+          {/if}
+          <section class="issues-draft-detail__section" aria-label="Captured UI context">
+            <h3 class="issues-draft-detail__label">Captured UI context</h3>
+            <div class="issues-draft-detail__context" data-testid="issues-draft-context">
+              {#if parts.facts.length > 0}
+                <dl class="issues-draft-facts">
+                  {#each parts.facts as fact (fact.label)}
+                    <dt>{fact.label}:</dt>
+                    <dd>{fact.value}</dd>
                   {/each}
-                </div>
+                </dl>
               {/if}
-              <form
-                class="issues-answer"
-                onsubmit={(event) => {
-                  event.preventDefault();
-                  issues.submitDraftAnswer(issues.draftAnswer);
-                }}
-              >
-                <Input
-                  type="text"
-                  value={issues.draftAnswer}
-                  oninput={(event) => (issues.draftAnswer = event.currentTarget.value)}
-                  placeholder="Your answer"
-                  aria-label="Your answer to the elaboration agent"
-                  data-testid="issues-draft-answer-input"
-                />
-                <Button
-                  variant="default"
-                  type="submit"
-                  data-command="issues.draft.answer"
-                  data-testid="issues-draft-answer-submit"
-                  disabled={issues.draftAnswer.trim().length === 0}
-                >
-                  Answer
-                </Button>
-              </form>
+              {#if parts.sections.length > 0}
+                <details class="issues-draft-evidence">
+                  <summary>Captured evidence</summary>
+                  <div class="issues-draft-evidence__body">
+                    {#each parts.sections as section (section.title)}
+                      <section class="issues-draft-evidence__section">
+                        <h4 class="issues-draft-detail__label">{section.title}</h4>
+                        <pre class="issues-draft-evidence__text mono">{section.body}</pre>
+                      </section>
+                    {/each}
+                  </div>
+                </details>
+              {:else if parts.rawContext.length > 0}
+                <pre class="issues-draft-evidence__text mono">{parts.rawContext}</pre>
+              {:else}
+                <p class="issues-draft-detail__empty">No captured UI context.</p>
+              {/if}
             </div>
-          {/if}
+          </section>
+          <details class="issues-draft-source">
+            <summary>
+              <span class="issues-draft-detail__label">Draft source</span>
+              <span class="issues-draft-source__meta mono">{issues.draft.text.length} bytes</span>
+            </summary>
+            <pre class="issues-draft-text mono" data-testid="issues-draft-text">{issues.draft.text}</pre>
+          </details>
         </div>
       </section>
     {:else}

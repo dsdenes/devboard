@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { installHarnessTarball } from "./release";
+import { exec, installHarnessTarball, isReleaseUnreachable } from "./release";
 
 /** Release transport behaviour that needs a real npm install. */
 
@@ -35,6 +35,18 @@ function harnessTarball(directory: string): string {
   expect(packed.exitCode).toBe(0);
   return tarball;
 }
+
+describe("isReleaseUnreachable", () => {
+  test("treats a missing release command as an unreachable feed", async () => {
+    const missing = `devboard-missing-gh-${crypto.randomUUID()}`;
+    const error = await exec(missing, []).then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect(isReleaseUnreachable(error)).toBe(true);
+  });
+});
 
 describe("installHarnessTarball", () => {
   test("installs with an explicit cwd after the process cwd is deleted", async () => {

@@ -180,6 +180,7 @@ if (!existsSync(indexPath)) fail("the build produced no dist/index.html");
 const builtAt = statSync(indexPath).mtimeMs;
 const sources = [
   join(harnessRoot, "client"),
+  join(harnessRoot, "public"),
   join(harnessRoot, "index.html"),
   join(harnessRoot, "vite.config.ts"),
   join(harnessRoot, "svelte.config.js"),
