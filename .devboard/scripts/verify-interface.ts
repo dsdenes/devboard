@@ -1949,6 +1949,7 @@ try {
     revision: number;
     panelBottom: number;
     revisionBottom: number;
+    eyebrow: boolean;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="goal-text"]');
     const panel = document.querySelector('[data-testid="goal-editor"]');
@@ -1959,8 +1960,10 @@ try {
       revision: revision === null ? 0 : Math.round(revision.getBoundingClientRect().height),
       panelBottom: panel === null ? 0 : Math.round(panel.getBoundingClientRect().bottom),
       revisionBottom: revision === null ? 0 : Math.round(revision.getBoundingClientRect().bottom),
+      eyebrow: document.querySelector('[data-testid="document-header"] .page-header__eyebrow') !== null,
     };
   })()`);
+  check(!goalLayout.eyebrow, "the goal document header still carries its Plan eyebrow", goalLayout);
   check(goalLayout.editor >= 400 && goalLayout.editor >= goalLayout.panel * 0.6, "the goal document does not fill the page", goalLayout);
   check(goalLayout.revision >= 60 && Math.abs(goalLayout.revisionBottom - goalLayout.panelBottom) <= 24, "the revision guidance is not a tall field at the bottom", goalLayout);
   await saveShot("goal-document");

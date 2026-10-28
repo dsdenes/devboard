@@ -502,7 +502,7 @@
     </div>
   {:else if tab.kind === "goal-document"}
     <div class="goal-page goal-page--fill">
-      <PageHeader eyebrow="Plan" title="Goal document" subtitle={documentState} testid="document-header">
+      <PageHeader title="Goal document" subtitle={documentState} testid="document-header">
         {#snippet meta()}
           {#if operationText !== null}
             <span class="badge" data-tone="accent">{operationText}</span>
