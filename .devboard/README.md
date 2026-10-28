@@ -906,67 +906,103 @@ hyphens, and the whole URL is at most 2048 bytes. `http://`, `git@github.com:`, 
 host, a port, user information, a query, a fragment, an empty or whitespace-only value, an empty
 owner or repository, `.`, `..`, more than two path segments, and absolute or Windows path shapes are
 refused with one `discoverError` naming the reason; nothing is spawned and no directory is created.
-Branch or ref selection, private repositories, credentials, and more than one stored remote target
-are out of scope.
+Branch or ref selection, private repositories, and credentials are out of scope; any number of
+public repositories may be retained.
 
-The scratch root is `<STATE_DIR>/discover-remote/` and must resolve inside `<REPO_DIR>`. A submit
-broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs exactly one
-child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with the scratch
-root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`, `NO_COLOR=1`, and a
-300-second timeout. On success the server renames the staging directory to `<owner>-<repo>`
-(lowercased), removes the previously active clone after the rename, makes the clone the target, and
-starts exactly one crawl against it. On a non-zero exit, a timeout, or an unreadable destination it
-removes staging, clears `cloning`, reports the exit status, timeout, or destination, and keeps the
-previous target and its artifacts intact. A second `discoverRemote`, a `clearDiscoverRemote`, or a
-`discoverProject` while cloning is non-null is refused with one `discoverError`. A clone is never
+The retained root is `<STATE_DIR>/discover-remote/` and must resolve inside `<REPO_DIR>`. It holds
+one directory per discovered repository, named `<owner>-<repo>` in lowercase, and nothing else once
+a run ends. Each directory keeps the bytes the crawl published — `.omp/discover/` and
+`.omp/skills/` — beside `project.json`, which records `url`, `owner`, `repo`, and the ISO
+`completedAt` time. A run's checkout is a transient `.staging-<run-id>` directory beside those
+projects; it never survives the run.
+
+A submit broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs
+exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
+the retained root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`,
+`NO_COLOR=1`, and a 300-second timeout. On success the checkout becomes the crawl root and exactly
+one crawl runs against it. Publication writes into the checkout's `.omp`; when the crawl succeeds,
+the two published trees are copied into `<owner>-<repo>/`, `project.json` is rewritten with the
+submitted URL and the completion time, and the checkout is removed. The active target moves to the
+new project only after its bytes are retained, so a failed clone or a failed crawl leaves the
+previous target, its bytes, its entry, and its completion time untouched and reports exactly one
+`discoverError`. A second `discoverRemote`, `discoverProject`, `switchDiscoverRemote`,
+`removeDiscoverRemote`, or `clearDiscoverRemote` while `cloning` is non-null is refused with one
+`discoverError`, as it is while a Discover run or other Goal/Flow work is active. A clone is never
 resumed.
 
-With a remote target every Discover command uses the clone as the host: staging under
-`<cloneDir>/.omp/discover/staging/<run-id>/`, the ACP working directory and the prompt's staging
-path from the clone, facts before and after from the clone, staged validation against the clone, and
-publication into the clone's `.omp/discover/` and `.omp/skills/`. Snapshot, staleness, warnings,
-skill saves and restores, glossary decisions, and the manifest follow the active target only, so this
-checkout's `.omp/discover` and `.omp/skills` stay byte-identical. Only one Discover run exists at a
-time across both targets; a remote crawl is active work for Goal Mode and Flow Mode, and a clone in
-flight is refused while either is active. `clearDiscoverRemote` removes exactly
-`<STATE_DIR>/discover-remote/<owner>-<repo>` and returns the host target; it never touches
-`<REPO_DIR>/.omp`.
+With a remote target every Discover read and write uses the retained directory: the Overview,
+staleness, warnings, skill saves and restores, glossary decisions, and the manifest all come from
+`<owner>-<repo>/.omp`. A crawl is the only path that needs a checkout; starting Discover on a
+retained target — `discoverProject`, or `discoverRemote` with its URL — first clones the project
+again, runs exactly one crawl, replaces the snapshot on success, and removes the checkout. Remote
+grounding evidence is stored in the glossary, so the retained snapshot renders without the source
+tree. This checkout's `.omp/discover` and `.omp/skills` stay byte-identical, and a remote operation
+writes nothing outside `<STATE_DIR>/discover-remote/` apart from the dashboard's own state file.
 
-Durable state stores the active target as URL, owner, and repository only, and `cloneDir` is derived
-from `STATE_DIR`, so moving the state directory never leaves a stale absolute path. Startup removes
-every leftover `.staging-*` and every clone that is not the stored target's, so the scratch root
-holds at most one clone. A replacement restores a remote target only while `<cloneDir>/.git` exists;
-otherwise it starts on the host target, drops the stored target so the fallback never repeats, and
-sends one `discoverError` naming the missing clone to the next client. A restart during a remote
-crawl interrupts it as a host run does: the recorded child ends, the clone's staging is removed, its
-published artifacts stay, and nothing is published or resumed. After a restart with an intact clone,
-`getDiscover` and the Overview render the clone's artifacts with `target.kind === "remote"` without a
-re-crawl.
+Every discovery is retained, so the list holds exactly one entry per lowercased `owner/repo`:
+discovering the same repository again in any letter case, with a trailing slash, or with a `.git`
+suffix updates that entry's bytes, URL, and completion time and moves it to the top. Entries are
+listed newest completed discovery first. `discoverState` carries this list as `retained`
+(`{url, owner, repo, completedAt}[]`) and `target.checkout`, which is true only while the active
+project's transient clone exists.
 
-The protocol adds `{ "type": "discoverRemote", "url": string }` and
-`{ "type": "clearDiscoverRemote" }`. A malformed payload, a missing or non-string `url`, and an
-unknown command receive the existing unknown-command treatment and change nothing. `discoverState`
-keeps every existing field and adds `remoteAvailable`, `target` (`{ "kind": "host" }` or
-`{ "kind": "remote", "url", "owner", "repo", "cloneDir" }`, where `cloneDir` is repository-root-
-relative and never absolute), and `cloning` (`{ "url" }` or `null`). `getDiscover` answers with the
-same snapshot, and a connecting client still receives it before its own command replies.
+Durable state stores the active target as URL, owner, and repository only. A replacement restores
+it only while `<owner>-<repo>` holds a readable `project.json` and both `.omp` trees, without a
+clone or a re-crawl; otherwise it starts on the host target, drops that one stored target, keeps
+every other retained entry, and sends one `discoverError` naming the missing project to the next
+client. Startup removes every `.staging-*` directory and any leftover directory containing `.git`,
+so a restart never resumes a run and never deletes a retained project. A restart during a remote
+crawl interrupts it as a host run does: the recorded child ends, the checkout's staging is removed,
+its retained snapshot stays, and nothing is published or resumed.
+
+The protocol adds `{ "type": "discoverRemote", "url": string }`,
+`{ "type": "switchDiscoverRemote", "url": string }`,
+`{ "type": "removeDiscoverRemote", "url": string }`, and `{ "type": "clearDiscoverRemote" }`. A
+malformed payload, a missing or non-string `url`, and an unknown command receive the existing
+unknown-command treatment and change nothing; an unknown or malformed URL in a switch or removal
+receives one `discoverError` naming it. `switchDiscoverRemote` changes the active target to a
+retained project and renders its retained bytes without cloning, crawling, or network access;
+`removeDiscoverRemote` deletes exactly that project's directory and list entry, returning to the
+host target when it was the active one; `clearDiscoverRemote` returns to the host target and keeps
+every project and its bytes. All three are refused with one `discoverError`, changing nothing,
+while a clone or a Discover run is active or while the existing busy rules refuse
+`clearDiscoverRemote`.
+
+`discoverState` keeps every existing field and adds `remoteAvailable`, `retained`, `target`
+(`{ "kind": "host" }` or `{ "kind": "remote", "url", "owner", "repo", "checkout" }`), and
+`cloning` (`{ "url" }` or `null`). `getDiscover` answers with the same snapshot, and a connecting
+client still receives it before its own command replies.
 
 While `remoteAvailable` is true the Overview renders a target strip as its first region, above the
-project header and the sheet or the empty state: an input (`data-testid="discover-remote-url"`)
-labelled for a GitHub repository URL with the placeholder `https://github.com/owner/repo`, a submit
-control (`data-testid="discover-remote-start"`) labelled `Discover from URL`, a banner
-(`data-testid="discover-remote-target"`) naming the active URL with a `Manual testing` marker, and
-a clear control (`data-testid="discover-remote-clear"`) only while the target is remote. The strip
-is secondary in weight yet first in reading order, so an operator sees the active target before
-anything it affects. A source checkout with nothing published still learns the gate: the server
-replays one `discoverState` on connect when `remoteAvailable` is true, even
+project header and the sheet or the empty state: a retained-project dropdown
+(`data-testid="discover-remote-select"`) whose options are the retained URLs, newest first, with the
+active project selected and no host option; one row per retained project with a remove control
+(`data-testid="discover-remote-remove"`, carrying the URL in `data-url`); an input
+(`data-testid="discover-remote-url"`) labelled for a GitHub repository URL with the placeholder
+`https://github.com/owner/repo`; a submit control (`data-testid="discover-remote-start"`) labelled
+`Discover from URL`; a banner (`data-testid="discover-remote-target"`) naming the active URL with a
+`Manual testing` marker; and a clear control (`data-testid="discover-remote-clear"`) only while the
+target is remote. The strip is secondary in weight yet first in reading order, so an operator sees
+the active target before anything it affects. A source checkout with nothing published still learns
+the gate: the server replays one `discoverState` on connect when `remoteAvailable` is true, even
 with no artifacts and no run. The submit control is disabled while the socket is closed, `cloning`
 is non-null, a run is active, or `discoverState.busy` is set, and its `title` names the reason; it
 is also disabled for empty or whitespace-only input. Submitting sends exactly one frame with the
-trimmed URL and starts nothing else; clearing sends exactly one `clearDiscoverRemote`. Rendering
-the strip on load, reconnect, mode switch, or page switch sends no frame. While cloning, the strip
-shows the cloning URL and the activity area shows no run; errors reach the Discover error and
-notification surfaces only.
+trimmed URL and starts nothing else; selecting an option sends exactly one `switchDiscoverRemote`
+and starts nothing else; removing sends exactly one `removeDiscoverRemote`; clearing sends exactly
+one `clearDiscoverRemote`. Rendering the strip on load, reconnect, mode switch, or page switch sends
+no frame. While cloning, the strip shows the cloning URL and the activity area shows no run; errors
+reach the Discover error and notification surfaces only.
+
+`server/discover-remote.test.ts` proves retention after a successful crawl with the checkout
+removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased
+`owner/repo`, switching with zero clone invocations across a restart, one clone and one crawl on
+re-discovery, unchanged bytes after a failed clone or crawl, clear keeping every project, removal
+of exactly one directory with a restart, busy refusals, the missing-retained-directory fallback, the
+gate refusing every remote command without touching the retained root, and a byte-identical host
+`.omp`. `verify:interface` drives the built UI through a retained render after restart, the
+dropdown's two entries and selection, removal of one entry, and the gate-off host with no remote
+control.
 
 Operator smoke procedure, which needs network and a model endpoint and is therefore not a pass gate:
 
@@ -975,11 +1011,14 @@ cd .devboard
 ADRS_DIR=../adrs REPO_DIR=.. bun run start
 ```
 
-Open Discover, enter `https://github.com/octocat/Hello-World`, and confirm the cloning state, the
-clone at `.devboard/.tmp/discover-remote/octocat-hello-world`, a completed crawl, the clone's sheet
-and glossaries, a skill save under the clone's `.omp/skills/`, and `Clear remote target` returning
-to this checkout's artifacts. Hash `.omp` from the repository root before and after; the two hashes
-match.
+Open Discover, enter `https://github.com/octocat/Hello-World`, and confirm the cloning state, a
+completed crawl, the checkout gone from `.devboard/.tmp/discover-remote/`, the retained project at
+`.devboard/.tmp/discover-remote/octocat-hello-world/` with its `.omp/discover`, `.omp/skills`, and
+`project.json`, its sheet and glossaries, and a skill save landing under the retained `.omp/skills/`.
+Restart the server, reload, and confirm the same project is active with its artifacts and no
+missing-clone error. Discover a second repository, switch between the two from the dropdown, and
+confirm no clone appears. Remove one entry and confirm only its directory disappears. Hash `.omp`
+from the repository root before and after; the two hashes match.
 
 ## Publish a change
 
@@ -1544,8 +1583,11 @@ in `REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-rel
 activity streams into `issues-draft-activity`, its `ask` question renders as options plus a
 free-text answer, and an answer goes only to that peer. While it runs, every other draft's start
 control is disabled with the stated reason; Stop closes the peer, records `stopped`, keeps the
-draft, and re-enables the controls; a failed peer keeps the draft, shows the error, and accepts a
-retry as a new peer.
+draft, and re-enables the controls; a successful or failed run closes its peer before recording
+`succeeded` or `failed`, so no elaboration leaves an agent process behind; a failed peer keeps
+the draft, shows the error, and accepts a retry as a new peer. The running peer's pid, argv, and
+`cwd` are recorded in the server state, so a replacement server ends one its predecessor left
+running.
 
 `.devboard/prompts/goal-draft.md` is the elaboration contract and
 `.devboard/omp/commands/goal-draft.md` its command wrapper, which reads the prompt and passes
