@@ -1285,20 +1285,29 @@ it stays the Issues mode's active tab until another Issues page is opened. The p
 `GET /api/watchdog` and sends no command that files, comments, closes, starts, stops, or fixes
 anything.
 
+The page is one framed header, one full-width `watchdog-last-cycle` summary band, and two panels
+under it. The summary leads with the action badge and the reason, then states the exact start, the
+findings, and the pending filings as one compact facts row. The filed-issue table takes the wider
+column on a viewport at least 1501px wide; below that the two panels stack as flexible rows. Below
+1100px the issue `Category` column is hidden before any value is clipped (the category repeats
+inside the generated title); it stays in the DOM. Both panels own their scrolling, so the 100-row
+history never pushes the filed issues below the page.
+
 `watchdog-last-cycle` is the newest cycle from `latest.json`: `watchdog-last-cycle-at` (a `<time>`,
 or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findings`,
 `watchdog-last-pending`, and `watchdog-last-reason` only when the report carries a reason. The
 panel's `watchdog-last-age` shows that cycle's age.
 
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
-first, capped at the newest 100 directories. Every `watchdog-cycle` row carries `data-action` and
-renders `watchdog-cycle-at`, `watchdog-cycle-action`, and, only when the cycle's findings map to a
-filed issue, a `watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to those GitHub
-issues. Each anchor reads `#<number>` and opens in a new tab; the row repeats no issue and keeps
-the finding order. A cycle row renders no window interval, finding count, or reason. A run
-directory whose `report.json` is missing or unparsable is skipped without hiding the other rows.
-With no run directory at all, the `latest.json` cycle is the single row; with no cycle anywhere,
-`watchdog-cycles-empty` is rendered.
+first, capped at the newest 100 directories. Its table labels the three columns `Started`, `Action`,
+and `Issues`, and its header sticks while the panel scrolls. Every `watchdog-cycle` row carries
+`data-action` and renders `watchdog-cycle-at`, `watchdog-cycle-action`, and, only when the cycle's
+findings map to a filed issue, a `watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to
+those GitHub issues. Each anchor reads `#<number>` and opens in a new tab; the row repeats no issue
+and keeps the finding order. A cycle row renders no window interval, finding count, or reason. A
+run directory whose `report.json` is missing or unparsable is skipped without hiding the other
+rows. With no run directory at all, the `latest.json` cycle is the single row; with no cycle
+anywhere, `watchdog-cycles-empty` renders `No cycles yet` and the ten-minute cadence.
 
 `watchdog-issues` lists every ledger entry whose disposition is `filed:<url>`, newest `filedAt`
 first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `data-state`, and

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Watchdog — wireframe</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        background: #f4f4f4;
+        color: #222;
+        font: 13px/1.4 system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+      }
+      .wireframe {
+        width: 960px;
+      }
+      .note {
+        color: #666;
+        font-size: 11px;
+        margin: 0 0 12px;
+      }
+      .frame {
+        border: 1px solid #bbb;
+        border-radius: 4px;
+        background: #fff;
+        margin-bottom: 12px;
+      }
+      .frame__head {
+        align-items: center;
+        border-bottom: 1px solid #ddd;
+        display: flex;
+        gap: 8px;
+        height: 30px;
+        justify-content: space-between;
+        padding: 0 8px;
+      }
+      .frame__title {
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .page-head {
+        align-items: flex-start;
+        display: flex;
+        justify-content: space-between;
+        padding: 10px 12px;
+      }
+      .eyebrow {
+        color: #777;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        margin: 0;
+      }
+      h1 {
+        font-size: 20px;
+        line-height: 1.2;
+        margin: 0;
+      }
+      .meta {
+        color: #666;
+        font-size: 11px;
+      }
+      .verdict {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        padding: 8px;
+      }
+      .pill {
+        border: 1px solid #999;
+        border-radius: 999px;
+        font-size: 10px;
+        padding: 2px 6px;
+      }
+      .facts {
+        display: flex;
+        gap: 24px;
+        padding: 0 8px 8px;
+      }
+      .fact {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .fact span {
+        color: #777;
+        font-size: 10px;
+        letter-spacing: 0.06em;
+      }
+      .body {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1.25fr 1fr;
+      }
+      table {
+        border-collapse: collapse;
+        font-size: 11px;
+        width: 100%;
+      }
+      th {
+        background: #fff;
+        border-bottom: 1px solid #ccc;
+        color: #777;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        padding: 4px 8px;
+        text-align: left;
+      }
+      td {
+        border-bottom: 1px solid #eee;
+        height: 27px;
+        overflow: hidden;
+        padding: 0 8px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .empty {
+        color: #666;
+        padding: 24px 16px;
+        text-align: center;
+      }
+      .empty strong {
+        display: block;
+        color: #333;
+        font-size: 13px;
+        margin-bottom: 2px;
+      }
+      .history td:nth-child(1),
+      .history td:nth-child(2) {
+        color: #666;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wireframe">
+      <p class="note">Structure only: grey primitives, no product tokens or components.</p>
+
+      <section class="frame page-head">
+        <div>
+          <p class="eyebrow">ISSUES</p>
+          <h1>Watchdog</h1>
+        </div>
+        <p class="meta">GitHub read ok · Last read 14:02:48</p>
+      </section>
+
+      <section class="frame">
+        <div class="frame__head">
+          <span class="frame__title">Newest cycle</span>
+          <span class="meta">2m ago</span>
+        </div>
+        <div class="verdict">
+          <span class="pill">filed</span>
+          <span>filed 2 issue(s)</span>
+        </div>
+        <div class="facts">
+          <span class="fact"><span>STARTED</span>Oct 28, 14:00:00</span>
+          <span class="fact"><span>FINDINGS</span>2</span>
+          <span class="fact"><span>PENDING FILINGS</span>1</span>
+        </div>
+      </section>
+
+      <div class="body">
+        <section class="frame">
+          <div class="frame__head">
+            <span class="frame__title">Filed issues</span>
+            <span class="meta">12 filed · 0 pending filing</span>
+          </div>
+          <table>
+            <thead>
+              <tr><th>ISSUE</th><th>CATEGORY</th><th>FILED</th><th>STATE</th><th>VERSION</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>[watchdog] server-error: Synthetic error A</td>
+                <td>server-error</td>
+                <td>Oct 28, 12:00:00</td>
+                <td><span class="pill">pending</span></td>
+                <td>—</td>
+              </tr>
+              <tr>
+                <td>[watchdog] update-error: release check failed</td>
+                <td>update-error</td>
+                <td>Oct 28, 11:00:00</td>
+                <td><span class="pill">implemented</span></td>
+                <td>v1.0.0</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="frame">
+          <div class="frame__head">
+            <span class="frame__title">Cycle history</span>
+          </div>
+          <table class="history">
+            <thead>
+              <tr><th>STARTED</th><th>ACTION</th><th>ISSUES</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Oct 28, 14:00:00</td>
+                <td><span class="pill">filed</span></td>
+                <td>#901 #902</td>
+              </tr>
+              <tr>
+                <td>Oct 28, 13:50:01</td>
+                <td><span class="pill">duplicate</span></td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </div>
+
+      <div class="body" style="margin-top: 12px">
+        <section class="frame">
+          <div class="frame__head"><span class="frame__title">Filed issues</span></div>
+          <div class="empty">
+            <strong>No issues filed</strong>
+            Findings worth an issue appear here after a cycle.
+          </div>
+        </section>
+        <section class="frame">
+          <div class="frame__head"><span class="frame__title">Cycle history</span></div>
+          <div class="empty">
+            <strong>No cycles yet</strong>
+            The watchdog records one cycle every ten minutes.
+          </div>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

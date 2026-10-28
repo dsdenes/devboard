@@ -426,7 +426,6 @@
   {:else if tab.kind === "adrs"}
     <div class="goal-page">
       <PageHeader
-        eyebrow="Plan"
         title="Decision records"
         testid="adrs-header"
       >
