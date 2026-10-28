@@ -1362,13 +1362,15 @@ it stays the Issues mode's active tab until another Issues page is opened. The p
 `GET /api/watchdog` and sends no command that files, comments, closes, starts, stops, or fixes
 anything.
 
-The page is one framed header, one full-width `watchdog-last-cycle` summary band, and two panels
-under it. The summary leads with the action badge and the reason, then states the exact start, the
-findings, and the pending filings as one compact facts row. The filed-issue table takes the wider
-column on a viewport at least 1501px wide; below that the two panels stack as flexible rows. Below
-1100px the issue `Category` column is hidden before any value is clipped (the category repeats
-inside the generated title); it stays in the DOM. Both panels own their scrolling, so the 100-row
-history never pushes the filed issues below the page.
+The page is one framed header over a body that is two columns while the page container is wider
+than 1300px and one column below that. The primary column stacks the `watchdog-last-cycle` summary
+band over the filed-issue table; the cycle-history panel is the aside. The summary leads with the
+action badge and the reason, then states the exact start, the findings, and the pending filings as
+one compact facts row. Both panels own their scrolling, so the 100-row history never pushes the
+filed issues below the page. In the stacked layout the page scrolls and each list caps its own
+height. When the primary column is narrower than 900px the issue `Category`, `Filed`, and
+`Version` columns are hidden before any value is clipped (the category repeats inside the generated
+title); they stay in the DOM.
 
 `watchdog-last-cycle` is the newest cycle from `latest.json`: `watchdog-last-cycle-at` (a `<time>`,
 or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findings`,
@@ -1376,15 +1378,16 @@ or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findi
 panel's `watchdog-last-age` shows that cycle's age.
 
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
-first, capped at the newest 100 directories. Its table labels the three columns `Started`, `Action`,
-and `Issues`, and its header sticks while the panel scrolls. Every `watchdog-cycle` row carries
-`data-action` and renders `watchdog-cycle-at`, `watchdog-cycle-action`, and, only when the cycle's
-findings map to a filed issue, a `watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to
-those GitHub issues. Each anchor reads `#<number>` and opens in a new tab; the row repeats no issue
-and keeps the finding order. A cycle row renders no window interval, finding count, or reason. A
-run directory whose `report.json` is missing or unparsable is skipped without hiding the other
-rows. With no run directory at all, the `latest.json` cycle is the single row; with no cycle
-anywhere, `watchdog-cycles-empty` renders `No cycles yet` and the ten-minute cadence.
+first, capped at the newest 100 directories. Its rows are three tracks — the `Started` clock, the
+`Action` badge, and the `Issues` links — with no table header; the order and the badges name the
+columns. Every `watchdog-cycle` row carries `data-action` and renders `watchdog-cycle-at`,
+`watchdog-cycle-action`, and, only when the cycle's findings map to a filed issue, a
+`watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to those GitHub issues. Each
+anchor reads `#<number>` and opens in a new tab; the row repeats no issue and keeps the finding
+order. A cycle row renders no window interval, finding count, or reason. A run directory whose
+`report.json` is missing or unparsable is skipped without hiding the other rows. With no run
+directory at all, the `latest.json` cycle is the single row; with no cycle anywhere,
+`watchdog-cycles-empty` renders `No cycle has run yet.`
 
 `watchdog-issues` lists every ledger entry whose disposition is `filed:<url>`, newest `filedAt`
 first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `data-state`, and
@@ -1392,7 +1395,8 @@ first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `da
 `[watchdog] <category>: <line>`), `watchdog-issue-category`, `watchdog-issue-filed` (a `<time>`),
 `watchdog-issue-state`, and `watchdog-issue-version` (the tag, or `—`). A pending-only fingerprint
 is counted in `watchdog-last-pending` and never becomes a row; `watchdog-issues-empty` renders
-when nothing is filed. `watchdog-issues-count` summarizes the rows and pending filings.
+when nothing is filed. `watchdog-issues-count` summarizes the filed rows only; the pending count
+appears once in `watchdog-last-pending`.
 
 The server prints `watchdog-issue-state` as `pending` for an open issue and `implemented` for a
 closed one, whatever its `stateReason`; a reopened issue returns to `pending` within one refresh
@@ -1652,7 +1656,7 @@ lifecycle and the running-agent count in its title and still opens Issues mode.
 
 ## Draft goals and proposed goals
 
-The Issues sidebar carries a fourth entry after Runs: `Draft goals`, with `data-command="open.issues.drafts"`
+The Issues sidebar carries `Draft goals` after `Issues`, with `data-command="open.issues.drafts"`
 and `data-testid="open-issues-drafts"`. It trails the number of listed drafts, its accessible
 name names the Issues mode and the `Alt+2` shortcut, and the command palette lists it under the
 same command id. Opening it renders `data-testid="issues-drafts"`: every regular `.md` file
@@ -1742,8 +1746,9 @@ agent leaves the queue on the next poll.
 
 ## Auto Scout
 
-The Issues sidebar lists `Overview`, `Auto Scout`, `Issues`, `Runs`, and then `Draft goals`
-in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`,
+The Issues sidebar lists `Overview`, `Auto Scout`, `Watchdog`, `Issues`, and then `Draft goals`
+in that order; it carries no `Runs` entry, and the command palette opens that tab. Auto Scout
+(`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`,
 palette `Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its
 tab, or reloading the dashboard never starts a worker and never files an issue: only
 `data-testid="scout-start"` starts the worker, and that control becomes

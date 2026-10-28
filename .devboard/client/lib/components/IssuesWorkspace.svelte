@@ -130,7 +130,7 @@
     <header class="issues-overview__header">
       <div>
         <h1 class="issues-overview__title">Issue automation</h1>
-        <p class="issues-overview__repo mono" data-testid="issues-repo">
+        <p class="issues-overview__repo mono" data-testid="issues-repo" title={issues.repoLabel}>
           {issues.repoLabel}
         </p>
       </div>
@@ -461,7 +461,7 @@
     <header class="issues-overview__header">
       <div>
         <h1 class="issues-overview__title">Open issues</h1>
-        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
+        <p class="issues-overview__repo mono" title={issues.repoLabel}>{issues.repoLabel}</p>
       </div>
       <span class="badge" data-tone={statusTone("pending")}>{issues.pending} pending</span>
     </header>
@@ -523,7 +523,7 @@
     <header class="issues-overview__header">
       <div>
         <h1 class="issues-overview__title">Runs</h1>
-        <p class="issues-overview__repo mono">{issues.repoLabel}</p>
+        <p class="issues-overview__repo mono" title={issues.repoLabel}>{issues.repoLabel}</p>
       </div>
     </header>
     <div class="panel">

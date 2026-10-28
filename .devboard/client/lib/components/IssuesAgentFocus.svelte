@@ -47,8 +47,8 @@
   <header class="issues-overview__header">
     <div>
       <p class="muted">Issues · agent</p>
-      <h1 class="issues-overview__title">{tab.title}</h1>
-      <p class="issues-overview__repo mono">{issues.repoLabel}</p>
+      <h1 class="issues-overview__title" title={tab.title}>{tab.title}</h1>
+      <p class="issues-overview__repo mono" title={issues.repoLabel}>{issues.repoLabel}</p>
     </div>
     <span class="badge" data-tone={statusTone(status)} data-testid="issues-agent-focus-status">
       {status}
