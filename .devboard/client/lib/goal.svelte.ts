@@ -233,7 +233,7 @@ export class GoalStore {
     return this.skills.length > 0;
   }
 
-  selectSkill(name: string): void {
+  selectSkill(name: string | null): void {
     this.selectedSkill = name;
   }
 
