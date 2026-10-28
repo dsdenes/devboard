@@ -3,6 +3,7 @@ import { notifications } from "./notifications.svelte";
 import type {
   GoalDraftDetail,
   GoalDraftRun,
+  GoalDraftStatus,
   GoalDraftSummary,
   IssuesActivityEntry,
   IssuesAgent,
@@ -99,10 +100,13 @@ export class IssuesStore {
   closing = $state<number[]>([]);
 
   drafts = $state<GoalDraftSummary[]>([]);
-  draftRun = $state<GoalDraftRun | null>(null);
+  /** One elaboration run per draft path; a path with no entry is idle. */
+  draftRuns = $state<Record<string, GoalDraftRun>>({});
   draft = $state<GoalDraftDetail | null>(null);
   draftPath = $state<string | null>(readDraftPath());
-  draftError = $state<string | null>(null);
+  /** The detail response is only accepted for the path last requested. */
+  private draftRequest: string | null = null;
+  draftErrors = $state<Record<string, string>>({});
   /** The New goal popover's open state and its in-flight submission. */
   draftCreateOpen = $state(false);
   draftCreating = $state(false);
@@ -202,25 +206,35 @@ export class IssuesStore {
     return new Date(Math.min(...times)).toISOString();
   }
 
-  get draftRunning(): boolean {
-    return this.draftRun?.status === "running";
+  draftRunFor(path: string | null): GoalDraftRun | null {
+    return path === null ? null : (this.draftRuns[path] ?? null);
   }
 
-  get draftBusyPath(): string | null {
-    return this.draftRunning ? (this.draftRun?.path ?? null) : null;
+  draftRunning(path: string | null): boolean {
+    return this.draftRunFor(path)?.status === "running";
+  }
+
+  draftWaiting(path: string | null): boolean {
+    return this.draftRunFor(path)?.question !== null &&
+      this.draftRunFor(path)?.question !== undefined;
+  }
+
+  draftState(path: string | null): GoalDraftStatus {
+    return this.draftRunFor(path)?.status ?? "idle";
   }
 
   get draftStatus(): string {
-    return this.draftRun?.status ?? "idle";
+    return this.draftState(this.draftPath);
   }
 
-  /** The stated reason another draft's start control is disabled, or null. */
+  /** The stated reason this draft's own start control is disabled, or null. */
   draftStartBlocker(path: string): string | null {
-    const busy = this.draftBusyPath;
-    if (busy === null) return null;
-    return busy === path
-      ? "This draft is being elaborated."
-      : `An elaboration is running for ${busy}.`;
+    return this.draftRunning(path) ? "This draft is being elaborated." : null;
+  }
+
+  draftErrorFor(path: string | null): string | null {
+    if (path === null) return null;
+    return this.draftErrors[path] ?? this.draftRunFor(path)?.error ?? null;
   }
 
   refreshDrafts(): void {
@@ -230,24 +244,29 @@ export class IssuesStore {
 
   openDraft(path: string): void {
     this.draftPath = path;
+    this.draftRequest = path;
     this.draft = null;
-    this.draftError = null;
+    delete this.draftErrors[path];
     writeDraftPath(path);
     if (connection.open) connection.send({ type: "getGoalDraft", path });
   }
 
   clearDraft(): void {
     this.draftPath = null;
+    this.draftRequest = null;
     this.draft = null;
-    this.draftError = null;
     writeDraftPath(null);
   }
 
-  startDraft(): void {
-    const path = this.draftPath;
-    if (path === null || this.draftRunning) return;
-    this.draftError = null;
+  startDraft(path: string | null = this.draftPath): void {
+    if (path === null || this.draftRunning(path)) return;
+    delete this.draftErrors[path];
     connection.send({ type: "startGoalDraft", path });
+  }
+
+  stopDraft(path: string | null = this.draftPath): void {
+    if (path === null || !this.draftRunning(path)) return;
+    connection.send({ type: "stopGoalDraft", path });
   }
 
   /** Opens the New goal popover; opening it writes nothing. */
@@ -263,17 +282,15 @@ export class IssuesStore {
   }
 
   /**
-   * Writes one context-free draft and starts its elaboration when none runs.
-   * The raw text is posted so the draft carries it verbatim. A busy
-   * elaboration still receives the draft but no start; the operator's next
-   * start is the only way it begins. A failed write keeps the popover open
-   * with the server's error and starts nothing.
+   * Writes one context-free draft and starts its elaboration. There is no
+   * concurrency cap, so another draft's run never prevents the new draft from
+   * starting. A failed write keeps the popover open with the server's error
+   * and starts nothing.
    */
   async createDraft(report: string): Promise<boolean> {
     if (report.trim().length === 0 || this.draftCreating) return false;
     this.draftCreating = true;
     this.draftCreateError = null;
-    const startable = !this.draftRunning;
     try {
       const response = await fetch("/api/goal-proposals", {
         method: "POST",
@@ -295,9 +312,7 @@ export class IssuesStore {
       this.pendingCreatedPath = body.path;
       this.openDraft(body.path);
       this.refreshDrafts();
-      if (startable && connection.open) {
-        connection.send({ type: "startGoalDraft", path: body.path });
-      }
+      this.startDraft(body.path);
       return true;
     } catch (error) {
       this.draftCreateError = error instanceof Error ? error.message : String(error);
@@ -307,15 +322,12 @@ export class IssuesStore {
     }
   }
 
-  stopDraft(): void {
-    if (!this.draftRunning) return;
-    connection.send({ type: "stopGoalDraft" });
-  }
-
   submitDraftAnswer(value: string): void {
-    const question = this.draftRun?.question ?? null;
+    const path = this.draftPath;
+    if (path === null) return;
+    const question = this.draftRunFor(path)?.question ?? null;
     if (question === null || value.trim().length === 0) return;
-    connection.send({ type: "answerGoalDraft", id: question.id, value: value.trim() });
+    connection.send({ type: "answerGoalDraft", path, id: question.id, value: value.trim() });
   }
 
   get canStart(): boolean {
@@ -468,11 +480,43 @@ export class IssuesStore {
         left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
       );
       const known = new Set(drafts.map((draft) => draft.path));
+      if (Array.isArray(message.runs)) {
+        // A full replay is authoritative: a draft the server no longer reports
+        // running must not keep a stale client state after a reconnect.
+        const runs: Record<string, GoalDraftRun> = {};
+        for (const value of message.runs) {
+          if (!isObject(value) || typeof value.status !== "string" || typeof value.path !== "string") {
+            continue;
+          }
+          const run = value as unknown as GoalDraftRun;
+          const path = value.path;
+          runs[path] = {
+            ...run,
+            path,
+            activity: Array.isArray(run.activity) ? run.activity : [],
+            question: (run.question ?? null) as GoalDraftRun["question"],
+          };
+        }
+        this.draftRuns = runs;
+      } else {
+        // A refreshed list without runs keeps live runs and drops vanished ones.
+        const runs: Record<string, GoalDraftRun> = {};
+        for (const [path, run] of Object.entries(this.draftRuns)) {
+          if (known.has(path) || run.status === "running") runs[path] = run;
+        }
+        this.draftRuns = runs;
+      }
+      for (const path of Object.keys(this.draftErrors)) {
+        if (!known.has(path)) delete this.draftErrors[path];
+      }
       const pending = this.pendingCreatedPath;
       if (pending !== null) {
         if (known.has(pending)) {
           this.pendingCreatedPath = null;
-        } else if (this.draftRun?.path === pending && this.draftRun.status !== "running") {
+        } else if (
+          this.draftRuns[pending] !== undefined &&
+          this.draftRuns[pending]?.status !== "running"
+        ) {
           // The draft finished and removed itself before any list confirmed it.
           this.pendingCreatedPath = null;
           this.clearDraft();
@@ -484,32 +528,44 @@ export class IssuesStore {
     }
     if (message.type === "issuesDraftState" && isObject(message.draft)) {
       const run = message.draft as unknown as GoalDraftRun;
-      if (typeof run.status !== "string") return;
-      this.draftRun = {
-        ...run,
-        activity: Array.isArray(run.activity) ? run.activity : [],
-        question: (run.question ?? null) as GoalDraftRun["question"],
+      if (typeof run.status !== "string" || typeof run.path !== "string") return;
+      this.draftRuns = {
+        ...this.draftRuns,
+        [run.path]: {
+          ...run,
+          activity: Array.isArray(run.activity) ? run.activity : [],
+          question: (run.question ?? null) as GoalDraftRun["question"],
+        },
       };
-      if (run.status === "running") this.draftError = null;
+      if (run.status === "running") delete this.draftErrors[run.path];
       return;
     }
     if (message.type === "issuesDraftDetail" && isObject(message.draft)) {
       const draft = message.draft as unknown as GoalDraftDetail;
-      if (typeof draft.path === "string" && typeof draft.text === "string") {
-        this.draft = draft;
-        this.draftPath = draft.path;
-        writeDraftPath(draft.path);
-        this.draftError = null;
-      }
+      if (typeof draft.path !== "string" || typeof draft.text !== "string") return;
+      // A detail for a superseded selection must not replace the open draft.
+      if (this.draftRequest !== null && draft.path !== this.draftRequest) return;
+      this.draft = draft;
+      this.draftPath = draft.path;
+      writeDraftPath(draft.path);
+      delete this.draftErrors[draft.path];
       return;
     }
     if (message.type === "issuesDraftError" && typeof message.message === "string") {
+      const path = typeof message.path === "string" ? message.path : null;
       // A stored path whose draft is gone opens the list instead of an error.
-      if (this.draft === null && this.draftPath !== null && message.message.startsWith("No draft at")) {
+      if (
+        path === this.draftPath &&
+        this.draft === null &&
+        message.message.startsWith("No draft at")
+      ) {
         this.clearDraft();
         return;
       }
-      this.draftError = message.message;
+      if (path !== null) this.draftErrors = { ...this.draftErrors, [path]: message.message };
+      else if (this.draftPath !== null) {
+        this.draftErrors = { ...this.draftErrors, [this.draftPath]: message.message };
+      }
     }
   }
 }
