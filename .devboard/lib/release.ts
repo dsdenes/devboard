@@ -225,6 +225,29 @@ export function isReleaseUnreachable(error: unknown): boolean {
   return failure?.code === "ENOENT" && (message.includes("spawn") || syscall.startsWith("spawn"));
 }
 
+/**
+ * Text the registry or feed prints when it refuses a request because the
+ * client exceeded its request allowance. The feed is reachable and healthy;
+ * the request was refused until the allowance resets, so the cause is outside
+ * the harness and the check is retried as context.
+ */
+const THROTTLED_PATTERNS = [
+  "rate limit exceeded",
+  "secondary rate limit",
+  "rate limited",
+  "abuse detection",
+  "too many requests",
+  "http 429",
+  "status 429",
+  "e429",
+];
+
+/** True when a release check failed because the feed throttled the request. */
+export function isReleaseThrottled(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return THROTTLED_PATTERNS.some((pattern) => message.includes(pattern));
+}
+
 export function tarballName(version: string): string {
   return `${RELEASE_PREFIX}${version}.tgz`;
 }

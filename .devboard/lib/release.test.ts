@@ -18,6 +18,7 @@ import {
   exec,
   installHarnessTarball,
   installRelease,
+  isReleaseThrottled,
   isReleaseUnreachable,
   latestRelease,
   parseReleaseDescription,
@@ -70,6 +71,37 @@ describe("isReleaseUnreachable", () => {
     );
     expect(error).toBeInstanceOf(Error);
     expect(isReleaseUnreachable(error)).toBe(true);
+  });
+});
+
+describe("isReleaseThrottled", () => {
+  test("treats a GitHub request allowance as a throttle", () => {
+    const error = new ReleaseError(
+      "gh api releases/latest failed: gh: API rate limit exceeded for user ID 123850.",
+    );
+    expect(isReleaseThrottled(error)).toBe(true);
+  });
+
+  test("treats an npm 429 as a throttle", () => {
+    const error = new ReleaseError(
+      "npm could not resolve @dsdenes/devboard: npm error 429 Too Many Requests - GET " +
+        "https://registry.npmjs.org/@dsdenes%2fdevboard",
+    );
+    expect(isReleaseThrottled(error)).toBe(true);
+  });
+
+  test("treats a Gitea 429 as a throttle", () => {
+    const error = new ReleaseError(
+      'the release feed answered HTTP 429: {"message":"Too many requests"}',
+    );
+    expect(isReleaseThrottled(error)).toBe(true);
+  });
+
+  test("does not treat an authentication failure or a version as a throttle", () => {
+    expect(isReleaseThrottled(new ReleaseError("gh: HTTP 401: Bad credentials"))).toBe(false);
+    expect(isReleaseThrottled(new ReleaseError("npm returned an unreadable version: 0.1.429"))).toBe(
+      false,
+    );
   });
 });
 

@@ -300,6 +300,33 @@ describe("startUpdater", () => {
     updater.stop();
   });
 
+  test("journals a throttled feed as context, never an update-error", async () => {
+    const prefix = await installedPrefix("0.1.0");
+    const { journal, records } = journalRecorder();
+    const manual = manualSchedule();
+    const throttled =
+      "npm could not resolve @dsdenes/devboard: npm error code E429: 429 Too Many Requests - GET " +
+      "https://registry.npmjs.org/@dsdenes%2fdevboard";
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: "0.1.0",
+      journal,
+      intervalMs: 1000,
+      schedule: manual.schedule,
+      fetchRelease: async () => {
+        throw new Error(throttled);
+      },
+      install: async (info) => info.version,
+    });
+    await manual.fire(0);
+    expect(records).toEqual([["activity", `release check skipped: ${throttled}`]]);
+    // The throttled check still backs off instead of polling at the base interval.
+    expect(manual.delays).toEqual([0, 2000]);
+    updater.stop();
+  });
+
   test("journals an unreadable release description as context, never an update-error", async () => {
     const prefix = await installedPrefix("0.1.0");
     const { journal, records } = journalRecorder();

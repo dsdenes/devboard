@@ -2,6 +2,7 @@ import {
   installRelease,
   installedHarnessVersion,
   isNewerVersion,
+  isReleaseThrottled,
   isReleaseUnreachable,
   latestRelease,
   releaseSource,
@@ -126,11 +127,15 @@ export function startUpdater(options: UpdateOptions): Updater {
     } catch (error) {
       failures += 1;
       const detail = detailOf(error);
-      if (isReleaseUnreachable(error) || error instanceof ReleaseFeedError) {
-        // An offline host, a missing release client, or a feed that answers
-        // with something other than a release description is not a harness
-        // defect: the check backs off like any other failure, but the record
-        // is context, never a watchdog finding.
+      if (
+        isReleaseUnreachable(error) ||
+        isReleaseThrottled(error) ||
+        error instanceof ReleaseFeedError
+      ) {
+        // An offline host, a missing release client, a throttled feed, or a
+        // feed that answers with something other than a release description
+        // is not a harness defect: the check backs off like any other failure,
+        // but the record is context, never a watchdog finding.
         options.journal.write("activity", `release check skipped: ${detail}`);
       } else {
         options.journal.write("update-error", `release check failed: ${detail}`);
