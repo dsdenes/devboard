@@ -10,6 +10,7 @@ import { fileScoutIssue } from "./actions";
 import { takeCommands, type ScoutCommand } from "./control";
 import {
   createScoutGitHub,
+  isGitHubRateLimited,
   shippedVersion,
   type ScoutGitHubClient,
   type ScoutGitHubIssue,
@@ -555,7 +556,10 @@ export class ScoutWorker {
 
   private recordSyncFailure(detail: string): void {
     this.state.sync = { state: "error", at: this.state.sync.at, error: detail };
-    this.state.lastError = detail;
+    // A spent GitHub request budget is environmental and clears itself. The
+    // reason stays in the sync banner, but a rate limit never raises the
+    // global error notification the operator can file as a harness issue.
+    this.state.lastError = isGitHubRateLimited(detail) ? null : detail;
     this.state.notice = `Could not read GitHub: ${detail}`;
     this.state.nextAttemptAt = null;
     this.nextSyncAt = this.clock().getTime() + this.syncMs;
@@ -945,7 +949,9 @@ export class ScoutWorker {
     this.active = undefined;
     this.state.scan = null;
     this.state.newestScanId = active.scanId;
-    this.state.lastError = error;
+    // The scan still failed, but a throttled GitHub read or write is
+    // environmental: it must not raise the global error notification.
+    this.state.lastError = error !== null && isGitHubRateLimited(error) ? null : error;
     this.state.notice = error === null ? this.state.notice : `Scan failed: ${error}`;
     this.state.lifecycle = error === null ? "idle" : "failed";
     const now = this.clock();
