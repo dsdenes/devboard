@@ -4,6 +4,7 @@
   import Trash2 from "lucide-svelte/icons/trash-2";
   import type { WorkspaceTab } from "../layout.svelte";
   import { recordStatusTone } from "../record-status";
+  import { renderSkillDocument, skillBody } from "../skill-document";
   import { statusTone } from "../status-tone";
   import type { AdrRecord, Lane } from "../types";
   import AdrTable from "./AdrTable.svelte";
@@ -32,6 +33,12 @@
     goal.selectedSkill === null
       ? null
       : (goal.skills.find((skill) => skill.name === goal.selectedSkill) ?? null),
+  );
+  const selectedSkillHtml = $derived(
+    selectedSkill?.content === undefined ? "" : renderSkillDocument(selectedSkill.content),
+  );
+  const selectedSkillBodyEmpty = $derived(
+    selectedSkill?.content !== undefined && skillBody(selectedSkill.content).length === 0,
   );
 
   const createGoalTitle = $derived(
@@ -628,7 +635,11 @@
         {/snippet}
       </PageHeader>
 
-      <section class="panel goal-skills" data-testid="skills-overlay">
+      <section
+        class="panel goal-skills"
+        class:goal-skills--with-detail={selectedSkill !== null}
+        data-testid="skills-overlay"
+      >
         <div class="panel__header">
           <h2 class="panel__title">
             Prepared skills <span class="mono" data-testid="skills-count">{goal.skills.length}</span>
@@ -696,11 +707,25 @@
         <section class="panel goal-skill-detail" data-testid="skill-content">
           <div class="panel__header">
             <h2 class="panel__title mono" data-testid="skill-content-name">{selectedSkill.name}</h2>
-            <span class="muted">{selectedSkill.description}</span>
+            <span
+              class="panel__subtitle mono skill__path"
+              title={`.omp/skills/${selectedSkill.name}/SKILL.md`}
+            >
+              .omp/skills/{selectedSkill.name}/SKILL.md
+            </span>
           </div>
           <div class="panel__body">
             {#if selectedSkill.content !== undefined && selectedSkill.content.length > 0}
-              <pre class="skill__content mono" data-testid="skill-content-text">{selectedSkill.content}</pre>
+              {#if selectedSkillHtml.length > 0}
+                <div class="skill__document" data-testid="skill-content-text">
+                  {@html selectedSkillHtml}
+                </div>
+              {:else}
+                <p class="empty" style="padding: 0;">
+                  This skill's file carries only preparation metadata; there are no instructions to
+                  read.
+                </p>
+              {/if}
             {:else}
               <p class="empty" style="padding: 0;">
                 This skill has no file on disk; prepare the skills again to write it.

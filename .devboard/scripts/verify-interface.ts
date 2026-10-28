@@ -1870,14 +1870,36 @@ try {
     };
   })()`);
   check(goalSkillSurface.selected === clickedSkill && goalSkillSurface.current === "true", "clicking a prepared skill does not select it", { clickedSkill, goalSkillSurface });
-  const skillDocument = await page.eval<{ name: string; text: string }>(`(() => ({
-    name: document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() ?? "",
-    text: document.querySelector('[data-testid="skill-content-text"]')?.textContent?.trim() ?? "",
-  }))()`);
+  const skillDocument = await page.eval<{
+    name: string;
+    text: string;
+    blocks: number;
+    path: string;
+    frontmatter: boolean;
+  }>(`(() => {
+    const doc = document.querySelector('[data-testid="skill-content-text"]');
+    return {
+      name: document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() ?? "",
+      text: doc?.textContent?.trim() ?? "",
+      blocks: doc?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
+      path: document.querySelector('.skill__path')?.textContent?.trim() ?? "",
+      frontmatter: (doc?.textContent ?? "").includes("devboard-managed"),
+    };
+  })()`);
   check(
     skillDocument.name === clickedSkill && skillDocument.text.length > 0,
     "selecting a prepared skill does not open its document",
     { clickedSkill, skillDocument },
+  );
+  check(
+    skillDocument.blocks > 0 && !skillDocument.frontmatter,
+    "the skill document is not rendered as a document without its frontmatter",
+    skillDocument,
+  );
+  check(
+    skillDocument.path === `.omp/skills/${clickedSkill}/SKILL.md`,
+    "the skill document does not name its file",
+    skillDocument,
   );
   const deletion = await page.eval<{ rows: number; controls: string[]; discoverControls: number }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="skill"]')];
