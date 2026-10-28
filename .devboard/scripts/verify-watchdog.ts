@@ -195,7 +195,6 @@ interface RenderedCycle {
   window: string;
   actionText: string;
   findings: string;
-  reason: string;
 }
 
 interface RenderedIssue {
@@ -224,7 +223,6 @@ function renderedCycles(value: unknown): RenderedCycle[] | undefined {
       window: String(record.window ?? ""),
       actionText: String(record.actionText ?? ""),
       findings: String(record.findings ?? ""),
-      reason: String(record.reason ?? ""),
     });
   }
   return cycles;
@@ -259,7 +257,6 @@ const readCycles = `(() => [...document.querySelectorAll('[data-testid="watchdog
   window: row.querySelector('[data-testid="watchdog-cycle-window"]')?.textContent?.trim() ?? '',
   actionText: row.querySelector('[data-testid="watchdog-cycle-action"]')?.textContent?.trim() ?? '',
   findings: row.querySelector('[data-testid="watchdog-cycle-findings"]')?.textContent?.trim() ?? '',
-  reason: row.querySelector('[data-testid="watchdog-cycle-reason"]')?.textContent?.trim() ?? '',
 })))()`;
 
 const readIssues = `(() => [...document.querySelectorAll('[data-testid="watchdog-issue"]')].map((row) => ({
@@ -599,8 +596,12 @@ try {
         seededCycles[2]?.findings === "2",
       "a cycle row carries the wrong finding count",
     );
-    assertTrue(seededCycles[1]?.reason === "", "a missing cycle reason renders text");
-    assertTrue(seededCycles[2]?.reason === "gh unavailable", "a cycle reason is missing");
+    assertTrue(
+      !(await devtools.evaluate(
+        `document.querySelector('[data-testid="watchdog-cycle-reason"]') !== null`,
+      )),
+      "a cycle row still renders a reason",
+    );
     console.log("PASS watchdog-cycles");
 
     const localIssues = await waitFor(

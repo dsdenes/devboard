@@ -6,6 +6,7 @@ import {
   CATEGORIES,
   EXCLUDED_ROOTS,
   SIGNIFICANCE_THRESHOLD,
+  recommendationsPath,
   requestPath,
   scanDirectory,
   scansDirectory,
@@ -93,6 +94,25 @@ export function writeRequest(directory: string, request: ScanRequest): string {
 
 export function promptFor(directory: string): string {
   return `${SCAN_PROMPT} ${directory}`;
+}
+
+/**
+ * The one correction turn a scan gets after its answer is rejected. It quotes
+ * the rejection and restates the two output rules the model most often
+ * misses, so a fixable mistake costs a turn instead of the whole finding.
+ */
+export function repairPrompt(directory: string, rejection: string): string {
+  return [
+    `Auto Scout rejected the scan answer at ${recommendationsPath(directory)}: ${rejection}`,
+    "",
+    `Rewrite ${recommendationsPath(directory)} so it satisfies the scan prompt's output ` +
+      "contract, changing only what the rejection names.",
+    `Every \`evidence[].path\` and every \`files\` entry is relative to the \`repositoryPath\` ` +
+      `in ${requestPath(directory)}: a file nested under a directory keeps those leading ` +
+      "segments in its path. Each cited path must name an existing regular file and each " +
+      "line span must lie inside that file.",
+    "Never modify the repository and write nothing else. Finish in this turn.",
+  ].join("\n");
 }
 
 /** The `# heading` of every draft under `<REPO_DIR>/.devboard/goal-proposals/`. */

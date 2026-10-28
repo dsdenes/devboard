@@ -1288,8 +1288,8 @@ panel's `watchdog-last-age` shows that cycle's age.
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
 first, capped at the newest 100 directories. Every `watchdog-cycle` row carries `data-action` and
 renders `watchdog-cycle-at`, `watchdog-cycle-window` (window start and end),
-`watchdog-cycle-action`, `watchdog-cycle-findings`, and `watchdog-cycle-reason` (empty when the
-report has none). A run directory whose `report.json` is missing or unparsable is skipped without
+`watchdog-cycle-action`, and `watchdog-cycle-findings`; a cycle's reason appears only in the
+newest-cycle panel. A run directory whose `report.json` is missing or unparsable is skipped without
 hiding the other rows. With no run directory at all, the `latest.json` cycle is the single row;
 with no cycle anywhere, `watchdog-cycles-empty` is rendered.
 
@@ -1697,8 +1697,8 @@ Every recommendation carries an integer `significance` from 1 to 5 and a non-emp
 impact — a reproducible defect, a real failure mode, or a measured structural cost; polishing
 code that is already correct is at most 2. Items scoring below 4 are dropped before filing and
 recorded in scan activity. A missing or out-of-range score, or a missing reason, fails the whole
-scan atomically and files nothing. Each filed issue body carries `## Significance` with `<n>/5`
-and the reason.
+scan and files nothing unless the correction turn fixes it. Each filed issue body carries
+`## Significance` with `<n>/5` and the reason.
 
 A filed issue carries the exact `scout` label (created first when absent), the recommendation's
 title, and a body with category, summary, impact, significance, evidence, proposed change, files,
@@ -1786,13 +1786,15 @@ title of at most 200 characters; a summary, proposed change, significance from 1
 non-empty significance reason, and at least one acceptance criterion; at least one evidence entry
 whose repository-relative path resolves to an existing regular file inside `REPO_DIR` and outside
 `.git/`, `node_modules/`, `dist/`, `.worktree/`, and `.tmp/`, with an in-range `N` or `N-M` span;
-and a non-empty file list whose entries all appear in the evidence. A malformed item, duplicate
-id, path escape, over-count, missing score, or out-of-range score fails the whole answer
-atomically, naming the offending item, so nothing is filed. An item's id is the first 16 hex
-characters of SHA-256 over its category, sorted evidence paths, and normalized title, so the same
-finding keeps its id. Items below significance 4 and duplicate titles are dropped before filing
-and recorded in the activity. The worker never edits source, tests, configuration, a goal, a
-draft, a branch, or a pull request.
+and a non-empty file list whose entries all appear in the evidence. A rejected answer is sent back
+to the same agent session once, with the rejection text and the root-relative path rule, while the
+scan's own deadline still bounds the turn; a repaired file is validated again and filed normally.
+A malformed item, duplicate id, path escape, over-count, missing score, or out-of-range score that
+survives the correction turn fails the whole answer atomically, naming the offending item, so
+nothing is filed. An item's id is the first 16 hex characters of SHA-256 over its category, sorted
+evidence paths, and normalized title, so the same finding keeps its id. Items below significance
+4 and duplicate titles are dropped before filing and recorded in the activity. The worker never
+edits source, tests, configuration, a goal, a draft, a branch, or a pull request.
 
 ## Report, remove, or redesign a UI element
 
