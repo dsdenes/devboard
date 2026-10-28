@@ -138,6 +138,8 @@ const discoverSignificance = argument("discover-significance") ?? "";
 const discoverMissingArtifact = process.argv.includes("--discover-missing-artifact");
 const discoverExtraArtifact = process.argv.includes("--discover-extra-artifact");
 const discoverWriteOutside = process.argv.includes("--discover-write-outside");
+/** Deletes the crawl root, simulating a checkout removed by another process. */
+const discoverRemoveRoot = process.argv.includes("--discover-remove-root");
 const discoverError = process.argv.includes("--discover-error");
 const discoverNoExit = process.argv.includes("--discover-no-exit");
 
@@ -1416,6 +1418,11 @@ async function runDiscover(staging: string) {
   if (discoverError) {
     stream("Crawl failed while reading manifests");
     process.exit(1);
+  }
+  if (discoverRemoveRoot) {
+    stream("The checkout is gone");
+    rmSync(process.cwd(), { recursive: true, force: true });
+    return;
   }
 
   mkdirSync(staging, { recursive: true });

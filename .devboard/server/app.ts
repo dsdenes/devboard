@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -43,6 +43,7 @@ import { openJournal, type Journal, type JournalKind } from "./journal";
 import {
   DISCOVER_SKILLS,
   artifactsStale,
+  claimRemoteDirectory,
   confirmGlossaryTerm,
   declaredCommandAliases,
   dependencyRepositories,
@@ -55,6 +56,7 @@ import {
   publishStaged,
   readArtifacts,
   readRetainedProject,
+  releaseRemoteDirectory,
   rejectGlossaryTerm,
   remoteCloneName,
   remoteCloneRequest,
@@ -1705,6 +1707,7 @@ export function createApp(options: AppOptions) {
     if (checkout === null) return;
     try {
       rmSync(checkout.dir, { recursive: true, force: true });
+      releaseRemoteDirectory(checkout.dir);
     } catch {
       // The next start removes a checkout that cannot be removed.
     }
@@ -2462,6 +2465,7 @@ export function createApp(options: AppOptions) {
     const staging = join(remoteRoot, `.staging-${runId}`);
     try {
       mkdirSync(remoteRoot, { recursive: true });
+      claimRemoteDirectory(staging);
     } catch (error) {
       discoverFailure(
         ws,
@@ -2494,6 +2498,7 @@ export function createApp(options: AppOptions) {
       discoverCloning = null;
       try {
         rmSync(staging, { recursive: true, force: true });
+        releaseRemoteDirectory(staging);
       } catch {
         // The next start removes a staging directory that cannot be removed.
       }
@@ -2636,6 +2641,14 @@ export function createApp(options: AppOptions) {
       return;
     }
     if (discoverRun !== run || request !== discoverRequest) return;
+
+    if (!existsSync(root)) {
+      failDiscover(
+        run,
+        "The Discover checkout was removed while the crawl was running, so nothing was published.",
+      );
+      return;
+    }
 
     try {
       const facts = hostFacts(root);

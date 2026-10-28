@@ -291,6 +291,52 @@ export const REMOTE_RECORD_NAME = "project.json";
 /** Every transient directory a run creates starts with this prefix. */
 export const REMOTE_TRANSIENT_PREFIX = ".staging-";
 
+/**
+ * The owner marker a live dashboard writes beside each transient directory it
+ * creates. Several dashboards may share one state directory, so startup cleanup
+ * must never delete a transient that a live process still owns.
+ */
+export const REMOTE_OWNER_SUFFIX = ".owner";
+
+function ownerMarker(directory: string): string {
+  return `${directory}${REMOTE_OWNER_SUFFIX}`;
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function liveOwner(directory: string): boolean {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(ownerMarker(directory), "utf8"));
+  } catch {
+    return false;
+  }
+  if (typeof raw !== "object" || raw === null) return false;
+  const pid = (raw as Record<string, unknown>).pid;
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  // This process claims only after startup cleanup, so its own marker names a
+  // predecessor whose dashboard is already gone.
+  if (pid === process.pid) return false;
+  return processAlive(pid);
+}
+
+/** Claims a transient directory for this process before it is created. */
+export function claimRemoteDirectory(directory: string): void {
+  writeFileSync(ownerMarker(directory), `${JSON.stringify({ pid: process.pid })}\n`);
+}
+
+/** Drops the claim beside a transient directory this process finished with. */
+export function releaseRemoteDirectory(directory: string): void {
+  rmSync(ownerMarker(directory), { force: true });
+}
+
 /** What a retained project keeps after the run's checkout is gone. */
 export interface RetainedRemoteProject {
   url: string;
@@ -389,6 +435,8 @@ export function retainRemoteProject(
   const previous = join(scratchRoot, `${REMOTE_TRANSIENT_PREFIX}previous-${runId}`);
   const destination = remoteProjectDirectory(scratchRoot, record.owner, record.repo);
   try {
+    claimRemoteDirectory(staging);
+    claimRemoteDirectory(previous);
     rmSync(staging, { recursive: true, force: true });
     mkdirSync(join(staging, ".omp"), { recursive: true });
     cpSync(discoverSource, join(staging, ".omp", "discover"), { recursive: true });
@@ -418,6 +466,9 @@ export function retainRemoteProject(
       // A staging directory that cannot be removed is removed by the next start.
     }
     return error instanceof Error ? error.message : String(error);
+  } finally {
+    releaseRemoteDirectory(staging);
+    releaseRemoteDirectory(previous);
   }
 }
 
@@ -508,18 +559,34 @@ export function cleanupRemoteScratch(scratchRoot: string): void {
     return;
   }
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const directory = join(scratchRoot, entry.name);
+    const path = join(scratchRoot, entry.name);
+    if (!entry.isDirectory()) {
+      // A claim whose directory is gone belongs to no live run.
+      if (entry.name.endsWith(REMOTE_OWNER_SUFFIX)) {
+        const claimed = path.slice(0, -REMOTE_OWNER_SUFFIX.length);
+        if (!existsSync(claimed)) {
+          try {
+            rmSync(path, { force: true });
+          } catch {
+            // A claim that cannot be removed is left for the next start.
+          }
+        }
+      }
+      continue;
+    }
     const transient = entry.name.startsWith(REMOTE_TRANSIENT_PREFIX);
     let checkout = false;
     try {
-      checkout = existsSync(join(directory, ".git"));
+      checkout = existsSync(join(path, ".git"));
     } catch {
       checkout = false;
     }
     if (!transient && !checkout) continue;
+    // Another dashboard sharing this state directory may still be running.
+    if (liveOwner(path)) continue;
     try {
-      rmSync(directory, { recursive: true, force: true });
+      rmSync(path, { recursive: true, force: true });
+      rmSync(ownerMarker(path), { force: true });
     } catch {
       // A directory that cannot be removed is left for the next start.
     }

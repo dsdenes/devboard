@@ -13,7 +13,14 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
-import { declaredCommandAliases } from "./discover";
+import {
+  claimRemoteDirectory,
+  cleanupRemoteScratch,
+  declaredCommandAliases,
+  releaseRemoteDirectory,
+  REMOTE_OWNER_SUFFIX,
+  REMOTE_TRANSIENT_PREFIX,
+} from "./discover";
 
 /**
  * Discover Mode's deterministic contract. It drives the app over its WebSocket
@@ -1497,6 +1504,51 @@ describe("declared command aliases", () => {
     expect(declaredCommandAliases(root)).toEqual([]);
     writeFileSync(join(root, "package.json"), `${JSON.stringify({ scripts: [] })}\n`);
     expect(declaredCommandAliases(root)).toEqual([]);
+  });
+});
+
+describe("remote scratch cleanup", () => {
+  test("keeps a transient directory that a live dashboard still owns", () => {
+    const root = testDirectory("scratch-owner-live");
+    const live = join(root, `${REMOTE_TRANSIENT_PREFIX}run-live`);
+    const stale = join(root, `${REMOTE_TRANSIENT_PREFIX}run-stale`);
+    mkdirSync(join(live, ".omp"), { recursive: true });
+    mkdirSync(join(stale, ".omp"), { recursive: true });
+    const holder = Bun.spawn({ cmd: ["sleep", "30"], stdout: "ignore", stderr: "ignore" });
+    try {
+      writeFileSync(`${live}${REMOTE_OWNER_SUFFIX}`, `${JSON.stringify({ pid: holder.pid })}\n`);
+      writeFileSync(`${stale}${REMOTE_OWNER_SUFFIX}`, `${JSON.stringify({ pid: 2 ** 30 })}\n`);
+
+      cleanupRemoteScratch(root);
+
+      expect(existsSync(live)).toBe(true);
+      expect(existsSync(`${live}${REMOTE_OWNER_SUFFIX}`)).toBe(true);
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(`${stale}${REMOTE_OWNER_SUFFIX}`)).toBe(false);
+    } finally {
+      holder.kill();
+    }
+  });
+
+  test("removes this process's predecessor, an unclaimed checkout, and an orphan claim", () => {
+    const root = testDirectory("scratch-unowned");
+    const predecessor = join(root, `${REMOTE_TRANSIENT_PREFIX}run-predecessor`);
+    const checkout = join(root, `${REMOTE_TRANSIENT_PREFIX}run-orphan`);
+    const retained = join(root, "owner-repo");
+    const orphanClaim = join(root, `${REMOTE_TRANSIENT_PREFIX}run-gone${REMOTE_OWNER_SUFFIX}`);
+    mkdirSync(join(predecessor, ".omp"), { recursive: true });
+    claimRemoteDirectory(predecessor);
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+    mkdirSync(join(retained, ".omp", "discover"), { recursive: true });
+    writeFileSync(orphanClaim, `${JSON.stringify({ pid: 2 ** 30 })}\n`);
+
+    cleanupRemoteScratch(root);
+
+    expect(existsSync(predecessor)).toBe(false);
+    expect(existsSync(`${predecessor}${REMOTE_OWNER_SUFFIX}`)).toBe(false);
+    expect(existsSync(checkout)).toBe(false);
+    expect(existsSync(retained)).toBe(true);
+    expect(existsSync(orphanClaim)).toBe(false);
   });
 });
 

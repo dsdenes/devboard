@@ -588,14 +588,16 @@ optional meta row, and a right-aligned action group. The Overview frame holds th
 `owner/name` from its GitHub remote (falling back to the directory name when no remote names one;
 the full path stays in the tooltip), the one-line definition, the discovery date, and the single
 filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
-report it. Below the frame, an active run region appears only while a run exists: a tinted header
-with a `Discover` eyebrow, `Run in progress`, the run identifier as a code chip, `Started 3 minutes
-ago`, and Stop, followed by the activity terminal and its ownership note. A queued question region
-follows while a question waits. The sheet
-follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and Testing in the
-main column on the right, and Bounded contexts below them. The manual-testing strip is the last
-region of the page, so a source checkout never pushes it above the project identity. An error,
-an interrupted-run notice, and a stop notice render above the page in one notice stack.
+report it. While a run exists, every Discover page carries a run tag above its notice stack: a
+status dot, `Discover run in progress`, the age, the run identifier as a code chip, the latest
+activity line, and Stop. Below the Overview frame, the active run region adds the full activity
+terminal: a tinted header with `Run in progress`, the run identifier, `Started 3 minutes ago`, and
+Stop, followed by the terminal and its ownership note. A queued question region follows while a
+question waits. The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left,
+Commands and Testing in the main column on the right, and Bounded contexts below them. The
+manual-testing strip is the last region of the page, so a source checkout never pushes it above
+the project identity. An error, an interrupted-run notice, and a stop notice render above the page
+in one notice stack.
 
 The Glossary row is a plain section link: it has no disclosure control and no nested submenu, so
 individual terms are never repeated as sidebar menu items. A term opens from its row on the
@@ -956,10 +958,14 @@ Durable state stores the active target as URL, owner, and repository only. A rep
 it only while `<owner>-<repo>` holds a readable `project.json` and both `.omp` trees, without a
 clone or a re-crawl; otherwise it starts on the host target, drops that one stored target, keeps
 every other retained entry, and sends one `discoverError` naming the missing project to the next
-client. Startup removes every `.staging-*` directory and any leftover directory containing `.git`,
-so a restart never resumes a run and never deletes a retained project. A restart during a remote
+client. A transient directory carries an owner marker naming the dashboard that created it.
+Startup removes every unclaimed `.staging-*` directory and every unclaimed leftover directory
+containing `.git`, so a restart never resumes a run and never deletes a retained project or a
+checkout that another dashboard sharing the state directory still owns. A restart during a remote
 crawl interrupts it as a host run does: the recorded child ends, the checkout's staging is removed,
-its retained snapshot stays, and nothing is published or resumed.
+its retained snapshot stays, and nothing is published or resumed. A checkout removed while its
+crawl runs fails that run with one `discoverError` naming the removed checkout and publishes
+nothing.
 
 The protocol adds `{ "type": "discoverRemote", "url": string }`,
 `{ "type": "switchDiscoverRemote", "url": string }`,

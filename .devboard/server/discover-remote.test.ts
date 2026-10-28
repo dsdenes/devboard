@@ -1148,6 +1148,39 @@ describe("discover remote target", () => {
   );
 
   test(
+    "reports a checkout removed during the crawl and leaves no transient behind",
+    async () => {
+      const fixture = createFixture("removed-checkout");
+      const clones = cloneHarness({ source: createSourceRepository("removed-checkout-source") });
+      const { server, url } = startServer({
+        fixture,
+        clone: clones,
+        stub: ["--discover", "--discover-remove-root"],
+      });
+      const client = await connect(url);
+      try {
+        client.take((message) => message.type === "discoverState");
+        const started = client.waitNext((message) => message.type === "discoverStarted");
+        const failed = client.waitNext((message) => message.type === "discoverError");
+        const stopped = client.waitNext((message) => message.type === "discoverStopped");
+        client.send({ type: "discoverRemote", url: "https://github.com/octocat/Hello-World" });
+        await started;
+        expect(String((await failed).message)).toContain(
+          "checkout was removed while the crawl was running",
+        );
+        expect((await stopped).completed).toBe(false);
+        expect(scratchEntries(fixture)).toEqual([]);
+        expect((await discoverState(client)).retained).toEqual([]);
+        expect((await discoverState(client)).target).toEqual({ kind: "host" });
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    90_000,
+  );
+
+  test(
     "retains bytes while clearing, and removes exactly one project",
     async () => {
       const fixture = createFixture("remove");
