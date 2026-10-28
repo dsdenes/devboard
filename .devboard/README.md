@@ -588,9 +588,11 @@ optional meta row, and a right-aligned action group. The Overview frame holds th
 `owner/name` from its GitHub remote (falling back to the directory name when no remote names one;
 the full path stays in the tooltip), the one-line definition, the discovery date, and the single
 filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
-report it. Below the frame, an active run region appears only while a run exists: a tinted header
-with a `Discover` eyebrow, `Run in progress`, `Started 3 minutes ago`, and Stop, followed by the
-activity terminal and its ownership note. A queued question region follows while a question waits.
+report it. While a run exists, every Discover page carries a run tag above its notice stack: a
+status dot, `Discover run in progress`, the age, the run identifier as a code chip, the latest
+activity line, and Stop. Below the Overview frame, the active run region adds the full activity
+terminal: a tinted header with `Run in progress`, `Started 3 minutes ago`, and Stop, followed by
+the terminal. A queued question region follows while a question waits.
 The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and
 Testing in the main column on the right, and Bounded contexts below them. The manual-testing strip
 is the last region of the page, so a source checkout never pushes it above the project identity. An
