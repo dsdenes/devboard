@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -291,6 +292,99 @@ export const REMOTE_RECORD_NAME = "project.json";
 /** Every transient directory a run creates starts with this prefix. */
 export const REMOTE_TRANSIENT_PREFIX = ".staging-";
 
+/**
+ * Live claims on transient directories, one `<name>.json` file per claim. A
+ * dashboard's startup hygiene never removes a transient another live dashboard
+ * still owns; without the claim, a second dashboard sharing `STATE_DIR` would
+ * delete the checkout of a crawl that is still running.
+ */
+const RUN_CLAIM_DIRECTORY = ".runs";
+
+interface RunClaim {
+  /** Process that owns the transient directory. */
+  pid: number;
+  /** ISO time the claim was written, for diagnosis only. */
+  claimedAt: string;
+}
+
+function claimPath(scratchRoot: string, name: string): string {
+  return join(scratchRoot, RUN_CLAIM_DIRECTORY, `${name}.json`);
+}
+
+/** True while the claim's owner process still runs; an unreadable claim is dead. */
+function claimAlive(scratchRoot: string, name: string): boolean {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(claimPath(scratchRoot, name), "utf8"));
+  } catch {
+    return false;
+  }
+  const pid = (raw as Partial<RunClaim> | null)?.pid;
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // Only a vanished process means the claim is dead; any other failure is
+    // treated as live, so a checkout is never removed on a guess.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Records this process as the owner of one transient directory. Returns false
+ * when the claim cannot be written; the caller then refuses to create the
+ * transient rather than leave it exposed to another dashboard's cleanup.
+ */
+export function claimScratchEntry(scratchRoot: string, name: string): boolean {
+  const claim: RunClaim = { pid: process.pid, claimedAt: new Date().toISOString() };
+  try {
+    mkdirSync(join(scratchRoot, RUN_CLAIM_DIRECTORY), { recursive: true });
+    writeFileSync(claimPath(scratchRoot, name), `${JSON.stringify(claim)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Drops one claim and the claim directory once it is empty. */
+export function releaseScratchEntry(scratchRoot: string, name: string): void {
+  try {
+    rmSync(claimPath(scratchRoot, name), { force: true });
+    rmdirSync(join(scratchRoot, RUN_CLAIM_DIRECTORY));
+  } catch {
+    // A claim that cannot be removed is dropped by the next start, and a
+    // directory still holding another run's claim stays.
+  }
+}
+
+/** Removes claims whose owner is gone, then the empty claim directory. */
+function pruneScratchClaims(scratchRoot: string): void {
+  const directory = join(scratchRoot, RUN_CLAIM_DIRECTORY);
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const name = entry.name.slice(0, -".json".length);
+    if (claimAlive(scratchRoot, name)) continue;
+    try {
+      rmSync(join(directory, entry.name), { force: true });
+    } catch {
+      // A claim that cannot be removed is retried by the next start.
+    }
+  }
+  try {
+    rmdirSync(directory);
+  } catch {
+    // The directory stays only while it still holds a live or stuck claim.
+  }
+}
+
 /** What a retained project keeps after the run's checkout is gone. */
 export interface RetainedRemoteProject {
   url: string;
@@ -387,7 +481,11 @@ export function retainRemoteProject(
   }
   const staging = join(scratchRoot, `${REMOTE_TRANSIENT_PREFIX}retain-${runId}`);
   const previous = join(scratchRoot, `${REMOTE_TRANSIENT_PREFIX}previous-${runId}`);
+  const stagingName = basename(staging);
+  const previousName = basename(previous);
   const destination = remoteProjectDirectory(scratchRoot, record.owner, record.repo);
+  claimScratchEntry(scratchRoot, stagingName);
+  claimScratchEntry(scratchRoot, previousName);
   try {
     rmSync(staging, { recursive: true, force: true });
     mkdirSync(join(staging, ".omp"), { recursive: true });
@@ -418,6 +516,9 @@ export function retainRemoteProject(
       // A staging directory that cannot be removed is removed by the next start.
     }
     return error instanceof Error ? error.message : String(error);
+  } finally {
+    releaseScratchEntry(scratchRoot, stagingName);
+    releaseScratchEntry(scratchRoot, previousName);
   }
 }
 
@@ -498,17 +599,20 @@ export function remoteCloneRequest(
 
 /**
  * Startup hygiene: a run's checkout, its clone staging, and its copy staging
- * never survive a restart. Retained projects are never touched.
+ * never survive a restart, and a retained project is never touched. A transient
+ * another live dashboard still owns is left alone: two dashboards can share one
+ * `STATE_DIR`, and one starting must not delete the other's running checkout.
  */
 export function cleanupRemoteScratch(scratchRoot: string): void {
   let entries;
   try {
     entries = readdirSync(scratchRoot, { withFileTypes: true });
   } catch {
+    pruneScratchClaims(scratchRoot);
     return;
   }
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || entry.name === RUN_CLAIM_DIRECTORY) continue;
     const directory = join(scratchRoot, entry.name);
     const transient = entry.name.startsWith(REMOTE_TRANSIENT_PREFIX);
     let checkout = false;
@@ -518,12 +622,15 @@ export function cleanupRemoteScratch(scratchRoot: string): void {
       checkout = false;
     }
     if (!transient && !checkout) continue;
+    if (transient && claimAlive(scratchRoot, entry.name)) continue;
     try {
       rmSync(directory, { recursive: true, force: true });
     } catch {
       // A directory that cannot be removed is left for the next start.
     }
+    releaseScratchEntry(scratchRoot, entry.name);
   }
+  pruneScratchClaims(scratchRoot);
 }
 
 // ------------------------------------------------------------ host facts
