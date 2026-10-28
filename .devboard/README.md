@@ -920,7 +920,9 @@ one directory per discovered repository, named `<owner>-<repo>` in lowercase, an
 a run ends. Each directory keeps the bytes the crawl published — `.omp/discover/` and
 `.omp/skills/` — beside `project.json`, which records `url`, `owner`, `repo`, and the ISO
 `completedAt` time. A run's checkout is a transient `.staging-<run-id>` directory beside those
-projects; it never survives the run.
+projects; it never survives the run. While a run is live it owns a claim at
+`.runs/<checkout-name>.json` naming its process, and the claim and the `.runs/` directory leave
+with the checkout.
 
 A submit broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs
 exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
@@ -957,9 +959,12 @@ it only while `<owner>-<repo>` holds a readable `project.json` and both `.omp` t
 clone or a re-crawl; otherwise it starts on the host target, drops that one stored target, keeps
 every other retained entry, and sends one `discoverError` naming the missing project to the next
 client. Startup removes every `.staging-*` directory and any leftover directory containing `.git`,
-so a restart never resumes a run and never deletes a retained project. A restart during a remote
-crawl interrupts it as a host run does: the recorded child ends, the checkout's staging is removed,
-its retained snapshot stays, and nothing is published or resumed.
+so a restart never resumes a run and never deletes a retained project. The one exception is a
+transient another live dashboard still claims: two dashboards may serve the same repository with
+one `STATE_DIR`, and a starting dashboard never deletes a checkout a running one owns. A restart
+during a remote crawl interrupts it as a host run does: the recorded child ends, the checkout's
+staging is removed, its retained snapshot stays, and nothing is published or resumed. A stopped
+dashboard removes its own checkout and claim.
 
 The protocol adds `{ "type": "discoverRemote", "url": string }`,
 `{ "type": "switchDiscoverRemote", "url": string }`,
@@ -1005,10 +1010,11 @@ removed, restore and rendering without a clone, newest-first ordering and one en
 `owner/repo`, switching with zero clone invocations across a restart, one clone and one crawl on
 re-discovery, unchanged bytes after a failed clone or crawl, clear keeping every project, removal
 of exactly one directory with a restart, busy refusals, the missing-retained-directory fallback, the
-gate refusing every remote command without touching the retained root, and a byte-identical host
-`.omp`. `verify:interface` drives the built UI through a retained render after restart, the
-dropdown's two entries and selection, removal of one entry, and the gate-off host with no remote
-control.
+gate refusing every remote command without touching the retained root, a byte-identical host
+`.omp`, and startup hygiene that keeps a live run's checkout when a second dashboard starts on the
+same state directory. `verify:interface` drives the built UI through a retained render after
+restart, the dropdown's two entries and selection, removal of one entry, and the gate-off host with
+no remote control.
 
 Operator smoke procedure, which needs network and a model endpoint and is therefore not a pass gate:
 
