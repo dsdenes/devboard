@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   instancesFromProcesses,
@@ -11,7 +11,7 @@ import {
   type Instance,
   type ProcessSnapshot,
 } from "../watchdog/discovery";
-import { journalFile, openJournal } from "../server/journal";
+import { journalFile, journalFiles, openJournal } from "../server/journal";
 import {
   normalizeEvidenceLine,
   readJournalEvidence,
@@ -277,6 +277,55 @@ describe("window and attribution", () => {
     const collected = readJournalEvidence(instance, { window, root: base });
     expect(collected.events.map((item) => item.text)).toEqual(["nine", "start", "end"]);
     expect(collected.malformed).toBe(1);
+  });
+
+  test("reads an error that rotation moved out of the live journal", async () => {
+    const base = await temporaryDirectory("test-watchdog-journal-rotated");
+    const harness = join(base, "harness");
+    await mkdir(join(harness, ".tmp", "journal"), { recursive: true });
+    const instance = instanceFor(base, 8080, harness);
+    const journal = openJournal({
+      stateDir: join(harness, ".tmp"),
+      repoDir: base,
+      port: 8080,
+      rotateBytes: 1,
+      now: () => fixedNow,
+    });
+    journal.write("server-error", SERVER_ERROR);
+    // The second write rotates the error aside; the live file starts over.
+    journal.write("activity", "after rotation");
+    await writeFile(instance.journal, "");
+    const rotated = journalFiles(instance.journal)[0];
+    if (rotated === undefined) throw new Error("rotation did not produce a journal");
+    await appendFile(rotated, "{not json\n");
+
+    const collected = readJournalEvidence(instance, { window, root: base });
+    expect(collected.events.map((item) => item.text)).toEqual([SERVER_ERROR]);
+    expect(collected.malformed).toBe(1);
+    const findings = analyzeEvidence(collected.events, { window });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.category).toBe("server-error");
+    expect(findings[0]?.quote).toBe(SERVER_ERROR);
+  });
+
+  test("a record copied into a rotated journal and the live journal counts once", async () => {
+    const base = await temporaryDirectory("test-watchdog-journal-duplicate");
+    const harness = join(base, "harness");
+    await mkdir(join(harness, ".tmp", "journal"), { recursive: true });
+    const instance = instanceFor(base, 8080, harness);
+    const journal = openJournal({
+      stateDir: join(harness, ".tmp"),
+      repoDir: base,
+      port: 8080,
+      now: () => fixedNow,
+    });
+    journal.write("server-error", SERVER_ERROR);
+    await copyFile(instance.journal, `${instance.journal}.1700000000000-1`);
+
+    const collected = readJournalEvidence(instance, { window, root: base });
+    expect(collected.events).toHaveLength(1);
+    expect(collected.events[0]?.text).toBe(SERVER_ERROR);
+    expect(analyzeEvidence(collected.events, { window })).toHaveLength(1);
   });
 
   test("attributes an in-window omp error by dashboard process ancestry", async () => {

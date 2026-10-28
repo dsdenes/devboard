@@ -125,40 +125,6 @@
     <div class="issues-scout__side">
       <section class="panel">
         <div class="panel__header">
-          <h2 class="panel__title">Scout worker</h2>
-        </div>
-        <div class="panel__body">
-          <dl class="scout-facts">
-            <div>
-              <dt>Pending issues</dt>
-              <dd class="scout-facts__count">{scout.count}</dd>
-            </div>
-            <div>
-              <dt>Worker</dt>
-              <dd class="mono">
-                {scout.snapshot?.worker === null || scout.snapshot?.worker === undefined
-                  ? "none"
-                  : `pid ${scout.snapshot.worker.pid} · ${scout.snapshot.worker.harnessVersion ?? "unknown"}`}
-              </dd>
-            </div>
-            <div>
-              <dt>Next attempt</dt>
-              <dd class="mono">
-                {#if scout.nextAttemptAt === null}
-                  none
-                {:else}
-                  <time datetime={scout.nextAttemptAt} title={scout.nextAttemptAt}>
-                    {stamp(scout.nextAttemptAt)}
-                  </time>
-                {/if}
-              </dd>
-            </div>
-          </dl>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel__header">
           <h2 class="panel__title">Filing limits</h2>
         </div>
         <div class="panel__body stack-sm">

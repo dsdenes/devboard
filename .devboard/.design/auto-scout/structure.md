@@ -88,4 +88,5 @@ body (grid: 360px minmax(0,1fr), gap 12, fills height)
 - Lifecycle and read states are words in badges, not colour-only.
 - Error and notice banners keep `role="alert"`/`role="status"` and remain in reading
   order immediately after the header.
-- The table keeps column headers and link text; empty states are plain paragraphs.
+- The table keeps column headers and link text; the empty table is a compact centered message
+  with a decorative mark, not a full-width strip.
