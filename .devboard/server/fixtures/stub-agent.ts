@@ -140,6 +140,8 @@ const discoverProse =
   "A fixture host with a small order domain used to verify the Discover crawl";
 const discoverInvalidSheet = process.argv.includes("--discover-invalid-sheet");
 const discoverSheetAbsolute = process.argv.includes("--discover-sheet-absolute");
+/** Stages evidence that is an absolute host path with its leading slash stripped. */
+const discoverSheetStrippedHome = process.argv.includes("--discover-sheet-stripped-home");
 const discoverSheetNoEvidence = process.argv.includes("--discover-sheet-no-evidence");
 const discoverSheetSecret = process.argv.includes("--discover-sheet-secret");
 const discoverSheetTwoSentences = process.argv.includes("--discover-sheet-two-sentences");
@@ -149,6 +151,8 @@ const discoverSheetNoHappyPath = process.argv.includes("--discover-sheet-no-happ
 const discoverSheetHappyOverflow = process.argv.includes("--discover-sheet-happy-overflow");
 const discoverGlossaryInvalid = process.argv.includes("--discover-glossary-invalid");
 const discoverGlossaryGrounding = process.argv.includes("--discover-glossary-grounding");
+/** Grounds a concept in a repository path whose directory is named `home`. */
+const discoverGlossaryHomePath = process.argv.includes("--discover-glossary-home-path");
 /** Omits a concept from the staged glossary, so a published one is preserved unscored. */
 const discoverGlossaryDrop = process.argv.includes("--discover-glossary-drop");
 /** The staged significance sidecar defect, or "" for a valid sidecar. */
@@ -1161,6 +1165,7 @@ function discoverSheet(): Record<string, unknown> {
   const deployment = sheet.deployment as { artifact: { value: unknown } };
   if (discoverInvalidSheet) stack.value = ["x".repeat(200)];
   if (discoverSheetAbsolute) stack.evidence = ["/etc/passwd"];
+  if (discoverSheetStrippedHome) stack.evidence = ["home/ds/project/file.ts"];
   if (discoverSheetNoEvidence) stack.evidence = [];
   if (discoverSheetSecret) deployment.artifact.value = DISCOVER_SECRET;
 
@@ -1232,7 +1237,7 @@ function discoverGlossary(): { yaml: string; concepts: DiscoverConcept[] } {
     origin: "owner",
     standardRef: null,
     kind: "entity",
-    grounding: [firstGrounding],
+    grounding: [discoverGlossaryHomePath ? "code:app/home/page.tsx" : firstGrounding],
     broader: null,
     related: [],
   };

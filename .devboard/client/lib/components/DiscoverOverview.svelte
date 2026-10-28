@@ -67,12 +67,6 @@
 
   const sheet = $derived(discover.sheet);
   const freshness = $derived(discover.freshness);
-  const definition = $derived(sectionLeaf(sheet, "definition"));
-  const definitionText = $derived(
-    definition === undefined ? "" : definition.confidence === "unknown"
-      ? unknownText(definition)
-      : leafText(definition),
-  );
   const projectPath = $derived(
     discover.remoteTarget?.url ??
       (freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : "")),
@@ -590,7 +584,7 @@
 
   {@render remotePanel()}
 
-  <header class="discover-head" data-testid="discover-card" data-field="definition">
+  <header class="discover-head" data-testid="discover-card">
     <div class="discover-head__top">
       <div class="discover-head__identity">
         <h1 class="discover-head__title" title={projectPath}>{projectName}</h1>
@@ -603,13 +597,10 @@
       </div>
     </div>
 
-    {#if discover.hasArtifacts}
-      <p class="discover-head__definition">{definitionText}</p>
-      {#if freshness !== null}
-        <div class="discover-head__meta" data-testid="discover-freshness">
-          <span>{discoveredLabel(freshness.discoveredAt)}</span>
-        </div>
-      {/if}
+    {#if discover.hasArtifacts && freshness !== null}
+      <div class="discover-head__meta" data-testid="discover-freshness">
+        <span>{discoveredLabel(freshness.discoveredAt)}</span>
+      </div>
     {/if}
   </header>
 
