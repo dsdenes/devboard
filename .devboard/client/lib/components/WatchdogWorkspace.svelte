@@ -10,15 +10,8 @@
   const syncTone = $derived<BadgeTone>(
     sync.state === "ok" ? "success" : sync.state === "error" ? "error" : "stale",
   );
-  const cycle = $derived(snapshot?.cycle ?? null);
   const cycles = $derived(snapshot?.cycles ?? []);
   const issues = $derived(snapshot?.issues ?? []);
-
-  let now = $state(Date.now());
-  $effect(() => {
-    const timer = setInterval(() => (now = Date.now()), 1000);
-    return () => clearInterval(timer);
-  });
 
   onMount(() => {
     watchdog.start();
@@ -36,19 +29,6 @@
       second: "2-digit",
       hour12: false,
     });
-  }
-
-  function age(value: string | null): string {
-    if (value === null) return "never";
-    const elapsed = now - Date.parse(value);
-    if (!Number.isFinite(elapsed)) return "unknown";
-    const seconds = Math.max(0, Math.floor(elapsed / 1000));
-    if (seconds < 60) return "just now";
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    return `${Math.floor(hours / 24)}d ago`;
   }
 
   function actionTone(action: string): BadgeTone | undefined {
@@ -101,47 +81,6 @@
 
   <div class="watchdog-body">
     <div class="watchdog-main">
-      <section class="panel" data-testid="watchdog-last-cycle" aria-label="Newest cycle">
-        <div class="panel__header">
-          <h2 class="panel__title">Newest cycle</h2>
-          <span class="watchdog-panel__trail">
-            <span
-              class="badge"
-              data-tone={actionTone(snapshot?.action ?? "none")}
-              data-testid="watchdog-last-action"
-            >
-              {snapshot?.action ?? "none"}
-            </span>
-            <span class="panel__subtitle mono" data-testid="watchdog-last-age">{age(cycle)}</span>
-          </span>
-        </div>
-        <div class="panel__body watchdog-summary">
-          <dl class="watchdog-facts">
-            <div>
-              <dt>Started</dt>
-              <dd data-testid="watchdog-last-cycle-at">
-                {#if cycle === null}
-                  never
-                {:else}
-                  <time datetime={cycle}>{stamp(cycle)}</time>
-                {/if}
-              </dd>
-            </div>
-            <div>
-              <dt>Findings</dt>
-              <dd data-testid="watchdog-last-findings">{snapshot?.findings ?? 0}</dd>
-            </div>
-            <div data-warning={(snapshot?.pending ?? 0) > 0 ? "" : undefined}>
-              <dt>Pending filings</dt>
-              <dd data-testid="watchdog-last-pending">{snapshot?.pending ?? 0}</dd>
-            </div>
-          </dl>
-          {#if snapshot?.reason !== undefined}
-            <p class="watchdog-reason" data-testid="watchdog-last-reason">{snapshot.reason}</p>
-          {/if}
-        </div>
-      </section>
-
       <section class="panel watchdog-filed" aria-label="Filed issues">
         <div class="panel__header">
           <h2 class="panel__title">Filed issues</h2>
@@ -306,69 +245,6 @@
     gap: 12px;
     min-height: 0;
     min-width: 0;
-  }
-
-  .watchdog-panel__trail {
-    align-items: center;
-    display: inline-flex;
-    flex: 0 0 auto;
-    gap: 8px;
-  }
-
-  .watchdog-summary {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .watchdog-facts {
-    display: grid;
-    gap: 0;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    margin: 0;
-  }
-
-  .watchdog-facts div {
-    border-left: 1px solid var(--border-subtle);
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-    padding: 0 10px;
-  }
-
-  .watchdog-facts div:first-child {
-    border-left: 0;
-    padding-left: 0;
-  }
-
-  .watchdog-facts dt {
-    color: var(--muted-foreground);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    line-height: 1.2;
-    text-transform: uppercase;
-  }
-
-  .watchdog-facts dd {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    margin: 0;
-    overflow-wrap: anywhere;
-  }
-
-  .watchdog-facts div[data-warning] dd {
-    color: var(--warning);
-  }
-
-  .watchdog-reason {
-    border-top: 1px solid var(--border-subtle);
-    color: var(--muted-foreground);
-    font-size: 12px;
-    margin: 0;
-    overflow-wrap: anywhere;
-    padding-top: 8px;
   }
 
   .watchdog-empty {

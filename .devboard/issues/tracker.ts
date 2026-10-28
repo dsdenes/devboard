@@ -1,6 +1,11 @@
 import type { IssuesIssue } from "./state";
 import { configuredGiteaToken, type Forge } from "../lib/forge";
-import { GiteaError, giteaListIssues, type FetchLike } from "../lib/gitea";
+import {
+  GiteaError,
+  giteaIssue,
+  giteaListIssues,
+  type FetchLike,
+} from "../lib/gitea";
 
 /**
  * The tracker read: the origin's open issues through the operator's `gh`
@@ -212,6 +217,66 @@ async function pollGiteaIssues(options: TrackerOptions): Promise<PollResult> {
         detail: error.message,
       };
     }
+    return {
+      kind: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export type IssueStateResult =
+  | { kind: "state"; state: "open" | "closed" }
+  | { kind: "error"; detail: string };
+
+/**
+ * The tracker's current state for one issue. An unreadable answer is an
+ * error, never a success: a 404 can mean lost access as easily as a missing
+ * issue, and only a proven `closed` may mark a run handled.
+ */
+export async function fetchIssueState(
+  options: TrackerOptions,
+  number: number,
+): Promise<IssueStateResult> {
+  if ((options.forge ?? "github") === "gitea") return await giteaIssueState(options, number);
+  const execute = options.run ?? ((argv: string[]) => gh(argv, options.environment));
+  const outcome = await execute([
+    "api",
+    `repos/${options.repository}/issues/${number}`,
+    "--jq",
+    ".state",
+  ]);
+  if (outcome.code !== 0) {
+    return { kind: "error", detail: firstLine(outcome.stderr) ?? `gh exited with code ${outcome.code}` };
+  }
+  const state = outcome.stdout.trim();
+  if (state === "open" || state === "closed") return { kind: "state", state };
+  return { kind: "error", detail: `the tracker returned an unexpected issue state: ${state.slice(0, 100)}` };
+}
+
+async function giteaIssueState(
+  options: TrackerOptions,
+  number: number,
+): Promise<IssueStateResult> {
+  const environment = options.environment ?? process.env;
+  if (options.baseUrl === undefined || options.baseUrl.length === 0) {
+    return {
+      kind: "error",
+      detail: "the Gitea address is not configured; set DEVBOARD_GITEA_URL",
+    };
+  }
+  const token = configuredGiteaToken(environment);
+  try {
+    const issue = await giteaIssue(
+      {
+        baseUrl: options.baseUrl,
+        project: options.repository,
+        ...(token === undefined ? {} : { token }),
+      },
+      number,
+      options.giteaFetch,
+    );
+    return { kind: "state", state: issue.state };
+  } catch (error) {
     return {
       kind: "error",
       detail: error instanceof Error ? error.message : String(error),

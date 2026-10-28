@@ -32,7 +32,12 @@ import {
   type IssuesIssue,
   type IssuesState,
 } from "../issues/state";
-import { parseResponse, pollOpenIssues } from "../issues/tracker";
+import {
+  fetchIssueState,
+  parseResponse,
+  pollOpenIssues,
+  type IssueStateResult,
+} from "../issues/tracker";
 import {
   IssuesWorker,
   MAX_CONCURRENT_PEERS,
@@ -166,6 +171,11 @@ class ControlledPeer implements AcpPeer {
     this.options.onStderr(`${message}\n`);
     this.rejectRun(new Error(message));
   }
+
+  /** Writes to the child's stderr without ending the turn. */
+  writeStderr(message: string): void {
+    this.options.onStderr(`${message}\n`);
+  }
 }
 
 interface Fixture {
@@ -187,6 +197,7 @@ async function fixture(options: {
   harnessVersion?: string;
   now?: () => Date;
   beforeStart?: (root: string, stateDir: string) => void;
+  issueState?: (number: number) => Promise<IssueStateResult>;
 }): Promise<Fixture> {
   const base = await temporaryDirectory(options.label);
   const root = options.root ?? join(base, "repo");
@@ -203,6 +214,7 @@ async function fixture(options: {
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
     ...(options.now === undefined ? {} : { now: options.now }),
     listIssues: async () => ({ kind: "issues", issues: [...issues], etag: "etag-1" }),
+    issueState: options.issueState ?? (async () => ({ kind: "state", state: "closed" })),
     connect: (peerOptions) => {
       const peer = new ControlledPeer(peerOptions);
       peers.push(peer);
@@ -337,6 +349,78 @@ describe("per-issue fleet", () => {
       expect(Object.keys(ledger.handled).sort()).toEqual(["1", "2"]);
       expect(ledger.handled["1"].runId).not.toBe(ledger.handled["2"].runId);
       expect(handled.lifecycle).toBe("idle");
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a turn that leaves its issue open fails without handling it", async () => {
+    const f = await fixture({
+      issues: [issue(1)],
+      issueState: async () => ({ kind: "state", state: "open" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      f.peers[0]!.writeStderr("implement-goal-issue: no write access");
+      f.peers[0]!.succeed();
+      const failed = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(1) && run.status === "failed")
+            ? f.state()
+            : undefined,
+        "the failed run",
+      );
+      expect(failed.queue.find((entry) => entry.number === 1)?.handled).toBe(false);
+      const run = failed.runs.find((entry) => entry.issueNumbers.includes(1));
+      expect(run?.firstStderrLine).toContain("issue #1 is still open");
+      expect(run?.firstStderrLine).toContain("no write access");
+      expect(failed.agents).toEqual([]);
+      expect(failed.cooldowns["1"]).toBeDefined();
+      if (existsSync(ledgerPath(f.stateDir, f.root))) {
+        const ledger = JSON.parse(readFileSync(ledgerPath(f.stateDir, f.root), "utf8"));
+        expect(ledger.handled["1"]).toBeUndefined();
+      }
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a failed issue-state lookup fails the run without handling it", async () => {
+    const f = await fixture({
+      issues: [issue(1)],
+      issueState: async () => ({ kind: "error", detail: "tracker unreachable" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      f.peers[0]!.succeed();
+      const failed = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(1) && run.status === "failed")
+            ? f.state()
+            : undefined,
+        "the failed run",
+      );
+      expect(failed.queue.find((entry) => entry.number === 1)?.handled).toBe(false);
+      expect(failed.runs.find((run) => run.issueNumbers.includes(1))?.firstStderrLine).toContain(
+        "could not verify issue #1: tracker unreachable",
+      );
+      expect(failed.cooldowns["1"]).toBeDefined();
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a closed issue still records exactly one handled entry", async () => {
+    const f = await fixture({ issues: [issue(1)] });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      f.peers[0]!.succeed();
+      const handled = await waitFor(
+        () => (f.state().queue.every((entry) => entry.handled) ? f.state() : undefined),
+        "the handled queue",
+      );
+      expect(handled.agents).toEqual([]);
+      expect(handled.runs.find((run) => run.issueNumbers.includes(1))?.status).toBe("succeeded");
     } finally {
       await stop(f);
     }
@@ -1164,6 +1248,69 @@ describe("tracker", () => {
     if (limited.kind !== "rate-limited") return;
     expect(Date.parse(limited.until) - Date.now()).toBeGreaterThan(100_000);
     expect(parseResponse("HTTP/1.1 200 OK\n").blocks[0]?.status).toBe(200);
+  });
+
+  test("reads one issue state through gh", async () => {
+    const calls: string[][] = [];
+    const state = await fetchIssueState(
+      {
+        repository: "acme/fixture",
+        run: (argv) => {
+          calls.push(argv);
+          return { code: 0, stdout: "closed\n", stderr: "" };
+        },
+      },
+      7,
+    );
+    expect(state).toEqual({ kind: "state", state: "closed" });
+    expect(calls[0]).toEqual(["api", "repos/acme/fixture/issues/7", "--jq", ".state"]);
+  });
+
+  test("treats a missing issue and a failed probe as errors", async () => {
+    const missing = await fetchIssueState(
+      {
+        repository: "acme/fixture",
+        run: () => ({ code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" }),
+      },
+      7,
+    );
+    expect(missing).toEqual({ kind: "error", detail: "gh: Not Found (HTTP 404)" });
+
+    const failed = await fetchIssueState(
+      {
+        repository: "acme/fixture",
+        run: () => ({ code: 1, stdout: "", stderr: "gh: connection reset" }),
+      },
+      7,
+    );
+    expect(failed).toEqual({ kind: "error", detail: "gh: connection reset" });
+  });
+
+  test("reads one Gitea issue state", async () => {
+    const urls: string[] = [];
+    const state = await fetchIssueState(
+      {
+        repository: "acme/fixture",
+        forge: "gitea",
+        baseUrl: "http://gitea.test",
+        environment: {},
+        giteaFetch: async (input) => {
+          urls.push(input);
+          return new Response(
+            JSON.stringify({
+              number: 7,
+              title: "Issue 7",
+              html_url: "http://gitea.test/acme/fixture/issues/7",
+              state: "closed",
+            }),
+            { status: 200 },
+          );
+        },
+      },
+      7,
+    );
+    expect(state).toEqual({ kind: "state", state: "closed" });
+    expect(urls[0]).toBe("http://gitea.test/api/v1/repos/acme/fixture/issues/7");
   });
 });
 

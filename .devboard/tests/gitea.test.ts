@@ -128,6 +128,22 @@ describe("Gitea forge resolution", () => {
     expect(giteaBaseUrl(remote, { DEVBOARD_GITEA_URL: "http://gitea.test/" })).toBe(
       "http://gitea.test",
     );
+    expect(parseForgeRemote("https://github.com/owner/repo.git", {})).toEqual({
+      forge: "github",
+      host: "github.com",
+      project: "owner/repo",
+      originUrl: "https://github.com",
+    });
+    expect(parseForgeRemote("git@github.com:owner/repo.git", {})).toEqual({
+      forge: "github",
+      host: "github.com",
+      project: "owner/repo",
+    });
+    expect(parseForgeRemote("ssh://git@gitlab.example.com:2222/group/sub/project.git", {})).toEqual({
+      forge: "gitlab",
+      host: "gitlab.example.com",
+      project: "sub/project",
+    });
   });
 
   test("selects a write-capable Gitea token against the exact repository", async () => {
