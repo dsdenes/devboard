@@ -1287,11 +1287,13 @@ panel's `watchdog-last-age` shows that cycle's age.
 
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
 first, capped at the newest 100 directories. Every `watchdog-cycle` row carries `data-action` and
-renders `watchdog-cycle-at`, `watchdog-cycle-window` (window start and end),
-`watchdog-cycle-action`, and `watchdog-cycle-findings`; a cycle's reason appears only in the
-newest-cycle panel. A run directory whose `report.json` is missing or unparsable is skipped without
-hiding the other rows. With no run directory at all, the `latest.json` cycle is the single row;
-with no cycle anywhere, `watchdog-cycles-empty` is rendered.
+renders `watchdog-cycle-at`, `watchdog-cycle-action`, and, only when the cycle's findings map to a
+filed issue, a `watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to those GitHub
+issues. Each anchor reads `#<number>` and opens in a new tab; the row repeats no issue and keeps
+the finding order. A cycle row renders no window interval, finding count, or reason. A run
+directory whose `report.json` is missing or unparsable is skipped without hiding the other rows.
+With no run directory at all, the `latest.json` cycle is the single row; with no cycle anywhere,
+`watchdog-cycles-empty` is rendered.
 
 `watchdog-issues` lists every ledger entry whose disposition is `filed:<url>`, newest `filedAt`
 first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `data-state`, and
@@ -1323,7 +1325,8 @@ seconds, so a newly written run directory or filed ledger entry appears without 
 directory, ledger write, or lock. Its existing fields keep their meaning: `cycle` (ISO 8601 or
 null), `action`, the optional `reason`, the `findings` count, `issues`
 (`{url, category, line, filedAt, state, version}`) newest first, and the `pending` count; it adds
-`cycles` and `sync`. A dashboard-endpoint failure renders `watchdog-error`.
+`cycles` (each `{at, window, action, findings, issues, reason?}`, where `issues` lists the
+connected GitHub issue URLs) and `sync`. A dashboard-endpoint failure renders `watchdog-error`.
 
 The status bar's watchdog indicator is unchanged: `status-watchdog` shows the last action and its
 age; activating it opens `watchdog-popover` listing up to ten filed issues, each link opening in a
@@ -1737,11 +1740,14 @@ blank version on the next read.
 ### Periodic check
 
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
-and immediately on Start; the table, states, and versions reflect a change within one interval. A
-failed read keeps the last known rows, shows the reason in
-`data-testid="scout-sync-error"`, and keeps the last success time in
-`data-testid="scout-sync-at"`; the reason clears on the next successful read. Filing stays
-blocked until a read succeeds.
+and immediately on Start; the table, states, and versions reflect a change within one interval. One
+periodic read, including every `gh` child it starts, is bounded to 30 seconds; a read that does not
+finish records a sync error and releases the worker, so the next interval reads again. A failed
+read keeps the last known rows, shows the reason in `data-testid="scout-sync-error"`, and keeps the
+last success time in `data-testid="scout-sync-at"`; the reason clears on the next successful read.
+Filing stays blocked until a read succeeds. An injected GitHub client owns its own command bounds;
+the worker still races the whole read against the deadline, but it cannot cancel work that client
+never settles.
 
 ### Worker lifecycle
 
@@ -2357,10 +2363,11 @@ refusals, and the activity delta.
 duplicates against closed issues, open issues, and drafts, both caps across a restart, the
 effective batch, zero capacity, a close freeing a slot, limits applying live and surviving a
 restart, state mapping and a reopen, a later release filling a blank version, a failed periodic
-read and a failed pre-filing read, migration from a version-1 board, a missing score failing the
-scan atomically, a failed filing, Stop keeping the rows, the live lock, a replacement closing an
-interrupted scan, bridge replay without a spawn, another `STATE_DIR` refused, a harness-version
-notice, the issue body and label creation, and the scan prompt's rubric.
+read, a periodic read that never settles failing at its deadline and releasing the worker, the
+default client's bounded `gh` calls, a failed pre-filing read, migration from a version-1 board, a
+missing score failing the scan atomically, a failed filing, Stop keeping the rows, the live lock,
+a replacement closing an interrupted scan, bridge replay without a spawn, another `STATE_DIR`
+refused, a harness-version notice, the issue body and label creation, and the scan prompt's rubric.
 `tests/issues.test.ts` covers the fleet (four mixed issues, twelve peers with no cap, duplicate
 prevention, an issue opened mid-run, per-issue success and ledger entries, one failure cooling only
 its issue), Check now clearing every cooldown, pause draining every peer, Stop closing every peer

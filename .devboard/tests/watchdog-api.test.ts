@@ -196,6 +196,7 @@ describe("readWatchdogStatus", () => {
         },
         action: "filed",
         findings: 1,
+        issues: [first.url],
         reason: "filed 1 issue(s)",
       },
     ]);
@@ -246,9 +247,44 @@ describe("readWatchdogCycles", () => {
       window: { start: "2026-10-24T12:00:00.000Z", end: "2026-10-24T12:00:00.000Z" },
       action: "filed",
       findings: 1,
+      issues: [],
       reason: "filed 1 issue(s)",
     });
     expect(cycles[1]?.reason).toBeUndefined();
+  });
+
+  test("resolves every finding to the GitHub issue it maps to", async () => {
+    const directory = join(await temporaryDirectory("test-watchdog-history-issues"), "watchdog");
+    const runs = join(directory, "runs");
+    await mkdir(join(runs, "2026-10-24T12-00-00-000Z"), { recursive: true });
+    await writeFile(
+      join(runs, "2026-10-24T12-00-00-000Z", "report.json"),
+      JSON.stringify({
+        cycle: "2026-10-24T12:00:00.000Z",
+        window: { start: "2026-10-24T11:50:00.000Z", end: "2026-10-24T12:00:00.000Z" },
+        action: "duplicate",
+        findings: [
+          { fingerprint: "5e2f1e4c" },
+          { fingerprint: "9d1c7b3a" },
+          { fingerprint: "5e2f1e4c" },
+          { fingerprint: "missing" },
+        ],
+        issues: [{ url: "https://github.com/x/y/issues/9" }],
+        reason: "every finding already has an issue",
+      }),
+    );
+    const cycles = readWatchdogCycles(directory, undefined, (fingerprint) =>
+      fingerprint === "5e2f1e4c"
+        ? "https://github.com/dsdenes/devboard/issues/11"
+        : fingerprint === "9d1c7b3a"
+          ? "https://github.com/dsdenes/devboard/issues/12"
+          : undefined,
+    );
+    expect(cycles[0]?.issues).toEqual([
+      "https://github.com/dsdenes/devboard/issues/11",
+      "https://github.com/dsdenes/devboard/issues/12",
+      "https://github.com/x/y/issues/9",
+    ]);
   });
 
   test("caps the history at the newest 100 run directories", async () => {
@@ -277,6 +313,7 @@ describe("readWatchdogCycles", () => {
       window: { start: "2026-10-24T11:50:00.000Z", end: "2026-10-24T12:00:00.000Z" },
       action: "failed",
       findings: 3,
+      issues: [],
     };
     expect(readWatchdogCycles(directory, fallback)).toEqual([fallback]);
     expect(readWatchdogCycles(directory, undefined)).toEqual([]);
@@ -592,6 +629,7 @@ describe("GET /api/watchdog", () => {
           window: { start: "2026-10-24T11:50:00.000Z", end: "2026-10-24T12:00:00.000Z" },
           action: "filed",
           findings: 1,
+          issues: [first.url],
           reason: "filed 1 issue(s)",
         },
       ]);

@@ -62,6 +62,10 @@ export function readWatchdogStatus(watchdogDir: string): WatchdogStatus {
     findings: Array.isArray(latest.findings) ? latest.findings.length : 0,
     issues,
     pending: ledger.pendingFiling.length,
-    cycles: readWatchdogCycles(watchdogDir, latestWatchdogCycle(latest)),
+    cycles: readWatchdogCycles(
+      watchdogDir,
+      latestWatchdogCycle(latest, (fingerprint) => ledger.findings[fingerprint]?.url),
+      (fingerprint) => ledger.findings[fingerprint]?.url,
+    ),
   };
 }
