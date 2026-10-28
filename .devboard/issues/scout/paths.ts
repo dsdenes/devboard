@@ -13,7 +13,11 @@ import { journalKey } from "../../server/journal";
 export const SCOUT_DIRECTORY = "scout";
 export const STATE_VERSION = 2;
 export const SCAN_VERSION = 2;
-/** A scan's agent phase, and separately its settle-and-file phase, end here. */
+/**
+ * A scan's agent phase ends after this long without activity, and its
+ * separately timed settle-and-file phase ends after this long in total. A
+ * productive agent keeps resetting the first bound.
+ */
 export const SCAN_TIMEOUT_MS = 15 * 60_000;
 /** The periodic GitHub read while the worker is started. */
 export const SYNC_INTERVAL_MS = 60_000;
