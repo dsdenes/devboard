@@ -123,6 +123,10 @@ class ControlledPeer implements AcpPeer {
     return this.promise;
   }
 
+  prompt(): Promise<unknown> {
+    return Promise.reject(new Error("the stub peer does not answer follow-up prompts"));
+  }
+
   answer(id: number | string, value: string): boolean {
     const question = this.questions.find((candidate) => String(candidate.id) === String(id));
     if (question === undefined) return false;
