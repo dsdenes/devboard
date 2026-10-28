@@ -1260,6 +1260,8 @@ try {
     labels: string[];
     pressed: boolean[];
     disabled: boolean[];
+    backgrounds: string[];
+    marker: boolean[];
     inside: boolean;
   }> =>
     page.eval(`(() => {
@@ -1272,6 +1274,10 @@ try {
         labels: buttons.map((button) => button?.getAttribute("aria-label") ?? ""),
         pressed: buttons.map((button) => button?.getAttribute("aria-pressed") === "true"),
         disabled: buttons.map((button) => button?.disabled === true),
+        backgrounds: buttons.map((button) => getComputedStyle(button).backgroundColor),
+        marker: buttons.map(
+          (button) => getComputedStyle(button, "::before").content !== "none",
+        ),
         inside: buttons.every((button) => {
           const rect = button?.getBoundingClientRect();
           return (
@@ -3538,10 +3544,28 @@ try {
     `document.querySelector('.feedback-hint') !== null`,
     "the activity-bar report control picking mode",
   );
+  await page.wait(
+    `(() => {
+      const report = document.querySelector('[data-testid="activity-report"]');
+      const remove = document.querySelector('[data-testid="activity-remove"]');
+      return report !== null && remove !== null &&
+        getComputedStyle(report).backgroundColor !== getComputedStyle(remove).backgroundColor;
+    })()`,
+    "the armed report action to paint its active surface",
+  );
   const reportActive = await issueState();
   check(
     reportActive.pressed.join(",") === "true,false,false",
     "the report action is not pressed in selection mode",
+    reportActive,
+  );
+  check(
+    reportActive.marker[0] &&
+      !reportActive.marker[1] &&
+      !reportActive.marker[2] &&
+      reportActive.backgrounds[0] !== reportActive.backgrounds[1] &&
+      reportActive.backgrounds[0] !== reportActive.backgrounds[2],
+    "the armed report action does not read as active",
     reportActive,
   );
   await page.click('[data-testid="activity-report"]');
@@ -3566,7 +3590,9 @@ try {
     idleIssue,
   );
   check(
-    idleIssue.pressed.every((value) => !value) && idleIssue.inside,
+    idleIssue.pressed.every((value) => !value) &&
+      idleIssue.marker.every((value) => !value) &&
+      idleIssue.inside,
     "the issue actions are not idle inside the rail",
     idleIssue,
   );
@@ -3858,7 +3884,13 @@ try {
   await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter for the palette cancel");
   await runPalette("app.report.cancel");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "the palette to cancel the issue reporter");
-  check((await issueState()).pressed.every((value) => !value), "a canceled mode is still pressed");
+  const canceledIssue = await issueState();
+  check(
+    canceledIssue.pressed.every((value) => !value) &&
+      canceledIssue.marker.every((value) => !value),
+    "a canceled mode is still pressed",
+    canceledIssue,
+  );
 
   // Two removals from one uninterrupted mode, the second on a control whose
   // activation the selection mode must swallow.

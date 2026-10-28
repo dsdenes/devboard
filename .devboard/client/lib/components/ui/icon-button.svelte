@@ -31,7 +31,8 @@
   <Tooltip.Trigger
     class={cn(
       buttonVariants({ variant: "ghost", size: "icon" }),
-      active && "bg-[var(--secondary-hover)]",
+      active &&
+        "border-[var(--accent)] bg-[var(--accent-surface)] text-[var(--accent)] hover:bg-[var(--accent-surface)] hover:text-[var(--accent)]",
       className,
     )}
     aria-label={label}
