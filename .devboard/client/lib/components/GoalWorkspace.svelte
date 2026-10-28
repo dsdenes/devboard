@@ -428,7 +428,6 @@
       <PageHeader
         eyebrow="Plan"
         title="Decision records"
-        subtitle="Every decision the implementation depends on."
         testid="adrs-header"
       >
         {#snippet meta()}
