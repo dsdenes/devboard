@@ -392,11 +392,13 @@ describe("peer binding", () => {
     const config = readFileSync(join(binding.agentDir, "config.yml"), "utf8");
     const parsed = Bun.YAML.parse(config) as {
       modelRoles: Record<string, string>;
+      disabledProviders: string[];
       retry: { modelFallback: boolean; fallbackOn: string; fallbackChains: Record<string, string[]> };
     };
     for (const role of MODEL_ROLES) {
       expect(parsed.modelRoles[role]).toBe("opencode-go/deepseek-v4.1-flash");
     }
+    expect(parsed.disabledProviders).toEqual(["ollama", "lm-studio", "llama.cpp", "apple"]);
     expect(parsed.retry.modelFallback).toBe(true);
     expect(parsed.retry.fallbackOn).toBe("any");
     expect(parsed.retry.fallbackChains["opencode-go/*"]).toEqual([
@@ -417,9 +419,11 @@ describe("peer binding", () => {
     expect(binding.env.OPENROUTER_API_KEY).toBe("or-only-0003");
     const parsed = Bun.YAML.parse(readFileSync(join(binding.agentDir, "config.yml"), "utf8")) as {
       modelRoles: Record<string, string>;
+      disabledProviders: string[];
       retry?: unknown;
     };
     expect(parsed.modelRoles.default).toBe("openrouter/deepseek/deepseek-v4.1-flash-1017");
+    expect(parsed.disabledProviders).toEqual(["ollama", "lm-studio", "llama.cpp", "apple"]);
     expect(parsed.retry).toBeUndefined();
   });
 
