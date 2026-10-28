@@ -3160,7 +3160,25 @@ export function createApp(options: AppOptions) {
     }
   }
 
-  async function stopGoalRevision(revision: GoalRevision, succeeded: boolean) {
+  /**
+   * Reads the goal a peer is about to replace. An absent document snapshots as
+   * `null`; any other read failure surfaces rather than masquerading as a
+   * missing goal.
+   */
+  async function readGoalSnapshot(path: string): Promise<string | null> {
+    try {
+      return await readFile(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  async function stopGoalRevision(
+    revision: GoalRevision,
+    succeeded: boolean,
+    before: string | null,
+  ) {
     if (goalRevision !== revision) return;
     goalRevision = undefined;
     revision.question = null;
@@ -3173,6 +3191,16 @@ export function createApp(options: AppOptions) {
 
     try {
       const text = await readGoal(goalFile);
+      // A peer that halts resolves its turn without writing, so an unchanged
+      // document is the old goal, not this revision's outcome.
+      if (text === before) {
+        broadcast({
+          type: "error",
+          message: "The goal revision ended without changing the goal.",
+        });
+        broadcast({ type: "goalRevisionStopped", completed: false });
+        return;
+      }
       broadcast({ type: "goalRevisionStopped", completed: true, text });
     } catch (error) {
       broadcast({
@@ -3183,7 +3211,11 @@ export function createApp(options: AppOptions) {
     }
   }
 
-  async function stopGoalCreation(creation: GoalCreation, succeeded: boolean) {
+  async function stopGoalCreation(
+    creation: GoalCreation,
+    succeeded: boolean,
+    before: string | null,
+  ) {
     if (goalCreation !== creation) return;
     goalCreation = undefined;
     creation.question = null;
@@ -3206,10 +3238,22 @@ export function createApp(options: AppOptions) {
       return;
     }
 
+    // A peer that halts resolves its turn without writing, leaving the previous
+    // document in place; that text is not the goal this creation produced.
+    // An empty or whitespace-only document fails first: it is never a goal.
     if (text.trim().length === 0) {
       broadcast({
         type: "error",
         message: "The goal creation ended without a non-empty goal.",
+      });
+      broadcast({ type: "goalCreationStopped", completed: false });
+      return;
+    }
+
+    if (text === before) {
+      broadcast({
+        type: "error",
+        message: "The goal creation ended without writing a new goal.",
       });
       broadcast({ type: "goalCreationStopped", completed: false });
       return;
@@ -3702,6 +3746,21 @@ export function createApp(options: AppOptions) {
 
   /** Runs a creation peer to its outcome; also resumes a restored one. */
   async function spawnGoalCreation(creation: GoalCreation) {
+    let before: string | null;
+    try {
+      // Captured before the peer starts so a halt that leaves the document
+      // untouched is not mistaken for the outcome.
+      before = await readGoalSnapshot(creationGoalFile);
+    } catch (error) {
+      if (goalCreation !== creation) return;
+      broadcast({
+        type: "error",
+        message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      await stopGoalCreation(creation, false, null);
+      return;
+    }
+
     try {
       const agent = new AcpConnection({
         command: agentCommand,
@@ -3734,14 +3793,14 @@ export function createApp(options: AppOptions) {
 
       await agent.run(GOAL_CREATION_PROMPT);
       if (goalCreation !== creation) return;
-      await stopGoalCreation(creation, true);
+      await stopGoalCreation(creation, true, before);
     } catch (error) {
       if (goalCreation !== creation) return;
       broadcast({
         type: "error",
         message: error instanceof Error ? error.message : String(error),
       });
-      await stopGoalCreation(creation, false);
+      await stopGoalCreation(creation, false, before);
     }
   }
 
@@ -3796,6 +3855,21 @@ export function createApp(options: AppOptions) {
 
   /** Runs a revision peer to its outcome; also resumes a restored one. */
   async function spawnGoalRevision(revision: GoalRevision) {
+    let before: string | null;
+    try {
+      // Captured before the peer starts so a halt that leaves the document
+      // untouched is not mistaken for the outcome.
+      before = await readGoalSnapshot(goalFile);
+    } catch (error) {
+      if (goalRevision !== revision) return;
+      broadcast({
+        type: "error",
+        message: `Could not read the goal: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      await stopGoalRevision(revision, false, null);
+      return;
+    }
+
     try {
       const agent = new AcpConnection({
         command: agentCommand,
@@ -3828,14 +3902,14 @@ export function createApp(options: AppOptions) {
 
       await agent.run(goalRevisionPrompt(goalFile, goalRevisionRequest));
       if (goalRevision !== revision) return;
-      await stopGoalRevision(revision, true);
+      await stopGoalRevision(revision, true, before);
     } catch (error) {
       if (goalRevision !== revision) return;
       broadcast({
         type: "error",
         message: error instanceof Error ? error.message : String(error),
       });
-      await stopGoalRevision(revision, false);
+      await stopGoalRevision(revision, false, before);
     }
   }
 

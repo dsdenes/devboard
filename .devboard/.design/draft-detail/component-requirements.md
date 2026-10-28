@@ -11,7 +11,7 @@
 | Activity log | Reuse | — | — | empty, one line, many lines, command rows; auto-follows newest unless scrolled up; only mounted while a run exists | `pre` text; command `$` retained | activity log, accent-surface |
 | Proposal | Compose | — | — | leading H1 removed (header owns it), long lines wrap, empty proposal | plain text block after an `h3` | mono, body spacing |
 | Context facts | Compose | — | — | zero facts when the marker is absent; long URL/element wrap; five known labels | `dl`/`dt`/`dd`; label text includes the colon | overline, mono-small, muted |
-| Captured evidence | Compose (details) | — | — | Visible text and DOM excerpt; absent sections; long DOM; collapsed by default, one interaction away | native `details`/`summary`, keyboard operable | surface-raised, border-subtle |
+| Captured evidence | Compose | — | — | Visible text and DOM excerpt inline below the facts; absent sections; long DOM scrolls in its block | section headings; native `pre` text | surface-raised, border-subtle |
 | Exact draft source | Compose (details) | — | — | full bytes, empty file, 6 KB+ file; collapsed; byte count in summary; text must equal the file exactly | native `details`, selectable text | mono-small, background, border-subtle |
 
 ## Component details
@@ -46,12 +46,12 @@
   shell commands. The previous draft log was a plain `pre` with no follow behaviour.
 - Mounted only while `draftRun` exists; the empty state is its own text.
 
-### Details disclosures
-- Decision: compose native `<details>` twice.
-- Why: the visible text/DOM and the exact bytes are P2/P3; native disclosure keeps keyboard
-  and screen-reader semantics without a bespoke component.
-- Edge cases: closed content still satisfies the exact-bytes and captured-context checks;
-  long DOM scrolls inside its `pre`, not the page.
+### Source disclosure
+- Decision: compose one native `<details>`.
+- Why: the exact bytes are P3; native disclosure keeps keyboard and screen-reader semantics
+  without a bespoke component.
+- Edge cases: closed content still satisfies the exact-bytes check; long source scrolls inside
+  its `pre`, not the page.
 
 ## Design-system action
 - No token, color, radius, typography, or primitive variant changes. `Button`, `Input`,

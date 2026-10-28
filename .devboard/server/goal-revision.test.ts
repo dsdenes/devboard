@@ -536,6 +536,43 @@ describe("guided goal revision", () => {
   );
 
   test(
+    "reports a halt that leaves the goal unchanged as an incomplete revision",
+    async () => {
+      const existing = "# Original goal\n\nImplement the original.\n";
+      const { server, goalFile, logPath, url } = await startServer(
+        { "0001-first.md": PENDING_ONE },
+        { revision: { writeGoal: false }, goalText: existing },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "reviseGoal", request: "Tighten the goal" });
+        await client.waitFor((message) => message.type === "goalRevisionStarted");
+        const question = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(error.message).toBe("The goal revision ended without changing the goal.");
+        const stopped = await client.waitFor((message) => message.type === "goalRevisionStopped");
+        expect(stopped).toEqual({ type: "goalRevisionStopped", completed: false });
+        expect("text" in stopped).toBe(false);
+        expect(await readFile(goalFile, "utf8")).toBe(existing);
+        expect(spawnCount(logPath)).toBe(1);
+
+        client.send({ type: "getGoal" });
+        expect(await client.waitFor((message) => message.type === "goal")).toEqual({
+          type: "goal",
+          text: existing,
+        });
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
     "reports an incomplete revision when the peer leaves no readable goal and still starts a later run",
     async () => {
       const { server, logPath, url } = await startServer(

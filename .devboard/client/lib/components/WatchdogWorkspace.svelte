@@ -131,7 +131,6 @@
   <section class="panel" aria-label="Cycle history">
     <div class="panel__header">
       <h2 class="panel__title">Cycle history</h2>
-      <span class="panel__subtitle">Newest first · at most 100 retained cycles</span>
     </div>
     <div class="panel__body panel__body--flush">
       <ol class="watchdog-cycles" data-testid="watchdog-cycles">
