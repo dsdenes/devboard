@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createApp, projectLabel } from "./app";
 import { journalFile, journalKey } from "./journal";
+import { ProviderService, saveSubscriptions } from "./providers";
 import { acquireLock } from "../issues/lock";
 import { testProviderService } from "./fixtures/test-providers";
 
@@ -39,6 +40,8 @@ async function startServer(
     runningVersion?: string | null;
     /** Installs this checkout's `origin` before the app resolves it. */
     origin?: string;
+    providers?: (stateDir: string) => ProviderService;
+    providersRefreshMs?: number;
     issues?: {
       closeIssue?: (request: {
         repoDir: string;
@@ -70,7 +73,8 @@ async function startServer(
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
-    providers: testProviderService(join(root, "state")),
+    providers: options.providers?.(join(root, "state")) ?? testProviderService(join(root, "state")),
+    providersRefreshMs: options.providersRefreshMs,
     goalFile: options.goalFile,
     agentCommand: options.agentCommand,
     restart: options.restart,
@@ -239,6 +243,36 @@ describe("createApp", () => {
     }
   });
 
+  test("keeps serving after a failed restart", async () => {
+    const { server, url } = await startServer({
+      restart: () => {
+        throw new Error("spawn failed");
+      },
+    });
+
+    try {
+      const messages = await collect(
+        url,
+        { type: "restartServer" },
+        (frames) =>
+          frames.some(
+            (frame) =>
+              typeof frame === "object" &&
+              frame !== null &&
+              "type" in frame &&
+              frame.type === "error",
+          ),
+      );
+      expect(messages.at(-1)).toEqual({
+        type: "error",
+        message: "Could not restart the server: spawn failed",
+      });
+      expect(await listRecords(url)).toMatchObject({ type: "records" });
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("reports that restarting is unavailable without a launcher", async () => {
     const { server, url } = await startServer();
 
@@ -355,6 +389,73 @@ describe("createApp", () => {
       await exchange(url, { type: "saveGoal", text: "Edited goal" });
 
       expect(existsSync(logPath)).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refreshes provider usage on the interval only while a client is connected", async () => {
+    // This exercises the server's real interval against the platform clock;
+    // fake timers cannot drive the WebSocket delivery it proves.
+    let calls = 0;
+    const secondFetch = Promise.withResolvers<void>();
+    const fetchUsage = (async () => {
+      calls += 1;
+      if (calls === 2) secondFetch.resolve();
+      const body = {
+        usage: {
+          rolling: { percent: 10 },
+          weekly: { percent: 20 },
+          monthly: { percent: 30 },
+        },
+      };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const { server, url } = await startServer({
+      providersRefreshMs: 20,
+      providers: (stateDir) => {
+        saveSubscriptions(stateDir, [
+          {
+            id: "go",
+            provider: "opencode-go",
+            label: "Go",
+            key: "sk-test-key",
+            enabled: true,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ]);
+        return new ProviderService({ stateDir, fetch: fetchUsage });
+      },
+    });
+
+    try {
+      await Bun.sleep(80);
+      expect(calls).toBe(0);
+
+      const twoFrames = Promise.withResolvers<void>();
+      const frames: Record<string, unknown>[] = [];
+      const socket = new WebSocket(`ws://${url}/ws`);
+      socket.onmessage = (event) => {
+        const message = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (message.type !== "providersState") return;
+        frames.push(message);
+        if (frames.length === 2) twoFrames.resolve();
+      };
+      const opened = Promise.withResolvers<void>();
+      socket.onopen = () => opened.resolve();
+      await opened.promise;
+      socket.send(JSON.stringify({ type: "getProviders" }));
+
+      await Promise.race([secondFetch.promise, Bun.sleep(2_000)]);
+      await Promise.race([twoFrames.promise, Bun.sleep(2_000)]);
+      socket.close();
+
+      expect(calls).toBeGreaterThanOrEqual(2);
+      expect(frames.length).toBeGreaterThanOrEqual(2);
     } finally {
       server.stop(true);
     }

@@ -2453,42 +2453,14 @@ a.code-chip--link:focus-visible {
   }
 }
 
-/* Sidebar: a disclosure row that opens a nested skill submenu. */
-.sidebar-tab-row {
-  align-items: center;
-  display: flex;
-  gap: 2px;
-}
-
-.sidebar-tab-row .sidebar-item {
-  flex: 1;
-  min-width: 0;
-}
-
-.sidebar-disclosure {
-  align-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 3px;
+/* Sidebar: a skill row toggles its rendered document inside the nested list. */
+.sidebar-item__chevron {
   color: var(--muted-foreground);
-  cursor: pointer;
-  display: flex;
-  flex: 0 0 20px;
-  height: 24px;
-  justify-content: center;
-  padding: 0;
-}
-
-.sidebar-disclosure:hover {
-  background: var(--secondary);
-  color: var(--foreground);
-}
-
-.sidebar-disclosure__icon {
+  flex: 0 0 auto;
   transition: transform 120ms ease;
 }
 
-.sidebar-disclosure__icon--open {
+.sidebar-item__chevron--open {
   transform: rotate(90deg);
 }
 
@@ -2498,17 +2470,38 @@ a.code-chip--link:focus-visible {
   padding-left: 6px;
 }
 
-.sidebar-submenu__context {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  padding: 6px 6px 2px;
-  text-transform: uppercase;
-}
-
 .sidebar-item--nested {
   padding-left: 8px;
+}
+
+.sidebar-skill {
+  border-left: 2px solid var(--border-strong);
+  margin: 0 0 6px 8px;
+  padding: 4px 0 4px 8px;
+}
+
+.sidebar-skill .sidebar-empty {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.sidebar-skill__path {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  margin: 0 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-skill .sidebar-skill__document {
+  font-size: 12px;
+  max-height: 320px;
+  max-width: none;
+  overflow: auto;
+  padding-right: 2px;
 }
 .goal-page {
   display: flex;

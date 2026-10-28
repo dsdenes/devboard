@@ -2173,13 +2173,31 @@ try {
   check(!reopenedPanel.table && reopenedPanel.detail && reopenedPanel.tabs === 0, "a surface no longer replaces the open page", reopenedPanel);
 
   // The Goal sidebar has one Skills entry that discloses the prepared skills.
-  const goalSkills = await page.eval<{ sections: number; toggle: boolean; menu: boolean }>(`(() => ({
-    sections: document.querySelectorAll('[data-testid="sidebar"] section[aria-label="Skills"]').length,
-    toggle: document.querySelector('[data-testid="goal-skills-toggle"]') !== null,
-    menu: document.querySelector('[data-testid="goal-skills-menu"]') !== null,
-  }))()`);
-  check(goalSkills.sections === 0 && goalSkills.toggle && !goalSkills.menu, "the Goal sidebar duplicates the skills list", goalSkills);
-  await page.click('[data-testid="goal-skills-disclosure"]');
+  const goalSkills = await page.eval<{
+    sections: number;
+    toggle: null | { expanded: string; disclosure: boolean };
+    menu: boolean;
+  }>(`(() => {
+    const toggle = document.querySelector('[data-testid="goal-skills-toggle"]');
+    return {
+      sections: document.querySelectorAll('[data-testid="sidebar"] section[aria-label="Skills"]').length,
+      toggle: toggle === null ? null : {
+        expanded: toggle.getAttribute("aria-expanded") ?? "",
+        disclosure: document.querySelector('[data-testid="goal-skills-disclosure"]') !== null,
+      },
+      menu: document.querySelector('[data-testid="goal-skills-menu"]') !== null,
+    };
+  })()`);
+  check(
+    goalSkills.sections === 0 &&
+      goalSkills.toggle !== null &&
+      goalSkills.toggle.expanded === "false" &&
+      !goalSkills.toggle.disclosure &&
+      !goalSkills.menu,
+    "the Goal sidebar still splits the skills toggle from its disclosure",
+    goalSkills,
+  );
+  await page.click('[data-testid="goal-skills-toggle"]');
   await page.wait(`document.querySelector('[data-testid="goal-skills-menu"]') !== null`, "the prepared skills disclosure");
   const goalSkillNames = await page.eval<string[]>(`[...document.querySelectorAll('[data-testid="goal-skill"]')].map((item) => item.getAttribute("data-name") ?? "")`);
   check(goalSkillNames.length >= 5 && goalSkillNames.every((name) => name.length > 0), "the skills disclosure is empty", goalSkillNames);
@@ -2188,7 +2206,55 @@ try {
     item?.click();
     return item?.getAttribute("data-name") ?? "";
   })()`);
-  await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the disclosure");
+  await page.wait(
+    `document.querySelector('[data-testid="goal-skill-content"]') !== null`,
+    "the skill content inside the sidebar list",
+  );
+  const sidebarSkill = await page.eval<{
+    name: string;
+    expanded: string;
+    text: string;
+    path: string;
+    blocks: number;
+    frontmatter: boolean;
+    overlay: boolean;
+    page: boolean;
+  }>(`(() => {
+    const content = document.querySelector('[data-testid="goal-skill-content"]');
+    const text = content?.querySelector('[data-testid="goal-skill-content-text"]');
+    const row = document.querySelector('[data-testid="goal-skill"][data-name="${clickedSkill}"]');
+    return {
+      name: content?.getAttribute("data-name") ?? "",
+      expanded: row?.getAttribute("aria-expanded") ?? "",
+      text: text?.textContent?.trim() ?? "",
+      path: content?.querySelector('.sidebar-skill__path')?.textContent?.trim() ?? "",
+      blocks: text?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
+      frontmatter: (text?.textContent ?? "").includes("devboard-managed"),
+      overlay: document.querySelector('[data-testid="skills-overlay"]') !== null,
+      page: document.querySelector('[data-testid="goal-skills-page"]') !== null,
+    };
+  })()`);
+  check(
+    sidebarSkill.name === clickedSkill &&
+      sidebarSkill.expanded === "true" &&
+      sidebarSkill.text.length > 0 &&
+      sidebarSkill.blocks > 0 &&
+      !sidebarSkill.frontmatter,
+    "expanding a sidebar skill does not show its rendered document",
+    { clickedSkill, sidebarSkill },
+  );
+  check(
+    sidebarSkill.path === `.omp/skills/${clickedSkill}/SKILL.md`,
+    "the sidebar skill document does not name its file",
+    sidebarSkill,
+  );
+  check(
+    !sidebarSkill.overlay && sidebarSkill.page,
+    "a sidebar skill expands content without opening the Skills page",
+    sidebarSkill,
+  );
+  await page.click('[data-testid="goal-skills-page"]');
+  await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the sidebar list");
   const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
   check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
   const goalSkillSurface = await page.eval<{
