@@ -42,6 +42,8 @@ export interface CycleDeps {
   collect: (root: string, instances: Instance[], window: Window) => Collection;
   gh: GhRun;
   delivery?: WatchdogDelivery;
+  /** Environment for delivery construction; defaults to `process.env`. */
+  environment?: Record<string, string | undefined>;
 }
 
 export interface ReportInstance {
@@ -109,6 +111,16 @@ function stamp(now: Date): string {
 
 function isFiled(entry: LedgerEntry | undefined): boolean {
   return entry !== undefined && entry.disposition.startsWith("filed:");
+}
+
+function firstLine(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  return (
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? "no diagnostic"
+  );
 }
 
 /** Runs one watchdog cycle. The caller owns the singleton lock. */
@@ -254,8 +266,19 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
   }
 
   let delivery = deps.delivery;
-  const deliveryFor = () => {
-    delivery ??= createWatchdogDelivery({ root, gh: deps.gh });
+  let deliveryFailure: string | undefined;
+  const deliveryFor = (): WatchdogDelivery | undefined => {
+    if (delivery !== undefined) return delivery;
+    if (deliveryFailure !== undefined) return undefined;
+    try {
+      delivery = createWatchdogDelivery({
+        root,
+        gh: deps.gh,
+        ...(deps.environment === undefined ? {} : { environment: deps.environment }),
+      });
+    } catch (error) {
+      deliveryFailure = firstLine(error);
+    }
     return delivery;
   };
   const queue = [
@@ -268,6 +291,9 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
           !ledger.pendingFiling.includes(fingerprint),
       ),
   ];
+  // A configuration failure is a per-fingerprint failure, not a lost cycle:
+  // build once here so every queued fingerprint can stay pending below.
+  if (queue.length > 0) deliveryFor();
 
   const issueInput = (fingerprint: string, entry: LedgerEntry): IssueInput => ({
     category: entry.category,
@@ -291,7 +317,15 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
       ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
       continue;
     }
-    const filed = await deliveryFor().create(issueInput(fingerprint, entry));
+    const active = deliveryFor();
+    if (active === undefined) {
+      const reason = deliveryFailure ?? "the watchdog delivery is unavailable";
+      failure ??= reason;
+      markPending(ledger, fingerprint);
+      context.log(`filing ${entry.category} failed: ${reason}`);
+      continue;
+    }
+    const filed = await active.create(issueInput(fingerprint, entry));
     if (filed.ok) {
       markFiled(ledger, fingerprint, filed.url, now);
       report.issues.push({
@@ -315,7 +349,14 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     if (filedThisCycle.has(finding.fingerprint)) continue;
     const baseline = Date.parse(entry.lastCommentAt ?? entry.filedAt ?? "");
     if (!Number.isFinite(baseline) || now.getTime() - baseline < COMMENT_INTERVAL_MS) continue;
-    const comment = await deliveryFor().comment(
+    const active = deliveryFor();
+    if (active === undefined) {
+      const reason = deliveryFailure ?? "the watchdog delivery is unavailable";
+      failure ??= reason;
+      context.log(`comment on ${entry.url} failed: ${reason}`);
+      continue;
+    }
+    const comment = await active.comment(
       entry.url,
       issueInput(finding.fingerprint, entry),
     );

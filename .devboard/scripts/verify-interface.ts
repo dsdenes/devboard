@@ -2170,13 +2170,31 @@ try {
   check(!reopenedPanel.table && reopenedPanel.detail && reopenedPanel.tabs === 0, "a surface no longer replaces the open page", reopenedPanel);
 
   // The Goal sidebar has one Skills entry that discloses the prepared skills.
-  const goalSkills = await page.eval<{ sections: number; toggle: boolean; menu: boolean }>(`(() => ({
-    sections: document.querySelectorAll('[data-testid="sidebar"] section[aria-label="Skills"]').length,
-    toggle: document.querySelector('[data-testid="goal-skills-toggle"]') !== null,
-    menu: document.querySelector('[data-testid="goal-skills-menu"]') !== null,
-  }))()`);
-  check(goalSkills.sections === 0 && goalSkills.toggle && !goalSkills.menu, "the Goal sidebar duplicates the skills list", goalSkills);
-  await page.click('[data-testid="goal-skills-disclosure"]');
+  const goalSkills = await page.eval<{
+    sections: number;
+    toggle: null | { expanded: string; disclosure: boolean };
+    menu: boolean;
+  }>(`(() => {
+    const toggle = document.querySelector('[data-testid="goal-skills-toggle"]');
+    return {
+      sections: document.querySelectorAll('[data-testid="sidebar"] section[aria-label="Skills"]').length,
+      toggle: toggle === null ? null : {
+        expanded: toggle.getAttribute("aria-expanded") ?? "",
+        disclosure: document.querySelector('[data-testid="goal-skills-disclosure"]') !== null,
+      },
+      menu: document.querySelector('[data-testid="goal-skills-menu"]') !== null,
+    };
+  })()`);
+  check(
+    goalSkills.sections === 0 &&
+      goalSkills.toggle !== null &&
+      goalSkills.toggle.expanded === "false" &&
+      !goalSkills.toggle.disclosure &&
+      !goalSkills.menu,
+    "the Goal sidebar still splits the skills toggle from its disclosure",
+    goalSkills,
+  );
+  await page.click('[data-testid="goal-skills-toggle"]');
   await page.wait(`document.querySelector('[data-testid="goal-skills-menu"]') !== null`, "the prepared skills disclosure");
   const goalSkillNames = await page.eval<string[]>(`[...document.querySelectorAll('[data-testid="goal-skill"]')].map((item) => item.getAttribute("data-name") ?? "")`);
   check(goalSkillNames.length >= 5 && goalSkillNames.every((name) => name.length > 0), "the skills disclosure is empty", goalSkillNames);
@@ -2185,7 +2203,55 @@ try {
     item?.click();
     return item?.getAttribute("data-name") ?? "";
   })()`);
-  await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the disclosure");
+  await page.wait(
+    `document.querySelector('[data-testid="goal-skill-content"]') !== null`,
+    "the skill content inside the sidebar list",
+  );
+  const sidebarSkill = await page.eval<{
+    name: string;
+    expanded: string;
+    text: string;
+    path: string;
+    blocks: number;
+    frontmatter: boolean;
+    overlay: boolean;
+    page: boolean;
+  }>(`(() => {
+    const content = document.querySelector('[data-testid="goal-skill-content"]');
+    const text = content?.querySelector('[data-testid="goal-skill-content-text"]');
+    const row = document.querySelector('[data-testid="goal-skill"][data-name="${clickedSkill}"]');
+    return {
+      name: content?.getAttribute("data-name") ?? "",
+      expanded: row?.getAttribute("aria-expanded") ?? "",
+      text: text?.textContent?.trim() ?? "",
+      path: content?.querySelector('.sidebar-skill__path')?.textContent?.trim() ?? "",
+      blocks: text?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
+      frontmatter: (text?.textContent ?? "").includes("devboard-managed"),
+      overlay: document.querySelector('[data-testid="skills-overlay"]') !== null,
+      page: document.querySelector('[data-testid="goal-skills-page"]') !== null,
+    };
+  })()`);
+  check(
+    sidebarSkill.name === clickedSkill &&
+      sidebarSkill.expanded === "true" &&
+      sidebarSkill.text.length > 0 &&
+      sidebarSkill.blocks > 0 &&
+      !sidebarSkill.frontmatter,
+    "expanding a sidebar skill does not show its rendered document",
+    { clickedSkill, sidebarSkill },
+  );
+  check(
+    sidebarSkill.path === `.omp/skills/${clickedSkill}/SKILL.md`,
+    "the sidebar skill document does not name its file",
+    sidebarSkill,
+  );
+  check(
+    !sidebarSkill.overlay && sidebarSkill.page,
+    "a sidebar skill expands content without opening the Skills page",
+    sidebarSkill,
+  );
+  await page.click('[data-testid="goal-skills-page"]');
+  await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the sidebar list");
   const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
   check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
   const goalSkillSurface = await page.eval<{
@@ -3053,6 +3119,72 @@ try {
   );
   await page.click('[data-testid="mode-goal"]');
   await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "Goal for the scroll check");
+
+  // A narrow workspace must wrap the page-header actions, never crop one at
+  // the right edge: the Start implementation action is the widest row.
+  if (!(await page.eval<boolean>(`document.querySelector('[data-testid="lifecycle-control"]') !== null`))) {
+    await runPalette("open.goal.overview");
+    await page.wait(`document.querySelector('[data-testid="lifecycle-control"]') !== null`, "the Goal overview for the narrow header check");
+  }
+  await page.focus('[data-testid="pane-handle"]');
+  await page.key("End");
+  await page.wait(
+    `Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width) >= 500`,
+    "the widest sidebar for the narrow header check",
+  );
+  const goalHeader = await page.eval<{
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    scrollWidth: number;
+    clientWidth: number;
+    buttons: Array<{ label: string; left: number; right: number; top: number; bottom: number }>;
+  } | null>(`(() => {
+    const header = document.querySelector('#workspace-goal .page-header');
+    if (header === null) return null;
+    const rect = header.getBoundingClientRect();
+    const actions = header.querySelector('.page-header__actions');
+    if (actions === null) return null;
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      scrollWidth: header.scrollWidth,
+      clientWidth: header.clientWidth,
+      buttons: [...actions.querySelectorAll('button')].map((button) => {
+        const box = button.getBoundingClientRect();
+        return {
+          label: button.textContent.trim(),
+          left: box.left,
+          right: box.right,
+          top: box.top,
+          bottom: box.bottom,
+        };
+      }),
+    };
+  })()`);
+  check(goalHeader !== null && goalHeader.buttons.length >= 3, "the narrow Goal header lost its actions", goalHeader);
+  const header = goalHeader!;
+  check(
+    header.scrollWidth <= header.clientWidth + 1 &&
+      header.buttons.every(
+        (button) =>
+          button.left >= header.left - 0.5 &&
+          button.right <= header.right + 0.5 &&
+          button.top >= header.top - 0.5 &&
+          button.bottom <= header.bottom + 0.5,
+      ),
+    "a page-header action is clipped when the workspace is narrow",
+    header,
+  );
+  await page.doubleClick('[data-testid="pane-handle"]');
+  await page.wait(
+    `Math.abs(Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width) - 300) <= 12`,
+    "the default sidebar after the narrow header check",
+  );
+
   await page.click('[data-testid="mode-discover"]');
   await page.wait(`document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`, "Discover for the scroll check");
   const discoverScroll = await page.eval<number>(`Math.round(document.querySelector('#workspace-discover .scroll-column')?.scrollTop ?? 0)`);
@@ -3579,8 +3711,8 @@ try {
     "the Discover overview with a retained remote project",
   );
   await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]') !== null`,
-    "the retained remote target banner",
+    `document.querySelector('[data-testid="discover-remote-clear"]') !== null`,
+    "the retained remote target",
   );
   const remoteStrip = await page.eval<{
     select: boolean;
@@ -3589,7 +3721,8 @@ try {
     selectedIndex: number;
     removes: Array<string | null>;
     error: string | null;
-    banner: string;
+    active: string;
+    removed: boolean;
     input: boolean;
     placeholder: string;
     label: string;
@@ -3601,7 +3734,6 @@ try {
     first: boolean;
   }>(`(() => {
     const select = document.querySelector('[data-testid="discover-remote-select"]');
-    const banner = document.querySelector('[data-testid="discover-remote-target"]');
     const input = document.querySelector('[data-testid="discover-remote-url"]');
     const start = document.querySelector('[data-testid="discover-remote-start"]');
     const error = document.querySelector('[data-testid="discover-error"]');
@@ -3614,7 +3746,10 @@ try {
         (button) => button.getAttribute("data-url"),
       ),
       error: error?.textContent ?? null,
-      banner: banner?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      active:
+        document.querySelector('.discover-remote__item--active .discover-remote__url')
+          ?.textContent?.trim() ?? "",
+      removed: document.querySelector('[data-testid="discover-remote-target"]') === null,
       input: input !== null,
       placeholder: input?.getAttribute("placeholder") ?? "",
       label: input?.getAttribute("aria-label") ?? "",
@@ -3649,9 +3784,10 @@ try {
     "a retained project produced a missing-clone error",
     remoteStrip,
   );
+  check(remoteStrip.removed, "the removed remote target banner still renders", remoteStrip);
   check(
-    remoteStrip.banner.includes(helloUrl) && remoteStrip.banner.includes("Manual testing"),
-    "the retained banner does not name the active URL with its marker",
+    remoteStrip.active === helloUrl,
+    "the active retained project is not marked in the retained list",
     remoteStrip,
   );
   check(
@@ -3692,7 +3828,7 @@ try {
     select.dispatchEvent(new Event("change", { bubbles: true }));
   })()`);
   await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]')?.textContent?.includes(${JSON.stringify(secondUrl)}) === true`,
+    `document.querySelector('.discover-remote__item--active .discover-remote__url')?.textContent?.trim() === ${JSON.stringify(secondUrl)}`,
     "the switched retained project",
     20_000,
   );
@@ -3704,13 +3840,13 @@ try {
     "switching a retained option did not render that project",
     switchedTitle,
   );
-  const switchedBanner = await page.eval<string>(
-    `document.querySelector('[data-testid="discover-remote-target"]')?.textContent ?? ""`,
+  const switchedActive = await page.eval<string>(
+    `document.querySelector('.discover-remote__item--active .discover-remote__url')?.textContent?.trim() ?? ""`,
   );
   check(
-    switchedBanner.includes(secondUrl),
-    "switching a retained option did not move the target banner",
-    switchedBanner,
+    switchedActive === secondUrl,
+    "switching a retained option did not mark the new target",
+    switchedActive,
   );
   const switchFrames = await page.eval<{ frames: Array<{ type?: string; url?: string } | null> }>(`(() => ({
     frames: (window.__viFrames ?? []).slice(${framesBeforeRetainedSwitch}).map((frame) => {
@@ -3767,7 +3903,7 @@ try {
   await runPalette("discover.tab.overview");
   await page.eval(`document.querySelector('[data-testid="discover-remote-remove"][data-url="${secondUrl}"]').click()`);
   await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]') === null`,
+    `document.querySelector('[data-testid="discover-remote-clear"]') === null`,
     "the host target after removing the active retained project",
     20_000,
   );
@@ -3815,19 +3951,27 @@ try {
     `document.querySelector('[data-testid="discover-remote-select"]') !== null`,
     "the retained dropdown after the removal restart",
   );
-  const afterRestart = await page.eval<{ options: string[]; target: boolean; error: string | null }>(`(() => ({
-    options: [...document.querySelector('[data-testid="discover-remote-select"]').options].map(
-      (option) => option.value,
-    ),
-    target: document.querySelector('[data-testid="discover-remote-target"]') !== null,
-    error: document.querySelector('[data-testid="discover-error"]')?.textContent ?? null,
-  }))()`);
+  const afterRestart = await page.eval<{
+    options: string[];
+    clear: boolean;
+    selectedIndex: number;
+    error: string | null;
+  }>(`(() => {
+    const select = document.querySelector('[data-testid="discover-remote-select"]');
+    return {
+      options: [...select.options].map((option) => option.value),
+      clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
+      selectedIndex: select.selectedIndex,
+      error: document.querySelector('[data-testid="discover-error"]')?.textContent ?? null,
+    };
+  })()`);
   check(
     JSON.stringify(afterRestart.options) === JSON.stringify([helloUrl]),
     "the removed project returned after a restart",
     afterRestart,
   );
-  check(!afterRestart.target, "a restart reactivated a removed project", afterRestart);
+  check(!afterRestart.clear, "a restart reactivated a removed project", afterRestart);
+  check(afterRestart.selectedIndex === -1, "a restart selected a removed project", afterRestart);
   check(
     afterRestart.error === null || !afterRestart.error.includes("missing"),
     "the removal restart reported a missing checkout",
@@ -3842,14 +3986,14 @@ try {
     select.dispatchEvent(new Event("change", { bubbles: true }));
   })()`);
   await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]')?.textContent?.includes(${JSON.stringify(helloUrl)}) === true`,
+    `document.querySelector('.discover-remote__item--active .discover-remote__url')?.textContent?.trim() === ${JSON.stringify(helloUrl)}`,
     "the selected remaining retained project",
     20_000,
   );
   await page.click('[data-testid="discover-remote-clear"]');
   await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]') === null`,
-    "the cleared remote banner",
+    `document.querySelector('[data-testid="discover-remote-clear"]') === null`,
+    "the cleared remote target",
     20_000,
   );
   const cleared = await page.eval<{ input: string; clear: boolean; options: string[] }>(`(() => ({
@@ -3925,7 +4069,7 @@ try {
   const gateOff = await page.eval<Record<string, boolean>>(`({
     url: document.querySelector('[data-testid="discover-remote-url"]') !== null,
     start: document.querySelector('[data-testid="discover-remote-start"]') !== null,
-    banner: document.querySelector('[data-testid="discover-remote-target"]') !== null,
+    remote: document.querySelector('[data-testid="discover-remote"]') !== null,
     clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
     select: document.querySelector('[data-testid="discover-remote-select"]') !== null,
     remove: document.querySelector('[data-testid="discover-remote-remove"]') !== null,
@@ -3934,7 +4078,7 @@ try {
   })`);
   check(gateOff.panel, "the gate-off host has no Discover overview", gateOff);
   check(
-    !gateOff.url && !gateOff.start && !gateOff.banner && !gateOff.clear && !gateOff.select && !gateOff.remove,
+    !gateOff.url && !gateOff.start && !gateOff.remote && !gateOff.clear && !gateOff.select && !gateOff.remove,
     "the gate-off host renders a remote control",
     gateOff,
   );
@@ -5808,6 +5952,18 @@ try {
 
   await page.click('[data-testid="open-issues-runs"]');
   await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the runs page");
+  const runsHeader = await page.eval<string[]>(
+    `[...document.querySelectorAll('.issues-runs-page > .issues-overview__header > div > *')].map((node) => \`\${node.tagName}:\${node.className}\`)`,
+  );
+  check(
+    runsHeader[0]?.startsWith("H1:") === true && runsHeader.every((entry) => !entry.includes("muted")),
+    "the runs header still carries a label above its title",
+    runsHeader,
+  );
+  const headerBadges = await page.eval<number>(
+    `document.querySelectorAll('.issues-runs-page > .issues-overview__header > .badge').length`,
+  );
+  check(headerBadges === 0, "the runs header still carries a count badge", headerBadges);
   const runCount = await page.eval<number>(`document.querySelectorAll('[data-testid="issues-run"]').length`);
   check(runCount === 4, "the runs page does not list every concurrent run", runCount);
   const goalRunCount = await page.eval<number>(

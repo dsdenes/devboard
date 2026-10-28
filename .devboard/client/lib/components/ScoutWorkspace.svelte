@@ -68,7 +68,6 @@
 
 <section class="issues-scout" data-testid="issues-scout" aria-label="Auto Scout">
   <PageHeader
-    eyebrow="Issues"
     title="Auto Scout"
     subtitle={scout.repoLabel}
     layout="bar"

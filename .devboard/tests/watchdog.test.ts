@@ -838,6 +838,57 @@ describe("filing", () => {
     );
   });
 
+  test("a delivery configuration failure keeps the finding pending and writes the reports", async () => {
+    const { root } = await fixtureRepository();
+    git(root, "remote", "set-url", "origin", "http://127.0.0.1:3001/acme/fixture.git");
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
+    const { gh, calls } = ghStub();
+
+    const result = await runCycle({
+      root,
+      now: fixedNow,
+      stateDir,
+      deps: {
+        discover: () => [instanceFor(root, 8080)],
+        collect: () => ({ events, malformed: 0, unattributed: 0 }),
+        gh,
+        environment: {},
+      },
+    });
+    const reason = "the watchdog needs GITEA_TOKEN for a Gitea origin";
+    expect(result.exitCode).toBe(1);
+    expect(result.report.action).toBe("failed");
+    expect(result.report.reason).toBe(reason);
+    expect(result.report.issues).toEqual([]);
+    expect(calls).toEqual([]);
+
+    const fingerprint = result.report.findings[0]?.fingerprint as string;
+    const latest = JSON.parse(readFileSync(join(stateDir, "latest.json"), "utf8"));
+    expect(latest.action).toBe("failed");
+    expect(latest.reason).toBe(reason);
+    expect(latest.findings[0]?.fingerprint).toBe(fingerprint);
+    expect(result.runDir).toBeDefined();
+    const runReport = JSON.parse(
+      readFileSync(join(result.runDir as string, "report.json"), "utf8"),
+    );
+    expect(runReport.action).toBe("failed");
+    expect(runReport.reason).toBe(reason);
+    expect(existsSync(join(result.runDir as string, "report.md"))).toBe(true);
+
+    const ledger = loadLedger(stateDir);
+    expect(ledger.pendingFiling).toEqual([fingerprint]);
+    expect(ledger.findings[fingerprint]?.disposition).toBe("none");
+
+    const retried = await runCycle(
+      cycleFor(root, { events, gh, now: new Date(fixedNow.getTime() + 60 * 1000) }),
+    );
+    expect(retried.report.action).toBe("filed");
+    expect(retried.report.issues).toHaveLength(1);
+    expect(calls).toHaveLength(1);
+    expect(loadLedger(stateDir).pendingFiling).toEqual([]);
+  });
+
   test("a timed-out gh call is a failure with a bounded reason", async () => {
     const { root } = await fixtureRepository();
     const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
