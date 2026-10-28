@@ -1705,13 +1705,6 @@ kbd {
   min-width: 0;
 }
 
-.discover-run__id {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .discover-run__started {
   font-size: 11px;
   white-space: nowrap;
@@ -2283,58 +2276,6 @@ a.code-chip--link:focus-visible {
 
 .discover-diagram text {
   fill: var(--foreground);
-}
-
-.discover-empty__body {
-  align-items: start;
-  display: grid;
-  gap: 16px 24px;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  padding: 16px;
-}
-
-@media (max-width: 1100px) {
-  .discover-empty__body {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-.discover-empty__body h2 {
-  font-size: 13px;
-  font-weight: 600;
-  margin: 0 0 6px;
-}
-
-.discover-empty__body p {
-  color: var(--foreground);
-  font-size: 12px;
-  line-height: 1.45;
-  margin: 0 0 8px;
-}
-
-.discover-empty__body p.muted {
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-
-.discover-writes {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.discover-writes li {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.discover-writes span {
-  color: var(--muted-foreground);
-  font-size: 11px;
 }
 
 .discover-search {

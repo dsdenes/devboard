@@ -650,9 +650,6 @@
               Started {startedLabel}
             </span>
           {/if}
-          {#if discover.runId !== null}
-            <code class="code-chip discover-run__id" title={discover.runId}>{discover.runId}</code>
-          {/if}
           <button
             type="button"
             class="discover-run__stop"
@@ -897,35 +894,5 @@
         {/if}
       </div>
     </div>
-  {:else}
-    <section class="panel discover-empty" data-testid="discover-empty">
-      <div class="discover-empty__body">
-        <div class="discover-empty__copy">
-          <h2>No project sheet yet</h2>
-          <p>
-            One Discover run reads the repository without running its commands. It publishes a
-            project sheet, one UbiLang glossary per bounded context, and five Agent Skills.
-          </p>
-          <p class="muted">
-            A field the crawl cannot ground is recorded as unknown instead of guessed. Switching
-            views or closing the browser never starts a run.
-          </p>
-        </div>
-        <ul class="discover-writes">
-          <li>
-            <code>.omp/discover/sheet.json</code>
-            <span>Project sheet: stack, commands, CI, architecture, unknowns</span>
-          </li>
-          <li>
-            <code>.omp/discover/glossary/</code>
-            <span>One UbiLang glossary per bounded context</span>
-          </li>
-          <li>
-            <code>.omp/skills/</code>
-            <span>Five project-specific agent skills</span>
-          </li>
-        </ul>
-      </div>
-    </section>
   {/if}
 </div>

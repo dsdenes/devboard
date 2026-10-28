@@ -589,21 +589,20 @@ optional meta row, and a right-aligned action group. The Overview frame holds th
 the full path stays in the tooltip), the one-line definition, the discovery date, and the single
 filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
 report it. Below the frame, an active run region appears only while a run exists: a tinted header
-with a `Discover` eyebrow, `Run in progress`, the run identifier as a code chip, `Started 3 minutes
-ago`, and Stop, followed by the activity terminal and its ownership note. A queued question region
-follows while a question waits. The sheet
-follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and Testing in the
-main column on the right, and Bounded contexts below them. The manual-testing strip is the last
-region of the page, so a source checkout never pushes it above the project identity. An error,
-an interrupted-run notice, and a stop notice render above the page in one notice stack.
+with a `Discover` eyebrow, `Run in progress`, `Started 3 minutes ago`, and Stop, followed by the
+activity terminal and its ownership note. A queued question region follows while a question waits.
+The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and
+Testing in the main column on the right, and Bounded contexts below them. The manual-testing strip
+is the last region of the page, so a source checkout never pushes it above the project identity. An
+error, an interrupted-run notice, and a stop notice render above the page in one notice stack.
 
 The Glossary row is a plain section link: it has no disclosure control and no nested submenu, so
 individual terms are never repeated as sidebar menu items. A term opens from its row on the
 Glossary page.
 
-With no published artifacts the Overview page shows an empty state (`data-testid="discover-empty"`)
-and a `Discover project` button (`data-testid="discover-start"`); with artifacts it shows
-`Re-discover`. The button is disabled when the socket is not open, while a Discover run is active,
+With no published artifacts the Overview page shows the header's first-run explanation and a
+`Discover project` button (`data-testid="discover-start"`); with artifacts it shows `Re-discover`.
+The button is disabled when the socket is not open, while a Discover run is active,
 or while Goal or Flow work is active, and its title names the reason. It never starts on page
 load, reconnect, mode switch, or page switch. Selecting it sends `{ "type": "discoverProject" }`;
 the server broadcasts `discoverStarted` and starts exactly one ACP peer whose prompt is exactly
