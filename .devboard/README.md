@@ -1210,6 +1210,8 @@ stale files are therefore removed after a week. These entries are never deleted 
   which the first Issues Start still reads to migrate handled issue numbers.
 - `.tmp/issues/` in full: every repo-scoped state, ledger, run, activity journal, control file,
   and the repo-anchored worker lock, including the run directory a running worker names.
+- `.tmp/flow/` in full: every repository key and session record, including the machine state,
+  reviewable artifacts, and worktree/PR bookkeeping Flow restore and History read.
 - the run directory of the cycle performing the sweep.
 - a `devboard-<pid>.lock` whose pid is still alive.
 
@@ -2363,9 +2365,10 @@ its issue), Check now clearing every cooldown, pause draining every peer, Stop c
 without a cooldown, per-agent questions and answer routing, two orphan children on a fresh start,
 version 1 state loading, reopened-issue eligibility, history pruning that keeps every running
 directory, preflight for both wrappers, repo-scoped state and lock isolation, atomic and damaged
-state, ledger migration, the activity bounds, and the conditional tracker. `tests/cleanup.test.ts` proves the watchdog
-preserves repo-scoped issues state and the repo-anchored lock while sweeping legacy orchestrator
-run files. Every fixture stays under `.devboard/.tmp`.
+state, ledger migration, the activity bounds, and the conditional tracker. `tests/cleanup.test.ts`
+proves the watchdog preserves repo-scoped issues state, the repo-anchored lock, and Flow session
+records that Flow restore still reads, while sweeping legacy orchestrator run files. Every fixture
+stays under `.devboard/.tmp`.
 `tests/launcher.test.ts` covers the launcher and harness package boundaries: the help output,
 the launcher's file list and size, the harness tarball's required and forbidden paths, its size,
 and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`
