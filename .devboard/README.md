@@ -1245,6 +1245,8 @@ A machine-level systemd user timer runs the watchdog independently of every dash
 minutes 0, 10, 20, 30, 40, and 50 of every hour (`OnCalendar=*:0/10`, `Persistent=true`), the
 `devboard-watchdog.service` oneshot runs `bun run watchdog -- --once` from the canonical harness.
 It survives logout (`Linger=yes`) and never starts, stops, or restarts a dashboard itself.
+The unit supplies only `PATH`, so the cycle reads the host root's `.env` itself; a value already
+present in the process environment wins over the file.
 
 Each cycle detects and reports; it never fixes. It reads the ten minutes before cycle start, both
 ends inclusive, from:
