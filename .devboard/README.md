@@ -159,9 +159,11 @@ issue through `/api/feedback` at once, then replaces itself with the issue URL. 
 never replace mode content or steal focus, and several arrivals are all retained. Flow blockers
 and verification results also remain in their mode context.
 
-The 26px status bar is two groups. The left group states the WebSocket connection and the
+The 26px status bar is two groups. The left group states the WebSocket connection, the
 project's own name (the last path segment, with a folder mark and the full path in its tooltip),
-separated by a hairline rule. The right group states the running lane count, the issues worker
+and the Providers control: the selected provider with the lowest remaining percentage, or
+`No provider`, which opens the Providers dialog. The right group states the running lane count,
+the issues worker
 state with a state dot, the watchdog's last action and age, and the running and installed
 versions; each metric carries a 10px uppercase label so its meaning never rests on color. When
 `versionState.stale` is true it shows the existing reload control (`reload-devboard`), whose
@@ -220,6 +222,9 @@ npx @dsdenes/devboard update     # install the newest npm version; do not restar
 npx @dsdenes/devboard doctor     # one PASS or FAIL line per check
 ```
 
+The launcher never discovers, reads, copies, or waits on another local Devboard installation or
+source checkout; it resolves the npm version and artifact for the target host alone.
+
 `install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
 `.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
 package's files. It keeps `.devboard/.tmp`, copies `templates/host-AGENTS.md` to
@@ -254,18 +259,63 @@ The global `/setup-devboard` command runs the launcher against the invoking sess
 directory. It lives here as `omp/commands/setup-devboard.md` and is linked into the user-level
 command directory (`$HOME/.omp/agent/commands/setup-devboard.md`) so every session sees it.
 
-### Model selection
+### Providers and model selection
 
-`omp/config.yml` is installed as `<host>/.omp/config.yml`, the host's omp project settings.
-Every harness peer starts its ACP process with `<REPO_DIR>` as the working directory, so each
-one, and the interactive agent started in that repository, uses the same policy:
+Provider authentication is a harness capability, not host settings. Exactly two providers exist:
 
-|Setting|Value|Meaning|
+|Provider|Environment variable|Model|
 |---|---|---|
-|`modelRoles`|`opencode-go/deepseek-v4.1-flash` for `default`, `plan`, `smol`, `slow`, and `task`|Model for every chat role the harness uses.|
+|OpenCode Go|`OPENCODE_API_KEY`|`opencode-go/deepseek-v4.1-flash`|
+|OpenRouter|`OPENROUTER_API_KEY`|`openrouter/deepseek/deepseek-v4.1-flash-1017`|
 
-The model is served by OpenCode Go and reads `OPENCODE_API_KEY`. No fallback chain is
-configured. Editing `omp/config.yml` here and rerunning `install.sh` changes the installed copy.
+The operator registers keys in the **Providers** dialog, reachable from the status-bar control
+(`data-testid="providers-indicator"`) and the `settings.providers` palette command. The dialog
+supports add, edit, enable/disable, delete with confirmation, refresh, and save. It shows each
+key's masked value, status (`ok`, `near limit`, `exhausted`, `invalid`, `unknown`), every quota
+window's remaining fraction, and the last check time.
+
+Credentials live in `<stateDir>/providers/credentials.json` (directory `0700`, file `0600`,
+atomic replacement). The file survives a dashboard restart and is never removed by
+`bun run cleanup` or the watchdog sweep, however old it is. Generated per-peer agent directories
+live beside it under `<stateDir>/providers/agents/<selection-id>/`. No key is ever returned by a
+command or event, written to the journal or activity log, or placed in a process's argv; the
+only value the interface receives is a mask ending in at most the last four characters. The
+durable state file under `<stateDir>/state/` carries no key material.
+
+Usage is read from `https://opencode.ai/zen/go/v1/usage` (`rolling`, `weekly`, and `monthly`
+percent used) and `https://openrouter.ai/api/v1/key` (`limit_remaining` and `limit`).
+`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL` and `DEVBOARD_OPENROUTER_USAGE_BASE_URL` override the base
+URLs for tests and offline verification. A key's usage is fetched at most once per 60 seconds
+unless the operator forces a refresh.
+
+Remaining is `1 - percent/100` for each Go window and `limit_remaining / limit` for OpenRouter,
+or unlimited when the account has no limit. A subscription is eligible only when every gating
+window is strictly above **1% remaining**; that is the rule the dialog states. Eligible
+OpenCode Go subscriptions rank by their lowest remaining window, and ties keep the operator's
+list order. A key whose usage check failed or timed out stays eligible with unknown headroom and
+ranks below every key with known headroom. When no Go subscription is eligible, the peer starts
+on the OpenRouter fallback model; when neither provider has an eligible subscription, no process
+starts and the UI and event stream report the reason. With no subscription configured at all,
+every peer start is refused with an error pointing at the Providers dialog, so a peer never
+silently inherits the operator's OMP login.
+
+Every agent process — goal work, lifecycle lanes, Flow, issues, Auto Scout, Ask, Discover, goal
+drafts, and skills preparation — starts with `PI_CODING_AGENT_DIR` pointing at a generated
+directory under `<stateDir>/providers/agents/`. Its `config.yml` pins `default`, `plan`, `smol`,
+`slow`, and `task` to the selected model. A Go selection also sets `retry.modelFallback: true`,
+`retry.fallbackOn: any`, and a chain from `opencode-go/*` to the OpenRouter fallback; an
+OpenRouter selection sets no chain. The peer environment removes the operator's inherited
+`OPENCODE_API_KEY` and `OPENROUTER_API_KEY` first, then adds only the selected keys (a Go peer
+also receives an OpenRouter key when one exists, for its fallback chain).
+
+`omp/config.yml` is still installed as `<host>/.omp/config.yml`, but it no longer pins
+`modelRoles`: a project-level pin would override the per-peer selection. The interactive agent
+started in the repository keeps OMP's configured default. Editing `omp/config.yml` here and
+rerunning `install.sh` changes the installed copy.
+
+`bun run verify:providers` proves the selection matrix, the 1% boundary, unknown-usage ranking,
+OpenRouter fallback, refusal, masking, environment and argv hygiene, generated roles,
+persistence, and cleanup protection against a local provider stub and a deterministic ACP peer.
 
 ## Build and run
 
@@ -1097,6 +1147,8 @@ and is retried the same way.
 |`STATIC_DIR`|`dist`|Built client directory.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
 |`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`.|
+|`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
+|`DEVBOARD_OPENROUTER_USAGE_BASE_URL`|`https://openrouter.ai/api`|OpenRouter usage base; overridden by tests and offline verification.|
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
 |`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads the newest Gitea release over the public HTTP API.|
@@ -1224,6 +1276,8 @@ stale files are therefore removed after a week. These entries are never deleted 
 
 - `.tmp/state/` and everything below it.
 - `.tmp/journal/`, which the journal rule above governs.
+- `.tmp/providers/` in full: the operator's credential store and every generated per-peer agent
+  directory. A credential is operator input, not scratch, and nothing recreates it.
 - `.tmp/watchdog/state.json`, `.tmp/watchdog/latest.json`, and `.tmp/watchdog/lock`.
 - `.tmp/orchestrator/state.json`, `.tmp/orchestrator/ledger.json`, and `.tmp/orchestrator/lock`,
   which the first Issues Start still reads to migrate handled issue numbers.
@@ -1995,6 +2049,11 @@ The client sends:
 { "type": "answer", "id": 1, "value": "Gamma" }
 { "type": "ask", "conversationId": "…", "question": "What does this label mean?", "context": { … } }
 { "type": "closeAsk", "conversationId": "…" }
+{ "type": "getProviders" }
+{ "type": "saveProvider", "id": "…", "provider": "opencode-go", "label": "Work", "key": "…" }
+{ "type": "deleteProvider", "id": "…" }
+{ "type": "setProviderEnabled", "id": "…", "enabled": false }
+{ "type": "refreshProviders" }
 ```
 
 - `getGoal` reads the goal document from disk and answers with its complete contents; an
@@ -2010,6 +2069,14 @@ The client sends:
   version a release packs, so an unpacked checkout never claims `0.1.0`. A client that connects,
   and the page every few seconds, asks for it; a stale answer makes the reload control appear
   with both versions in its title.
+- `getProviders` answers with `providersState`: every subscription with its masked key, status,
+  quota windows, remaining fraction, last check time, and error; the current `selection` (or
+  `null`), the refusal reason, and the fixed rule `rotates at 1% remaining`. `saveProvider`
+  validates a new or changed key first: HTTP 401/403 answers `providerError` and changes nothing,
+  while an unreachable endpoint or 5xx saves the subscription with status `unknown`. Editing a
+  label without a key never revalidates. `deleteProvider` and `setProviderEnabled` persist the
+  store without touching a running peer. `refreshProviders` bypasses the 60-second usage cache.
+  Every mutation broadcasts a fresh `providersState`; failures answer `providerError`.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
   lifecycle, enabled, paused, repository, poll times, queue entries with `labels`, `handled`,
   `runId`, and `agentRunId`, run summaries, the running `agents` (run id, issue number, startedAt,
@@ -2352,6 +2419,7 @@ The server answers with events:
 cd .devboard
 bun test
 bun run verify:interface
+bun run verify:providers
 bun run verify:install
 bun run verify:update
 bun run verify:ui

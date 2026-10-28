@@ -84,7 +84,8 @@ no local checkout, running dashboard, or required release tarball is involved. G
 push mirror of this repository; it carries no release the dashboard reads.
 
 A host installs a real npm prefix at `<host>/.devboard` with
-`npx @dsdenes/devboard install`. `<host>/.omp/commands`, `<host>/.omp/extensions`, and
+`npx @dsdenes/devboard install`. The launcher never discovers, reads, copies, or waits on another
+local Devboard installation or source checkout. `<host>/.omp/commands`, `<host>/.omp/extensions`, and
 `<host>/AGENTS.md` are real copies from the installed package; no harness path is a symlink.
 The canonical `.devboard/` in this checkout is the source tree and is never an npm install.
 
