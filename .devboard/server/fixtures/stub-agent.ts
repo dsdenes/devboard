@@ -590,7 +590,7 @@ async function runGoalDraft(relativePath: string) {
   } catch {
     // A missing draft still produces a deterministic failure.
   }
-  stream("Reading the draft and researching the repository");
+  stream(`Reading the draft and researching the repository ${relativePath}`);
 
   if (source.includes("STUB-QUESTION")) {
     await askQuestions(1, { recommended: false });

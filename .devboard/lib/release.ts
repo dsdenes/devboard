@@ -16,6 +16,7 @@ import {
   giteaDownloadAsset,
   giteaLatestRelease,
   giteaReleaseByTag,
+  GiteaError,
   type GiteaAsset,
   type GiteaReleaseDocument,
   type GiteaTarget,
@@ -430,7 +431,19 @@ async function giteaRelease(source: GiteaSource): Promise<ReleaseInfo> {
       "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
     );
   }
-  return releaseFromDocument(await giteaLatestRelease(giteaTarget(source)));
+  try {
+    return releaseFromDocument(await giteaLatestRelease(giteaTarget(source)));
+  } catch (error) {
+    // A body that is not JSON is a proxy page, a truncated answer, or another
+    // tool's payload, not a harness defect: the update check retries it as
+    // feed context exactly as it did before the share Gitea client.
+    const marker = "returned invalid JSON: ";
+    if (error instanceof GiteaError && error.message.includes(marker)) {
+      const snippet = error.message.slice(error.message.indexOf(marker) + marker.length);
+      throw new ReleaseFeedError(`the release feed returned an unreadable description: ${snippet}`);
+    }
+    throw error;
+  }
 }
 
 async function giteaReleaseForVersion(

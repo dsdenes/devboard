@@ -15,8 +15,8 @@ import {
 } from "../server/goal-drafts";
 
 /**
- * Draft reads and the one elaboration peer. Every fixture lives under
- * `.devboard/.tmp`; the peer is a controllable fake and no agent, GitHub
+ * Draft reads and the per-path elaboration peers. Every fixture lives under
+ * `.devboard/.tmp`; each peer is a controllable fake and no agent, GitHub
  * object, or file outside the fixture is touched.
  */
 
@@ -45,17 +45,23 @@ function draftText(heading: string, body: string): string {
   return `# ${heading}\n\n> Unprocessed draft.\n\n${body}\n`;
 }
 
+function draftPath(name: string): string {
+  return `.devboard/goal-proposals/${name}`;
+}
+
 class FakePeer implements GoalDraftPeer {
-  readonly pid = 4242;
+  readonly pid: number;
   readonly argv = ["stub-acp"];
   readonly prompts: string[] = [];
   readonly options: GoalDraftPeerOptions;
+  readonly answered: Array<{ id: number | string; value: string }> = [];
   closed = false;
   closes = 0;
   private settle: { resolve: (value: unknown) => void; reject: (error: Error) => void } | undefined;
 
-  constructor(options: GoalDraftPeerOptions) {
+  constructor(options: GoalDraftPeerOptions, pid = 4242) {
     this.options = options;
+    this.pid = pid;
   }
 
   run(prompt: string): Promise<unknown> {
@@ -67,6 +73,7 @@ class FakePeer implements GoalDraftPeer {
 
   answer(id: number | string, value: string): boolean {
     if (this.lastQuestion === undefined || String(this.lastQuestion.id) !== String(id)) return false;
+    this.answered.push({ id, value });
     this.options.onActivity({ text: `answered ${value}`, append: false });
     return true;
   }
@@ -112,7 +119,7 @@ function managerFor(
     send: (event) => events.push(event),
     environment,
     connect: (options) => {
-      const peer = new FakePeer(options);
+      const peer = new FakePeer(options, 4200 + peers.length);
       peers.push(peer);
       return peer;
     },
@@ -188,88 +195,295 @@ describe("draft listing and reading", () => {
   });
 });
 
-describe("elaboration", () => {
-  test("sends exactly one /goal-draft prompt and streams activity and questions", async () => {
+describe("parallel elaboration", () => {
+  test("starts two distinct drafts at once with one live peer and snapshot per path", async () => {
     const { root, drafts } = await fixture();
-    writeFileSync(join(drafts, "elaborate-me.md"), draftText("Elaborate me", "body"));
+    writeFileSync(join(drafts, "alpha.md"), draftText("Alpha", "body"));
+    writeFileSync(join(drafts, "beta.md"), draftText("Beta", "body"));
     const peers: FakePeer[] = [];
     const { manager, events } = managerFor(root, peers);
 
-    const started = await manager.start(".devboard/goal-proposals/elaborate-me.md");
-    expect(started.ok).toBe(true);
-    const peer = await waitFor(() => peers[0], "the peer");
-    expect(peer.prompts).toEqual(["/goal-draft .devboard/goal-proposals/elaborate-me.md"]);
-    expect(peer.options.command).toBe("omp acp");
-    expect(peer.options.cwd).toBe(root);
-    expect(manager.snapshot().status).toBe("running");
-    expect(manager.snapshot().path).toBe(".devboard/goal-proposals/elaborate-me.md");
+    expect((await manager.start(draftPath("alpha.md"))).ok).toBe(true);
+    expect((await manager.start(draftPath("beta.md"))).ok).toBe(true);
+    expect(peers).toHaveLength(2);
+    const [alpha, beta] = peers as [FakePeer, FakePeer];
+    expect(alpha?.prompts).toEqual([`/goal-draft ${draftPath("alpha.md")}`]);
+    expect(beta?.prompts).toEqual([`/goal-draft ${draftPath("beta.md")}`]);
+    expect(alpha?.options.cwd).toBe(root);
+    expect(beta?.options.command).toBe("omp acp");
 
-    peer.emit("Reading the goal proposals");
-    expect(manager.snapshot().activity).toEqual(["Reading the goal proposals"]);
-    peer.ask({
+    const runs = manager.snapshot();
+    expect(runs.map((run) => [run.path, run.status])).toEqual([
+      [draftPath("alpha.md"), "running"],
+      [draftPath("beta.md"), "running"],
+    ]);
+    expect(manager.snapshot(draftPath("alpha.md"))).toMatchObject({
+      status: "running",
+      path: draftPath("alpha.md"),
+    });
+    expect(manager.snapshot(draftPath("beta.md")).status).toBe("running");
+    expect(manager.isRunning(draftPath("alpha.md"))).toBe(true);
+    expect(manager.isRunning(draftPath("beta.md"))).toBe(true);
+
+    alpha?.emit("Alpha read the draft");
+    beta?.emit("Beta read the draft");
+    expect(manager.snapshot(draftPath("alpha.md")).activity).toEqual(["Alpha read the draft"]);
+    expect(manager.snapshot(draftPath("beta.md")).activity).toEqual(["Beta read the draft"]);
+    expect(
+      events.some((event) => {
+        if (!isEventType(event, "issuesDraftState") || typeof event !== "object" || event === null) {
+          return false;
+        }
+        if (!("draft" in event) || typeof event.draft !== "object" || event.draft === null) {
+          return false;
+        }
+        return "path" in event.draft && event.draft.path === draftPath("beta.md");
+      }),
+    ).toBe(true);
+  });
+
+  test("starts a third and fourth draft without refusing any of them", async () => {
+    const { root, drafts } = await fixture();
+    const names = ["one.md", "two.md", "three.md", "four.md"];
+    for (const name of names) writeFileSync(join(drafts, name), draftText(name, "body"));
+    const peers: FakePeer[] = [];
+    const { manager } = managerFor(root, peers);
+
+    for (const name of names) {
+      const started = await manager.start(draftPath(name));
+      expect(started.ok).toBe(true);
+    }
+    expect(peers).toHaveLength(4);
+    expect(manager.snapshot().map((run) => run.status)).toEqual([
+      "running",
+      "running",
+      "running",
+      "running",
+    ]);
+    for (const peer of peers) expect(peer.prompts).toHaveLength(1);
+  });
+
+  test("refuses a second peer for the same path with the exact reason", async () => {
+    const { root, drafts } = await fixture();
+    writeFileSync(join(drafts, "only.md"), draftText("Only", "body"));
+    const peers: FakePeer[] = [];
+    const { manager } = managerFor(root, peers);
+
+    expect((await manager.start(draftPath("only.md"))).ok).toBe(true);
+    const peer = await waitFor(() => peers[0], "the first peer");
+    const refused = await manager.start(draftPath("only.md"));
+    expect(refused).toEqual({ ok: false, message: "This draft is being elaborated." });
+    expect(peers).toHaveLength(1);
+    expect(manager.snapshot(draftPath("only.md")).status).toBe("running");
+
+    peer.emit("still streaming");
+    expect(manager.snapshot(draftPath("only.md")).activity).toEqual(["still streaming"]);
+  });
+
+  test("answers one draft's question without reaching another", async () => {
+    const { root, drafts } = await fixture();
+    writeFileSync(join(drafts, "alpha.md"), draftText("Alpha", "body"));
+    writeFileSync(join(drafts, "beta.md"), draftText("Beta", "body"));
+    const peers: FakePeer[] = [];
+    const { manager } = managerFor(root, peers);
+
+    await manager.start(draftPath("alpha.md"));
+    await manager.start(draftPath("beta.md"));
+    const [alpha, beta] = peers as [FakePeer, FakePeer];
+    alpha.emit("Alpha activity");
+    beta.emit("Beta activity");
+    alpha.ask({
       id: 3,
-      message: "Which scope?",
+      message: "Alpha scope?",
       options: [{ label: "One", description: "First", recommended: true }],
       properties: {},
       required: undefined,
     });
-    const asked = await waitFor(
-      () => (manager.snapshot().question === null ? undefined : manager.snapshot()),
-      "the question",
+    beta.ask({
+      id: 7,
+      message: "Beta scope?",
+      options: [{ label: "Two", recommended: true }],
+      properties: {},
+      required: undefined,
+    });
+    await waitFor(
+      () =>
+        manager.snapshot(draftPath("alpha.md")).question !== null &&
+        manager.snapshot(draftPath("beta.md")).question !== null
+          ? true
+          : undefined,
+      "both questions",
     );
-    expect(asked.question?.message).toBe("Which scope?");
-    expect(asked.question?.options[0]?.recommended).toBe(true);
-    expect(manager.answer(3, "One")).toBe(true);
-    expect(manager.snapshot().question).toBeNull();
-    expect(manager.snapshot().activity).toContain("answered One");
 
-    expect(events.some((event) => isEventType(event, "issuesDraftState"))).toBe(true);
+    expect(manager.answer(draftPath("alpha.md"), 3, "One")).toBe(true);
+    expect(manager.snapshot(draftPath("alpha.md")).question).toBeNull();
+    expect(manager.snapshot(draftPath("alpha.md")).activity).toContain("answered One");
+    expect(manager.snapshot(draftPath("beta.md")).question?.id).toBe(7);
+    expect(manager.snapshot(draftPath("beta.md")).activity).toEqual(["Beta activity"]);
+    expect(beta.answered).toEqual([]);
+    expect(alpha.answered).toEqual([{ id: 3, value: "One" }]);
+
+    expect(manager.answer(draftPath("beta.md"), 3, "Wrong")).toBe(false);
+    expect(beta.answered).toEqual([]);
+    expect(manager.snapshot(draftPath("beta.md")).question?.id).toBe(7);
   });
 
-  test("runs one elaboration at a time and stop keeps the draft", async () => {
+  test("refuses an answer when the addressed draft has no pending question", async () => {
     const { root, drafts } = await fixture();
-    writeFileSync(join(drafts, "one.md"), draftText("One", "body"));
-    writeFileSync(join(drafts, "two.md"), draftText("Two", "body"));
+    writeFileSync(join(drafts, "alpha.md"), draftText("Alpha", "body"));
     const peers: FakePeer[] = [];
     const { manager } = managerFor(root, peers);
 
-    expect((await manager.start(".devboard/goal-proposals/one.md")).ok).toBe(true);
-    const first = await waitFor(() => peers[0], "the first peer");
-    const refused = await manager.start(".devboard/goal-proposals/two.md");
-    expect(refused.ok).toBe(false);
-    if (!refused.ok) {
-      expect(refused.message).toContain("An elaboration is already running for");
-      expect(refused.message).toContain(".devboard/goal-proposals/one.md");
-    }
-
-    expect(manager.stop()).toBe(true);
-    expect(first.closed).toBe(true);
-    expect(first.closes).toBe(1);
-    expect(manager.snapshot().status).toBe("stopped");
-    expect(existsSync(join(drafts, "one.md"))).toBe(true);
-
-    expect((await manager.start(".devboard/goal-proposals/two.md")).ok).toBe(true);
-    const second = await waitFor(() => peers[1], "the retried peer");
-    expect(second.prompts).toEqual(["/goal-draft .devboard/goal-proposals/two.md"]);
+    await manager.start(draftPath("alpha.md"));
+    const peer = await waitFor(() => peers[0], "the peer");
+    expect(manager.answer(draftPath("alpha.md"), 1, "Anything")).toBe(false);
+    expect(manager.answer(draftPath("missing.md"), 1, "Anything")).toBe(false);
+    expect(peer.answered).toEqual([]);
+    expect(manager.snapshot(draftPath("alpha.md")).status).toBe("running");
   });
 
-  test("a stop while the provider environment resolves closes the late peer without running it", async () => {
+  test("stops only the addressed draft and keeps the other running", async () => {
+    const { root, drafts } = await fixture();
+    writeFileSync(join(drafts, "alpha.md"), draftText("Alpha", "body"));
+    writeFileSync(join(drafts, "beta.md"), draftText("Beta", "body"));
+    const peers: FakePeer[] = [];
+    const { manager } = managerFor(root, peers);
+
+    await manager.start(draftPath("alpha.md"));
+    await manager.start(draftPath("beta.md"));
+    const [alpha, beta] = peers as [FakePeer, FakePeer];
+    beta.emit("Beta keeps running");
+
+    expect(manager.stop(draftPath("alpha.md"))).toBe(true);
+    expect(alpha.closed).toBe(true);
+    expect(alpha.closes).toBe(1);
+    expect(manager.snapshot(draftPath("alpha.md")).status).toBe("stopped");
+    expect(existsSync(join(drafts, "alpha.md"))).toBe(true);
+    expect(manager.snapshot(draftPath("beta.md")).status).toBe("running");
+    expect(beta.closed).toBe(false);
+    expect(manager.snapshot(draftPath("beta.md")).activity).toEqual(["Beta keeps running"]);
+    expect(manager.isRunning(draftPath("beta.md"))).toBe(true);
+
+    alpha.emit("a late line from the stopped peer");
+    expect(manager.snapshot(draftPath("alpha.md")).activity).toEqual([]);
+    expect(manager.stop(draftPath("beta.md"))).toBe(true);
+    expect(beta.closes).toBe(1);
+  });
+
+  test("records one success and one failure while a third draft keeps running", async () => {
+    const { root, drafts } = await fixture();
+    writeFileSync(join(drafts, "alpha.md"), draftText("Alpha", "body"));
+    writeFileSync(join(drafts, "beta.md"), draftText("Beta", "body"));
+    writeFileSync(join(drafts, "gamma.md"), draftText("Gamma", "body"));
+    const peers: FakePeer[] = [];
+    const { manager } = managerFor(root, peers);
+
+    await manager.start(draftPath("alpha.md"));
+    await manager.start(draftPath("beta.md"));
+    await manager.start(draftPath("gamma.md"));
+    const [alpha, beta, gamma] = peers as [FakePeer, FakePeer, FakePeer];
+    gamma.emit("Gamma is researching");
+    gamma.ask({
+      id: 11,
+      message: "Gamma scope?",
+      options: [{ label: "Whole", recommended: true }],
+      properties: {},
+      required: undefined,
+    });
+    await waitFor(
+      () => (manager.snapshot(draftPath("gamma.md")).question === null ? undefined : true),
+      "the gamma question",
+    );
+
+    await unlink(join(drafts, "alpha.md"));
+    alpha.succeed();
+    const succeeded = await waitFor(
+      () =>
+        manager.snapshot(draftPath("alpha.md")).status === "succeeded" ? true : undefined,
+      "the alpha success",
+    );
+    expect(succeeded).toBe(true);
+    expect(existsSync(join(drafts, "alpha.md"))).toBe(false);
+    expect(manager.snapshot(draftPath("beta.md")).status).toBe("running");
+    expect(manager.snapshot(draftPath("gamma.md")).status).toBe("running");
+
+    beta.fail("the model is unavailable");
+    const failed = await waitFor(
+      () => (manager.snapshot(draftPath("beta.md")).status === "failed" ? true : undefined),
+      "the beta failure",
+    );
+    expect(failed).toBe(true);
+    expect(manager.snapshot(draftPath("beta.md")).error).toBe("the model is unavailable");
+    expect(existsSync(join(drafts, "beta.md"))).toBe(true);
+
+    const gammaRun = manager.snapshot(draftPath("gamma.md"));
+    expect(gammaRun.status).toBe("running");
+    expect(gammaRun.error).toBeNull();
+    expect(gammaRun.question?.id).toBe(11);
+    expect(gammaRun.activity).toEqual(["Gamma is researching"]);
+    expect(manager.snapshot().map((run) => run.path)).toEqual([
+      draftPath("beta.md"),
+      draftPath("gamma.md"),
+    ]);
+    expect(listGoalDrafts(root).map((draft) => draft.name)).toEqual(["beta.md", "gamma.md"]);
+  });
+
+  test("dispose closes every live peer and leaves no run running", async () => {
+    const { root, drafts } = await fixture();
+    writeFileSync(join(drafts, "alpha.md"), draftText("Alpha", "body"));
+    writeFileSync(join(drafts, "beta.md"), draftText("Beta", "body"));
+    const peers: FakePeer[] = [];
+    const { manager } = managerFor(root, peers);
+
+    await manager.start(draftPath("alpha.md"));
+    await manager.start(draftPath("beta.md"));
+    expect(peers).toHaveLength(2);
+
+    manager.dispose();
+    for (const peer of peers) {
+      expect(peer.closed).toBe(true);
+      expect(peer.closes).toBe(1);
+    }
+    expect(manager.children()).toEqual([]);
+    expect(manager.snapshot().map((run) => run.status)).toEqual(["stopped", "stopped"]);
+    expect(manager.snapshot().some((run) => run.status === "running")).toBe(false);
+  });
+
+  test("children lists every live peer's pid, argv, and cwd", async () => {
+    const { root, drafts } = await fixture();
+    writeFileSync(join(drafts, "alpha.md"), draftText("Alpha", "body"));
+    writeFileSync(join(drafts, "beta.md"), draftText("Beta", "body"));
+    const peers: FakePeer[] = [];
+    const { manager } = managerFor(root, peers);
+
+    await manager.start(draftPath("alpha.md"));
+    await manager.start(draftPath("beta.md"));
+    expect(manager.children()).toEqual([
+      { pid: 4200, argv: ["stub-acp"], cwd: root },
+      { pid: 4201, argv: ["stub-acp"], cwd: root },
+    ]);
+
+    manager.stop(draftPath("alpha.md"));
+    expect(manager.children()).toEqual([{ pid: 4201, argv: ["stub-acp"], cwd: root }]);
+  });
+
+  test("a stop while the provider environment resolves closes that late peer without running it", async () => {
     const { root, drafts } = await fixture();
     writeFileSync(join(drafts, "late.md"), draftText("Late", "body"));
     const peers: FakePeer[] = [];
     const environment = Promise.withResolvers<Record<string, string | undefined>>();
     const { manager } = managerFor(root, peers, () => environment.promise);
 
-    const starting = manager.start(".devboard/goal-proposals/late.md");
-    expect(manager.snapshot().status).toBe("running");
-    expect(manager.stop()).toBe(true);
+    const starting = manager.start(draftPath("late.md"));
+    expect(manager.snapshot(draftPath("late.md")).status).toBe("running");
+    expect(manager.stop(draftPath("late.md"))).toBe(true);
     environment.resolve({});
 
     const result = await starting;
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.stopped).toBe(true);
-    expect(manager.snapshot().status).toBe("stopped");
-    expect(manager.snapshot().error).toBeNull();
+    expect(manager.snapshot(draftPath("late.md")).status).toBe("stopped");
+    expect(manager.snapshot(draftPath("late.md")).error).toBeNull();
     expect(existsSync(join(drafts, "late.md"))).toBe(true);
 
     const peer = peers[0];
@@ -279,7 +493,7 @@ describe("elaboration", () => {
     expect(peer?.closes).toBe(1);
   });
 
-  test("a connect failure after stop leaves the status stopped rather than failed", async () => {
+  test("a connect failure after stop leaves that draft stopped rather than failed", async () => {
     const { root, drafts } = await fixture();
     writeFileSync(join(drafts, "late-failure.md"), draftText("Late failure", "body"));
     let manager!: GoalDraftManager;
@@ -291,50 +505,52 @@ describe("elaboration", () => {
       connect: () => {
         // The stop lands while the peer is being constructed; the failure that
         // follows must not replace the operator's `stopped` state with `failed`.
-        manager.stop();
+        manager.stop(draftPath("late-failure.md"));
         throw new Error("connection refused");
       },
     });
     managers.push(manager);
 
-    const result = await manager.start(".devboard/goal-proposals/late-failure.md");
+    const result = await manager.start(draftPath("late-failure.md"));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.stopped).toBe(true);
-    expect(manager.snapshot().status).toBe("stopped");
-    expect(manager.snapshot().error).toBeNull();
-    expect(manager.child()).toBeUndefined();
+    expect(manager.snapshot(draftPath("late-failure.md")).status).toBe("stopped");
+    expect(manager.snapshot(draftPath("late-failure.md")).error).toBeNull();
+    expect(manager.children()).toEqual([]);
     expect(existsSync(join(drafts, "late-failure.md"))).toBe(true);
   });
 
-  test("a failed peer keeps the draft and reports the error; retry starts a new peer", async () => {
+  test("a failed peer keeps its draft and reports the error; retry starts a new peer", async () => {
     const { root, drafts } = await fixture();
     writeFileSync(join(drafts, "fail.md"), draftText("Fail", "body"));
     const peers: FakePeer[] = [];
     const { manager } = managerFor(root, peers);
 
-    await manager.start(".devboard/goal-proposals/fail.md");
+    await manager.start(draftPath("fail.md"));
     const peer = await waitFor(() => peers[0], "the peer");
     peer.fail("the model is unavailable");
     const failed = await waitFor(
-      () => (manager.snapshot().status === "failed" ? manager.snapshot() : undefined),
+      () => (manager.snapshot(draftPath("fail.md")).status === "failed" ? true : undefined),
       "the failure",
     );
-    expect(failed.error).toBe("the model is unavailable");
+    expect(failed).toBe(true);
+    expect(manager.snapshot(draftPath("fail.md")).error).toBe("the model is unavailable");
     expect(existsSync(join(drafts, "fail.md"))).toBe(true);
 
-    await manager.start(".devboard/goal-proposals/fail.md");
+    await manager.start(draftPath("fail.md"));
     const retry = await waitFor(() => peers[1], "the retry peer");
-    expect(retry.prompts).toEqual(["/goal-draft .devboard/goal-proposals/fail.md"]);
+    expect(retry.prompts).toEqual([`/goal-draft ${draftPath("fail.md")}`]);
+    expect(manager.snapshot(draftPath("fail.md")).status).toBe("running");
   });
 
-  test("a successful stub agent removes the draft only after it verifies the issue label", async () => {
+  test("a successful stub agent removes only its draft after verifying the issue label", async () => {
     const { root, drafts } = await fixture();
     writeFileSync(join(drafts, "verified.md"), draftText("Verified", "body"));
     writeFileSync(join(drafts, "unverified.md"), draftText("Unverified", "body"));
     const peers: FakePeer[] = [];
     const { manager } = managerFor(root, peers);
 
-    await manager.start(".devboard/goal-proposals/verified.md");
+    await manager.start(draftPath("verified.md"));
     const verified = await waitFor(() => peers[0], "the verifying peer");
     // The stub stands in for the agent: file the spec, read the issue back,
     // and delete only when that read carries the goal label and same bytes.
@@ -345,31 +561,32 @@ describe("elaboration", () => {
     if (verifiedLabel) await unlink(join(drafts, "verified.md"));
     verified.succeed();
     await waitFor(
-      () => (manager.snapshot().status === "succeeded" ? true : undefined),
+      () => (manager.snapshot(draftPath("verified.md")).status === "succeeded" ? true : undefined),
       "the verified success",
     );
     expect(existsSync(join(drafts, "verified.md"))).toBe(false);
     expect(existsSync(spec)).toBe(true);
     expect(verified.closed).toBe(true);
     expect(verified.closes).toBe(1);
-    expect(manager.child()).toBeUndefined();
+    expect(manager.children()).toEqual([]);
     expect(listGoalDrafts(root).map((draft) => draft.name)).toEqual(["unverified.md"]);
 
-    await manager.start(".devboard/goal-proposals/unverified.md");
+    await manager.start(draftPath("unverified.md"));
     const unverified = await waitFor(() => peers[1], "the failing verification peer");
-    expect(manager.child()).toEqual({ pid: unverified.pid, argv: ["stub-acp"], cwd: root });
+    expect(manager.children()).toEqual([{ pid: 4201, argv: ["stub-acp"], cwd: root }]);
     const verifiedLabelOnCreate = false;
     if (verifiedLabelOnCreate) await unlink(join(drafts, "unverified.md"));
     unverified.fail("goal label missing from the created issue");
     const failed = await waitFor(
-      () => (manager.snapshot().status === "failed" ? manager.snapshot() : undefined),
+      () => (manager.snapshot(draftPath("unverified.md")).status === "failed" ? true : undefined),
       "the failed verification",
     );
+    expect(failed).toBe(true);
     expect(existsSync(join(drafts, "unverified.md"))).toBe(true);
-    expect(failed.error).toContain("goal label missing");
+    expect(manager.snapshot(draftPath("unverified.md")).error).toContain("goal label missing");
     expect(unverified.closed).toBe(true);
     expect(unverified.closes).toBe(1);
-    expect(manager.child()).toBeUndefined();
+    expect(manager.children()).toEqual([]);
     expect(peers.filter((peer) => !peer.closed)).toHaveLength(0);
   });
 });

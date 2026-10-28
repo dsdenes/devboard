@@ -14,14 +14,12 @@
    */
   const proposal = $derived(draftProposal(issues.draft?.text ?? ""));
 
-  // The header reports this draft's run only; another draft's run is not this draft's state.
-  const run = $derived(
-    issues.draft !== null && issues.draftRun?.path === issues.draft.path ? issues.draftRun : null,
-  );
+  // The header reports the selected draft's run only; another draft's run is not this draft's state.
+  const run = $derived(issues.draft !== null ? issues.draftRunFor(issues.draft.path) : null);
   const status = $derived(run?.status ?? "idle");
   const running = $derived(run?.status === "running");
   const question = $derived(run?.question ?? null);
-  const error = $derived(issues.draftError ?? run?.error ?? null);
+  const error = $derived(issues.draftErrorFor(issues.draft?.path ?? null));
 
   onMount(() => {
     markDraftsPage(true);
@@ -60,23 +58,47 @@
       <div class="panel__body panel__body--flush">
         <ol class="issues-drafts" data-testid="issues-draft-list">
           {#each issues.drafts as draft (draft.path)}
+            {@const draftStatus = issues.draftState(draft.path)}
+            {@const waiting = issues.draftWaiting(draft.path)}
             {@const blocker = issues.draftStartBlocker(draft.path)}
-            <li>
+            <li class="issues-draft-row" style="display: flex; align-items: stretch;">
               <button
                 type="button"
                 class="issues-draft"
+                style="flex: 1; min-width: 0;"
                 data-testid="issues-draft"
                 data-path={draft.path}
                 data-command="issues.draft.open"
+                data-status={draftStatus}
+                data-question={waiting ? "true" : undefined}
                 aria-current={issues.draftPath === draft.path}
                 onclick={() => issues.openDraft(draft.path)}
               >
                 <span class="mono">{draft.name}</span>
                 <span class="issues-draft__heading">{draft.heading || "No heading"}</span>
+                <span class="badge" data-tone={statusTone(draftStatus)}>{draftStatus}</span>
+                {#if waiting}
+                  <span class="issues-draft__blocked" data-testid="issues-draft-waiting">
+                    Waiting for an answer
+                  </span>
+                {/if}
                 {#if blocker !== null}
                   <span class="issues-draft__blocked" data-testid="issues-draft-blocked">{blocker}</span>
                 {/if}
               </button>
+              <div style="display: flex; align-items: center; padding: 0 8px;">
+                <Button
+                  variant="default"
+                  data-testid="issues-draft-row-start"
+                  data-command="issues.draft.start"
+                  data-path={draft.path}
+                  disabled={issues.draftRunning(draft.path)}
+                  title={blocker ?? "Start the elaboration agent"}
+                  onclick={() => issues.startDraft(draft.path)}
+                >
+                  Start
+                </Button>
+              </div>
             </li>
           {:else}
             <li class="issues-drafts__empty muted" data-testid="issues-drafts-empty">
@@ -113,7 +135,7 @@
               variant="default"
               data-testid="issues-draft-start"
               data-command="issues.draft.start"
-              disabled={issues.draftRunning}
+              disabled={running}
               title={issues.draftStartBlocker(issues.draft.path) ?? "Start the elaboration agent"}
               onclick={() => issues.startDraft()}
             >

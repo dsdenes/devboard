@@ -352,6 +352,28 @@ describe("npm fallback", () => {
     }
   });
 
+  test("names an unreadable fallback body as feed context", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response('{"tag":"v1.0.0"}\n{"tag":"v1.1.0"}\n');
+      },
+    });
+    try {
+      const error = await latestRelease({
+        kind: "gitea",
+        baseUrl: `http://127.0.0.1:${server.port}`,
+        repo: "acme/fixture",
+      }).catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(ReleaseFeedError);
+      expect((error as Error).message).toContain(
+        "the release feed returned an unreadable description",
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("names npm when it fails and no fallback is configured", async () => {
     const root = workspace("npm-no-fallback");
     const npm = join(root, "failing-npm");

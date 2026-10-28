@@ -456,6 +456,31 @@ const MAX_FEEDBACK_BYTES = 64_000;
 /** Default wall-clock bound for one issue creation. */
 const FEEDBACK_TIMEOUT_MS = 60_000;
 
+/**
+ * Running dashboards register their stop handler here so a termination signal
+ * releases every child peer instead of leaving the agents orphaned.
+ */
+const shutdownHooks = new Set<() => void>();
+let shutdownBound = false;
+
+function bindShutdown(hook: () => void): void {
+  shutdownHooks.add(hook);
+  if (shutdownBound) return;
+  shutdownBound = true;
+  const halt = (): void => {
+    for (const stop of [...shutdownHooks]) {
+      try {
+        stop();
+      } catch {
+        // A failed cleanup must not keep the dashboard alive.
+      }
+    }
+    process.exit(0);
+  };
+  process.once("SIGTERM", halt);
+  process.once("SIGINT", halt);
+}
+
 /** One directive statement extracted from a skill body for contradiction review. */
 const DIRECTIVE_PATTERN =
   /^(always|never|must not|must|should not|should|do not|don't|avoid|prefer|use)\s+(.+)$/i;
@@ -495,8 +520,8 @@ type ClientMessage =
   | { type: "getGoalDrafts" }
   | { type: "getGoalDraft"; path?: unknown }
   | { type: "startGoalDraft"; path?: unknown }
-  | { type: "stopGoalDraft" }
-  | { type: "answerGoalDraft"; id?: unknown; value?: unknown }
+  | { type: "stopGoalDraft"; path?: unknown }
+  | { type: "answerGoalDraft"; path?: unknown; id?: unknown; value?: unknown }
   | { type: "getScout" }
   | { type: "startScout" }
   | { type: "stopScout" }
@@ -593,10 +618,11 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
     case "startGoalDraft":
       return { type: "startGoalDraft", path: "path" in value ? value.path : undefined };
     case "stopGoalDraft":
-      return { type: "stopGoalDraft" };
+      return { type: "stopGoalDraft", path: "path" in value ? value.path : undefined };
     case "answerGoalDraft":
       return {
         type: "answerGoalDraft",
+        path: "path" in value ? value.path : undefined,
         id: "id" in value ? value.id : undefined,
         value: "value" in value ? value.value : undefined,
       };
@@ -2017,8 +2043,7 @@ export function createApp(options: AppOptions) {
     remember(skillsPreparation?.agent);
     remember(discoverRun?.agent, discoverRun?.cwd);
     for (const lane of liveLanes) remember(lane.agent);
-    const draftPeer = goalDrafts.child();
-    if (draftPeer !== undefined) children.push(draftPeer);
+    children.push(...goalDrafts.children());
     return children;
   }
 
@@ -6053,14 +6078,18 @@ export function createApp(options: AppOptions) {
               }
             }
           } else if (command.type === "getGoalDrafts") {
-            send(ws, { type: "issuesDrafts", drafts: listGoalDrafts(repoDir) });
-            send(ws, { type: "issuesDraftState", draft: goalDrafts.snapshot() });
+            send(ws, {
+              type: "issuesDrafts",
+              drafts: listGoalDrafts(repoDir),
+              runs: goalDrafts.snapshot(),
+            });
           } else if (command.type === "getGoalDraft") {
             try {
               send(ws, { type: "issuesDraftDetail", draft: readGoalDraft(repoDir, command.path) });
             } catch (error) {
               send(ws, {
                 type: "issuesDraftError",
+                path: typeof command.path === "string" ? command.path : undefined,
                 message: error instanceof GoalDraftError ? error.message : String(error),
               });
             }
@@ -6071,23 +6100,41 @@ export function createApp(options: AppOptions) {
               // draft list; reporting an error would contradict the operator
               // and leave the Drafts view showing a failed start.
               if (started.stopped !== true) {
-                send(ws, { type: "issuesDraftError", message: started.message });
+                send(ws, {
+                  type: "issuesDraftError",
+                  path: typeof command.path === "string" ? command.path : undefined,
+                  message: started.message,
+                });
               }
             } else {
-              send(ws, { type: "issuesDraftState", draft: goalDrafts.snapshot() });
+              send(ws, { type: "issuesDraftState", draft: goalDrafts.snapshot(started.path) });
               goalDrafts.publishDrafts();
             }
           } else if (command.type === "stopGoalDraft") {
-            goalDrafts.stop();
+            if (typeof command.path !== "string") {
+              send(ws, { type: "issuesDraftError", message: "Stopping an elaboration needs its draft path." });
+            } else if (!goalDrafts.stop(command.path)) {
+              send(ws, {
+                type: "issuesDraftError",
+                path: command.path,
+                message: "That draft is not being elaborated.",
+              });
+            }
           } else if (command.type === "answerGoalDraft") {
             if (
+              typeof command.path !== "string" ||
               (typeof command.id !== "string" && typeof command.id !== "number") ||
               typeof command.value !== "string"
             ) {
-              send(ws, { type: "issuesDraftError", message: "An answer needs its question id and value." });
-            } else if (!goalDrafts.answer(command.id, command.value)) {
               send(ws, {
                 type: "issuesDraftError",
+                path: typeof command.path === "string" ? command.path : undefined,
+                message: "An answer needs its draft path, question id, and value.",
+              });
+            } else if (!goalDrafts.answer(command.path, command.id, command.value)) {
+              send(ws, {
+                type: "issuesDraftError",
+                path: command.path,
                 message: "That question is no longer waiting for an answer.",
               });
             }
@@ -6270,7 +6317,12 @@ export function createApp(options: AppOptions) {
   });
 
   const stop = server.stop.bind(server);
+  const shutdown = (): void => {
+    server.stop(true);
+  };
+  bindShutdown(shutdown);
   server.stop = (closeActiveConnections?: boolean) => {
+    shutdownHooks.delete(shutdown);
     ask.dispose();
     flow.dispose();
     issues.dispose();

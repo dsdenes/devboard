@@ -781,17 +781,32 @@ async function clearIssuesState(stateDir: string, host: string): Promise<void> {
   await rm(join(host, ".devboard", ".tmp", "issues", "lock"), { force: true });
 }
 
-/** Two deterministic drafts: one asks a question, one waits for Stop. */
+/**
+ * Deterministic drafts for the parallel phase: a question draft that keeps
+ * running after its answer, three hanging drafts, and one failing draft.
+ */
 async function seedGoalDrafts(host: string): Promise<string> {
   const directory = join(host, ".devboard", "goal-proposals");
   await mkdir(directory, { recursive: true });
   await writeFile(
     join(directory, "001-question.md"),
-    "# Question draft\n\n> Unprocessed draft. STUB-QUESTION\n\nAsk about the scope before finalizing.\n",
+    "# Question draft\n\n> Unprocessed draft. STUB-QUESTION STUB-HANG\n\nAsk about the scope before finalizing, then keep running.\n",
   );
   await writeFile(
     join(directory, "002-hang.md"),
     "# Hang draft\n\n> Unprocessed draft. STUB-HANG\n\nKeep this elaboration running until it is stopped.\n",
+  );
+  await writeFile(
+    join(directory, "003-hang.md"),
+    "# Third hang draft\n\n> Unprocessed draft. STUB-HANG\n\nKeep this elaboration running until it is stopped.\n",
+  );
+  await writeFile(
+    join(directory, "004-hang.md"),
+    "# Fourth hang draft\n\n> Unprocessed draft. STUB-HANG\n\nKeep this elaboration running until it is stopped.\n",
+  );
+  await writeFile(
+    join(directory, "005-fail.md"),
+    "# Failing draft\n\n> Unprocessed draft. STUB-FAIL\n\nFail the label verification.\n",
   );
   return directory;
 }
@@ -6122,7 +6137,7 @@ try {
   await page.click('[data-testid="open-issues-overview"]');
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the issues overview again");
 
-  // Drafts: list, read, elaborate, answer, stop, refresh, reload, and empty.
+  // Drafts: parallel elaborations, switching, independent answer and stop, restart.
   await seedGoalDrafts(host);
   await page.click('[data-testid="open-issues-drafts"]');
   await page.wait(`document.querySelector('[data-testid="issues-drafts"]') !== null`, "the drafts page");
@@ -6153,7 +6168,7 @@ try {
     "the Drafts entry does not name its mode and shortcut",
     draftsChrome,
   );
-  check(draftsChrome.count === "3", "the Drafts entry does not count the listed drafts", draftsChrome);
+  check(draftsChrome.count === "6", "the Drafts entry does not count the listed drafts", draftsChrome);
   check(draftsChrome.afterIssues, "the Drafts entry is not after Issues", draftsChrome);
 
   const listedDrafts = await page.eval<string[]>(
@@ -6165,7 +6180,7 @@ try {
     .sort()
     .map((name) => `.devboard/goal-proposals/${name}`);
   check(
-    listedDrafts.join(",") === expectedDrafts.join(",") && listedDrafts.length === 3,
+    listedDrafts.join(",") === expectedDrafts.join(",") && listedDrafts.length === 6,
     "the drafts list is missing, unsorted, or lists the wrong files",
     { listedDrafts, expectedDrafts },
   );
@@ -6174,7 +6189,10 @@ try {
   );
   check(
     draftHeadings[0]?.includes("Question draft") === true &&
-      draftHeadings[1]?.includes("Hang draft") === true,
+      draftHeadings[1]?.includes("Hang draft") === true &&
+      draftHeadings[2]?.includes("Third hang draft") === true &&
+      draftHeadings[3]?.includes("Fourth hang draft") === true &&
+      draftHeadings[4]?.includes("Failing draft") === true,
     "a draft does not show its first heading",
     draftHeadings,
   );
@@ -6235,164 +6253,370 @@ try {
     detail,
   );
 
-  // The question draft asks, answers, writes the spec, and disappears.
-  await page.click('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/001-question.md"]');
+  // Two drafts elaborate at once; each row carries only its own state.
+  const draftRow = (name: string): string =>
+    `[data-testid="issues-draft"][data-path=".devboard/goal-proposals/${name}"]`;
+  const draftRowStart = (name: string): string =>
+    `[data-testid="issues-draft-row-start"][data-path=".devboard/goal-proposals/${name}"]`;
+  const draftStatus = (name: string): string =>
+    `(document.querySelector('${draftRow(name)}')?.getAttribute("data-status") ?? "")`;
+
+  await page.click(draftRowStart("001-question.md"));
+  await page.click(draftRow("002-hang.md"));
   await page.wait(
-    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/001-question.md"`,
-    "the question draft detail",
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
+    "the second running draft detail",
   );
-  await page.click('[data-testid="issues-draft-start"]');
+  await page.click(draftRowStart("002-hang.md"));
   await page.wait(
-    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("Reading the draft")`,
-    "the streamed elaboration activity",
+    `${draftStatus("001-question.md")} === "running" && ${draftStatus("002-hang.md")} === "running"`,
+    "two drafts running at once",
     8_000,
   );
-  await page.wait(
-    `document.querySelector('[data-testid="issues-draft-question"]') !== null`,
-    "the elaboration question",
-    8_000,
-  );
-  const draftQuestion = await page.eval<{ message: string; options: number; recommended: boolean }>(`(() => ({
-    message: document.querySelector('[data-testid="issues-draft-question"]')?.textContent?.includes("Choose an answer") ?? false,
-    options: document.querySelectorAll('[data-testid="issues-draft-choice"]').length,
-    recommended:
-      document.querySelector('[data-testid="issues-draft-choice"]')?.querySelector('.choice__recommended') !== null,
-  }))()`);
+
+  const startStates = await page.eval<Record<string, boolean>>(`(() => {
+    const state = {};
+    for (const name of ["001-question.md", "002-hang.md", "003-hang.md", "004-hang.md", "005-fail.md"]) {
+      const start = document.querySelector(
+        '[data-testid="issues-draft-row-start"][data-path=".devboard/goal-proposals/' + name + '"]',
+      );
+      state[name] = start instanceof HTMLButtonElement ? start.disabled : true;
+    }
+    return state;
+  })()`);
   check(
-    draftQuestion.message && draftQuestion.options === 2 && draftQuestion.recommended,
-    "the elaboration question is not surfaced with a recommended first option",
-    draftQuestion,
+    startStates["001-question.md"] === true && startStates["002-hang.md"] === true,
+    "a running draft keeps its own start control enabled",
+    startStates,
   );
-  const questionLayout = await page.eval<{
+  check(
+    ["003-hang.md", "004-hang.md", "005-fail.md"].every(
+      (name) => startStates[name] === false,
+    ),
+    "an idle draft's start control is disabled while another elaborates",
+    startStates,
+  );
+  const blockers = await page.eval<string[]>(
+    `[...document.querySelectorAll('[data-testid="issues-draft-blocked"]')]
+      .map((item) => item.textContent?.trim() ?? "")`,
+  );
+  check(
+    blockers.length === 2 &&
+      blockers.every((reason) => reason === "This draft is being elaborated."),
+    "a draft shows another draft's blocker or the wrong reason",
+    blockers,
+  );
+
+  // A question for an unselected draft appears on its own row within two seconds.
+  await page.wait(
+    `${draftStatus("002-hang.md")} === "running" &&
+      document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") === "true" &&
+      document.querySelector('${draftRow("001-question.md")} [data-testid="issues-draft-waiting"]') !== null`,
+    "the unselected draft's waiting marker",
+    2_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("002-hang.md") === true`,
+    "the hang draft's own activity",
+    8_000,
+  );
+  const hangActivity = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? ""`,
+  );
+  check(
+    hangActivity.includes("002-hang.md") && !hangActivity.includes("001-question.md"),
+    "the hang detail shows another draft's activity",
+    hangActivity,
+  );
+
+  // Selecting the question draft shows only its own state, activity, and question.
+  await page.click(draftRow("001-question.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/001-question.md" &&
+      document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the question draft's own detail",
+    8_000,
+  );
+  const questionDetail = await page.eval<{
+    state: string;
+    activity: string;
+    question: string;
     ordered: boolean;
   }>(`(() => {
+    const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const question = document.querySelector('[data-testid="issues-draft-question"]');
     const activity = document.querySelector('[data-testid="issues-draft-activity"]');
     return {
+      state: document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? "",
+      activity: activity?.textContent ?? "",
+      question: question?.textContent ?? "",
       ordered: question !== null && activity !== null &&
         (question.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
     };
   })()`);
   check(
-    questionLayout.ordered,
-    "the pending question is not above the activity log",
-    questionLayout,
+    questionDetail.state === "running" &&
+      questionDetail.activity.includes("001-question.md") &&
+      !questionDetail.activity.includes("002-hang.md"),
+    "the switched detail does not show the selected draft's own activity",
+    questionDetail,
+  );
+  check(
+    questionDetail.question.includes("Choose an answer") && questionDetail.ordered,
+    "the selected question is missing or below the activity log",
+    questionDetail,
   );
   await dismissNotifications();
   await saveShot("issues-draft-detail-question");
-  await devtools.send("Emulation.setDeviceMetricsOverride", {
-    width: 1024,
-    height: 720,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the draft detail at 1024×720");
-  const narrowDraft = await page.eval<{
-    headerRight: number;
-    actionsRight: number;
-    pathWidth: number;
-    bodyOverflow: number;
-  }>(`(() => {
-    const panel = document.querySelector('[data-testid="issues-draft-detail"]');
-    const header = panel?.querySelector(".issues-draft-detail__header");
-    const actions = panel?.querySelector(".issues-draft-detail__actions");
-    const path = panel?.querySelector(".issues-draft-detail__path");
-    const body = panel?.querySelector(".issues-draft-detail__body");
-    return {
-      headerRight: header?.getBoundingClientRect().right ?? 0,
-      actionsRight: actions?.getBoundingClientRect().right ?? 0,
-      pathWidth: path?.getBoundingClientRect().width ?? 0,
-      bodyOverflow: body === null ? 0 : body.scrollWidth - body.clientWidth,
-    };
-  })()`);
-  check(
-    narrowDraft.pathWidth > 0 &&
-      narrowDraft.actionsRight <= narrowDraft.headerRight + 0.5 &&
-      narrowDraft.bodyOverflow <= 1,
-    "the draft detail header or body overflows at 1024×720",
-    narrowDraft,
-  );
-  await dismissNotifications();
-  await saveShot("issues-draft-detail-1024x720");
-  await devtools.send("Emulation.setDeviceMetricsOverride", {
-    width: 1440,
-    height: 900,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop viewport after the draft check");
 
-  // Another draft's run is not this draft's state.
-  await page.click('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/002-hang.md"]');
+  // Reload while both drafts run and one waits: both states and the question replay.
+  await page.reload();
   await page.wait(
-    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
-    "the idle draft beside a running elaboration",
-  );
-  const otherState = await page.eval<string | null>(
-    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? null`,
-  );
-  check(otherState === null, "an idle draft still shows a run-state badge", otherState);
-  await page.click('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/001-question.md"]');
-  await page.wait(
-    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/001-question.md" &&
+    `document.querySelector('[data-testid="issues-drafts"]') !== null &&
+      ${draftStatus("001-question.md")} === "running" &&
+      ${draftStatus("002-hang.md")} === "running" &&
+      document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") === "true" &&
+      document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") ===
+        ".devboard/goal-proposals/001-question.md" &&
       document.querySelector('[data-testid="issues-draft-question"]') !== null`,
-    "the running draft's question after reselecting it",
+    "the parallel runs and pending question replayed after reload",
+    20_000,
   );
-  const runningState = await page.eval<string>(
-    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? ""`,
-  );
-  check(runningState === "running", "a running draft hides its run-state badge", runningState);
-
-  const blocked = await page.eval<string[]>(
-    `[...document.querySelectorAll('[data-testid="issues-draft-blocked"]')].map((item) => item.textContent ?? "")`,
-  );
+  const replayedQuestion = await page.eval<{ activity: string; question: string }>(`(() => ({
+    activity: document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "",
+    question: document.querySelector('[data-testid="issues-draft-question"]')?.textContent ?? "",
+  }))()`);
   check(
-    blocked.length === 3 &&
-      blocked.some((reason) => reason.includes("001-question.md")) &&
-      blocked.some((reason) => reason === "This draft is being elaborated."),
-    "another draft's start control has no stated reason",
-    blocked,
+    replayedQuestion.activity.includes("001-question.md") &&
+      !replayedQuestion.activity.includes("002-hang.md") &&
+      replayedQuestion.question.includes("Choose an answer"),
+    "a replayed detail lost its own activity or question",
+    replayedQuestion,
   );
+
+  // Answer only the question draft; its marker clears and the hang draft is untouched.
   await page.click('[data-testid="issues-draft-choice"]');
   await page.wait(
-    `document.querySelector('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/001-question.md"]') === null`,
-    "the elaborated draft to disappear",
-    8_000,
+    `document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") !== "true" &&
+      document.querySelector('${draftRow("001-question.md")} [data-testid="issues-draft-waiting"]') === null`,
+    "the waiting marker to clear after the answer",
+    4_000,
   );
-  check(
-    existsSync(join(host, ".devboard", "goals", "001-question.md")),
-    "the elaboration did not keep its finalized spec",
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-question"]') === null &&
+      document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("Answer received: Alpha")
+      === true`,
+    "the answered question draft to keep running",
+    8_000,
   );
   check(
     (await readFile(agentLog, "utf8")).includes("answer Alpha"),
     "the answer did not reach the elaboration peer",
   );
 
-  // A hanging elaboration exposes Stop, keeps the draft, and re-enables start.
-  await page.click('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/002-hang.md"]');
+  await page.click(draftRow("002-hang.md"));
   await page.wait(
     `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
-    "the hanging draft detail",
+    "the hang draft after the other answer",
   );
-  await page.click('[data-testid="issues-draft-start"]');
-  await page.wait(`document.querySelector('[data-testid="issues-draft-stop"]') !== null`, "the stop control");
-  await page.wait(
-    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("Reading the draft")`,
-    "the hanging activity",
-    8_000,
-  );
-  await page.click('[data-testid="issues-draft-stop"]');
-  await page.wait(
-    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "stopped"`,
-    "the stopped elaboration",
-    8_000,
-  );
-  const afterStop = await page.eval<{ stop: boolean; startDisabled: boolean; present: boolean }>(`(() => ({
-    stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
-    startDisabled: document.querySelector('[data-testid="issues-draft-start"]')?.disabled === false,
-    present: document.querySelector('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/002-hang.md"]') !== null,
+  const hangAfterAnswer = await page.eval<{ state: string; activity: string; question: boolean }>(`(() => ({
+    state: document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? "",
+    activity: document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "",
+    question: document.querySelector('[data-testid="issues-draft-question"]') !== null,
   }))()`);
-  check(!afterStop.stop && afterStop.startDisabled && afterStop.present, "Stop lost the draft or kept the peer", afterStop);
+  check(
+    hangAfterAnswer.state === "running" &&
+      hangAfterAnswer.activity === hangActivity &&
+      !hangAfterAnswer.activity.includes("Answer received") &&
+      !hangAfterAnswer.question,
+    "answering one draft changed another running elaboration",
+    hangAfterAnswer,
+  );
+
+  // Stop only the selected hang; the question draft keeps running.
+  await page.click('[data-testid="issues-draft-stop"]');
+  await page.wait(`${draftStatus("002-hang.md")} === "stopped"`, "the stopped elaboration", 8_000);
+  await page.wait(`${draftStatus("001-question.md")} === "running"`, "the other elaboration stays running");
+  const stopped = await page.eval<{ stop: boolean; start: boolean; present: boolean }>(`(() => ({
+    stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+    start: document.querySelector('[data-testid="issues-draft-start"]')?.disabled === false,
+    present: document.querySelector('${draftRow("002-hang.md")}') !== null,
+  }))()`);
+  check(
+    !stopped.stop && stopped.start && stopped.present,
+    "Stop lost the draft or kept its peer",
+    stopped,
+  );
+  await page.click(draftRow("001-question.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/001-question.md"`,
+    "the unaffected question draft",
+  );
+  const questionAfterStop = await page.eval<{ state: string; activity: string; question: boolean }>(`(() => ({
+    state: document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? "",
+    activity: document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "",
+    question: document.querySelector('[data-testid="issues-draft-question"]') !== null,
+  }))()`);
+  check(
+    questionAfterStop.state === "running" &&
+      questionAfterStop.activity.includes("001-question.md") &&
+      questionAfterStop.activity.includes("Answer received: Alpha") &&
+      !questionAfterStop.activity.includes("002-hang.md") &&
+      !questionAfterStop.question,
+    "stopping another draft changed the question draft",
+    questionAfterStop,
+  );
+
+  // Third, fourth, and restarted drafts elaborate at the same time; no cap.
+  await page.click(draftRowStart("003-hang.md"));
+  await page.click(draftRowStart("004-hang.md"));
+  await page.click(draftRowStart("002-hang.md"));
+  await page.wait(
+    ["001-question.md", "002-hang.md", "003-hang.md", "004-hang.md"]
+      .map((name) => `(${draftStatus(name)} === "running")`)
+      .join(" && "),
+    "four drafts running at once",
+    8_000,
+  );
+  const runningRows = await page.eval<number>(
+    `[...document.querySelectorAll('[data-testid="issues-draft"]')]
+      .filter((row) => row.getAttribute("data-status") === "running").length`,
+  );
+  check(runningRows === 4, "the page does not run four elaborations at once", runningRows);
+
+  // A reload replays every draft's own running state and the selected path.
+  await page.reload();
+  await page.wait(
+    `document.querySelector('[data-testid="issues-drafts"]') !== null &&
+      ${["001-question.md", "002-hang.md", "003-hang.md", "004-hang.md"]
+        .map((name) => `(${draftStatus(name)} === "running")`)
+        .join(" && ")}`,
+    "every running draft replayed after reload",
+    20_000,
+  );
+  const replayed = await page.eval<Array<{ path: string; status: string; question: boolean }>>(
+    `[...document.querySelectorAll('[data-testid="issues-draft"]')].map((row) => ({
+      path: row.getAttribute("data-path") ?? "",
+      status: row.getAttribute("data-status") ?? "",
+      question: row.getAttribute("data-question") === "true",
+    }))`,
+  );
+  check(
+    replayed.filter((row) => row.status === "running").length === 4 &&
+      replayed.some((row) => row.path.endsWith("001-question.md") && row.status === "running"),
+    "a replayed row lost its own state",
+    replayed,
+  );
+  await page.click(draftRow("003-hang.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/003-hang.md" &&
+      document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("003-hang.md") === true`,
+    "the switched running detail after reload",
+    8_000,
+  );
+  const thirdActivity = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? ""`,
+  );
+  await dismissNotifications();
+  await saveShot("issues-draft-parallel");
+
+  // A failed draft records its own error while the others keep running.
+  await page.click(draftRowStart("005-fail.md"));
+  await page.wait(`${draftStatus("005-fail.md")} === "failed"`, "the failing draft", 8_000);
+  await page.click(draftRow("005-fail.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/005-fail.md" &&
+      document.querySelector('[data-testid="issues-draft-error"]') !== null`,
+    "the failed draft detail",
+    8_000,
+  );
+  const draftFailure = await page.eval<{ state: string; error: string; running: number; third: string }>(`(() => ({
+    state: document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? "",
+    error: document.querySelector('[data-testid="issues-draft-error"]')?.textContent ?? "",
+    running: [...document.querySelectorAll('[data-testid="issues-draft"]')]
+      .filter((row) => row.getAttribute("data-status") === "running").length,
+    third: document.querySelector(${JSON.stringify(draftRow("003-hang.md"))})?.getAttribute("data-status") ?? "",
+  }))()`);
+  check(
+    draftFailure.state === "failed" &&
+      draftFailure.error.includes("goal label verification failed") &&
+      draftFailure.running === 4 &&
+      draftFailure.third === "running",
+    "a failed draft disturbed the running elaborations",
+    draftFailure,
+  );
+
+  // A successful draft disappears while the other runs keep their state.
+  const reportName = reportDraftPath.split("/").pop() ?? "";
+  const reportSpec = join(host, ".devboard", "goals", reportName);
+  await page.click(draftRowStart(reportName));
+  await page.wait(`document.querySelector('${draftRow(reportName)}') === null`, "the finished draft to disappear", 8_000);
+  check(existsSync(reportSpec), "the successful elaboration did not keep its spec");
+  check(
+    (await page.eval<number>(
+      `[...document.querySelectorAll('[data-testid="issues-draft"]')]
+        .filter((row) => row.getAttribute("data-status") === "running").length`,
+    )) === 4,
+    "a successful draft cleared another draft's running state",
+  );
+  check(
+    (await page.eval<string>(
+      `document.querySelector('${draftRow("003-hang.md")}')?.getAttribute("data-status") ?? ""`,
+    )) === "running" && thirdActivity.includes("003-hang.md"),
+    "the third elaboration lost its state after another success",
+  );
+
+  // Stopping the dashboard closes every live peer, not only the newest.
+  const dashboardPeerPids = async (): Promise<number[]> => {
+    const pids: number[] = [];
+    for (const entry of await readdir("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const cmdline = (await readFile(join("/proc", entry, "cmdline"))).toString("utf8");
+        if (cmdline.includes(stubAgent) && cmdline.includes(agentLog)) pids.push(Number(entry));
+      } catch {
+        // The process exited while its command line was read.
+      }
+    }
+    return pids;
+  };
+  const livePeers = await dashboardPeerPids();
+  check(livePeers.length === 4, "the dashboard does not own one peer per running draft", livePeers);
+  serverProcess?.kill("SIGTERM");
+  const peersDeadline = Date.now() + 10_000;
+  let survivingPeers = await dashboardPeerPids();
+  while (survivingPeers.length > 0 && Date.now() < peersDeadline) {
+    await delay(50);
+    survivingPeers = await dashboardPeerPids();
+  }
+  check(survivingPeers.length === 0, "an elaboration peer survived the dashboard stop", survivingPeers);
+
+  startServer();
+  await waitForHttp(baseUrl);
+  await page.reload();
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "reconnection after the restart",
+    30_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-drafts"]') !== null &&
+      [...document.querySelectorAll('[data-testid="issues-draft"]')]
+        .every((row) => row.getAttribute("data-status") !== "running")`,
+    "no replayed running draft after the restart",
+    10_000,
+  );
+  const draftsAfterRestart = await page.eval<{ statuses: string[]; count: number }>(`(() => ({
+    statuses: [...document.querySelectorAll('[data-testid="issues-draft"]')]
+      .map((row) => row.getAttribute("data-status") ?? ""),
+    count: document.querySelectorAll('[data-testid="issues-draft"]').length,
+  }))()`);
+  check(
+    draftsAfterRestart.count === 5 &&
+      draftsAfterRestart.statuses.every((status) => status === "idle"),
+    "the replacement server restored a running draft or started one",
+    draftsAfterRestart,
+  );
 
   // A report-panel write reaches the open Drafts page without a reload.
   await runPalette("app.report");
@@ -6409,12 +6633,12 @@ try {
   const refreshedCount = await page.eval<string>(
     `document.querySelector('[data-testid="open-issues-drafts"] .sidebar-item__meta')?.textContent?.trim() ?? ""`,
   );
-  check(refreshedCount === "3", "the Drafts count did not follow the new draft", refreshedCount);
+  check(refreshedCount === "6", "the Drafts count did not follow the new draft", refreshedCount);
 
   // Reload restores the drafts page and the selected path.
   await page.reload();
   await page.wait(
-    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/005-fail.md"`,
     "the selected draft after reload",
     20_000,
   );

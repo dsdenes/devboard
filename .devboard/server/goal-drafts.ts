@@ -1,15 +1,24 @@
 /**
- * Proposed-goal drafts and their one elaboration peer.
+ * Proposed-goal drafts and their elaboration peers.
  *
  * A draft is unprocessed Markdown under `<REPO_DIR>/.devboard/goal-proposals/`.
  * The Drafts view lists them, shows one verbatim, and can start the harness
- * `/goal-draft <path>` command in one ACP peer at a time. The peer itself owns
- * the interview, the goal spec under `.devboard/goals/`, the GitHub issue, and
- * the draft removal; this module only validates paths, streams the transcript,
- * and refuses a second concurrent elaboration.
+ * `/goal-draft <path>` command in one ACP peer per draft. Any number of drafts
+ * may elaborate at once; each path has at most one live peer. The peer itself
+ * owns the interview, the goal spec under `.devboard/goals/`, the GitHub issue,
+ * and the draft removal; this module validates paths, keeps one run record per
+ * path, streams each transcript, and refuses only a duplicate start of the
+ * path already running.
  */
 
-import { readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  type Dirent,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { AcpConnection, type AcpActivity, type AcpQuestion } from "./acp";
 import { GOAL_PROPOSALS_DIRECTORY } from "./goal-proposal";
@@ -216,7 +225,6 @@ interface Elaboration {
   peer: GoalDraftPeer | undefined;
   activity: string[];
   firstStderr: string;
-  startedAt: string;
 }
 
 function firstLine(text: string): string {
@@ -245,7 +253,7 @@ const STOPPED_START: GoalDraftStartResult = {
   message: "The elaboration was stopped before it started.",
 };
 
-/** One elaboration at a time, scoped to one repository. */
+/** One run per draft path, many concurrent elaborations, scoped to one repository. */
 export class GoalDraftManager {
   private readonly repoDir: string;
   private readonly command: string;
@@ -255,8 +263,10 @@ export class GoalDraftManager {
   private readonly clock: () => Date;
   private readonly log: (line: string) => void;
 
-  private run: GoalDraftRun = { ...IDLE };
-  private current: Elaboration | undefined;
+  /** Runs that still matter: every live run plus finished runs whose draft is listed. */
+  private readonly runs = new Map<string, GoalDraftRun>();
+  /** The live peer per draft path; at most one per path. */
+  private readonly live = new Map<string, Elaboration>();
 
   constructor(options: GoalDraftManagerOptions) {
     this.repoDir = resolve(options.repoDir);
@@ -270,23 +280,36 @@ export class GoalDraftManager {
     this.log = options.log ?? (() => undefined);
   }
 
-  snapshot(): GoalDraftRun {
+  snapshot(): GoalDraftRun[];
+  snapshot(path: string): GoalDraftRun;
+  snapshot(path?: string): GoalDraftRun[] | GoalDraftRun {
+    if (path !== undefined) return this.copyOf(this.runs.get(path) ?? IDLE);
+    const runs: GoalDraftRun[] = [];
+    for (const [runPath, run] of this.runs) {
+      if (run.status === "running" || existsSync(resolve(this.repoDir, runPath))) {
+        runs.push(this.copyOf(run));
+      }
+    }
+    return runs.sort((left, right) => ((left.path ?? "") < (right.path ?? "") ? -1 : 1));
+  }
+
+  private copyOf(run: GoalDraftRun): GoalDraftRun {
     return {
-      ...this.run,
-      activity: [...this.run.activity],
+      ...run,
+      activity: [...run.activity],
       question:
-        this.run.question === null
+        run.question === null
           ? null
-          : { ...this.run.question, options: this.run.question.options.map((option) => ({ ...option })) },
+          : { ...run.question, options: run.question.options.map((option) => ({ ...option })) },
     };
   }
 
-  get running(): boolean {
-    return this.run.status === "running";
+  isRunning(path: string): boolean {
+    return this.live.has(path);
   }
 
-  private publishActivity(): void {
-    this.send({ type: "issuesDraftState", draft: this.snapshot() });
+  private publishRun(path: string): void {
+    this.send({ type: "issuesDraftState", draft: this.snapshot(path) });
   }
 
   publishDrafts(): void {
@@ -294,13 +317,14 @@ export class GoalDraftManager {
   }
 
   /**
-   * Ends the elaboration: closes its peer exactly once, then clears it. The
+   * Ends one elaboration: closes its peer exactly once, then clears it. The
    * peer is closed here rather than at each call site so a success, a
    * failure, a stop, and a connect failure all release the agent process.
+   * Other drafts' peers and runs are untouched.
    */
-  private finish(status: GoalDraftStatus, error: string | null): void {
-    const elaboration = this.current;
-    this.current = undefined;
+  private finish(path: string, status: GoalDraftStatus, error: string | null): void {
+    const elaboration = this.live.get(path);
+    this.live.delete(path);
     if (elaboration?.peer !== undefined) {
       try {
         elaboration.peer.close();
@@ -308,37 +332,35 @@ export class GoalDraftManager {
         // The peer already exited.
       }
     }
-    this.run = {
-      ...this.run,
+    const run = this.runs.get(path);
+    if (run === undefined) return;
+    this.runs.set(path, {
+      ...run,
       status,
       finishedAt: this.clock().toISOString(),
       error,
       question: null,
-    };
-    this.publishActivity();
+    });
+    this.publishRun(path);
     this.publishDrafts();
   }
 
   /**
-   * The running elaboration peer's identity, recorded in the state so a
-   * replacement server can end an orphaned child.
+   * Every running elaboration peer's identity, recorded in the state so a
+   * replacement server can end every orphaned child.
    */
-  child(): RecordedChild | undefined {
-    const peer = this.current?.peer;
-    if (peer === undefined) return undefined;
-    const pid = peer.pid;
-    if (pid === undefined) return undefined;
-    return { pid, argv: peer.argv, cwd: this.repoDir };
+  children(): RecordedChild[] {
+    const children: RecordedChild[] = [];
+    for (const elaboration of this.live.values()) {
+      const peer = elaboration.peer;
+      const pid = peer?.pid;
+      if (peer === undefined || pid === undefined) continue;
+      children.push({ pid, argv: peer.argv, cwd: this.repoDir });
+    }
+    return children;
   }
 
   async start(relativePath: unknown): Promise<GoalDraftStartResult> {
-    if (this.current !== undefined) {
-      const path = this.current.path;
-      return {
-        ok: false,
-        message: `An elaboration is already running for ${path}. Stop it before starting another draft.`,
-      };
-    }
     let draft: GoalDraft;
     try {
       draft = readGoalDraft(this.repoDir, relativePath);
@@ -348,26 +370,30 @@ export class GoalDraftManager {
         message: error instanceof GoalDraftError ? error.message : String(error),
       };
     }
+    if (this.live.has(draft.path)) {
+      return { ok: false, message: "This draft is being elaborated." };
+    }
 
+    const path = draft.path;
     const activity: string[] = [];
-    this.run = {
+    const startedAt = this.clock().toISOString();
+    this.runs.set(path, {
       status: "running",
-      path: draft.path,
-      startedAt: this.clock().toISOString(),
+      path,
+      startedAt,
       finishedAt: null,
       error: null,
       activity,
       question: null,
-    };
+    });
 
     const elaboration: Elaboration = {
-      path: draft.path,
+      path,
       peer: undefined,
       activity,
       firstStderr: "",
-      startedAt: this.run.startedAt ?? this.clock().toISOString(),
     };
-    this.current = elaboration;
+    this.live.set(path, elaboration);
     let peer: GoalDraftPeer;
     let env: Record<string, string | undefined>;
     try {
@@ -377,16 +403,20 @@ export class GoalDraftManager {
         cwd: this.repoDir,
         env,
         onActivity: (entry) => {
-          if (this.current !== elaboration) return;
+          if (this.live.get(path) !== elaboration) return;
+          const run = this.runs.get(path);
+          if (run === undefined) return;
           appendActivityLine(elaboration.activity, entry.text, entry.append);
           trimActivityLines(elaboration.activity);
-          this.run = { ...this.run, activity: elaboration.activity };
-          this.publishActivity();
+          this.runs.set(path, { ...run, activity: elaboration.activity });
+          this.publishRun(path);
         },
         onQuestion: (question) => {
-          if (this.current !== elaboration) return;
-          this.run = {
-            ...this.run,
+          if (this.live.get(path) !== elaboration) return;
+          const run = this.runs.get(path);
+          if (run === undefined) return;
+          this.runs.set(path, {
+            ...run,
             question: {
               id: question.id,
               message: question.message,
@@ -396,11 +426,11 @@ export class GoalDraftManager {
                 recommended: option.recommended,
               })),
             },
-          };
-          this.publishActivity();
+          });
+          this.publishRun(path);
         },
         onStderr: (text) => {
-          if (this.current !== elaboration) return;
+          if (this.live.get(path) !== elaboration) return;
           const line = firstLine(text);
           if (line.length > 0 && elaboration.firstStderr.length === 0) {
             elaboration.firstStderr = line;
@@ -410,16 +440,20 @@ export class GoalDraftManager {
     } catch (error) {
       // A stop outranks a late start failure: the operator's `stopped` state
       // must not become `failed` after the environment or connect rejected.
-      if (this.current !== elaboration) return STOPPED_START;
-      this.finish("failed", error instanceof Error ? error.message : String(error));
-      return { ok: false, message: this.run.error ?? "the elaboration peer could not be started" };
+      if (this.live.get(path) !== elaboration) return STOPPED_START;
+      this.finish(path, "failed", error instanceof Error ? error.message : String(error));
+      return {
+        ok: false,
+        message:
+          this.runs.get(path)?.error ?? "the elaboration peer could not be started",
+      };
     }
 
     // A stop can land while the environment resolves or while `connect`
     // constructs the peer. `finish` could not see that peer, so it was
     // neither closed nor prevented from running; close it here and keep the
     // operator's `stopped` state as the final one.
-    if (this.current !== elaboration) {
+    if (this.live.get(path) !== elaboration) {
       try {
         peer.close();
       } catch {
@@ -429,61 +463,67 @@ export class GoalDraftManager {
     }
 
     elaboration.peer = peer;
-    this.publishActivity();
+    this.publishRun(path);
     this.publishDrafts();
 
     void peer
-      .run(`/goal-draft ${draft.path}`)
+      .run(`/goal-draft ${path}`)
       .then(() => {
-        if (this.current !== elaboration) return;
-        this.finish("succeeded", null);
+        if (this.live.get(path) !== elaboration) return;
+        this.finish(path, "succeeded", null);
       })
       .catch((error: unknown) => {
-        if (this.current !== elaboration) return;
+        if (this.live.get(path) !== elaboration) return;
         const detail =
           error instanceof Error && error.message.length > 0
             ? error.message
             : elaboration.firstStderr.length > 0
               ? elaboration.firstStderr
               : "the elaboration agent ended with an error";
-        this.finish("failed", detail);
+        this.finish(path, "failed", detail);
       });
 
-    return { ok: true, path: draft.path };
+    return { ok: true, path };
   }
 
-  stop(): boolean {
-    if (this.current === undefined) return false;
-    this.finish("stopped", null);
+  stop(path: string): boolean {
+    const elaboration = this.live.get(path);
+    if (elaboration === undefined) return false;
+    this.finish(path, "stopped", null);
     return true;
   }
 
-  answer(id: number | string, value: string): boolean {
-    const elaboration = this.current;
+  answer(path: string, id: number | string, value: string): boolean {
+    const elaboration = this.live.get(path);
     if (elaboration === undefined || elaboration.peer === undefined) return false;
-    if (this.run.question === null) return false;
-    if (String(this.run.question.id) !== String(id)) return false;
+    const run = this.runs.get(path);
+    if (run?.question === null || run?.question === undefined) return false;
+    if (String(run.question.id) !== String(id)) return false;
     if (!elaboration.peer.answer(id, value)) return false;
-    this.run = { ...this.run, question: null };
-    this.publishActivity();
+    this.runs.set(path, { ...run, question: null });
+    this.publishRun(path);
     return true;
   }
 
-  /** Ends the peer without touching the draft; used when the server stops. */
+  /** Ends every peer without touching the drafts; used when the server stops. */
   dispose(): void {
-    const elaboration = this.current;
-    if (elaboration === undefined) return;
-    try {
-      elaboration.peer?.close();
-    } catch {
-      // The peer already exited.
+    const finishedAt = this.clock().toISOString();
+    for (const [path, elaboration] of this.live) {
+      try {
+        elaboration.peer?.close();
+      } catch {
+        // The peer already exited.
+      }
+      const run = this.runs.get(path);
+      if (run !== undefined) {
+        this.runs.set(path, {
+          ...run,
+          status: "stopped",
+          finishedAt,
+          question: null,
+        });
+      }
     }
-    this.current = undefined;
-    this.run = {
-      ...this.run,
-      status: "stopped",
-      finishedAt: this.clock().toISOString(),
-      question: null,
-    };
+    this.live.clear();
   }
 }
