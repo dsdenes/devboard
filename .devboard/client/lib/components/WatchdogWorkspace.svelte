@@ -1,6 +1,4 @@
 <script lang="ts">
-  import History from "lucide-svelte/icons/history";
-  import Inbox from "lucide-svelte/icons/inbox";
   import { onMount } from "svelte";
   import type { BadgeTone } from "../record-status";
   import type { WatchdogIssueState } from "../types";
@@ -68,7 +66,11 @@
 </script>
 
 <section class="watchdog-page" data-testid="watchdog-page" aria-label="Watchdog">
-  <PageHeader eyebrow="Issues" title="Watchdog" testid="watchdog-header">
+  <PageHeader
+    title="Watchdog"
+    subtitle="Files significant repository findings as issues and tracks their resolution."
+    testid="watchdog-header"
+  >
     {#snippet meta()}
       <span class="badge" data-tone={syncTone} data-testid="watchdog-sync" data-state={sync.state}>
         GitHub read {sync.state}
@@ -97,197 +99,171 @@
     </div>
   {/if}
 
-  <section class="panel watchdog-latest" data-testid="watchdog-last-cycle" aria-label="Newest cycle">
-    <div class="panel__header">
-      <h2 class="panel__title">Newest cycle</h2>
-      <span class="panel__subtitle" data-testid="watchdog-last-age">{age(cycle)}</span>
-    </div>
-    <div class="panel__body watchdog-latest__body">
-      <div class="watchdog-latest__verdict">
-        <span
-          class="badge"
-          data-tone={actionTone(snapshot?.action ?? "")}
-          data-testid="watchdog-last-action"
-        >
-          {snapshot?.action ?? "unknown"}
-        </span>
-        {#if snapshot?.reason !== undefined}
-          <p class="watchdog-latest__reason" data-testid="watchdog-last-reason">{snapshot.reason}</p>
-        {:else if cycle === null}
-          <p class="watchdog-latest__reason watchdog-latest__reason--empty">No cycle has run yet.</p>
-        {/if}
-      </div>
-      <dl class="watchdog-latest__facts">
-        <div>
-          <dt>Started</dt>
-          <dd class="mono" data-testid="watchdog-last-cycle-at">
-            {#if cycle === null}
-              never
-            {:else}
-              <time datetime={cycle}>{stamp(cycle)}</time>
-            {/if}
-          </dd>
-        </div>
-        <div>
-          <dt>Findings</dt>
-          <dd class="mono" data-testid="watchdog-last-findings">{snapshot?.findings ?? 0}</dd>
-        </div>
-        <div>
-          <dt>Pending filings</dt>
-          <dd class="mono" data-testid="watchdog-last-pending">{snapshot?.pending ?? 0}</dd>
-        </div>
-      </dl>
-    </div>
-  </section>
-
   <div class="watchdog-body">
-    <section class="panel watchdog-panel" aria-label="Filed issues">
-      <div class="panel__header">
-        <h2 class="panel__title">Filed issues</h2>
-        <span class="panel__subtitle" data-testid="watchdog-issues-count">
-          {issues.length} filed · {snapshot?.pending ?? 0} pending filing
-        </span>
-      </div>
-      <div class="panel__body panel__body--flush" data-testid="watchdog-issues">
-        {#if issues.length === 0}
-          <div class="watchdog-empty" data-testid="watchdog-issues-empty">
-            <span class="watchdog-empty__icon" aria-hidden="true">
-              <Inbox size={20} strokeWidth={1.5} />
+    <div class="watchdog-main">
+      <section class="panel" data-testid="watchdog-last-cycle" aria-label="Newest cycle">
+        <div class="panel__header">
+          <h2 class="panel__title">Newest cycle</h2>
+          <span class="watchdog-panel__trail">
+            <span
+              class="badge"
+              data-tone={actionTone(snapshot?.action ?? "none")}
+              data-testid="watchdog-last-action"
+            >
+              {snapshot?.action ?? "none"}
             </span>
-            <p class="watchdog-empty__title">No issues filed</p>
-            <p class="watchdog-empty__copy">
-              Findings worth an issue appear here after a cycle.
-            </p>
-          </div>
-        {:else}
-          <table class="watchdog-table watchdog-table--issues">
-            <thead>
-              <tr>
-                <th scope="col">Issue</th>
-                <th scope="col">Category</th>
-                <th scope="col">Filed</th>
-                <th scope="col">State</th>
-                <th scope="col">Version</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each issues as issue (issue.url)}
-                <tr
-                  class="watchdog-issue"
-                  data-testid="watchdog-issue"
-                  data-url={issue.url}
-                  data-state={issue.state ?? "unknown"}
-                  data-version={issue.version ?? ""}
-                >
-                  <td class="watchdog-table__title">
-                    <a
-                      class="watchdog-issue__title"
-                      data-testid="watchdog-issue-title"
-                      href={issue.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={`[watchdog] ${issue.category}: ${issue.line}`}
-                    >
-                      [watchdog] {issue.category}: {issue.line}
-                    </a>
-                  </td>
-                  <td class="mono watchdog-table__muted" data-testid="watchdog-issue-category">
-                    {issue.category}
-                  </td>
-                  <td class="mono">
-                    <time data-testid="watchdog-issue-filed" datetime={issue.filedAt}>
-                      {stamp(issue.filedAt)}
-                    </time>
-                  </td>
-                  <td>
-                    <span
-                      class="badge"
-                      data-tone={stateTone(issue.state)}
-                      data-testid="watchdog-issue-state"
-                    >
-                      {issue.state ?? "unknown"}
-                    </span>
-                  </td>
-                  <td class="mono watchdog-table__muted" data-testid="watchdog-issue-version">
-                    {issue.version ?? "—"}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
-      </div>
-    </section>
+            <span class="panel__subtitle mono" data-testid="watchdog-last-age">{age(cycle)}</span>
+          </span>
+        </div>
+        <div class="panel__body watchdog-summary">
+          <dl class="watchdog-facts">
+            <div>
+              <dt>Started</dt>
+              <dd data-testid="watchdog-last-cycle-at">
+                {#if cycle === null}
+                  never
+                {:else}
+                  <time datetime={cycle}>{stamp(cycle)}</time>
+                {/if}
+              </dd>
+            </div>
+            <div>
+              <dt>Findings</dt>
+              <dd data-testid="watchdog-last-findings">{snapshot?.findings ?? 0}</dd>
+            </div>
+            <div data-warning={(snapshot?.pending ?? 0) > 0 ? "" : undefined}>
+              <dt>Pending filings</dt>
+              <dd data-testid="watchdog-last-pending">{snapshot?.pending ?? 0}</dd>
+            </div>
+          </dl>
+          {#if snapshot?.reason !== undefined}
+            <p class="watchdog-reason" data-testid="watchdog-last-reason">{snapshot.reason}</p>
+          {/if}
+        </div>
+      </section>
 
-    <section class="panel watchdog-panel" aria-label="Cycle history">
+      <section class="panel watchdog-filed" aria-label="Filed issues">
+        <div class="panel__header">
+          <h2 class="panel__title">Filed issues</h2>
+          <span class="panel__subtitle" data-testid="watchdog-issues-count">{issues.length} filed</span>
+        </div>
+        <div class="panel__body panel__body--flush">
+          <div class="watchdog-issues" data-testid="watchdog-issues">
+            {#if issues.length === 0}
+              <p class="watchdog-empty" data-testid="watchdog-issues-empty">No issue has been filed.</p>
+            {:else}
+              <table class="watchdog-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Issue</th>
+                    <th scope="col">Category</th>
+                    <th scope="col">Filed</th>
+                    <th scope="col">State</th>
+                    <th scope="col">Version</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each issues as issue (issue.url)}
+                    {@const title = `[watchdog] ${issue.category}: ${issue.line}`}
+                    <tr
+                      class="watchdog-issue"
+                      data-testid="watchdog-issue"
+                      data-url={issue.url}
+                      data-state={issue.state ?? "unknown"}
+                      data-version={issue.version ?? ""}
+                    >
+                      <td>
+                        <a
+                          class="watchdog-issue__title"
+                          data-testid="watchdog-issue-title"
+                          href={issue.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={title}
+                        >
+                          {title}
+                        </a>
+                      </td>
+                      <td class="watchdog-issue__category" data-testid="watchdog-issue-category">
+                        {issue.category}
+                      </td>
+                      <td>
+                        <time
+                          class="watchdog-issue__filed"
+                          data-testid="watchdog-issue-filed"
+                          datetime={issue.filedAt}
+                        >
+                          {stamp(issue.filedAt)}
+                        </time>
+                      </td>
+                      <td>
+                        <span
+                          class="badge"
+                          data-tone={stateTone(issue.state)}
+                          data-testid="watchdog-issue-state"
+                        >
+                          {issue.state ?? "unknown"}
+                        </span>
+                      </td>
+                      <td class="watchdog-issue__version" data-testid="watchdog-issue-version">
+                        {issue.version ?? "—"}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            {/if}
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel watchdog-history" aria-label="Cycle history">
       <div class="panel__header">
         <h2 class="panel__title">Cycle history</h2>
       </div>
-      <div class="panel__body panel__body--flush" data-testid="watchdog-cycles">
-        {#if cycles.length === 0}
-          <div class="watchdog-empty" data-testid="watchdog-cycles-empty">
-            <span class="watchdog-empty__icon" aria-hidden="true">
-              <History size={20} strokeWidth={1.5} />
-            </span>
-            <p class="watchdog-empty__title">No cycles yet</p>
-            <p class="watchdog-empty__copy">The watchdog records one cycle every ten minutes.</p>
-          </div>
-        {:else}
-          <table class="watchdog-table watchdog-table--cycles">
-            <thead>
-              <tr>
-                <th scope="col">Started</th>
-                <th scope="col">Action</th>
-                <th scope="col">Issues</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each cycles as entry, index (index)}
-                <tr
-                  class="watchdog-cycle"
-                  data-testid="watchdog-cycle"
-                  data-action={entry.action}
-                  aria-label={`${entry.action} cycle at ${entry.at}`}
-                >
-                  <td>
-                    <span class="mono" data-testid="watchdog-cycle-at">
-                      <time datetime={entry.at}>{stamp(entry.at)}</time>
-                    </span>
-                  </td>
-                  <td>
-                    <span
-                      class="badge"
-                      data-tone={actionTone(entry.action)}
-                      data-testid="watchdog-cycle-action"
+      <div class="panel__body panel__body--flush">
+        <ol class="watchdog-cycles" data-testid="watchdog-cycles">
+          {#each cycles as entry, index (index)}
+            <li
+              class="watchdog-cycle"
+              data-testid="watchdog-cycle"
+              data-action={entry.action}
+              aria-label={`${entry.action} cycle at ${entry.at}`}
+            >
+              <span class="watchdog-cycle__at" data-testid="watchdog-cycle-at">
+                <time datetime={entry.at}>{stamp(entry.at)}</time>
+              </span>
+              <span
+                class="badge watchdog-cycle__action"
+                data-tone={actionTone(entry.action)}
+                data-testid="watchdog-cycle-action"
+              >
+                {entry.action}
+              </span>
+              {#if entry.issues.length > 0}
+                <span class="watchdog-cycle__issues" data-testid="watchdog-cycle-issues">
+                  {#each entry.issues as issue (issue)}
+                    {@const number = issue.slice(issue.lastIndexOf("/") + 1)}
+                    <a
+                      class="watchdog-cycle__issue"
+                      data-testid="watchdog-cycle-issue"
+                      href={issue}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={issue}
+                      aria-label={`GitHub issue ${number.length > 0 ? number : issue}`}
                     >
-                      {entry.action}
-                    </span>
-                  </td>
-                  <td class="watchdog-table__links">
-                    {#if entry.issues.length > 0}
-                      <span class="watchdog-cycle__issues" data-testid="watchdog-cycle-issues">
-                        {#each entry.issues as issue (issue)}
-                          {@const number = issue.slice(issue.lastIndexOf("/") + 1)}
-                          <a
-                            class="watchdog-cycle__issue"
-                            data-testid="watchdog-cycle-issue"
-                            href={issue}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            title={issue}
-                            aria-label={`GitHub issue ${number.length > 0 ? number : issue}`}
-                          >
-                            {number.length > 0 ? `#${number}` : issue}
-                          </a>
-                        {/each}
-                      </span>
-                    {/if}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
+                      {number.length > 0 ? `#${number}` : issue}
+                    </a>
+                  {/each}
+                </span>
+              {/if}
+            </li>
+          {:else}
+            <li class="watchdog-empty" data-testid="watchdog-cycles-empty">No cycle has run yet.</li>
+          {/each}
+        </ol>
       </div>
     </section>
   </div>
@@ -295,69 +271,78 @@
 
 <style>
   .watchdog-page {
+    container-name: watchdog;
+    container-type: inline-size;
     display: flex;
     flex-direction: column;
     gap: 12px;
     height: 100%;
     min-height: 0;
     min-width: 0;
-    overflow: hidden;
+    overflow: auto;
     padding: 16px;
   }
 
   .watchdog-page__alerts {
     display: flex;
-    flex: 0 0 auto;
     flex-direction: column;
     gap: 6px;
   }
 
-  .watchdog-latest {
-    flex: 0 0 auto;
+  .watchdog-body {
+    align-items: stretch;
+    display: grid;
+    flex: 1 1 auto;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.9fr);
+    min-height: 0;
   }
 
-  .watchdog-latest__body {
-    align-items: center;
+  .watchdog-main {
+    container-name: watchdog-main;
+    container-type: inline-size;
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px 24px;
-    justify-content: space-between;
-  }
-
-  .watchdog-latest__verdict {
-    align-items: center;
-    display: flex;
-    gap: 8px;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
     min-width: 0;
   }
 
-  .watchdog-latest__reason {
-    color: var(--foreground);
-    font-size: 12px;
-    line-height: 1.4;
-    margin: 0;
-    overflow-wrap: anywhere;
+  .watchdog-panel__trail {
+    align-items: center;
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 8px;
   }
 
-  .watchdog-latest__reason--empty {
-    color: var(--muted-foreground);
-  }
-
-  .watchdog-latest__facts {
+  .watchdog-summary {
     display: flex;
-    flex-wrap: wrap;
-    gap: 4px 24px;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .watchdog-facts {
+    display: grid;
+    gap: 0;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
     margin: 0;
   }
 
-  .watchdog-latest__facts > div {
+  .watchdog-facts div {
+    border-left: 1px solid var(--border-subtle);
     display: flex;
     flex-direction: column;
     gap: 2px;
     min-width: 0;
+    padding: 0 10px;
   }
 
-  .watchdog-latest__facts dt {
+  .watchdog-facts div:first-child {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .watchdog-facts dt {
     color: var(--muted-foreground);
     font-size: 10px;
     font-weight: 700;
@@ -366,24 +351,90 @@
     text-transform: uppercase;
   }
 
-  .watchdog-latest__facts dd {
-    font-size: 11.5px;
-    line-height: 1.4;
+  .watchdog-facts dd {
+    font-family: var(--font-mono);
+    font-size: 12px;
     margin: 0;
     overflow-wrap: anywhere;
   }
 
-  .watchdog-body {
+  .watchdog-facts div[data-warning] dd {
+    color: var(--warning);
+  }
+
+  .watchdog-reason {
+    border-top: 1px solid var(--border-subtle);
+    color: var(--muted-foreground);
+    font-size: 12px;
+    margin: 0;
+    overflow-wrap: anywhere;
+    padding-top: 8px;
+  }
+
+  .watchdog-empty {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    margin: 0;
+    padding: 10px 12px;
+  }
+
+  .watchdog-filed {
+    flex: 1 1 auto;
+  }
+
+  .watchdog-cycles {
+    display: flex;
+    flex-direction: column;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .watchdog-cycle {
+    align-items: center;
+    border-bottom: 1px solid var(--border-subtle);
     display: grid;
-    flex: 1;
-    gap: 12px;
-    grid-template-columns: minmax(0, 1.25fr) minmax(420px, 1fr);
-    min-height: 0;
+    font-size: 12px;
+    gap: 8px;
+    grid-template-columns: 118px 86px minmax(0, 1fr);
+    min-height: 27px;
+    padding: 5px 10px;
+  }
+
+  .watchdog-cycle:last-child {
+    border-bottom: 0;
+  }
+
+  .watchdog-cycle__at {
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .watchdog-cycle__action {
+    justify-self: start;
+  }
+
+  .watchdog-cycle__issues {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
     min-width: 0;
   }
 
-  .watchdog-panel {
-    min-height: 0;
+  .watchdog-cycle__issue {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    text-decoration: none;
+  }
+
+  .watchdog-cycle__issue:hover,
+  .watchdog-cycle__issue:focus-visible {
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
 
   .watchdog-table {
@@ -393,14 +444,30 @@
     width: 100%;
   }
 
+  .watchdog-table th:nth-child(2) {
+    width: 110px;
+  }
+
+  .watchdog-table th:nth-child(3) {
+    width: 132px;
+  }
+
+  .watchdog-table th:nth-child(4) {
+    width: 86px;
+  }
+
+  .watchdog-table th:nth-child(5) {
+    width: 76px;
+  }
+
   .watchdog-table th {
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     color: var(--muted-foreground);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    padding: 5px 8px;
     position: sticky;
     text-align: left;
     text-transform: uppercase;
@@ -410,127 +477,79 @@
 
   .watchdog-table td {
     border-bottom: 1px solid var(--border-subtle);
-    height: 27px;
-    line-height: 26px;
-    max-width: 0;
-    overflow: hidden;
-    padding: 0 8px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    padding: 5px 8px;
+    text-align: left;
+    vertical-align: middle;
+  }
+
+  .watchdog-table tr:last-child td {
+    border-bottom: 0;
   }
 
   .watchdog-table tbody tr:hover {
     background: var(--row-hover);
   }
 
-  .watchdog-table tbody tr:last-child td {
-    border-bottom: 0;
-  }
-
-  .watchdog-table__muted {
-    color: var(--muted-foreground);
-  }
-
-  .watchdog-table__links {
-    height: auto;
-    line-height: 1.4;
-    overflow-wrap: anywhere;
-    padding-bottom: 5px;
-    padding-top: 5px;
-    white-space: normal;
-  }
-
-  .watchdog-table--issues th:nth-child(2) {
-    width: 104px;
-  }
-  .watchdog-table--issues th:nth-child(3) {
-    width: 142px;
-  }
-  .watchdog-table--issues th:nth-child(4) {
-    width: 104px;
-  }
-  .watchdog-table--issues th:nth-child(5) {
-    width: 74px;
-  }
-
-  .watchdog-table--cycles th:nth-child(1) {
-    width: 140px;
-  }
-  .watchdog-table--cycles th:nth-child(2) {
-    width: 100px;
-  }
-
-  .watchdog-cycle__issues {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .watchdog-cycle__issue {
-    color: var(--accent);
-    text-decoration: none;
-  }
-
-  .watchdog-cycle__issue:hover,
-  .watchdog-cycle__issue:focus-visible {
-    text-decoration: underline;
+  .watchdog-table td:first-child {
+    overflow: hidden;
   }
 
   .watchdog-issue__title {
     color: var(--foreground);
-    text-decoration: none;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .watchdog-issue__title:hover,
   .watchdog-issue__title:focus-visible {
     color: var(--accent);
     text-decoration: underline;
+    text-underline-offset: 2px;
   }
 
-  .watchdog-empty {
-    align-items: center;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    justify-content: center;
-    min-height: 100%;
-    padding: 24px 16px;
-    text-align: center;
-  }
-
-  .watchdog-empty__icon {
+  .watchdog-issue__category,
+  .watchdog-issue__filed,
+  .watchdog-issue__version {
     color: var(--muted-foreground);
-    display: flex;
-    margin-bottom: 4px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .watchdog-empty__title {
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1.3;
-    margin: 0;
+  .watchdog-issue__version {
+    color: var(--foreground);
   }
 
-  .watchdog-empty__copy {
-    color: var(--muted-foreground);
-    font-size: 12px;
-    line-height: 1.45;
-    margin: 0;
-    max-width: 360px;
-  }
-
-  @media (max-width: 1500px) {
+  @container watchdog (max-width: 1300px) {
     .watchdog-body {
+      align-items: start;
+      flex: 0 0 auto;
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr);
+    }
+
+    .watchdog-filed {
+      flex: 0 0 auto;
+      max-height: clamp(240px, 48vh, 520px);
+    }
+
+    .watchdog-history {
+      max-height: clamp(280px, 58vh, 580px);
     }
   }
 
-  /* The category is already in the issue title; it yields before the content
-     does at the narrowest supported workspace. */
-  @media (max-width: 1100px) {
-    .watchdog-table--issues th:nth-child(2),
-    .watchdog-table--issues td:nth-child(2) {
+  @container watchdog-main (max-width: 900px) {
+    /* The title carries the category and finding; the narrow table keeps the
+       identification and the state, and drops the secondary columns. */
+    .watchdog-table th:nth-child(2),
+    .watchdog-table td:nth-child(2),
+    .watchdog-table th:nth-child(3),
+    .watchdog-table td:nth-child(3),
+    .watchdog-table th:nth-child(5),
+    .watchdog-table td:nth-child(5) {
       display: none;
     }
   }
