@@ -140,13 +140,13 @@ export class ScoutStore {
       if (next.lastError !== this.lastError) {
         this.lastError = next.lastError;
         if (next.lastError !== null && !first) {
-          notifications.push("error", next.lastError);
+          notifications.push("Auto Scout", "error", next.lastError);
         }
       }
       if (next.notice !== this.lastNotice) {
         this.lastNotice = next.notice;
         if (!first && next.notice !== null && next.notice.startsWith("Filed ")) {
-          notifications.push("success", next.notice);
+          notifications.push("Auto Scout", "success", next.notice);
         }
       }
       return;

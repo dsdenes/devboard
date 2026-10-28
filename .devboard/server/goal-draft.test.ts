@@ -100,13 +100,17 @@ class FakePeer implements GoalDraftPeer {
   }
 }
 
-function managerFor(root: string, peers: FakePeer[]): { manager: GoalDraftManager; events: unknown[] } {
+function managerFor(
+  root: string,
+  peers: FakePeer[],
+  environment: () => Promise<Record<string, string | undefined>> = async () => ({}),
+): { manager: GoalDraftManager; events: unknown[] } {
   const events: unknown[] = [];
   const manager = new GoalDraftManager({
     repoDir: root,
     command: "omp acp",
     send: (event) => events.push(event),
-    environment: async () => ({}),
+    environment,
     connect: (options) => {
       const peer = new FakePeer(options);
       peers.push(peer);
@@ -247,6 +251,59 @@ describe("elaboration", () => {
     expect((await manager.start(".devboard/goal-proposals/two.md")).ok).toBe(true);
     const second = await waitFor(() => peers[1], "the retried peer");
     expect(second.prompts).toEqual(["/goal-draft .devboard/goal-proposals/two.md"]);
+  });
+
+  test("a stop while the provider environment resolves closes the late peer without running it", async () => {
+    const { root, drafts } = await fixture();
+    writeFileSync(join(drafts, "late.md"), draftText("Late", "body"));
+    const peers: FakePeer[] = [];
+    const environment = Promise.withResolvers<Record<string, string | undefined>>();
+    const { manager } = managerFor(root, peers, () => environment.promise);
+
+    const starting = manager.start(".devboard/goal-proposals/late.md");
+    expect(manager.snapshot().status).toBe("running");
+    expect(manager.stop()).toBe(true);
+    environment.resolve({});
+
+    const result = await starting;
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.stopped).toBe(true);
+    expect(manager.snapshot().status).toBe("stopped");
+    expect(manager.snapshot().error).toBeNull();
+    expect(existsSync(join(drafts, "late.md"))).toBe(true);
+
+    const peer = peers[0];
+    expect(peer).toBeDefined();
+    expect(peer?.prompts).toEqual([]);
+    expect(peer?.closed).toBe(true);
+    expect(peer?.closes).toBe(1);
+  });
+
+  test("a connect failure after stop leaves the status stopped rather than failed", async () => {
+    const { root, drafts } = await fixture();
+    writeFileSync(join(drafts, "late-failure.md"), draftText("Late failure", "body"));
+    let manager!: GoalDraftManager;
+    manager = new GoalDraftManager({
+      repoDir: root,
+      command: "omp acp",
+      send: () => undefined,
+      environment: async () => ({}),
+      connect: () => {
+        // The stop lands while the peer is being constructed; the failure that
+        // follows must not replace the operator's `stopped` state with `failed`.
+        manager.stop();
+        throw new Error("connection refused");
+      },
+    });
+    managers.push(manager);
+
+    const result = await manager.start(".devboard/goal-proposals/late-failure.md");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.stopped).toBe(true);
+    expect(manager.snapshot().status).toBe("stopped");
+    expect(manager.snapshot().error).toBeNull();
+    expect(manager.child()).toBeUndefined();
+    expect(existsSync(join(drafts, "late-failure.md"))).toBe(true);
   });
 
   test("a failed peer keeps the draft and reports the error; retry starts a new peer", async () => {

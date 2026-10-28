@@ -1,8 +1,21 @@
 export type Severity = "error" | "warning" | "notice" | "success";
 
+/** The subsystem that raised a notification, so the card names its origin. */
+export type NotificationSource =
+  | "Auto Scout"
+  | "Connection"
+  | "Discover"
+  | "Flow"
+  | "Issues"
+  | "Providers"
+  | "Server"
+  | "Updates";
+
 export interface AppNotification {
   id: number;
   severity: Severity;
+  /** Where the notification came from; rendered beside the timestamp. */
+  source: NotificationSource;
   text: string;
   at: string;
 }
@@ -20,7 +33,7 @@ export class NotificationStore {
   historyOpen = $state(false);
   private counter = 0;
 
-  push(severity: Severity, text: string): void {
+  push(source: NotificationSource, severity: Severity, text: string): void {
     const message = text.trim();
     if (message.length === 0) return;
     this.counter += 1;
@@ -28,6 +41,7 @@ export class NotificationStore {
       {
         id: this.counter,
         severity,
+        source,
         text: message,
         at: new Date().toISOString(),
       },

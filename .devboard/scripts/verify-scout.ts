@@ -713,6 +713,31 @@ try {
     "an issue was filed without the host origin and the scout label",
     created,
   );
+  const filingNotice = await waitFor(
+    async () => {
+      const entry = (await devtools.evaluate(`(() => {
+        const card = [...document.querySelectorAll('[data-testid="notifications"] .notification')]
+          .find((item) => item.textContent?.includes("Filed 2 issues"));
+        return card === undefined
+          ? null
+          : {
+              text: card.querySelector(".notification__text")?.textContent ?? "",
+              source: card.getAttribute("data-source"),
+              meta: card.querySelector(".notification__meta")?.textContent ?? "",
+            };
+      })()`)) as { text: string; source: string | null; meta: string } | null;
+      return entry ?? undefined;
+    },
+    "the filing notification",
+    10_000,
+  );
+  check(
+    filingNotice.text === "Filed 2 issues in acme/fixture-scout: #1, #2" &&
+      filingNotice.source === "Auto Scout" &&
+      filingNotice.meta.includes("Auto Scout"),
+    "the filing notification does not name its source and the filed issues",
+    filingNotice,
+  );
   const activity = await text(devtools, "scout-activity");
   check(activity.includes("filed #"), "the filings are not in the activity", activity);
   const createdBodies = readStore(fixture).issues.map((issue) => issue.body);
