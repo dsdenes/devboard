@@ -63,6 +63,8 @@ const laneSettleMs = Number(argument("lane-settle-ms") ?? 0);
 const logPath = argument("log");
 const delayMs = Number(argument("delay-ms") ?? 0);
 const forcedQuestions = argument("questions");
+/** Omits the schema default so the fixture question has no recommended option. */
+const questionsUnrecommended = process.argv.includes("--questions-unrecommended");
 const reviseGoal = process.argv.includes("--revise-goal");
 const createGoal = process.argv.includes("--create-goal");
 const createGoalWrite = !process.argv.includes("--no-create-goal-write");
@@ -484,7 +486,8 @@ function writePreparedSkills() {
   }
 }
 
-async function askQuestions(count: number) {
+async function askQuestions(count: number, options: { recommended?: boolean } = {}) {
+  const hasDefault = options.recommended ?? !questionsUnrecommended;
   for (let index = 0; index < count; index += 1) {
     const response = await request("elicitation/create", {
       mode: "form",
@@ -500,7 +503,7 @@ async function askQuestions(count: number) {
               { const: "Alpha", title: "Alpha", description: "Alpha leads to the first outcome." },
               { const: "Beta", title: "Beta", description: "Beta leads to the second outcome." },
             ],
-            default: "Alpha",
+            ...(hasDefault ? { default: "Alpha" } : {}),
           },
         },
         required: ["value"],
@@ -547,7 +550,7 @@ async function runGoalDraft(relativePath: string) {
   stream("Reading the draft and researching the repository");
 
   if (source.includes("STUB-QUESTION")) {
-    await askQuestions(1);
+    await askQuestions(1, { recommended: false });
   }
   if (source.includes("STUB-FAIL")) {
     throw new Error("goal label verification failed");

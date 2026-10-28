@@ -428,6 +428,35 @@ describe("agent runs", () => {
   );
 
   test(
+    "recommends the first option when the elicitation omits a default",
+    async () => {
+      const { server, url } = await startServer(
+        { "0001-first.md": PENDING_ONE },
+        "--questions=1 --questions-unrecommended",
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startRun" });
+        await client.waitFor((message) => message.type === "runStarted");
+
+        const question = await client.waitFor((message) => message.type === "question");
+        expect(question).toMatchObject({
+          message: "Choose an answer",
+          options: [
+            { label: "Alpha", recommended: true },
+            { label: "Beta", recommended: false },
+          ],
+        });
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
     "ends the sequence without starting another record when the agent turn does not resolve",
     async () => {
       const { server, adrDir, logPath, url } = await startServer(
