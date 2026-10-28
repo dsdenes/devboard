@@ -34,3 +34,14 @@ export const NoActions: Story = { args: { actionCount: 0 } };
 
 // Flat inside a parent panel, as the Goal document page composes it.
 export const FlatInsidePanel: Story = { args: { flat: true, actionCount: 3 } };
+
+// The operational bar: the state cluster sits beside the action it qualifies.
+export const Bar: Story = {
+  args: {
+    eyebrow: "Issues",
+    title: "Auto Scout",
+    subtitle: "dsdenes/devboard",
+    layout: "bar",
+    actionCount: 1,
+  },
+};
