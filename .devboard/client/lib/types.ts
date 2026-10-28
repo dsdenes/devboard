@@ -233,6 +233,8 @@ export interface WatchdogCycle {
   window: WatchdogCycleWindow;
   action: string;
   findings: number;
+  /** The GitHub issues this cycle's findings map to, in finding order. */
+  issues: string[];
   reason?: string;
 }
 

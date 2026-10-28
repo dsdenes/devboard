@@ -91,6 +91,10 @@ const flowGoalEmpty = process.argv.includes("--flow-goal-empty");
 const flowGoalFail = process.argv.includes("--flow-goal-fail");
 const flowGoalText =
   argument("flow-goal-text") ?? "# Flow goal\n\nMake the fixture behavior observable.";
+/** Overrides the goal text while this file exists, so turns can differ. */
+const flowGoalTextFile = argument("flow-goal-text-file");
+/** Stalls this long after writing goal.md, before the turn ends. */
+const flowGoalSettleMs = Number(argument("flow-goal-settle") ?? 0);
 /** While this file exists the interview stalls; `partial` first writes a draft. */
 const flowGoalHang = argument("flow-goal-hang");
 const flowGoalPartial = argument("flow-goal-partial");
@@ -725,8 +729,17 @@ async function runFlowGoal(directory: string) {
     return;
   }
   mkdirSync(directory, { recursive: true });
-  writeFileSync(join(directory, "goal.md"), flowGoalEmpty ? "" : flowGoalText);
+  let text = flowGoalText;
+  if (flowGoalTextFile !== undefined) {
+    try {
+      text = readFileSync(flowGoalTextFile, "utf8");
+    } catch {
+      // The file is a one-shot override; absent means keep the default.
+    }
+  }
+  writeFileSync(join(directory, "goal.md"), flowGoalEmpty ? "" : text);
   log(`flow-goal-written ${directory}`);
+  if (flowGoalSettleMs > 0) await Bun.sleep(flowGoalSettleMs);
   stream("Wrote the Flow goal");
 }
 

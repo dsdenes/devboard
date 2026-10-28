@@ -32,6 +32,7 @@ import {
   categoryFromBody,
   normalizeTitle,
   parseScanResult,
+  type ScanResult,
   type ScoutRecommendation,
 } from "./recommendation";
 import {
@@ -39,6 +40,7 @@ import {
   createScanDirectory,
   promptFor,
   readDraftGoalHeadings,
+  repairPrompt,
   writeRequest,
 } from "./scan";
 import {
@@ -69,6 +71,8 @@ const TICK_MS = 100;
 const DEFAULT_AGENT_COMMAND = "omp acp";
 const FIRST_LINE_MAX = 400;
 const MAX_ACTIVITY_LINE = 2000;
+/** One periodic read, including its default `gh` calls, may not outlive this. */
+const READ_TIMEOUT_MS = 30_000;
 
 export interface ScoutWorkerOptions {
   repoDir: string;
@@ -77,12 +81,23 @@ export interface ScoutWorkerOptions {
   environment?: Record<string, string | undefined>;
   /** The periodic GitHub read; 60 seconds in production. */
   syncMs?: number;
+  /**
+   * One periodic GitHub read is abandoned after this many milliseconds; the
+   * sync records a failure and the next tick may read again. The default
+   * client applies the same deadline to each `gh` child.
+   */
+  readTimeoutMs?: number;
   /** A scan that exceeds this is closed as failed. */
   timeoutMs?: number;
   now?: () => Date;
   /** Injected for tests; defaults to the real ACP client. */
   connect?: (options: IssuesPeerOptions) => AcpPeer;
-  /** Injected for tests; defaults to the checkout's `gh` reads. */
+  /**
+   * Injected for tests; defaults to the checkout's `gh` reads. An injected
+   * client owns its own bound: `refresh` races the whole read against
+   * `readTimeoutMs`, but a call that never settles still leaks its pending
+   * work, so production clients must bound every command they start.
+   */
   github?: ScoutGitHubClient;
   fileIssue?: typeof fileScoutIssue;
   harnessVersion?: string | null;
@@ -105,6 +120,8 @@ interface ActiveScan {
   firstLine: string | null;
   /** Issues filed so far, so a failed settle records the real count. */
   filed: number;
+  /** Correction turns already requested for a rejected answer; at most one. */
+  repairs: number;
   /** Present while reading and filing, where the scan timer no longer guards. */
   settle?: {
     controller: AbortController;
@@ -169,6 +186,7 @@ export class ScoutWorker {
   readonly repoDir: string;
   readonly stateDir: string;
   readonly syncMs: number;
+  readonly readTimeoutMs: number;
   readonly timeoutMs: number;
   private readonly agentCommand: string;
   private readonly environment: Record<string, string | undefined>;
@@ -202,6 +220,7 @@ export class ScoutWorker {
     this.repoDir = resolve(options.repoDir);
     this.stateDir = resolve(options.stateDir);
     this.syncMs = Math.max(1000, options.syncMs ?? SYNC_INTERVAL_MS);
+    this.readTimeoutMs = Math.max(1, options.readTimeoutMs ?? READ_TIMEOUT_MS);
     this.timeoutMs = Math.max(1000, options.timeoutMs ?? SCAN_TIMEOUT_MS);
     this.agentCommand =
       options.agentCommand ??
@@ -277,6 +296,7 @@ export class ScoutWorker {
         repository,
         repoDir: this.repoDir,
         environment: this.environment,
+        timeoutMs: this.readTimeoutMs,
       });
     this.nextSyncAt = 0;
     this.publish();
@@ -476,6 +496,26 @@ export class ScoutWorker {
   }
 
   /**
+   * One periodic read, raced against its deadline. The default client bounds
+   * each `gh` child itself; this race also releases the worker from an
+   * injected client that never settles, so a stall can never leave `syncing`
+   * set forever.
+   */
+  private async readGitHubWithinDeadline(): Promise<GitHubRead> {
+    const timedOut = Promise.withResolvers<never>();
+    let timer: Timer | undefined;
+    timer = setTimeout(() => {
+      timedOut.reject(new Error(`the GitHub read did not finish within ${this.readTimeoutMs} ms`));
+    }, this.readTimeoutMs);
+    timer.unref?.();
+    try {
+      return await Promise.race([this.readGitHub(), timedOut.promise]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * The periodic check: every `scout` issue, every published release, and the
    * open titles the next scan must not restate. A failed read keeps the last
    * known rows, records the reason, and blocks filing until a read succeeds.
@@ -486,7 +526,7 @@ export class ScoutWorker {
     try {
       let read: GitHubRead;
       try {
-        read = await this.readGitHub();
+        read = await this.readGitHubWithinDeadline();
       } catch (error) {
         this.recordSyncFailure(detailOf(error));
         return;
@@ -615,6 +655,7 @@ export class ScoutWorker {
         timer: undefined,
         firstLine: null,
         filed: 0,
+        repairs: 0,
       };
       this.active = active;
       this.state.scan = { scanId: scan.scanId, startedAt: scan.startedAt, requested: capacity.batch };
@@ -882,57 +923,76 @@ export class ScoutWorker {
   }
 
   /**
-   * Reads and validates the answer, re-reads GitHub immediately before filing,
-   * then files every significant, novel item the caps allow. A malformed or
-   * insignificant item never reaches `gh`; a failed read files nothing.
+   * Reads and validates the answer file. A missing file, invalid JSON, and a
+   * rejected document are all the same kind of failure: the correction turn
+   * gets the message, and an uncorrected scan files nothing.
    */
-  private async completeScan(active: ActiveScan): Promise<void> {
-    if (active.finished) return;
-    // Claim the terminal path before touching the answer, so the timeout can
-    // no longer close a scan that is already settling.
-    active.finished = true;
-    clearTimeout(active.timer);
-    active.timer = undefined;
-    this.closePeer(active);
-
+  private readAnswer(
+    active: ActiveScan,
+  ): { ok: true; result: Extract<ScanResult, { ok: true }> } | { ok: false; error: string } {
     let text: string;
     try {
       text = readFileSync(recommendationsPath(active.directory), "utf8");
     } catch {
-      this.writeScan(active, "failed", {
-        requested: active.requested,
-        filed: 0,
-        error: "the agent wrote no recommendations.json",
-      });
-      this.finishScan(active, "the agent wrote no recommendations.json");
-      return;
+      return { ok: false, error: "the agent wrote no recommendations.json" };
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
     } catch {
-      this.writeScan(active, "failed", {
-        requested: active.requested,
-        filed: 0,
-        error: "recommendations.json is not valid JSON",
-      });
-      this.finishScan(active, "recommendations.json is not valid JSON");
-      return;
+      return { ok: false, error: "recommendations.json is not valid JSON" };
     }
     const result = parseScanResult(parsed, {
       requested: active.requested,
       repoDir: this.repoDir,
     });
-    if (!result.ok) {
-      this.recordScanLine(active, `rejected: ${result.error}`);
+    return result.ok ? { ok: true, result } : { ok: false, error: result.error };
+  }
+
+  /**
+   * Reads and validates the answer, asks the agent for one correction when the
+   * answer is rejected while the scan timer still guards the phase, re-reads
+   * GitHub immediately before filing, then files every significant, novel item
+   * the caps allow. A malformed or insignificant item never reaches `gh`; a
+   * failed read files nothing.
+   */
+  private async completeScan(active: ActiveScan): Promise<void> {
+    if (active.finished) return;
+
+    let answer = this.readAnswer(active);
+    if (!answer.ok) {
+      this.recordScanLine(active, `rejected: ${answer.error}`);
+      if (active.repairs === 0) {
+        active.repairs = 1;
+        this.recordScanLine(active, "asked the agent to correct the answer");
+        try {
+          await active.peer.prompt(repairPrompt(active.directory, answer.error));
+        } catch (error) {
+          if (active.finished || this.active !== active) return;
+          this.recordScanLine(active, `correction failed: ${detailOf(error)}`);
+        }
+        if (active.finished || this.active !== active) return;
+        answer = this.readAnswer(active);
+        if (!answer.ok) this.recordScanLine(active, `rejected: ${answer.error}`);
+      }
+    }
+    if (!answer.ok) {
       this.writeScan(active, "failed", {
         requested: active.requested,
         filed: 0,
-        error: result.error,
+        error: answer.error,
       });
-      this.finishScan(active, result.error);
+      this.finishScan(active, answer.error);
       return;
     }
+
+    // The answer is final: claim the terminal path before touching the
+    // tracker, so the scan timer can no longer close a scan that is settling.
+    active.finished = true;
+    clearTimeout(active.timer);
+    active.timer = undefined;
+    this.closePeer(active);
+    const result = answer.result;
 
     // Immediately before filing, read every scout issue again. The periodic
     // read stands aside until this scan has finished filing, so a stale apply

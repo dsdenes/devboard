@@ -1287,11 +1287,13 @@ panel's `watchdog-last-age` shows that cycle's age.
 
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
 first, capped at the newest 100 directories. Every `watchdog-cycle` row carries `data-action` and
-renders `watchdog-cycle-at`, `watchdog-cycle-window` (window start and end),
-`watchdog-cycle-action`, `watchdog-cycle-findings`, and `watchdog-cycle-reason` (empty when the
-report has none). A run directory whose `report.json` is missing or unparsable is skipped without
-hiding the other rows. With no run directory at all, the `latest.json` cycle is the single row;
-with no cycle anywhere, `watchdog-cycles-empty` is rendered.
+renders `watchdog-cycle-at`, `watchdog-cycle-action`, and, only when the cycle's findings map to a
+filed issue, a `watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to those GitHub
+issues. Each anchor reads `#<number>` and opens in a new tab; the row repeats no issue and keeps
+the finding order. A cycle row renders no window interval, finding count, or reason. A run
+directory whose `report.json` is missing or unparsable is skipped without hiding the other rows.
+With no run directory at all, the `latest.json` cycle is the single row; with no cycle anywhere,
+`watchdog-cycles-empty` is rendered.
 
 `watchdog-issues` lists every ledger entry whose disposition is `filed:<url>`, newest `filedAt`
 first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `data-state`, and
@@ -1323,7 +1325,8 @@ seconds, so a newly written run directory or filed ledger entry appears without 
 directory, ledger write, or lock. Its existing fields keep their meaning: `cycle` (ISO 8601 or
 null), `action`, the optional `reason`, the `findings` count, `issues`
 (`{url, category, line, filedAt, state, version}`) newest first, and the `pending` count; it adds
-`cycles` and `sync`. A dashboard-endpoint failure renders `watchdog-error`.
+`cycles` (each `{at, window, action, findings, issues, reason?}`, where `issues` lists the
+connected GitHub issue URLs) and `sync`. A dashboard-endpoint failure renders `watchdog-error`.
 
 The status bar's watchdog indicator is unchanged: `status-watchdog` shows the last action and its
 age; activating it opens `watchdog-popover` listing up to ten filed issues, each link opening in a
@@ -1570,17 +1573,16 @@ opening it. A running draft's row shows `issues-draft-blocked` with exactly
 `This draft is being elaborated.`; no other row carries a blocker. An empty directory shows
 `No drafts exist.`.
 
-Selecting one opens `data-testid="issues-draft-detail"`: a two-line header carries the draft's
-first heading and its file name, the state badge for this draft's run only, `issues-draft-start`
+Selecting one opens `data-testid="issues-draft-detail"`: the header carries the draft's file name,
+the state badge for this draft's run only (absent while the run is `idle`), `issues-draft-start`
 (`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
 body reads the proposal before the `## Captured UI context` marker, then the activity stream in
 `issues-draft-activity` once a run exists, then `issues-draft-context`: the captured facts as a
-compact grid and the visible text and DOM excerpt behind a `Captured evidence` disclosure. A
-pending elaboration question (`issues-draft-question`) renders above the proposal, with
-`issues-draft-choice`, `issues-draft-answer-input`, and `issues-draft-answer-submit`. The exact
-draft bytes remain in `issues-draft-text`, collapsed under `Draft source`. Selecting another draft
-switches every one of those surfaces to that path; the previous draft's activity and question are
-absent. The detail refreshes when the page opens, after the report panel writes a draft through
+compact grid followed by the inline Visible text and DOM excerpt sections. A pending elaboration
+question (`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,
+`issues-draft-answer-input`, and `issues-draft-answer-submit`. Selecting another draft switches
+every one of those surfaces to that path; the previous draft's activity and question are absent.
+The detail refreshes when the page opens, after the report panel writes a draft through
 `POST /api/goal-proposals`, after an elaboration finishes or stops, and when a listed draft
 disappears. The page polls the list every two seconds while it is mounted, so an external deletion
 is visible without a reload, and the report panel's write broadcast reaches an open page
@@ -1709,8 +1711,8 @@ Every recommendation carries an integer `significance` from 1 to 5 and a non-emp
 impact — a reproducible defect, a real failure mode, or a measured structural cost; polishing
 code that is already correct is at most 2. Items scoring below 4 are dropped before filing and
 recorded in scan activity. A missing or out-of-range score, or a missing reason, fails the whole
-scan atomically and files nothing. Each filed issue body carries `## Significance` with `<n>/5`
-and the reason.
+scan and files nothing unless the correction turn fixes it. Each filed issue body carries
+`## Significance` with `<n>/5` and the reason.
 
 A filed issue carries the exact `scout` label (created first when absent), the recommendation's
 title, and a body with category, summary, impact, significance, evidence, proposed change, files,
@@ -1750,11 +1752,14 @@ blank version on the next read.
 ### Periodic check
 
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
-and immediately on Start; the table, states, and versions reflect a change within one interval. A
-failed read keeps the last known rows, shows the reason in
-`data-testid="scout-sync-error"`, and keeps the last success time in
-`data-testid="scout-sync-at"`; the reason clears on the next successful read. Filing stays
-blocked until a read succeeds.
+and immediately on Start; the table, states, and versions reflect a change within one interval. One
+periodic read, including every `gh` child it starts, is bounded to 30 seconds; a read that does not
+finish records a sync error and releases the worker, so the next interval reads again. A failed
+read keeps the last known rows, shows the reason in `data-testid="scout-sync-error"`, and keeps the
+last success time in `data-testid="scout-sync-at"`; the reason clears on the next successful read.
+Filing stays blocked until a read succeeds. An injected GitHub client owns its own command bounds;
+the worker still races the whole read against the deadline, but it cannot cancel work that client
+never settles.
 
 ### Worker lifecycle
 
@@ -1798,13 +1803,15 @@ title of at most 200 characters; a summary, proposed change, significance from 1
 non-empty significance reason, and at least one acceptance criterion; at least one evidence entry
 whose repository-relative path resolves to an existing regular file inside `REPO_DIR` and outside
 `.git/`, `node_modules/`, `dist/`, `.worktree/`, and `.tmp/`, with an in-range `N` or `N-M` span;
-and a non-empty file list whose entries all appear in the evidence. A malformed item, duplicate
-id, path escape, over-count, missing score, or out-of-range score fails the whole answer
-atomically, naming the offending item, so nothing is filed. An item's id is the first 16 hex
-characters of SHA-256 over its category, sorted evidence paths, and normalized title, so the same
-finding keeps its id. Items below significance 4 and duplicate titles are dropped before filing
-and recorded in the activity. The worker never edits source, tests, configuration, a goal, a
-draft, a branch, or a pull request.
+and a non-empty file list whose entries all appear in the evidence. A rejected answer is sent back
+to the same agent session once, with the rejection text and the root-relative path rule, while the
+scan's own deadline still bounds the turn; a repaired file is validated again and filed normally.
+A malformed item, duplicate id, path escape, over-count, missing score, or out-of-range score that
+survives the correction turn fails the whole answer atomically, naming the offending item, so
+nothing is filed. An item's id is the first 16 hex characters of SHA-256 over its category, sorted
+evidence paths, and normalized title, so the same finding keeps its id. Items below significance
+4 and duplicate titles are dropped before filing and recorded in the activity. The worker never
+edits source, tests, configuration, a goal, a draft, a branch, or a pull request.
 
 ## Report, remove, or redesign a UI element
 
@@ -1868,10 +1875,10 @@ unusable answer falls back to the report's first non-empty line, lowercased, wit
 non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
 hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
 exclusive create, so the first draft is never overwritten. The body opens with
-`# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, carries the line
-`> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
+`# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the
-`## Captured UI context` block an issue report carries. A successful click closes the panel,
+`## Captured UI context` block an issue report carries. It carries no notice line or other prose
+the operator did not write. A successful click closes the panel,
 stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
 with the server's error and leaves no draft. The drafts are ignored by git.
@@ -2308,8 +2315,8 @@ The server answers with events:
   the current contradiction list; `getSkills` requests it, and a client that connects or
   reconnects during preparation first receives `skillsPreparationStarted`, every recorded
   `activity` line, and the pending `question` if one exists. The panel lists managed skills only
-  and shows `No contradictions` when the list is empty; the contradiction review itself covers
-  every skill directory, managed or not.
+  and shows a contradiction list only when the review found one; the review itself covers every
+  skill directory, managed or not.
 - The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written verbatim by `saveGoal` and by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file.
 - Skills preparation writes only under `<REPO_DIR>/.omp/skills/` and only through its ACP peer;
   the server deletes managed skill directories before the run and restores the snapshot after a
@@ -2368,10 +2375,11 @@ refusals, and the activity delta.
 duplicates against closed issues, open issues, and drafts, both caps across a restart, the
 effective batch, zero capacity, a close freeing a slot, limits applying live and surviving a
 restart, state mapping and a reopen, a later release filling a blank version, a failed periodic
-read and a failed pre-filing read, migration from a version-1 board, a missing score failing the
-scan atomically, a failed filing, Stop keeping the rows, the live lock, a replacement closing an
-interrupted scan, bridge replay without a spawn, another `STATE_DIR` refused, a harness-version
-notice, the issue body and label creation, and the scan prompt's rubric.
+read, a periodic read that never settles failing at its deadline and releasing the worker, the
+default client's bounded `gh` calls, a failed pre-filing read, migration from a version-1 board, a
+missing score failing the scan atomically, a failed filing, Stop keeping the rows, the live lock,
+a replacement closing an interrupted scan, bridge replay without a spawn, another `STATE_DIR`
+refused, a harness-version notice, the issue body and label creation, and the scan prompt's rubric.
 `tests/issues.test.ts` covers the fleet (four mixed issues, twelve peers with no cap, duplicate
 prevention, an issue opened mid-run, per-issue success and ledger entries, one failure cooling only
 its issue), Check now clearing every cooldown, pause draining every peer, Stop closing every peer

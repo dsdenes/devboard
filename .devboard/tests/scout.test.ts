@@ -6,7 +6,12 @@ import type { AcpActivity, AcpQuestion } from "../server/acp";
 import { ScoutBridge } from "../server/scout";
 import { fileScoutIssue, issueBody, type GhRunner } from "../issues/scout/actions";
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
-import type { ScoutGitHubClient, ScoutGitHubIssue, ScoutRelease } from "../issues/scout/github";
+import {
+  createScoutGitHub,
+  type ScoutGitHubClient,
+  type ScoutGitHubIssue,
+  type ScoutRelease,
+} from "../issues/scout/github";
 import {
   controlDirectory,
   lockPath,
@@ -65,8 +70,17 @@ class ControlledPeer implements AcpPeer {
   readonly pid = undefined;
   readonly argv = ["stub-scout-acp"];
   readonly prompts: string[] = [];
+  /** Correction turns sent after a rejected answer. */
+  readonly corrections: string[] = [];
+  /** When false, a correction is refused so a rejected scan settles at once. */
+  correctionEnabled = false;
   closed = false;
   private settled = false;
+  private correction: {
+    promise: Promise<unknown>;
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+  } | null = null;
   private readonly resolveRun: (value: unknown) => void;
   private readonly rejectRun: (error: Error) => void;
   private readonly options: IssuesPeerOptions;
@@ -86,6 +100,21 @@ class ControlledPeer implements AcpPeer {
     return this.promise;
   }
 
+  prompt(prompt: string): Promise<unknown> {
+    this.corrections.push(prompt);
+    if (!this.correctionEnabled) {
+      return Promise.reject(new Error("the stub peer does not answer corrections"));
+    }
+    this.correction = Promise.withResolvers<unknown>();
+    return this.correction.promise;
+  }
+
+  /** Ends the pending correction turn. */
+  resolveCorrection(): void {
+    this.correction?.resolve({});
+    this.correction = null;
+  }
+
   answer(id: number | string, value: string): boolean {
     this.emit(`answered ${String(id)} ${value}`);
     return true;
@@ -97,6 +126,8 @@ class ControlledPeer implements AcpPeer {
       this.settled = true;
       this.rejectRun(new Error("Agent process exited before answering."));
     }
+    this.correction?.reject(new Error("Agent process exited before answering."));
+    this.correction = null;
   }
 
   emit(text: string, append = false): void {
@@ -171,6 +202,16 @@ class FakeGitHub implements ScoutGitHubClient {
   async containingReleaseTags(commit: string, releases: ScoutRelease[]): Promise<string[]> {
     const tags = this.containing.get(commit) ?? [];
     return tags.filter((tag) => releases.some((release) => release.tag === tag));
+  }
+}
+
+/** A client whose issue list never settles while `hanging` is set. */
+class HangingGitHub extends FakeGitHub {
+  hanging = true;
+
+  override async listIssues(): Promise<ScoutGitHubIssue[]> {
+    if (this.hanging) return await new Promise<ScoutGitHubIssue[]>(() => undefined);
+    return await super.listIssues();
   }
 }
 
@@ -265,6 +306,7 @@ async function fixture(options: {
   github?: FakeGitHub;
   files?: Record<string, string>;
   syncMs?: number;
+  readTimeoutMs?: number;
   timeoutMs?: number;
   limit?: { maxPerHour: number; maxPending: number };
   harnessVersion?: string;
@@ -315,6 +357,7 @@ async function fixture(options: {
     repoDir: root,
     stateDir,
     syncMs: options.syncMs ?? 900_000,
+    ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
     now: () => new Date(clock.now),
@@ -402,6 +445,90 @@ describe("direct filing", () => {
       expect(activityOf(scanDirectoryOf(peer.prompts[0]!))).toContain(
         "significance 3/5 is below 4",
       );
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a rejected answer gets one correction turn and the repaired file is filed", async () => {
+    const f = await fixture({ label: "correction" });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      peer.correctionEnabled = true;
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      const document = scanDocument([recommendation(1)]);
+      (document.recommendations as Record<string, unknown>[])[0]!.evidence = [
+        { path: "server/app.ts", lines: "1" },
+      ];
+      writeRecommendations(scanPath, document);
+      peer.succeed();
+      await waitFor(
+        () => (peer.corrections.length === 1 ? true : undefined),
+        "the correction prompt",
+      );
+      expect(peer.corrections[0]).toContain("server/app.ts does not exist");
+      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 1)));
+      peer.resolveCorrection();
+      const settled = await waitSettled(f.root, peer.prompts[0]!);
+      expect(settled.status).toBe("succeeded");
+      expect(f.filed.map((entry) => entry.title)).toEqual(["Simplify module 1 control flow"]);
+      expect(f.state().lastError).toBeNull();
+      expect(peer.corrections).toHaveLength(1);
+      const activity = activityOf(scanPath);
+      expect(activity).toContain("server/app.ts does not exist");
+      expect(activity).toContain("asked the agent to correct the answer");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a still-rejected answer after the correction turn fails the scan once", async () => {
+    const f = await fixture({ label: "correction-failed" });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      peer.correctionEnabled = true;
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      const document = scanDocument([recommendation(1)]);
+      (document.recommendations as Record<string, unknown>[])[0]!.evidence = [
+        { path: "server/app.ts", lines: "1" },
+      ];
+      writeRecommendations(scanPath, document);
+      peer.succeed();
+      await waitFor(
+        () => (peer.corrections.length === 1 ? true : undefined),
+        "the correction prompt",
+      );
+      peer.resolveCorrection();
+      const failed = await waitFor(
+        () => (f.state().lifecycle === "failed" ? f.state() : undefined),
+        "the refused scan",
+      );
+      expect(peer.corrections).toHaveLength(1);
+      expect(f.filed).toEqual([]);
+      expect(failed.lastError).toContain("server/app.ts does not exist");
+      expect(readScanFile(scanDirectory(f.root, basename(scanPath)))?.status).toBe("failed");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a scan with no answer file gets a correction turn before it fails", async () => {
+    const f = await fixture({ label: "correction-missing" });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      peer.correctionEnabled = true;
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      peer.succeed();
+      await waitFor(
+        () => (peer.corrections.length === 1 ? true : undefined),
+        "the correction prompt",
+      );
+      expect(peer.corrections[0]).toContain("wrote no recommendations.json");
+      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 1)));
+      peer.resolveCorrection();
+      const settled = await waitSettled(f.root, peer.prompts[0]!);
+      expect(settled.status).toBe("succeeded");
+      expect(f.filed).toHaveLength(1);
     } finally {
       await f.worker.stop();
     }
@@ -1262,6 +1389,55 @@ describe("filing actions", () => {
 });
 
 describe("bounded commands", () => {
+  test("a periodic read that never resolves fails the sync and releases the worker", async () => {
+    const github = new HangingGitHub();
+    github.add({ number: 7, title: "Recovered finding", createdAt: "2026-10-27T09:00:00.000Z" });
+    const started = Date.now();
+    const f = await fixture({ label: "sync-deadline", github, readTimeoutMs: 1000 });
+    try {
+      const failed = await waitFor(
+        () => (f.state().sync.state === "error" ? f.state() : undefined),
+        "the timed out read",
+      );
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(failed.sync.error).toContain("the GitHub read did not finish within 1000 ms");
+      expect(failed.lastError).toContain("the GitHub read did not finish within 1000 ms");
+
+      // The failed read released `syncing`: a later refresh runs and succeeds.
+      github.hanging = false;
+      await f.worker.refresh();
+      expect(f.state().sync.state).toBe("ok");
+      expect(f.state().issues.map((row) => row.number)).toContain(7);
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("the default scout client bounds every periodic gh call", async () => {
+    const directory = await temporaryDirectory("scout-gh-deadline");
+    const script = join(directory, "gh");
+    writeFileSync(script, `#!/bin/sh\ntrap '' TERM\nwhile :; do :; done\n`);
+    await chmod(script, 0o755);
+    const client = createScoutGitHub({
+      repository: "acme/fixture",
+      repoDir: directory,
+      environment: { PATH: `${directory}:${process.env.PATH ?? ""}` },
+      timeoutMs: 300,
+    });
+
+    const started = Date.now();
+    const results = await Promise.allSettled([
+      client.listIssues(),
+      client.listReleases(),
+      client.listOpenIssueTitles(),
+    ]);
+    expect(Date.now() - started).toBeLessThan(5000);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      expect(result.status === "rejected" ? String(result.reason) : "").toContain("deadline");
+    }
+  });
+
   test("a gh child that ignores SIGTERM is killed at the deadline", async () => {
     const directory = await temporaryDirectory("gh-deadline");
     const script = join(directory, "gh");

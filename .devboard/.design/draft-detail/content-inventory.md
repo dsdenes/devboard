@@ -14,11 +14,10 @@ journeys in `brief.md`.
 | C5 | Stop elaboration | `issues.draft.stop` | Start | Stop the peer and keep the draft | Keep | The only way to interrupt a wrong elaboration |
 | C6 | Start blocker reason | `draftStartBlocker(path)` | Start | Understand a disabled Start | Keep | Stated in the control's tooltip; the list also carries it |
 | C7 | Draft or peer error | `draftError`, `draftRun.error` | Review, Start | Recover from a refused read or failed peer | Keep | Needs a visible alert, not a raw log line |
-| C8 | Proposal text before `## Captured UI context` | `GoalDraftDetail.text` | Review | Judge the proposal | Keep | The reading surface; currently buried inside the raw bytes |
+| C8 | Proposal text before `## Captured UI context` | `GoalDraftDetail.text` | Review | Judge the proposal | Keep | The reading surface; the raw source block is gone |
 | C9 | Captured route, URL, selected element, viewport, time | `## Captured UI context` facts | Review | Decide whether the evidence matches the report | Keep | Compact facts; currently a wall of text |
-| C10 | Visible text | `### Visible text` | Review | See what the reporter saw | Keep | Evidence, one level below the facts |
-| C11 | DOM excerpt | `### DOM excerpt` | Review | See the exact element | Keep | Evidence, scroll-bounded |
-| C12 | Exact draft bytes | `GoalDraftDetail.text` | Review | Debug the raw source; hard contract in README/verify | Keep | Required verbatim; behind a disclosure so it never leads |
+| C10 | Visible text | `### Visible text` | Review | See what the reporter saw | Keep | Inline below the facts |
+| C11 | DOM excerpt | `### DOM excerpt` | Review | See the exact element | Keep | Inline, scroll-bounded |
 | C13 | Elaboration activity | `issues.draftRun.activity` | Start | Follow progress and failures | Keep | Live stream; follows its newest line |
 | C14 | Question message | `draftRun.question.message` | Start | Answer to unblock | Keep | P0 while present; currently below the log |
 | C15 | Question options and recommendation | `question.options` | Start | Choose the intended answer | Keep | One click per option; recommendation is labelled |
@@ -31,9 +30,9 @@ journeys in `brief.md`.
 | C22 | `> Unprocessed draft` note | draft bytes | Review | Know the draft needs elaboration | Keep | Part of the proposal text; it is the writer's own instruction |
 
 ## Deduplication
-- C9 and C10/C11 no longer render twice: the exact bytes (C12) move to a collapsed source
-  disclosure, while the structured context is read once.
+- C9 and C10/C11 render once: the structured context is read from the parsed draft, and the
+  raw source block that repeated the whole file is gone.
 - C1 and C2 share one two-line header instead of the heading appearing again inside the text.
-- C17 and C19 are removed outright.
+- C17 and C19 are removed outright, and C12 is dropped with the raw source block it rendered.
 - C3 is filtered to the selected draft; the previous component showed the global run status
   even when another draft was elaborating.
