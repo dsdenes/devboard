@@ -598,7 +598,7 @@
     </div>
   {:else if tab.kind === "skills"}
     <div class="goal-page goal-page--fill">
-      <PageHeader eyebrow="Plan" title="Skills" subtitle={skillsReady} testid="skills-header">
+      <PageHeader title="Skills" subtitle={skillsReady} testid="skills-header">
         {#snippet meta()}
           {#if goal.contradictions.length > 0}
             <span class="badge" data-tone="error">
