@@ -32,6 +32,9 @@ const MAX_SLUG_WORDS = MAX_NAME_WORDS;
 const MAX_SLUG_LENGTH = 64;
 const FALLBACK_NAME = "ui-goal";
 const BODY_VISIBLE_TEXT = 1500;
+/** The context-free draft's one-line statement of what it is. */
+const UNPROCESSED_NOTICE = "> Unprocessed draft. Elaborate it to turn it into a goal.";
+const NO_CAPTURED_CONTEXT = "No page context was captured.";
 /** Bounds the `-2`, `-3`, … search; far past any real click count. */
 const MAX_NAME_ATTEMPTS = 1000;
 
@@ -168,7 +171,7 @@ function capturedContext(submission: GoalProposalSubmission): string[] {
     context.push("", "### DOM excerpt", "", `${fence}html`, dom, fence);
   }
 
-  return context.length === 0 ? ["No page context was captured."] : context;
+  return context.length === 0 ? [NO_CAPTURED_CONTEXT] : context;
 }
 
 /**
@@ -179,15 +182,21 @@ function capturedContext(submission: GoalProposalSubmission): string[] {
  */
 export function goalProposalBody(submission: GoalProposalSubmission): string {
   const conversation = conversationSection(submission.conversation);
+  const context = capturedContext(submission);
+  // A draft typed straight into the Draft goals page carries no captured
+  // element. Only that context-free body states what it is; a proposal with
+  // captured context keeps the report panel's existing body exactly.
+  const notice = context.length === 1 && context[0] === NO_CAPTURED_CONTEXT;
   return [
     `# Proposed goal: ${goalProposalHeading(submission.report)}`,
     "",
+    ...(notice ? [UNPROCESSED_NOTICE, ""] : []),
     submission.report,
     "",
     ...(conversation.length === 0 ? [] : [...conversation, ""]),
     "## Captured UI context",
     "",
-    ...capturedContext(submission),
+    ...context,
     "",
   ].join("\n");
 }

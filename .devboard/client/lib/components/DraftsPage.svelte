@@ -21,6 +21,31 @@
   const question = $derived(run?.question ?? null);
   const error = $derived(issues.draftErrorFor(issues.draft?.path ?? null));
 
+  let instructions = $state("");
+  let input = $state<HTMLTextAreaElement | undefined>(undefined);
+
+  $effect(() => {
+    if (issues.draftCreateOpen) input?.focus();
+  });
+
+  async function submitNewGoal(): Promise<void> {
+    if (instructions.trim().length === 0 || issues.draftCreating) return;
+    if (await issues.createDraft(instructions)) instructions = "";
+  }
+
+  function cancelNewGoal(): void {
+    if (issues.draftCreating) return;
+    instructions = "";
+    issues.cancelDraftCreate();
+  }
+
+  function onNewGoalKeydown(event: KeyboardEvent): void {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelNewGoal();
+  }
+
   onMount(() => {
     markDraftsPage(true);
     const restore = (): void => {
@@ -53,8 +78,69 @@
     <section class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Proposed goals</h2>
-        <span class="panel__subtitle">{issues.repoLabel}</span>
+        <div class="issues-drafts__header-actions">
+          <span class="panel__subtitle">{issues.repoLabel}</span>
+          <Button
+            variant="secondary"
+            size="sm"
+            data-testid="issues-draft-new"
+            data-command="issues.draft.new"
+            aria-expanded={issues.draftCreateOpen}
+            onclick={() => issues.beginDraftCreate()}
+          >
+            New goal
+          </Button>
+        </div>
       </div>
+      {#if issues.draftCreateOpen}
+        <div
+          class="issues-draft-new"
+          data-testid="issues-draft-new-popover"
+          role="dialog"
+          aria-label="New goal"
+          tabindex="-1"
+          onkeydown={onNewGoalKeydown}
+        >
+          <label class="issues-draft-new__label" for="issues-draft-new-input">
+            Initial instructions
+          </label>
+          <textarea
+            id="issues-draft-new-input"
+            class="issues-draft-new__input"
+            data-testid="issues-draft-new-input"
+            bind:this={input}
+            bind:value={instructions}
+            rows="4"
+            disabled={issues.draftCreating}
+            placeholder="Describe the goal in your own words."
+          ></textarea>
+          {#if issues.draftCreateError !== null}
+            <p class="issues-error" data-testid="issues-draft-new-error" role="alert">
+              {issues.draftCreateError}
+            </p>
+          {/if}
+          <div class="issues-draft-new__actions">
+            <Button
+              variant="ghost"
+              data-testid="issues-draft-new-cancel"
+              data-command="issues.draft.new.cancel"
+              disabled={issues.draftCreating}
+              onclick={cancelNewGoal}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              data-testid="issues-draft-new-submit"
+              data-command="issues.draft.new.submit"
+              disabled={issues.draftCreating || instructions.trim().length === 0}
+              onclick={() => void submitNewGoal()}
+            >
+              {issues.draftCreating ? "Creating…" : "Create draft"}
+            </Button>
+          </div>
+        </div>
+      {/if}
       <div class="panel__body panel__body--flush">
         <ol class="issues-drafts" data-testid="issues-draft-list">
           {#each issues.drafts as draft (draft.path)}

@@ -107,6 +107,16 @@ export class IssuesStore {
   /** The detail response is only accepted for the path last requested. */
   private draftRequest: string | null = null;
   draftErrors = $state<Record<string, string>>({});
+  /** The New goal popover's open state and its in-flight submission. */
+  draftCreateOpen = $state(false);
+  draftCreating = $state(false);
+  draftCreateError = $state<string | null>(null);
+  /**
+   * The path just created. A list request sent before the write can answer
+   * after the selection moves, so it must not clear that selection until a
+   * list has confirmed the path or its run has ended.
+   */
+  private pendingCreatedPath: string | null = null;
 
   /**
    * True once the connect-time replay has named the live agents. A run request
@@ -257,6 +267,59 @@ export class IssuesStore {
   stopDraft(path: string | null = this.draftPath): void {
     if (path === null || !this.draftRunning(path)) return;
     connection.send({ type: "stopGoalDraft", path });
+  }
+
+  /** Opens the New goal popover; opening it writes nothing. */
+  beginDraftCreate(): void {
+    this.draftCreateError = null;
+    this.draftCreateOpen = true;
+  }
+
+  cancelDraftCreate(): void {
+    if (this.draftCreating) return;
+    this.draftCreateOpen = false;
+    this.draftCreateError = null;
+  }
+
+  /**
+   * Writes one context-free draft and starts its elaboration. There is no
+   * concurrency cap, so another draft's run never prevents the new draft from
+   * starting. A failed write keeps the popover open with the server's error
+   * and starts nothing.
+   */
+  async createDraft(report: string): Promise<boolean> {
+    if (report.trim().length === 0 || this.draftCreating) return false;
+    this.draftCreating = true;
+    this.draftCreateError = null;
+    try {
+      const response = await fetch("/api/goal-proposals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ report }),
+      });
+      const body = (await response.json().catch(() => null)) as {
+        path?: unknown;
+        error?: unknown;
+      } | null;
+      if (!response.ok || typeof body?.path !== "string") {
+        this.draftCreateError =
+          typeof body?.error === "string"
+            ? body.error
+            : `The server refused the draft (${response.status}).`;
+        return false;
+      }
+      this.draftCreateOpen = false;
+      this.pendingCreatedPath = body.path;
+      this.openDraft(body.path);
+      this.refreshDrafts();
+      this.startDraft(body.path);
+      return true;
+    } catch (error) {
+      this.draftCreateError = error instanceof Error ? error.message : String(error);
+      return false;
+    } finally {
+      this.draftCreating = false;
+    }
   }
 
   submitDraftAnswer(value: string): void {
@@ -446,7 +509,19 @@ export class IssuesStore {
       for (const path of Object.keys(this.draftErrors)) {
         if (!known.has(path)) delete this.draftErrors[path];
       }
-      if (this.draftPath !== null && !known.has(this.draftPath)) {
+      const pending = this.pendingCreatedPath;
+      if (pending !== null) {
+        if (known.has(pending)) {
+          this.pendingCreatedPath = null;
+        } else if (
+          this.draftRuns[pending] !== undefined &&
+          this.draftRuns[pending]?.status !== "running"
+        ) {
+          // The draft finished and removed itself before any list confirmed it.
+          this.pendingCreatedPath = null;
+          this.clearDraft();
+        }
+      } else if (this.draftPath !== null && !known.has(this.draftPath)) {
         this.clearDraft();
       }
       return;

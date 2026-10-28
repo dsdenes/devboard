@@ -1675,6 +1675,34 @@ directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each 
 `data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
 and its first Markdown heading. An empty directory shows `No drafts exist.`.
 
+The list header carries a `New goal` control (`data-testid="issues-draft-new"`,
+`data-command="issues.draft.new"`); the command palette lists the same id, opens the Draft goals
+page, and opens the popover. Activating the control opens
+`data-testid="issues-draft-new-popover"` under the header and writes nothing. The popover holds
+one instructions field (`issues-draft-new-input`), a submit control (`issues-draft-new-submit`),
+and Cancel (`issues-draft-new-cancel`); Escape and Cancel close it without writing a draft or
+starting a peer. One submit posts `{ "report": <instructions> }` with no captured page context to
+`POST /api/goal-proposals`, so exactly one draft lands with the heading, the line
+`> Unprocessed draft. ...`, the instructions verbatim, and a `## Captured UI context` section that
+states `No page context was captured.`; it invents no route, element, viewport, visible text, or
+DOM excerpt. Naming, the exclusive create, and the `-2`, `-3`, … suffix are the report panel's. A
+whitespace-only input submits nothing.
+
+When no elaboration runs, the page sends exactly one `startGoalDraft` for the written path after
+the write, so `/goal-draft <repository-relative path>` starts at once and the popover closes with
+the new draft selected in `issues-draft-detail`, its `running` state, its activity, and
+`issues-draft-stop`; a question for it renders in `issues-draft-question` and its answer reaches
+only that peer. When another elaboration is already running, the submit still writes and selects
+the draft but starts nothing: the new draft's start control is disabled with the running
+elaboration named as its blocker, and it becomes startable once that run ends, with no queued
+start. A write the server refuses leaves no draft and no peer and shows the server's reason in
+`issues-draft-new-error` while the popover and instructions stay; a start the server refuses after
+the write keeps the draft listed, selected, and startable, and shows that reason in the detail. A
+double submit while the write or start is pending produces one draft and one peer. Creation never
+runs `gh`, files an issue, creates a worktree or branch, or writes a goal spec; only the draft file
+is created. The report panel's `Goal` action and the open-then-`Start elaboration` path are
+unchanged.
+
 Selecting one opens `data-testid="issues-draft-detail"`: the header carries the draft's file name,
 the state badge for this draft's run only (absent while the run is `idle`), `issues-draft-start`
 (`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). Each

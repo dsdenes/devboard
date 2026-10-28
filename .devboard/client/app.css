@@ -3239,6 +3239,60 @@ a.code-chip--link:focus-visible {
   padding: 0;
 }
 
+.issues-drafts__header-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.issues-draft-new {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+}
+
+.issues-draft-new__label {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.issues-draft-new__input {
+  background: var(--background);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--foreground);
+  font-family: inherit;
+  font-size: 12px;
+  min-height: 64px;
+  padding: 6px 8px;
+  resize: vertical;
+  width: 100%;
+}
+
+.issues-draft-new__input:focus-visible {
+  border-color: var(--ring);
+  outline: none;
+}
+
+.issues-draft-new__hint {
+  color: var(--warning);
+  font-size: 11px;
+  margin: 0;
+}
+
+.issues-draft-new__actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.issues-draft-new .issues-error {
+  margin: 0;
+}
+
 .issues-draft {
   display: flex;
   flex-direction: column;

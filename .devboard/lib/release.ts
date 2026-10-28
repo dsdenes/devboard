@@ -13,10 +13,10 @@ import {
 import { basename, join, resolve } from "node:path";
 import { configuredGiteaToken, configuredGiteaUrl } from "./forge";
 import {
+  GiteaError,
   giteaDownloadAsset,
   giteaLatestRelease,
   giteaReleaseByTag,
-  GiteaError,
   type GiteaAsset,
   type GiteaReleaseDocument,
   type GiteaTarget,
@@ -474,19 +474,21 @@ async function giteaRelease(source: GiteaSource): Promise<ReleaseInfo> {
       "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
     );
   }
+  let document: GiteaReleaseDocument;
   try {
-    return releaseFromDocument(await giteaLatestRelease(giteaTarget(source)));
+    document = await giteaLatestRelease(giteaTarget(source));
   } catch (error) {
-    // A body that is not JSON is a proxy page, a truncated answer, or another
-    // tool's payload, not a harness defect: the update check retries it as
-    // feed context exactly as it did before the share Gitea client.
-    const marker = "returned invalid JSON: ";
-    if (error instanceof GiteaError && error.message.includes(marker)) {
-      const snippet = error.message.slice(error.message.indexOf(marker) + marker.length);
-      throw new ReleaseFeedError(`the release feed returned an unreadable description: ${snippet}`);
+    // A 2xx answer that is not JSON is feed context, not a harness defect,
+    // exactly like the command-based feed's unreadable description. A status
+    // error still names a rejected request.
+    if (error instanceof GiteaError && error.status === undefined) {
+      throw new ReleaseFeedError(
+        `the release feed returned an unreadable description: ${error.message}`,
+      );
     }
     throw error;
   }
+  return releaseFromDocument(document);
 }
 
 async function giteaReleaseForVersion(
