@@ -14,12 +14,13 @@
 | C21 | Shipped version | 3 | 3 | 3 | 5 | 3 | 68 | P1 | Mono column, `—` when absent |
 | C14 | Cycle action | 4 | 3 | 4 | 3 | 3 | 71 | P1 | Labelled column with badge |
 | C16 | Cycle reason | 3 | 1 | 2 | 1 | 2 | 34 | Drop | Removed on main while this redesign was in flight; the summary carries the newest reason |
+| C26 | Cycle's filed issue links | 4 | 4 | 3 | 5 | 2 | 76 | P1 | Third history column, `#<number>` anchors in finding order |
 | C11 | Newest cycle age | 4 | 2 | 5 | 3 | 3 | 72 | P1 | Summary panel header |
 | C22 | Filed/pending counts | 3 | 2 | 4 | 2 | 3 | 56 | P2 | Filed panel subtitle |
 | C10 | Newest cycle start | 2 | 1 | 4 | 2 | 2 | 42 | P2 | Compact facts line, exact clock |
 | C12 | Cycle start | 2 | 1 | 4 | 1 | 2 | 40 | P2 | History column |
-| C13 | Cycle window | 2 | 1 | 2 | 3 | 1 | 36 | P3 | History column, muted, tooltip-free |
-| C15 | Cycle findings | 3 | 1 | 4 | 1 | 2 | 49 | P2 | History column, tabular |
+| C13 | Cycle window | 2 | 1 | 2 | 1 | 1 | 27 | Drop | The integrated compact row removes the interval |
+| C15 | Cycle findings | 3 | 1 | 4 | 1 | 1 | 41 | Drop | The integrated compact row removes the count; the summary keeps the newest |
 | C18 | Issue category | 2 | 1 | 3 | 2 | 2 | 38 | P3 | Narrow mono column |
 | C19 | Issue filed time | 2 | 1 | 3 | 1 | 2 | 36 | P3 | History-style mono column |
 | C3 | Last read | 2 | 1 | 4 | 1 | 3 | 42 | P2 | Header meta, 11px muted |
@@ -35,14 +36,14 @@
   occupy the page header and the summary band, above the fold.
 - **P1** (60–79): counts, issue state and version, history action, newest age, page read error.
   They fill the two panels in the main flow.
-- **P2** (40–59): exact clocks, history findings, counts subtitle, empty states.
-- **P3** (< 40): category, filed time, window, page identity. They stay because they are contract
+- **P2** (40–59): exact clocks, counts subtitle, empty states.
+- **P3** (< 40): category, filed time, page identity. They stay because they are contract
   columns or page chrome, but they never take emphasis from P0/P1.
 
-Dropped after scoring: the per-cycle reason, which the integrated history change removed; the
-newest reason stays in the summary. Deduplicated twice: no item repeats the newest action in a
-second visual form, and the summary does not repeat every history field. The history row for the
-newest cycle is retained because the panel is the complete audit list.
+Dropped after scoring: the per-cycle window, findings, and reason, which the integrated compact
+row removed; the newest start and counts stay in the summary. Deduplicated twice: no item repeats
+the newest action in a second visual form, and the summary does not repeat every history field.
+The history row for the newest cycle is retained because the panel is the complete audit list.
 
 ## Order
 

@@ -19,8 +19,8 @@
 ├ Filed issues ──────────────────────────────────────── 12 filed · 0 pending ┤
 │ ISSUE                                         CATEGORY  FILED  STATE  ...  │
 │ [watchdog] ...                                                           │
-├ Cycle history ───────────────────────────────────────── Newest first ────┤
-│ STARTED  WINDOW  ACTION                                  FINDINGS        │
+├ Cycle history ────────────────────────────────────────────────────────────┤
+│ STARTED  ACTION  ISSUES                                                  │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -31,8 +31,8 @@
 - The page header owns trust; the summary never repeats the sync badge or last-read time.
 - Filed issues and cycle history are peers, each with a 30px header, a table header, 27–28px rows,
   and a `border-subtle` rule. The filed-issue table gets the wider track (`1.25fr` versus
-  `minmax(420px, 1fr)`) because its title is the only wrapping text. The history table has four
-  labelled columns; the findings count is the trailing track, right-aligned tabular mono.
+  `minmax(420px, 1fr)`) because its title is the only wrapping text. The history table has three
+  labelled columns; the trailing `Issues` track links each cycle's filed issues as `#<number>`.
 - Both tables live inside `.panel__body--flush`; the table header is sticky and the body scrolls,
   so the page itself never scrolls and the 100-row history cannot bury the filed issues.
 
@@ -53,9 +53,8 @@
 - Wide (≥1501px): two columns, filed issues left, history right. The summary spans both.
 - Narrow (1024–1500px): one column of two flexible rows. Each row keeps a `minmax(0, …)` track so
   the panels shrink rather than overflow; tables and history scroll internally at every width.
-- At ≤1100px the provisional P3 columns yield before content is clipped: the issue category (it is
-  already in the generated title) and the cycle window (the start stamp and the panel's audit
-  purpose remain). The elements stay in the DOM, so the browser contract still reads them.
+- At ≤1100px the issue category yields before content is clipped (it is already in the generated
+  title). The element stays in the DOM, so the browser contract still reads it.
 - Page padding is 16px and the gap 12px, matching the other Issues pages. No horizontal page
   scroll at 1024px.
 
@@ -75,5 +74,5 @@
   where the page grew to 3511px inside an `overflow: hidden` workspace and the filed issues sat
   unreachable below 100 history rows.
 - Labelled table headers fix the unlabelled history tracks, and a fixed action track stops badge
-  width from shifting the findings column row to row. The per-cycle reason is not repeated: the
-  newest reason sits in the summary, and the integrated main change removed the history column.
+  width from shifting the issue links row to row. The integrated compact row keeps only the start,
+  action, and linked issues; the newest reason and counts sit in the summary.

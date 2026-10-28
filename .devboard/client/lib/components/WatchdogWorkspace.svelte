@@ -3,7 +3,7 @@
   import Inbox from "lucide-svelte/icons/inbox";
   import { onMount } from "svelte";
   import type { BadgeTone } from "../record-status";
-  import type { WatchdogCycle, WatchdogIssueState } from "../types";
+  import type { WatchdogIssueState } from "../types";
   import { watchdog } from "../watchdog.svelte";
   import PageHeader from "./ui/page-header.svelte";
 
@@ -40,17 +40,6 @@
     });
   }
 
-  function clock(value: string): string {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return date.toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    });
-  }
-
   function age(value: string | null): string {
     if (value === null) return "never";
     const elapsed = now - Date.parse(value);
@@ -62,27 +51,6 @@
     const hours = Math.floor(minutes / 60);
     if (hours < 24) return `${hours}h ago`;
     return `${Math.floor(hours / 24)}d ago`;
-  }
-
-  /**
-   * The window is the cycle's coverage, not a second start stamp: a same-day
-   * window drops the repeated date, and a window that crosses midnight keeps
-   * both dates.
-   */
-  function windowText(window: WatchdogCycle["window"]): string {
-    if (window.start === null && window.end === null) return "—";
-    if (window.start === null) return `never → ${stamp(window.end ?? "")}`;
-    if (window.end === null) return `${stamp(window.start)} → never`;
-    const start = new Date(window.start);
-    const end = new Date(window.end);
-    if (
-      !Number.isNaN(start.getTime()) &&
-      !Number.isNaN(end.getTime()) &&
-      start.toDateString() === end.toDateString()
-    ) {
-      return `${clock(window.start)} → ${clock(window.end)}`;
-    }
-    return `${stamp(window.start)} → ${stamp(window.end)}`;
   }
 
   function actionTone(action: string): BadgeTone | undefined {
@@ -254,7 +222,6 @@
     <section class="panel watchdog-panel" aria-label="Cycle history">
       <div class="panel__header">
         <h2 class="panel__title">Cycle history</h2>
-        <span class="panel__subtitle">Newest first · {cycles.length} retained</span>
       </div>
       <div class="panel__body panel__body--flush" data-testid="watchdog-cycles">
         {#if cycles.length === 0}
@@ -270,9 +237,8 @@
             <thead>
               <tr>
                 <th scope="col">Started</th>
-                <th scope="col">Window</th>
                 <th scope="col">Action</th>
-                <th scope="col">Findings</th>
+                <th scope="col">Issues</th>
               </tr>
             </thead>
             <tbody>
@@ -288,13 +254,6 @@
                       <time datetime={entry.at}>{stamp(entry.at)}</time>
                     </span>
                   </td>
-                  <td
-                    class="mono watchdog-table__muted"
-                    data-testid="watchdog-cycle-window"
-                    title={windowText(entry.window)}
-                  >
-                    {windowText(entry.window)}
-                  </td>
                   <td>
                     <span
                       class="badge"
@@ -304,8 +263,25 @@
                       {entry.action}
                     </span>
                   </td>
-                  <td class="mono watchdog-cycle__findings" data-testid="watchdog-cycle-findings">
-                    {entry.findings}
+                  <td class="watchdog-table__links">
+                    {#if entry.issues.length > 0}
+                      <span class="watchdog-cycle__issues" data-testid="watchdog-cycle-issues">
+                        {#each entry.issues as issue (issue)}
+                          {@const number = issue.slice(issue.lastIndexOf("/") + 1)}
+                          <a
+                            class="watchdog-cycle__issue"
+                            data-testid="watchdog-cycle-issue"
+                            href={issue}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title={issue}
+                            aria-label={`GitHub issue ${number.length > 0 ? number : issue}`}
+                          >
+                            {number.length > 0 ? `#${number}` : issue}
+                          </a>
+                        {/each}
+                      </span>
+                    {/if}
                   </td>
                 </tr>
               {/each}
@@ -455,6 +431,15 @@
     color: var(--muted-foreground);
   }
 
+  .watchdog-table__links {
+    height: auto;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    padding-bottom: 5px;
+    padding-top: 5px;
+    white-space: normal;
+  }
+
   .watchdog-table--issues th:nth-child(2) {
     width: 104px;
   }
@@ -472,15 +457,23 @@
     width: 140px;
   }
   .watchdog-table--cycles th:nth-child(2) {
-    width: 160px;
-  }
-  .watchdog-table--cycles th:nth-child(3) {
     width: 100px;
   }
 
-  .watchdog-table--cycles th:nth-child(4),
-  .watchdog-cycle__findings {
-    text-align: right;
+  .watchdog-cycle__issues {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .watchdog-cycle__issue {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .watchdog-cycle__issue:hover,
+  .watchdog-cycle__issue:focus-visible {
+    text-decoration: underline;
   }
 
   .watchdog-issue__title {
@@ -533,13 +526,11 @@
     }
   }
 
-  /* The category is already in the issue title and the window is the audit
-     detail behind the start stamp; both yield before the content does. */
+  /* The category is already in the issue title; it yields before the content
+     does at the narrowest supported workspace. */
   @media (max-width: 1100px) {
     .watchdog-table--issues th:nth-child(2),
-    .watchdog-table--issues td:nth-child(2),
-    .watchdog-table--cycles th:nth-child(2),
-    .watchdog-table--cycles td:nth-child(2) {
+    .watchdog-table--issues td:nth-child(2) {
       display: none;
     }
   }

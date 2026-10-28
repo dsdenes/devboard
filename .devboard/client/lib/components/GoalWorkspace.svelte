@@ -502,7 +502,7 @@
     </div>
   {:else if tab.kind === "goal-document"}
     <div class="goal-page goal-page--fill">
-      <PageHeader eyebrow="Plan" title="Goal document" subtitle={documentState} testid="document-header">
+      <PageHeader title="Goal document" subtitle={documentState} testid="document-header">
         {#snippet meta()}
           {#if operationText !== null}
             <span class="badge" data-tone="accent">{operationText}</span>
@@ -598,7 +598,7 @@
     </div>
   {:else if tab.kind === "skills"}
     <div class="goal-page goal-page--fill">
-      <PageHeader eyebrow="Plan" title="Skills" subtitle={skillsReady} testid="skills-header">
+      <PageHeader title="Skills" subtitle={skillsReady} testid="skills-header">
         {#snippet meta()}
           {#if goal.contradictions.length > 0}
             <span class="badge" data-tone="error">
@@ -676,9 +676,7 @@
             </ul>
           {/if}
 
-          {#if goal.contradictions.length === 0}
-            <p class="muted" data-testid="skills-no-contradictions">No contradictions</p>
-          {:else}
+          {#if goal.contradictions.length > 0}
             <ul class="history-list goal-contradictions" data-testid="skills-contradictions">
               {#each goal.contradictions as contradiction (`${contradiction.skills[0]}:${contradiction.skills[1]}`)}
                 <li class="message" data-severity="warning">

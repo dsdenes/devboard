@@ -351,6 +351,49 @@ describe("guided goal creation", () => {
   );
 
   test(
+    "reports a halt that leaves the previous goal as an incomplete creation",
+    async () => {
+      const existing = "# Existing goal\n\nDo the old thing.\n";
+      const { server, goalFile, logPath, url } = await startServer(
+        { "0001-first.md": PENDING_ONE },
+        { goalText: existing, writeStubGoal: false },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "createGoal" });
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        const question = await client.waitFor((message) => message.type === "question");
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(error.message).toBe("The goal creation ended without writing a new goal.");
+        const stopped = await client.waitFor((message) => message.type === "goalCreationStopped");
+        expect(stopped).toEqual({ type: "goalCreationStopped", completed: false });
+        expect("text" in stopped).toBe(false);
+        expect(await readFile(goalFile, "utf8")).toBe(existing);
+        expect(spawnCount(logPath)).toBe(1);
+
+        // The unchanged document stays what getGoal reports.
+        client.send({ type: "getGoal" });
+        expect(await client.waitFor((message) => message.type === "goal")).toEqual({
+          type: "goal",
+          text: existing,
+        });
+
+        // The control stays available: another creation starts a new peer.
+        client.send({ type: "createGoal" });
+        await client.waitFor((message) => message.type === "goalCreationStarted");
+        await eventually(() => spawnCount(logPath) === 2);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
     "refuses creation when the goal document exists but cannot be read",
     async () => {
       const { server, root, logPath, url } = await startServer({

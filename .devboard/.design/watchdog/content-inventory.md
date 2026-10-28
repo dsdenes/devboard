@@ -17,10 +17,11 @@ journeys in `brief.md`; nothing is kept merely because the API returns it.
 | C10 | Newest cycle start | `snapshot.cycle` | history | When did it run? | Keep | P2, compact facts line |
 | C11 | Newest cycle age | derived | health | Is the timer still running? | Keep | P1, panel header |
 | C12 | Cycle start | `cycles[].at` | history | Correlate with wall clock | Keep | P1 |
-| C13 | Cycle window | `cycles[].window` | history | Which ten minutes did it cover? | Keep | P2; contract requires it |
-| C14 | Cycle action | `cycles[].action` | history | Rule or exception? | Keep | P0 in that panel |
-| C15 | Cycle findings | `cycles[].findings` | history | How much did it see? | Keep | P1 |
-| C16 | Cycle reason | `cycles[].reason` | history | Why the action? | Drop | The newest reason is in the summary; the integrated history change keeps only the action and count per row |
+| C13 | Cycle window | `cycles[].window` | history | Which ten minutes did it cover? | Drop | The integrated compact row removes the interval; the start stamp is enough to correlate |
+| C14 | Cycle action | `cycles[].action` | history | Rule or exception? | Keep | The row's badge |
+| C15 | Cycle findings | `cycles[].findings` | history | How much did it see? | Drop | The newest count stays in the summary; the integrated row is compact |
+| C16 | Cycle reason | `cycles[].reason` | history | Why the action? | Drop | The newest reason is in the summary; the integrated history change keeps only the action per row |
+| C26 | Cycle's filed issue links | `cycles[].issues` | history, issues | Which issues did this cycle file? | Keep | The only row content after the action; `#<number>` anchors |
 | C17 | Filed issue title and link | ledger + GitHub | issues | Which issue, and open it | Keep | P0 |
 | C18 | Filed issue category | ledger | issues | Group by signal kind | Keep | P2 scan aid |
 | C19 | Filed issue time | ledger | issues | Newest first | Keep | P2 |
