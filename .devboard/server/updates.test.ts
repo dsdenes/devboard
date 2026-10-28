@@ -8,6 +8,7 @@ import {
   checksumName,
   installRelease,
   ReleaseFeedError,
+  ReleaseNotServedError,
   tarballName,
   type ReleaseInfo,
 } from "../lib/release";
@@ -179,6 +180,39 @@ describe("startUpdater", () => {
     } finally {
       updater.stop();
     }
+  });
+
+  test("journals a registry artifact that has not propagated as context", async () => {
+    const prefix = await installedPrefix("0.1.0");
+    const { journal, records } = journalRecorder();
+    const manual = manualSchedule();
+    const tarball =
+      "https://registry.npmjs.org/@dsdenes/devboard/-/devboard-0.1.2.tgz";
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: "0.1.0",
+      journal,
+      intervalMs: 1000,
+      schedule: manual.schedule,
+      fetchRelease: async () => release("0.1.2"),
+      install: async () => {
+        throw new ReleaseNotServedError(
+          `npm does not serve the advertised @dsdenes/devboard@0.1.2 artifact yet: ${tarball}`,
+        );
+      },
+    });
+    await manual.fire(0);
+    expect(records).toEqual([
+      [
+        "activity",
+        `release install skipped: npm does not serve the advertised @dsdenes/devboard@0.1.2 artifact yet: ${tarball}`,
+      ],
+    ]);
+    // A not-yet-served artifact backs off like any other failed check.
+    expect(manual.delays).toEqual([0, 2000]);
+    updater.stop();
   });
 
   test("journals a stalled download as an update-error and reschedules the check", async () => {
