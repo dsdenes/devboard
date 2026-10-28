@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join, relative, resolve } from "node:path";
@@ -1002,6 +1003,15 @@ export class FlowController {
   }): Promise<void> {
     const directory = this.sessionDir;
     if (directory === undefined) return;
+    // Drop the previous interview's goal first: only a file this turn writes
+    // may be accepted, never a draft an interrupted peer or an earlier
+    // interview left behind.
+    const goalPath = join(directory, "goal.md");
+    try {
+      unlinkSync(goalPath);
+    } catch {
+      // No goal file exists yet.
+    }
     try {
       const agent = new AcpConnection({
         command: this.#agentCommand,
@@ -1032,11 +1042,25 @@ export class FlowController {
         onStderr: (text) => this.#journal?.write("acp-stderr", text),
       });
       creation.agent = agent;
-      await Promise.race([
-        agent.run(`/flow-goal ${directory}`),
-        timeout(this.#goalTimeoutMs),
+      // A timeout is its own outcome: an interrupted interview is never an
+      // accepted goal, and its peer is closed before anything is read.
+      const turn = agent
+        .run(`/flow-goal ${directory}`)
+        .then(
+          () => ({ ok: true as const }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+      const outcome = await Promise.race([
+        turn,
+        timeout(this.#goalTimeoutMs).then(() => ({ timedOut: true as const })),
       ]);
       if (this.#goalCreation !== creation) return;
+      if ("timedOut" in outcome) {
+        this.#error(`The Flow goal interview timed out after ${this.#goalTimeoutMs / 1000} s.`);
+        this.#finishGoalCreation(false);
+        return;
+      }
+      if (!outcome.ok) throw outcome.error;
       this.#finishGoalCreation(true);
     } catch (error) {
       if (this.#goalCreation !== creation) return;
@@ -1057,6 +1081,9 @@ export class FlowController {
     const text = readFile ? readText(goalPath) : undefined;
     if (text === undefined || text.trim().length === 0) {
       if (readFile) this.#error("The Flow goal interview wrote no goal.");
+      // A failed or interrupted interview must not leave its truncated draft
+      // where the session's accepted goal belongs.
+      this.#persistArtifacts();
       this.#broadcast({ type: "flowGoalStopped", completed: false });
       this.#publish();
       return;

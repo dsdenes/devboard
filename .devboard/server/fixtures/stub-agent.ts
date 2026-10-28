@@ -91,6 +91,10 @@ const flowGoalEmpty = process.argv.includes("--flow-goal-empty");
 const flowGoalFail = process.argv.includes("--flow-goal-fail");
 const flowGoalText =
   argument("flow-goal-text") ?? "# Flow goal\n\nMake the fixture behavior observable.";
+/** While this file exists the interview stalls; `partial` first writes a draft. */
+const flowGoalHang = argument("flow-goal-hang");
+const flowGoalPartial = argument("flow-goal-partial");
+const flowGoalDraft = argument("flow-goal-draft") ?? "# Flow goal\n\nAn unfinished draft";
 const flowCheckpoints = Math.max(1, Number(argument("flow-checkpoints") ?? 1));
 const flowStepDelay = Number(argument("flow-step-delay") ?? 0);
 const flowBlocked = process.argv.includes("--flow-blocked");
@@ -689,6 +693,16 @@ function consumeSteering(directory: string): Record<string, unknown>[] {
 async function runFlowGoal(directory: string) {
   log(`flow-goal ${directory}`);
   stream("Interviewing the developer about the Flow goal");
+  if (flowGoalHang !== undefined && existsSync(flowGoalHang)) {
+    log(`flow-goal-hung ${directory}`);
+    await new Promise<never>(() => {});
+  }
+  if (flowGoalPartial !== undefined && existsSync(flowGoalPartial)) {
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "goal.md"), flowGoalDraft);
+    log(`flow-goal-partial ${directory}`);
+    await new Promise<never>(() => {});
+  }
   if (delayMs > 0) await Bun.sleep(delayMs);
   await askQuestions(1);
   if (flowGoalFail) {

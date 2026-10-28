@@ -431,6 +431,10 @@ one ACP peer. The prompt interviews the developer one question at a time until t
 result and every load-bearing boundary are settled, then writes only `<session-dir>/goal.md`; its
 questions arrive as `flowQuestion` with `target: "goal"` and are answered with `flowAnswer`. The
 goal text is end-result only: no implementation, technology, path, step, or internal criterion.
+The interview is bounded by `goalTimeoutMs` (120 s by default). `<session-dir>/goal.md` is removed
+before each interview, so only a file that interview writes can be accepted. A timeout kills the
+peer, discards whatever draft it wrote, and reports `flowGoalStopped` with `completed: false`; the
+session's accepted goal is left unchanged, exactly as when the interview writes no goal.
 `saveFlowGoal` replaces the goal text while the implementation is stopped. `startFlowImplementation`
 requires a non-empty goal and starts `/flow-implement`; `stopFlowImplementation` ends that peer and
 reports the session `stopped`. A session whose pull request has merged cannot be restarted: create

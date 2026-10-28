@@ -127,6 +127,7 @@ interface StartOptions {
   stub?: string[];
   forge?: StubForge;
   watchMs?: number;
+  goalTimeoutMs?: number;
   tracker?: () => Promise<undefined>;
   stateDir?: string;
   restart?: () => void;
@@ -160,7 +161,7 @@ function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
       forgeTarget: { forge: "github", host: "forge.test", project: "acme/fixture" },
       watchMs: options.watchMs ?? 40,
       analystTimeoutMs: 10_000,
-      goalTimeoutMs: 10_000,
+      goalTimeoutMs: options.goalTimeoutMs ?? 10_000,
     },
   });
   servers.push(server);
@@ -449,6 +450,68 @@ describe("Flow Mode contract", () => {
     // The same session accepts a developer save after the failed attempt.
     client.send({ type: "saveFlowGoal", text: "# Saved by hand\n" });
     await client.waitFor((event) => event.type === "flowSnapshot" && event.goal === "# Saved by hand\n");
+    client.close();
+  }, 30_000);
+
+  test("a timed-out Flow goal interview keeps the previous goal unfinished", async () => {
+    const fixture = createFixture("goal-timeout");
+    const gate = join(fixture.root, "goal-hang");
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", `--flow-goal-hang=${gate}`],
+      goalTimeoutMs: 100,
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    const id = sessionIds(fixture)[0] as string;
+    expect(readSession(fixture, id).goal).toBe(FLOW_GOAL);
+
+    writeFileSync(gate, "");
+    const mark = client.mark();
+    client.send({ type: "createFlowGoal" });
+    const stopped = await client.waitFor((event) => event.type === "flowGoalStopped", {
+      from: mark,
+      timeout: 20_000,
+    });
+    expect(stopped.completed).toBe(false);
+    expect("text" in stopped).toBe(false);
+    const errors = client.events.slice(mark).filter((event) => event.type === "flowError");
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0]?.message)).toContain("timed out");
+
+    // The interrupted interview wrote nothing, so the accepted goal survives.
+    expect(readSession(fixture, id).goal).toBe(FLOW_GOAL);
+    const sessionDirectory = join(fixture.stateDir, "flow", journalKey(fixture.root), id);
+    expect(readFileSync(join(sessionDirectory, "goal.md"), "utf8")).toBe(FLOW_GOAL);
+    expect(sessionIds(fixture)).toEqual([id]);
+    expect(stubLog(fixture)).toContain(`flow-goal-hung ${sessionDirectory}`);
+    client.close();
+  }, 30_000);
+
+  test("a timed-out interview keeps its partial draft out of the session goal", async () => {
+    const fixture = createFixture("goal-partial");
+    const gate = join(fixture.root, "goal-partial");
+    writeFileSync(gate, "");
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", `--flow-goal-partial=${gate}`],
+      goalTimeoutMs: 2_000,
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    const mark = client.mark();
+    client.send({ type: "createFlowGoal" });
+    const stopped = await client.waitFor((event) => event.type === "flowGoalStopped", {
+      from: mark,
+      timeout: 20_000,
+    });
+    expect(stopped.completed).toBe(false);
+    expect("text" in stopped).toBe(false);
+    expect(stubLog(fixture).some((line) => line.startsWith("flow-goal-partial "))).toBe(true);
+
+    const id = sessionIds(fixture)[0] as string;
+    expect(readSession(fixture, id).goal).toBe("");
+    const sessionDirectory = join(fixture.stateDir, "flow", journalKey(fixture.root), id);
+    expect(readFileSync(join(sessionDirectory, "goal.md"), "utf8")).toBe("");
     client.close();
   }, 30_000);
 
