@@ -476,6 +476,14 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   link; `role="status"` on success and `role="alert"` with `error` text on failure. A proposed
   goal's `Goal proposed: .devboard/goal-proposals/<file>.md` result carries no link. It clears the
   notification region, which stays in the lower-right corner.
+- **Notification entry action** (`.notification__actions` in `NotificationRegion.svelte`) — every
+  error and warning notification carries one `File issue` ghost `sm` button beside its dismiss
+  icon. It files that notification's text as a UI issue through `/api/feedback` at once, without
+  a panel, and carries the card as the captured context; while filing it reads `Filing…` and is
+  disabled, a success replaces it with the filed issue URL as an `accent` `Open issue` link, and a
+  failure adds an 11px `error` line naming the server's message. Notices and successes carry no
+  filing action. The 2px action gap sits inside the existing 6px 8px card padding and adds at
+  most one line to the card.
 - **Status bar** (`.status-bar`) — a 26px two-group strip on `surface-raised` with a 1px `border`
   top edge. The left group states connection (7px dot plus word) and the project (folder icon plus
   the last path segment in mono), divided by a 1px `border` rule. The right group holds the lane
