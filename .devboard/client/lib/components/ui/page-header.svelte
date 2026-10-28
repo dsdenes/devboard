@@ -182,11 +182,12 @@
   .page-header__tail {
     align-items: center;
     display: flex;
-    flex: 0 0 auto;
+    flex: 0 1 auto;
     flex-wrap: wrap;
     gap: 12px;
     justify-content: flex-end;
     margin-left: auto;
+    min-width: 0;
   }
 
   .page-header--bar .page-header__meta {

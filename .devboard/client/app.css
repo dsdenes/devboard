@@ -3833,28 +3833,9 @@ a.code-chip--link:focus-visible {
   gap: 6px;
 }
 
-.issues-scout__body {
-  display: grid;
-  flex: 1;
-  gap: 12px;
-  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
-  min-height: 0;
-}
-
-.issues-scout__side {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-  overflow: auto;
-}
-
-.issues-scout__side > .panel {
-  flex: 0 0 auto;
-}
-
 .issues-scout__main {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 12px;
   min-height: 0;
@@ -3876,29 +3857,41 @@ a.code-chip--link:focus-visible {
 }
 
 .scout-limits {
+  align-items: center;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.scout-limits__title {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .scout-limits__field {
+  align-items: center;
   color: var(--muted);
   display: flex;
-  flex-direction: column;
   font-size: 10.5px;
   gap: 4px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
-.scout-limits__actions {
-  display: flex;
-  justify-content: flex-end;
+.scout-limits__hint {
+  color: var(--muted-foreground);
+  flex: 0 1 360px;
+  font-size: 11px;
+  line-height: 1.35;
+  margin: 0;
 }
 
-.scout-limits__hint {
-  font-size: 11px;
-  line-height: 1.45;
+.scout-limits__error {
+  flex: 1 1 100%;
   margin: 0;
 }
 
@@ -3907,13 +3900,9 @@ a.code-chip--link:focus-visible {
     overflow: auto;
   }
 
-  .issues-scout__body {
-    grid-template-columns: 1fr;
-    grid-template-rows: max-content max-content;
-  }
-
-  .issues-scout__side {
-    overflow: visible;
+  /* The header keeps the controls and the action; the rule stays in the group tooltip. */
+  .scout-limits__hint {
+    display: none;
   }
 
   .issues-scout__main > .panel:first-child {

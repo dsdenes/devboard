@@ -220,7 +220,7 @@ export class ProviderStore {
       const text = string(message.message) ?? "The provider change failed.";
       this.error = text;
       this.busy = false;
-      notifications.push("error", text);
+      notifications.push("Providers", "error", text);
       return true;
     }
     return false;

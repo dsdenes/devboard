@@ -65,7 +65,7 @@ export class ConnectionStore {
   send(command: unknown): boolean {
     if (this.socket === undefined || this.socket.readyState !== WebSocket.OPEN) {
       this.lastError = "Not connected to the server.";
-      notifications.push("error", this.lastError);
+      notifications.push("Connection", "error", this.lastError);
       return false;
     }
     this.lastError = null;
@@ -112,7 +112,7 @@ export class ConnectionStore {
       this.lastError = "Could not reach the server.";
       if (!this.notifiedLoss) {
         this.notifiedLoss = true;
-        notifications.push("warning", "Connection lost. Reconnecting…");
+        notifications.push("Connection", "warning", "Connection lost. Reconnecting…");
       }
     };
 
@@ -147,7 +147,11 @@ export class ConnectionStore {
     }
     if (message.type === "upgradePending") {
       this.upgradePending = true;
-      notifications.push("notice", "An update is waiting for the current work to finish.");
+      notifications.push(
+        "Updates",
+        "notice",
+        "An update is waiting for the current work to finish.",
+      );
       return;
     }
     if (message.type === "project" && typeof message.path === "string") {
@@ -156,7 +160,7 @@ export class ConnectionStore {
     }
     if (message.type === "error" && typeof message.message === "string") {
       this.lastError = message.message;
-      notifications.push("error", message.message);
+      notifications.push("Server", "error", message.message);
       if (this.restarting) {
         this.awaitingRestart = false;
         this.restarting = false;
