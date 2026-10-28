@@ -5,7 +5,6 @@
 | Activity bar, sidebar, status bar | workspace chrome | `ActivityBar`, `Sidebar`, `StatusBar` | reuse; one page per mode, no tab strip |
 | Page identity (`h1`, stale badge) | project and freshness state | `.discover-head__title`, `.badge[data-tone]` | extend: header composition; no dirty badge |
 | Freshness meta line | commit and discovery date | `.discover-head__meta`, `freshness` from `discover.svelte` | extend: `data-testid="discover-freshness"` |
-| Definition lead | one-sentence project definition | `.discover-head__definition` | extend: page lead type |
 | `Re-discover` / `Discover project` | primary action | `Button` (default), `discover.startDisabled/startTitle` | reuse |
 | `Run and verify`, `Platform`, `Delivery` | section group labels | `.discover-group__title` | extend: mirrors `.sidebar-group__title` rhythm |
 | Commands panel | task and command table | `.panel`, `.panel__header`, `DataTable` | reuse; no header row, `$` prefix in the command cell |

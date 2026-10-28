@@ -649,7 +649,7 @@ keeps no freshness group and no recent-notice list.
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the repository as
 `owner/name` from its GitHub remote (falling back to the directory name when no remote names one;
-the full path stays in the tooltip), the one-line definition, the discovery date, and the single
+the full path stays in the tooltip), the discovery date, and the single
 filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
 report it. While a run exists, every Discover page carries a run tag above its notice stack: a
 status dot, `Discover run in progress`, the age, the run identifier as a code chip, the latest
@@ -730,7 +730,7 @@ significance sidecar and is read as legacy, with no error.
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint. The
 Overview page is a project sheet, not a card grid. A masthead
-(`data-testid="discover-freshness"`) carries the project name, the one-sentence definition, and the
+(`data-testid="discover-freshness"`) carries the project name and the
 discovery date. The commit, the dirty flag, and the staleness flag stay in the sheet and the state
 payload but render no header badge. Below the masthead the sheet is one bounded two-column spine:
 `Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates, and
