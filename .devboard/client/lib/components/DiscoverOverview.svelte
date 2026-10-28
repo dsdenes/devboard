@@ -77,7 +77,8 @@
       : leafText(definition),
   );
   const projectPath = $derived(
-    freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : ""),
+    discover.remoteTarget?.url ??
+      (freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : "")),
   );
   const projectName = $derived(discover.repository ?? (baseName(projectPath) || "Discover"));
 
