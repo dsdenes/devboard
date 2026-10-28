@@ -161,9 +161,6 @@
             <span class="mono watchdog-cycle__findings" data-testid="watchdog-cycle-findings">
               {entry.findings}
             </span>
-            <span class="watchdog-cycle__reason" data-testid="watchdog-cycle-reason">
-              {entry.reason ?? ""}
-            </span>
           </li>
         {:else}
           <li class="watchdog-empty" data-testid="watchdog-cycles-empty">No cycle has run yet.</li>
@@ -305,7 +302,7 @@
     display: grid;
     font-size: 11px;
     gap: 10px;
-    grid-template-columns: 150px minmax(200px, 1fr) 90px 60px minmax(120px, 2fr);
+    grid-template-columns: 150px minmax(200px, 1fr) 90px 60px;
     padding: 5px 12px;
   }
 
@@ -315,11 +312,6 @@
 
   .watchdog-cycle__window {
     color: var(--muted-foreground);
-  }
-
-  .watchdog-cycle__reason {
-    color: var(--muted-foreground);
-    overflow-wrap: anywhere;
   }
 
   .watchdog-issues {
