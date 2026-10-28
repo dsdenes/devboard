@@ -245,7 +245,11 @@ while (Date.now() < deadline) {
   const match = runs.find((candidate) => candidate.headSha === published);
   if (match !== undefined) {
     workflow = match;
-    const finished = match.status === "completed" || match.conclusion !== null;
+    const finished =
+      match.conclusion !== null ||
+      ["completed", "success", "failure", "cancelled", "skipped", "timed_out"].includes(
+        match.status,
+      );
     if (finished) break;
   }
   await Bun.sleep(5000);
@@ -263,7 +267,8 @@ console.log(`publish: release workflow ${workflow.id} succeeded`);
 
 let releaseOk = false;
 let packageOk = false;
-while (Date.now() < deadline) {
+const verifyDeadline = Date.now() + waitTimeoutMs;
+while (Date.now() < verifyDeadline) {
   if (!releaseOk) {
     const release = await giteaReleaseByTag(target, tag).catch(() => undefined);
     if (release !== undefined) {

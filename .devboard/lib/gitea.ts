@@ -668,17 +668,7 @@ export async function giteaDeleteBranch(
 }
 
 /** Workflow runs whose triggering commit is `headSha`. */
-export async function giteaWorkflowRuns(
-  target: GiteaTarget,
-  headSha: string,
-  fetchImpl: FetchLike = fetch,
-): Promise<GiteaWorkflowRun[]> {
-  const document = await giteaJson<unknown>(
-    target,
-    `${repoPath(target)}/actions/runs?head_sha=${encodeURIComponent(headSha)}&limit=50`,
-    undefined,
-    fetchImpl,
-  );
+function workflowRunsFrom(document: unknown): GiteaWorkflowRun[] {
   let entries: unknown;
   if (Array.isArray(document)) {
     entries = document;
@@ -706,4 +696,34 @@ export async function giteaWorkflowRuns(
     });
   }
   return runs;
+}
+
+/**
+ * Workflow runs for one commit. The run-list endpoint needs a credential on
+ * the canonical instance; the public task feed answers the same records, so
+ * read-only verification works without a token.
+ */
+export async function giteaWorkflowRuns(
+  target: GiteaTarget,
+  headSha: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<GiteaWorkflowRun[]> {
+  try {
+    const document = await giteaJson<unknown>(
+      target,
+      `${repoPath(target)}/actions/runs?head_sha=${encodeURIComponent(headSha)}&limit=50`,
+      undefined,
+      fetchImpl,
+    );
+    return workflowRunsFrom(document);
+  } catch (error) {
+    if (!(error instanceof GiteaError) || error.status !== 401) throw error;
+    const document = await giteaJson<unknown>(
+      target,
+      `${repoPath(target)}/actions/tasks?limit=50`,
+      undefined,
+      fetchImpl,
+    );
+    return workflowRunsFrom(document);
+  }
 }
