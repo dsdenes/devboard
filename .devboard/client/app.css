@@ -266,6 +266,20 @@ kbd {
   position: relative;
 }
 
+/* The armed issue action reads as selected: accent surface, border, icon, and
+   a rail bar matching an active mode tab. */
+.activity-bar__action[aria-pressed="true"]::before {
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+  content: "";
+  height: 16px;
+  left: -5px;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+}
+
 .activity-bar__unread {
   background: var(--error);
   border: 1px solid var(--activity-bar);
