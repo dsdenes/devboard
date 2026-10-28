@@ -207,6 +207,55 @@ export interface ScoutActivityEntry {
   append: boolean;
 }
 
+export type WatchdogIssueState = "pending" | "implemented";
+export type WatchdogSyncState = "ok" | "error" | "stale";
+
+/** One issue the watchdog filed, with what GitHub last reported for it. */
+export interface WatchdogIssue {
+  url: string;
+  category: string;
+  line: string;
+  filedAt: string;
+  /** `null` until a GitHub read has answered for this issue. */
+  state: WatchdogIssueState | null;
+  /** The earliest published release that shipped the closing commit, or null. */
+  version: string | null;
+}
+
+export interface WatchdogCycleWindow {
+  start: string | null;
+  end: string | null;
+}
+
+/** One retained watchdog run directory. */
+export interface WatchdogCycle {
+  at: string;
+  window: WatchdogCycleWindow;
+  action: string;
+  findings: number;
+  reason?: string;
+}
+
+export interface WatchdogSync {
+  state: WatchdogSyncState;
+  /** The last successful read, or null before one. */
+  at: string | null;
+  /** Why the last read failed, or null after a success. */
+  error: string | null;
+}
+
+/** `GET /api/watchdog`, as the page renders it. */
+export interface WatchdogSnapshot {
+  cycle: string | null;
+  action: string;
+  reason?: string;
+  findings: number;
+  issues: WatchdogIssue[];
+  pending: number;
+  cycles: WatchdogCycle[];
+  sync: WatchdogSync;
+}
+
 export interface SkillSummary {
   name: string;
   description: string;

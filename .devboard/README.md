@@ -1055,10 +1055,10 @@ control appears while `stale` is true and restarts the server from the installed
 dashboard serving the canonical source checkout reports `0.1.<commit-count>` on both sides, the
 version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder.
 
-A check that cannot reach the feed at all — an offline host, a DNS or proxy failure, a refused
-or reset connection, or a timeout — leaves the previous package and server intact, writes an
-`activity` record naming the skipped check, and retries with exponential backoff
-(`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for the operator, never an
+A check that cannot reach the feed at all — an offline host, a missing `gh` executable, a DNS
+or proxy failure, a refused or reset connection, or a timeout — leaves the previous package and
+server intact, writes an `activity` record naming the skipped check, and retries with exponential
+backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for the operator, never an
 `update-error` finding. A check that reaches the feed and fails, a checksum mismatch, an
 authentication failure, or a failed npm install writes `update-error` and is retried the same
 way.
@@ -1263,11 +1263,62 @@ and exits without filing. A stale lock whose pid is gone is reclaimed.
 The cycle never spawns an agent, creates a worktree, commits, merges, pushes, or publishes; it
 leaves `HEAD`, `origin/main`, the worktree list, and the working tree exactly as it found them.
 
-`GET /api/watchdog` reports the newest cycle as JSON: `cycle` (ISO 8601 or null), `action`, the
-optional `reason`, the `findings` count, `issues` as `{url, category, line, filedAt}` newest
-first, and the `pending` count. The status bar's watchdog indicator shows the last action and its
-age; activating it opens a popover listing up to ten filed issues, each link opening in a new tab,
-and Escape closes it.
+### The Watchdog page
+
+The Issues sidebar lists `Watchdog` (`open-issues-watchdog`) directly after Auto Scout. Activating
+it opens the full workspace page `watchdog-page`, titled `Watchdog`, in place of the Overview tab;
+it stays the Issues mode's active tab until another Issues page is opened. The page reads only
+`GET /api/watchdog` and sends no command that files, comments, closes, starts, stops, or fixes
+anything.
+
+`watchdog-last-cycle` is the newest cycle from `latest.json`: `watchdog-last-cycle-at` (a `<time>`,
+or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findings`,
+`watchdog-last-pending`, and `watchdog-last-reason` only when the report carries a reason. The
+panel's `watchdog-last-age` shows that cycle's age.
+
+`watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
+first, capped at the newest 100 directories. Every `watchdog-cycle` row carries `data-action` and
+renders `watchdog-cycle-at`, `watchdog-cycle-window` (window start and end),
+`watchdog-cycle-action`, `watchdog-cycle-findings`, and `watchdog-cycle-reason` (empty when the
+report has none). A run directory whose `report.json` is missing or unparsable is skipped without
+hiding the other rows. With no run directory at all, the `latest.json` cycle is the single row;
+with no cycle anywhere, `watchdog-cycles-empty` is rendered.
+
+`watchdog-issues` lists every ledger entry whose disposition is `filed:<url>`, newest `filedAt`
+first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `data-state`, and
+`data-version` and renders `watchdog-issue-title` (an anchor to the issue reading
+`[watchdog] <category>: <line>`), `watchdog-issue-category`, `watchdog-issue-filed` (a `<time>`),
+`watchdog-issue-state`, and `watchdog-issue-version` (the tag, or `—`). A pending-only fingerprint
+is counted in `watchdog-last-pending` and never becomes a row; `watchdog-issues-empty` renders
+when nothing is filed. `watchdog-issues-count` summarizes the rows and pending filings.
+
+The server prints `watchdog-issue-state` as `pending` for an open issue and `implemented` for a
+closed one, whatever its `stateReason`; a reopened issue returns to `pending` within one refresh
+interval. State is read from the repository in each ledger URL. For an implemented issue the
+server resolves the closing commit from the issue timeline, or the last 7–40 character hex SHA in
+the newest comment carrying one, resolved to one full commit. The version is the earliest
+published release of that issue's repository whose history contains the commit, ordered by
+`publishedAt` and breaking a tie by tag, or `—` when no commit or release resolves. A blank
+version is recomputed on every read, so a release published later fills it.
+
+The server refreshes its GitHub projection at most once per 60 seconds. Any `GET /api/watchdog`
+request triggers a due refresh in the background and is answered from the last projection without
+waiting for `gh`; the refresh result appears on a later request. A failed read keeps every last
+known state and version and the whole table, and sets `watchdog-sync` to `data-state="error"` with
+the reason in `watchdog-sync-error`. A success sets `data-state="ok"`, clears the reason, and
+updates `watchdog-sync-at`; a success older than 120 seconds with no later failure reports
+`stale`. `watchdog-sync-at` reads `never` before the first success. The page polls every 15
+seconds, so a newly written run directory or filed ledger entry appears without a reload.
+
+`GET /api/watchdog` is GET-only and leaves `<STATE_DIR>/watchdog/` byte-identical: no run
+directory, ledger write, or lock. Its existing fields keep their meaning: `cycle` (ISO 8601 or
+null), `action`, the optional `reason`, the `findings` count, `issues`
+(`{url, category, line, filedAt, state, version}`) newest first, and the `pending` count; it adds
+`cycles` and `sync`. A dashboard-endpoint failure renders `watchdog-error`.
+
+The status bar's watchdog indicator is unchanged: `status-watchdog` shows the last action and its
+age; activating it opens `watchdog-popover` listing up to ten filed issues, each link opening in a
+new tab, and Escape closes it.
 
 Operate it from the canonical `.devboard`:
 
@@ -1282,9 +1333,12 @@ bun run watchdog:uninstall   # stop, disable, and remove the units
 the absolute Bun executable plus the `omp` and `git` directories for the unit's `PATH`, and is
 idempotent. `watchdog:uninstall` changes no repository file. To pause the watchdog without
 uninstalling, `systemctl --user stop devboard-watchdog.timer`; `systemctl --user start
-devboard-watchdog.timer` resumes it. `bun run verify:watchdog` proves the indicator, popover, and
-issue links against a freshly built bundle; `bun run verify:watchdog-live` starts a seeded
-dashboard, waits for the installed timer to file a real issue, and closes it as not planned.
+devboard-watchdog.timer` resumes it. `bun run verify:watchdog` builds the client, seeds run
+directories, a ledger, and a stub `gh`, and proves the Watchdog page's empty states, cycle history,
+state and version columns, sync badge and failure text, 60-second refresh, freshness, and the
+unchanged footer indicator, popover, issue links, and Escape. `bun run verify:watchdog-live`
+starts a seeded dashboard, waits for the installed timer to file a real issue, and closes it as not
+planned.
 
 ## Issues mode
 
@@ -1468,9 +1522,11 @@ facts, and `data-testid="issues-overview"`. It shows the running-agent count as
 `data-testid="issues-running-agents"`, the pending count, the number of issues in cooldown and the
 earliest cooldown time as `data-testid="issues-cooldowns"`. The left column holds the Automation
 panel and, directly after it, the running agents in
-`data-testid="issues-agent-summary"`: one button per agent carrying `data-run` and `data-issue`,
+`data-testid="issues-agent-summary"`: one row per agent carrying `data-run` and `data-issue`,
 sorted by issue number, with `aria-current="true"` on
 the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
+The row's issue number is a tracker link (`data-testid="issues-agent-row-issue"`, opening the
+issue URL from the queue in a new tab) next to a control that selects the agent's output.
 The running-agent panel header carries an aggregate `data-testid="issues-overview-asking"` warning
 badge (`<n> needs answer` or `<n> need answers`) only while at least one agent waits; the fleet
 count is not repeated in that header because the Automation panel states it.
@@ -1482,8 +1538,8 @@ open and reports the reason as an error notification; a successful one reports
 The right column renders only the selected agent's output in
 `data-testid="issues-overview-output"` with `data-run`, its stream in
 `data-testid="issues-overview-activity"`, and its question in
-`data-testid="issues-overview-question"`. The first agent is selected by default, clicking another
-row switches the output, and the pane falls back to the first live agent when the selected run
+`data-testid="issues-overview-question"`. The first agent is selected by default, the row's select
+control switches the output, and the pane falls back to the first live agent when the selected run
 ends; the overview list selects instead of opening a tab. The queue keeps every open issue, its
 `goal` badge, and its handled state, and shows `data-run` and a running marker for an issue with an
 active agent. The Runs page lists every run with its status and issue,
@@ -1500,14 +1556,21 @@ directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each 
 `data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
 and its first Markdown heading. An empty directory shows `No drafts exist.`.
 
-Selecting one opens `data-testid="issues-draft-detail"` with the draft's bytes exactly, its
-`## Captured UI context` block, and `issues-draft-start` (`issues.draft.start`) plus, while an
-elaboration runs, `issues-draft-stop` (`issues.draft.stop`). The detail refreshes when the page
-opens, after the report panel writes a draft through `POST /api/goal-proposals`, after an
-elaboration finishes or stops, and when a listed draft disappears. The page polls the list every
-two seconds while it is mounted, so an external deletion is visible without a reload, and the
-report panel's write broadcast reaches an open page immediately. A browser reload restores the
-Draft goals page and the selected path; when the file no longer exists, the page opens the list.
+Selecting one opens `data-testid="issues-draft-detail"`: a two-line header carries the draft's
+first heading and its file name, the state badge for this draft's run only, `issues-draft-start`
+(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
+body reads the proposal before the `## Captured UI context` marker, then the activity stream in
+`issues-draft-activity` once a run exists, then `issues-draft-context`: the captured facts as a
+compact grid and the visible text and DOM excerpt behind a `Captured evidence` disclosure. A
+pending elaboration question (`issues-draft-question`) renders above the proposal, with
+`issues-draft-choice`, `issues-draft-answer-input`, and `issues-draft-answer-submit`. The exact
+draft bytes remain in `issues-draft-text`, collapsed under `Draft source`. The detail refreshes
+when the page opens, after the report panel writes a draft through `POST /api/goal-proposals`,
+after an elaboration finishes or stops, and when a listed draft disappears. The page polls the
+list every two seconds while it is mounted, so an external deletion is visible without a reload,
+and the report panel's write broadcast reaches an open page immediately. A browser reload
+restores the Draft goals page and the selected path; when the file no longer exists, the page
+opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
@@ -1644,8 +1707,11 @@ renders `data-testid="scout-issue-title"` as an anchor to the issue URL,
 cell's `title`), `data-testid="scout-issue-type"`,
 `data-testid="scout-issue-state"`, and `data-testid="scout-issue-version"`. The type is the
 recommendation's category, or the issue body's `## Category` value for an adopted issue, or `—`.
-With no rows, `data-testid="scout-issues-empty"` renders. The sidebar `data-testid="scout-count"`
-shows the number of rows whose state is `pending`.
+With no rows, `data-testid="scout-issues-empty"` renders a centered stack: a decorative inbox
+mark, `No issues filed yet`, and one line stating that Auto Scout files significant findings after
+each scan. The empty state adds no control of its own; Start/Stop stays in the page header and the
+row count stays in the panel header. The sidebar `data-testid="scout-count"` shows the number of
+rows whose state is `pending`.
 
 An open issue is `pending`. A closed issue is `implemented` regardless of `stateReason`; a
 reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
@@ -1768,11 +1834,15 @@ context to `POST /api/goal-proposals`; the server writes one Markdown draft unde
 `<REPO_DIR>/.devboard/goal-proposals/` and answers
 `201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
-never writes a goal document, `GOAL.md`, or an ADR, never files an issue, never runs `gh`, and
-starts no agent or conversation. The file name is the report's first non-empty line, lowercased,
-with every run of non-alphanumeric characters replaced by `-`, leading and trailing `-` removed,
-and at most six hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`,
-`-3`, … through an exclusive create, so the first draft is never overwritten. The body opens with
+never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
+The file name is chosen by one bounded naming turn: an ACP peer starts with `AGENT_COMMAND` in
+`REPO_DIR`, receives the operator report marked as data with a read-only instruction, and must
+answer with only a lowercase kebab-case slug, at most six hyphen-separated words, `[a-z0-9-]`, and
+at most 64 characters. A start failure, an exited peer, a question, a 15-second timeout, or an
+unusable answer falls back to the report's first non-empty line, lowercased, with every run of
+non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
+hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
+exclusive create, so the first draft is never overwritten. The body opens with
 `# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, carries the line
 `> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the
@@ -2166,7 +2236,9 @@ The server answers with events:
   lifecycle conversation.
 - A `question` event carries one option per choice. Each option has a `label`, an optional
   `description` stating the consequence of choosing it, and `recommended`, true for the answer
-  the agent suggests. `answer` names the selected label as `value`.
+  the agent suggests. When the peer's schema marks none, the server marks the first option as
+  recommended, so a choice list never lacks a suggestion. `answer` names the selected label as
+  `value`.
 - A record's title and status come from its YAML frontmatter `title` and `status` fields.
 - A record is pending exactly when its status is `draft` or `proposed`; every other status is
   resolved.
@@ -2373,5 +2445,9 @@ legacy logs), the inclusive ten-minute window, omp-log attribution and self-excl
 evidence mapping (prose never produces a finding), host-independent fingerprints, filing and
 commenting against a stub `gh`, pending retries after a failed call, duplicate windows, the
 version 1 ledger migration, and the absence of any commit, merge, push, or publish.
-`tests/watchdog-api.test.ts` covers the read-only endpoint and its status projection. All new
+`tests/watchdog-api.test.ts` covers the read-only endpoint, the newest-cycle projection, the
+cycle history's newest-first order, 100-directory cap, `latest.json` fallback, and malformed-report
+skip, issue row order and fields, open/closed state mapping, timeline and comment shipped-version
+resolution with the earliest-release rule, the `ok`/`error`/`stale` transitions against a stubbed
+GitHub reader and clock, the request-never-waits contract, and byte-identical state. All new
 fixtures live under `.devboard/.tmp`; no test uses the network or a real model.

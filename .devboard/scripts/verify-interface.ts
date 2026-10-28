@@ -623,7 +623,7 @@ async function seedIssuesState(
           title: `Fixture issue ${number}`,
           url: `https://github.com/fixture/host/issues/${number}`,
           createdAt: "2026-10-26T00:00:00Z",
-          labels: [] as string[],
+          labels: number === 19 ? ["goal"] : ([] as string[]),
           handled: false,
           runId: null,
           agentRunId: agents.find((agent) => agent.issueNumber === number)?.runId ?? null,
@@ -1204,6 +1204,15 @@ try {
 
   const saveShot = async (name: string): Promise<void> => {
     await page.screenshot(join(harnessRoot, ".tmp", "interface", `${name}.png`));
+  };
+
+  // A screenshot should show the surface, not an earlier test's notification.
+  const dismissNotifications = async (): Promise<void> => {
+    await page.eval<number>(`(() => {
+      const buttons = [...document.querySelectorAll('[data-command="app.notifications.dismiss"]')];
+      for (const button of buttons) button instanceof HTMLElement && button.click();
+      return buttons.length;
+    })()`);
   };
 
   // The deterministic feedback store: the stub appends every filing to
@@ -4516,6 +4525,7 @@ try {
   const overview = await page.eval<{
     cooldowns: string;
     summaryIssues: string[];
+    summaryIssueLinks: Array<{ tag: string; text: string; href: string; target: string }>;
     sideBeforeOutput: boolean;
     leftOfOutput: boolean;
     summaryBelowAutomation: boolean;
@@ -4541,6 +4551,14 @@ try {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
       summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
+      ),
+      summaryIssueLinks: [...(summary?.querySelectorAll(".issues-agent-row__issue") ?? [])].map(
+        (link) => ({
+          tag: link.tagName,
+          text: link.textContent?.trim() ?? "",
+          href: link.getAttribute("href") ?? "",
+          target: link.getAttribute("target") ?? "",
+        }),
       ),
       sideBeforeOutput: side !== null && output !== null && side.nextElementSibling === output,
       leftOfOutput:
@@ -4640,6 +4658,18 @@ try {
     "the overview does not list every running agent",
     overview,
   );
+  check(
+    overview.summaryIssueLinks.length === 3 &&
+      overview.summaryIssueLinks.every(
+        (link, index) =>
+          link.tag === "A" &&
+          link.text === `#${[17, 18, 19][index]}` &&
+          link.href === `https://github.com/fixture/host/issues/${[17, 18, 19][index]}` &&
+          link.target === "_blank",
+      ),
+    "the overview running-agent issue numbers are not tracker links",
+    overview.summaryIssueLinks,
+  );
   check(overview.sideBeforeOutput, "the agent list is not in the left column", overview);
   check(overview.leftOfOutput, "the side column does not sit to the left of the output", overview);
   check(
@@ -4664,7 +4694,7 @@ try {
     overview,
   );
 
-  await page.click('[data-testid="issues-agent-summary"] [data-issue="18"]');
+  await page.click('[data-testid="issues-agent-summary"] .issues-agent-row__open[data-issue="18"]');
   await page.wait(
     `document.querySelector('[data-testid="issues-overview-output"]')?.getAttribute("data-run") ===
        "2026-10-27T10-00-02-000Z" &&
@@ -5111,7 +5141,7 @@ try {
     queue,
   );
   check(
-    queue.every((entry, index) => entry.goal === (index >= 3 ? "true" : "false")),
+    queue.every((entry, index) => entry.goal === (index >= 2 ? "true" : "false")),
     "a goal label is not visible on its issue",
     queue,
   );
@@ -5129,7 +5159,46 @@ try {
   const goalBadges = await page.eval<number>(
     `document.querySelectorAll('[data-testid="issues-goal-badge"]').length`,
   );
-  check(goalBadges === 2, "the goal issues carry no goal badge", goalBadges);
+  check(goalBadges === 3, "the goal issues carry no goal badge", goalBadges);
+  const queueGeometry = await page.eval<{
+    heights: number[];
+    goalTop: number | null;
+    stateTop: number | null;
+    stateRight: number | null;
+    panelRight: number | null;
+  }>(`(() => {
+    const items = [...document.querySelectorAll('[data-testid="issues-queue-item"]')];
+    const goalItem = items.find((item) => item.querySelector('[data-testid="issues-goal-badge"]') && item.querySelector('[data-testid="issues-running-marker"]'));
+    const goal = goalItem?.querySelector('[data-testid="issues-goal-badge"]')?.getBoundingClientRect();
+    const state = goalItem?.querySelector('[data-testid="issues-running-marker"]')?.getBoundingClientRect();
+    const panel = document.querySelector('[data-testid="issues-queue"]')?.getBoundingClientRect();
+    return {
+      heights: items.map((item) => Math.round(item.getBoundingClientRect().height)),
+      goalTop: goal ? Math.round(goal.top) : null,
+      stateTop: state ? Math.round(state.top) : null,
+      stateRight: state ? Math.round(state.right) : null,
+      panelRight: panel ? Math.round(panel.right) : null,
+    };
+  })()`);
+  check(
+    new Set(queueGeometry.heights).size === 1,
+    "the queue rows do not share one height",
+    queueGeometry.heights,
+  );
+  check(
+    queueGeometry.goalTop !== null &&
+      queueGeometry.stateTop !== null &&
+      Math.abs(queueGeometry.goalTop - queueGeometry.stateTop) <= 1,
+    "the goal and state badges do not sit on one line",
+    queueGeometry,
+  );
+  check(
+    queueGeometry.stateRight !== null &&
+      queueGeometry.panelRight !== null &&
+      Math.abs(queueGeometry.stateRight - queueGeometry.panelRight) <= 13,
+    "the state badge is not on the row's trailing edge",
+    queueGeometry,
+  );
   const pendingMeta = await page.eval<string>(
     `document.querySelector('[data-testid="open-issues-queue"] .sidebar-item__meta')?.textContent ?? ""`,
   );
@@ -5222,9 +5291,16 @@ try {
     start: string;
     startCommand: string;
     stop: boolean;
+    title: string;
+    pathLabel: string;
+    proposal: string;
+    facts: number;
+    evidence: number;
+    sourceClosed: boolean;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const start = document.querySelector('[data-testid="issues-draft-start"]');
+    const source = panel?.querySelector("details.issues-draft-source");
     return {
       path: panel?.getAttribute("data-path") ?? "",
       text: document.querySelector('[data-testid="issues-draft-text"]')?.textContent ?? "",
@@ -5232,6 +5308,12 @@ try {
       start: document.querySelector('[data-testid="issues-draft-start"]') !== null ? "yes" : "",
       startCommand: start?.getAttribute("data-command") ?? "",
       stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+      title: panel?.querySelector(".issues-draft-detail__title")?.textContent?.trim() ?? "",
+      pathLabel: panel?.querySelector(".issues-draft-detail__path")?.textContent?.trim() ?? "",
+      proposal: panel?.querySelector(".issues-draft-detail__prose")?.textContent ?? "",
+      facts: panel?.querySelectorAll('[data-testid="issues-draft-context"] dt').length ?? 0,
+      evidence: panel?.querySelectorAll(".issues-draft-evidence__section").length ?? 0,
+      sourceClosed: source instanceof HTMLDetailsElement && !source.open,
     };
   })()`);
   check(detail.path === reportDraftPath, "the detail does not name the selected draft", detail);
@@ -5252,6 +5334,20 @@ try {
     "the detail lost the captured UI context",
     detail,
   );
+  check(
+    detail.title.length > 0 &&
+      detail.pathLabel.endsWith(".md") &&
+      !detail.proposal.includes("## Captured UI context"),
+    "the detail does not separate identity and proposal from the evidence",
+    detail,
+  );
+  check(
+    detail.facts > 0 && detail.evidence > 0 && detail.sourceClosed,
+    "the compact context and closed source disclosure are missing",
+    detail,
+  );
+  await dismissNotifications();
+  await saveShot("issues-draft-detail");
   check(
     detail.start === "yes" && detail.startCommand === "issues.draft.start" && !detail.stop,
     "the draft detail has the wrong controls",
@@ -5275,11 +5371,105 @@ try {
     "the elaboration question",
     8_000,
   );
-  const draftQuestion = await page.eval<{ message: string; options: number }>(`(() => ({
+  const draftQuestion = await page.eval<{ message: string; options: number; recommended: boolean }>(`(() => ({
     message: document.querySelector('[data-testid="issues-draft-question"]')?.textContent?.includes("Choose an answer") ?? false,
     options: document.querySelectorAll('[data-testid="issues-draft-choice"]').length,
+    recommended:
+      document.querySelector('[data-testid="issues-draft-choice"]')?.querySelector('.choice__recommended') !== null,
   }))()`);
-  check(draftQuestion.message && draftQuestion.options === 2, "the elaboration question is not surfaced", draftQuestion);
+  check(
+    draftQuestion.message && draftQuestion.options === 2 && draftQuestion.recommended,
+    "the elaboration question is not surfaced with a recommended first option",
+    draftQuestion,
+  );
+  const questionLayout = await page.eval<{
+    ordered: boolean;
+    sourceClosed: boolean;
+    contextEmpty: string;
+  }>(`(() => {
+    const question = document.querySelector('[data-testid="issues-draft-question"]');
+    const activity = document.querySelector('[data-testid="issues-draft-activity"]');
+    const panel = document.querySelector('[data-testid="issues-draft-detail"]');
+    const source = panel?.querySelector("details.issues-draft-source");
+    return {
+      ordered: question !== null && activity !== null &&
+        (question.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      sourceClosed: source instanceof HTMLDetailsElement && !source.open,
+      contextEmpty: document.querySelector('[data-testid="issues-draft-context"]')?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    questionLayout.ordered,
+    "the pending question is not above the activity log",
+    questionLayout,
+  );
+  check(questionLayout.sourceClosed, "the exact draft source is not collapsed", questionLayout);
+  check(
+    questionLayout.contextEmpty === "No captured UI context.",
+    "a draft without captured context does not say so",
+    questionLayout,
+  );
+  await dismissNotifications();
+  await saveShot("issues-draft-detail-question");
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the draft detail at 1024×720");
+  const narrowDraft = await page.eval<{
+    headerRight: number;
+    actionsRight: number;
+    titleWidth: number;
+    bodyOverflow: number;
+  }>(`(() => {
+    const panel = document.querySelector('[data-testid="issues-draft-detail"]');
+    const header = panel?.querySelector(".issues-draft-detail__header");
+    const actions = panel?.querySelector(".issues-draft-detail__actions");
+    const title = panel?.querySelector(".issues-draft-detail__title");
+    const body = panel?.querySelector(".issues-draft-detail__body");
+    return {
+      headerRight: header?.getBoundingClientRect().right ?? 0,
+      actionsRight: actions?.getBoundingClientRect().right ?? 0,
+      titleWidth: title?.getBoundingClientRect().width ?? 0,
+      bodyOverflow: body === null ? 0 : body.scrollWidth - body.clientWidth,
+    };
+  })()`);
+  check(
+    narrowDraft.titleWidth > 0 &&
+      narrowDraft.actionsRight <= narrowDraft.headerRight + 0.5 &&
+      narrowDraft.bodyOverflow <= 1,
+    "the draft detail header or body overflows at 1024×720",
+    narrowDraft,
+  );
+  await dismissNotifications();
+  await saveShot("issues-draft-detail-1024x720");
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop viewport after the draft check");
+
+  // Another draft's run is not this draft's state.
+  await page.click('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/002-hang.md"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
+    "the idle draft beside a running elaboration",
+  );
+  const otherState = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? ""`,
+  );
+  check(otherState === "idle", "a draft borrowed another draft's run status", otherState);
+  await page.click('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/001-question.md"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/001-question.md" &&
+      document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the running draft's question after reselecting it",
+  );
+
   const blocked = await page.eval<string[]>(
     `[...document.querySelectorAll('[data-testid="issues-draft-blocked"]')].map((item) => item.textContent ?? "")`,
   );

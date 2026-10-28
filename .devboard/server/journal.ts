@@ -7,7 +7,7 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /**
  * The dashboard journal is the machine-readable record the watchdog reads.
@@ -80,6 +80,76 @@ export function journalKey(repoDir: string): string {
 
 export function journalFile(stateDir: string, repoDir: string): string {
   return join(stateDir, "journal", `${journalKey(repoDir)}.jsonl`);
+}
+
+/**
+ * A journal filename: `<24-hex project key>.jsonl`, rotated aside as
+ * `<key>.jsonl.<rotation instant>-<counter>`. Rotation and pruning share this
+ * one definition so a name the writer produces is a name the pruner accepts.
+ */
+const JOURNAL_NAME = /^([0-9a-f]{24})\.jsonl(?:\.(\d+)-(\d+))?$/;
+
+interface JournalName {
+  /** The project key that names the journal. */
+  key: string;
+  /** Rotation instant and counter; absent on the live journal. */
+  rotation?: { ms: number; counter: number };
+}
+
+/** Parses a journal filename; `null` for any other file in the directory. */
+function parseJournalName(name: string): JournalName | null {
+  const match = JOURNAL_NAME.exec(name);
+  if (match === null) return null;
+  const key = match[1];
+  const ms = match[2];
+  const counter = match[3];
+  if (key === undefined) return null;
+  if (ms === undefined || counter === undefined) return { key };
+  return { key, rotation: { ms: Number(ms), counter: Number(counter) } };
+}
+
+/**
+ * Every journal file of one project: rotated journals oldest first, then the
+ * live file. A project that never rotated yields only its live path, and a
+ * missing journal directory yields that path so the read reports nothing.
+ *
+ * `since` is the oldest instant a caller needs. A rotated file last written
+ * before it cannot hold a later record, so it is skipped instead of parsed:
+ * a quiet dashboard keeps up to `JOURNAL_MAX_BYTES` of old rotations.
+ */
+export function journalFiles(livePath: string, since?: Date): string[] {
+  const directory = dirname(livePath);
+  const live = parseJournalName(basename(livePath));
+  let names: string[];
+  try {
+    names = readdirSync(directory);
+  } catch {
+    return [livePath];
+  }
+  if (live === null) return [livePath];
+  const cutoff = since?.getTime();
+  const rotated: { path: string; ms: number; counter: number; name: string }[] = [];
+  for (const name of names) {
+    const parsed = parseJournalName(name);
+    if (parsed === null || parsed.rotation === undefined) continue;
+    if (parsed.key !== live.key) continue;
+    const { ms, counter } = parsed.rotation;
+    const path = join(directory, name);
+    if (cutoff !== undefined) {
+      try {
+        if (statSync(path).mtimeMs < cutoff) continue;
+      } catch {
+        // A journal disappearing mid-scan is already gone.
+        continue;
+      }
+    }
+    rotated.push({ path, ms, counter, name });
+  }
+  rotated.sort(
+    (left, right) =>
+      left.ms - right.ms || left.counter - right.counter || left.name.localeCompare(right.name),
+  );
+  return [...rotated.map((file) => file.path), livePath];
 }
 
 /** One JSONL line per event, truncated so a single huge stream cannot flood it. */
@@ -170,7 +240,6 @@ export interface PruneOptions {
 interface JournalFile {
   path: string;
   name: string;
-  complete: boolean;
   size: number;
   mtimeMs: number;
 }
@@ -193,7 +262,7 @@ export function pruneJournal(stateDir: string, options: PruneOptions): string[] 
 
   const files: JournalFile[] = [];
   for (const name of names) {
-    if (!/^[0-9a-f]{24}\.jsonl(\.\d+)?$/.test(name)) continue;
+    if (parseJournalName(name) === null) continue;
     const path = join(directory, name);
     try {
       const info = statSync(path);
@@ -201,7 +270,6 @@ export function pruneJournal(stateDir: string, options: PruneOptions): string[] 
       files.push({
         path,
         name,
-        complete: /\.jsonl\.\d+$/.test(name),
         size: info.size,
         mtimeMs: info.mtimeMs,
       });

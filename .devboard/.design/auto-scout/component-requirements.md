@@ -12,7 +12,7 @@
 | Save limits | Reuse | `Button` | `stories/design-system.stories.ts` | secondary; enabled while connected; validation failure keeps the last saved values | native button, focus ring | button-secondary |
 | Limits alert | Compose | — (`.issues-error`) | — | visible validation message; `role="alert"` | announced, not colour-only | error, error-surface |
 | Filed issues table | Compose | — (`.panel` + table markup) | — | zero, one, many rows; long titles ellipsize with tooltip; pending/implemented badges; missing category/version render `—`; body scrolls | column headers, link text, badge words | panel, table, badge, mono, row-hover |
-| Empty table | Compose | — | — | one quiet message plus one explanatory line; not focusable | plain paragraph | muted, padding |
+| Empty table | Compose | — | — | centered 20px inbox mark above a 13px/600 title and one 12px explanatory line; max 360px; not focusable | decorative mark is `aria-hidden`; title and copy are plain text | muted, spacing |
 | Activity log | Reuse | — | — | `IssuesAgentLog` with empty state; appends live; follows the newest line unless scrolled up | `pre` text, command rows keep their `$` prompt | activity log styles, accent-surface |
 | Alert banner | Compose | — (`.issues-error`) | — | sync error, worker error (`role="alert"`) | announced; sits before the panels in reading order | error/warning surfaces |
 

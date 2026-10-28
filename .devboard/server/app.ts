@@ -11,7 +11,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { readWatchdogStatus } from "../watchdog/status";
+import { WatchdogActivity, type WatchdogActivityOptions } from "./watchdog";
 import {
   AcpConnection,
   agentPrompt,
@@ -28,6 +28,7 @@ import {
 } from "./feedback";
 import { FlowController, type FlowOptions } from "./flow";
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
+import { suggestGoalSlug } from "./goal-slug";
 import {
   GoalDraftError,
   GoalDraftManager,
@@ -157,6 +158,10 @@ export interface AppOptions {
   issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "closeIssue">;
   /** Auto Scout's test seams; production uses the detached worker itself. */
   scout?: Pick<ScoutBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
+  /** Watchdog page's test seams; production reads `gh` in the background. */
+  watchdog?: Pick<WatchdogActivityOptions, "reader" | "now" | "intervalMs" | "staleAfterMs">;
+  /** Names one proposed-goal draft; production asks the configured ACP agent. */
+  goalSlug?: (report: string) => Promise<string>;
 }
 
 type RunAction = "resolving" | "implementing" | "generating";
@@ -1599,6 +1604,11 @@ export function createApp(options: AppOptions) {
   const creationGoalFile = defaultGoalPath(repoDir);
   const skillsDir = join(repoDir, ".omp", "skills");
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
+  // A draft name is chosen by an LLM; any failure falls back to the
+  // deterministic slug inside `writeGoalProposal`.
+  const goalSlug =
+    options.goalSlug ??
+    ((report: string) => suggestGoalSlug(report, { command: agentCommand, cwd: repoDir }));
   // Every Ask peer runs in the host repository, whatever the request came from.
   const ask = new AskController({ command: agentCommand, cwd: repoDir });
   const tracker = options.tracker ?? findOpenEpics;
@@ -1615,6 +1625,20 @@ export function createApp(options: AppOptions) {
   // The state belongs to this checkout, not to the harness installation: hosts
   // share one harness through a symlink, so the repository path keys the file.
   const stateDir = resolve(options.stateDir ?? join(import.meta.dir, "..", ".tmp"));
+  // The Issues-mode watchdog page: local facts every request, GitHub in the
+  // background at most once per interval. It never writes watchdog state.
+  const watchdog = new WatchdogActivity({
+    watchdogDir: join(stateDir, "watchdog"),
+    repoDir,
+    ...(options.watchdog?.reader === undefined ? {} : { reader: options.watchdog.reader }),
+    ...(options.watchdog?.now === undefined ? {} : { now: options.watchdog.now }),
+    ...(options.watchdog?.intervalMs === undefined
+      ? {}
+      : { intervalMs: options.watchdog.intervalMs }),
+    ...(options.watchdog?.staleAfterMs === undefined
+      ? {}
+      : { staleAfterMs: options.watchdog.staleAfterMs }),
+  });
   // The journal records what happened for the watchdog. It is never part of a
   // run's behavior: a failed write only adds a line to stderr.
   const journal =
@@ -1801,9 +1825,10 @@ export function createApp(options: AppOptions) {
    * is on disk. A SIGKILL after delivery therefore loses nothing the client
    * already saw, and a replacement replays at least that state.
    */
-  function sendAll(event: unknown) {
+  function sendAll(event: unknown, except?: { send(data: string): unknown }) {
     const payload = JSON.stringify(event);
     for (const client of clients) {
+      if (client === except) continue;
       try {
         client.send(payload);
       } catch {
@@ -1831,7 +1856,7 @@ export function createApp(options: AppOptions) {
     agentCommand,
     runningVersion,
     harnessDir: runningHarnessDir(),
-    send: (event) => sendAll(event),
+    send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.issues?.pollMs === undefined ? {} : { pollMs: options.issues.pollMs }),
     ...(options.issues?.preflight === undefined ? {} : { preflight: options.issues.preflight }),
@@ -1862,7 +1887,7 @@ export function createApp(options: AppOptions) {
     agentCommand,
     runningVersion,
     harnessDir: runningHarnessDir(),
-    send: (event) => sendAll(event),
+    send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.scout?.pollMs === undefined ? {} : { pollMs: options.scout.pollMs }),
     ...(options.scout?.preflight === undefined ? {} : { preflight: options.scout.preflight }),
@@ -5531,7 +5556,7 @@ export function createApp(options: AppOptions) {
 
     try {
       const submission = parseGoalProposalSubmission(guarded.value);
-      const proposal = await writeGoalProposal(submission, { repoDir });
+      const proposal = await writeGoalProposal(submission, { repoDir, slugger: goalSlug });
       goalDrafts.publishDrafts();
       return Response.json(proposal, { status: 201 });
     } catch (error) {
@@ -5564,7 +5589,7 @@ export function createApp(options: AppOptions) {
         if (request.method !== "GET") {
           return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
         }
-        return Response.json(readWatchdogStatus(join(stateDir, "watchdog")));
+        return Response.json(watchdog.view());
       }
 
       if (url.pathname === "/ws") {

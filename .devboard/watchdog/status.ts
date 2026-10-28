@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { latestWatchdogCycle, readWatchdogCycles, type WatchdogCycle } from "./history";
 import { loadLedger } from "./ledger";
 
 /**
  * The read-only watchdog view the dashboard serves. It is derived from the
- * newest cycle report and the ledger, and it never carries an environment
- * value: only the action, the counts, and the issue URLs.
+ * newest cycle report, the retained run directories, and the ledger, and it
+ * never carries an environment value: only the action, the counts, and the
+ * issue URLs.
  */
 
 export interface WatchdogIssue {
@@ -26,6 +28,8 @@ export interface WatchdogStatus {
   issues: WatchdogIssue[];
   /** Fingerprints still waiting for a successful filing. */
   pending: number;
+  /** The retained cycles, newest first; empty before the first cycle. */
+  cycles: WatchdogCycle[];
 }
 
 export function readWatchdogStatus(watchdogDir: string): WatchdogStatus {
@@ -58,5 +62,6 @@ export function readWatchdogStatus(watchdogDir: string): WatchdogStatus {
     findings: Array.isArray(latest.findings) ? latest.findings.length : 0,
     issues,
     pending: ledger.pendingFiling.length,
+    cycles: readWatchdogCycles(watchdogDir, latestWatchdogCycle(latest)),
   };
 }

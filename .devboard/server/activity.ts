@@ -22,7 +22,6 @@ export function activityDelta(previous: string[], activity: string[]): ActivityD
   if (activity.length === 0) return { replay: false, entries: [] };
   if (previous.length === 0) return replay();
   if (activity.length < previous.length) return replay();
-  if (activity[0] !== previous[0] && previous[0] !== undefined) return replay();
 
   let prefix = 0;
   while (prefix < previous.length && prefix < activity.length && previous[prefix] === activity[prefix]) {
@@ -34,12 +33,16 @@ export function activityDelta(previous: string[], activity: string[]): ActivityD
       entries: activity.slice(prefix).map((text) => ({ text, append: false })),
     };
   }
-  if (prefix === previous.length - 1 && activity.length === previous.length) {
+  if (prefix === previous.length - 1) {
     const before = previous[prefix] ?? "";
     const after = activity[prefix] ?? "";
     if (after.startsWith(before)) {
-      return { replay: false, entries: [{ text: after.slice(before.length), append: true }] };
+      const entries: AcpLikeActivity[] = [];
+      const extension = after.slice(before.length);
+      if (extension.length > 0) entries.push({ text: extension, append: true });
+      for (const text of activity.slice(previous.length)) entries.push({ text, append: false });
+      return { replay: false, entries };
     }
   }
-  return { replay: false, entries: [] };
+  return replay();
 }

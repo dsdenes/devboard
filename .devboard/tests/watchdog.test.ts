@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   instancesFromProcesses,
@@ -11,7 +11,7 @@ import {
   type Instance,
   type ProcessSnapshot,
 } from "../watchdog/discovery";
-import { journalFile, openJournal } from "../server/journal";
+import { journalFile, journalFiles, openJournal } from "../server/journal";
 import {
   normalizeEvidenceLine,
   readJournalEvidence,
@@ -279,6 +279,55 @@ describe("window and attribution", () => {
     expect(collected.malformed).toBe(1);
   });
 
+  test("reads an error that rotation moved out of the live journal", async () => {
+    const base = await temporaryDirectory("test-watchdog-journal-rotated");
+    const harness = join(base, "harness");
+    await mkdir(join(harness, ".tmp", "journal"), { recursive: true });
+    const instance = instanceFor(base, 8080, harness);
+    const journal = openJournal({
+      stateDir: join(harness, ".tmp"),
+      repoDir: base,
+      port: 8080,
+      rotateBytes: 1,
+      now: () => fixedNow,
+    });
+    journal.write("server-error", SERVER_ERROR);
+    // The second write rotates the error aside; the live file starts over.
+    journal.write("activity", "after rotation");
+    await writeFile(instance.journal, "");
+    const rotated = journalFiles(instance.journal)[0];
+    if (rotated === undefined) throw new Error("rotation did not produce a journal");
+    await appendFile(rotated, "{not json\n");
+
+    const collected = readJournalEvidence(instance, { window, root: base });
+    expect(collected.events.map((item) => item.text)).toEqual([SERVER_ERROR]);
+    expect(collected.malformed).toBe(1);
+    const findings = analyzeEvidence(collected.events, { window });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.category).toBe("server-error");
+    expect(findings[0]?.quote).toBe(SERVER_ERROR);
+  });
+
+  test("a record copied into a rotated journal and the live journal counts once", async () => {
+    const base = await temporaryDirectory("test-watchdog-journal-duplicate");
+    const harness = join(base, "harness");
+    await mkdir(join(harness, ".tmp", "journal"), { recursive: true });
+    const instance = instanceFor(base, 8080, harness);
+    const journal = openJournal({
+      stateDir: join(harness, ".tmp"),
+      repoDir: base,
+      port: 8080,
+      now: () => fixedNow,
+    });
+    journal.write("server-error", SERVER_ERROR);
+    await copyFile(instance.journal, `${instance.journal}.1700000000000-1`);
+
+    const collected = readJournalEvidence(instance, { window, root: base });
+    expect(collected.events).toHaveLength(1);
+    expect(collected.events[0]?.text).toBe(SERVER_ERROR);
+    expect(analyzeEvidence(collected.events, { window })).toHaveLength(1);
+  });
+
   test("attributes an in-window omp error by dashboard process ancestry", async () => {
     const base = await temporaryDirectory("test-watchdog-omp");
     const logsDir = join(base, "logs");
@@ -508,6 +557,57 @@ describe("evidence mapping", () => {
       event(root, 2, "lane-2 implementing", "lane-start", owner),
     ];
     expect(analyzeEvidence(events, { window })).toEqual([]);
+  });
+
+  test("a sibling lane's stop never ends another lane's stall", async () => {
+    const root = await temporaryDirectory("test-watchdog-stall-sibling");
+    const owner = instanceFor(root, 8080);
+    const events = [
+      event(root, 8, "lane-1 implementing", "lane-start", owner),
+      event(root, 8, "lane-2 implementing", "lane-start", owner),
+      event(root, 6, "lane-2 closed", "lane-stop", owner),
+    ];
+    const findings = analyzeEvidence(events, { window });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.category).toBe("stall");
+    expect(findings[0]?.quote).toBe("lane-1 implementing");
+  });
+
+  test("a stop only ends a start of its own kind", async () => {
+    const root = await temporaryDirectory("test-watchdog-stall-kind");
+    const owner = instanceFor(root, 8080);
+    const lane = [
+      event(root, 8, "lane-1 implementing", "lane-start", owner),
+      event(root, 6, "0001-first.md: resolved", "run-stop", owner),
+    ];
+    expect(analyzeEvidence(lane, { window }).map((finding) => finding.quote)).toEqual([
+      "lane-1 implementing",
+    ]);
+
+    const run = [
+      event(root, 8, "0001-first.md: First decision", "run-start", owner),
+      event(root, 6, "lane-2 failed", "lane-stop", owner),
+    ];
+    const stalled = analyzeEvidence(run, { window }).filter(
+      (finding) => finding.category === "stall",
+    );
+    expect(stalled.map((finding) => finding.quote)).toEqual(["0001-first.md: First decision"]);
+  });
+
+  test("two stalled lanes are two findings with distinct fingerprints", async () => {
+    const root = await temporaryDirectory("test-watchdog-stall-pair");
+    const owner = instanceFor(root, 8080);
+    const events = [
+      event(root, 8, "lane-1 implementing", "lane-start", owner),
+      event(root, 8, "lane-2 implementing", "lane-start", owner),
+    ];
+    const findings = analyzeEvidence(events, { window });
+    expect(findings).toHaveLength(2);
+    expect(findings.map((finding) => finding.quote).sort()).toEqual([
+      "lane-1 implementing",
+      "lane-2 implementing",
+    ]);
+    expect(new Set(findings.map((finding) => finding.fingerprint)).size).toBe(2);
   });
 
   test("the same text on two dashboards is one fingerprint", async () => {

@@ -6,9 +6,10 @@
   import DraftsPage from "./DraftsPage.svelte";
   import IssuesAgentFocus from "./IssuesAgentFocus.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
-  import IssuesAgentQuestion from "./IssuesAgentQuestion.svelte";
+  import IssuesQuestion from "./IssuesQuestion.svelte";
   import PageHeader from "./ui/page-header.svelte";
   import ScoutWorkspace from "./ScoutWorkspace.svelte";
+  import WatchdogWorkspace from "./WatchdogWorkspace.svelte";
   import { pollStatus } from "../poll-status";
 
   interface Props {
@@ -32,7 +33,9 @@
               ? "agent"
               : tab?.kind === "scout"
                 ? "scout"
-                : "overview",
+                : tab?.kind === "watchdog"
+                  ? "watchdog"
+                  : "overview",
   );
 
   const runCount = $derived(issues.runs.length);
@@ -120,6 +123,8 @@
 
 {#if page === "scout"}
   <ScoutWorkspace />
+{:else if page === "watchdog"}
+  <WatchdogWorkspace />
 {:else if page === "overview"}
   <section class="issues-overview" data-testid="issues-overview" aria-label="Issues overview">
     <header class="issues-overview__header">
@@ -251,30 +256,45 @@
           <ol class="issues-agent-summary" data-testid="issues-agent-summary">
             {#each agents as agent (agent.runId)}
               <li class="issues-agent-summary__item">
-                <button
-                  type="button"
+                <div
                   class="issues-agent-row"
-                  data-command="issues.agent.open"
                   data-run={agent.runId}
                   data-issue={agent.issueNumber}
                   title={issueTitle(agent.issueNumber)}
                   aria-current={selectedAgent?.runId === agent.runId}
-                  onclick={() => (selectedRunId = agent.runId)}
                 >
-                  <span class="issues-agent-row__issue mono">#{agent.issueNumber}</span>
-                  <span class="issues-agent-row__title">{issueTitle(agent.issueNumber)}</span>
-                  <span class="issues-agent-row__meta">
-                    {#if agent.question !== null}
-                      <span class="badge" data-tone="warning">needs answer</span>
-                    {/if}
-                    <span
-                      class="issues-agent-row__elapsed mono"
-                      title={`Started ${startedClock(agent.startedAt)}`}
-                    >
-                      {elapsedShort(agent.startedAt)}
+                  <a
+                    class="issues-agent-row__issue mono"
+                    data-testid="issues-agent-row-issue"
+                    href={issueUrl(agent.issueNumber)}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Open issue #${agent.issueNumber}: ${issueTitle(agent.issueNumber)}`}
+                  >
+                    #{agent.issueNumber}
+                  </a>
+                  <button
+                    type="button"
+                    class="issues-agent-row__open"
+                    data-command="issues.agent.open"
+                    data-run={agent.runId}
+                    data-issue={agent.issueNumber}
+                    onclick={() => (selectedRunId = agent.runId)}
+                  >
+                    <span class="issues-agent-row__title">{issueTitle(agent.issueNumber)}</span>
+                    <span class="issues-agent-row__meta">
+                      {#if agent.question !== null}
+                        <span class="badge" data-tone="warning">needs answer</span>
+                      {/if}
+                      <span
+                        class="issues-agent-row__elapsed mono"
+                        title={`Started ${startedClock(agent.startedAt)}`}
+                      >
+                        {elapsedShort(agent.startedAt)}
+                      </span>
                     </span>
-                  </span>
-                </button>
+                  </button>
+                </div>
                 <button
                   type="button"
                   class="issues-agent-row__close"
@@ -315,7 +335,7 @@
               runId={selectedAgent.runId}
             />
             {#if selectedAgent.question}
-              <IssuesAgentQuestion
+              <IssuesQuestion
                 runId={selectedAgent.runId}
                 question={selectedAgent.question}
                 testid="issues-overview-question"
@@ -423,7 +443,7 @@
               />
             </div>
             {#if agent.question}
-              <IssuesAgentQuestion
+              <IssuesQuestion
                 runId={agent.runId}
                 question={agent.question}
                 testid="issues-agent-question"
@@ -460,24 +480,34 @@
               data-goal={isGoalIssue(issue)}
               data-run={issue.agentRunId ?? ""}
             >
-              <a class="mono" href={issue.url} target="_blank" rel="noreferrer">#{issue.number}</a>
-              <span class="issues-queue__title">{issue.title}</span>
-              {#if isGoalIssue(issue)}
-                <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
-              {/if}
-              {#if issue.handled}
-                <span class="badge" data-tone={statusTone("handled")}>handled</span>
-              {:else if issue.agentRunId !== null}
-                <span
-                  class="badge"
-                  data-tone={statusTone("running")}
-                  data-testid="issues-running-marker"
-                >
-                  running
-                </span>
-              {:else}
-                <span class="badge" data-tone={statusTone("pending")}>pending</span>
-              {/if}
+              <a
+                class="issues-queue__number mono"
+                href={issue.url}
+                target="_blank"
+                rel="noreferrer"
+                title={`Open issue #${issue.number} on the tracker`}
+              >
+                #{issue.number}
+              </a>
+              <span class="issues-queue__title" title={issue.title}>{issue.title}</span>
+              <span class="issues-queue__meta">
+                {#if isGoalIssue(issue)}
+                  <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
+                {/if}
+                {#if issue.handled}
+                  <span class="badge" data-tone={statusTone("handled")}>handled</span>
+                {:else if issue.agentRunId !== null}
+                  <span
+                    class="badge"
+                    data-tone={statusTone("running")}
+                    data-testid="issues-running-marker"
+                  >
+                    running
+                  </span>
+                {:else}
+                  <span class="badge" data-tone={statusTone("pending")}>pending</span>
+                {/if}
+              </span>
             </li>
           {:else}
             <li class="issues-queue__empty muted">No open issues have been polled yet.</li>

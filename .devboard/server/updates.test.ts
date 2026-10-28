@@ -200,6 +200,34 @@ describe("startUpdater", () => {
     updater.stop();
   });
 
+  test("journals a missing release client as context, never an update-error", async () => {
+    const prefix = await installedPrefix("0.1.0");
+    const { journal, records } = journalRecorder();
+    const manual = manualSchedule();
+    const missing = Object.assign(
+      new Error("ENOENT: no such file or directory, posix_spawn 'gh'"),
+      { code: "ENOENT" },
+    );
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: "0.1.0",
+      journal,
+      intervalMs: 1000,
+      schedule: manual.schedule,
+      fetchRelease: async () => {
+        throw missing;
+      },
+      install: async (info) => info.version,
+    });
+    await manual.fire(0);
+    expect(records).toEqual([["activity", `release check skipped: ${missing.message}`]]);
+    // The skipped check still backs off instead of polling at the base interval.
+    expect(manual.delays).toEqual([0, 2000]);
+    updater.stop();
+  });
+
   test("journals a feed error that is not connectivity as an update-error", async () => {
     const prefix = await installedPrefix("0.1.0");
     const { journal, records } = journalRecorder();
