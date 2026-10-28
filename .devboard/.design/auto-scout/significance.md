@@ -5,7 +5,6 @@
 | C4 | Start/Stop action | 5 | 5 | 4 | 3 | 4 | 89 | P0 | Keep; the only filled action in the page header. |
 | C3 | Lifecycle state | 5 | 4 | 5 | 4 | 3 | 88 | P0 | Keep; badge in the header meta line beside the title. |
 | C15 | Filed issue title and link | 5 | 4 | 3 | 4 | 2 | 80 | P0 | Keep; first table column, the link target. |
-| C5 | GitHub-read state | 4 | 4 | 4 | 4 | 3 | 78 | P1 | Keep; second header badge after lifecycle. |
 | C14 | Limits validation error | 4 | 4 | 3 | 4 | 2 | 73 | P1 | Keep; inline alert under the fields. |
 | C22 | Worker error | 4 | 4 | 3 | 4 | 2 | 73 | P1 | Keep; full-width alert banner under the header. |
 | C19 | Scan activity | 4 | 3 | 4 | 4 | 2 | 71 | P1 | Keep; right column, below the table. |
@@ -17,7 +16,7 @@
 | C16 | Created, category, state, shipped | 3 | 3 | 3 | 3 | 2 | 58 | P2 | Keep; remaining table columns, read-only. |
 | C2 | Repository origin | 3 | 3 | 2 | 4 | 2 | 58 | P2 | Keep; header subtitle. |
 | C17 | Filed issues count | 3 | 3 | 3 | 3 | 1 | 56 | P2 | Keep; table panel header. |
-| C6 | Last successful read | 3 | 2 | 3 | 3 | 1 | 51 | P2 | Keep; beside the read badge. |
+| C6 | Last successful read | 3 | 2 | 3 | 3 | 1 | 51 | P2 | Keep; header meta line. |
 | C13 | Limits explanation | 2 | 4 | 2 | 3 | 1 | 51 | P2 | Keep; one hint under the fields. |
 | C18 | Empty table state | 2 | 2 | 2 | 4 | 1 | 44 | P2 | Keep; two lines, no decorative container. |
 | C9 | Worker pid and version | 2 | 2 | 2 | 3 | 1 | 41 | P2 | Keep; one compact worker fact. |
@@ -27,7 +26,7 @@
 ## Deduplication
 - C8 and C17 count different sets (open scout issues versus every filed row); labels say
   so, and neither is repeated elsewhere.
-- C5 and C6 form one read-health unit; C7 carries the failure reason in the banner.
+- C6 is the read-health fact; C7 carries the failure reason in the banner.
 - C11 appears only in the activity header, not again among the worker facts.
 
 ## Notes
