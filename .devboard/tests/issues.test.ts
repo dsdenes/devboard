@@ -798,6 +798,64 @@ describe("history and isolation", () => {
   });
 });
 
+describe("repository lock", () => {
+  async function lockRoot(prefix: string): Promise<{ root: string; stateDir: string }> {
+    const base = await temporaryDirectory(prefix);
+    const root = join(base, "repo");
+    const stateDir = join(base, "state");
+    await mkdir(dirname(lockPath(root)), { recursive: true });
+    return { root, stateDir };
+  }
+
+  test("reports a lock whose owner is this process with the recorded start", async () => {
+    const { root, stateDir } = await lockRoot("lock-live");
+    const held = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(held.acquired).toBe(true);
+    if (!held.acquired) return;
+    try {
+      expect(liveLockOwner(lockPath(root))?.stateDir).toBe(stateDir);
+    } finally {
+      held.release();
+    }
+  });
+
+  for (const [label, startedAt] of [
+    ["before this process started", new Date(0)],
+    ["after this process started", new Date(Date.now() + 3_600_000)],
+  ] satisfies [string, Date][]) {
+    test(`reclaims a live pid recorded ${label}`, async () => {
+      const { root, stateDir } = await lockRoot("lock-reused-pid");
+      // The pid is this live process; only the recorded start is wrong, as it
+      // would be for a stale lock whose pid the OS handed to another process.
+      writeFileSync(
+        lockPath(root),
+        JSON.stringify({
+          pid: process.pid,
+          startedAt: startedAt.toISOString(),
+          repo: root,
+          stateDir,
+          harnessVersion: null,
+          argv: [],
+        }),
+      );
+      expect(liveLockOwner(lockPath(root))).toBeUndefined();
+      const reclaimed = acquireLock(lockPath(root), {
+        repo: root,
+        stateDir,
+        harnessVersion: null,
+        argv: [],
+      });
+      expect(reclaimed.acquired).toBe(true);
+      if (reclaimed.acquired) reclaimed.release();
+    });
+  }
+});
+
 describe("preflight", () => {
   async function checkoutWithTools(): Promise<{
     root: string;
@@ -1209,18 +1267,14 @@ describe("dashboard bridge", () => {
         },
       ],
     });
-    await mkdir(dirname(lockPath(root)), { recursive: true });
-    writeFileSync(
-      lockPath(root),
-      JSON.stringify({
-        pid: process.pid,
-        startedAt: "2026-10-27T10:00:00.000Z",
-        repo: resolve(root),
-        stateDir,
-        harnessVersion: "0.1.0",
-        argv: ["bun", "issues/worker.ts"],
-      }),
-    );
+    const held = acquireLock(lockPath(root), {
+      repo: resolve(root),
+      stateDir,
+      harnessVersion: "0.1.0",
+      argv: ["bun", "issues/worker.ts"],
+    });
+    expect(held.acquired).toBe(true);
+    if (!held.acquired) return;
 
     const first: Array<Record<string, unknown>> = [];
     const second: Array<Record<string, unknown>> = [];
@@ -1281,5 +1335,6 @@ describe("dashboard bridge", () => {
       expect(client.at(-1)?.replay).toBeUndefined();
     }
     bridge.dispose();
+    held.release();
   });
 });

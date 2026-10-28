@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createApp, projectLabel } from "./app";
 import { journalFile, journalKey } from "./journal";
+import { acquireLock } from "../issues/lock";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -478,23 +479,18 @@ async function seedIssues(root: string, overrides: Record<string, unknown> = {})
   const stateDir = join(root, "state");
   const directory = join(stateDir, "issues", journalKey(resolve(root)));
   await mkdir(directory, { recursive: true });
-  await mkdir(join(root, ".devboard", ".tmp", "issues"), { recursive: true });
   const document = issuesDocument(root, overrides);
   const worker = document.worker as Record<string, unknown>;
   worker.stateDir = stateDir;
   await writeFile(join(directory, "state.json"), JSON.stringify(document));
-  await writeFile(
-    join(root, ".devboard", ".tmp", "issues", "lock"),
-    JSON.stringify({
-      pid: process.pid,
-      startedAt: "2026-10-27T10:00:00.000Z",
-      repo: resolve(root),
-      stateDir,
-      harnessVersion: "0.1.0",
-      argv: ["bun", "issues/worker.ts"],
-    }),
-  );
-  return { stateDir, directory, document };
+  const lock = acquireLock(join(root, ".devboard", ".tmp", "issues", "lock"), {
+    repo: resolve(root),
+    stateDir,
+    harnessVersion: "0.1.0",
+    argv: ["bun", "issues/worker.ts"],
+  });
+  expect(lock.acquired).toBe(true);
+  return { stateDir, directory, document, lock };
 }
 
 function serverErrors(stateDir: string, root: string): string[] {
@@ -774,19 +770,17 @@ describe("issues protocol", () => {
 
   test("refuses Start when this checkout's worker uses another state directory", async () => {
     const { server, root, url } = await startServer();
-    const { stateDir } = await seedIssues(root);
-    const lock = join(root, ".devboard", ".tmp", "issues", "lock");
-    await writeFile(
-      lock,
-      JSON.stringify({
-        pid: process.pid,
-        startedAt: "2026-10-27T10:00:00.000Z",
-        repo: resolve(root),
-        stateDir: join(root, "other-state"),
-        harnessVersion: "0.1.0",
-        argv: ["bun", "issues/worker.ts"],
-      }),
-    );
+    const { stateDir, lock: seeded } = await seedIssues(root);
+    // Replace the seeded lock with an equally live one naming another state.
+    if (seeded.acquired) seeded.release();
+    const held = acquireLock(join(root, ".devboard", ".tmp", "issues", "lock"), {
+      repo: resolve(root),
+      stateDir: join(root, "other-state"),
+      harnessVersion: "0.1.0",
+      argv: ["bun", "issues/worker.ts"],
+    });
+    expect(held.acquired).toBe(true);
+    if (!held.acquired) return;
 
     try {
       const message = (await exchange(url, { type: "startIssues" })) as Record<string, unknown>;

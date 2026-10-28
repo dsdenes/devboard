@@ -122,4 +122,46 @@ describe("issues bridge commands", () => {
       await worker.exited;
     }
   }, 20_000);
+
+  test("a stale lock whose pid was reused lets Start spawn instead of attaching", async () => {
+    const root = await temporaryDirectory("issues-bridge-stale");
+    const stateDir = join(root, "state");
+    await mkdir(dirname(lockPath(root)), { recursive: true });
+    // The pid is alive (this test process); the recorded start cannot be its
+    // own, which is what a killed worker's lock looks like after pid reuse.
+    await writeFile(
+      lockPath(root),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date(0).toISOString(),
+        repo: root,
+        stateDir,
+        harnessVersion: null,
+        argv: [],
+      }),
+    );
+    const spawned: string[][] = [];
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      preflight: async () => ({ ok: true, repository: "acme/fixture" }),
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      expect(subject.snapshot().attached).toBe(false);
+      expect(await subject.start()).toEqual({ ok: true, attached: false });
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.join(" ")).toContain(join("issues", "worker.ts"));
+    } finally {
+      subject.dispose();
+    }
+  });
 });
