@@ -2254,12 +2254,18 @@ try {
   await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the sidebar list");
   const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
   check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
-  const goalSkillSurface = await page.eval<{ selected: string; current: string; expanded: string }>(`(() => {
+  const goalSkillSurface = await page.eval<{
+    selected: string;
+    current: string;
+    expanded: string;
+    description: boolean;
+  }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
     return {
       selected: item?.getAttribute("data-name") ?? "",
       current: item?.getAttribute("aria-current") ?? "",
       expanded: item?.getAttribute("aria-expanded") ?? "",
+      description: item?.querySelector(".skill__description") !== null,
     };
   })()`);
   check(
@@ -2268,6 +2274,11 @@ try {
       goalSkillSurface.expanded === "true",
     "clicking a prepared skill does not expand it",
     { clickedSkill, goalSkillSurface },
+  );
+  check(
+    !goalSkillSurface.description,
+    "the prepared skill row still shows its description",
+    goalSkillSurface,
   );
   const skillDocument = await page.eval<{
     name: string;
