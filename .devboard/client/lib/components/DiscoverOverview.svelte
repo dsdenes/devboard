@@ -513,12 +513,6 @@
           <span class="panel__subtitle">Source checkout only</span>
         </div>
         <div class="panel__body stack-sm">
-          {#if discover.remoteTarget !== null}
-            <p class="row-sm" data-testid="discover-remote-target">
-              <span class="badge" data-tone="warning">Manual testing</span>
-              <span>Discover reads <code>{discover.remoteTarget.url}</code>.</span>
-            </p>
-          {/if}
           {#if discover.retained.length > 0}
             <div class="discover-remote__retained">
               <label class="discover-remote__label" for="discover-remote-select">Retained project</label>
