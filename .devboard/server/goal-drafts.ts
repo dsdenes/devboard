@@ -17,6 +17,7 @@ import {
   appendActivityLine,
   trimActivityLines,
 } from "../issues/state";
+import type { RecordedChild } from "./state";
 
 export type GoalDraftStatus = "idle" | "running" | "succeeded" | "failed" | "stopped";
 
@@ -199,7 +200,8 @@ export interface GoalDraftManagerOptions {
 
 interface Elaboration {
   path: string;
-  peer: GoalDraftPeer;
+  /** Undefined only while the peer is being constructed. */
+  peer: GoalDraftPeer | undefined;
   activity: string[];
   firstStderr: string;
   startedAt: string;
@@ -270,8 +272,21 @@ export class GoalDraftManager {
     this.send({ type: "issuesDrafts", drafts: listGoalDrafts(this.repoDir) });
   }
 
+  /**
+   * Ends the elaboration: closes its peer exactly once, then clears it. The
+   * peer is closed here rather than at each call site so a success, a
+   * failure, a stop, and a connect failure all release the agent process.
+   */
   private finish(status: GoalDraftStatus, error: string | null): void {
+    const elaboration = this.current;
     this.current = undefined;
+    if (elaboration?.peer !== undefined) {
+      try {
+        elaboration.peer.close();
+      } catch {
+        // The peer already exited.
+      }
+    }
     this.run = {
       ...this.run,
       status,
@@ -281,6 +296,18 @@ export class GoalDraftManager {
     };
     this.publishActivity();
     this.publishDrafts();
+  }
+
+  /**
+   * The running elaboration peer's identity, recorded in the state so a
+   * replacement server can end an orphaned child.
+   */
+  child(): RecordedChild | undefined {
+    const peer = this.current?.peer;
+    if (peer === undefined) return undefined;
+    const pid = peer.pid;
+    if (pid === undefined) return undefined;
+    return { pid, argv: peer.argv, cwd: this.repoDir };
   }
 
   start(relativePath: unknown): { ok: true; path: string } | { ok: false; message: string } {
@@ -314,14 +341,15 @@ export class GoalDraftManager {
 
     const elaboration: Elaboration = {
       path: draft.path,
-      peer: undefined as unknown as GoalDraftPeer,
+      peer: undefined,
       activity,
       firstStderr: "",
       startedAt: this.run.startedAt ?? this.clock().toISOString(),
     };
     this.current = elaboration;
+    let peer: GoalDraftPeer;
     try {
-      elaboration.peer = this.connect({
+      peer = this.connect({
         command: this.command,
         cwd: this.repoDir,
         onActivity: (entry) => {
@@ -360,10 +388,11 @@ export class GoalDraftManager {
       return { ok: false, message: this.run.error ?? "the elaboration peer could not be started" };
     }
 
+    elaboration.peer = peer;
     this.publishActivity();
     this.publishDrafts();
 
-    void elaboration.peer
+    void peer
       .run(`/goal-draft ${draft.path}`)
       .then(() => {
         if (this.current !== elaboration) return;
@@ -384,20 +413,14 @@ export class GoalDraftManager {
   }
 
   stop(): boolean {
-    const elaboration = this.current;
-    if (elaboration === undefined) return false;
-    try {
-      elaboration.peer.close();
-    } catch {
-      // The peer already exited.
-    }
+    if (this.current === undefined) return false;
     this.finish("stopped", null);
     return true;
   }
 
   answer(id: number | string, value: string): boolean {
     const elaboration = this.current;
-    if (elaboration === undefined) return false;
+    if (elaboration === undefined || elaboration.peer === undefined) return false;
     if (this.run.question === null) return false;
     if (String(this.run.question.id) !== String(id)) return false;
     if (!elaboration.peer.answer(id, value)) return false;
@@ -411,7 +434,7 @@ export class GoalDraftManager {
     const elaboration = this.current;
     if (elaboration === undefined) return;
     try {
-      elaboration.peer.close();
+      elaboration.peer?.close();
     } catch {
       // The peer already exited.
     }

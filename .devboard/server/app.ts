@@ -1881,6 +1881,8 @@ export function createApp(options: AppOptions) {
     remember(skillsPreparation?.agent);
     remember(discoverRun?.agent, discoverRun?.cwd);
     for (const lane of liveLanes) remember(lane.agent);
+    const draftPeer = goalDrafts.child();
+    if (draftPeer !== undefined) children.push(draftPeer);
     return children;
   }
 

@@ -1544,8 +1544,11 @@ in `REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-rel
 activity streams into `issues-draft-activity`, its `ask` question renders as options plus a
 free-text answer, and an answer goes only to that peer. While it runs, every other draft's start
 control is disabled with the stated reason; Stop closes the peer, records `stopped`, keeps the
-draft, and re-enables the controls; a failed peer keeps the draft, shows the error, and accepts a
-retry as a new peer.
+draft, and re-enables the controls; a successful or failed run closes its peer before recording
+`succeeded` or `failed`, so no elaboration leaves an agent process behind; a failed peer keeps
+the draft, shows the error, and accepts a retry as a new peer. The running peer's pid, argv, and
+`cwd` are recorded in the server state, so a replacement server ends one its predecessor left
+running.
 
 `.devboard/prompts/goal-draft.md` is the elaboration contract and
 `.devboard/omp/commands/goal-draft.md` its command wrapper, which reads the prompt and passes

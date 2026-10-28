@@ -46,11 +46,12 @@ function draftText(heading: string, body: string): string {
 }
 
 class FakePeer implements GoalDraftPeer {
-  readonly pid = undefined;
+  readonly pid = 4242;
   readonly argv = ["stub-acp"];
   readonly prompts: string[] = [];
   readonly options: GoalDraftPeerOptions;
   closed = false;
+  closes = 0;
   private settle: { resolve: (value: unknown) => void; reject: (error: Error) => void } | undefined;
 
   constructor(options: GoalDraftPeerOptions) {
@@ -73,6 +74,7 @@ class FakePeer implements GoalDraftPeer {
   private lastQuestion: AcpQuestion | undefined;
 
   close(): void {
+    this.closes += 1;
     this.closed = true;
     this.settle?.reject(new Error("Agent process exited before answering."));
   }
@@ -237,6 +239,7 @@ describe("elaboration", () => {
 
     expect(manager.stop()).toBe(true);
     expect(first.closed).toBe(true);
+    expect(first.closes).toBe(1);
     expect(manager.snapshot().status).toBe("stopped");
     expect(existsSync(join(drafts, "one.md"))).toBe(true);
 
@@ -289,10 +292,14 @@ describe("elaboration", () => {
     );
     expect(existsSync(join(drafts, "verified.md"))).toBe(false);
     expect(existsSync(spec)).toBe(true);
+    expect(verified.closed).toBe(true);
+    expect(verified.closes).toBe(1);
+    expect(manager.child()).toBeUndefined();
     expect(listGoalDrafts(root).map((draft) => draft.name)).toEqual(["unverified.md"]);
 
     manager.start(".devboard/goal-proposals/unverified.md");
     const unverified = await waitFor(() => peers[1], "the failing verification peer");
+    expect(manager.child()).toEqual({ pid: unverified.pid, argv: ["stub-acp"], cwd: root });
     const verifiedLabelOnCreate = false;
     if (verifiedLabelOnCreate) await unlink(join(drafts, "unverified.md"));
     unverified.fail("goal label missing from the created issue");
@@ -302,6 +309,10 @@ describe("elaboration", () => {
     );
     expect(existsSync(join(drafts, "unverified.md"))).toBe(true);
     expect(failed.error).toContain("goal label missing");
+    expect(unverified.closed).toBe(true);
+    expect(unverified.closes).toBe(1);
+    expect(manager.child()).toBeUndefined();
+    expect(peers.filter((peer) => !peer.closed)).toHaveLength(0);
   });
 });
 
