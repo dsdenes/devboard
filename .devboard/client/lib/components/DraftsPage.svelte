@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { draftParts } from "../draft-format";
+  import { draftProposal } from "../draft-format";
   import { issues, markDraftsPage } from "../issues.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
@@ -12,7 +12,7 @@
    * refresh loop stops with the page. Opening the page restores the stored
    * draft path; a path whose file vanished resolves to the list.
    */
-  const parts = $derived(draftParts(issues.draft?.text ?? ""));
+  const proposal = $derived(draftProposal(issues.draft?.text ?? ""));
 
   // The header reports this draft's run only; another draft's run is not this draft's state.
   const run = $derived(
@@ -218,12 +218,6 @@
       >
         <div class="issues-draft-detail__header">
           <div class="issues-draft-detail__identity">
-            <h2
-              class="issues-draft-detail__title"
-              title={issues.draft.heading || issues.draft.name}
-            >
-              {issues.draft.heading || issues.draft.name}
-            </h2>
             <span class="issues-draft-detail__path mono" title={issues.draft.path}>
               {issues.draft.name}
             </span>
@@ -293,8 +287,8 @@
             </section>
           {/if}
           <section class="issues-draft-detail__section" aria-label="Draft">
-            {#if parts.proposal.length > 0}
-              <pre class="issues-draft-detail__prose mono">{parts.proposal}</pre>
+            {#if proposal.length > 0}
+              <pre class="issues-draft-detail__prose mono">{proposal}</pre>
             {:else}
               <p class="issues-draft-detail__empty">This draft holds no proposal text yet.</p>
             {/if}
@@ -308,43 +302,6 @@
               <IssuesAgentLog lines={run.activity} testid="issues-draft-activity" />
             </section>
           {/if}
-          <section class="issues-draft-detail__section" aria-label="Captured UI context">
-            <h3 class="issues-draft-detail__label">Captured UI context</h3>
-            <div class="issues-draft-detail__context" data-testid="issues-draft-context">
-              {#if parts.facts.length > 0}
-                <dl class="issues-draft-facts">
-                  {#each parts.facts as fact (fact.label)}
-                    <dt>{fact.label}:</dt>
-                    <dd>{fact.value}</dd>
-                  {/each}
-                </dl>
-              {/if}
-              {#if parts.sections.length > 0}
-                <details class="issues-draft-evidence">
-                  <summary>Captured evidence</summary>
-                  <div class="issues-draft-evidence__body">
-                    {#each parts.sections as section (section.title)}
-                      <section class="issues-draft-evidence__section">
-                        <h4 class="issues-draft-detail__label">{section.title}</h4>
-                        <pre class="issues-draft-evidence__text mono">{section.body}</pre>
-                      </section>
-                    {/each}
-                  </div>
-                </details>
-              {:else if parts.rawContext.length > 0}
-                <pre class="issues-draft-evidence__text mono">{parts.rawContext}</pre>
-              {:else}
-                <p class="issues-draft-detail__empty">No captured UI context.</p>
-              {/if}
-            </div>
-          </section>
-          <details class="issues-draft-source">
-            <summary>
-              <span class="issues-draft-detail__label">Draft source</span>
-              <span class="issues-draft-source__meta mono">{issues.draft.text.length} bytes</span>
-            </summary>
-            <pre class="issues-draft-text mono" data-testid="issues-draft-text">{issues.draft.text}</pre>
-          </details>
         </div>
       </section>
     {:else}

@@ -425,6 +425,36 @@ describe("goal proposal naming and body", () => {
     expect(goalProposalName("\u0000\u0000")).toBe("ui-goal");
   });
 
+  test("bounds the fallback name to a usable file name", () => {
+    expect(goalProposalName("a".repeat(8000))).toBe("a".repeat(64));
+    for (const report of [
+      "word ".repeat(2000),
+      `${"a".repeat(63)}b`,
+      `${"a".repeat(40)} ${"b".repeat(40)}`,
+      "a-".repeat(4000),
+    ]) {
+      const name = goalProposalName(report);
+      expect(name.length).toBeGreaterThan(0);
+      expect(name.length).toBeLessThanOrEqual(64);
+      expect(name.endsWith("-")).toBe(false);
+    }
+  });
+
+  test("writes a draft when a long report falls back to the derived name", async () => {
+    const root = await temporaryDirectory();
+    const submission = parseGoalProposalSubmission({ report: "a".repeat(8000) });
+    const written = await writeGoalProposal(submission, {
+      repoDir: root,
+      slugger: async () => {
+        throw new Error("The naming agent did not answer in time.");
+      },
+    });
+
+    const filename = `${"a".repeat(64)}.md`;
+    expect(written.path).toBe(`.devboard/goal-proposals/${filename}`);
+    expect(await readdir(join(root, GOAL_PROPOSALS_DIRECTORY))).toEqual([filename]);
+  });
+
   test("bounds the heading and omits empty optional context", () => {
     const submission = parseGoalProposalSubmission({
       report: `${"word ".repeat(100)}`,

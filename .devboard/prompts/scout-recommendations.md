@@ -14,7 +14,12 @@ nothing else.
   `repositoryPath`.
 - `<repositoryPath>` is the repository to survey. Never survey or write outside it, and never
   read inside an `excludedRoots` tree: generated output, vendored packages, temporary state, and
-  worktrees are not the repository under review.
+  worktrees are not the repository under review. Every `path` you cite is relative to that exact
+  root: a file under a subdirectory keeps that leading directory in the path, never a shorter
+  form. Before writing the answer, confirm every cited path with `test -f <path>` from
+  `<repositoryPath>`.
+- One correction turn is available: if validation rejects the answer, rewrite
+  `<scan-dir>/recommendations.json` addressing exactly what the rejection names.
 - Read the repository's context files (`AGENTS.md`, `GOAL.md`, `README.md`, `adrs/`, `docs/`), its
   package manifests, its source, and its tests before proposing anything. A finding you cannot
   point at in the code is not a finding.

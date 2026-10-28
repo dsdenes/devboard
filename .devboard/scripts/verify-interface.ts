@@ -1865,6 +1865,8 @@ try {
     return item?.getAttribute("data-name") ?? "";
   })()`);
   await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the disclosure");
+  const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
+  check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
   const goalSkillSurface = await page.eval<{ selected: string; current: string }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
     return {
@@ -1873,13 +1875,14 @@ try {
     };
   })()`);
   check(goalSkillSurface.selected === clickedSkill && goalSkillSurface.current === "true", "clicking a prepared skill does not select it", { clickedSkill, goalSkillSurface });
-  const skillDocument = await page.eval<{ name: string; text: string }>(`(() => ({
+  const skillDocument = await page.eval<{ name: string; text: string; description: boolean }>(`(() => ({
     name: document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() ?? "",
     text: document.querySelector('[data-testid="skill-content-text"]')?.textContent?.trim() ?? "",
+    description: document.querySelector('[data-testid="skill-content"] .panel__header .muted') !== null,
   }))()`);
   check(
-    skillDocument.name === clickedSkill && skillDocument.text.length > 0,
-    "selecting a prepared skill does not open its document",
+    skillDocument.name === clickedSkill && skillDocument.text.length > 0 && !skillDocument.description,
+    "selecting a prepared skill does not open its document without a description",
     { clickedSkill, skillDocument },
   );
   const deletion = await page.eval<{ rows: number; controls: string[]; discoverControls: number }>(`(() => {
@@ -1952,6 +1955,7 @@ try {
     revision: number;
     panelBottom: number;
     revisionBottom: number;
+    eyebrow: boolean;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="goal-text"]');
     const panel = document.querySelector('[data-testid="goal-editor"]');
@@ -1962,8 +1966,10 @@ try {
       revision: revision === null ? 0 : Math.round(revision.getBoundingClientRect().height),
       panelBottom: panel === null ? 0 : Math.round(panel.getBoundingClientRect().bottom),
       revisionBottom: revision === null ? 0 : Math.round(revision.getBoundingClientRect().bottom),
+      eyebrow: document.querySelector('[data-testid="document-header"] .page-header__eyebrow') !== null,
     };
   })()`);
+  check(!goalLayout.eyebrow, "the goal document header still carries its Plan eyebrow", goalLayout);
   check(goalLayout.editor >= 400 && goalLayout.editor >= goalLayout.panel * 0.6, "the goal document does not fill the page", goalLayout);
   check(goalLayout.revision >= 60 && Math.abs(goalLayout.revisionBottom - goalLayout.panelBottom) <= 24, "the revision guidance is not a tall field at the bottom", goalLayout);
   await saveShot("goal-document");
@@ -2463,7 +2469,6 @@ try {
   const discoverChrome = await page.eval<{
     eyebrow: boolean;
     stale: boolean;
-    commit: boolean;
     railLeft: number;
     railWidth: number;
     columnLeft: number;
@@ -2493,7 +2498,6 @@ try {
     return {
       eyebrow: head?.querySelector('.discover-page__eyebrow') !== null,
       stale: document.querySelector('[data-testid="discover-stale"]') !== null,
-      commit: head?.querySelector('.discover-head__meta code') !== null,
       railLeft: Math.round(rail?.getBoundingClientRect().left ?? -1),
       railWidth: Math.round(rail?.getBoundingClientRect().width ?? -1),
       columnLeft: Math.round(column?.getBoundingClientRect().left ?? -1),
@@ -2511,7 +2515,7 @@ try {
       happyPath: stats.find((stat) => stat.label === "happy path")?.value ?? "",
     };
   })()`);
-  check(!discoverChrome.eyebrow && !discoverChrome.stale && !discoverChrome.commit, "the sheet still renders removed masthead chrome", discoverChrome);
+  check(!discoverChrome.eyebrow && !discoverChrome.stale, "the sheet still renders removed masthead chrome", discoverChrome);
   check(discoverChrome.railLeft < discoverChrome.columnLeft, "the sheet column is not to the right of the facts rail", discoverChrome);
   check(
     discoverChrome.railWidth >= 320,
@@ -5353,37 +5357,25 @@ try {
   check(reportDraftPath !== undefined, "the report panel's draft is missing from the list", expectedDrafts);
   await page.click(`[data-testid="issues-draft"][data-path="${reportDraftPath}"]`);
   await page.wait(`document.querySelector('[data-testid="issues-draft-detail"]') !== null`, "the draft detail");
-  const reportDraftText = await readFile(join(host, reportDraftPath!), "utf8");
   const detail = await page.eval<{
     path: string;
-    text: string;
-    context: string;
     start: string;
     startCommand: string;
     stop: boolean;
-    title: string;
     pathLabel: string;
     proposal: string;
-    facts: number;
-    evidence: number;
-    sourceClosed: boolean;
+    contextSection: boolean;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const start = document.querySelector('[data-testid="issues-draft-start"]');
-    const source = panel?.querySelector("details.issues-draft-source");
     return {
       path: panel?.getAttribute("data-path") ?? "",
-      text: document.querySelector('[data-testid="issues-draft-text"]')?.textContent ?? "",
-      context: document.querySelector('[data-testid="issues-draft-context"]')?.textContent ?? "",
       start: document.querySelector('[data-testid="issues-draft-start"]') !== null ? "yes" : "",
       startCommand: start?.getAttribute("data-command") ?? "",
       stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
-      title: panel?.querySelector(".issues-draft-detail__title")?.textContent?.trim() ?? "",
       pathLabel: panel?.querySelector(".issues-draft-detail__path")?.textContent?.trim() ?? "",
       proposal: panel?.querySelector(".issues-draft-detail__prose")?.textContent ?? "",
-      facts: panel?.querySelectorAll('[data-testid="issues-draft-context"] dt').length ?? 0,
-      evidence: panel?.querySelectorAll(".issues-draft-evidence__section").length ?? 0,
-      sourceClosed: source instanceof HTMLDetailsElement && !source.open,
+      contextSection: panel?.querySelector('section[aria-label="Captured UI context"]') !== null,
     };
   })()`);
   check(detail.path === reportDraftPath, "the detail does not name the selected draft", detail);
@@ -5396,25 +5388,16 @@ try {
     "the draft selection is not persisted",
     storedSelection,
   );
-  check(detail.text === reportDraftText, "the detail does not show the draft bytes exactly", detail);
   check(
-    detail.context.includes("Route:") &&
-      detail.context.includes("Selected element:") &&
-      detail.context.includes("Visible text"),
-    "the detail lost the captured UI context",
+    !detail.contextSection,
+    "the draft detail still shows the captured UI context",
     detail,
   );
   check(
-    detail.title.length > 0 &&
-      detail.pathLabel.endsWith(".md") &&
+    detail.pathLabel.endsWith(".md") &&
       !detail.proposal.includes("## Captured UI context") &&
       !detail.proposal.includes("Unprocessed draft"),
     "the detail does not separate identity and proposal from the evidence",
-    detail,
-  );
-  check(
-    detail.facts > 0 && detail.evidence > 0 && detail.sourceClosed,
-    "the compact context and closed source disclosure are missing",
     detail,
   );
   await dismissNotifications();
@@ -5455,29 +5438,17 @@ try {
   );
   const questionLayout = await page.eval<{
     ordered: boolean;
-    sourceClosed: boolean;
-    contextEmpty: string;
   }>(`(() => {
     const question = document.querySelector('[data-testid="issues-draft-question"]');
     const activity = document.querySelector('[data-testid="issues-draft-activity"]');
-    const panel = document.querySelector('[data-testid="issues-draft-detail"]');
-    const source = panel?.querySelector("details.issues-draft-source");
     return {
       ordered: question !== null && activity !== null &&
         (question.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
-      sourceClosed: source instanceof HTMLDetailsElement && !source.open,
-      contextEmpty: document.querySelector('[data-testid="issues-draft-context"]')?.textContent?.trim() ?? "",
     };
   })()`);
   check(
     questionLayout.ordered,
     "the pending question is not above the activity log",
-    questionLayout,
-  );
-  check(questionLayout.sourceClosed, "the exact draft source is not collapsed", questionLayout);
-  check(
-    questionLayout.contextEmpty === "No captured UI context.",
-    "a draft without captured context does not say so",
     questionLayout,
   );
   await dismissNotifications();
@@ -5492,23 +5463,23 @@ try {
   const narrowDraft = await page.eval<{
     headerRight: number;
     actionsRight: number;
-    titleWidth: number;
+    pathWidth: number;
     bodyOverflow: number;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const header = panel?.querySelector(".issues-draft-detail__header");
     const actions = panel?.querySelector(".issues-draft-detail__actions");
-    const title = panel?.querySelector(".issues-draft-detail__title");
+    const path = panel?.querySelector(".issues-draft-detail__path");
     const body = panel?.querySelector(".issues-draft-detail__body");
     return {
       headerRight: header?.getBoundingClientRect().right ?? 0,
       actionsRight: actions?.getBoundingClientRect().right ?? 0,
-      titleWidth: title?.getBoundingClientRect().width ?? 0,
+      pathWidth: path?.getBoundingClientRect().width ?? 0,
       bodyOverflow: body === null ? 0 : body.scrollWidth - body.clientWidth,
     };
   })()`);
   check(
-    narrowDraft.titleWidth > 0 &&
+    narrowDraft.pathWidth > 0 &&
       narrowDraft.actionsRight <= narrowDraft.headerRight + 0.5 &&
       narrowDraft.bodyOverflow <= 1,
     "the draft detail header or body overflows at 1024×720",
@@ -5613,19 +5584,12 @@ try {
   );
   check(refreshedCount === "3", "the Drafts count did not follow the new draft", refreshedCount);
 
-  // Reload restores the drafts page and the selected path's bytes.
+  // Reload restores the drafts page and the selected path.
   await page.reload();
   await page.wait(
     `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
     "the selected draft after reload",
     20_000,
-  );
-  const restoredText = await page.eval<string>(
-    `document.querySelector('[data-testid="issues-draft-text"]')?.textContent ?? ""`,
-  );
-  check(
-    restoredText === (await readFile(join(host, ".devboard", "goal-proposals", "002-hang.md"), "utf8")),
-    "reload lost the selected draft's bytes",
   );
 
   // A vanished draft leaves the list and selection; a reload opens the list.

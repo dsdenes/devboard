@@ -188,14 +188,19 @@ function renderedLinks(value: unknown): RenderedLink[] | undefined {
   return links;
 }
 
+interface RenderedCycleIssue {
+  href: string;
+  text: string;
+}
+
 interface RenderedCycle {
   action: string;
   at: string;
   datetime: string;
-  window: string;
   actionText: string;
-  findings: string;
-  reason: string;
+  issues: RenderedCycleIssue[];
+  /** True when the removed interval, finding count, and reason render nothing. */
+  compact: boolean;
 }
 
 interface RenderedIssue {
@@ -211,6 +216,17 @@ interface RenderedIssue {
   versionText: string;
 }
 
+function renderedCycleIssues(value: unknown): RenderedCycleIssue[] {
+  if (!Array.isArray(value)) return [];
+  const issues: RenderedCycleIssue[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    issues.push({ href: String(record.href ?? ""), text: String(record.text ?? "") });
+  }
+  return issues;
+}
+
 function renderedCycles(value: unknown): RenderedCycle[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const cycles: RenderedCycle[] = [];
@@ -221,10 +237,9 @@ function renderedCycles(value: unknown): RenderedCycle[] | undefined {
       action: String(record.action ?? ""),
       at: String(record.at ?? ""),
       datetime: String(record.datetime ?? ""),
-      window: String(record.window ?? ""),
       actionText: String(record.actionText ?? ""),
-      findings: String(record.findings ?? ""),
-      reason: String(record.reason ?? ""),
+      issues: renderedCycleIssues(record.issues),
+      compact: record.compact === true,
     });
   }
   return cycles;
@@ -256,10 +271,14 @@ const readCycles = `(() => [...document.querySelectorAll('[data-testid="watchdog
   action: row.dataset.action ?? '',
   at: row.querySelector('[data-testid="watchdog-cycle-at"]')?.textContent?.trim() ?? '',
   datetime: row.querySelector('[data-testid="watchdog-cycle-at"] time')?.getAttribute('datetime') ?? '',
-  window: row.querySelector('[data-testid="watchdog-cycle-window"]')?.textContent?.trim() ?? '',
   actionText: row.querySelector('[data-testid="watchdog-cycle-action"]')?.textContent?.trim() ?? '',
-  findings: row.querySelector('[data-testid="watchdog-cycle-findings"]')?.textContent?.trim() ?? '',
-  reason: row.querySelector('[data-testid="watchdog-cycle-reason"]')?.textContent?.trim() ?? '',
+  issues: [...row.querySelectorAll('[data-testid="watchdog-cycle-issue"]')].map((link) => ({
+    href: link.getAttribute('href') ?? '',
+    text: link.textContent?.trim() ?? '',
+  })),
+  compact: row.querySelector('[data-testid="watchdog-cycle-window"]') === null &&
+    row.querySelector('[data-testid="watchdog-cycle-findings"]') === null &&
+    row.querySelector('[data-testid="watchdog-cycle-reason"]') === null,
 })))()`;
 
 const readIssues = `(() => [...document.querySelectorAll('[data-testid="watchdog-issue"]')].map((row) => ({
@@ -313,11 +332,16 @@ function ledgerFixture(entries: EntryFixture[], pending: string[]): Ledger {
 const GH_STUB = `#!/bin/sh
 set -u
 fixtures="$(cd "$(dirname "$0")/.." && pwd)/gh"
-if [ -f "$fixtures/fail" ]; then
-  echo "HTTP 401: Bad credentials" >&2
-  exit 1
-fi
 args="$*"
+# The fail marker simulates an expired credential for the tracker reads the
+# watchdog page makes. The dashboard's update check shares this stub, so keep
+# answering its latest-release read or the fixture journals an update-error.
+if [ -f "$fixtures/fail" ]; then
+  case "$args" in
+    *"repos/dsdenes/devboard/releases/latest"*) ;;
+    *) echo "HTTP 401: Bad credentials" >&2; exit 1 ;;
+  esac
+fi
 case "$args" in
   *"repos/dsdenes/devboard/issues/901 --jq .state"*) echo open ;;
   *"repos/dsdenes/devboard/issues/902 --jq .state"*) echo closed ;;
@@ -531,7 +555,9 @@ try {
           ...report,
           window: { start: report.cycle, end: report.cycle, minutes: 10 },
           instances: [],
-          findings: Array.from({ length: report.findings }, (_unused, index) => ({ fingerprint: `${index}` })),
+          findings: Array.from({ length: report.findings }, (_unused, index) => ({
+            fingerprint: `fingerprint-${index}`,
+          })),
           issues: [],
           pending: 0,
           malformed: 0,
@@ -585,17 +611,24 @@ try {
       "a cycle row carries the wrong start time",
     );
     assertTrue(
-      seededCycles.every((cycle) => cycle.window.includes("→")),
-      "a cycle row omits its window",
+      seededCycles.every((cycle) => cycle.compact),
+      "a cycle row still renders its interval or finding count",
     );
     assertTrue(
-      seededCycles[0]?.findings === "1" &&
-        seededCycles[1]?.findings === "0" &&
-        seededCycles[2]?.findings === "2",
-      "a cycle row carries the wrong finding count",
+      JSON.stringify(seededCycles.map((cycle) => cycle.issues.map((issue) => issue.href))) ===
+        JSON.stringify([[issueUrl(0)], [], [issueUrl(0), issueUrl(1)]]),
+      `a cycle row links the wrong GitHub issue: ${JSON.stringify(seededCycles)}`,
     );
-    assertTrue(seededCycles[1]?.reason === "", "a missing cycle reason renders text");
-    assertTrue(seededCycles[2]?.reason === "gh unavailable", "a cycle reason is missing");
+    assertTrue(
+      seededCycles[2]?.issues.map((issue) => issue.text).join(" ") === "#901 #902",
+      "a connected issue link does not name its number",
+    );
+    assertTrue(
+      !(await devtools.evaluate(
+        `document.querySelector('[data-testid="watchdog-cycle-reason"]') !== null`,
+      )),
+      "a cycle row still renders a reason",
+    );
     console.log("PASS watchdog-cycles");
 
     const localIssues = await waitFor(
@@ -678,6 +711,28 @@ try {
     /* 4. A failed read keeps the rows and reports its reason            */
     /* ---------------------------------------------------------------- */
     await writeFile(join(ghFixtures, "fail"), "");
+    // The marker fakes an expired credential for tracker reads. The update
+    // check shares the same gh, so prove its release read still succeeds:
+    // otherwise the fixture itself journals an update-error the watchdog files.
+    const failEnv = { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    const releaseWhileFailing = run(
+      join(binDir, "gh"),
+      ["api", "repos/dsdenes/devboard/releases/latest"],
+      { env: failEnv },
+    );
+    assertTrue(
+      releaseWhileFailing.code === 0 && releaseWhileFailing.stdout.includes('"tag_name"'),
+      `the fail fixture broke the update release check: ${releaseWhileFailing.stderr}`,
+    );
+    const trackerWhileFailing = run(
+      join(binDir, "gh"),
+      ["api", "repos/dsdenes/devboard/issues/901"],
+      { env: failEnv },
+    );
+    assertTrue(
+      trackerWhileFailing.code !== 0 && trackerWhileFailing.stderr.includes("Bad credentials"),
+      "the fail fixture no longer fails tracker reads",
+    );
     const failed = await waitFor(
       async () => {
         const state = await devtools

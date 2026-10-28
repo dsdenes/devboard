@@ -633,10 +633,6 @@
         Inventory this project from repository evidence: stack, commands, testing, architecture, and
         the conventions an agent should follow here.
       </p>
-      <div class="discover-head__meta">
-        No artifacts have been published for this host. Nothing outside
-        <code>.omp/discover/</code> and <code>.omp/skills/</code> is written.
-      </div>
     {/if}
   </header>
 
@@ -672,10 +668,6 @@
         <div class="discover-run__terminal">
           <Terminal lines={discover.activity} data-testid="discover-activity" label="Discover activity" />
         </div>
-        <p class="discover-run__note">
-          The run is owned by the server. Leaving this view or closing the browser does not stop it;
-          published artifacts stay readable until the run replaces them.
-        </p>
       </div>
     </section>
   {/if}
