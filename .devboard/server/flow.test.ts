@@ -8,6 +8,7 @@ import { createApp } from "./app";
 import { StubForge } from "./fixtures/stub-forge";
 import { journalKey } from "./journal";
 import { testProviderService } from "./fixtures/test-providers";
+import type { ProviderService } from "./providers";
 
 /**
  * Flow Mode's deterministic contract, driven over the app's WebSocket with the
@@ -132,6 +133,8 @@ interface StartOptions {
   tracker?: () => Promise<undefined>;
   stateDir?: string;
   restart?: () => void;
+  /** Replaces the deterministic provider service, to defer peer preparation. */
+  providers?: ProviderService;
 }
 
 function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
@@ -147,7 +150,7 @@ function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
     port: 0,
     repoDir: fixture.root,
     stateDir: options.stateDir ?? fixture.stateDir,
-    providers: testProviderService(options.stateDir ?? fixture.stateDir),
+    providers: options.providers ?? testProviderService(options.stateDir ?? fixture.stateDir),
     goalFile: fixture.goalFile,
     agentCommand: command,
     tracker:
@@ -1029,6 +1032,71 @@ describe("Flow steering, decisions, and conversation", () => {
     client.send({ type: "closeFlowWidget" });
     await client.waitFor((event) => event.type === "flowConversationStopped");
     expect(client.events.some((event) => event.type === "flowStopped" && false)).toBe(false);
+    client.close();
+  }, 60_000);
+
+  test("a message sent while the conversation peer is being prepared is queued and delivered", async () => {
+    const fixture = createFixture("conversation-pending-peer");
+    const providers = testProviderService(fixture.stateDir);
+    const select = providers.select.bind(providers);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let hold = false;
+    providers.select = async () => {
+      if (hold) {
+        hold = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return select();
+    };
+    const testServer = startServer(fixture, {
+      providers,
+      stub: ["--flow-goal", "--flow-implement", "--flow-change", "--flow-widget"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "startFlowImplementation" });
+    await waitUntil(
+      () => {
+        const widgets = latest(client, "flowWidgets")?.widgets as { id: string }[] | undefined;
+        return Array.isArray(widgets) && widgets.length > 0;
+      },
+      "the first widget snapshot",
+    );
+    await client.waitFor((event) => event.type === "flowStopped");
+
+    const widget = (latest(client, "flowWidgets")?.widgets as { id: string }[])[0] as { id: string };
+    hold = true;
+    client.send({ type: "openFlowWidget", id: widget.id });
+    await client.waitFor((event) => event.type === "flowConversationStarted");
+    // The conversation is published, but its peer is still resolving the
+    // provider environment when the developer's message arrives.
+    await entered.promise;
+    client.send({ type: "sendFlowConversation", text: "Queued before the peer" });
+    await client.waitFor(
+      (event) => event.type === "flowConversationMessage" && event.text === "Queued before the peer",
+    );
+    release.resolve();
+
+    const question = await client.waitFor((event) => event.type === "flowConversationQuestion");
+    client.send({
+      type: "flowAnswer",
+      target: "conversation",
+      id: question.id,
+      value: "Alpha",
+    });
+    await waitForStub(fixture, (line) => line === "flow-conversation Queued before the peer");
+
+    const log = stubLog(fixture);
+    const opening = log.findIndex((line) => line.startsWith("prompt /flow-widget "));
+    const queued = log.findIndex((line) => line === "flow-conversation Queued before the peer");
+    expect(opening).toBeGreaterThanOrEqual(0);
+    expect(queued).toBeGreaterThan(opening);
+
+    client.send({ type: "closeFlowWidget" });
+    await client.waitFor((event) => event.type === "flowConversationStopped");
     client.close();
   }, 60_000);
 
