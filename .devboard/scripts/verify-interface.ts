@@ -2130,6 +2130,61 @@ try {
   check(adr.tabStrips === 0, "the workspace still renders a tab strip", adr.tabStrips);
   const adrSidebar = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="ADR records"]') !== null`);
   check(adrSidebar, "the sidebar hides pending ADR records");
+
+  // The Start action keeps its column when the window is at the supported
+  // floor and the sidebar is at its widest.
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(
+    `innerWidth === 1024 && innerHeight === 720`,
+    "the 1024×720 viewport for the ADR action check",
+  );
+  const adrHandle = await page.rect('[data-testid="pane-handle"]');
+  check(adrHandle !== null, "the sidebar separator is missing for the ADR action check");
+  await page.drag(adrHandle!, 500);
+  const adrAction = await page.eval<{
+    sidebar: number;
+    cell: number;
+    button: number;
+    overflow: number;
+  }>(`(() => {
+    const button = document.querySelector('[data-testid="start"]');
+    const cell = button?.closest("td") ?? null;
+    const sidebar = document.querySelector('[data-testid="sidebar"]');
+    if (button === null || cell === null || sidebar === null) {
+      return { sidebar: 0, cell: 0, button: 0, overflow: 0 };
+    }
+    const cellRect = cell.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    return {
+      sidebar: Math.round(sidebar.getBoundingClientRect().width),
+      cell: Math.round(cellRect.width),
+      button: Math.round(buttonRect.width),
+      overflow: Math.round(buttonRect.right - cellRect.right),
+    };
+  })()`);
+  check(adrAction.sidebar >= 500, "the sidebar did not widen for the ADR action check", adrAction);
+  check(
+    adrAction.button <= adrAction.cell,
+    "the Start button is wider than its table cell",
+    adrAction,
+  );
+  check(adrAction.overflow <= 0, "the Start button is clipped by its table cell", adrAction);
+  await page.doubleClick('[data-testid="pane-handle"]');
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(
+    `innerWidth === 1440 && innerHeight === 900`,
+    "the desktop viewport after the ADR action check",
+  );
   const framesBeforeRow = await page.eval<number>("window.__viFrames.length");
   await page.click('[data-testid="record"]');
   await page.wait(`document.querySelector('[data-testid="record-file"]') !== null && !document.querySelector('[data-testid="adr-table"]')`, "the ADR detail tab");

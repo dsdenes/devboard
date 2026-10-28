@@ -177,7 +177,7 @@
     width: 22%;
   }
   th:nth-child(6) {
-    width: 10%;
+    width: 64px;
   }
 
   .adr-title {

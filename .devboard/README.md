@@ -129,10 +129,11 @@ reduce` disables nonessential transitions.
 TanStack Table renders the ADR record list and the Discover command, testing, architecture,
 dependency, unknown-field, and glossary tables. The ADR table keeps title, status,
 pending or resolved state, next marker, file, and decision summary; selecting a row opens its
-detail page without navigating away. Body and table text is 12–14 CSS px, paths, code, diffs,
-terminal output, and IDs are monospace, one-line data rows are at most 32 CSS px tall, and wrapped
-data rows stay within 120 CSS px. The shell uses
-the full viewport with no application max-width.
+detail page without navigating away. The action column keeps a minimum width, so the Start
+control stays whole when the window is narrow or the sidebar is wide. Body and table text is
+12–14 CSS px, paths, code, diffs, terminal output, and IDs are monospace, one-line data rows are
+at most 32 CSS px tall, and wrapped data rows stay within 120 CSS px. The shell uses the full
+viewport with no application max-width.
 
 ### Editors and terminals
 
