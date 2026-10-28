@@ -3167,6 +3167,29 @@ a.code-chip--link:focus-visible {
   white-space: nowrap;
 }
 
+.issues-draft__state {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: lowercase;
+}
+
+.issues-draft__state[data-tone="success"] {
+  color: var(--success);
+}
+
+.issues-draft__state[data-tone="accent"] {
+  color: var(--accent);
+}
+
+.issues-draft__state[data-tone="error"] {
+  color: var(--error);
+}
+
+.issues-draft__waiting {
+  color: var(--warning);
+  font-size: 11px;
+}
+
 .issues-draft__blocked {
   color: var(--warning);
   font-size: 11px;

@@ -482,8 +482,8 @@ type ClientMessage =
   | { type: "getGoalDrafts" }
   | { type: "getGoalDraft"; path?: unknown }
   | { type: "startGoalDraft"; path?: unknown }
-  | { type: "stopGoalDraft" }
-  | { type: "answerGoalDraft"; id?: unknown; value?: unknown }
+  | { type: "stopGoalDraft"; path?: unknown }
+  | { type: "answerGoalDraft"; path?: unknown; id?: unknown; value?: unknown }
   | { type: "getScout" }
   | { type: "startScout" }
   | { type: "stopScout" }
@@ -575,10 +575,11 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
     case "startGoalDraft":
       return { type: "startGoalDraft", path: "path" in value ? value.path : undefined };
     case "stopGoalDraft":
-      return { type: "stopGoalDraft" };
+      return { type: "stopGoalDraft", path: "path" in value ? value.path : undefined };
     case "answerGoalDraft":
       return {
         type: "answerGoalDraft",
+        path: "path" in value ? value.path : undefined,
         id: "id" in value ? value.id : undefined,
         value: "value" in value ? value.value : undefined,
       };
@@ -1866,8 +1867,9 @@ export function createApp(options: AppOptions) {
   issues.begin();
 
   /**
-   * The Drafts view's one elaboration peer. It is a dashboard child, not a
-   * detached worker: it lives only while the server that started it is up.
+   * The Drafts view's elaboration peers, one per draft path. They are
+   * dashboard children, not a detached worker: each lives only while the
+   * server that started it is up.
    */
   const goalDrafts = new GoalDraftManager({
     repoDir,
@@ -1909,8 +1911,7 @@ export function createApp(options: AppOptions) {
     remember(skillsPreparation?.agent);
     remember(discoverRun?.agent, discoverRun?.cwd);
     for (const lane of liveLanes) remember(lane.agent);
-    const draftPeer = goalDrafts.child();
-    if (draftPeer !== undefined) children.push(draftPeer);
+    for (const draftPeer of goalDrafts.children()) children.push(draftPeer);
     return children;
   }
 
@@ -5830,7 +5831,7 @@ export function createApp(options: AppOptions) {
             }
           } else if (command.type === "getGoalDrafts") {
             send(ws, { type: "issuesDrafts", drafts: listGoalDrafts(repoDir) });
-            send(ws, { type: "issuesDraftState", draft: goalDrafts.snapshot() });
+            send(ws, { type: "issuesDraftState", drafts: goalDrafts.snapshots() });
           } else if (command.type === "getGoalDraft") {
             try {
               send(ws, { type: "issuesDraftDetail", draft: readGoalDraft(repoDir, command.path) });
@@ -5844,19 +5845,18 @@ export function createApp(options: AppOptions) {
             const started = goalDrafts.start(command.path);
             if (!started.ok) {
               send(ws, { type: "issuesDraftError", message: started.message });
-            } else {
-              send(ws, { type: "issuesDraftState", draft: goalDrafts.snapshot() });
-              goalDrafts.publishDrafts();
             }
           } else if (command.type === "stopGoalDraft") {
-            goalDrafts.stop();
+            goalDrafts.stop(command.path);
           } else if (command.type === "answerGoalDraft") {
             if (
               (typeof command.id !== "string" && typeof command.id !== "number") ||
               typeof command.value !== "string"
             ) {
               send(ws, { type: "issuesDraftError", message: "An answer needs its question id and value." });
-            } else if (!goalDrafts.answer(command.id, command.value)) {
+            } else if (typeof command.path !== "string" || command.path.length === 0) {
+              send(ws, { type: "issuesDraftError", message: "An answer needs its draft path." });
+            } else if (!goalDrafts.answer(command.path, command.id, command.value)) {
               send(ws, {
                 type: "issuesDraftError",
                 message: "That question is no longer waiting for an answer.",
@@ -6046,6 +6046,19 @@ export function createApp(options: AppOptions) {
     }
     return stop(closeActiveConnections);
   };
+
+  // A terminated dashboard releases every child peer before it exits. Bun's
+  // default SIGTERM handling exits the process without running the stop above,
+  // which would leave elaboration agents orphaned.
+  const terminate = (): void => {
+    try {
+      server.stop(true);
+    } finally {
+      process.exit(0);
+    }
+  };
+  process.once("SIGTERM", terminate);
+  process.once("SIGINT", terminate);
 
   return server;
 }

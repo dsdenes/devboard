@@ -14,10 +14,8 @@
    */
   const parts = $derived(draftParts(issues.draft?.text ?? ""));
 
-  // The header reports this draft's run only; another draft's run is not this draft's state.
-  const run = $derived(
-    issues.draft !== null && issues.draftRun?.path === issues.draft.path ? issues.draftRun : null,
-  );
+  // The detail reports this draft's run only; another draft's run is not this draft's state.
+  const run = $derived(issues.draft !== null ? issues.draftRun : null);
   const status = $derived(run?.status ?? "idle");
   const running = $derived(run?.status === "running");
   const question = $derived(run?.question ?? null);
@@ -47,7 +45,7 @@
     <div>
       <h1 class="issues-overview__title">Draft goals</h1>
       <p class="issues-overview__repo mono">
-        {issues.draftStatus} · {issues.drafts.length} draft(s)
+        {issues.draftRunningCount} running · {issues.drafts.length} draft(s)
       </p>
     </div>
   </header>
@@ -60,6 +58,8 @@
       <div class="panel__body panel__body--flush">
         <ol class="issues-drafts" data-testid="issues-draft-list">
           {#each issues.drafts as draft (draft.path)}
+            {@const draftState = issues.draftStatusFor(draft.path)}
+            {@const waiting = issues.draftHasQuestion(draft.path)}
             {@const blocker = issues.draftStartBlocker(draft.path)}
             <li>
               <button
@@ -67,12 +67,22 @@
                 class="issues-draft"
                 data-testid="issues-draft"
                 data-path={draft.path}
+                data-status={draftState}
+                data-question={waiting ? "true" : undefined}
                 data-command="issues.draft.open"
                 aria-current={issues.draftPath === draft.path}
                 onclick={() => issues.openDraft(draft.path)}
               >
                 <span class="mono">{draft.name}</span>
                 <span class="issues-draft__heading">{draft.heading || "No heading"}</span>
+                <span class="issues-draft__state" data-tone={statusTone(draftState)}>
+                  {draftState}
+                </span>
+                {#if waiting}
+                  <span class="issues-draft__waiting" data-testid="issues-draft-waiting">
+                    Waiting for an answer
+                  </span>
+                {/if}
                 {#if blocker !== null}
                   <span class="issues-draft__blocked" data-testid="issues-draft-blocked">{blocker}</span>
                 {/if}

@@ -1563,7 +1563,12 @@ name names the Issues mode and the `Alt+2` shortcut, and the command palette lis
 same command id. Opening it renders `data-testid="issues-drafts"`: every regular `.md` file
 directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each with
 `data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
-and its first Markdown heading. An empty directory shows `No drafts exist.`.
+and its first Markdown heading. Every row also carries `data-status` with that draft's own state
+and renders the state as text; a draft whose elaboration waits for an answer adds
+`data-question="true"` and an `issues-draft-waiting` marker, so it is distinguishable without
+opening it. A running draft's row shows `issues-draft-blocked` with exactly
+`This draft is being elaborated.`; no other row carries a blocker. An empty directory shows
+`No drafts exist.`.
 
 Selecting one opens `data-testid="issues-draft-detail"`: a two-line header carries the draft's
 first heading and its file name, the state badge for this draft's run only, `issues-draft-start`
@@ -1573,29 +1578,37 @@ body reads the proposal before the `## Captured UI context` marker, then the act
 compact grid and the visible text and DOM excerpt behind a `Captured evidence` disclosure. A
 pending elaboration question (`issues-draft-question`) renders above the proposal, with
 `issues-draft-choice`, `issues-draft-answer-input`, and `issues-draft-answer-submit`. The exact
-draft bytes remain in `issues-draft-text`, collapsed under `Draft source`. The detail refreshes
-when the page opens, after the report panel writes a draft through `POST /api/goal-proposals`,
-after an elaboration finishes or stops, and when a listed draft disappears. The page polls the
-list every two seconds while it is mounted, so an external deletion is visible without a reload,
-and the report panel's write broadcast reaches an open page immediately. A browser reload
-restores the Draft goals page and the selected path; when the file no longer exists, the page
-opens the list.
+draft bytes remain in `issues-draft-text`, collapsed under `Draft source`. Selecting another draft
+switches every one of those surfaces to that path; the previous draft's activity and question are
+absent. The detail refreshes when the page opens, after the report panel writes a draft through
+`POST /api/goal-proposals`, after an elaboration finishes or stops, and when a listed draft
+disappears. The page polls the list every two seconds while it is mounted, so an external deletion
+is visible without a reload, and the report panel's write broadcast reaches an open page
+immediately. A browser reload restores the Draft goals page, the selected path, and every draft's
+run state; when the file no longer exists, the page opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
 refused with a visible error, and nothing outside the directory is read. The list never follows
 symlinks.
 
-Only one elaboration runs at a time. Starting one spawns exactly one ACP peer with `AGENT_COMMAND`
-in `REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-relative path>`. Its
-activity streams into `issues-draft-activity`, its `ask` question renders as options plus a
-free-text answer, and an answer goes only to that peer. While it runs, every other draft's start
-control is disabled with the stated reason; Stop closes the peer, records `stopped`, keeps the
-draft, and re-enables the controls; a successful or failed run closes its peer before recording
-`succeeded` or `failed`, so no elaboration leaves an agent process behind; a failed peer keeps
-the draft, shows the error, and accepts a retry as a new peer. The running peer's pid, argv, and
-`cwd` are recorded in the server state, so a replacement server ends one its predecessor left
-running.
+Any number of drafts elaborate at once, with no concurrency cap: each draft path owns exactly one
+ACP peer with `AGENT_COMMAND` in `REPO_DIR`, which opens one session and receives exactly
+`/goal-draft <repository-relative path>`. Starting a second, third, or later distinct draft is
+never refused because another elaboration runs; only the drafts present in the repository bound
+the count. A `startGoalDraft` for a path that is already running is refused with
+`This draft is being elaborated.` and starts no second peer.
+
+Each draft keeps its own state, activity stream, and pending question. Selecting a draft shows only
+that draft's surfaces, and an answer goes only to that draft's peer; every other elaboration keeps
+its pending question, transcript, and state. An answer for a draft with no pending question is
+refused without reaching any peer. Stop acts on the selected draft: it closes that peer, records
+`stopped` and keeps the draft startable, while every other elaboration stays `running`. A
+successful or failed run closes its own peer before recording `succeeded` or `failed`; a failure
+keeps the draft and shows its error, and a success whose agent removed the draft removes only that
+row. Stopping the dashboard closes every live elaboration peer, and a replacement server reports
+no draft as running and starts none on its own. Every live peer's pid, argv, and `cwd` are recorded
+in the server state, so a replacement can end any peer its predecessor left running.
 
 `.devboard/prompts/goal-draft.md` is the elaboration contract and
 `.devboard/omp/commands/goal-draft.md` its command wrapper, which reads the prompt and passes

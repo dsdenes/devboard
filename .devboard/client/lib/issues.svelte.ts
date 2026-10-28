@@ -99,7 +99,8 @@ export class IssuesStore {
   closing = $state<number[]>([]);
 
   drafts = $state<GoalDraftSummary[]>([]);
-  draftRun = $state<GoalDraftRun | null>(null);
+  /** Each draft path's own run; a path with no entry has never started. */
+  draftRuns = $state<Record<string, GoalDraftRun>>({});
   draft = $state<GoalDraftDetail | null>(null);
   draftPath = $state<string | null>(readDraftPath());
   draftError = $state<string | null>(null);
@@ -192,25 +193,33 @@ export class IssuesStore {
     return new Date(Math.min(...times)).toISOString();
   }
 
+  /** The selected draft's own run, never another path's. */
+  get draftRun(): GoalDraftRun | null {
+    const path = this.draftPath;
+    return path === null ? null : (this.draftRuns[path] ?? null);
+  }
+
   get draftRunning(): boolean {
     return this.draftRun?.status === "running";
   }
 
-  get draftBusyPath(): string | null {
-    return this.draftRunning ? (this.draftRun?.path ?? null) : null;
+  get draftRunningCount(): number {
+    return Object.values(this.draftRuns).filter((run) => run.status === "running").length;
   }
 
-  get draftStatus(): string {
-    return this.draftRun?.status ?? "idle";
+  draftStatusFor(path: string): string {
+    return this.draftRuns[path]?.status ?? "idle";
   }
 
-  /** The stated reason another draft's start control is disabled, or null. */
+  draftHasQuestion(path: string): boolean {
+    return (this.draftRuns[path]?.question ?? null) !== null;
+  }
+
+  /** The stated reason this draft's start control is disabled, or null. */
   draftStartBlocker(path: string): string | null {
-    const busy = this.draftBusyPath;
-    if (busy === null) return null;
-    return busy === path
+    return this.draftRuns[path]?.status === "running"
       ? "This draft is being elaborated."
-      : `An elaboration is running for ${busy}.`;
+      : null;
   }
 
   refreshDrafts(): void {
@@ -235,20 +244,27 @@ export class IssuesStore {
 
   startDraft(): void {
     const path = this.draftPath;
-    if (path === null || this.draftRunning) return;
+    if (path === null || this.draftRuns[path]?.status === "running") return;
     this.draftError = null;
     connection.send({ type: "startGoalDraft", path });
   }
 
   stopDraft(): void {
-    if (!this.draftRunning) return;
-    connection.send({ type: "stopGoalDraft" });
+    const path = this.draftPath;
+    if (path === null || this.draftRuns[path]?.status !== "running") return;
+    connection.send({ type: "stopGoalDraft", path });
   }
 
   submitDraftAnswer(value: string): void {
-    const question = this.draftRun?.question ?? null;
-    if (question === null || value.trim().length === 0) return;
-    connection.send({ type: "answerGoalDraft", id: question.id, value: value.trim() });
+    const path = this.draftPath;
+    const question = path === null ? null : (this.draftRuns[path]?.question ?? null);
+    if (path === null || question === null || value.trim().length === 0) return;
+    connection.send({
+      type: "answerGoalDraft",
+      path,
+      id: question.id,
+      value: value.trim(),
+    });
   }
 
   get canStart(): boolean {
@@ -404,15 +420,21 @@ export class IssuesStore {
       }
       return;
     }
-    if (message.type === "issuesDraftState" && isObject(message.draft)) {
-      const run = message.draft as unknown as GoalDraftRun;
-      if (typeof run.status !== "string") return;
-      this.draftRun = {
-        ...run,
-        activity: Array.isArray(run.activity) ? run.activity : [],
-        question: (run.question ?? null) as GoalDraftRun["question"],
-      };
-      if (run.status === "running") this.draftError = null;
+    if (message.type === "issuesDraftState" && Array.isArray(message.drafts)) {
+      const runs: Record<string, GoalDraftRun> = {};
+      for (const entry of message.drafts) {
+        if (!isObject(entry) || typeof entry.path !== "string" || typeof entry.status !== "string") {
+          continue;
+        }
+        const run = entry as unknown as GoalDraftRun;
+        runs[entry.path] = {
+          ...run,
+          activity: Array.isArray(run.activity) ? run.activity : [],
+          question: (run.question ?? null) as GoalDraftRun["question"],
+        };
+      }
+      this.draftRuns = runs;
+      if (this.draftRun?.status === "running") this.draftError = null;
       return;
     }
     if (message.type === "issuesDraftDetail" && isObject(message.draft)) {
