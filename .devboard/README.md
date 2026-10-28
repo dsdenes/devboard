@@ -1747,10 +1747,9 @@ tab, or reloading the dashboard never starts a worker and never files an issue: 
 `data-testid="scout-stop"` while a worker is attached. The page header
 (`data-testid="issues-scout-header"`) carries the repository origin,
 `data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`), the last-read
-time, and the single Start/Stop action. A 360px side rail holds the worker
-facts and the filing limits; the results column holds the filed-issues table and
-`data-testid="scout-activity"` for the current or newest scan. The page also shows
-`data-testid="scout-error"` for the last error.
+time, the filing limits, and the single Start/Stop action. The results column holds the
+filed-issues table and `data-testid="scout-activity"` for the current or newest scan. The page
+also shows `data-testid="scout-error"` for the last error.
 
 There is no review path. While a worker runs, a scan whose items score at least 4 files each
 accepted item directly as a GitHub issue in the host `origin`, in the same scan cycle, with no
@@ -1761,11 +1760,12 @@ filed rows and the limits; the next Start reads GitHub and scans again.
 
 ### Limits
 
-`data-testid="scout-max-per-hour"` (default 10) and `data-testid="scout-max-pending"` (default 5)
-accept integers from 1 through 100. `data-testid="scout-save-limits"` persists both; an invalid
-value renders `data-testid="scout-limits-error"` and sends nothing. A valid save is written
-atomically to `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json`, so it survives a page
-reload and a worker restart, and a running worker receives it as a limits command without
+The limits sit in the page header beside Start/Stop: both fields, Save limits, and the rule
+hint. `data-testid="scout-max-per-hour"` (default 10) and `data-testid="scout-max-pending"`
+(default 5) accept integers from 1 through 100. `data-testid="scout-save-limits"` persists both;
+an invalid value renders `data-testid="scout-limits-error"` and sends nothing. A valid save is
+written atomically to `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json`, so it survives a
+page reload and a worker restart, and a running worker receives it as a limits command without
 restarting. A worker start reads that file first, then the last state's limits, then the defaults.
 
 `maxPerHour` counts every Auto Scout issue whose creation time is inside a rolling 60-minute

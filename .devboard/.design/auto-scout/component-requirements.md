@@ -2,14 +2,14 @@
 
 | Need | Decision | OpenUI entry | Storybook story | Data/state requirements | Accessibility | Token needs |
 |---|---|---|---|---|---|---|
-| Page identity and actions | Reuse, `bar` layout | `PageHeader` | `stories/page-header.stories.ts` | eyebrow, title, subtitle, meta badges and one action on one band; title and repository truncate | native `header`, sole `h1`, action group | existing page-header, spacing, typography |
+| Page identity and actions | Reuse, `bar` layout | `PageHeader` | `stories/page-header.stories.ts` | eyebrow, title, subtitle, meta badges, the filing limits, and one action on one band; title and repository truncate | native `header`, sole `h1`, limits group, action group | existing page-header, spacing, typography |
 | Start/Stop control | Reuse | `Button` | `stories/design-system.stories.ts` | `default` while stopped, `destructive` while attached; disabled when the socket is closed or the server refuses | native button, focus ring, disabled opacity | button-primary and destructive |
 | Lifecycle badge | Compose | — (`.badge` CSS primitive) | design-system overview specimens | `data-tone` from `statusTone(lifecycle)`; words `stopped`, `idle`, `scanning`, `failed` | word carries meaning, colour is redundant | success, warning, error, border-strong |
 | Last-read timestamp | Compose | — | — | `sync.at` or `never`; formatted local date/time with the raw value in `title`; stable across a failed read; the sync error banner carries the read state | visible text, mono | mono-small |
 | Worker facts | Compose | — (definition list) | — | pending count 0–many; worker pid/version or `none`; next attempt formatted or `none`; empty and long values | `dl`/`dt`/`dd` semantics; wraps without overflow | muted, mono, spacing |
-| Limit inputs | Reuse | `Input` | `stories/design-system.stories.ts` | integers 1–100, invalid values, empty, 2 digits and 3 digits; 28px height | wrapping `label`, numeric input mode, range attributes | input component; border-strong |
-| Save limits | Reuse | `Button` | `stories/design-system.stories.ts` | secondary; enabled while connected; validation failure keeps the last saved values | native button, focus ring | button-secondary |
-| Limits alert | Compose | — (`.issues-error`) | — | visible validation message; `role="alert"` | announced, not colour-only | error, error-surface |
+| Limit inputs | Reuse | `Input` | `stories/design-system.stories.ts` | header group: inline labels, integers 1–100, invalid values, empty, 2 digits and 3 digits; 28px height, 56px width | wrapping `label`, numeric input mode, range attributes | input component; border-strong |
+| Save limits | Reuse | `Button` | `stories/design-system.stories.ts` | secondary, in the header group; enabled while connected; validation failure keeps the last saved values | native button, focus ring | button-secondary |
+| Limits alert | Compose | — (`.issues-error`) | — | header group, full row under the controls; visible validation message; `role="alert"` | announced, not colour-only | error, error-surface |
 | Filed issues table | Compose | — (`.panel` + table markup) | — | zero, one, many rows; long titles ellipsize with tooltip; pending/implemented badges; missing category/version render `—`; body scrolls | column headers, link text, badge words | panel, table, badge, mono, row-hover |
 | Empty table | Compose | — | — | centered 20px inbox mark above a 13px/600 title and one 12px explanatory line; max 360px; not focusable | decorative mark is `aria-hidden`; title and copy are plain text | muted, spacing |
 | Activity log | Reuse | — | — | `IssuesAgentLog` with empty state; appends live; follows the newest line unless scrolled up | `pre` text, command rows keep their `$` prompt | activity log styles, accent-surface |
@@ -19,18 +19,18 @@
 
 ### PageHeader
 - Decision: reuse with `layout="bar"`.
-- Why: one 56px band reads as an operational status header. The title and repository sit
-  on one line while the lifecycle badge, last read, and Start/Stop share the trailing
-  edge, so the state sits beside the action it qualifies instead of in a second column
-  under the title.
+- Why: one operational band reads as a status header. The title and repository sit on one
+  line while the lifecycle badge, last read, filing limits, and Start/Stop share the
+  trailing edge, so the budget and the action it qualifies sit beside the state instead of
+  in a second column under the title.
 - Real API: `.devboard/client/lib/components/ui/page-header.svelte`; `eyebrow`, `title`,
   `subtitle`, `meta`, `actions`, `flat`, `layout`, `testid`.
 - States: only empty and populated states of the meta/actions; the header itself has no
   loading state.
-- Edge cases: a long owner/repo truncates without moving the trailing cluster; the
-  cluster wraps below the identity only when the workspace is too narrow for both, and
-  the action never detaches from the state.
-- Tokens: existing page-header and badge tokens only.
+- Edge cases: a long owner/repo truncates without moving the trailing cluster; the limits
+  group and the cluster wrap below the identity only when the workspace is too narrow for
+  both, and the action never detaches from the state.
+- Tokens: existing page-header, badge, and limits styles only.
 
 ### Button
 - Decision: reuse two instances (the same control swaps label, variant, and testid).

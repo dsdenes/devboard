@@ -403,7 +403,7 @@ export class DiscoverStore {
     }
     if (type === "discoverError" && typeof message.message === "string") {
       this.error = message.message;
-      notifications.push("error", message.message);
+      notifications.push("Discover", "error", message.message);
     }
   }
 }
