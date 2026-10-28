@@ -340,6 +340,7 @@ export class IssuesWorker {
     const previous = loadState(path);
     const records = previousRecords(path);
     this.ledger = loadLedger(this.stateDir, this.repoDir);
+    let migrationError: string | null = null;
     const migrated = migrateLegacyLedger({
       stateDir: this.stateDir,
       repoDir: this.repoDir,
@@ -351,7 +352,7 @@ export class IssuesWorker {
         handled[String(entry.number)] = entry;
       }
       this.ledger = { version: 1, handled };
-      writeLedger(this.stateDir, this.repoDir, this.ledger);
+      migrationError = this.persistLedger();
       this.log(`migrated ${migrated.length} handled issue(s) from the legacy orchestrator`);
     }
 
@@ -397,6 +398,7 @@ export class IssuesWorker {
       runs: this.summaries(),
       updatedAt: now.toISOString(),
     };
+    if (migrationError !== null) this.state.lastError = migrationError;
     void previous;
     this.nextPollDue = now.getTime();
     this.publish();
@@ -446,12 +448,43 @@ export class IssuesWorker {
 
   private async tick(): Promise<void> {
     if (this.stopping) return;
-    await this.consumeCommands();
+    await this.guarded("consume control commands", () => this.consumeCommands());
     if (this.stopping) return;
     if (!this.state.enabled) return;
     if (this.polling) return;
     if (this.clock().getTime() < this.nextPollDue) return;
-    await this.poll();
+    await this.guarded("poll the tracker", () => this.poll());
+  }
+
+  /**
+   * One tick stage. A thrown stage is recorded and never rejects the ticker:
+   * the interval keeps running and the next tick retries.
+   */
+  private async guarded(stage: string, action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
+    } catch (error) {
+      this.recordFailure(stage, error);
+    }
+  }
+
+  private recordFailure(stage: string, error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    this.state.lastError = `the issues worker could not ${stage}: ${detail}`;
+    this.log(this.state.lastError);
+    this.publish();
+  }
+
+  /** Persists the ledger; an I/O failure is recorded, never thrown. */
+  private persistLedger(): string | null {
+    try {
+      writeLedger(this.stateDir, this.repoDir, this.ledger);
+      return null;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.log(`could not write the ledger: ${detail}`);
+      return `could not write the ledger: ${detail}`;
+    }
   }
 
   private async consumeCommands(): Promise<void> {
@@ -623,7 +656,8 @@ export class IssuesWorker {
     const pruned = pruneLedger(this.ledger, open);
     if (pruned !== this.ledger) {
       this.ledger = pruned;
-      writeLedger(this.stateDir, this.repoDir, this.ledger);
+      const ledgerError = this.persistLedger();
+      if (ledgerError !== null) this.state.lastError = ledgerError;
     }
     const cooldowns = Object.fromEntries(
       Object.entries(this.state.cooldowns).filter(([key]) => open.has(Number(key))),
@@ -858,10 +892,15 @@ export class IssuesWorker {
     const finishedAt = this.clock().toISOString();
     this.updateRun(active.runId, active.directory, "succeeded", finishedAt, 0, null);
     this.ledger = recordHandled(this.ledger, active.captured, active.runId, this.clock());
-    writeLedger(this.stateDir, this.repoDir, this.ledger);
+    // Settle before persisting: a ledger I/O error must never strand the run.
     this.forget(active);
     this.refreshQueue();
     this.settle(0, null, finishedAt);
+    const ledgerError = this.persistLedger();
+    if (ledgerError !== null) {
+      this.state.lastError = ledgerError;
+      this.publish();
+    }
   }
 
   private finishFailed(active: ActiveRun, detail: string): void {
