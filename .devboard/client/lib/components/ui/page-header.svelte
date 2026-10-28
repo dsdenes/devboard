@@ -194,9 +194,4 @@
     flex-wrap: nowrap;
     margin-top: 0;
   }
-
-  .page-header--bar .page-header__actions {
-    flex: 0 1 auto;
-    min-width: 0;
-  }
 </style>
