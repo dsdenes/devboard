@@ -21,10 +21,13 @@ import {
   isReleaseRateLimited,
   isReleaseUnreachable,
   latestRelease,
+  npmInstallError,
   parseReleaseDescription,
   ReleaseError,
   ReleaseFeedError,
+  ReleaseNotServedError,
   tarballName,
+  type CommandResult,
   type ReleaseInfo,
   type ReleaseSource,
 } from "./release";
@@ -110,6 +113,74 @@ describe("isReleaseRateLimited", () => {
         ),
       ),
     ).toBe(false);
+  });
+});
+
+describe("npmInstallError", () => {
+  const version = "0.1.592";
+  const tarball = `https://registry.npmjs.org/@dsdenes/devboard/-/${tarballName(version)}`;
+
+  function failed(stderr: string): CommandResult {
+    return { code: 1, stdout: "", stderr, killed: false };
+  }
+
+  test("treats the package's own unpropagated tarball as context", () => {
+    const error = npmInstallError(
+      failed(
+        [
+          "npm error code E404",
+          `npm error 404 Not Found - GET ${tarball}`,
+          "npm error 404",
+          `npm error 404  The requested resource '@dsdenes/devboard@${tarball}' could not be found.`,
+        ].join("\n"),
+      ),
+      version,
+    );
+    expect(error).toBeInstanceOf(ReleaseNotServedError);
+    expect(error.message).toBe(
+      `npm does not serve the advertised @dsdenes/devboard@${version} artifact yet: ${tarball}`,
+    );
+  });
+
+  test("treats a gone artifact reported by an older npm as context", () => {
+    const error = npmInstallError(
+      failed(`npm ERR! code E410\nnpm ERR! 410 Gone - GET ${tarball}`),
+      version,
+    );
+    expect(error).toBeInstanceOf(ReleaseNotServedError);
+  });
+
+  test("keeps a missing dependency tarball a release defect", () => {
+    const error = npmInstallError(
+      failed(
+        "npm error code E404\n" +
+          "npm error 404 Not Found - GET https://registry.npmjs.org/mermaid/-/mermaid-11.12.0.tgz",
+      ),
+      version,
+    );
+    expect(error).not.toBeInstanceOf(ReleaseNotServedError);
+    expect(error.message).toBe("npm install failed: npm error code E404");
+  });
+
+  test("keeps another version's tarball a release defect", () => {
+    const other = `https://registry.npmjs.org/@dsdenes/devboard/-/${tarballName("0.1.597")}`;
+    const error = npmInstallError(
+      failed(`npm error code E404\nnpm error 404 Not Found - GET ${other}`),
+      version,
+    );
+    expect(error).not.toBeInstanceOf(ReleaseNotServedError);
+  });
+
+  test("keeps a 404 without a tarball URL and any other failure a release defect", () => {
+    for (const stderr of [
+      "npm error code E404",
+      "npm error code EINTEGRITY",
+      "npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/@dsdenes%2fdevboard",
+    ]) {
+      const error = npmInstallError(failed(stderr), version);
+      expect(error).not.toBeInstanceOf(ReleaseNotServedError);
+      expect(error).toBeInstanceOf(ReleaseError);
+    }
   });
 });
 

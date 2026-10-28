@@ -15,7 +15,12 @@ import { createApp } from "./app";
 import {
   cleanupRemoteScratch,
   hostFacts,
+  listRetainedProjects,
+  remoteCloneName,
+  remoteProjectDirectory,
   remoteScratchRoot,
+  removeRetainedProject,
+  retainRemoteProject,
   type RemoteCloneRequest,
   type RemoteCloneRunner,
 } from "./discover";
@@ -477,7 +482,7 @@ function scratchEntries(fixture: Fixture, stateDir = fixture.stateDir): string[]
 }
 
 function retainedDirectory(fixture: Fixture, owner: string, repo: string): string {
-  return join(remoteScratchRoot(fixture.stateDir), `${owner}-${repo}`.toLowerCase());
+  return remoteProjectDirectory(remoteScratchRoot(fixture.stateDir), owner, repo);
 }
 
 function retainedRecord(
@@ -499,7 +504,7 @@ function seedRetainedProject(
   completedAt: string,
   marker: string,
 ): string {
-  const directory = join(remoteScratchRoot(stateDir), `${owner}-${repo}`.toLowerCase());
+  const directory = remoteProjectDirectory(remoteScratchRoot(stateDir), owner, repo);
   mkdirSync(join(directory, ".omp", "discover"), { recursive: true });
   mkdirSync(join(directory, ".omp", "skills"), { recursive: true });
   writeFileSync(join(directory, ".omp", "discover", "marker.txt"), marker);
@@ -630,7 +635,7 @@ describe("discover remote target", () => {
         const acceptedCount = clones.calls.length;
         expect(acceptedCount).toBe(4);
         // Every accepted spelling names the same lowercased owner/repo.
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
         expect(retainedRecord(fixture, "octocat", "hello-world").url).toBe(
           "https://github.com/Octocat/Hello-World",
         );
@@ -661,7 +666,7 @@ describe("discover remote target", () => {
           expect(String((await refused).message)).toContain("Could not clone");
         }
         expect(clones.calls.length).toBe(acceptedCount);
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
         expect((await discoverState(client)).target).toMatchObject({ kind: "remote" });
       } finally {
         client.close();
@@ -764,7 +769,7 @@ describe("discover remote target", () => {
         expect(request.env.NO_COLOR).toBe("1");
 
         // The checkout is gone; only the retained project remains.
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
         expectNoCheckout(fixture);
         const retained = retainedDirectory(fixture, "octocat", "hello-world");
         expect(existsSync(join(retained, ".git"))).toBe(false);
@@ -1018,7 +1023,7 @@ describe("discover remote target", () => {
         const firstBytes = treeBytes(retainedDirectory(fixture, "octocat", "hello-world"));
         const second = await runRemote(client, "https://github.com/octocat/hello-world/");
         const secondRecord = retainedRecord(fixture, "octocat", "hello-world");
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
         expect(second.retained).toHaveLength(1);
         expect(secondRecord.url).toBe("https://github.com/octocat/hello-world/");
         expect(Date.parse(String(secondRecord.completedAt))).toBeGreaterThanOrEqual(
@@ -1032,7 +1037,7 @@ describe("discover remote target", () => {
         expect(treeBytes(retainedDirectory(fixture, "octocat", "hello-world")).size).toBe(
           firstBytes.size,
         );
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
 
         clones.behavior.source = createSourceRepository("dedupe-source-other");
         const fourth = await runRemote(client, "https://github.com/octocat/Other");
@@ -1086,7 +1091,7 @@ describe("discover remote target", () => {
         expect(Date.parse(String(recordAfter.completedAt))).toBeGreaterThanOrEqual(
           Date.parse(String(recordBefore.completedAt)),
         );
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
         expectNoCheckout(fixture);
         expect(ompBytes(fixture.root).size).toBe(0);
       } finally {
@@ -1208,7 +1213,7 @@ describe("discover remote target", () => {
           url: "https://github.com/octocat/Unknown",
         });
         expect(unknown).toContain("No retained Discover project");
-        expect(scratchEntries(fixture)).toEqual(["octocat-second"]);
+        expect(scratchEntries(fixture)).toEqual(["octocat~second"]);
       } finally {
         client.close();
         first.server.stop(true);
@@ -1370,7 +1375,7 @@ describe("discover remote target", () => {
       }
 
       const scratch = remoteScratchRoot(fixture.stateDir);
-      const retained = treeBytes(join(scratch, "octocat-hello-world"));
+      const retained = treeBytes(join(scratch, "octocat~hello-world"));
       mkdirSync(join(scratch, ".staging-leftover"), { recursive: true });
       mkdirSync(join(scratch, ".staging-retain-leftover"), { recursive: true });
       mkdirSync(join(scratch, "octocat-old", ".git"), { recursive: true });
@@ -1378,11 +1383,11 @@ describe("discover remote target", () => {
       const second = startServer({ fixture, clone: cloneHarness() });
       const restored = await connect(second.url);
       try {
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
         expect(existsSync(join(scratch, ".staging-leftover"))).toBe(false);
         expect(existsSync(join(scratch, ".staging-retain-leftover"))).toBe(false);
         expect(existsSync(join(scratch, "octocat-old"))).toBe(false);
-        expect(treeBytes(join(scratch, "octocat-hello-world"))).toEqual(retained);
+        expect(treeBytes(join(scratch, "octocat~hello-world"))).toEqual(retained);
         const state = stateOf(await restored.take((message) => message.type === "discoverState"));
         expect(state.target).toMatchObject({ kind: "remote", repo: "Hello-World" });
       } finally {
@@ -1531,7 +1536,7 @@ describe("discover remote target", () => {
         expect(state.target).toMatchObject({ kind: "remote", checkout: false });
         expect(state.sheet).not.toBeNull();
         expect(treeBytes(retained)).toEqual(published);
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
         expectNoCheckout(fixture);
         expect(spawnCount(fixture.logPath)).toBe(spawnsBefore);
         expect(persistedState(fixture).discover).toBeNull();
@@ -1590,6 +1595,72 @@ describe("discover remote target", () => {
       }
     },
     90_000,
+  );
+
+  test(
+    "retains distinct owner/repo pairs whose hyphenated names collide",
+    () => {
+      const scratch = testDirectory("identity-collision");
+      const firstCheckout = testDirectory("identity-collision-first");
+      const secondCheckout = testDirectory("identity-collision-second");
+      const publish = (checkout: string, marker: string) => {
+        mkdirSync(join(checkout, ".omp", "discover"), { recursive: true });
+        mkdirSync(join(checkout, ".omp", "skills"), { recursive: true });
+        writeFileSync(join(checkout, ".omp", "discover", "marker.txt"), marker);
+        writeFileSync(join(checkout, ".omp", "skills", "marker.txt"), marker);
+      };
+      publish(firstCheckout, "first");
+      publish(secondCheckout, "second");
+
+      const firstRecord = {
+        url: "https://github.com/a/b-c",
+        owner: "a",
+        repo: "b-c",
+        completedAt: "2026-01-01T00:00:00.000Z",
+      };
+      const secondRecord = {
+        url: "https://github.com/a-b/c",
+        owner: "a-b",
+        repo: "c",
+        completedAt: "2026-01-02T00:00:00.000Z",
+      };
+      const firstDirectory = remoteProjectDirectory(scratch, "a", "b-c");
+      const secondDirectory = remoteProjectDirectory(scratch, "a-b", "c");
+      expect(firstDirectory).not.toBe(secondDirectory);
+      expect(remoteCloneName("a", "b-c")).not.toBe(remoteCloneName("a-b", "c"));
+
+      expect(retainRemoteProject(scratch, firstCheckout, firstRecord, "collision-first")).toBeNull();
+      expect(retainRemoteProject(scratch, secondCheckout, secondRecord, "collision-second")).toBeNull();
+      expect(listRetainedProjects(scratch).map((project) => project.url)).toEqual([
+        secondRecord.url,
+        firstRecord.url,
+      ]);
+      expect(readFileSync(join(firstDirectory, ".omp", "discover", "marker.txt"), "utf8")).toBe(
+        "first",
+      );
+      expect(readFileSync(join(firstDirectory, ".omp", "skills", "marker.txt"), "utf8")).toBe(
+        "first",
+      );
+      expect(readFileSync(join(secondDirectory, ".omp", "discover", "marker.txt"), "utf8")).toBe(
+        "second",
+      );
+      expect(readFileSync(join(secondDirectory, ".omp", "skills", "marker.txt"), "utf8")).toBe(
+        "second",
+      );
+
+      expect(removeRetainedProject(scratch, firstRecord)).toBeNull();
+      expect(existsSync(firstDirectory)).toBe(false);
+      expect(listRetainedProjects(scratch).map((project) => project.url)).toEqual([
+        secondRecord.url,
+      ]);
+      expect(readFileSync(join(secondDirectory, ".omp", "discover", "marker.txt"), "utf8")).toBe(
+        "second",
+      );
+      expect(readFileSync(join(secondDirectory, ".omp", "skills", "marker.txt"), "utf8")).toBe(
+        "second",
+      );
+    },
+    30_000,
   );
 });
 

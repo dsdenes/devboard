@@ -140,6 +140,8 @@ const discoverProse =
   "A fixture host with a small order domain used to verify the Discover crawl";
 const discoverInvalidSheet = process.argv.includes("--discover-invalid-sheet");
 const discoverSheetAbsolute = process.argv.includes("--discover-sheet-absolute");
+/** Stages evidence that is an absolute host path with its leading slash stripped. */
+const discoverSheetStrippedHome = process.argv.includes("--discover-sheet-stripped-home");
 const discoverSheetNoEvidence = process.argv.includes("--discover-sheet-no-evidence");
 const discoverSheetSecret = process.argv.includes("--discover-sheet-secret");
 const discoverSheetTwoSentences = process.argv.includes("--discover-sheet-two-sentences");
@@ -149,6 +151,8 @@ const discoverSheetNoHappyPath = process.argv.includes("--discover-sheet-no-happ
 const discoverSheetHappyOverflow = process.argv.includes("--discover-sheet-happy-overflow");
 const discoverGlossaryInvalid = process.argv.includes("--discover-glossary-invalid");
 const discoverGlossaryGrounding = process.argv.includes("--discover-glossary-grounding");
+/** Grounds a concept in a repository path whose directory is named `home`. */
+const discoverGlossaryHomePath = process.argv.includes("--discover-glossary-home-path");
 /** Omits a concept from the staged glossary, so a published one is preserved unscored. */
 const discoverGlossaryDrop = process.argv.includes("--discover-glossary-drop");
 /** The staged significance sidecar defect, or "" for a valid sidecar. */
@@ -158,6 +162,8 @@ const discoverExtraArtifact = process.argv.includes("--discover-extra-artifact")
 const discoverWriteOutside = process.argv.includes("--discover-write-outside");
 const discoverError = process.argv.includes("--discover-error");
 const discoverNoExit = process.argv.includes("--discover-no-exit");
+/** Holds a Discover turn active long enough for the UI to render its state. */
+const discoverDelayMs = Number(argument("discover-delay-ms") ?? 0);
 
 /** Ask mode: a read-only answer, preceded by thought and tool noise. */
 const ask = process.argv.includes("--ask");
@@ -1159,6 +1165,7 @@ function discoverSheet(): Record<string, unknown> {
   const deployment = sheet.deployment as { artifact: { value: unknown } };
   if (discoverInvalidSheet) stack.value = ["x".repeat(200)];
   if (discoverSheetAbsolute) stack.evidence = ["/etc/passwd"];
+  if (discoverSheetStrippedHome) stack.evidence = ["home/ds/project/file.ts"];
   if (discoverSheetNoEvidence) stack.evidence = [];
   if (discoverSheetSecret) deployment.artifact.value = DISCOVER_SECRET;
 
@@ -1230,7 +1237,7 @@ function discoverGlossary(): { yaml: string; concepts: DiscoverConcept[] } {
     origin: "owner",
     standardRef: null,
     kind: "entity",
-    grounding: [firstGrounding],
+    grounding: [discoverGlossaryHomePath ? "code:app/home/page.tsx" : firstGrounding],
     broader: null,
     related: [],
   };
@@ -1429,6 +1436,7 @@ async function runDiscover(staging: string) {
   stream("Scanning manifests");
   stream("Reading tests");
   stream("Mapping architecture");
+  if (discoverDelayMs > 0) await Bun.sleep(discoverDelayMs);
   if (discoverQuestion) await askQuestions(1);
 
   if (discoverError) {

@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { remoteCloneName } from "../server/discover";
 import { fixtureRecord } from "../server/fixtures/adr-source";
 import { journalKey } from "../server/journal";
 import { saveSubscriptions } from "../server/providers";
@@ -896,7 +897,7 @@ async function seedRetainedProject(
   repo: string,
   completedAt: string,
 ): Promise<string> {
-  const directory = join(stateDir, "discover-remote", `${owner}-${repo}`.toLowerCase());
+  const directory = join(stateDir, "discover-remote", remoteCloneName(owner, repo));
   await mkdir(join(directory, ".omp"), { recursive: true });
   await cp(join(host, ".omp", "discover"), join(directory, ".omp", "discover"), {
     recursive: true,
@@ -1135,7 +1136,7 @@ try {
     GOAL_FILE: join(host, "GOAL.md"),
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
-    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --ask --ask-delay-ms=600 --goal-draft`,
+    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=1500 --ask --ask-delay-ms=600 --goal-draft`,
     // Harness-owned reporting goes through the local Gitea API stub, never
     // through `gh`, and the recorded requests stay under `.tmp`.
     DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
@@ -2902,6 +2903,7 @@ try {
     tableFont: string;
     freshness: boolean;
     freshnessText: string;
+    definitionLead: boolean;
     dirtyBadges: number;
     evidence: number;
     confidence: number;
@@ -2957,6 +2959,7 @@ try {
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
       freshness: document.querySelector('[data-testid="discover-freshness"]') !== null,
       freshnessText: document.querySelector('[data-testid="discover-freshness"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      definitionLead: document.querySelector('#workspace-discover .discover-head__definition') !== null,
       dirtyBadges: [...document.querySelectorAll('#workspace-discover .discover-head .badge')]
         .filter((badge) => badge.textContent.trim() === "dirty").length,
       evidence: document.querySelectorAll('[data-testid="discover-evidence"]').length,
@@ -3052,6 +3055,7 @@ try {
   check(discoverTables.stackLinks > 0, "no library chip links to its repository", discoverTables.stackLinks);
   check(discoverTables.stackHref.startsWith("https://github.com/"), "a library chip links outside its repository", discoverTables.stackHref);
   check(discoverTables.stackedSections === 0, "Discover still renders the duplicated dependency or unknown sections", discoverTables.stackedSections);
+  check(!discoverTables.definitionLead, "the Discover header still renders the definition lead", discoverTables);
   check(discoverTables.staticText === 0, "Discover still renders static lead or note prose", discoverTables.staticText);
   check(discoverTables.commandHeaders === 0, "the command table still renders a header row", discoverTables.commandHeaders);
   check(discoverTables.contextHeader === "", "the bounded-context card still renders a table header", discoverTables.contextHeader);
@@ -3296,6 +3300,27 @@ try {
     mobile: false,
   });
   await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop viewport after the scroll check");
+
+  // Like the Issues overview, the Discover overview names a run in progress.
+  // The fixture holds the turn open so the state is observable.
+  const discoverIdleBadge = await page.eval<string>(
+    `document.querySelector('[data-testid="discover-running"]')?.textContent?.trim() ?? ""`,
+  );
+  check(discoverIdleBadge === "", "the Discover sidebar shows a running label while idle", discoverIdleBadge);
+  await page.click('[data-testid="discover-start"]');
+  await page.wait(
+    `(() => {
+      const badge = document.querySelector('[data-testid="sidebar"] button[data-tab="overview"] [data-testid="discover-running"]');
+      return badge?.textContent?.trim() === "running";
+    })()`,
+    "the running label on the Discover overview",
+    15_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="sidebar"] [data-testid="discover-running"]') === null`,
+    "the Discover running label to clear",
+    30_000,
+  );
 
   await runPalette("discover.tab.glossary");
   await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the glossary term table");
@@ -3966,7 +3991,7 @@ try {
   const scratchAfterSwitch = await readdir(join(stateDir, "discover-remote"));
   check(
     JSON.stringify(scratchAfterSwitch.sort()) ===
-      JSON.stringify(["octocat-hello-world", "octocat-second-project"]),
+      JSON.stringify(["octocat~hello-world", "octocat~second-project"]),
     "switching created a checkout or removed a retained project",
     scratchAfterSwitch,
   );
@@ -4136,7 +4161,7 @@ try {
   );
   const scratchAfterInvalid = await readdir(join(stateDir, "discover-remote"));
   check(
-    JSON.stringify(scratchAfterInvalid.sort()) === JSON.stringify(["octocat-hello-world"]),
+    JSON.stringify(scratchAfterInvalid.sort()) === JSON.stringify(["octocat~hello-world"]),
     "an invalid URL created or removed a retained project",
     scratchAfterInvalid,
   );

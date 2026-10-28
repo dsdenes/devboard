@@ -4586,6 +4586,9 @@ export function createApp(options: AppOptions) {
         broadcast({ type: "error", lane: lane.id, message: lane.failure });
       }
     } finally {
+      // The lane has left liveLanes by the time this returns, so a finished
+      // peer would otherwise outlive the lane with no reference left to close it.
+      lane.agent?.close();
       lane.agent = undefined;
       lane.question = null;
       liveLanes.delete(lane);

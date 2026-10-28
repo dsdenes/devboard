@@ -642,14 +642,16 @@ Discover artifacts are published it also lists the five skills `Testing Strategy
 `testing-strategy`, `naming-conventions`, `coding-conventions`, `architecture-boundaries`, and
 `glossary-skill`); with no published artifacts the **Skills** group and its header do not render.
 The sidebar has no header, so its first entry is its mode's navigation. The active panel carries
-`data-testid="discover-panel"` and the same `data-tab`.
+`data-testid="discover-panel"` and the same `data-tab`. While a crawl is active, the `Overview`
+entry carries a `running` badge (`data-testid="discover-running"`), matching the Issues overview;
+the badge disappears when the run stops.
 Warnings appears as its own group with a count only while at least one warning exists; the sidebar
 keeps no freshness group and no recent-notice list.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the repository as
 `owner/name` from its GitHub remote (falling back to the directory name when no remote names one;
-the full path stays in the tooltip), the one-line definition, the discovery date, and the single
+the full path stays in the tooltip), the discovery date, and the single
 filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
 report it. While a run exists, every Discover page carries a run tag above its notice stack: a
 status dot, `Discover run in progress`, the age, the run identifier as a code chip, the latest
@@ -730,7 +732,7 @@ significance sidecar and is read as legacy, with no error.
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint. The
 Overview page is a project sheet, not a card grid. A masthead
-(`data-testid="discover-freshness"`) carries the project name, the one-sentence definition, and the
+(`data-testid="discover-freshness"`) carries the project name and the
 discovery date. The commit, the dirty flag, and the staleness flag stay in the sheet and the state
 payload but render no header badge. Below the masthead the sheet is one bounded two-column spine:
 `Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates, and
@@ -979,20 +981,21 @@ Branch or ref selection, private repositories, and credentials are out of scope;
 public repositories may be retained.
 
 The retained root is `<STATE_DIR>/discover-remote/` and must resolve inside `<REPO_DIR>`. It holds
-one directory per discovered repository, named `<owner>-<repo>` in lowercase, and nothing else once
-a run ends. Each directory keeps the bytes the crawl published — `.omp/discover/` and
-`.omp/skills/` — beside `project.json`, which records `url`, `owner`, `repo`, and the ISO
-`completedAt` time. A run's checkout is a transient `.staging-<run-id>` directory beside those
-projects; it never survives the run. While a run is live it owns a claim at
-`.runs/<checkout-name>.json` naming its process, and the claim and the `.runs/` directory leave
-with the checkout.
+one directory per discovered repository, named `<owner>~<repo>` in lowercase, and nothing else once
+a run ends. The `~` cannot occur in either URL segment, so distinct `owner/repo` pairs — including
+`a/b-c` and `a-b/c` — always get different directories. Each directory keeps the bytes the crawl
+published — `.omp/discover/` and `.omp/skills/` — beside `project.json`, which records `url`,
+`owner`, `repo`, and the ISO `completedAt` time. A run's checkout is a transient
+`.staging-<run-id>` directory beside those projects; it never survives the run. While a run is live
+it owns a claim at `.runs/<checkout-name>.json` naming its process, and the claim and the `.runs/`
+directory leave with the checkout.
 
 A submit broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs
 exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
 the retained root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`,
 `NO_COLOR=1`, and a 300-second timeout. On success the checkout becomes the crawl root and exactly
 one crawl runs against it. Publication writes into the checkout's `.omp`; when the crawl succeeds,
-the two published trees are copied into `<owner>-<repo>/`, `project.json` is rewritten with the
+the two published trees are copied into `<owner>~<repo>/`, `project.json` is rewritten with the
 submitted URL and the completion time, and the checkout is removed. The active target moves to the
 new project only after its bytes are retained, so a failed clone or a failed crawl leaves the
 previous target, its bytes, its entry, and its completion time untouched and reports exactly one
@@ -1003,7 +1006,7 @@ resumed.
 
 With a remote target every Discover read and write uses the retained directory: the Overview,
 staleness, warnings, skill saves and restores, glossary decisions, and the manifest all come from
-`<owner>-<repo>/.omp`. A crawl is the only path that needs a checkout; starting Discover on a
+`<owner>~<repo>/.omp`. A crawl is the only path that needs a checkout; starting Discover on a
 retained target — `discoverProject`, or `discoverRemote` with its URL — first clones the project
 again, runs exactly one crawl, replaces the snapshot on success, and removes the checkout. Remote
 grounding evidence is stored in the glossary, so the retained snapshot renders without the source
@@ -1018,7 +1021,7 @@ listed newest completed discovery first. `discoverState` carries this list as `r
 project's transient clone exists.
 
 Durable state stores the active target as URL, owner, and repository only. A replacement restores
-it only while `<owner>-<repo>` holds a readable `project.json` and both `.omp` trees, without a
+it only while `<owner>~<repo>` holds a readable `project.json` and both `.omp` trees, without a
 clone or a re-crawl; otherwise it starts on the host target, drops that one stored target, keeps
 every other retained entry, and sends one `discoverError` naming the missing project to the next
 client. Startup removes every `.staging-*` directory and any leftover directory containing `.git`,
@@ -1087,8 +1090,9 @@ ADRS_DIR=../adrs REPO_DIR=.. bun run start
 
 Open Discover, enter `https://github.com/octocat/Hello-World`, and confirm the cloning state, a
 completed crawl, the checkout gone from `.devboard/.tmp/discover-remote/`, the retained project at
-`.devboard/.tmp/discover-remote/octocat-hello-world/` with its `.omp/discover`, `.omp/skills`, and
-`project.json`, its sheet and glossaries, and a skill save landing under the retained `.omp/skills/`.
+`.devboard/.tmp/discover-remote/octocat~hello-world/` with its `.omp/discover`, `.omp/skills`, and
+`project.json`, its sheet and glossaries, and a skill save landing under the retained
+`.omp/skills/`.
 Restart the server, reload, and confirm the same project is active with its artifacts and no
 missing-clone error. Discover a second repository, switch between the two from the dropdown, and
 confirm no clone appears. Remove one entry and confirm only its directory disappears. Hash `.omp`
@@ -1138,9 +1142,12 @@ failure, a refused or reset connection, a timeout, an API rate limit, or an answ
 readable release description (a proxy page, a truncated body, an unexpected payload) — leaves the
 previous package and server intact, writes an `activity` record naming the skipped check, and
 retries with exponential backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for
-the operator, never an `update-error` finding. A check that reaches the feed and fails, a release
-without a tag, a checksum mismatch, an authentication failure, or a failed npm install writes
-`update-error` and is retried the same way.
+the operator, never an `update-error` finding. A registry that advertises a version but does not
+serve that version's own tarball yet (npm answers 404 or 410) is the same kind of external,
+temporary refusal: the install is skipped with an `activity` record and retried with the backoff.
+A check that reaches the feed and fails, a release without a tag, a missing dependency tarball, a
+checksum mismatch, an authentication failure, or any other failed npm install writes `update-error`
+and is retried the same way.
 
 |Variable|Default|Purpose|
 |---|---|---|
@@ -1241,6 +1248,8 @@ A machine-level systemd user timer runs the watchdog independently of every dash
 minutes 0, 10, 20, 30, 40, and 50 of every hour (`OnCalendar=*:0/10`, `Persistent=true`), the
 `devboard-watchdog.service` oneshot runs `bun run watchdog -- --once` from the canonical harness.
 It survives logout (`Linger=yes`) and never starts, stops, or restarts a dashboard itself.
+The unit supplies only `PATH`, so the cycle reads the host root's `.env` itself; a value already
+present in the process environment wins over the file.
 
 Each cycle detects and reports; it never fixes. It reads the ten minutes before cycle start, both
 ends inclusive, from:
@@ -1310,7 +1319,10 @@ Discovery scans `/proc` for every process running `server/index.ts` that supplie
 `PORT`, de-duplicates by `(REPO_DIR, PORT)`, resolves the serving harness from `STATIC_DIR` or
 the process working directory, and reads the journal from the process's `STATE_DIR`. Instances
 from installed hosts and the canonical source checkout are covered alike; an instance whose
-state directory has no journal is reported `uninstrumented`.
+state directory has no journal is reported `uninstrumented`. A process whose `REPO_DIR` lies
+inside a `.devboard/.tmp` directory is verification scratch, not a monitored host: verification
+scripts create those fixtures to assert deliberate failures, so discovery skips them before any
+evidence is read.
 
 Findings derive only from machine-checkable evidence: a `server-error`, `update-error`, or
 `acp-stderr` journal record; a `lane-stop` whose status token is `failed`; an omp log record at
@@ -1363,19 +1375,12 @@ it stays the Issues mode's active tab until another Issues page is opened. The p
 anything.
 
 The page is one framed header over a body that is two columns while the page container is wider
-than 1300px and one column below that. The primary column stacks the `watchdog-last-cycle` summary
-band over the filed-issue table; the cycle-history panel is the aside. The summary leads with the
-action badge and the reason, then states the exact start, the findings, and the pending filings as
-one compact facts row. Both panels own their scrolling, so the 100-row history never pushes the
-filed issues below the page. In the stacked layout the page scrolls and each list caps its own
-height. When the primary column is narrower than 900px the issue `Category`, `Filed`, and
+than 1300px and one column below that. The primary column holds the filed-issue table and the
+cycle-history panel is the aside. Both panels own their scrolling, so the 100-row history never
+pushes the filed issues below the page. In the stacked layout the page scrolls and each list caps
+its own height. When the primary column is narrower than 900px the issue `Category`, `Filed`, and
 `Version` columns are hidden before any value is clipped (the category repeats inside the generated
 title); they stay in the DOM.
-
-`watchdog-last-cycle` is the newest cycle from `latest.json`: `watchdog-last-cycle-at` (a `<time>`,
-or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findings`,
-`watchdog-last-pending`, and `watchdog-last-reason` only when the report carries a reason. The
-panel's `watchdog-last-age` shows that cycle's age.
 
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
 first, capped at the newest 100 directories. Its rows are three tracks — the `Started` clock, the
@@ -1394,9 +1399,8 @@ first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `da
 `data-version` and renders `watchdog-issue-title` (an anchor to the issue reading
 `[watchdog] <category>: <line>`), `watchdog-issue-category`, `watchdog-issue-filed` (a `<time>`),
 `watchdog-issue-state`, and `watchdog-issue-version` (the tag, or `—`). A pending-only fingerprint
-is counted in `watchdog-last-pending` and never becomes a row; `watchdog-issues-empty` renders
-when nothing is filed. `watchdog-issues-count` summarizes the filed rows only; the pending count
-appears once in `watchdog-last-pending`.
+never becomes a row; `watchdog-issues-empty` renders when nothing is filed.
+`watchdog-issues-count` counts the filed rows only.
 
 The server prints `watchdog-issue-state` as `pending` for an open issue and `implemented` for a
 closed one, whatever its `stateReason`; a reopened issue returns to `pending` within one refresh
