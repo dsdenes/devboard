@@ -1353,18 +1353,11 @@ it stays the Issues mode's active tab until another Issues page is opened. The p
 `GET /api/watchdog` and sends no command that files, comments, closes, starts, stops, or fixes
 anything.
 
-The page is one framed header, one full-width `watchdog-last-cycle` summary band, and two panels
-under it. The summary leads with the action badge and the reason, then states the exact start, the
-findings, and the pending filings as one compact facts row. The filed-issue table takes the wider
+The page is one framed header with two panels under it. The filed-issue table takes the wider
 column on a viewport at least 1501px wide; below that the two panels stack as flexible rows. Below
 1100px the issue `Category` column is hidden before any value is clipped (the category repeats
 inside the generated title); it stays in the DOM. Both panels own their scrolling, so the 100-row
 history never pushes the filed issues below the page.
-
-`watchdog-last-cycle` is the newest cycle from `latest.json`: `watchdog-last-cycle-at` (a `<time>`,
-or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findings`,
-`watchdog-last-pending`, and `watchdog-last-reason` only when the report carries a reason. The
-panel's `watchdog-last-age` shows that cycle's age.
 
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
 first, capped at the newest 100 directories. Its table labels the three columns `Started`, `Action`,
@@ -1382,8 +1375,9 @@ first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `da
 `data-version` and renders `watchdog-issue-title` (an anchor to the issue reading
 `[watchdog] <category>: <line>`), `watchdog-issue-category`, `watchdog-issue-filed` (a `<time>`),
 `watchdog-issue-state`, and `watchdog-issue-version` (the tag, or `—`). A pending-only fingerprint
-is counted in `watchdog-last-pending` and never becomes a row; `watchdog-issues-empty` renders
-when nothing is filed. `watchdog-issues-count` summarizes the rows and pending filings.
+is counted in the `watchdog-issues-count` pending total and never becomes a row;
+`watchdog-issues-empty` renders when nothing is filed. `watchdog-issues-count` summarizes the rows
+and pending filings.
 
 The server prints `watchdog-issue-state` as `pending` for an open issue and `implemented` for a
 closed one, whatever its `stateReason`; a reopened issue returns to `pending` within one refresh

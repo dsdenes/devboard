@@ -12,15 +12,8 @@
   const syncTone = $derived<BadgeTone>(
     sync.state === "ok" ? "success" : sync.state === "error" ? "error" : "stale",
   );
-  const cycle = $derived(snapshot?.cycle ?? null);
   const cycles = $derived(snapshot?.cycles ?? []);
   const issues = $derived(snapshot?.issues ?? []);
-
-  let now = $state(Date.now());
-  $effect(() => {
-    const timer = setInterval(() => (now = Date.now()), 1000);
-    return () => clearInterval(timer);
-  });
 
   onMount(() => {
     watchdog.start();
@@ -38,19 +31,6 @@
       second: "2-digit",
       hour12: false,
     });
-  }
-
-  function age(value: string | null): string {
-    if (value === null) return "never";
-    const elapsed = now - Date.parse(value);
-    if (!Number.isFinite(elapsed)) return "unknown";
-    const seconds = Math.max(0, Math.floor(elapsed / 1000));
-    if (seconds < 60) return "just now";
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    return `${Math.floor(hours / 24)}d ago`;
   }
 
   function actionTone(action: string): BadgeTone | undefined {
@@ -96,49 +76,6 @@
       {/if}
     </div>
   {/if}
-
-  <section class="panel watchdog-latest" data-testid="watchdog-last-cycle" aria-label="Newest cycle">
-    <div class="panel__header">
-      <h2 class="panel__title">Newest cycle</h2>
-      <span class="panel__subtitle" data-testid="watchdog-last-age">{age(cycle)}</span>
-    </div>
-    <div class="panel__body watchdog-latest__body">
-      <div class="watchdog-latest__verdict">
-        <span
-          class="badge"
-          data-tone={actionTone(snapshot?.action ?? "")}
-          data-testid="watchdog-last-action"
-        >
-          {snapshot?.action ?? "unknown"}
-        </span>
-        {#if snapshot?.reason !== undefined}
-          <p class="watchdog-latest__reason" data-testid="watchdog-last-reason">{snapshot.reason}</p>
-        {:else if cycle === null}
-          <p class="watchdog-latest__reason watchdog-latest__reason--empty">No cycle has run yet.</p>
-        {/if}
-      </div>
-      <dl class="watchdog-latest__facts">
-        <div>
-          <dt>Started</dt>
-          <dd class="mono" data-testid="watchdog-last-cycle-at">
-            {#if cycle === null}
-              never
-            {:else}
-              <time datetime={cycle}>{stamp(cycle)}</time>
-            {/if}
-          </dd>
-        </div>
-        <div>
-          <dt>Findings</dt>
-          <dd class="mono" data-testid="watchdog-last-findings">{snapshot?.findings ?? 0}</dd>
-        </div>
-        <div>
-          <dt>Pending filings</dt>
-          <dd class="mono" data-testid="watchdog-last-pending">{snapshot?.pending ?? 0}</dd>
-        </div>
-      </dl>
-    </div>
-  </section>
 
   <div class="watchdog-body">
     <section class="panel watchdog-panel" aria-label="Filed issues">
@@ -310,67 +247,6 @@
     flex: 0 0 auto;
     flex-direction: column;
     gap: 6px;
-  }
-
-  .watchdog-latest {
-    flex: 0 0 auto;
-  }
-
-  .watchdog-latest__body {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 24px;
-    justify-content: space-between;
-  }
-
-  .watchdog-latest__verdict {
-    align-items: center;
-    display: flex;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .watchdog-latest__reason {
-    color: var(--foreground);
-    font-size: 12px;
-    line-height: 1.4;
-    margin: 0;
-    overflow-wrap: anywhere;
-  }
-
-  .watchdog-latest__reason--empty {
-    color: var(--muted-foreground);
-  }
-
-  .watchdog-latest__facts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 24px;
-    margin: 0;
-  }
-
-  .watchdog-latest__facts > div {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-
-  .watchdog-latest__facts dt {
-    color: var(--muted-foreground);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    line-height: 1.2;
-    text-transform: uppercase;
-  }
-
-  .watchdog-latest__facts dd {
-    font-size: 11.5px;
-    line-height: 1.4;
-    margin: 0;
-    overflow-wrap: anywhere;
   }
 
   .watchdog-body {
