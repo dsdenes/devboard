@@ -194,8 +194,15 @@ export function openJournal(options: JournalOptions): Journal {
   /** Moves the live file aside so no record is ever truncated away. */
   function rotate() {
     rotations += 1;
-    // A counter keeps two rotations in the same millisecond from colliding.
-    renameSync(path, `${path}.${Date.now()}-${rotations}`);
+    try {
+      // A counter keeps two rotations in the same millisecond from colliding.
+      renameSync(path, `${path}.${Date.now()}-${rotations}`);
+    } catch (error) {
+      // The live file can disappear under a running writer: an external delete
+      // or a retention sweep of an older build. Rotation then starts a fresh
+      // live file instead of throwing the record away.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     size = 0;
   }
 
@@ -242,6 +249,8 @@ interface JournalFile {
   name: string;
   size: number;
   mtimeMs: number;
+  /** The live file the writer appends to; never a deletion candidate. */
+  live: boolean;
 }
 
 /**
@@ -262,7 +271,8 @@ export function pruneJournal(stateDir: string, options: PruneOptions): string[] 
 
   const files: JournalFile[] = [];
   for (const name of names) {
-    if (parseJournalName(name) === null) continue;
+    const parsed = parseJournalName(name);
+    if (parsed === null) continue;
     const path = join(directory, name);
     try {
       const info = statSync(path);
@@ -272,6 +282,7 @@ export function pruneJournal(stateDir: string, options: PruneOptions): string[] 
         name,
         size: info.size,
         mtimeMs: info.mtimeMs,
+        live: parsed.rotation === undefined,
       });
     } catch {
       // A journal disappearing mid-scan is already gone.
@@ -285,6 +296,8 @@ export function pruneJournal(stateDir: string, options: PruneOptions): string[] 
 
   for (const file of [...files].sort((left, right) => left.mtimeMs - right.mtimeMs)) {
     if (!remaining.has(file)) continue;
+    // Only rotated evidence expires: the live file belongs to the writer.
+    if (file.live) continue;
     if (file.mtimeMs >= cutoff) continue;
     try {
       unlinkSync(file.path);
@@ -298,6 +311,8 @@ export function pruneJournal(stateDir: string, options: PruneOptions): string[] 
   let total = [...remaining].reduce((sum, file) => sum + file.size, 0);
   for (const file of [...remaining].sort((left, right) => left.mtimeMs - right.mtimeMs)) {
     if (total <= maxBytes) break;
+    // The live file still counts toward the bound but is never a candidate.
+    if (file.live) continue;
     // A file still inside the window is evidence the next cycle needs.
     if (file.mtimeMs >= windowStart) continue;
     try {
