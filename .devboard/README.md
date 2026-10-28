@@ -1288,8 +1288,8 @@ panel's `watchdog-last-age` shows that cycle's age.
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
 first, capped at the newest 100 directories. Every `watchdog-cycle` row carries `data-action` and
 renders `watchdog-cycle-at`, `watchdog-cycle-window` (window start and end),
-`watchdog-cycle-action`, `watchdog-cycle-findings`, and `watchdog-cycle-reason` (empty when the
-report has none). A run directory whose `report.json` is missing or unparsable is skipped without
+`watchdog-cycle-action`, and `watchdog-cycle-findings`; a cycle's reason appears only in the
+newest-cycle panel. A run directory whose `report.json` is missing or unparsable is skipped without
 hiding the other rows. With no run directory at all, the `latest.json` cycle is the single row;
 with no cycle anywhere, `watchdog-cycles-empty` is rendered.
 
@@ -1566,9 +1566,10 @@ directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each 
 and its first Markdown heading. An empty directory shows `No drafts exist.`.
 
 Selecting one opens `data-testid="issues-draft-detail"`: a two-line header carries the draft's
-first heading and its file name, the state badge for this draft's run only, `issues-draft-start`
-(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
-body reads the proposal before the `## Captured UI context` marker, then the activity stream in
+first heading and its file name, the state badge for this draft's run only (absent while the run
+is `idle`), `issues-draft-start` (`issues.draft.start`) and, while this draft runs,
+`issues-draft-stop` (`issues.draft.stop`). The body reads the proposal before the `## Captured
+UI context` marker, then the activity stream in
 `issues-draft-activity` once a run exists, then `issues-draft-context`: the captured facts as a
 compact grid and the visible text and DOM excerpt behind a `Captured evidence` disclosure. A
 pending elaboration question (`issues-draft-question`) renders above the proposal, with

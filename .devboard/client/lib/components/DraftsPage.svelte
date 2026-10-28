@@ -106,13 +106,15 @@
             </span>
           </div>
           <div class="issues-draft-detail__actions">
-            <span
-              class="badge"
-              data-tone={statusTone(status)}
-              data-testid="issues-draft-state"
-            >
-              {status}
-            </span>
+            {#if status !== "idle"}
+              <span
+                class="badge"
+                data-tone={statusTone(status)}
+                data-testid="issues-draft-state"
+              >
+                {status}
+              </span>
+            {/if}
             <Button
               variant="default"
               data-testid="issues-draft-start"
