@@ -2983,15 +2983,33 @@ a.code-chip--link:focus-visible {
   gap: 12px;
 }
 
+/* Tracker text is unbounded: the identity column yields so the issue title
+   truncates on one line and the trailing badge and control stay inside. */
+.issues-overview__header > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.issues-overview__header > .badge,
+.issues-overview__header > button {
+  flex: 0 0 auto;
+}
+
 .issues-overview__title {
   font-size: 18px;
   font-weight: 600;
   margin: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .issues-overview__repo {
   font-size: 11.5px;
   color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .issues-overview__body {
