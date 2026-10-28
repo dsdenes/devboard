@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { remoteCloneName } from "../server/discover";
 import { fixtureRecord } from "../server/fixtures/adr-source";
 import { journalKey } from "../server/journal";
 import { saveSubscriptions } from "../server/providers";
@@ -881,7 +882,7 @@ async function seedRetainedProject(
   repo: string,
   completedAt: string,
 ): Promise<string> {
-  const directory = join(stateDir, "discover-remote", `${owner}-${repo}`.toLowerCase());
+  const directory = join(stateDir, "discover-remote", remoteCloneName(owner, repo));
   await mkdir(join(directory, ".omp"), { recursive: true });
   await cp(join(host, ".omp", "discover"), join(directory, ".omp", "discover"), {
     recursive: true,
@@ -3972,7 +3973,7 @@ try {
   const scratchAfterSwitch = await readdir(join(stateDir, "discover-remote"));
   check(
     JSON.stringify(scratchAfterSwitch.sort()) ===
-      JSON.stringify(["octocat-hello-world", "octocat-second-project"]),
+      JSON.stringify(["octocat~hello-world", "octocat~second-project"]),
     "switching created a checkout or removed a retained project",
     scratchAfterSwitch,
   );
@@ -4142,7 +4143,7 @@ try {
   );
   const scratchAfterInvalid = await readdir(join(stateDir, "discover-remote"));
   check(
-    JSON.stringify(scratchAfterInvalid.sort()) === JSON.stringify(["octocat-hello-world"]),
+    JSON.stringify(scratchAfterInvalid.sort()) === JSON.stringify(["octocat~hello-world"]),
     "an invalid URL created or removed a retained project",
     scratchAfterInvalid,
   );

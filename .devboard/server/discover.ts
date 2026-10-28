@@ -269,9 +269,13 @@ export function remoteScratchRoot(stateDir: string): string {
   return join(resolve(stateDir), REMOTE_SCRATCH_NAME);
 }
 
-/** The one clone directory name a repository gets; always lowercase. */
+/**
+ * The one clone directory name a repository gets; always lowercase. The `~`
+ * separator is outside the accepted URL grammar, so distinct `owner/repo`
+ * pairs can never produce the same name (`a/b-c` and `a-b/c` stay apart).
+ */
 export function remoteCloneName(owner: string, repo: string): string {
-  return `${owner}-${repo}`.toLowerCase();
+  return `${owner}~${repo}`.toLowerCase();
 }
 
 /**

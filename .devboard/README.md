@@ -981,20 +981,21 @@ Branch or ref selection, private repositories, and credentials are out of scope;
 public repositories may be retained.
 
 The retained root is `<STATE_DIR>/discover-remote/` and must resolve inside `<REPO_DIR>`. It holds
-one directory per discovered repository, named `<owner>-<repo>` in lowercase, and nothing else once
-a run ends. Each directory keeps the bytes the crawl published — `.omp/discover/` and
-`.omp/skills/` — beside `project.json`, which records `url`, `owner`, `repo`, and the ISO
-`completedAt` time. A run's checkout is a transient `.staging-<run-id>` directory beside those
-projects; it never survives the run. While a run is live it owns a claim at
-`.runs/<checkout-name>.json` naming its process, and the claim and the `.runs/` directory leave
-with the checkout.
+one directory per discovered repository, named `<owner>~<repo>` in lowercase, and nothing else once
+a run ends. The `~` cannot occur in either URL segment, so distinct `owner/repo` pairs — including
+`a/b-c` and `a-b/c` — always get different directories. Each directory keeps the bytes the crawl
+published — `.omp/discover/` and `.omp/skills/` — beside `project.json`, which records `url`,
+`owner`, `repo`, and the ISO `completedAt` time. A run's checkout is a transient
+`.staging-<run-id>` directory beside those projects; it never survives the run. While a run is live
+it owns a claim at `.runs/<checkout-name>.json` naming its process, and the claim and the `.runs/`
+directory leave with the checkout.
 
 A submit broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs
 exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
 the retained root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`,
 `NO_COLOR=1`, and a 300-second timeout. On success the checkout becomes the crawl root and exactly
 one crawl runs against it. Publication writes into the checkout's `.omp`; when the crawl succeeds,
-the two published trees are copied into `<owner>-<repo>/`, `project.json` is rewritten with the
+the two published trees are copied into `<owner>~<repo>/`, `project.json` is rewritten with the
 submitted URL and the completion time, and the checkout is removed. The active target moves to the
 new project only after its bytes are retained, so a failed clone or a failed crawl leaves the
 previous target, its bytes, its entry, and its completion time untouched and reports exactly one
@@ -1005,7 +1006,7 @@ resumed.
 
 With a remote target every Discover read and write uses the retained directory: the Overview,
 staleness, warnings, skill saves and restores, glossary decisions, and the manifest all come from
-`<owner>-<repo>/.omp`. A crawl is the only path that needs a checkout; starting Discover on a
+`<owner>~<repo>/.omp`. A crawl is the only path that needs a checkout; starting Discover on a
 retained target — `discoverProject`, or `discoverRemote` with its URL — first clones the project
 again, runs exactly one crawl, replaces the snapshot on success, and removes the checkout. Remote
 grounding evidence is stored in the glossary, so the retained snapshot renders without the source
@@ -1020,7 +1021,7 @@ listed newest completed discovery first. `discoverState` carries this list as `r
 project's transient clone exists.
 
 Durable state stores the active target as URL, owner, and repository only. A replacement restores
-it only while `<owner>-<repo>` holds a readable `project.json` and both `.omp` trees, without a
+it only while `<owner>~<repo>` holds a readable `project.json` and both `.omp` trees, without a
 clone or a re-crawl; otherwise it starts on the host target, drops that one stored target, keeps
 every other retained entry, and sends one `discoverError` naming the missing project to the next
 client. Startup removes every `.staging-*` directory and any leftover directory containing `.git`,
@@ -1089,8 +1090,9 @@ ADRS_DIR=../adrs REPO_DIR=.. bun run start
 
 Open Discover, enter `https://github.com/octocat/Hello-World`, and confirm the cloning state, a
 completed crawl, the checkout gone from `.devboard/.tmp/discover-remote/`, the retained project at
-`.devboard/.tmp/discover-remote/octocat-hello-world/` with its `.omp/discover`, `.omp/skills`, and
-`project.json`, its sheet and glossaries, and a skill save landing under the retained `.omp/skills/`.
+`.devboard/.tmp/discover-remote/octocat~hello-world/` with its `.omp/discover`, `.omp/skills`, and
+`project.json`, its sheet and glossaries, and a skill save landing under the retained
+`.omp/skills/`.
 Restart the server, reload, and confirm the same project is active with its artifacts and no
 missing-clone error. Discover a second repository, switch between the two from the dropdown, and
 confirm no clone appears. Remove one entry and confirm only its directory disappears. Hash `.omp`
