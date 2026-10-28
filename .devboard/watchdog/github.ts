@@ -185,7 +185,7 @@ export function commentIssue(
   url: string,
   input: IssueInput,
 ): { ok: true } | { ok: false; reason: string } {
-  const outcome = gh(["issue", "comment", url, "--body", "-"], watchdogComment(input));
+  const outcome = gh(["issue", "comment", url, "--body-file", "-"], watchdogComment(input));
   if (outcome.code !== 0) return { ok: false, reason: ghFailureReason(outcome) };
   return { ok: true };
 }
