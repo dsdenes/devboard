@@ -1362,19 +1362,30 @@ export class FlowController {
       return;
     }
 
+    const activity: string[] = [];
+    const implementation = { agent: undefined as AcpConnection | undefined, activity, finished: false };
+    // Claim the slot before the first await. The base fetch and the worktree
+    // check are asynchronous, and a second Start that lands inside them would
+    // otherwise pass the guard and spawn a second peer in the same worktree.
+    this.#implementation = implementation;
+
     const base = await this.#resolveBase();
     if (base === undefined) {
+      if (this.#implementation === implementation) this.#implementation = undefined;
       this.#error("Could not start the Flow implementation: neither origin/main nor main exists.");
       return;
     }
     if (session.baseRevision === null) session.baseRevision = base;
 
     const created = await this.#ensureWorktree(session, base);
-    if (!created) return;
+    if (!created) {
+      if (this.#implementation === implementation) this.#implementation = undefined;
+      return;
+    }
+    // Stop or dispose released the claim while the worktree was being
+    // prepared; no peer may start without holding the slot.
+    if (this.#implementation !== implementation) return;
 
-    const activity: string[] = [];
-    const implementation = { agent: undefined as AcpConnection | undefined, activity, finished: false };
-    this.#implementation = implementation;
     this.#quiet = false;
     session.status = "running";
     this.#restartNotice = null;
@@ -1398,7 +1409,10 @@ export class FlowController {
         cwd: session.worktree,
         env: await this.#agentEnvironment(),
         onActivity: (update: AcpActivity) => {
-          if (this.#implementation !== implementation) return;
+          if (this.#implementation !== implementation) {
+            implementation.agent?.close();
+            return;
+          }
           const append = update.append && activity.length > 0;
           if (append) activity[activity.length - 1] += update.text;
           else activity.push(update.text);
@@ -1411,7 +1425,10 @@ export class FlowController {
           }
         },
         onQuestion: (question: AcpQuestion) => {
-          if (this.#implementation !== implementation) return;
+          if (this.#implementation !== implementation) {
+            implementation.agent?.close();
+            return;
+          }
           session.question = {
             id: question.id,
             message: question.message,
@@ -1430,11 +1447,17 @@ export class FlowController {
       });
       implementation.agent = agent;
       await agent.run(`/flow-implement ${directory}`);
-      if (this.#implementation !== implementation) return;
+      if (this.#implementation !== implementation) {
+        agent.close();
+        return;
+      }
       implementation.finished = true;
       this.#finishImplementation();
     } catch (error) {
-      if (this.#implementation !== implementation) return;
+      if (this.#implementation !== implementation) {
+        implementation.agent?.close();
+        return;
+      }
       this.#error(error instanceof Error ? error.message : String(error));
       this.#finishImplementation();
     }

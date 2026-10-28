@@ -1373,6 +1373,98 @@ describe("Flow session lifecycle", () => {
     client.close();
   }, 60_000);
 
+  test("two concurrent starts spawn one implementation peer and Stop closes it", async () => {
+    const fixture = createFixture("concurrent-start");
+    const testServer = startServer(fixture, {
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-checkpoints=2",
+        "--flow-step-delay=5000",
+      ],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+
+    /** The stub pid behind each `/flow-implement` turn, in spawn order. */
+    const implementationPids = (): string[] => {
+      const log = stubLog(fixture);
+      const pids: string[] = [];
+      for (let index = 0; index < log.length; index += 1) {
+        if (!log[index]?.startsWith("flow-implement ")) continue;
+        for (let previous = index - 1; previous >= 0; previous -= 1) {
+          const line = log[previous];
+          if (line?.startsWith("spawn ")) {
+            pids.push(line.slice("spawn ".length));
+            break;
+          }
+        }
+      }
+      return pids;
+    };
+
+    // One start and Stop leaves the stopped session with an existing worktree:
+    // the state in which two Starts can overlap inside resolveBase/ensureWorktree.
+    client.send({ type: "startFlowImplementation" });
+    const started = await client.waitFor((event) => event.type === "flowImplementationStarted");
+    const sessionId = started.sessionId as string;
+    const directory = join(fixture.stateDir, "flow", journalKey(fixture.root), sessionId);
+    await waitUntil(() => promptCount(fixture, directory) === 1, "the first implementation prompt");
+    const firstPid = implementationPids()[0] ?? "";
+    expect(firstPid).not.toBe("");
+
+    const firstStop = client.mark();
+    client.send({ type: "stopFlowImplementation" });
+    await client.waitFor((event) => event.type === "flowStopped", { from: firstStop });
+    await waitUntil(
+      () => stubLog(fixture).includes(`exit ${firstPid}`),
+      "the first implementation peer to exit",
+    );
+    expect(readSession(fixture, sessionId).status).toBe("stopped");
+    expect(existsSync(started.worktree as string)).toBe(true);
+    // The restarted peer must have something to commit before it reaches the
+    // step delay, so Stop lands inside a live turn.
+    writeFileSync(join(started.worktree as string, "src", "main.txt"), "changed before restart\n");
+
+    const mark = client.mark();
+    client.send({ type: "startFlowImplementation" });
+    client.send({ type: "startFlowImplementation" });
+
+    const error = await client.waitFor(
+      (event) => event.type === "flowError" && String(event.message).includes("already running"),
+      { from: mark },
+    );
+    expect(String(error.message)).toContain("already running");
+    const resumed = await client.waitFor(
+      (event) => event.type === "flowImplementationStarted" && event.sessionId === sessionId,
+      { from: mark },
+    );
+    expect(resumed.worktree).toBe(started.worktree);
+    await waitUntil(
+      () => promptCount(fixture, directory) === 2,
+      "one implementation prompt from the overlapping starts",
+    );
+    // The refused frame must not spawn later either.
+    await Bun.sleep(200);
+    expect(promptCount(fixture, directory)).toBe(2);
+    expect(implementationPids()).toHaveLength(2);
+    const secondPid = implementationPids()[1] ?? "";
+    expect(secondPid).not.toBe(firstPid);
+
+    const secondStop = client.mark();
+    client.send({ type: "stopFlowImplementation" });
+    await client.waitFor((event) => event.type === "flowStopped", { from: secondStop });
+    await waitUntil(
+      () => stubLog(fixture).includes(`exit ${secondPid}`),
+      "the implementation peer to exit after Stop",
+    );
+    // Stop closed the only peer the overlapping starts spawned; the refused
+    // start left no child behind.
+    expect(implementationPids()).toHaveLength(2);
+    client.close();
+  }, 60_000);
+
   test("restartServer whenIdle waits for active Flow work", async () => {
     const fixture = createFixture("restart-idle");
     let restarts = 0;
