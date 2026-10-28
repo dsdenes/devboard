@@ -6394,6 +6394,261 @@ try {
   }))()`);
   check(!afterStop.stop && afterStop.startDisabled && afterStop.present, "Stop lost the draft or kept the peer", afterStop);
 
+  // The Draft goals page creates a goal and starts its elaboration in one step.
+  const listDraftFiles = async (): Promise<string[]> =>
+    (await readdir(draftDirectory)).filter((name) => name.endsWith(".md")).sort();
+  const draftTurns = async (): Promise<number> =>
+    (await readFile(agentLog, "utf8"))
+      .split("\n")
+      .filter((line) => line.startsWith("goal-draft ")).length;
+  const popoverOpen = `document.querySelector('[data-testid="issues-draft-new-popover"]') !== null`;
+  const createdPath = ".devboard/goal-proposals/stub-question-add-a-keyboard-shortcut.md";
+  const busyPath = ".devboard/goal-proposals/stub-hang-add-a-shortcut-for.md";
+  const createdInstructions =
+    "STUB-QUESTION Add a keyboard shortcut for creating a goal.\n\nKeep the drafts list in place.";
+  const busyInstructions = "STUB-HANG Add a shortcut for the draft list.";
+
+  const beforeNewGoal = await listDraftFiles();
+  check(beforeNewGoal.length === 2, "the one-step creation phase starts with the wrong drafts", beforeNewGoal);
+  await page.click('[data-testid="issues-draft-new"]');
+  await page.wait(
+    `${popoverOpen} && document.querySelector('[data-testid="issues-draft-new-input"]') !== null`,
+    "the New goal popover",
+  );
+  const newGoalChrome = await page.eval<{
+    testid: string;
+    command: string;
+    submit: string;
+    cancel: string;
+  }>(`(() => ({
+    testid: document.querySelector('[data-testid="issues-draft-new"]')?.getAttribute("data-testid") ?? "",
+    command: document.querySelector('[data-testid="issues-draft-new"]')?.getAttribute("data-command") ?? "",
+    submit: document.querySelector('[data-testid="issues-draft-new-submit"]') !== null ? "yes" : "",
+    cancel: document.querySelector('[data-testid="issues-draft-new-cancel"]') !== null ? "yes" : "",
+  }))()`);
+  check(
+    newGoalChrome.testid === "issues-draft-new" &&
+      newGoalChrome.command === "issues.draft.new" &&
+      newGoalChrome.submit === "yes" &&
+      newGoalChrome.cancel === "yes",
+    "the New goal control or its popover fields have the wrong ids",
+    newGoalChrome,
+  );
+  check(
+    (await listDraftFiles()).join(",") === beforeNewGoal.join(","),
+    "opening the New goal popover wrote a draft",
+  );
+  await page.fill('[data-testid="issues-draft-new-input"]', createdInstructions);
+  await dismissNotifications();
+  await saveShot("issues-draft-new-goal");
+  await page.key("Escape");
+  await page.wait(`!(${popoverOpen})`, "Escape to close the New goal popover");
+  check(
+    (await listDraftFiles()).join(",") === beforeNewGoal.join(","),
+    "Escape wrote a draft or started a peer",
+  );
+  await page.click('[data-testid="issues-draft-new"]');
+  await page.wait(popoverOpen, "the New goal popover after Escape");
+  await page.click('[data-testid="issues-draft-new-cancel"]');
+  await page.wait(`!(${popoverOpen})`, "Cancel to close the New goal popover");
+  check(
+    (await listDraftFiles()).join(",") === beforeNewGoal.join(","),
+    "Cancel wrote a draft or started a peer",
+  );
+
+  // One submit writes one context-free draft and starts exactly one peer.
+  const turnsBeforeCreate = await draftTurns();
+  await page.click('[data-testid="issues-draft-new"]');
+  await page.wait(popoverOpen, "the New goal popover for the created draft");
+  await page.fill('[data-testid="issues-draft-new-input"]', createdInstructions);
+  await page.click('[data-testid="issues-draft-new-submit"]');
+  await page.wait(`!(${popoverOpen})`, "the popover to close after creating the goal");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft"][data-path="${createdPath}"]') !== null`,
+    "the created draft without a reload",
+    8_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === "${createdPath}" &&
+      document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "running"`,
+    "the created draft's running detail",
+    8_000,
+  );
+  const createdText = await readFile(join(host, createdPath), "utf8");
+  check(
+    createdText.startsWith(
+      "# Proposed goal: STUB-QUESTION Add a keyboard shortcut for creating a goal.\n\n> Unprocessed draft. ",
+    ),
+    "the created draft has no heading or unprocessed notice",
+    createdText,
+  );
+  check(
+    createdText.includes(createdInstructions),
+    "the created draft lost the typed instructions",
+    createdText,
+  );
+  check(
+    createdText.includes("## Captured UI context\n\nNo page context was captured.\n"),
+    "the created draft does not state that no page context was captured",
+    createdText,
+  );
+  check(
+    !createdText.includes("- Route:") &&
+      !createdText.includes("- URL:") &&
+      !createdText.includes("- Selected element:") &&
+      !createdText.includes("- Viewport:") &&
+      !createdText.includes("- Captured at:") &&
+      !createdText.includes("### Visible text") &&
+      !createdText.includes("### DOM excerpt"),
+    "the created draft invents captured page context",
+    createdText,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("Reading the draft")`,
+    "the created draft's activity",
+    8_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-stop"]') !== null`,
+    "the created draft's stop control",
+  );
+  check(
+    (await draftTurns()) === turnsBeforeCreate + 1,
+    "one submit did not start exactly one elaboration",
+  );
+  await dismissNotifications();
+  await saveShot("issues-draft-new-goal-detail");
+
+  // A question reaches the created draft and its answer advances the turn.
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the created draft's question",
+    8_000,
+  );
+  const createdActivity = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? ""`,
+  );
+  const createdQuestion = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-draft-question"]')?.textContent ?? ""`,
+  );
+
+  // A busy submit writes the draft, starts nothing, and keeps the run intact.
+  const turnsBeforeBusy = await draftTurns();
+  await page.click('[data-testid="issues-draft-new"]');
+  await page.wait(popoverOpen, "the New goal popover while an elaboration runs");
+  await page.fill('[data-testid="issues-draft-new-input"]', busyInstructions);
+  await page.click('[data-testid="issues-draft-new-submit"]');
+  await page.wait(`!(${popoverOpen})`, "the busy popover to close");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft"][data-path="${busyPath}"]') !== null`,
+    "the busy submit's draft without a reload",
+    8_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === "${busyPath}"`,
+    "the busy submit's selected detail",
+    8_000,
+  );
+  const busyStart = await page.eval<{ disabled: boolean; title: string; blocker: string }>(`(() => {
+    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    const blocked = [...document.querySelectorAll('[data-testid="issues-draft-blocked"]')]
+      .find((item) => item.closest('[data-path="${busyPath}"]') !== null);
+    return {
+      disabled: start?.disabled === true,
+      title: start?.getAttribute("title") ?? "",
+      blocker: blocked?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    existsSync(join(host, busyPath)) &&
+      busyStart.disabled &&
+      busyStart.title.includes(createdPath) &&
+      busyStart.blocker.includes(createdPath),
+    "the busy submit did not write a draft that states why it cannot start",
+    busyStart,
+  );
+  check(
+    (await draftTurns()) === turnsBeforeBusy,
+    "a busy submit started a second elaboration",
+    { before: turnsBeforeBusy },
+  );
+
+  await page.click(`[data-testid="issues-draft"][data-path="${createdPath}"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === "${createdPath}" &&
+      document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the running elaboration after the busy submit",
+  );
+  const undisturbed = await page.eval<{ activity: string; question: string; state: string }>(`(() => ({
+    activity: document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "",
+    question: document.querySelector('[data-testid="issues-draft-question"]')?.textContent ?? "",
+    state: document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    undisturbed.activity === createdActivity &&
+      undisturbed.question === createdQuestion &&
+      undisturbed.state === "running",
+    "the busy submit disturbed the running elaboration",
+    undisturbed,
+  );
+  await page.click('[data-testid="issues-draft-choice"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft"][data-path="${createdPath}"]') === null`,
+    "the answered draft to disappear",
+    8_000,
+  );
+  check(
+    existsSync(join(host, ".devboard", "goals", "stub-question-add-a-keyboard-shortcut.md")),
+    "the answered elaboration did not advance to its spec",
+  );
+
+  // Ending the first elaboration frees the created draft, which stops cleanly.
+  await page.click(`[data-testid="issues-draft"][data-path="${busyPath}"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === "${busyPath}" &&
+      document.querySelector('[data-testid="issues-draft-start"]')?.disabled === false`,
+    "the busy draft's enabled start",
+  );
+  const unblocked = await page.eval<{ blocked: boolean }>(`(() => ({
+    blocked: [...document.querySelectorAll('[data-testid="issues-draft-blocked"]')]
+      .some((item) => item.textContent?.includes("An elaboration is running") === true),
+  }))()`);
+  check(!unblocked.blocked, "the busy draft kept its blocker after the run ended", unblocked);
+  await page.click('[data-testid="issues-draft-start"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === "${busyPath}" &&
+      document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "running"`,
+    "the created draft to reach running",
+    8_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("Reading the draft")`,
+    "the created draft's hang activity",
+    8_000,
+  );
+  await page.click('[data-testid="issues-draft-stop"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "stopped"`,
+    "the created draft's stop",
+    8_000,
+  );
+  const afterCreatedStop = await page.eval<{ stop: boolean; startDisabled: boolean; present: boolean }>(`(() => ({
+    stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+    startDisabled: document.querySelector('[data-testid="issues-draft-start"]')?.disabled === false,
+    present: document.querySelector('[data-testid="issues-draft"][data-path="${busyPath}"]') !== null,
+  }))()`);
+  check(
+    !afterCreatedStop.stop && afterCreatedStop.startDisabled && afterCreatedStop.present,
+    "stopping the created draft left it unstartable or removed it",
+    afterCreatedStop,
+  );
+  await page.click('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/002-hang.md"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ` +
+      `".devboard/goal-proposals/002-hang.md"`,
+    "the selected draft before the report-panel refresh",
+  );
+
   // A report-panel write reaches the open Drafts page without a reload.
   await runPalette("app.report");
   await page.click('[data-testid="status-bar"]');
@@ -6409,7 +6664,7 @@ try {
   const refreshedCount = await page.eval<string>(
     `document.querySelector('[data-testid="open-issues-drafts"] .sidebar-item__meta')?.textContent?.trim() ?? ""`,
   );
-  check(refreshedCount === "3", "the Drafts count did not follow the new draft", refreshedCount);
+  check(refreshedCount === "4", "the Drafts count did not follow the new draft", refreshedCount);
 
   // Reload restores the drafts page and the selected path.
   await page.reload();

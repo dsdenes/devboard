@@ -4,6 +4,10 @@ import { mkdir, mkdtemp, rm, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AcpActivity, AcpQuestion } from "../server/acp";
 import {
+  parseGoalProposalSubmission,
+  writeGoalProposal,
+} from "../server/goal-proposal";
+import {
   GoalDraftError,
   GoalDraftManager,
   goalDraftHeading,
@@ -224,6 +228,52 @@ describe("elaboration", () => {
     expect(manager.snapshot().activity).toContain("answered One");
 
     expect(events.some((event) => isEventType(event, "issuesDraftState"))).toBe(true);
+  });
+
+  test("a created draft sends one /goal-draft prompt; a busy start is refused without a peer", async () => {
+    const { root } = await fixture();
+    const first = await writeGoalProposal(
+      parseGoalProposalSubmission({ report: "Create the first goal from the drafts page." }),
+      { repoDir: root },
+    );
+    const second = await writeGoalProposal(
+      parseGoalProposalSubmission({ report: "Create the second goal from the drafts page." }),
+      { repoDir: root },
+    );
+    expect(first.path.startsWith(".devboard/goal-proposals/")).toBe(true);
+    expect(second.path).not.toBe(first.path);
+    const peers: FakePeer[] = [];
+    const { manager } = managerFor(root, peers);
+
+    const started = await manager.start(first.path);
+    expect(started).toEqual({ ok: true, path: first.path });
+    const peer = await waitFor(() => peers[0], "the created draft's peer");
+    expect(peer.prompts).toEqual([`/goal-draft ${first.path}`]);
+    expect(peers).toHaveLength(1);
+    expect(listGoalDrafts(root).map((draft) => draft.path)).toEqual(
+      [first.path, second.path].sort(),
+    );
+
+    const refused = await manager.start(second.path);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect(refused.message).toBe(
+        `An elaboration is already running for ${first.path}. Stop it before starting another draft.`,
+      );
+    }
+    expect(peers).toHaveLength(1);
+    expect(readGoalDraft(root, second.path).text).toContain(
+      "Create the second goal from the drafts page.",
+    );
+
+    expect(manager.stop()).toBe(true);
+    expect(peer.closed).toBe(true);
+    expect(readGoalDraft(root, second.path).text.startsWith("# Proposed goal: ")).toBe(true);
+
+    const retried = await manager.start(second.path);
+    expect(retried).toEqual({ ok: true, path: second.path });
+    const retry = await waitFor(() => peers[1], "the retried created draft's peer");
+    expect(retry.prompts).toEqual([`/goal-draft ${second.path}`]);
   });
 
   test("runs one elaboration at a time and stop keeps the draft", async () => {

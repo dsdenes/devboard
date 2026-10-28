@@ -13,6 +13,7 @@ import {
 import { basename, join, resolve } from "node:path";
 import { configuredGiteaToken, configuredGiteaUrl } from "./forge";
 import {
+  GiteaError,
   giteaDownloadAsset,
   giteaLatestRelease,
   giteaReleaseByTag,
@@ -430,7 +431,21 @@ async function giteaRelease(source: GiteaSource): Promise<ReleaseInfo> {
       "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
     );
   }
-  return releaseFromDocument(await giteaLatestRelease(giteaTarget(source)));
+  let document: GiteaReleaseDocument;
+  try {
+    document = await giteaLatestRelease(giteaTarget(source));
+  } catch (error) {
+    // A 2xx answer that is not JSON is feed context, not a harness defect,
+    // exactly like the command-based feed's unreadable description. A status
+    // error still names a rejected request.
+    if (error instanceof GiteaError && error.status === undefined) {
+      throw new ReleaseFeedError(
+        `the release feed returned an unreadable description: ${error.message}`,
+      );
+    }
+    throw error;
+  }
+  return releaseFromDocument(document);
 }
 
 async function giteaReleaseForVersion(

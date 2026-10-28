@@ -249,6 +249,22 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
 
   // Issues mode.
   add({
+    id: "issues.draft.new",
+    title: "New goal",
+    group: "Issues",
+    keywords: "create propose draft goal instructions",
+    run: () => {
+      layout.setMode("issues");
+      ctx.openTab("issues", {
+        id: "drafts",
+        kind: "drafts",
+        resourceId: "drafts",
+        title: "Draft goals",
+      });
+      issues.beginDraftCreate();
+    },
+  });
+  add({
     id: "issues.start",
     title: "Start issue automation",
     group: "Issues",
