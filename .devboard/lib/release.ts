@@ -81,6 +81,15 @@ export class ReleaseError extends Error {}
  */
 export class ReleaseFeedError extends ReleaseError {}
 
+/**
+ * The registry's metadata advertised a version whose own tarball it does not
+ * serve yet: a fresh publish whose artifact has not propagated. The cause is
+ * outside the harness, so an install that hits it is retried as context
+ * instead of being reported as a defect. Any other install failure remains a
+ * release defect.
+ */
+export class ReleaseNotServedError extends ReleaseError {}
+
 function trimmed(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const text = value.trim();
@@ -188,6 +197,40 @@ function failure(tool: string, result: CommandResult): ReleaseError {
   return new ReleaseError(
     `${tool} failed${result.killed ? " (timed out)" : ""}: ${detail.length > 0 ? detail : "no output"}`,
   );
+}
+
+/** The artifact URL npm names when it refuses a fetch, from either report line. */
+function failedArtifactUrl(result: CommandResult): string | undefined {
+  const text = `${result.stderr}\n${result.stdout}`;
+  const fetched = /- GET (https?:\/\/\S+)/.exec(text);
+  if (fetched?.[1] !== undefined) return fetched[1];
+  const resource = /@(https?:\/\/[^\s']+)/.exec(text);
+  return resource?.[1];
+}
+
+/**
+ * The error for one failed npm install. A 404 or 410 for the package's own
+ * versioned tarball means the registry advertises a release whose artifact has
+ * not propagated yet; that is external and temporary, so it is retried as
+ * context. A missing dependency tarball or any other npm failure is a defect
+ * in the release and stays a plain install failure.
+ */
+export function npmInstallError(result: CommandResult, version: string): ReleaseError {
+  const url = /\b(?:E?404|E?410)\b/i.test(result.stderr) ? failedArtifactUrl(result) : undefined;
+  if (url !== undefined) {
+    let path: string | undefined;
+    try {
+      path = new URL(url).pathname;
+    } catch {
+      path = undefined;
+    }
+    if (path?.endsWith(`/${tarballName(version)}`) === true) {
+      return new ReleaseNotServedError(
+        `npm does not serve the advertised ${PACKAGE_NAME}@${version} artifact yet: ${url}`,
+      );
+    }
+  }
+  return failure("npm install", result);
 }
 
 /**
@@ -666,7 +709,7 @@ async function stagedInstall(
         timeoutMs,
       },
     );
-    if (result.code !== 0) throw failure("npm install", result);
+    if (result.code !== 0) throw npmInstallError(result, version);
     const staged = packageDir(staging);
     const stagedVersion = await readPackageVersion(staged);
     if (stagedVersion !== version) {

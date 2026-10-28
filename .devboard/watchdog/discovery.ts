@@ -80,9 +80,22 @@ export function servingHarness(process: ProcessSnapshot): string | undefined {
 }
 
 /**
- * Builds instances from a process table. Excludes the watchdog and its
- * descendants, de-duplicates by `(REPO_DIR, PORT)`, and resolves the journal
- * and legacy log through the serving harness.
+ * True when a dashboard serves a repository inside harness verification
+ * scratch (`<anything>/.devboard/.tmp`). Verification scripts create hosts
+ * there and deliberately fail update checks, installs, and servers; that
+ * evidence proves the script's assertion, not a defect an operator must see.
+ */
+export function isVerificationScratch(repoDir: string): boolean {
+  const segments = repoDir.split(/[\\/]+/);
+  return segments.some(
+    (segment, index) => segment === ".devboard" && segments[index + 1] === ".tmp",
+  );
+}
+
+/**
+ * Builds instances from a process table. Excludes the watchdog, its
+ * descendants, and verification fixtures, de-duplicates by `(REPO_DIR, PORT)`,
+ * and resolves the journal and legacy log through the serving harness.
  */
 export function instancesFromProcesses(
   processes: ProcessSnapshot[],
@@ -98,6 +111,7 @@ export function instancesFromProcesses(
     const repoDir = process.env.get("REPO_DIR");
     const port = Number(process.env.get("PORT"));
     if (repoDir === undefined || !Number.isInteger(port) || port <= 0) continue;
+    if (isVerificationScratch(repoDir)) continue;
     const harness = servingHarness(process);
     if (harness === undefined) continue;
     const key = `${repoDir}\0${port}`;

@@ -177,6 +177,14 @@ function spawnCount(logPath: string): number {
     .filter((line) => line.startsWith("spawn ")).length;
 }
 
+function exitedPids(logPath: string): number[] {
+  if (!existsSync(logPath)) return [];
+  return readFileSync(logPath, "utf8")
+    .split("\n")
+    .filter((line) => line.startsWith("exit "))
+    .map((line) => Number(line.slice("exit ".length)));
+}
+
 function prompts(logPath: string): string[] {
   if (!existsSync(logPath)) return [];
   return readFileSync(logPath, "utf8")
@@ -366,6 +374,39 @@ describe("lifecycle runs", () => {
           { type: "lifecycleState", stage: "finished", pass: 1, work: null, paused: false },
         ]);
         expect(client.events.filter((message) => message.type === "error")).toEqual([]);
+        expect(spawnCount(logPath)).toBe(1);
+        expect(prompts(logPath)).toEqual(["/epic-next"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "closes a finished lane's peer without a stop",
+    async () => {
+      const { server, logPath, url } = await startServer({
+        "0001-done.md": fixtureRecord("0001-done.md", "Done"),
+      });
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
+        await waitUntil(
+          () => exitedPids(logPath).length === 1,
+          "the finished lane's peer was not closed",
+        );
+
+        const spawnLine = readFileSync(logPath, "utf8")
+          .split("\n")
+          .find((line) => line.startsWith("spawn "));
+        expect(spawnLine).toBeDefined();
+        expect(exitedPids(logPath)).toEqual([Number(spawnLine?.slice("spawn ".length))]);
         expect(spawnCount(logPath)).toBe(1);
         expect(prompts(logPath)).toEqual(["/epic-next"]);
       } finally {
