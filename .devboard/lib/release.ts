@@ -14,8 +14,8 @@ import { basename, join, resolve } from "node:path";
 import { configuredGiteaToken, configuredGiteaUrl } from "./forge";
 import {
   giteaDownloadAsset,
+  giteaLatestRelease,
   giteaReleaseByTag,
-  repoPath,
   type GiteaAsset,
   type GiteaReleaseDocument,
   type GiteaTarget,
@@ -430,22 +430,7 @@ async function giteaRelease(source: GiteaSource): Promise<ReleaseInfo> {
       "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
     );
   }
-  const target = giteaTarget(source);
-  const response = await fetch(
-    `${target.baseUrl}/api/v1/repos/${repoPath(target)}/releases/latest`,
-    {
-      headers: {
-        Accept: "application/json",
-        ...(source.token === undefined ? {} : { Authorization: `token ${source.token}` }),
-      },
-    },
-  );
-  if (!response.ok) {
-    throw new ReleaseError(
-      `the release feed answered HTTP ${response.status}: ${await response.text().catch(() => "")}`,
-    );
-  }
-  return parseReleaseDescription(await response.text());
+  return releaseFromDocument(await giteaLatestRelease(giteaTarget(source)));
 }
 
 async function giteaReleaseForVersion(
