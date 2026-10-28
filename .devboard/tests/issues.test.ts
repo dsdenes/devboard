@@ -35,6 +35,7 @@ import {
 import { parseResponse, pollOpenIssues } from "../issues/tracker";
 import {
   IssuesWorker,
+  MAX_CONCURRENT_PEERS,
   isGoalIssue,
   promptFor,
   type AcpPeer,
@@ -251,16 +252,38 @@ describe("per-issue fleet", () => {
     }
   });
 
-  test("starts twelve peers at once with no concurrency cap", async () => {
-    const issues = Array.from({ length: 12 }, (_, index) => issue(index + 1));
+  test("starts at most thirty peers at once and fills a slot when one finishes", async () => {
+    const issues = Array.from({ length: MAX_CONCURRENT_PEERS + 5 }, (_, index) =>
+      issue(index + 1),
+    );
     const f = await fixture({ issues });
     try {
-      await waitFor(() => (f.peers.length === 12 ? true : undefined), "twelve peers", 8000);
-      expect(f.peers.map((peer) => peer.prompts[0]).sort()).toEqual(
-        issues.map((entry) => `/implement-issue ${entry.number}`).sort(),
+      await waitFor(
+        () => (f.peers.length === MAX_CONCURRENT_PEERS ? true : undefined),
+        "thirty peers",
+        8000,
       );
-      expect(f.state().agents).toHaveLength(12);
-      expect(f.peers.every((peer) => peer.closed === false)).toBe(true);
+      await f.worker.poll();
+      expect(f.peers).toHaveLength(MAX_CONCURRENT_PEERS);
+      expect(f.state().agents).toHaveLength(MAX_CONCURRENT_PEERS);
+      expect(f.state().agents.map((agent) => agent.issueNumber).sort((a, b) => a - b)).toEqual(
+        issues.slice(0, MAX_CONCURRENT_PEERS).map((entry) => entry.number),
+      );
+      expect(
+        f.state().queue.filter((entry) => entry.agentRunId === null).map((entry) => entry.number),
+      ).toEqual(issues.slice(MAX_CONCURRENT_PEERS).map((entry) => entry.number));
+
+      const finishing = f.peers.find((peer) => peer.prompts[0] === "/implement-issue 1")!;
+      finishing.succeed();
+      const started = await waitFor(
+        () =>
+          f.state().agents.find((agent) => agent.issueNumber === MAX_CONCURRENT_PEERS + 1),
+        "the next queued peer",
+      );
+      expect(started.issueNumber).toBe(MAX_CONCURRENT_PEERS + 1);
+      expect(f.peers).toHaveLength(MAX_CONCURRENT_PEERS + 1);
+      expect(f.peers.filter((peer) => peer.closed === false)).toHaveLength(MAX_CONCURRENT_PEERS);
+      expect(f.state().agents).toHaveLength(MAX_CONCURRENT_PEERS);
     } finally {
       await stop(f);
     }
@@ -638,14 +661,18 @@ describe("lifecycle", () => {
 });
 
 describe("history and isolation", () => {
-  test("pruning keeps every running run directory", async () => {
-    const issues = Array.from({ length: 55 }, (_, index) => issue(index + 1));
+  test("keeps every running run directory at the concurrency cap", async () => {
+    const issues = Array.from({ length: MAX_CONCURRENT_PEERS }, (_, index) => issue(index + 1));
     const f = await fixture({ issues });
     try {
-      await waitFor(() => (f.peers.length === 55 ? true : undefined), "fifty-five peers", 15_000);
+      await waitFor(
+        () => (f.peers.length === MAX_CONCURRENT_PEERS ? true : undefined),
+        "thirty peers",
+        15_000,
+      );
       const directories = readdirSync(runsDirectory(f.stateDir, f.root));
-      expect(directories).toHaveLength(55);
-      expect(f.state().runs).toHaveLength(55);
+      expect(directories).toHaveLength(MAX_CONCURRENT_PEERS);
+      expect(f.state().runs).toHaveLength(MAX_CONCURRENT_PEERS);
       expect(f.state().runs.every((run) => run.status === "running")).toBe(true);
     } finally {
       await stop(f);

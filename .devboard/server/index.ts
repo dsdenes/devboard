@@ -6,8 +6,9 @@ import type { ForgeTarget } from "./forge-pr";
 import { StubForge } from "./fixtures/stub-forge";
 import { openJournal } from "./journal";
 import { sourceCheckoutGiteaUrl } from "./local-gitea";
+import { relaunch } from "./relaunch";
 import { startUpdater, type Updater } from "./updates";
-import { hostHarnessDir, readHarnessVersion, runningHarnessDir } from "./version";
+import { readHarnessVersion, runningHarnessDir } from "./version";
 
 const hostname = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? 8080);
@@ -28,41 +29,16 @@ function isAddressInUse(error: unknown): boolean {
 }
 
 /**
- * Replaces this process with the harness the host now points at. Stopping the
- * listener first frees the port; the replacement retries the bind while the
- * old process finishes exiting. It reads the same repository and settings.
+ * Replaces this process with the harness the host now points at. The
+ * replacement starts before the listener stops; if it cannot start, this
+ * process keeps serving and the restart error stays recoverable.
  */
 function restart(server: Server<unknown>) {
-  server.stop(true);
-  const harness = hostHarnessDir(repoDir);
-  // A new session protects the replacement when the launcher itself was
-  // started inside a process group that is being shut down.
-  const setsid = process.platform === "win32" ? null : Bun.which("setsid");
-  const child = Bun.spawn({
-    cmd: [
-      ...(setsid === null ? [] : [setsid]),
-      process.execPath,
-      join(harness, "server", "index.ts"),
-    ],
-    // Never start from the replaceable package directory: an update can
-    // rename and delete it, and a child cannot start from a missing cwd.
-    cwd: repoDir,
-    env: {
-      ...process.env,
-      HOST: hostname,
-      PORT: String(port),
-      ADRS_DIR: adrDir,
-      REPO_DIR: repoDir,
-      GOAL_FILE: goalFile,
-      STATIC_DIR: join(harness, "dist"),
-      STATE_DIR: stateDir,
-    },
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  child.unref();
-  process.exit(0);
+  relaunch(
+    server,
+    { hostname, port, adrDir, repoDir, goalFile, stateDir },
+    { stop: (current) => current.stop(true), exit: (code) => process.exit(code) },
+  );
 }
 
 /**
