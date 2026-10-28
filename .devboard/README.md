@@ -2301,8 +2301,8 @@ The server answers with events:
   the current contradiction list; `getSkills` requests it, and a client that connects or
   reconnects during preparation first receives `skillsPreparationStarted`, every recorded
   `activity` line, and the pending `question` if one exists. The panel lists managed skills only
-  and shows `No contradictions` when the list is empty; the contradiction review itself covers
-  every skill directory, managed or not.
+  and shows a contradiction list only when the review found one; the review itself covers every
+  skill directory, managed or not.
 - The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written verbatim by `saveGoal` and by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file.
 - Skills preparation writes only under `<REPO_DIR>/.omp/skills/` and only through its ACP peer;
   the server deletes managed skill directories before the run and restores the snapshot after a
