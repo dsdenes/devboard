@@ -3,7 +3,7 @@
 - Page: Goal mode → Decision records, `#workspace-goal`,
   `section.panel.goal-adrs-panel` (`[data-testid="adrs-overlay"]`).
 - Commit/branch: worktree `.worktree/issue-401`, branch `issue-401`, integrated with `main` at
-  `b29c972`.
+  `aa1d3aa`.
 - Commands: `cd .devboard && bun install --frozen-lockfile && bun run build`, then the source
   server at `http://127.0.0.1:8942/` with `PORT=8942`, `STATIC_DIR` in the worktree, `STATE_DIR`
   under the worktree, and `REPO_DIR`, `ADRS_DIR`, `GOAL_FILE` pointing at a fixture host under
@@ -59,7 +59,7 @@
   those two files; the rest of `main` merged cleanly.
 - Checks:
   - `bun run check`: 0 errors, 0 warnings.
-  - `bun test`: 759 pass, 0 fail (57 files).
+  - `bun test`: 765 pass, 0 fail (58 files).
   - `bun run verify:interface`: passed, including the new Start contract (four controls, 24px
     Button at 4px radius and 11px type, centered within 1px, one filled primary on the `Next`
     row, unique record-naming accessible names, pointer cursor, and empty resolved action cells).
