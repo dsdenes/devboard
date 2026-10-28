@@ -1142,9 +1142,12 @@ failure, a refused or reset connection, a timeout, an API rate limit, or an answ
 readable release description (a proxy page, a truncated body, an unexpected payload) — leaves the
 previous package and server intact, writes an `activity` record naming the skipped check, and
 retries with exponential backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for
-the operator, never an `update-error` finding. A check that reaches the feed and fails, a release
-without a tag, a checksum mismatch, an authentication failure, or a failed npm install writes
-`update-error` and is retried the same way.
+the operator, never an `update-error` finding. A registry that advertises a version but does not
+serve that version's own tarball yet (npm answers 404 or 410) is the same kind of external,
+temporary refusal: the install is skipped with an `activity` record and retried with the backoff.
+A check that reaches the feed and fails, a release without a tag, a missing dependency tarball, a
+checksum mismatch, an authentication failure, or any other failed npm install writes `update-error`
+and is retried the same way.
 
 |Variable|Default|Purpose|
 |---|---|---|
