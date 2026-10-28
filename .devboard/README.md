@@ -1825,9 +1825,13 @@ periodic read, including every `gh` child it starts, is bounded to 30 seconds; a
 finish records a sync error and releases the worker, so the next interval reads again. A failed
 read keeps the last known rows, shows the reason in `data-testid="scout-sync-error"`, and keeps the
 last success time in `data-testid="scout-sync-at"`; the reason clears on the next successful read.
-Filing stays blocked until a read succeeds. An injected GitHub client owns its own command bounds;
-the worker still races the whole read against the deadline, but it cannot cancel work that client
-never settles.
+Filing stays blocked until a read succeeds. A GitHub rate limit (the `gh` text naming a primary or
+secondary limit, abuse detection, or HTTP 429) is a failed read like any other: it keeps the rows and
+blocks filing, and its reason stays in the sync banner. Because the operator's credential is shared
+with every other process on the host and the limit clears itself, it never raises the dashboard-wide
+error notification — neither for the periodic read nor for the fresh read before filing. An injected
+GitHub client owns its own command bounds; the worker still races the whole read against the
+deadline, but it cannot cancel work that client never settles.
 
 ### Worker lifecycle
 
