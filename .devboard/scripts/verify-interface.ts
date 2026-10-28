@@ -5363,6 +5363,7 @@ try {
     proposal: string;
     facts: number;
     evidence: number;
+    evidenceDisclosure: boolean;
     sourceClosed: boolean;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
@@ -5380,6 +5381,7 @@ try {
       proposal: panel?.querySelector(".issues-draft-detail__prose")?.textContent ?? "",
       facts: panel?.querySelectorAll('[data-testid="issues-draft-context"] dt').length ?? 0,
       evidence: panel?.querySelectorAll(".issues-draft-evidence__section").length ?? 0,
+      evidenceDisclosure: panel?.querySelector("details.issues-draft-evidence") !== null,
       sourceClosed: source instanceof HTMLDetailsElement && !source.open,
     };
   })()`);
@@ -5397,7 +5399,7 @@ try {
   check(
     detail.context.includes("Route:") &&
       detail.context.includes("Selected element:") &&
-      detail.context.includes("Visible text"),
+      detail.context.includes("Captured at:"),
     "the detail lost the captured UI context",
     detail,
   );
@@ -5409,8 +5411,8 @@ try {
     detail,
   );
   check(
-    detail.facts > 0 && detail.evidence > 0 && detail.sourceClosed,
-    "the compact context and closed source disclosure are missing",
+    detail.facts > 0 && detail.evidence > 0 && !detail.evidenceDisclosure && detail.sourceClosed,
+    "the compact context, the inline evidence, or the closed source disclosure is missing",
     detail,
   );
   await dismissNotifications();
