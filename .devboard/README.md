@@ -589,7 +589,7 @@ optional meta row, and a right-aligned action group. The Overview frame holds th
 the full path stays in the tooltip), the one-line definition, the discovery date, and the single
 filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
 report it. Below the frame, an active run region appears only while a run exists: a tinted header
-with a `Discover` eyebrow, `Run in progress`, the run identifier as a code chip, `Started 3 minutes
+with a `Discover` eyebrow, `Run in progress`, `Started 3 minutes
 ago`, and Stop, followed by the activity terminal and its ownership note. A queued question region
 follows while a question waits. The sheet
 follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and Testing in the

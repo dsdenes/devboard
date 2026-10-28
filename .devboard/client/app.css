@@ -1709,13 +1709,6 @@ kbd {
   min-width: 0;
 }
 
-.discover-run__id {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .discover-run__started {
   font-size: 11px;
   white-space: nowrap;
