@@ -137,6 +137,8 @@ export interface AppOptions {
   trackerSettle?: Partial<TrackerSettle>;
   /** Wall-clock bound for one tracker read; defaults to 30 seconds. */
   trackerTimeoutMs?: number;
+  /** Wall-clock bound for one git invocation of the reset; defaults to 60 seconds. */
+  gitTimeoutMs?: number;
   /** Delay before an implementation lane whose epic stayed open runs again. */
   laneBackoffMs?: number;
   /** How long a finished lane keeps its tab before leaving the active list. */
@@ -456,6 +458,8 @@ const RESET_PUSH_ENV = {
   GIT_ASKPASS: "true",
   NO_COLOR: "1",
 };
+/** Wall-clock bound for one git invocation the dashboard spawns. */
+const GIT_TIMEOUT_MS = 60_000;
 /** Largest accepted feedback body, before JSON parsing. */
 const MAX_FEEDBACK_BYTES = 64_000;
 /** Default wall-clock bound for one issue creation. */
@@ -1180,29 +1184,65 @@ interface GitResult {
   stderr: string;
 }
 
+/**
+ * One bounded `git` invocation. The child never reads stdin and is killed when
+ * it outlives its bound, so a stalled `git push` fails the caller with a
+ * timeout result instead of pinning it for the life of the process. The bound
+ * covers the output reads too: a grandchild inheriting the pipes can otherwise
+ * keep them open after the child itself is gone.
+ */
 async function runGit(
   repoDir: string,
   args: string[],
   env: Record<string, string> = {},
+  timeoutMs: number = GIT_TIMEOUT_MS,
 ): Promise<GitResult> {
-  try {
-    const child = Bun.spawn({
+  const controller = new AbortController();
+  let killChild: (() => void) | undefined;
+
+  const invocation = (async (): Promise<GitResult> => {
+    const spawned = Bun.spawn({
       cmd: ["git", "-C", repoDir, ...args],
       env: { ...process.env, ...env },
+      stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      signal: controller.signal,
     });
+    killChild = () => {
+      try {
+        spawned.kill("SIGKILL");
+      } catch {
+        // The child is already gone; the timeout result still stands.
+      }
+    };
     const [stdout, stderr] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
+      new Response(spawned.stdout).text(),
+      new Response(spawned.stderr).text(),
     ]);
-    return { code: await child.exited, stdout, stderr };
-  } catch (error) {
-    return {
+    return { code: await spawned.exited, stdout, stderr };
+  })().catch((error: unknown): GitResult => ({
+    code: -1,
+    stdout: "",
+    stderr: error instanceof Error ? error.message : String(error),
+  }));
+
+  const timeout = Promise.withResolvers<GitResult>();
+  const timer = setTimeout(() => {
+    // The abort kills the child; SIGKILL covers one that ignores it.
+    controller.abort();
+    killChild?.();
+    timeout.resolve({
       code: -1,
       stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-    };
+      stderr: `git ${args[0] ?? ""} timed out after ${timeoutMs}ms`,
+    });
+  }, timeoutMs);
+
+  try {
+    return await Promise.race([invocation, timeout.promise]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1705,6 +1745,10 @@ export function createApp(options: AppOptions) {
     1,
     options.trackerTimeoutMs ?? TRACKER_READ_TIMEOUT_MS,
   );
+  const gitTimeoutMs = Math.max(1, options.gitTimeoutMs ?? GIT_TIMEOUT_MS);
+  /** Every git call this dashboard makes shares the one configured bound. */
+  const runRepoGit = (args: string[], env: Record<string, string> = {}) =>
+    runGit(repoDir, args, env, gitTimeoutMs);
   const laneBackoffMs = Math.max(0, options.laneBackoffMs ?? LANE_BACKOFF_MS);
   const laneRetentionMs = Math.max(0, options.laneRetentionMs ?? LANE_RETENTION_MS);
   const mainPollMs = Math.max(10, options.mainPollMs ?? MAIN_POLL_MS);
@@ -4968,7 +5012,7 @@ export function createApp(options: AppOptions) {
    * or retrying epic responsive without a fixed attempt cap.
    */
   async function readMainRevision(): Promise<string | undefined> {
-    const result = await runGit(repoDir, ["rev-parse", "--verify", "main"]);
+    const result = await runRepoGit(["rev-parse", "--verify", "main"]);
     return result.code === 0 ? result.stdout.trim() : undefined;
   }
 
@@ -5687,7 +5731,7 @@ export function createApp(options: AppOptions) {
    */
   async function performImplementationReset() {
     try {
-      const top = await runGit(repoDir, ["rev-parse", "--show-toplevel"]);
+      const top = await runRepoGit(["rev-parse", "--show-toplevel"]);
       if (top.code !== 0 || resolve(top.stdout.trim()) !== resolve(repoDir)) {
         failImplementationReset(
           `Reset refused: REPO_DIR is not the repository top level. ${gitDetail(top)}`,
@@ -5695,13 +5739,13 @@ export function createApp(options: AppOptions) {
         return;
       }
 
-      const head = await runGit(repoDir, ["rev-parse", "--verify", "HEAD"]);
+      const head = await runRepoGit(["rev-parse", "--verify", "HEAD"]);
       if (head.code !== 0) {
         failImplementationReset(`Reset refused: HEAD does not name a commit. ${gitDetail(head)}`);
         return;
       }
 
-      const branch = await runGit(repoDir, ["symbolic-ref", "--short", "HEAD"]);
+      const branch = await runRepoGit(["symbolic-ref", "--short", "HEAD"]);
       if (branch.code !== 0 || branch.stdout.trim() !== "main") {
         failImplementationReset(
           `Reset refused: the repository is not on main. ${gitDetail(branch)}`,
@@ -5709,7 +5753,7 @@ export function createApp(options: AppOptions) {
         return;
       }
 
-      const origin = await runGit(repoDir, ["remote", "get-url", "origin"]);
+      const origin = await runRepoGit(["remote", "get-url", "origin"]);
       if (origin.code !== 0) {
         failImplementationReset(
           `Reset refused: the repository has no origin remote. ${gitDetail(origin)}`,
@@ -5733,7 +5777,7 @@ export function createApp(options: AppOptions) {
         else await rm(target, { recursive: true, force: true });
       }
 
-      const staged = await runGit(repoDir, ["add", "-A"]);
+      const staged = await runRepoGit(["add", "-A"]);
       if (staged.code !== 0) {
         failImplementationReset(`Could not stage the reset: ${gitDetail(staged)}`);
         return;
@@ -5741,7 +5785,7 @@ export function createApp(options: AppOptions) {
       // git add -A honours .gitignore, but an absent .gitignore would stage the
       // internal trees, and an earlier commit may already track them. Remove
       // them from the index; the working tree is untouched.
-      const excluded = await runGit(repoDir, [
+      const excluded = await runRepoGit([
         "rm",
         "-r",
         "--cached",
@@ -5757,9 +5801,9 @@ export function createApp(options: AppOptions) {
 
       // With no staged change the current HEAD already describes the reset,
       // so the operation stays idempotent.
-      const changed = await runGit(repoDir, ["diff", "--cached", "--quiet"]);
+      const changed = await runRepoGit(["diff", "--cached", "--quiet"]);
       if (changed.code !== 0) {
-        const committed = await runGit(repoDir, [
+        const committed = await runRepoGit([
           "commit",
           "--no-verify",
           "-m",
@@ -5771,7 +5815,7 @@ export function createApp(options: AppOptions) {
         }
       }
 
-      const committedHead = await runGit(repoDir, ["rev-parse", "HEAD"]);
+      const committedHead = await runRepoGit(["rev-parse", "HEAD"]);
       if (committedHead.code !== 0) {
         failImplementationReset(
           `Could not read the reset commit: ${gitDetail(committedHead)}`,
@@ -5780,7 +5824,7 @@ export function createApp(options: AppOptions) {
       }
       const commit = committedHead.stdout.trim();
 
-      const pushed = await runGit(repoDir, ["push", "origin", "main"], RESET_PUSH_ENV);
+      const pushed = await runRepoGit(["push", "origin", "main"], RESET_PUSH_ENV);
       if (pushed.code !== 0) {
         failImplementationReset(
           `Could not push the reset commit: ${gitDetail(pushed)}`,

@@ -2316,7 +2316,10 @@ The client sends:
   itself, and broadcasts `implementationResetStopped` with `completed: true` and the 40-hex
   `commit` only after `git push origin main` succeeds; a failed push includes the local commit
   with `completed: false`, and a failure before or during the commit omits `commit`. Every
-  failure is preceded by one `error` carrying git's stderr where git failed. While a reset
+  failure is preceded by one `error` carrying git's stderr where git failed. Every git invocation
+  the reset runs is bounded by `gitTimeoutMs` (60 seconds by default); an invocation past that
+  deadline is killed, reports `error` with `git <verb> timed out after <ms>ms`, and settles the
+  reset with `completed: false`, so a stalled push never keeps the reset guard active. While a reset
   runs, `saveGoal`, `startRun`, `startLifecycle`, `pauseLifecycle`, `resumeLifecycle`,
   `reviseGoal`, `createGoal`, `prepareSkills`, `answer`, and a second `resetImplementation`
   are each refused with an `error`; `listRecords`, `getGoal`, `getProject`, `getIssues`, `getIssuesRun`,
