@@ -116,6 +116,37 @@ export interface WatchdogGitHubReaderOptions {
   fetchImpl?: FetchLike;
 }
 
+/** Host names that all mean this machine. */
+const LOOPBACK_HOSTS: Record<string, true> = {
+  localhost: true,
+  "127.0.0.1": true,
+  "::1": true,
+  "[::1]": true,
+  "0.0.0.0": true,
+};
+
+/**
+ * The scheme, host, and port of a URL, with loopback aliases folded together.
+ * The watchdog ledger can hold issue URLs filed through an earlier forge, so
+ * the Gitea reader must recognise only the issues its own instance serves.
+ */
+function originKey(value: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return undefined;
+  }
+  const host = LOOPBACK_HOSTS[parsed.hostname] === true ? "loopback" : parsed.hostname;
+  const port = parsed.port !== "" ? parsed.port : parsed.protocol === "https:" ? "443" : "80";
+  return `${parsed.protocol}//${host}:${port}`;
+}
+
+function servedBy(value: string, baseUrl: string): boolean {
+  const issue = originKey(value);
+  return issue !== undefined && issue === originKey(baseUrl);
+}
+
 function createWatchdogGiteaReader(
   options: WatchdogGitHubReaderOptions,
   remote: ForgeRemote,
@@ -145,6 +176,9 @@ function createWatchdogGiteaReader(
       }
       const facts: WatchdogFacts[] = [];
       for (const url of urls) {
+        // An issue filed through another forge cannot be read here; the row
+        // stays without a state instead of failing the whole projection.
+        if (!servedBy(url, baseUrl)) continue;
         const locator = issueLocator(url);
         if (locator === null) throw new Error(`not a supported issue URL: ${url}`);
         const target: GiteaTarget = {

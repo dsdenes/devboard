@@ -9,6 +9,7 @@ import { closeIssue } from "../server/issue-close";
 import { CommandFlowForge } from "../server/forge-pr";
 import { fileScoutIssue } from "../issues/scout/actions";
 import { createWatchdogDelivery } from "../watchdog/delivery";
+import { createWatchdogGitHubReader } from "../server/watchdog";
 
 /**
  * Gitea is a first-class forge: resolution, issue polling and closing, Flow's
@@ -286,5 +287,45 @@ describe("Gitea watchdog delivery", () => {
     });
     expect(commented).toEqual({ ok: true });
     expect(calls.some((call) => call.url.endsWith("/issues/12/comments"))).toBe(true);
+  });
+});
+
+describe("Gitea watchdog activity", () => {
+  const openIssue: FetchLike = async (input) =>
+    /\/issues\/\d+$/.test(String(input))
+      ? Response.json({ number: 5, state: "open" })
+      : Response.json({ message: "unexpected" }, 500);
+
+  const noGh = async () => {
+    throw new Error("gh must not run for a Gitea origin");
+  };
+
+  test("reads only the issues its own instance serves", async () => {
+    const reader = createWatchdogGitHubReader({
+      repoDir: repository(),
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl: openIssue,
+    });
+    const facts = await reader.project([
+      "https://github.com/acme/fixture/issues/377",
+      "http://gitea.test/acme/fixture/issues/5",
+    ]);
+    expect(facts).toEqual([
+      { url: "http://gitea.test/acme/fixture/issues/5", state: "pending", version: null },
+    ]);
+  });
+
+  test("treats loopback aliases as the same instance", async () => {
+    const reader = createWatchdogGitHubReader({
+      repoDir: repository(),
+      environment: { DEVBOARD_GITEA_URL: "http://127.0.0.1:3001" },
+      run: noGh,
+      fetchImpl: openIssue,
+    });
+    const facts = await reader.project(["http://localhost:3001/acme/fixture/issues/5"]);
+    expect(facts).toEqual([
+      { url: "http://localhost:3001/acme/fixture/issues/5", state: "pending", version: null },
+    ]);
   });
 });

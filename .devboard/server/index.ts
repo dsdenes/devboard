@@ -5,6 +5,7 @@ import { createApp, type FeedbackOptions } from "./app";
 import type { ForgeTarget } from "./forge-pr";
 import { StubForge } from "./fixtures/stub-forge";
 import { openJournal } from "./journal";
+import { sourceCheckoutGiteaUrl } from "./local-gitea";
 import { startUpdater, type Updater } from "./updates";
 import { hostHarnessDir, readHarnessVersion, runningHarnessDir } from "./version";
 
@@ -100,6 +101,14 @@ function feedbackOptions(): FeedbackOptions | undefined {
     ...(token === undefined ? {} : { token }),
     ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
   };
+}
+
+// A source checkout with a Gitea origin supplies its own HTTP address when the
+// operator configures none: the local Gitea instance is already listening.
+const discoveredGiteaUrl = await sourceCheckoutGiteaUrl({ repoDir });
+if (discoveredGiteaUrl !== undefined) {
+  process.env.DEVBOARD_GITEA_URL = discoveredGiteaUrl;
+  console.log(`Gitea reporting origin discovered at ${discoveredGiteaUrl}`);
 }
 
 const injectedFlow = flowOptions();

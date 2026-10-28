@@ -1152,7 +1152,7 @@ and is retried the same way.
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
 |`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads the newest Gitea release over the public HTTP API.|
-|`DEVBOARD_GITEA_URL` / `GITEA_URL`|unset|Gitea HTTP origin; an HTTP(S) `origin` remote supplies it when unset.|
+|`DEVBOARD_GITEA_URL` / `GITEA_URL`|unset|Gitea HTTP origin; an HTTP(S) `origin` remote supplies it when unset, and a source-checkout dashboard discovers a local SSH Gitea listener. Installed hosts never probe.|
 |`GITEA_TOKEN`|unset|Gitea credential for issue, PR, scout, and watchdog writes; public reads need none.|
 
 ## Self-hosted runner
@@ -1986,10 +1986,14 @@ before the Gitea request. Harness-owned reporting uses only the Gitea API: `DEVB
 names the instance, `GITEA_TOKEN` (or `DEVBOARD_GITEA_TOKEN`) authenticates it, and
 `DEVBOARD_RELEASE_REPO` selects the repository (default `dsdenes/devboard`), whatever host project
 the interface is serving. Nothing is created in the host's own tracker, and no `github.com`
-repository is used for filing. Without `DEVBOARD_GITEA_URL` the endpoint answers HTTP 503 naming
-that variable and performs no request. A refused or failing request is reported in the filing
-toast and creates nothing. The endpoint accepts only same-origin `POST` requests, bounds the body
-to 64 KB, and gives the request 60 seconds.
+repository is used for filing. Starting the dashboard from the canonical `.devboard` checkout
+resolves the HTTP origin itself when the `origin` remote is a Gitea SSH address on this machine
+and neither variable is set: it probes the local listening ports for `GET /api/v1/version` and
+uses the lowest matching loopback port. An explicit variable always wins, an HTTP(S) origin needs
+no discovery, and an installed host never probes. Without a configured or discovered origin the
+endpoint answers HTTP 503 naming `DEVBOARD_GITEA_URL` and performs no request. A refused or
+failing request is reported in the filing toast and creates nothing. The endpoint accepts only
+same-origin `POST` requests, bounds the body to 64 KB, and gives the request 60 seconds.
 
 ## Container
 
