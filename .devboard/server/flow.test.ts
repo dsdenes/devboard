@@ -2,13 +2,16 @@ import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
+import { FlowController } from "./flow";
+import { recordedChildAlive, stateFile, type RecordedChild } from "./state";
 import { StubForge } from "./fixtures/stub-forge";
 import { journalKey } from "./journal";
 import { testProviderService } from "./fixtures/test-providers";
 import type { ProviderService } from "./providers";
+import { seedVerificationProvider, verificationProviderUsageEnv } from "../scripts/provider-fixture";
 
 /**
  * Flow Mode's deterministic contract, driven over the app's WebSocket with the
@@ -210,7 +213,7 @@ function latest(client: TestClient, type: string): Event | undefined {
   return [...client.events].reverse().find((event) => event.type === type);
 }
 
-function connect(testServer: TestServer): Promise<TestClient> {
+function connect(testServer: { url: string }): Promise<TestClient> {
   const { promise, resolve, reject } = Promise.withResolvers<TestClient>();
   const socket = new WebSocket(`ws://${testServer.url}/ws`);
   const events: Event[] = [];
@@ -1699,4 +1702,210 @@ describe("Flow replay, base resolution, and validation edges", () => {
     expect(view).toContain('data-category={widget.category}');
     expect(view).toContain('data-testid="flow-widget"');
   });
+});
+
+/** The children a replacement reads from the persisted state. */
+function storedChildren(fixture: Fixture): RecordedChild[] {
+  try {
+    const stored = JSON.parse(
+      readFileSync(stateFile(fixture.stateDir, resolve(fixture.root)), "utf8"),
+    ) as { state?: { children?: RecordedChild[] } };
+    return Array.isArray(stored.state?.children) ? stored.state.children : [];
+  } catch {
+    return [];
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface FlowProcess {
+  child: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  url: string;
+}
+
+const flowProcesses: Bun.Subprocess<"ignore", "pipe", "pipe">[] = [];
+
+afterEach(() => {
+  for (const child of flowProcesses.splice(0)) {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The test already ended it.
+    }
+  }
+});
+
+/** A real server process for the crash-recovery path an in-process stop cannot exercise. */
+async function startFlowProcess(fixture: Fixture, command: string): Promise<FlowProcess> {
+  seedVerificationProvider(fixture.stateDir);
+  const releaseDir = join(fixture.root, "releases");
+  mkdirSync(releaseDir, { recursive: true });
+  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
+  const port = probe.port;
+  probe.stop(true);
+  const child = Bun.spawn({
+    cmd: [process.execPath, join(import.meta.dir, "index.ts")],
+    cwd: join(import.meta.dir, ".."),
+    env: {
+      ...process.env,
+      HOST: "127.0.0.1",
+      PORT: String(port),
+      ADRS_DIR: join(fixture.root, "adrs"),
+      REPO_DIR: fixture.root,
+      GOAL_FILE: fixture.goalFile,
+      STATIC_DIR: join(fixture.root, "static"),
+      STATE_DIR: fixture.stateDir,
+      AGENT_COMMAND: command,
+      DEVBOARD_RELEASE_DIR: releaseDir,
+      ...verificationProviderUsageEnv(),
+    },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  flowProcesses.push(child);
+  let stderr = "";
+  void (async () => {
+    const reader = child.stderr.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      stderr += decoder.decode(value, { stream: true });
+    }
+  })();
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/`, { method: "HEAD" });
+      if (response.ok || response.status === 404) break;
+    } catch {
+      // Still binding or still starting.
+    }
+    if (Date.now() > deadline) throw new Error(`the server did not start: ${stderr}`);
+    await Bun.sleep(50);
+  }
+  return { child, url: `127.0.0.1:${port}` };
+}
+
+describe("Flow children ledger", () => {
+  test("the persisted state records the live implementation peer with its pid, argv, and worktree", async () => {
+    const fixture = createFixture("children-implement");
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", "--flow-implement", "--flow-pre-commit-delay=5000"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+
+    client.send({ type: "startFlowImplementation" });
+    const started = await client.waitFor((event) => event.type === "flowImplementationStarted");
+    const worktree = started.worktree as string;
+    // The stub's worktree line proves the peer runs where its cwd says it does.
+    await waitForStub(fixture, (line) => line.startsWith("flow-implement "));
+    await waitUntil(
+      () => storedChildren(fixture).some((child) => child.cwd === worktree),
+      "the implementation peer in the persisted children",
+    );
+
+    const children = storedChildren(fixture);
+    expect(children).toHaveLength(1);
+    const child = children[0] as RecordedChild;
+    expect(child.pid).toBeGreaterThan(0);
+    expect(child.argv[0]).toBe("bun");
+    expect(child.argv[1]).toBe(STUB_AGENT);
+    expect(child.cwd).toBe(worktree);
+    // pid, argv, and cwd together prove this is the peer the stub logged.
+    expect(recordedChildAlive(child)).toBe(true);
+    client.close();
+  }, 60_000);
+
+  test("dispose reports no peers", async () => {
+    const fixture = createFixture("children-dispose");
+    const controller = new FlowController({
+      repoDir: fixture.root,
+      stateDir: fixture.stateDir,
+      agentCommand: `bun ${STUB_AGENT} --log=${fixture.logPath} --flow-goal`,
+      agentEnvironment: async () => ({ ...process.env }),
+      broadcast: () => {},
+    });
+    void controller.createGoal();
+    await waitUntil(() => controller.children().length === 1, "the goal interview peer");
+    const child = controller.children()[0] as RecordedChild;
+    expect(child.cwd).toBe(resolve(fixture.root));
+    expect(recordedChildAlive(child)).toBe(true);
+
+    controller.dispose();
+    expect(controller.children()).toEqual([]);
+    await waitUntil(() => !recordedChildAlive(child), "the disposed peer to exit");
+  }, 30_000);
+
+  test("a replacement ends the Flow peer a killed process left before a new implementation starts", async () => {
+    const fixture = createFixture("children-restart");
+    const command = [
+      `bun ${STUB_AGENT}`,
+      `--log=${fixture.logPath}`,
+      "--flow-goal",
+      "--flow-implement",
+      "--flow-pre-commit-delay=60000",
+    ].join(" ");
+    const first = await startFlowProcess(fixture, command);
+    const client = await connect({ url: first.url });
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "startFlowImplementation" });
+    const started = await client.waitFor((event) => event.type === "flowImplementationStarted");
+    const sessionId = started.sessionId as string;
+    const worktree = started.worktree as string;
+    await waitForStub(fixture, (line) => line.startsWith("flow-implement "));
+    await waitUntil(
+      () => storedChildren(fixture).some((child) => child.cwd === worktree),
+      "the implementation peer in the persisted children",
+    );
+    const recorded = storedChildren(fixture).find((child) => child.cwd === worktree);
+    if (recorded === undefined) throw new Error("the implementation peer was not recorded.");
+    client.close();
+
+    first.child.kill("SIGKILL");
+    await first.child.exited;
+    await waitUntil(() => alive(recorded.pid), "the orphaned implementation peer to survive");
+
+    const second = await startFlowProcess(fixture, command);
+    await waitUntil(
+      () => !alive(recorded.pid),
+      "the replacement to end the recorded Flow peer",
+      15_000,
+    );
+
+    const replacementClient = await connect({ url: second.url });
+    await connected(replacementClient);
+    // The snapshot proves the restored session exists and is stopped, so the
+    // start below runs against restored work rather than a fresh controller.
+    await replacementClient.waitFor(
+      (event) => event.type === "flowSnapshot" && event.status === "stopped",
+    );
+    replacementClient.send({ type: "startFlowImplementation" });
+    await replacementClient.waitFor(
+      (event) => event.type === "flowImplementationStarted" && event.sessionId === sessionId,
+    );
+    await waitUntil(() => {
+      const next = storedChildren(fixture).find(
+        (child) => child.cwd === worktree && child.pid !== recorded.pid,
+      );
+      return next !== undefined && recordedChildAlive(next);
+    }, "the replacement implementation peer in the persisted children");
+
+    // The old peer was proven gone before the new implementation started.
+    expect(alive(recorded.pid)).toBe(false);
+    replacementClient.send({ type: "stopFlowImplementation" });
+    await replacementClient.waitFor((event) => event.type === "flowStopped");
+    replacementClient.close();
+  }, 90_000);
 });

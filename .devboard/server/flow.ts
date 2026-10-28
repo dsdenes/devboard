@@ -20,6 +20,7 @@ import {
 import type { Exec, Forge } from "../lib/forge-auth.ts";
 import { giteaBaseUrl, parseForgeRemote } from "../lib/forge";
 import { journalKey, type Journal } from "./journal";
+import type { RecordedChild } from "./state";
 
 /**
  * Flow Mode: one implementation agent in an isolated worktree, reviewable as
@@ -1025,6 +1026,26 @@ export class FlowController {
       rationale: widget.rationale,
       files: widget.files,
     }));
+  }
+
+  /**
+   * The pids, commands, and working directories a replacement needs to prove
+   * and end the peers this process leaves behind. Every peer is live: a field
+   * cleared by disposal or a finished turn contributes nothing.
+   */
+  children(): RecordedChild[] {
+    const children: RecordedChild[] = [];
+    const remember = (agent: AcpConnection | undefined, cwd: string) => {
+      const pid = agent?.pid;
+      if (agent === undefined || pid === undefined) return;
+      children.push({ pid, argv: agent.argv, cwd });
+    };
+    const worktree = this.#session?.worktree;
+    if (worktree !== undefined) remember(this.#implementation?.agent, worktree);
+    remember(this.#goalCreation?.agent, this.repoDir);
+    remember(this.#analyst, this.repoDir);
+    remember(this.#conversation?.agent, this.repoDir);
+    return children;
   }
 
   dispose(): void {

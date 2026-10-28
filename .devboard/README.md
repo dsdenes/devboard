@@ -609,9 +609,13 @@ silently abandoned.
 A graceful stop, launcher restart, or `SIGKILL` leaves the session on disk. The replacement reads
 the session directory and re-emits its complete state. A session that was running is reported
 `stopped`, its pending question is cleared, and the server sends one `flowNotice` saying the Flow
-implementation stopped and that starting it again resumes it. It never re-spawns a Flow agent on
-its own: no goal interview, implementation turn, change analysis, or widget conversation resumes
-automatically. Selecting `Start implementation` re-spawns `/flow-implement` with the same session
+implementation stopped and that starting it again resumes it. The durable child ledger includes
+Flow's own peers: a live implementation (recorded with its worktree as the working directory), goal
+interview, change analyst, and widget conversation are written to the state file, so the
+replacement proves and ends each one before anything can start another implementation in the same
+worktree. It never re-spawns a Flow agent on its own: no goal interview, implementation turn,
+change analysis, or widget conversation resumes automatically. Selecting `Start implementation`
+re-spawns `/flow-implement` with the same session
 directory, and the agent reads the persisted goal, decisions, steering acks, checkpoints, and
 verification before continuing. A session that was idle stays idle. The replacement recomputes the
 diff and widgets from the worktree without spawning an analyst, so a restart can never lose review

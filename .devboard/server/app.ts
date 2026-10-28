@@ -2053,6 +2053,9 @@ export function createApp(options: AppOptions) {
     remember(skillsPreparation?.agent);
     remember(discoverRun?.agent, discoverRun?.cwd);
     for (const lane of liveLanes) remember(lane.agent);
+    // Flow's own peers — implementation, goal interview, analyst, and widget
+    // conversation — are recorded by their controller with their real cwds.
+    children.push(...flow.children());
     // Running elaborations belong to their detached owners, not to this
     // process: a replacement must adopt them, never end them as orphans.
     return children;
