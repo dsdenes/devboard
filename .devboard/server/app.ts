@@ -93,6 +93,9 @@ import {
 import {
   findOpenEpics,
   normalizeEpics,
+  TrackerAbortedError,
+  TrackerTimeoutError,
+  TRACKER_READ_TIMEOUT_MS,
   type EpicLookup,
   type OpenEpic,
 } from "./tracker";
@@ -132,6 +135,8 @@ export interface AppOptions {
   agentCommand?: string;
   tracker?: EpicLookup;
   trackerSettle?: Partial<TrackerSettle>;
+  /** Wall-clock bound for one tracker read; defaults to 30 seconds. */
+  trackerTimeoutMs?: number;
   /** Delay before an implementation lane whose epic stayed open runs again. */
   laneBackoffMs?: number;
   /** How long a finished lane keeps its tab before leaving the active list. */
@@ -1696,6 +1701,10 @@ export function createApp(options: AppOptions) {
     attempts: Math.max(1, options.trackerSettle?.attempts ?? TRACKER_SETTLE_ATTEMPTS),
     delayMs: Math.max(0, options.trackerSettle?.delayMs ?? TRACKER_SETTLE_DELAY_MS),
   };
+  const trackerTimeoutMs = Math.max(
+    1,
+    options.trackerTimeoutMs ?? TRACKER_READ_TIMEOUT_MS,
+  );
   const laneBackoffMs = Math.max(0, options.laneBackoffMs ?? LANE_BACKOFF_MS);
   const laneRetentionMs = Math.max(0, options.laneRetentionMs ?? LANE_RETENTION_MS);
   const mainPollMs = Math.max(10, options.mainPollMs ?? MAIN_POLL_MS);
@@ -1867,6 +1876,8 @@ export function createApp(options: AppOptions) {
   /** Resolves when a stopped lifecycle loop has finished unwinding. */
   let lifecycleUnwinding: Promise<void> | undefined;
   let settleLifecycleUnwinding: (() => void) | undefined;
+  /** Tracker reads the lifecycle owns; a stop or reset aborts every one. */
+  const trackerReads = new Set<AbortController>();
   let restarting = false;
   /** A refresh waits for active work before it replaces this process. */
   let restartWhenIdle = false;
@@ -4476,8 +4487,46 @@ export function createApp(options: AppOptions) {
     publishLanes();
   }
 
+  /** Rejects with the controller's reason as soon as a tracker read is aborted. */
+  function whenTrackerAborted(signal: AbortSignal): Promise<never> {
+    const aborted = Promise.withResolvers<never>();
+    const reject = () =>
+      aborted.reject(
+        signal.reason instanceof Error ? signal.reason : new TrackerAbortedError(),
+      );
+    if (signal.aborted) reject();
+    else signal.addEventListener("abort", reject, { once: true });
+    return aborted.promise;
+  }
+
+  /** Aborts every in-flight tracker read; the lifecycle then unwinds at once. */
+  function abortTrackerReads() {
+    for (const controller of trackerReads) controller.abort(new TrackerAbortedError());
+    trackerReads.clear();
+  }
+
+  /**
+   * Reads the tracker under a deadline the lifecycle owns. Stop and reset abort
+   * the read, so a stalled child cannot keep the run from unwinding.
+   */
   async function readEpicList(): Promise<OpenEpic[]> {
-    return normalizeEpics(await tracker(repoDir));
+    const controller = new AbortController();
+    trackerReads.add(controller);
+    const timer = setTimeout(
+      () => controller.abort(new TrackerTimeoutError(trackerTimeoutMs)),
+      trackerTimeoutMs,
+    );
+    try {
+      return normalizeEpics(
+        await Promise.race([
+          tracker(repoDir, { signal: controller.signal, timeoutMs: trackerTimeoutMs }),
+          whenTrackerAborted(controller.signal),
+        ]),
+      );
+    } finally {
+      clearTimeout(timer);
+      trackerReads.delete(controller);
+    }
   }
 
   /**
@@ -4820,8 +4869,10 @@ export function createApp(options: AppOptions) {
       const list = await settleEpicList(
         (candidate) => !candidate.some((entry) => !before.has(String(entry.number))),
       );
+      if (!lifecycleRunning) return;
       applyEpicList(list);
     } catch (error) {
+      if (!lifecycleRunning) return;
       broadcast({
         type: "error",
         lane: lane.id,
@@ -5083,6 +5134,9 @@ export function createApp(options: AppOptions) {
 
     lifecyclePausedForManualRun = false;
     lifecycleRunning = false;
+    // The start may still be waiting on a stalled tracker; aborting the read
+    // lets it unwind now instead of blocking the next Start forever.
+    abortTrackerReads();
     journal.write("lifecycle", "stop");
     if (stopAllLanes()) publishLanes();
     lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
@@ -5273,16 +5327,21 @@ export function createApp(options: AppOptions) {
     publishLifecycle(true);
     let finished = false;
     try {
-      applyEpicList(await readEpicList());
+      const list = await readEpicList();
+      // A stopped or reset run owns no lanes: its late tracker answer is stale.
+      if (!lifecycleRunning || request !== lifecycleStartRequest) return;
+      applyEpicList(list);
       await holdWhilePaused();
       if (!lifecycleRunning) return;
       reconcileLanes();
       finished = await runLifecycle();
     } catch (error) {
-      broadcast({
-        type: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
+      if (lifecycleRunning && request === lifecycleStartRequest) {
+        broadcast({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
       finalizeLifecycleRun(finished, lifecycle.paused);
     }
@@ -5324,15 +5383,19 @@ export function createApp(options: AppOptions) {
     let finished = false;
     try {
       spawnRestoredLanes();
-      applyEpicList(await readEpicList());
+      const list = await readEpicList();
+      if (!lifecycleRunning) return;
+      applyEpicList(list);
       reconcileLanes();
       if (generationQueued) void drainGenerations();
       finished = await runLifecycle();
     } catch (error) {
-      broadcast({
-        type: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
+      if (lifecycleRunning) {
+        broadcast({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
       finalizeLifecycleRun(finished, false);
     }
@@ -5564,6 +5627,7 @@ export function createApp(options: AppOptions) {
 
     lifecycleStartRequest += 1;
     lifecyclePausedForManualRun = false;
+    abortTrackerReads();
     if (lifecycleRunning) {
       lifecycleRunning = false;
       lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };

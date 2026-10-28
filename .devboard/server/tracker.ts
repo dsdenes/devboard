@@ -16,6 +16,39 @@ export interface OpenEpic {
   url: string;
 }
 
+/** Default wall-clock bound for one whole tracker read. */
+export const TRACKER_READ_TIMEOUT_MS = 30_000;
+
+/**
+ * A tracker read that ran past its deadline. The read left no state behind, so
+ * the caller may run it again.
+ */
+export class TrackerTimeoutError extends Error {
+  readonly retryable = true;
+
+  constructor(readonly timeoutMs: number) {
+    super(`The tracker did not answer within ${timeoutMs} ms; retry the read.`);
+    this.name = "TrackerTimeoutError";
+  }
+}
+
+/** A tracker read cancelled by its owner: a stop, a reset, or a shutdown. */
+export class TrackerAbortedError extends Error {
+  readonly retryable = true;
+
+  constructor() {
+    super("The tracker read was stopped.");
+    this.name = "TrackerAbortedError";
+  }
+}
+
+export interface TrackerReadOptions {
+  /** Whole-read deadline in milliseconds; defaults to `TRACKER_READ_TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** Aborting kills every in-flight child and rejects the read. */
+  signal?: AbortSignal;
+}
+
 /**
  * Reads every open epic on the origin tracker. A lookup may return one epic or
  * `undefined` for the single-epic callers tests use; the lifecycle normalizes
@@ -23,6 +56,7 @@ export interface OpenEpic {
  */
 export type EpicLookup = (
   repoDir: string,
+  options?: TrackerReadOptions,
 ) => Promise<OpenEpic[] | OpenEpic | undefined>;
 
 /** Normalizes a tracker answer to the list shape the lifecycle consumes. */
@@ -71,8 +105,34 @@ function baseEnvironment(): Record<string, string> {
   };
 }
 
+/** The error an aborted read should surface; the controller carries the cause. */
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new TrackerAbortedError();
+}
+
+/** Rejects with the read's abort reason as soon as its controller aborts. */
+function whenAborted(signal: AbortSignal): Promise<never> {
+  const aborted = Promise.withResolvers<never>();
+  if (signal.aborted) {
+    aborted.reject(abortReason(signal));
+  } else {
+    signal.addEventListener("abort", () => aborted.reject(abortReason(signal)), { once: true });
+  }
+  return aborted.promise;
+}
+
+/** Kills a tracker child; a child that already exited is not an error. */
+function terminate(process: Pick<Subprocess, "kill">): void {
+  try {
+    process.kill("SIGKILL");
+  } catch {
+    // It exited between the abort and the signal.
+  }
+}
+
 const bunExec: Exec = async (commandName, args, options) => {
   try {
+    if (options.signal?.aborted) return { stdout: "", stderr: "", code: -1, killed: true };
     const process = Bun.spawn({
       cmd: [commandName, ...args],
       cwd: options.cwd,
@@ -81,18 +141,37 @@ const bunExec: Exec = async (commandName, args, options) => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text(),
-      process.exited,
-    ]);
-    return { stdout, stderr, code };
+    const kill = () => terminate(process);
+    options.signal?.addEventListener("abort", kill, { once: true });
+    let timer: Timer | undefined;
+    const guards: Promise<never>[] = [];
+    if (options.timeout !== undefined) {
+      const timeoutMs = Math.max(1, options.timeout);
+      const timed = Promise.withResolvers<never>();
+      guards.push(timed.promise);
+      timer = setTimeout(() => {
+        kill();
+        timed.reject(new TrackerTimeoutError(timeoutMs));
+      }, timeoutMs);
+    }
+    if (options.signal !== undefined) guards.push(whenAborted(options.signal));
+    try {
+      const finished = Promise.all([
+        new Response(process.stdout).text(),
+        new Response(process.stderr).text(),
+        process.exited,
+      ]).then(([stdout, stderr, code]) => ({ stdout, stderr, code, killed: code === 137 }));
+      return await (guards.length === 0 ? finished : Promise.race([finished, ...guards]));
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", kill);
+    }
   } catch (error) {
     return {
       stdout: "",
       stderr: error instanceof Error ? error.message : String(error),
       code: -1,
-      killed: false,
+      killed: true,
     };
   }
 };
@@ -101,7 +180,9 @@ async function command(
   cwd: string,
   argv: string[],
   env: Record<string, string> = baseEnvironment(),
+  signal?: AbortSignal,
 ): Promise<CommandResult> {
+  if (signal?.aborted) throw abortReason(signal);
   let process: Subprocess<"ignore", "pipe", "pipe">;
   try {
     process = Bun.spawn(argv, {
@@ -117,12 +198,18 @@ async function command(
     );
   }
 
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
-    process.exited,
-  ]);
-  return { stdout, stderr, exitCode };
+  const kill = () => terminate(process);
+  signal?.addEventListener("abort", kill, { once: true });
+  try {
+    const finished = Promise.all([
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text(),
+      process.exited,
+    ]).then(([stdout, stderr, exitCode]) => ({ stdout, stderr, exitCode }));
+    return await (signal === undefined ? finished : Promise.race([finished, whenAborted(signal)]));
+  } finally {
+    signal?.removeEventListener("abort", kill);
+  }
 }
 
 async function commandJson<T>(
@@ -130,8 +217,9 @@ async function commandJson<T>(
   argv: string[],
   description: string,
   env?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const result = await command(cwd, argv, env);
+  const result = await command(cwd, argv, env, signal);
   if (result.exitCode !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`;
     throw new Error(`Could not ${description}: ${detail}`);
@@ -196,12 +284,14 @@ async function githubEpics(
   cwd: string,
   project: string,
   env: Record<string, string>,
+  signal: AbortSignal,
 ): Promise<OpenEpic[]> {
   const labels = await commandJson<LabelEntry[]>(
     cwd,
     ["gh", "label", "list", "--search", "epic", "--limit", "100", "--json", "name"],
     "list tracker labels",
     env,
+    signal,
   );
   const label = labels.find(
     (entry) => typeof entry.name === "string" && entry.name.toLowerCase() === "epic",
@@ -225,6 +315,7 @@ async function githubEpics(
       ],
       "list open epics",
       env,
+      signal,
     );
     return allEpics(issues);
   }
@@ -249,16 +340,22 @@ async function githubEpics(
     ],
     "search open epics",
     env,
+    signal,
   );
   return allEpics(issues);
 }
 
-async function gitlabEpics(cwd: string, env: Record<string, string>): Promise<OpenEpic[]> {
+async function gitlabEpics(
+  cwd: string,
+  env: Record<string, string>,
+  signal: AbortSignal,
+): Promise<OpenEpic[]> {
   const labels = await commandJson<LabelEntry[]>(
     cwd,
     ["glab", "label", "list", "--output", "json"],
     "list tracker labels",
     env,
+    signal,
   );
   const label = labels.find(
     (entry) => typeof entry.name === "string" && entry.name.toLowerCase() === "epic",
@@ -270,6 +367,7 @@ async function gitlabEpics(cwd: string, env: Record<string, string>): Promise<Op
       ["glab", "issue", "list", "--label", label.name, "--output", "json"],
       "list open epics",
       env,
+      signal,
     );
     return allEpics(issues);
   }
@@ -279,11 +377,12 @@ async function gitlabEpics(cwd: string, env: Record<string, string>): Promise<Op
     ["glab", "issue", "list", "--search", "devboard-epic", "--in", "description", "--output", "json"],
     "search open epics",
     env,
+    signal,
   );
   return allEpics(issues);
 }
 
-async function giteaEpics(remote: Remote): Promise<OpenEpic[]> {
+async function giteaEpics(remote: Remote, signal: AbortSignal): Promise<OpenEpic[]> {
   if (remote.baseUrl === undefined || remote.baseUrl.length === 0) {
     throw new Error("The Gitea address is not configured; set DEVBOARD_GITEA_URL.");
   }
@@ -295,6 +394,7 @@ async function giteaEpics(remote: Remote): Promise<OpenEpic[]> {
       ...(token === undefined ? {} : { token }),
     },
     "open",
+    (input, init) => fetch(input, { ...init, signal }),
   );
   return issues
     .filter(
@@ -318,6 +418,8 @@ async function resolveTrackerAuth(
   project: string,
   forge: Forge,
   repoDir: string,
+  deadline: number,
+  signal: AbortSignal,
 ): Promise<ResolvedAuth> {
   const key = `${forge}:${host}:${project}`;
   const cached = authCache.get(key);
@@ -330,19 +432,21 @@ async function resolveTrackerAuth(
     cwd: repoDir,
     required: "read",
     env: process.env,
+    deadline,
+    signal,
   });
   if (isAuthFailure(auth)) throw new Error(auth.error);
   authCache.set(key, { auth, expires: Date.now() + AUTH_CACHE_MS });
   return auth;
 }
 
-/**
- * Finds every open epic on the origin tracker. An issue is an epic when it is
- * open and either carries the label `epic` ignoring case or contains the
- * `devboard-epic` marker in its body. Only read-only CLI queries run.
- */
-export async function findOpenEpics(repoDir: string): Promise<OpenEpic[]> {
-  const remote = await command(repoDir, ["git", "remote", "get-url", "origin"]);
+/** Runs the origin read under one controller that owns every child it spawns. */
+async function readOpenEpics(
+  repoDir: string,
+  deadline: number,
+  signal: AbortSignal,
+): Promise<OpenEpic[]> {
+  const remote = await command(repoDir, ["git", "remote", "get-url", "origin"], undefined, signal);
   if (remote.exitCode !== 0) {
     const detail = remote.stderr.trim() || `exit code ${remote.exitCode}`;
     throw new Error(`Could not read the origin remote: ${detail}`);
@@ -353,17 +457,51 @@ export async function findOpenEpics(repoDir: string): Promise<OpenEpic[]> {
     throw new Error("The origin remote does not name a supported repository.");
   }
 
-  if (classified.forge === "gitea") return await giteaEpics(classified);
+  if (classified.forge === "gitea") return await giteaEpics(classified, signal);
 
   const auth = await resolveTrackerAuth(
     classified.host,
     classified.project,
     classified.forge,
     repoDir,
+    deadline,
+    signal,
   );
   const env = authEnvironment(auth);
 
   return classified.forge === "github"
-    ? await githubEpics(repoDir, classified.project, env)
-    : await gitlabEpics(repoDir, env);
+    ? await githubEpics(repoDir, classified.project, env, signal)
+    : await gitlabEpics(repoDir, env, signal);
+}
+
+/**
+ * Finds every open epic on the origin tracker. An issue is an epic when it is
+ * open and either carries the label `epic` ignoring case or contains the
+ * `devboard-epic` marker in its body. Only read-only CLI queries run. The whole
+ * read is bounded: past `timeoutMs`, or when the caller aborts, every child is
+ * killed and the promise rejects instead of outliving the caller.
+ */
+export async function findOpenEpics(
+  repoDir: string,
+  options: TrackerReadOptions = {},
+): Promise<OpenEpic[]> {
+  const timeoutMs = Math.max(1, options.timeoutMs ?? TRACKER_READ_TIMEOUT_MS);
+  const deadline = Date.now() + timeoutMs;
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new TrackerTimeoutError(timeoutMs)),
+    timeoutMs,
+  );
+  const onAbort = () => controller.abort(new TrackerAbortedError());
+  if (options.signal?.aborted) onAbort();
+  else options.signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([
+      readOpenEpics(repoDir, deadline, controller.signal),
+      whenAborted(controller.signal),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
 }

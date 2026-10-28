@@ -2,7 +2,6 @@ import { fixtureRecord, frontmatterStatus, pendingRecord } from "./fixtures/adr-
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
@@ -46,7 +45,9 @@ interface TestServer {
 }
 
 async function temporaryDirectory() {
-  const directory = await mkdtemp(join(tmpdir(), "devboard-lifecycle-"));
+  const parent = join(import.meta.dir, "..", ".tmp", "lifecycle");
+  await mkdir(parent, { recursive: true });
+  const directory = await mkdtemp(join(parent, "host-"));
   temporaryDirectories.push(directory);
   return directory;
 }
@@ -58,6 +59,7 @@ async function startServer(
     tracker?: EpicLookup;
     goalText?: string | null;
     trackerSettle?: { attempts: number; delayMs: number };
+    trackerTimeoutMs?: number;
     laneBackoffMs?: number;
     mainPollMs?: number;
     installedSkills?: "managed" | "unmanaged" | "none";
@@ -99,6 +101,7 @@ async function startServer(
     agentCommand: `bun ${STUB_AGENT} --log=${logPath} ${options.agentArguments ?? ""}`.trim(),
     tracker: options.tracker ?? (async () => undefined),
     trackerSettle: options.trackerSettle ?? { attempts: 1 },
+    trackerTimeoutMs: options.trackerTimeoutMs,
     laneBackoffMs: options.laneBackoffMs,
     mainPollMs: options.mainPollMs,
   });
@@ -484,6 +487,139 @@ describe("lifecycle runs", () => {
       } finally {
         client.close();
         other.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "fails a start whose tracker read exceeds its deadline and accepts the next one",
+    async () => {
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        {},
+        {
+          trackerTimeoutMs: 200,
+          tracker: async () => {
+            lookups += 1;
+            if (lookups === 1) await new Promise<never>(() => {});
+            return undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        expect(await client.waitFor((message) => message.type === "lifecycleState")).toEqual({
+          type: "lifecycleState",
+          stage: "epic",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+
+        const error = await client.waitFor((message) => message.type === "error");
+        expect(error.message).toContain("did not answer within 200 ms");
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.stage === "goal",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "goal",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+
+        // The timed-out start unwound: the next Start reaches the loop and finishes.
+        client.send({ type: "startLifecycle" });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.stage === "finished",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "finished",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+        expect(lookups).toBeGreaterThan(1);
+        expect(spawnCount(logPath)).toBe(1);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "ignores a tracker answer that arrives after the run stopped and starts cleanly again",
+    async () => {
+      const answer = Promise.withResolvers<OpenEpic[]>();
+      const epic: OpenEpic = {
+        number: 77,
+        title: "Late answer",
+        url: "https://example.test/issues/77",
+      };
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        {},
+        {
+          tracker: async () => {
+            lookups += 1;
+            if (lookups === 1) return await answer.promise;
+            return undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "epic",
+        );
+        client.send({ type: "stopLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "goal",
+        );
+        const stoppedAt = client.events.length;
+
+        answer.resolve([epic]);
+        await Bun.sleep(250);
+
+        expect(
+          client.events
+            .slice(stoppedAt)
+            .filter((message) => message.type === "laneState" && message.openEpics !== 0),
+        ).toEqual([]);
+        expect(
+          client.events
+            .slice(stoppedAt)
+            .filter((message) => message.type === "lifecycleState" && message.stage !== "goal"),
+        ).toEqual([]);
+
+        // No unwinding promise remains pending: the next Start runs to the end.
+        client.send({ type: "startLifecycle" });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "lifecycleState" && message.stage === "finished",
+          ),
+        ).toEqual({
+          type: "lifecycleState",
+          stage: "finished",
+          pass: 1,
+          work: null,
+          paused: false,
+        });
+        expect(spawnCount(logPath)).toBe(1);
+      } finally {
+        client.close();
         server.stop(true);
       }
     },

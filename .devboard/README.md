@@ -2332,11 +2332,16 @@ The client sends:
   installed there. A refused start spawns no agent and reports no `lifecycleState`. An accepted
   start reports `lifecycleState` at `epic` with `work: null`, the pass already held, and
   `paused: false` before its first tracker query and before any agent starts. While the lifecycle
-  run is active, `startLifecycle` is also refused. `startRun` is accepted and pauses every lane
-  as described above, and the lifecycle resumes when the manual sequence ends.
+  run is active, `startLifecycle` is also refused. A tracker read is bounded by
+  `trackerTimeoutMs` (30 seconds by default); a read past that deadline kills every tracker
+  child, reports an `error` naming the deadline, and returns the run to the idle `goal` stage, so
+  the next Start is accepted instead of waiting on the unfinished one. An answer that arrives
+  after a stop or reset is ignored and changes no lane or stage. `startRun` is accepted and
+  pauses every lane as described above, and the lifecycle resumes when the manual sequence ends.
   `reviseGoal` and `saveGoal` are refused only while the lifecycle is
   advancing.
-- `stopLifecycle` ends an active run for real. It closes every live lane peer, reports the idle
+- `stopLifecycle` ends an active run for real. It closes every live lane peer, aborts an
+  in-flight tracker read so the start unwinds at once, reports the idle
   `lifecycleState` at `goal` with `work: null`, `paused: false`, and the pass already reached,
   and publishes a lane snapshot with every stopped lane `failed` and `runningLanes: 0`. It
   leaves nothing suspended. It is refused with an `error` when no lifecycle run is active. A
@@ -2618,7 +2623,10 @@ single-agent refusals while creating, reconnect replay before the late client's 
 acceptance while the lifecycle is paused with the paused lane tabs retained, completion without
 reading or writing `adrs/`, and the custom `GOAL_FILE` split.
 `server/lifecycle.test.ts` covers the `lifecycleState` sequence, the running `epic` state
-reported before the first tracker lookup and to every client, stopping a running lifecycle and
+reported before the first tracker lookup and to every client, a start whose tracker read
+exceeds its configured deadline reporting an `error` and the idle `goal` stage while the next
+start reaches the loop, a tracker answer that arrives after a stop changing no lane or stage
+and not blocking the next start, stopping a running lifecycle and
 its in-flight lanes with the idle state that follows, the single `/epic-next`
 peer, ADR-order resolution, implementation of an already-open epic, return to epic generation
 on the next pass, the settle window that waits out a lagging tracker after epic generation and
@@ -2635,6 +2643,9 @@ same-open-epic stop, epic generation leaving the same pending records, and a thr
 query each end with the idle `goal` state, `work: null`, `paused: false`, and the aborting
 pass; a later client receives that state first, goal saving answers with the saved text, and
 a new lifecycle start is accepted and runs without a stale refusal.
+`server/tracker-timeout.test.ts` proves a stalled tracker child is killed at the read deadline
+with a retryable `TrackerTimeoutError`, and that aborting the read kills the child and rejects
+`TrackerAbortedError`.
 `server/skills-preparation.test.ts` covers skills preparation: the `prepareSkills` command and
 its `/prepare-skills` prompt, the project-agnostic prompt rules, one peer, activity and question
 relay, the non-whitespace goal precondition, every refusal while preparation runs and while each
