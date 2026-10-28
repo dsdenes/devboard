@@ -573,6 +573,8 @@ async function runGoalDraft(relativePath: string) {
     // A missing draft still produces a deterministic failure.
   }
   stream("Reading the draft and researching the repository");
+  const scenario = /\bSTUB-[A-Z]+\b/.exec(source)?.[0];
+  if (scenario !== undefined) stream(`Scenario ${scenario}`);
 
   if (source.includes("STUB-QUESTION")) {
     await askQuestions(1, { recommended: false });
@@ -1498,6 +1500,7 @@ async function promptTurn(params: unknown) {
 
   if (ask && text !== undefined && text.includes(ASK_INSTRUCTION)) {
     askTurns += 1;
+    if (askTurns === 1) log(`ask-spawn ${process.pid}`);
     const question = /(?:^|\n)Question: ([^\n]*)/.exec(text)?.[1] ?? "";
     log(`ask-prompt ${askTurns} ${question}`);
     log(`ask-text ${askTurns} ${JSON.stringify(text)}`);

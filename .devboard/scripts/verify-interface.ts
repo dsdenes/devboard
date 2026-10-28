@@ -755,11 +755,14 @@ async function seedIssuesState(
   }
   const lockDirectory = join(host, ".devboard", ".tmp", "issues");
   await mkdir(lockDirectory, { recursive: true });
+  // The lock's liveness guard compares the recorded instant with this
+  // process's real start; a fixed timestamp reads as a recycled pid.
+  const lockStartedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
   await writeFile(
     join(lockDirectory, "lock"),
     JSON.stringify({
       pid: process.pid,
-      startedAt: "2026-10-27T10:00:00.000Z",
+      startedAt: lockStartedAt,
       repo: resolve(host),
       stateDir,
       harnessVersion: sourceVersion ?? "0.1.0",
@@ -5646,6 +5649,398 @@ try {
     await page.eval<boolean>(`document.querySelector('[data-testid="issues-draft-detail"]') === null`),
     "a missing restored path opened a detail",
   );
+
+  // One-step new goal: the popover writes nothing until a submit, one submit
+  // writes the draft and starts its elaboration, a busy page writes only.
+  const newGoalDraftFiles = async (): Promise<string[]> =>
+    existsSync(draftDirectory)
+      ? (await readdir(draftDirectory)).filter((name) => name.endsWith(".md")).sort()
+      : [];
+  const waitForNewGoalDraft = async (before: string[], description: string): Promise<string> => {
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      const added = (await newGoalDraftFiles()).filter((name) => !before.includes(name));
+      if (added.length === 1) return added[0]!;
+      if (Date.now() > deadline) {
+        throw new Error(`verify:interface: ${description} wrote ${added.length} drafts`);
+      }
+      await delay(50);
+    }
+  };
+  const busyReason = "An elaboration is running for .devboard/goal-proposals/keep-the-drafts-header-sticky.md.";
+
+  check(
+    !existsSync(draftDirectory),
+    "the drafts directory exists before the new-goal checks",
+    draftDirectory,
+  );
+  const newGoalEntry = await page.eval<{ testid: string; command: string; label: string }>(`(() => {
+    const entry = document.querySelector('[data-testid="issues-draft-new"]');
+    return {
+      testid: entry?.getAttribute("data-testid") ?? "",
+      command: entry?.getAttribute("data-command") ?? "",
+      label: (entry?.textContent ?? "").replace(/\\s+/g, " ").trim(),
+    };
+  })()`);
+  check(
+    newGoalEntry.testid === "issues-draft-new" &&
+      newGoalEntry.command === "issues.draft.new" &&
+      newGoalEntry.label === "New goal",
+    "the drafts header has no New goal control",
+    newGoalEntry,
+  );
+
+  await page.click('[data-testid="issues-draft-new"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-new-popover"]') !== null`,
+    "the new goal popover",
+  );
+  const newGoalPopover = await page.eval<{
+    input: boolean;
+    submit: boolean;
+    cancel: boolean;
+    text: string;
+  }>(`(() => {
+    const input = document.querySelector('[data-testid="issues-draft-new-input"]');
+    return {
+      input: input !== null,
+      submit: document.querySelector('[data-testid="issues-draft-new-submit"]') !== null,
+      cancel: document.querySelector('[data-testid="issues-draft-new-cancel"]') !== null,
+      text: (input?.textContent ?? "").trim(),
+    };
+  })()`);
+  check(
+    newGoalPopover.input && newGoalPopover.submit && newGoalPopover.cancel,
+    "the new goal popover is missing its field or controls",
+    newGoalPopover,
+  );
+  check(!existsSync(draftDirectory), "opening the popover wrote a draft", await newGoalDraftFiles());
+  await page.key("Escape");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-new-popover"]') === null`,
+    "the popover to close with Escape",
+  );
+  check(!existsSync(draftDirectory), "Escape wrote a draft", await newGoalDraftFiles());
+
+  await page.click('[data-testid="issues-draft-new"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-new-popover"]') !== null`,
+    "the new goal popover again",
+  );
+  await page.click('[data-testid="issues-draft-new-cancel"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-new-popover"]') === null`,
+    "the popover to close with Cancel",
+  );
+  check(!existsSync(draftDirectory), "Cancel wrote a draft", await newGoalDraftFiles());
+
+  await runPalette("issues.draft.new");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-new-popover"]') !== null`,
+    "the new goal popover from the palette",
+  );
+  await page.key("Escape");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-new-popover"]') === null`,
+    "the palette-opened popover to close with Escape",
+  );
+  check(!existsSync(draftDirectory), "the palette entry wrote a draft", await newGoalDraftFiles());
+
+  // One submit writes the draft, lands on it, and starts exactly one peer.
+  const questionInstructions = "Create a goal from the drafts page.\nSTUB-QUESTION";
+  await page.click('[data-testid="issues-draft-new"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-new-popover"]') !== null`,
+    "the new goal popover for a submission",
+  );
+  await page.fill('[data-testid="issues-draft-new-input"]', questionInstructions);
+  await dismissNotifications();
+  await saveShot("issues-draft-new-goal");
+  check(
+    !existsSync(draftDirectory),
+    "typing in the popover wrote a draft before submit",
+    await newGoalDraftFiles(),
+  );
+  await page.click('[data-testid="issues-draft-new-submit"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-new-popover"]') === null`,
+    "the popover to close after a successful submit",
+  );
+  const createdQuestionFile = await waitForNewGoalDraft([], "the new goal submit");
+  check(
+    createdQuestionFile === "create-a-goal-from-the-drafts.md",
+    "the created draft has the wrong name",
+    createdQuestionFile,
+  );
+  check(
+    (await newGoalDraftFiles()).length === 1,
+    "one submit wrote more than one draft",
+    await newGoalDraftFiles(),
+  );
+  const createdQuestionPath = `.devboard/goal-proposals/${createdQuestionFile}`;
+  const createdQuestionBytes = await readFile(join(draftDirectory, createdQuestionFile), "utf8");
+  check(
+    createdQuestionBytes.startsWith(
+      "# Proposed goal: Create a goal from the drafts page.\n\n> Unprocessed draft. ",
+    ),
+    "the created draft lost its heading or notice",
+    createdQuestionBytes,
+  );
+  check(
+    createdQuestionBytes.includes(questionInstructions),
+    "the created draft lost the instructions verbatim",
+    createdQuestionBytes,
+  );
+  check(
+    createdQuestionBytes.includes("## Captured UI context") &&
+      createdQuestionBytes.includes("No page context was captured."),
+    "the created draft does not state that no page context was captured",
+    createdQuestionBytes,
+  );
+  for (const fabricated of [
+    "- Route:",
+    "- URL:",
+    "- Selected element:",
+    "- Viewport:",
+    "- Captured at:",
+    "### Visible text",
+    "### DOM excerpt",
+  ]) {
+    check(
+      !createdQuestionBytes.includes(fabricated),
+      `the created draft invented captured context: ${fabricated}`,
+      createdQuestionBytes,
+    );
+  }
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ${JSON.stringify(createdQuestionPath)}`,
+    "the created draft's detail",
+    20_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "running"`,
+    "the created draft to report running",
+    20_000,
+  );
+  const createdRun = await page.eval<{ activity: string; stop: boolean; state: string }>(`(() => ({
+    activity: document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "",
+    stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+    state: document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    createdRun.state === "running" && createdRun.stop,
+    "the created draft has no running state or Stop control",
+    createdRun,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("STUB-QUESTION") === true`,
+    "the created draft's STUB activity",
+    20_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the created draft's elaboration question",
+    20_000,
+  );
+  await dismissNotifications();
+  await page.click('[data-testid="issues-draft-choice"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft"][data-path=${JSON.stringify(createdQuestionPath)}]') === null`,
+    "the answered draft to disappear",
+    20_000,
+  );
+  const answeredLog = await readFile(agentLog, "utf8");
+  check(
+    answeredLog.includes("answer Alpha") &&
+      answeredLog.includes(`goal-draft-verified ${createdQuestionPath}`),
+    "the created draft's answer did not reach its own peer",
+    answeredLog.split("\n").filter((line) => line.includes("answer ") || line.includes("goal-draft-verified")),
+  );
+
+  // A hanging creation keeps Stop and Stop keeps it listed and startable.
+  const hangInstructions = "Keep the drafts header sticky.\nSTUB-QUESTION\nSTUB-HANG";
+  await page.click('[data-testid="issues-draft-new"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-new-popover"]') !== null`,
+    "the new goal popover for the hanging draft",
+  );
+  await page.fill('[data-testid="issues-draft-new-input"]', hangInstructions);
+  await page.click('[data-testid="issues-draft-new-submit"]');
+  const hangFile = await waitForNewGoalDraft([], "the hanging submit");
+  check(hangFile === "keep-the-drafts-header-sticky.md", "the hanging draft has the wrong name", hangFile);
+  const hangPath = `.devboard/goal-proposals/${hangFile}`;
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ${JSON.stringify(hangPath)} &&
+      document.querySelector('[data-testid="issues-draft-stop"]') !== null`,
+    "the hanging draft's running detail",
+    20_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the hanging draft's pending question",
+    20_000,
+  );
+  await page.click('[data-testid="issues-draft-stop"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "stopped"`,
+    "the stopped hanging draft",
+    20_000,
+  );
+  const hangAfterStop = await page.eval<{ listed: boolean; startEnabled: boolean; stop: boolean }>(`(() => ({
+    listed: document.querySelector('[data-testid="issues-draft"][data-path=${JSON.stringify(hangPath)}]') !== null,
+    startEnabled: document.querySelector('[data-testid="issues-draft-start"]')?.disabled === false,
+    stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+  }))()`);
+  check(
+    hangAfterStop.listed && hangAfterStop.startEnabled && !hangAfterStop.stop,
+    "Stop lost the created draft or left its peer running",
+    hangAfterStop,
+  );
+
+  // A busy submit writes the draft, selects it, and starts nothing.
+  await page.click(`[data-testid="issues-draft-start"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "running" &&
+      document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the hanging draft running with its question",
+    20_000,
+  );
+  const busyBefore = await page.eval<{ activity: string; question: string }>(`(() => ({
+    activity: document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "",
+    question: document.querySelector('[data-testid="issues-draft-question"]')?.textContent ?? "",
+  }))()`);
+  const busyInstructions = "Make the drafts rail collapsible.\nSTUB-HANG";
+  await page.click('[data-testid="issues-draft-new"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-new-popover"]') !== null`,
+    "the new goal popover while another elaboration runs",
+  );
+  await page.fill('[data-testid="issues-draft-new-input"]', busyInstructions);
+  await page.click('[data-testid="issues-draft-new-submit"]');
+  const busyFile = await waitForNewGoalDraft([hangFile!], "the busy submit");
+  check(
+    busyFile === "make-the-drafts-rail-collapsible.md",
+    "the busy draft has the wrong name",
+    busyFile,
+  );
+  const busyPath = `.devboard/goal-proposals/${busyFile}`;
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ${JSON.stringify(busyPath)}`,
+    "the busy draft's detail",
+    20_000,
+  );
+  const busyState = await page.eval<{
+    state: string;
+    stop: boolean;
+    startDisabled: boolean;
+    startTitle: string;
+    detailReason: string;
+    listReason: string;
+  }>(`(() => {
+    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    return {
+      state: document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? "",
+      stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+      startDisabled: start?.disabled === true,
+      startTitle: start?.getAttribute("title") ?? "",
+      detailReason: document.querySelector('[data-testid="issues-draft-detail-blocked"]')?.textContent?.trim() ?? "",
+      listReason: document.querySelector('[data-testid="issues-draft"][data-path=${JSON.stringify(busyPath)}] [data-testid="issues-draft-blocked"]')?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    busyState.state === "" && !busyState.stop && busyState.startDisabled,
+    "the busy draft did not stay unstarted",
+    busyState,
+  );
+  check(
+    busyState.startTitle === busyReason &&
+      busyState.detailReason === busyReason &&
+      busyState.listReason === busyReason,
+    "the busy draft does not state why its start is disabled",
+    busyState,
+  );
+  await delay(500);
+  const busyLog = await readFile(agentLog, "utf8");
+  check(
+    busyLog.split("\n").filter((line) => line.trim() === `goal-draft ${busyPath}`).length === 0,
+    "the busy submit started a second elaboration peer",
+    busyLog.split("\n").filter((line) => line.startsWith("goal-draft ")),
+  );
+
+  // The running elaboration keeps its own draft, activity, and question.
+  await page.click(`[data-testid="issues-draft"][data-path="${hangPath}"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ${JSON.stringify(hangPath)} &&
+      document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the running elaboration after the busy submit",
+    20_000,
+  );
+  const busyAfter = await page.eval<{ activity: string; question: string; state: string }>(`(() => ({
+    activity: document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "",
+    question: document.querySelector('[data-testid="issues-draft-question"]')?.textContent ?? "",
+    state: document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    busyAfter.activity === busyBefore.activity &&
+      busyAfter.question === busyBefore.question &&
+      busyAfter.state === "running",
+    "the busy submit disturbed the running elaboration",
+    { busyBefore, busyAfter },
+  );
+
+  // Stopping that elaboration enables the created draft, which starts on demand.
+  await page.click('[data-testid="issues-draft-stop"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "stopped"`,
+    "the stopped blocking elaboration",
+    20_000,
+  );
+  await page.click(`[data-testid="issues-draft"][data-path="${busyPath}"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ${JSON.stringify(busyPath)}`,
+    "the busy draft after the blocker ended",
+    20_000,
+  );
+  const unblocked = await page.eval<{ startDisabled: boolean; reason: boolean }>(`(() => ({
+    startDisabled: document.querySelector('[data-testid="issues-draft-start"]')?.disabled === true,
+    reason: document.querySelector('[data-testid="issues-draft-detail-blocked"]') !== null,
+  }))()`);
+  check(
+    !unblocked.startDisabled && !unblocked.reason,
+    "the created draft stayed blocked after the running elaboration ended",
+    unblocked,
+  );
+  await page.click('[data-testid="issues-draft-start"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "running" &&
+      document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("STUB-HANG") === true`,
+    "the created draft to start after the blocker ended",
+    20_000,
+  );
+  const startedBusy = await page.eval<{ path: string; stop: boolean }>(`(() => ({
+    path: document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") ?? "",
+    stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+  }))()`);
+  check(
+    startedBusy.path === busyPath && startedBusy.stop,
+    "the created draft did not reach its own running detail",
+    startedBusy,
+  );
+  const startedLog = await readFile(agentLog, "utf8");
+  check(
+    startedLog.split("\n").filter((line) => line.trim() === `goal-draft ${busyPath}`).length === 1,
+    "the created draft starts more than one peer",
+    startedLog.split("\n").filter((line) => line.startsWith("goal-draft ")),
+  );
+  await dismissNotifications();
+  await saveShot("issues-draft-new-goal-running");
+  await page.click('[data-testid="issues-draft-stop"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "stopped"`,
+    "the stopped created draft",
+    20_000,
+  );
+  await rm(draftDirectory, { recursive: true, force: true });
 
   await page.click('[data-testid="open-issues-overview"]');
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the overview before the failed state");

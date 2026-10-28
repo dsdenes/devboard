@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { draftParts } from "../draft-format";
   import { issues, markDraftsPage } from "../issues.svelte";
   import { statusTone } from "../status-tone";
@@ -22,6 +22,65 @@
   const running = $derived(run?.status === "running");
   const question = $derived(run?.question ?? null);
   const error = $derived(issues.draftError ?? run?.error ?? null);
+  const startBlocker = $derived(
+    issues.draft === null ? null : issues.draftStartBlocker(issues.draft.path),
+  );
+
+  // The popover only holds text until a submit; opening, Escape, or Cancel
+  // writes no draft and starts no peer.
+  let newInstructions = $state("");
+  let newTrigger = $state<HTMLElement | null>(null);
+  let newInput = $state<HTMLTextAreaElement | null>(null);
+  let newPosition = $state("");
+
+  function placeNewPopover(): void {
+    const rect = newTrigger?.getBoundingClientRect();
+    if (rect === undefined) return;
+    const width = Math.min(360, window.innerWidth - 24);
+    const left = Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12));
+    newPosition = `top:${Math.round(rect.bottom + 6)}px;left:${Math.round(left)}px;width:${width}px`;
+  }
+
+  $effect(() => {
+    if (!issues.draftComposerOpen) return;
+    placeNewPopover();
+    void tick().then(() => newInput?.focus());
+    const update = (): void => placeNewPopover();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, { capture: true });
+    };
+  });
+
+  function toggleNewPopover(): void {
+    if (issues.draftComposerOpen) closeNewPopover();
+    else issues.openDraftComposer();
+  }
+
+  function closeNewPopover(): void {
+    issues.closeDraftComposer();
+    if (!issues.draftComposerOpen) newInstructions = "";
+  }
+
+  async function submitNew(): Promise<void> {
+    await issues.createDraft(newInstructions);
+    if (!issues.draftComposerOpen) newInstructions = "";
+  }
+
+  function onNewKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeNewPopover();
+      return;
+    }
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      void submitNew();
+    }
+  }
 
   onMount(() => {
     markDraftsPage(true);
@@ -55,8 +114,72 @@
     <section class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Proposed goals</h2>
-        <span class="panel__subtitle">{issues.repoLabel}</span>
+        <div class="issues-draft-new">
+          <span class="panel__subtitle">{issues.repoLabel}</span>
+          <span class="issues-draft-new__anchor" bind:this={newTrigger}>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="issues-draft-new"
+              data-command="issues.draft.new"
+              aria-haspopup="dialog"
+              aria-expanded={issues.draftComposerOpen}
+              onclick={toggleNewPopover}
+            >
+              New goal
+            </Button>
+          </span>
+        </div>
       </div>
+      {#if issues.draftComposerOpen}
+        <div
+          class="issues-draft-new__popover"
+          data-testid="issues-draft-new-popover"
+          role="dialog"
+          aria-label="New goal draft"
+          tabindex="-1"
+          style={newPosition}
+          onkeydown={onNewKeydown}
+        >
+          <label class="issues-draft-new__label" for="issues-draft-new-input">
+            Initial instructions
+          </label>
+          <textarea
+            id="issues-draft-new-input"
+            class="issues-draft-new__input mono"
+            data-testid="issues-draft-new-input"
+            bind:this={newInput}
+            bind:value={newInstructions}
+            rows={5}
+            placeholder="Describe the goal. One submit writes the draft and starts its elaboration."
+          ></textarea>
+          {#if issues.draftComposerError !== null}
+            <p class="issues-draft-new__error" data-testid="issues-draft-new-error" role="alert">
+              {issues.draftComposerError}
+            </p>
+          {/if}
+          <div class="issues-draft-new__actions">
+            <Button
+              variant="ghost"
+              size="sm"
+              data-testid="issues-draft-new-cancel"
+              disabled={issues.draftComposerPending}
+              onclick={closeNewPopover}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              data-testid="issues-draft-new-submit"
+              disabled={issues.draftComposerPending}
+              onclick={() => void submitNew()}
+            >
+              {issues.draftComposerPending ? "Creating…" : "Create and elaborate"}
+            </Button>
+          </div>
+        </div>
+      {/if}
       <div class="panel__body panel__body--flush">
         <ol class="issues-drafts" data-testid="issues-draft-list">
           {#each issues.drafts as draft (draft.path)}
@@ -141,6 +264,14 @@
         <div class="issues-draft-detail__body">
           {#if error !== null}
             <p class="issues-error" data-testid="issues-draft-error" role="alert">{error}</p>
+          {/if}
+          {#if startBlocker !== null && !running}
+            <p
+              class="issues-draft-detail__blocked"
+              data-testid="issues-draft-detail-blocked"
+            >
+              {startBlocker}
+            </p>
           {/if}
           {#if question !== null}
             <section
@@ -227,3 +358,64 @@
     {/if}
   </div>
 </section>
+
+<style>
+  .issues-draft-new {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+  }
+
+  .issues-draft-new__anchor {
+    display: inline-flex;
+  }
+
+  .issues-draft-new__popover {
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    box-shadow: 0 10px 30px rgb(0 0 0 / 28%);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    position: fixed;
+    z-index: 60;
+  }
+
+  .issues-draft-new__label {
+    color: var(--muted-foreground);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .issues-draft-new__input {
+    background: var(--background);
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    color: var(--foreground);
+    font-size: 12px;
+    min-height: 84px;
+    padding: 6px 8px;
+    resize: vertical;
+    width: 100%;
+  }
+
+  .issues-draft-new__error {
+    color: var(--destructive);
+    font-size: 11px;
+    margin: 0;
+  }
+
+  .issues-draft-new__actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+
+  .issues-draft-detail__blocked {
+    color: var(--warning);
+    font-size: 11px;
+    margin: 0;
+  }
+</style>

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import { createApp } from "./app";
 import {
+  DRAFT_NOTICE,
   GOAL_PROPOSALS_DIRECTORY,
   goalProposalBody,
   goalProposalName,
@@ -166,6 +167,65 @@ describe("goal proposal drafts", () => {
       ]) {
         expect(text).not.toContain(heading);
       }
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("writes a text-only draft with the notice and no captured context, never overwriting", async () => {
+    const { server, root, url, recordPath } = await startServer();
+
+    try {
+      const instructions =
+        "  Make the header sticky on scroll.\n\nKeep the footer as it is.  \n";
+      const response = await propose(url, { report: instructions });
+
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({
+        path: ".devboard/goal-proposals/make-the-header-sticky-on-scroll.md",
+      });
+
+      const files = await drafts(root);
+      expect(files).toEqual(["make-the-header-sticky-on-scroll.md"]);
+      const firstPath = join(root, GOAL_PROPOSALS_DIRECTORY, files[0]!);
+      const text = await readFile(firstPath, "utf8");
+      expect(text).toBe(
+        [
+          "# Proposed goal: Make the header sticky on scroll.",
+          "",
+          DRAFT_NOTICE,
+          "",
+          instructions,
+          "",
+          "## Captured UI context",
+          "",
+          "No page context was captured.",
+          "",
+        ].join("\n"),
+      );
+      expect(text).not.toContain("- Route:");
+      expect(text).not.toContain("- Selected element:");
+      expect(text).not.toContain("### Visible text");
+      expect(text).not.toContain("### DOM excerpt");
+      expect(text).not.toContain("http://");
+
+      const second = await propose(url, { report: instructions });
+      expect(second.status).toBe(201);
+      expect(await second.json()).toEqual({
+        path: ".devboard/goal-proposals/make-the-header-sticky-on-scroll-2.md",
+      });
+      expect(await drafts(root)).toEqual([
+        "make-the-header-sticky-on-scroll-2.md",
+        "make-the-header-sticky-on-scroll.md",
+      ]);
+      expect(await readFile(firstPath, "utf8")).toBe(text);
+      // The text-only path runs no `gh` command either.
+      expect(existsSync(recordPath)).toBe(false);
+
+      const blank = await propose(url, { report: " \n\t " });
+      expect(blank.status).toBe(400);
+      expect(await blank.json()).toEqual({ error: "report must not be empty." });
+      expect(await drafts(root)).toHaveLength(2);
     } finally {
       server.stop(true);
     }

@@ -13,6 +13,7 @@ import {
   type GoalDraftPeer,
   type GoalDraftPeerOptions,
 } from "../server/goal-drafts";
+import { parseGoalProposalSubmission, writeGoalProposal } from "../server/goal-proposal";
 
 /**
  * Draft reads and the one elaboration peer. Every fixture lives under
@@ -246,6 +247,82 @@ describe("elaboration", () => {
     expect(manager.start(".devboard/goal-proposals/two.md").ok).toBe(true);
     const second = await waitFor(() => peers[1], "the retried peer");
     expect(second.prompts).toEqual(["/goal-draft .devboard/goal-proposals/two.md"]);
+  });
+
+  test("creation followed by one start sends one /goal-draft prompt; a busy start is refused", async () => {
+    const { root } = await fixture();
+    const peers: FakePeer[] = [];
+    const { manager, events } = managerFor(root, peers);
+
+    const created = await writeGoalProposal(
+      parseGoalProposalSubmission({ report: "Make the drafts rail sticky." }),
+      { repoDir: root },
+    );
+    expect(created.path).toBe(".devboard/goal-proposals/make-the-drafts-rail-sticky.md");
+
+    const started = manager.start(created.path);
+    expect(started.ok).toBe(true);
+    const first = await waitFor(() => peers[0], "the peer for the created draft");
+    expect(peers).toHaveLength(1);
+    expect(first.prompts).toEqual([`/goal-draft ${created.path}`]);
+    expect(manager.snapshot()).toMatchObject({ status: "running", path: created.path });
+    const stateEvents = events.filter((event) => isEventType(event, "issuesDraftState"));
+    expect(stateEvents.length).toBeGreaterThan(0);
+
+    const other = await writeGoalProposal(
+      parseGoalProposalSubmission({ report: "Make the drafts rail collapsible." }),
+      { repoDir: root },
+    );
+    const refused = manager.start(other.path);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect(refused.message).toContain("An elaboration is already running for");
+      expect(refused.message).toContain(created.path);
+    }
+    // The busy refusal spawns no second peer and changes no draft.
+    expect(peers).toHaveLength(1);
+    expect(listGoalDrafts(root).map((draft) => draft.name)).toEqual([
+      "make-the-drafts-rail-collapsible.md",
+      "make-the-drafts-rail-sticky.md",
+    ]);
+    expect(readGoalDraft(root, other.path).text).toContain("Make the drafts rail collapsible.");
+    expect(manager.snapshot().path).toBe(created.path);
+
+    // Once the running elaboration ends, the created draft is startable.
+    expect(manager.stop()).toBe(true);
+    expect(manager.snapshot().status).toBe("stopped");
+    expect(manager.start(other.path).ok).toBe(true);
+    const second = await waitFor(() => peers[1], "the retried peer");
+    expect(second.prompts).toEqual([`/goal-draft ${other.path}`]);
+  });
+
+  test("a start refused after the write keeps the draft readable and startable", async () => {
+    const { root, drafts } = await fixture();
+    writeFileSync(join(drafts, "busy.md"), draftText("Busy", "body"));
+    const peers: FakePeer[] = [];
+    const { manager } = managerFor(root, peers);
+
+    expect(manager.start(".devboard/goal-proposals/busy.md").ok).toBe(true);
+    await waitFor(() => peers[0], "the first peer");
+
+    const created = await writeGoalProposal(
+      parseGoalProposalSubmission({ report: "A draft written while another elaborates." }),
+      { repoDir: root },
+    );
+    expect(readGoalDraft(root, created.path).heading).toBe(
+      "Proposed goal: A draft written while another elaborates.",
+    );
+    const refused = manager.start(created.path);
+    expect(refused.ok).toBe(false);
+    expect(peers).toHaveLength(1);
+    expect(listGoalDrafts(root).map((draft) => draft.name)).toContain(
+      "a-draft-written-while-another-elaborates.md",
+    );
+
+    manager.stop();
+    expect(manager.start(created.path).ok).toBe(true);
+    const retry = await waitFor(() => peers[1], "the retry peer");
+    expect(retry.prompts).toEqual([`/goal-draft ${created.path}`]);
   });
 
   test("a failed peer keeps the draft and reports the error; retry starts a new peer", async () => {

@@ -167,17 +167,40 @@ function capturedContext(submission: GoalProposalSubmission): string[] {
   return context.length === 0 ? ["No page context was captured."] : context;
 }
 
+/** The notice a draft without captured context carries under its heading. */
+export const DRAFT_NOTICE =
+  "> Unprocessed draft. Refine it with `/goal-spec` before it becomes a goal.";
+
+/** True when the submission carries any observed page context or Ask turns. */
+function hasCapturedContext(submission: GoalProposalSubmission): boolean {
+  return (
+    submission.conversation.length > 0 ||
+    [
+      submission.route,
+      submission.url,
+      submission.selector,
+      submission.viewport,
+      submission.capturedAt,
+      submission.visibleText,
+      submission.domExcerpt,
+    ].some((value) => value.trim().length > 0)
+  );
+}
+
 /**
  * The draft body: the proposed goal, the operator's text verbatim, the Ask
- * conversation, then the captured context. It carries no notice line, success
- * criteria, verification, boundaries, or stop conditions; elaboration does
- * that.
+ * conversation, then the captured context. A text-only submission, which has
+ * no observed page context and no Ask turns, also carries the unprocessed
+ * notice under its heading; a submission with captured context keeps the
+ * report panel's body without it. It carries no success criteria,
+ * verification, boundaries, or stop conditions; elaboration does that.
  */
 export function goalProposalBody(submission: GoalProposalSubmission): string {
   const conversation = conversationSection(submission.conversation);
   return [
     `# Proposed goal: ${goalProposalHeading(submission.report)}`,
     "",
+    ...(hasCapturedContext(submission) ? [] : [DRAFT_NOTICE, ""]),
     submission.report,
     "",
     ...(conversation.length === 0 ? [] : [...conversation, ""]),

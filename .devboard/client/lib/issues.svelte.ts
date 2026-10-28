@@ -103,6 +103,10 @@ export class IssuesStore {
   draft = $state<GoalDraftDetail | null>(null);
   draftPath = $state<string | null>(readDraftPath());
   draftError = $state<string | null>(null);
+  /** The Draft goals page's one-step creation popover. */
+  draftComposerOpen = $state(false);
+  draftComposerPending = $state(false);
+  draftComposerError = $state<string | null>(null);
 
   /**
    * True once the connect-time replay has named the live agents. A run request
@@ -216,6 +220,60 @@ export class IssuesStore {
   refreshDrafts(): void {
     if (!connection.open) return;
     connection.send({ type: "getGoalDrafts" });
+  }
+
+  /** Opens the creation popover; it writes nothing until a submit. */
+  openDraftComposer(): void {
+    if (this.draftComposerPending) return;
+    this.draftComposerError = null;
+    this.draftComposerOpen = true;
+  }
+
+  closeDraftComposer(): void {
+    if (this.draftComposerPending) return;
+    this.draftComposerOpen = false;
+    this.draftComposerError = null;
+  }
+
+  /**
+   * Writes one text-only draft through `POST /api/goal-proposals`, closes the
+   * popover, lands on it, and starts its elaboration only when no elaboration
+   * is running. A failed write keeps the popover and its input for a retry; a
+   * refused start keeps the draft and shows the server's reason.
+   */
+  async createDraft(report: string): Promise<void> {
+    if (report.trim().length === 0 || this.draftComposerPending) return;
+    this.draftComposerPending = true;
+    this.draftComposerError = null;
+    try {
+      const response = await fetch("/api/goal-proposals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ report }),
+      });
+      const body = (await response.json().catch(() => null)) as {
+        path?: unknown;
+        error?: unknown;
+      } | null;
+      if (!response.ok || typeof body?.path !== "string") {
+        this.draftComposerError =
+          typeof body?.error === "string"
+            ? body.error
+            : `The server refused the proposal (${response.status}).`;
+        return;
+      }
+      const path = body.path;
+      this.draftComposerOpen = false;
+      this.openDraft(path);
+      // A busy page writes only; the operator starts the draft when the
+      // running elaboration ends. A race with another client is refused by
+      // the server, which states its reason in the detail.
+      if (!this.draftRunning) connection.send({ type: "startGoalDraft", path });
+    } catch (error) {
+      this.draftComposerError = error instanceof Error ? error.message : String(error);
+    } finally {
+      this.draftComposerPending = false;
+    }
   }
 
   openDraft(path: string): void {

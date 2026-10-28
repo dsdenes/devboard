@@ -1582,6 +1582,32 @@ and the report panel's write broadcast reaches an open page immediately. A brows
 restores the Draft goals page and the selected path; when the file no longer exists, the page
 opens the list.
 
+The list header carries `data-testid="issues-draft-new"` with `data-command="issues.draft.new"`
+(palette `New goal draft`). It opens `data-testid="issues-draft-new-popover"`: one initial
+instructions field (`issues-draft-new-input`), `issues-draft-new-submit` (`Create and elaborate`),
+and `issues-draft-new-cancel`. Escape and Cancel close it. Opening, typing, Escape, and Cancel
+write nothing and start no peer. One submit posts only the instructions to
+`POST /api/goal-proposals`, so the draft is text-only: its body is
+`# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, the line
+`> Unprocessed draft. Refine it with /goal-spec before it becomes a goal.`, the instructions
+verbatim, and `## Captured UI context` stating `No page context was captured.` It never invents a
+route, selector, viewport, visible text, or DOM excerpt, runs no `gh`, files no issue, creates no
+worktree or branch, and writes no goal spec. A whitespace-only input submits nothing, and the file
+name follows the same lowercase kebab-case slug rules (`-2`, `-3`, … without overwriting).
+
+A successful submit closes the popover, selects the created draft in `issues-draft-detail` (so its
+path is the stored selection a reload restores), and, when no elaboration runs, sends exactly one
+`startGoalDraft` for that path; the draft then reports `running` with its activity, its question in
+`issues-draft-question`, and its Stop control. While another elaboration runs, the submit still
+writes and selects the draft but starts nothing: the new draft's start control stays disabled with
+the stated reason, the reason is shown in the detail (`issues-draft-detail-blocked`) and beside the
+list item (`issues-draft-blocked`), and no start is queued; the running elaboration keeps its
+activity and its pending question. When the server refuses the attempted start, the draft stays
+listed and startable and the detail shows the server's reason. A failed write leaves the popover
+open with the instructions intact and the server's error in `issues-draft-new-error`, and creates
+no draft or peer; a retry creates and starts normally. The two-step path — select a draft, then
+`Start elaboration` — and the report panel's `Goal` action stay unchanged.
+
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
 refused with a visible error, and nothing outside the directory is read. The list never follows
@@ -1859,7 +1885,11 @@ exclusive create, so the first draft is never overwritten. The body opens with
 `# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the
 `## Captured UI context` block an issue report carries. It carries no notice line or other prose
-the operator did not write. A successful click closes the panel,
+the operator did not write. A text-only submission, the Draft goals popover's `New goal` form,
+carries no captured context and no Ask conversation: it gains the line
+`> Unprocessed draft. Refine it with /goal-spec before it becomes a goal.` between the heading and
+the instructions, and its context section states `No page context was captured.` A successful
+click closes the panel,
 stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
 with the server's error and leaves no draft. The drafts are ignored by git.

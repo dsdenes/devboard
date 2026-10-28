@@ -266,6 +266,23 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     run: () => issues.check(),
   });
   add({
+    id: "issues.draft.new",
+    title: "New goal draft",
+    group: "Issues",
+    keywords: "create proposed goal popover instructions elaborate one step",
+    disabled: () => disabledWhen(!connection.open, "Not connected"),
+    run: () => {
+      ctx.openTab("issues", {
+        id: "drafts",
+        kind: "drafts",
+        resourceId: "drafts",
+        title: "Draft goals",
+      });
+      issues.openDraftComposer();
+      return ctx.focusLater("issues", '[data-testid="issues-draft-new-input"]');
+    },
+  });
+  add({
     id: "issues.run.open",
     title: "Open the selected issues run",
     group: "Issues",
