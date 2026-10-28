@@ -100,10 +100,6 @@ export class ScoutStore {
     return this.snapshot?.scan !== null && this.snapshot?.scan !== undefined;
   }
 
-  get notice(): string | null {
-    return this.snapshot?.notice ?? null;
-  }
-
   get error(): string | null {
     return this.snapshot?.lastError ?? null;
   }
