@@ -75,7 +75,6 @@
   <div class="sidebar__body">
     {#if layout.mode === "goal"}
       <section class="sidebar-group" aria-label="Plan">
-        <div class="sidebar-group__title">Plan</div>
         <button
           type="button"
           class="sidebar-item"
