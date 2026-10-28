@@ -1761,12 +1761,6 @@ kbd {
   height: 180px;
 }
 
-.discover-run__note {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  margin: 0;
-}
-
 /* Queued question. */
 .discover-question__message {
   font-size: 13px;
