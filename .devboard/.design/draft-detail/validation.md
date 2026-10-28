@@ -19,7 +19,7 @@
 ## Journeys exercised
 
 - Review a draft: open the report-written draft, read the proposal before the marker, read the
-  five captured facts, open the evidence disclosure and the exact source.
+  five captured facts and the inline Visible text and DOM excerpt, and open the exact source.
 - Read a draft without captured context: 001-question shows `No captured UI context.`.
 - Start, question, answer: start 001-question, see the question above the activity log, answer
   an option, see the draft leave the list and the spec written.
@@ -33,9 +33,8 @@
 
 | State | Evidence | Result |
 |---|---|---|
-| Idle with captured context, dark | `idle-dark-1440.png` | heading + path, idle badge, Start; proposal, five facts, collapsed evidence, collapsed source |
+| Idle with captured context, dark | `idle-dark-1440.png` | heading + path, idle badge, Start; proposal, five facts, inline evidence, collapsed source |
 | Idle with captured context, light | `idle-light-1440.png` | same content; labels and borders hold in the light palette |
-| Evidence opened, light | `evidence-light-1440.png` | Visible text and DOM excerpt render in full; the body owns the scroll |
 | Question pending and running | `question-dark-1440.png` | warning question block above the proposal and log; disabled Start; quiet Stop; activity follows |
 | Question pending at the floor | `question-dark-1024x720.png` | header fits, title truncates, no horizontal overflow |
 | No captured context | `verify:interface` assertion | `No captured UI context.` |
@@ -54,15 +53,15 @@ reports them passing; their test ids and store submit path are unchanged.
   documented Flow goal header; 104px is the documented fact-label column; 24px is the documented
   quiet-destructive control height. Radius 3/4px, panel and badge rules unchanged.
 - One `h1` (page), panel `h2`, section `h3`, evidence `h4`; native `dl`/`dt`/`dd` for facts,
-  native `details`/`summary` for the two disclosures, native buttons and form.
+  one native `details`/`summary` for the source, native buttons and form.
 - Status is written as a word; color is redundant. Focus rings come from the existing Button and
   Input primitives. The exact bytes stay selectable in the source block.
 
 ## Duplicate information
 
 The previous detail rendered the captured context once as its own box and again inside the whole
-draft. Now the structured facts/evidence are the only visible copy; the byte-exact source is a
-collapsed disclosure required by the README contract. The heading lives in the header only and
+draft. Now the structured facts and inline evidence are the only visible copy; the byte-exact
+source is a collapsed disclosure required by the README contract. The heading lives in the header only and
 is stripped from the proposal body. The nested `Activity` header and its run path are gone.
 
 ## Wireframe

@@ -95,12 +95,6 @@
       >
         <div class="issues-draft-detail__header">
           <div class="issues-draft-detail__identity">
-            <h2
-              class="issues-draft-detail__title"
-              title={issues.draft.heading || issues.draft.name}
-            >
-              {issues.draft.heading || issues.draft.name}
-            </h2>
             <span class="issues-draft-detail__path mono" title={issues.draft.path}>
               {issues.draft.name}
             </span>
@@ -189,20 +183,15 @@
                 </dl>
               {/if}
               {#if parts.sections.length > 0}
-                <details class="issues-draft-evidence">
-                  <summary>Captured evidence</summary>
-                  <div class="issues-draft-evidence__body">
-                    {#each parts.sections as section (section.title)}
-                      <section class="issues-draft-evidence__section">
-                        <h4 class="issues-draft-detail__label">{section.title}</h4>
-                        <pre class="issues-draft-evidence__text mono">{section.body}</pre>
-                      </section>
-                    {/each}
-                  </div>
-                </details>
+                {#each parts.sections as section (section.title)}
+                  <section class="issues-draft-evidence__section">
+                    <h4 class="issues-draft-detail__label">{section.title}</h4>
+                    <pre class="issues-draft-evidence__text mono">{section.body}</pre>
+                  </section>
+                {/each}
               {:else if parts.rawContext.length > 0}
                 <pre class="issues-draft-evidence__text mono">{parts.rawContext}</pre>
-              {:else}
+              {:else if parts.facts.length === 0}
                 <p class="issues-draft-detail__empty">No captured UI context.</p>
               {/if}
             </div>

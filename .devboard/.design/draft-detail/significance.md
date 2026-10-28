@@ -13,8 +13,8 @@ Scores follow `20 × (0.35·Goal + 0.25·Action + 0.15·Frequency + 0.15·Unique
 | C7 | Draft / peer error | 3 | 5 | 2 | 5 | 3 | 73 | P1 | Alert directly under the header |
 | C8 | Proposal text | 5 | 5 | 5 | 5 | 0 | 90 | P0 | First reading block |
 | C9 | Context facts | 4 | 3 | 4 | 4 | 0 | 67 | P1 | Fact grid above the evidence |
-| C10 | Visible text | 3 | 3 | 3 | 4 | 0 | 57 | P2 | Evidence section |
-| C11 | DOM excerpt | 3 | 3 | 3 | 5 | 0 | 60 | P1 | Bounded code block |
+| C10 | Visible text | 3 | 3 | 3 | 4 | 0 | 57 | P2 | Inline below the facts |
+| C11 | DOM excerpt | 3 | 3 | 3 | 5 | 0 | 60 | P1 | Inline, scroll-bounded |
 | C12 | Exact draft bytes | 1 | 1 | 1 | 5 | 2 | 34 | P3 | Collapsed source disclosure |
 | C13 | Activity stream | 4 | 3 | 5 | 4 | 1 | 72 | P1 | Section below the proposal while a run exists |
 | C14 | Question message | 5 | 5 | 3 | 5 | 2 | 88 | P0 | First block after the header while pending |

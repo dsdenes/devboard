@@ -3539,17 +3539,6 @@ a.code-chip--link:focus-visible {
   min-width: 0;
 }
 
-.issues-draft-detail__title {
-  color: var(--foreground);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.3;
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .issues-draft-detail__path {
   color: var(--muted-foreground);
   font-size: 11px;
@@ -3696,19 +3685,6 @@ a.code-chip--link:focus-visible {
   line-height: 1.4;
   margin: 0;
   overflow-wrap: anywhere;
-}
-
-.issues-draft-evidence > summary {
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.issues-draft-evidence__body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
 }
 
 .issues-draft-evidence__section {
