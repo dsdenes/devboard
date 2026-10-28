@@ -14,7 +14,12 @@ import {
   readGoalDraft,
   resolveGoalDraft,
 } from "../server/goal-drafts";
-import { readGoalDraftOwnerState } from "../server/goal-draft-owner";
+import {
+  readGoalDraftHandoff,
+  readGoalDraftLease,
+  readGoalDraftOwnerState,
+  writeGoalDraftLease,
+} from "../server/goal-draft-owner";
 
 /**
  * Draft reads and the per-path detached elaboration owners. Every fixture
@@ -402,6 +407,107 @@ describe("elaboration", () => {
       expect(state.run.error).toContain("server exit interrupted the elaboration");
       expect(existsSync(join(root, path))).toBe(true);
     }
+  });
+
+  test("one dashboard's dispose leaves another dashboard's live elaboration running", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "first.md"), draftText("First", "STUB-HANG body"));
+    writeFileSync(join(drafts, "second.md"), draftText("Second", "STUB-HANG body"));
+    const first = draftPath("first.md");
+    const second = draftPath("second.md");
+    const { manager: firstDashboard } = managerFor(root, stateDir, log);
+    expect((await firstDashboard.start(first)).ok).toBe(true);
+    const firstPeer = await waitFor(
+      () => readGoalDraftOwnerState(stateDir, root, first)?.peer?.pid,
+      "the first peer",
+    );
+    const lease = await waitFor(
+      () => readGoalDraftLease(stateDir, root) ?? undefined,
+      "the first lease",
+    );
+    expect(lease.pid).toBe(process.pid);
+    expect(lease.instance).toBeDefined();
+
+    // Attaches after the first dashboard holds the lease, then starts a draft
+    // of its own without taking supervision away from it.
+    const { manager: secondDashboard } = managerFor(root, stateDir, log);
+    expect((await secondDashboard.start(second)).ok).toBe(true);
+    const secondPeer = await waitFor(
+      () => readGoalDraftOwnerState(stateDir, root, second)?.peer?.pid,
+      "the second peer",
+    );
+    expect(readGoalDraftLease(stateDir, root)?.instance).toBe(lease.instance);
+
+    firstDashboard.dispose();
+    await waitFor(() => (alive(firstPeer) ? undefined : true), "the first peer to exit");
+    await waitFor(
+      () =>
+        readGoalDraftOwnerState(stateDir, root, first)?.run.status === "failed" ? true : undefined,
+      "the first run's interruption",
+    );
+
+    const secondState = readGoalDraftOwnerState(stateDir, root, second);
+    expect(secondState?.run.status).toBe("running");
+    expect(secondState?.owner).not.toBeNull();
+    expect(alive(secondState!.owner!.pid)).toBe(true);
+    expect(alive(secondPeer)).toBe(true);
+  });
+
+  test("an observing dashboard's dispose leaves the supervising dashboard's owner running", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "supervised.md"), draftText("Supervised", "STUB-HANG body"));
+    writeFileSync(join(drafts, "observed.md"), draftText("Observed", "STUB-HANG body"));
+    const supervised = draftPath("supervised.md");
+    const observedPath = draftPath("observed.md");
+    const { manager: supervisor } = managerFor(root, stateDir, log);
+    expect((await supervisor.start(supervised)).ok).toBe(true);
+    const supervisedPeer = await waitFor(
+      () => readGoalDraftOwnerState(stateDir, root, supervised)?.peer?.pid,
+      "the supervised peer",
+    );
+    const { manager: observer } = managerFor(root, stateDir, log);
+    expect((await observer.start(observedPath)).ok).toBe(true);
+    const observedPeer = await waitFor(
+      () => readGoalDraftOwnerState(stateDir, root, observedPath)?.peer?.pid,
+      "the observed peer",
+    );
+
+    observer.dispose();
+    await waitFor(() => (alive(observedPeer) ? undefined : true), "the observer's peer to exit");
+    await waitFor(
+      () =>
+        readGoalDraftOwnerState(stateDir, root, observedPath)?.run.status === "failed"
+          ? true
+          : undefined,
+      "the observer's interrupted run",
+    );
+
+    expect(readGoalDraftOwnerState(stateDir, root, supervised)?.run.status).toBe("running");
+    expect(alive(supervisedPeer)).toBe(true);
+  });
+
+  test("refresh stops supervising when another live dashboard owns the lease", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "leased.md"), draftText("Leased", "STUB-HANG body"));
+    const path = draftPath("leased.md");
+    const { manager } = managerFor(root, stateDir, log);
+    expect((await manager.start(path)).ok).toBe(true);
+    const peer = await waitFor(
+      () => readGoalDraftOwnerState(stateDir, root, path)?.peer?.pid,
+      "the leased peer",
+    );
+
+    // A live lease from another dashboard outranks this manager's supervision:
+    // a refresh drops it, so no reload handoff claims the other dashboard's run.
+    writeGoalDraftLease(stateDir, root, { pid: process.pid, updatedAt: 1, instance: "another" });
+    manager.handoff();
+    expect(readGoalDraftHandoff(stateDir, root)).toBeNull();
+    const lease = readGoalDraftLease(stateDir, root);
+    expect(lease?.instance).toBe("another");
+    expect(lease?.updatedAt).toBe(1);
+
+    manager.dispose();
+    await waitFor(() => (alive(peer) ? undefined : true), "the leased peer to exit");
   });
 
   test("a stop while the provider environment resolves spawns no owner", async () => {
