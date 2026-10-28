@@ -520,6 +520,60 @@ describe("per-agent state and answers", () => {
   });
 });
 
+describe("ledger persistence failure", () => {
+  test("a successful turn settles even when the ledger cannot be written", async () => {
+    const f = await fixture({ issues: [issue(1)] });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "one peer");
+      // A directory at the ledger path makes the atomic rename fail without
+      // depending on filesystem permissions (the suite may run as root).
+      const ledgerFile = ledgerPath(f.stateDir, f.root);
+      await mkdir(ledgerFile);
+      f.peers[0]!.succeed();
+      const settled = await waitFor(
+        () => (f.state().agents.length === 0 ? f.state() : undefined),
+        "the run to settle despite the ledger write",
+      );
+      expect(settled.queue.find((entry) => entry.number === 1)?.handled).toBe(true);
+      expect(settled.runs.find((run) => run.issueNumbers.includes(1))?.status).toBe("succeeded");
+      expect(settled.lifecycle).toBe("idle");
+      expect(settled.lastError).toContain("could not write the ledger");
+      expect(readdirSync(ledgerFile)).toEqual([]);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a poll's ledger write failure is recorded and the ticker keeps polling", async () => {
+    const f = await fixture({ issues: [issue(1)] });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "one peer");
+      const ledgerFile = ledgerPath(f.stateDir, f.root);
+      await mkdir(ledgerFile);
+      f.peers[0]!.succeed();
+      await waitFor(
+        () => (f.state().agents.length === 0 ? true : undefined),
+        "the run to settle",
+      );
+      // The in-memory ledger now handles issue 1; closing it forces applyIssues
+      // to prune and persist.
+      f.issues.splice(0, f.issues.length);
+      // `tick` is private; the test drives one interval iteration deterministically.
+      const tick = Reflect.get(f.worker, "tick") as () => Promise<void>;
+      await tick.call(f.worker);
+      const polled = f.state();
+      expect(polled.queue).toEqual([]);
+      expect(polled.lastError).toContain("could not write the ledger");
+      expect(polled.poll.lastPollAt).not.toBeNull();
+      expect(polled.lifecycle).toBe("idle");
+      // The ticker survived the rejection that the unguarded write produced.
+      await tick.call(f.worker);
+    } finally {
+      await stop(f);
+    }
+  });
+});
+
 describe("lifecycle", () => {
   test("pause drains every peer before reporting paused", async () => {
     const f = await fixture({ issues: [issue(1), issue(2), goalIssue(3)] });
