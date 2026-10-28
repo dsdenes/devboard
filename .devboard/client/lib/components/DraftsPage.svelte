@@ -162,7 +162,6 @@
             </section>
           {/if}
           <section class="issues-draft-detail__section" aria-label="Draft">
-            <h3 class="issues-draft-detail__label">Draft</h3>
             {#if parts.proposal.length > 0}
               <pre class="issues-draft-detail__prose mono">{parts.proposal}</pre>
             {:else}

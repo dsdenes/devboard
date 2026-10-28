@@ -4,7 +4,7 @@
 
 | Order | A2UI ID | Region | Journey | Items | Priority |
 |---|---|---|---|---|---|
-| 1 | region_header | Page header: identity, meta, actions | 1, 2, 4 | C1, C2, C3, C5, C6, C4 | P0/P1 |
+| 1 | region_header | Page header: identity, meta, actions | 1, 2, 4 | C1, C2, C3, C6, C4 | P0/P1 |
 | 2 | region_alerts | Conditional banner row | 1, 4 | C7, C22 | P1 |
 | 3 | region_side | Left rail: worker facts, filing limits | 1, 2, 3 | C8, C9, C10, C12, C13, C14 | P1 |
 | 4 | region_main | Main column: filed issues, scan activity | 1, 4 | C11, C15–C20 | P0/P1 |
@@ -12,7 +12,7 @@
 ```
 PageHeader (surface, border, 10/12 padding)
   eyebrow "Issues" · h1 "Auto Scout" · subtitle "owner/repo"
-  meta: [lifecycle badge] [GitHub read badge] [Last read time]
+  meta: [lifecycle badge] [Last read time]
   actions: [Stop] or [Start]
 alerts (only when present)
   [sync error / worker error]
@@ -46,12 +46,12 @@ body (grid: 360px minmax(0,1fr), gap 12, fills height)
   nesting than the two columns.
 
 ## State coverage
-- Empty, stopped: lifecycle `stopped`, GitHub read `stale` and `never`, worker `none`,
+- Empty, stopped: lifecycle `stopped`, last read `never`, worker `none`,
   next attempt `none`, pending `0`, empty table, empty activity, filled `Start`.
 - Attached or scanning: lifecycle `idle`/`scanning`, worker `pid … · version`, filled
   `Stop`, activity lines appended live.
-- Failed read: read badge `error`, the last successful time stays, banner carries the
-  reason, existing rows stay visible.
+- Failed read: the banner carries the reason, the last successful time stays, existing rows
+  stay visible.
 - Worker failure: lifecycle `failed`, banner carries `lastError`; Start/Stop follows the
   server's flags, never inferred.
 - Notice: success banner after a filing pass; no banner layout shift because the zone is
@@ -73,10 +73,10 @@ body (grid: 360px minmax(0,1fr), gap 12, fills height)
 - Two columns give the page a reading order and remove the near-empty full-width strips
   the current stack renders when Auto Scout has no rows.
 - A page header rather than a bespoke two-line header reuses the shared `PageHeader`
-  primitive, so the lifecycle and read badges sit on one meta line and the action aligns
-  with the page title.
+  primitive, so the lifecycle badge and the last-read time sit on one meta line and the
+  action aligns with the page title.
 - The worker panel drops the scan id and last-read duplicate: the scan id labels the
-  activity it describes, and last read belongs beside the read state.
+  activity it describes, and last read belongs in the header meta line.
 - Alternatives rejected: a five-equal-panel stack (no hierarchy), a table above the
   header (the action would be buried), and a full-width limits form (needless travel for
   two numbers).
