@@ -50,9 +50,6 @@
         {issues.draftStatus} · {issues.drafts.length} draft(s)
       </p>
     </div>
-    <span class="badge" data-tone="accent" data-testid="issues-drafts-count">
-      {issues.drafts.length}
-    </span>
   </header>
   <div class="issues-drafts__body">
     <section class="panel">

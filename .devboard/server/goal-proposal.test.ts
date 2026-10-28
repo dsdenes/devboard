@@ -7,12 +7,25 @@ import {
   GOAL_PROPOSALS_DIRECTORY,
   goalProposalBody,
   goalProposalName,
+  normalizeGoalSlug,
   parseGoalProposalSubmission,
+  writeGoalProposal,
 } from "./goal-proposal";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
 const STUB_GH = join(import.meta.dir, "fixtures", "stub-gh.ts");
+const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
+
+interface StartOptions {
+  /**
+   * `fallback` keeps unrelated tests deterministic; `agent` runs the real ACP
+   * naming path against the stub agent; a function is the injected seam.
+   */
+  slug?: "fallback" | "agent" | ((report: string) => Promise<string>);
+  /** What the stub agent answers the naming turn with. */
+  slugAnswer?: string;
+}
 
 afterAll(async () => {
   await Promise.all(
@@ -27,7 +40,7 @@ async function temporaryDirectory(): Promise<string> {
   return directory;
 }
 
-async function startServer() {
+async function startServer(options: StartOptions = {}) {
   const root = await temporaryDirectory();
   const adrDir = join(root, "adrs");
   const staticDir = join(root, "static");
@@ -36,6 +49,18 @@ async function startServer() {
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>Proposals</title>");
 
+  const slug = options.slug ?? "fallback";
+  const goalSlug =
+    slug === "agent"
+      ? undefined
+      : typeof slug === "function"
+        ? slug
+        : async (report: string) => goalProposalName(report);
+  const agentCommand =
+    slug === "agent"
+      ? `bun ${STUB_AGENT} --goal-slug=${options.slugAnswer ?? ""}`
+      : undefined;
+
   const server = createApp({
     adrDir,
     staticDir,
@@ -43,6 +68,8 @@ async function startServer() {
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
+    ...(agentCommand === undefined ? {} : { agentCommand }),
+    ...(goalSlug === undefined ? {} : { goalSlug }),
     feedback: {
       ghCommand: ["bun", STUB_GH],
       timeoutMs: 5_000,
@@ -349,5 +376,80 @@ describe("goal proposal naming and body", () => {
     expect(body).toContain("No page context was captured.");
     expect(body).not.toContain("### Visible text");
     expect(body).not.toContain("### DOM excerpt");
+  });
+
+  test("normalizes an agent's slug and rejects unusable answers", () => {
+    expect(normalizeGoalSlug("clipped-start-button")).toBe("clipped-start-button");
+    expect(normalizeGoalSlug("`clipped-start-button`")).toBe("clipped-start-button");
+    expect(normalizeGoalSlug("Slug: clipped-start-button\n")).toBe("clipped-start-button");
+    expect(normalizeGoalSlug("```\nclipped-start-button\n```")).toBe("clipped-start-button");
+    expect(normalizeGoalSlug("Here is the slug:\n\n`clipped-start-button`")).toBe(
+      "clipped-start-button",
+    );
+    expect(normalizeGoalSlug("**clipped-start-button**.")).toBe("clipped-start-button");
+    expect(normalizeGoalSlug("Clipped Start Button")).toBeNull();
+    expect(normalizeGoalSlug("one-two-three-four-five-six-seven")).toBeNull();
+    expect(normalizeGoalSlug("a".repeat(65))).toBeNull();
+    expect(normalizeGoalSlug("clipped-start-button.")).toBe("clipped-start-button");
+    expect(normalizeGoalSlug("")).toBeNull();
+  });
+
+  test("uses a chosen name and falls back when naming fails", async () => {
+    const root = await temporaryDirectory();
+    const submission = parseGoalProposalSubmission({
+      report: "Make the start button visible.",
+    });
+
+    const chosen = await writeGoalProposal(submission, {
+      repoDir: root,
+      slugger: async () => "start-button-visibility",
+    });
+    expect(chosen.path).toBe(".devboard/goal-proposals/start-button-visibility.md");
+
+    const failed = await writeGoalProposal(submission, {
+      repoDir: root,
+      slugger: async () => {
+        throw new Error("The naming agent did not answer in time.");
+      },
+    });
+    expect(failed.path).toBe(".devboard/goal-proposals/make-the-start-button-visible.md");
+  });
+
+  test("names the draft with the ACP naming agent's slug", async () => {
+    const { server, root, url } = await startServer({
+      slug: "agent",
+      slugAnswer: "clipped-start-button",
+    });
+
+    try {
+      const response = await propose(url, proposal());
+
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({
+        path: ".devboard/goal-proposals/clipped-start-button.md",
+      });
+      expect(await drafts(root)).toEqual(["clipped-start-button.md"]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("falls back to the deterministic name when the agent's answer is unusable", async () => {
+    const { server, root, url } = await startServer({
+      slug: "agent",
+      slugAnswer: "INVALID_SLUG",
+    });
+
+    try {
+      const response = await propose(url, proposal());
+
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({
+        path: ".devboard/goal-proposals/the-start-button-is-clipped-on.md",
+      });
+      expect(await drafts(root)).toEqual(["the-start-button-is-clipped-on.md"]);
+    } finally {
+      server.stop(true);
+    }
   });
 });

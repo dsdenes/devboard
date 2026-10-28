@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { chmod, mkdir, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AcpActivity, AcpQuestion } from "../server/acp";
 import { ScoutBridge } from "../server/scout";
@@ -15,6 +15,7 @@ import {
   settingsPath,
   statePath,
 } from "../issues/scout/paths";
+import { ghCommand } from "../issues/scout/preflight";
 import { readScanFile, readSettings, type ScoutState } from "../issues/scout/state";
 import { ScoutWorker } from "../issues/scout/worker";
 import type { ScoutRecommendation } from "../issues/scout/recommendation";
@@ -269,6 +270,7 @@ async function fixture(options: {
   harnessVersion?: string;
   now?: Date;
   draftHeading?: string;
+  fileIssue?: typeof fileScoutIssue;
 }): Promise<Fixture> {
   const base = await temporaryDirectory(options.label ?? "scout");
   const root = await makeRepository({
@@ -322,7 +324,7 @@ async function fixture(options: {
       peers.push(peer);
       return peer;
     },
-    fileIssue: fakeFiling(f),
+    fileIssue: options.fileIssue ?? fakeFiling(f),
   });
   workers.push(worker);
   expect(worker.start("acme/fixture")).toBe(true);
@@ -1003,6 +1005,79 @@ describe("dashboard bridge", () => {
     }
   });
 
+  test("a connect-time replay reaches the clients that were already attached", async () => {
+    const f = await fixture({ label: "replay-shared" });
+    try {
+      await scan(f, 0, uniqueItems(1, 1));
+      const scanId = readdirSync(scansDirectory(f.root))[0]!;
+      const activityFile = join(scanDirectory(f.root, scanId), "activity.json");
+      writeFileSync(activityFile, JSON.stringify(["first"]));
+      const first: Array<Record<string, unknown>> = [];
+      const second: Array<Record<string, unknown>> = [];
+      const firstSocket = {
+        send: (data: string) => first.push(JSON.parse(data) as Record<string, unknown>),
+      };
+      const secondSocket = {
+        send: (data: string) => second.push(JSON.parse(data) as Record<string, unknown>),
+      };
+      const attached = new Map<object, Array<Record<string, unknown>>>([
+        [firstSocket, first],
+        [secondSocket, second],
+      ]);
+      const bridge = new ScoutBridge({
+        repoDir: f.root,
+        stateDir: f.stateDir,
+        agentCommand: "stub",
+        runningVersion: "0.1.0",
+        harnessDir: join(import.meta.dir, ".."),
+        send: (event, except) => {
+          for (const [socket, messages] of attached) {
+            if (socket !== except) messages.push(event as Record<string, unknown>);
+          }
+        },
+        pollMs: 60_000,
+        spawnWorker: () => undefined,
+      });
+
+      bridge.replay(firstSocket);
+      const firstReplay = first.findLast((event) => event.type === "scoutActivity");
+      expect((firstReplay?.entries as Array<{ text: string }>).map((entry) => entry.text)).toEqual([
+        "first",
+      ]);
+
+      // Activity grows after the first client's last poll; the second client's
+      // replay now advances the shared baseline, so it must reach every client.
+      writeFileSync(activityFile, JSON.stringify(["first", "second"]));
+      bridge.replay(secondSocket);
+
+      for (const client of [first, second]) {
+        const replay = client.findLast(
+          (event) => event.type === "scoutActivity" && event.replay === true,
+        );
+        expect((replay?.entries as Array<{ text: string }>).map((entry) => entry.text)).toEqual([
+          "first",
+          "second",
+        ]);
+      }
+
+      // The next refresh resumes from that baseline and appends only the new line.
+      writeFileSync(activityFile, JSON.stringify(["first", "second", "third"]));
+      bridge.refresh();
+      expect(first.at(-1)).toMatchObject({
+        type: "scoutActivity",
+        entries: [{ text: "third", append: false }],
+      });
+      expect(first.at(-1)?.replay).toBeUndefined();
+      expect(second.at(-1)).toMatchObject({
+        type: "scoutActivity",
+        entries: [{ text: "third", append: false }],
+      });
+      bridge.dispose();
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
   test("a different STATE_DIR is refused without spawning a worker", async () => {
     const f = await fixture({ label: "state-refusal" });
     try {
@@ -1180,6 +1255,76 @@ describe("filing actions", () => {
       expect(failed.issues).toEqual([]);
       expect(failed.lastError).toContain("the label does not exist");
       expect(failed.notice).toContain("Scan failed");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+});
+
+describe("bounded commands", () => {
+  test("a gh child that ignores SIGTERM is killed at the deadline", async () => {
+    const directory = await temporaryDirectory("gh-deadline");
+    const script = join(directory, "gh");
+    const pidFile = join(directory, "pid");
+    writeFileSync(
+      script,
+      `#!/bin/sh\ntrap '' TERM\nprintf '%s\\n' "$$" > ${JSON.stringify(pidFile)}\nwhile :; do :; done\n`,
+    );
+    await chmod(script, 0o755);
+
+    const started = Date.now();
+    const result = await ghCommand(
+      ["version"],
+      { PATH: `${directory}:${process.env.PATH ?? ""}` },
+      { timeoutMs: 300 },
+    );
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(result.killed).toBe(true);
+    expect(result.code).not.toBe(0);
+
+    const pid = await waitFor(
+      () => {
+        if (!existsSync(pidFile)) return undefined;
+        const text = readFileSync(pidFile, "utf8").trim();
+        return text.length === 0 ? undefined : Number(text);
+      },
+      "the gh child to record its pid",
+    );
+    await waitFor(
+      () => {
+        try {
+          process.kill(pid, 0);
+          return undefined;
+        } catch {
+          return true;
+        }
+      },
+      "the killed gh child to disappear",
+    );
+  });
+
+  test("a filing that never resolves fails the scan at the deadline and clears it", async () => {
+    const f = await fixture({
+      label: "filing-deadline",
+      timeoutMs: 1000,
+      fileIssue: async () => await new Promise<never>(() => undefined),
+    });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 1)));
+      const started = Date.now();
+      peer.succeed();
+      const settled = await waitSettled(f.root, peer.prompts[0]!, "the filing deadline");
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(settled.status).toBe("failed");
+      expect(settled.error).toContain("timed out while reading and filing");
+      const state = f.state();
+      expect(state.lifecycle).toBe("failed");
+      expect(state.scan).toBeNull();
+      expect(state.lastError).toContain("timed out while reading and filing");
+      expect(f.worker.scanning).toBe(false);
+      expect(f.filed).toEqual([]);
     } finally {
       await f.worker.stop();
     }

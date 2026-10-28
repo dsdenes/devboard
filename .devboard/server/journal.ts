@@ -7,7 +7,7 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /**
  * The dashboard journal is the machine-readable record the watchdog reads.
@@ -80,6 +80,54 @@ export function journalKey(repoDir: string): string {
 
 export function journalFile(stateDir: string, repoDir: string): string {
   return join(stateDir, "journal", `${journalKey(repoDir)}.jsonl`);
+}
+
+/** A rotated journal is named `<live>.<rotation instant>-<counter>`. */
+const ROTATED_JOURNAL = /^(\d+)-(\d+)$/;
+
+/**
+ * Every journal file of one project: rotated journals oldest first, then the
+ * live file. A project that never rotated yields only its live path, and a
+ * missing journal directory yields that path so the read reports nothing.
+ *
+ * `since` is the oldest instant a caller needs. A rotated file last written
+ * before it cannot hold a later record, so it is skipped instead of parsed:
+ * a quiet dashboard keeps up to `JOURNAL_MAX_BYTES` of old rotations.
+ */
+export function journalFiles(livePath: string, since?: Date): string[] {
+  const directory = dirname(livePath);
+  const prefix = `${basename(livePath)}.`;
+  let names: string[];
+  try {
+    names = readdirSync(directory);
+  } catch {
+    return [livePath];
+  }
+  const cutoff = since?.getTime();
+  const rotated: { path: string; ms: number; counter: number; name: string }[] = [];
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const match = ROTATED_JOURNAL.exec(name.slice(prefix.length));
+    if (match === null) continue;
+    const ms = Number(match[1]);
+    const counter = Number(match[2]);
+    if (!Number.isFinite(ms) || !Number.isFinite(counter)) continue;
+    const path = join(directory, name);
+    if (cutoff !== undefined) {
+      try {
+        if (statSync(path).mtimeMs < cutoff) continue;
+      } catch {
+        // A journal disappearing mid-scan is already gone.
+        continue;
+      }
+    }
+    rotated.push({ path, ms, counter, name });
+  }
+  rotated.sort(
+    (left, right) =>
+      left.ms - right.ms || left.counter - right.counter || left.name.localeCompare(right.name),
+  );
+  return [...rotated.map((file) => file.path), livePath];
 }
 
 /** One JSONL line per event, truncated so a single huge stream cannot flood it. */

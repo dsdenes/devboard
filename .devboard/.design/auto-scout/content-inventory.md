@@ -22,7 +22,6 @@
 | C18 | Empty table state | `rows.length === 0` | 1, 4 | Distinguishes "nothing filed" from missing UI | yes | Kept with an explanatory second line. |
 | C19 | Scan activity lines | `scout.activity` | 1, 4 | Shows commands and results of the newest scan | yes | The only audit trail on the page. |
 | C20 | Activity empty state | `activity.length === 0` | 1, 4 | Distinguishes "not scanned" from a blank log | yes | Kept inside the log. |
-| C21 | Notice (`Filed …`) | `scout.notice` | 1 | Confirms a successful filing pass | yes | Shown as a page banner. |
 | C22 | Worker error | `scout.error` | 1, 4 | Explains a failed worker | yes | Shown as a page banner. |
 
 ## Conflicts and resolutions
@@ -41,4 +40,5 @@
   available action.
 - Raw scan identifiers in the worker facts: duplicated by the activity heading.
 - A second count of pending issues in the table header: the page count already states it.
+- The filing notice banner: the filed row and the activity log already confirm the pass.
 - Review, approve, reject, or draft controls: deliberately absent from Auto Scout.

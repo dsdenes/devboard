@@ -15,6 +15,7 @@ import {
   type ScoutGitHubIssue,
   type ScoutRelease,
 } from "./github";
+import { ghCommand } from "./preflight";
 import {
   HOUR_MS,
   SCAN_TIMEOUT_MS,
@@ -102,6 +103,23 @@ interface ActiveScan {
   finished: boolean;
   timer: Timer | undefined;
   firstLine: string | null;
+  /** Issues filed so far, so a failed settle records the real count. */
+  filed: number;
+  /** Present while reading and filing, where the scan timer no longer guards. */
+  settle?: {
+    controller: AbortController;
+    /** Epoch milliseconds shared by every read, probe, and filing. */
+    deadline: number;
+    timer: Timer;
+    finished: boolean;
+  };
+}
+
+/** The settle-and-file phase was aborted by its deadline or by Stop. */
+class SettleAborted extends Error {
+  constructor() {
+    super("the scan stopped reading and filing");
+  }
 }
 
 interface GitHubRead {
@@ -446,8 +464,8 @@ export class ScoutWorker {
   /* GitHub reads                                                        */
   /* ------------------------------------------------------------------ */
 
-  private async readGitHub(): Promise<GitHubRead> {
-    const github = this.github;
+  private async readGitHub(active?: ActiveScan): Promise<GitHubRead> {
+    const github = active === undefined ? this.github : this.githubFor(active);
     if (github === undefined) throw new Error("no GitHub client is configured");
     const [issues, releases, openTitles] = await Promise.all([
       github.listIssues(),
@@ -498,8 +516,8 @@ export class ScoutWorker {
     this.publish();
   }
 
-  private async applyRead(read: GitHubRead): Promise<void> {
-    const github = this.github;
+  private async applyRead(read: GitHubRead, active?: ActiveScan): Promise<void> {
+    const github = active === undefined ? this.github : this.githubFor(active);
     const previous = new Map(this.state.issues.map((row) => [row.number, row]));
     const rows: ScoutIssueRow[] = [];
     for (const issue of read.issues) {
@@ -596,6 +614,7 @@ export class ScoutWorker {
         finished: false,
         timer: undefined,
         firstLine: null,
+        filed: 0,
       };
       this.active = active;
       this.state.scan = { scanId: scan.scanId, startedAt: scan.startedAt, requested: capacity.batch };
@@ -745,6 +764,7 @@ export class ScoutWorker {
     active.finished = true;
     clearTimeout(active.timer);
     active.timer = undefined;
+    this.endSettle(active);
     this.closePeer(active);
     const error = active.firstLine ?? detail;
     this.writeScan(active, "failed", {
@@ -755,7 +775,96 @@ export class ScoutWorker {
     this.finishScan(active, error);
   }
 
+  /** Starts the one deadline shared by every read, probe, and filing. */
+  private beginSettle(active: ActiveScan): void {
+    const timer = setTimeout(() => {
+      this.failSettle(active, "the scan timed out while reading and filing");
+    }, this.timeoutMs);
+    timer.unref?.();
+    active.settle = {
+      controller: new AbortController(),
+      deadline: Date.now() + this.timeoutMs,
+      timer,
+      finished: false,
+    };
+  }
+
+  /** The phase ended normally; its timer must never fire. */
+  private endSettle(active: ActiveScan): void {
+    if (active.settle === undefined || active.settle.finished) return;
+    active.settle.finished = true;
+    clearTimeout(active.settle.timer);
+  }
+
+  /**
+   * The deadline expired or Stop arrived: record one failure and abort every
+   * child and pending step. A Stop has already written its own state, so the
+   * failure is not recorded over it.
+   */
+  private failSettle(active: ActiveScan, detail: string): void {
+    const settle = active.settle;
+    if (settle === undefined || settle.finished) return;
+    settle.finished = true;
+    clearTimeout(settle.timer);
+    settle.controller.abort();
+    if (this.active !== active || this.stopping) return;
+    this.recordScanLine(active, `failed: ${detail}`);
+    this.writeScan(active, "failed", {
+      requested: active.requested,
+      filed: active.filed,
+      error: detail,
+    });
+    this.finishScan(active, detail);
+  }
+
+  /** True once no further step may touch this scan. */
+  private settled(active: ActiveScan): boolean {
+    return active.settle?.finished === true || this.active !== active;
+  }
+
+  /**
+   * Waits for one step but never past the phase deadline or Stop. The step
+   * itself is abandoned on abort; its `gh` child is killed by the deadline or
+   * the abort signal, so nothing outlives the phase.
+   */
+  private async within<T>(active: ActiveScan, work: Promise<T>): Promise<T> {
+    const settle = active.settle;
+    if (settle === undefined) return await work;
+    if (settle.controller.signal.aborted) throw new SettleAborted();
+    const aborted = Promise.withResolvers<never>();
+    settle.controller.signal.addEventListener(
+      "abort",
+      () => aborted.reject(new SettleAborted()),
+      { once: true },
+    );
+    return await Promise.race([work, aborted.promise]);
+  }
+
+  /**
+   * The GitHub client for a settle step. The periodic client is shared with
+   * `refresh`, so only the settle path builds a bounded one.
+   */
+  private githubFor(active: ActiveScan): ScoutGitHubClient {
+    if (this.injectedGithub !== undefined) return this.injectedGithub;
+    const settle = active.settle;
+    return createScoutGitHub({
+      repository: this.state.repo,
+      repoDir: this.repoDir,
+      environment: this.environment,
+      run: (argv, env) =>
+        ghCommand(argv, env, {
+          ...(settle === undefined
+            ? {}
+            : {
+                timeoutMs: Math.max(1, settle.deadline - Date.now()),
+                signal: settle.controller.signal,
+              }),
+        }),
+    });
+  }
+
   private finishScan(active: ActiveScan, error: string | null): void {
+    this.endSettle(active);
     this.filing = false;
     this.active = undefined;
     this.state.scan = null;
@@ -828,123 +937,142 @@ export class ScoutWorker {
     // Immediately before filing, read every scout issue again. The periodic
     // read stands aside until this scan has finished filing, so a stale apply
     // can never drop a row that was just created. A failed read files nothing
-    // and surfaces the reason; the next read retries.
+    // and surfaces the reason; the next read retries. Every wait and command
+    // shares one deadline, because the scan timer no longer guards this phase.
     this.filing = true;
-    while (this.syncing) await Bun.sleep(5);
-    let read: GitHubRead;
+    this.beginSettle(active);
     try {
-      read = await this.readGitHub();
-    } catch (error) {
-      const detail = detailOf(error);
-      this.recordScanLine(active, `failed: ${detail}`);
-      this.recordSyncFailure(detail);
-      this.writeScan(active, "failed", {
-        requested: active.requested,
-        filed: 0,
-        error: detail,
-      });
-      this.finishScan(active, detail);
-      return;
-    }
-    try {
-      await this.applyRead(read);
-    } catch (error) {
-      const detail = detailOf(error);
-      this.recordScanLine(active, `failed: ${detail}`);
-      this.recordSyncFailure(detail);
-      this.writeScan(active, "failed", {
-        requested: active.requested,
-        filed: 0,
-        error: detail,
-      });
-      this.finishScan(active, detail);
-      return;
-    }
-    this.publish();
-
-    const known = new Set(this.knownTitles(active.draftGoalHeadings));
-    const capacity = this.capacity();
-    const limit = Math.min(active.requested, capacity.batch);
-    let filed = 0;
-    let filingError: string | null = null;
-    let lastFiled: { number: number; title: string } | null = null;
-    for (const item of result.items) {
-      if (this.stopping) break;
-      if (item.significance < SIGNIFICANCE_THRESHOLD) {
-        this.recordScanLine(
-          active,
-          `dropped “${item.title}” — significance ${item.significance}/5 is below ` +
-            `${SIGNIFICANCE_THRESHOLD}`,
-        );
-        continue;
-      }
-      const key = normalizeTitle(item.title);
-      if (known.has(key)) {
-        this.recordScanLine(active, `dropped duplicate “${item.title}”`);
-        continue;
-      }
-      if (filed >= limit) break;
-      let created: { url: string; number: number };
+      while (this.syncing) await this.within(active, Bun.sleep(5));
+      let read: GitHubRead;
       try {
-        created = await this.fileIssue({
-          repoDir: this.repoDir,
-          repository: this.state.repo,
-          recommendation: item,
-          environment: this.environment,
-        });
+        read = await this.within(active, this.readGitHub(active));
       } catch (error) {
-        filingError = detailOf(error);
-        this.recordScanLine(active, `failed to file “${item.title}”: ${filingError}`);
-        break;
+        if (error instanceof SettleAborted) return;
+        const detail = detailOf(error);
+        this.recordScanLine(active, `failed: ${detail}`);
+        this.recordSyncFailure(detail);
+        this.writeScan(active, "failed", {
+          requested: active.requested,
+          filed: active.filed,
+          error: detail,
+        });
+        this.finishScan(active, detail);
+        return;
       }
-      known.add(key);
-      filed += 1;
-      lastFiled = { number: created.number, title: item.title };
-      const createdAt = this.clock().toISOString();
-      this.state.issues = newestFirst([
-        ...this.state.issues.filter((row) => row.number !== created.number),
-        {
-          number: created.number,
-          title: item.title,
-          url: created.url,
-          createdAt,
-          state: "pending",
-          category: item.category,
-          version: null,
-        },
-      ]);
-      this.recordScanLine(active, `filed #${created.number} “${item.title}”`);
+      try {
+        await this.within(active, this.applyRead(read, active));
+      } catch (error) {
+        if (error instanceof SettleAborted) return;
+        const detail = detailOf(error);
+        this.recordScanLine(active, `failed: ${detail}`);
+        this.recordSyncFailure(detail);
+        this.writeScan(active, "failed", {
+          requested: active.requested,
+          filed: active.filed,
+          error: detail,
+        });
+        this.finishScan(active, detail);
+        return;
+      }
+      if (this.settled(active)) return;
       this.publish();
-    }
 
-    if (this.stopping) {
-      this.filing = false;
-      this.active = undefined;
-      this.writeScan(active, "stopped", { requested: active.requested, filed });
-      return;
-    }
+      const known = new Set(this.knownTitles(active.draftGoalHeadings));
+      const capacity = this.capacity();
+      const limit = Math.min(active.requested, capacity.batch);
+      let filingError: string | null = null;
+      let lastFiled: { number: number; title: string } | null = null;
+      for (const item of result.items) {
+        if (this.settled(active) || this.stopping) break;
+        if (item.significance < SIGNIFICANCE_THRESHOLD) {
+          this.recordScanLine(
+            active,
+            `dropped “${item.title}” — significance ${item.significance}/5 is below ` +
+              `${SIGNIFICANCE_THRESHOLD}`,
+          );
+          continue;
+        }
+        const key = normalizeTitle(item.title);
+        if (known.has(key)) {
+          this.recordScanLine(active, `dropped duplicate “${item.title}”`);
+          continue;
+        }
+        if (active.filed >= limit) break;
+        const settle = active.settle;
+        let created: { url: string; number: number };
+        try {
+          created = await this.within(
+            active,
+            this.fileIssue({
+              repoDir: this.repoDir,
+              repository: this.state.repo,
+              recommendation: item,
+              environment: this.environment,
+              ...(settle === undefined
+                ? {}
+                : { deadline: settle.deadline, signal: settle.controller.signal }),
+            }),
+          );
+        } catch (error) {
+          if (error instanceof SettleAborted) return;
+          filingError = detailOf(error);
+          this.recordScanLine(active, `failed to file “${item.title}”: ${filingError}`);
+          break;
+        }
+        known.add(key);
+        active.filed += 1;
+        lastFiled = { number: created.number, title: item.title };
+        const createdAt = this.clock().toISOString();
+        this.state.issues = newestFirst([
+          ...this.state.issues.filter((row) => row.number !== created.number),
+          {
+            number: created.number,
+            title: item.title,
+            url: created.url,
+            createdAt,
+            state: "pending",
+            category: item.category,
+            version: null,
+          },
+        ]);
+        this.recordScanLine(active, `filed #${created.number} “${item.title}”`);
+        this.publish();
+      }
 
-    if (lastFiled !== null) {
-      this.state.notice =
-        filed === 1
-          ? `Filed #${lastFiled.number} “${lastFiled.title}”`
-          : `Filed ${filed} issues.`;
-    }
+      if (this.settled(active)) return;
+      if (this.stopping) {
+        this.filing = false;
+        this.active = undefined;
+        this.endSettle(active);
+        this.writeScan(active, "stopped", { requested: active.requested, filed: active.filed });
+        return;
+      }
 
-    const shortfall =
-      filed < active.requested
-        ? (filingError ??
-          result.shortfall ??
-          `filed ${filed} of the ${active.requested} requested`)
-        : null;
-    if (shortfall !== null) this.recordScanLine(active, `shortfall: ${shortfall}`);
-    this.writeScan(active, filingError === null ? "succeeded" : "failed", {
-      requested: active.requested,
-      filed,
-      ...(filingError === null ? {} : { error: filingError }),
-      ...(shortfall === null ? {} : { shortfall }),
-    });
-    this.finishScan(active, filingError);
+      if (lastFiled !== null) {
+        this.state.notice =
+          active.filed === 1
+            ? `Filed #${lastFiled.number} “${lastFiled.title}”`
+            : `Filed ${active.filed} issues.`;
+      }
+
+      const shortfall =
+        active.filed < active.requested
+          ? (filingError ??
+            result.shortfall ??
+            `filed ${active.filed} of the ${active.requested} requested`)
+          : null;
+      if (shortfall !== null) this.recordScanLine(active, `shortfall: ${shortfall}`);
+      this.writeScan(active, filingError === null ? "succeeded" : "failed", {
+        requested: active.requested,
+        filed: active.filed,
+        ...(filingError === null ? {} : { error: filingError }),
+        ...(shortfall === null ? {} : { shortfall }),
+      });
+      this.finishScan(active, filingError);
+    } catch (error) {
+      if (error instanceof SettleAborted) return;
+      throw error;
+    }
   }
 
   /** Stop: end the peer, keep the rows and limits, release the lock. */
@@ -952,12 +1080,22 @@ export class ScoutWorker {
     if (this.stopping) return;
     this.stopping = true;
     const active = this.active;
-    if (active !== undefined && !active.finished) {
-      active.finished = true;
-      clearTimeout(active.timer);
-      active.timer = undefined;
-      this.closePeer(active);
-      this.writeScan(active, "stopped", { requested: active.requested, filed: 0 });
+    if (active !== undefined) {
+      if (active.settle !== undefined && !active.settle.finished) {
+        // The scan timer no longer guards the filing phase; Stop aborts it
+        // instead of waiting for a stalled read or filing to finish.
+        active.settle.finished = true;
+        clearTimeout(active.settle.timer);
+        active.settle.controller.abort();
+        this.filing = false;
+        this.writeScan(active, "stopped", { requested: active.requested, filed: active.filed });
+      } else if (!active.finished) {
+        active.finished = true;
+        clearTimeout(active.timer);
+        active.timer = undefined;
+        this.closePeer(active);
+        this.writeScan(active, "stopped", { requested: active.requested, filed: 0 });
+      }
       this.active = undefined;
     }
     this.state.enabled = false;

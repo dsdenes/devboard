@@ -64,7 +64,7 @@ export interface ScoutBridgeOptions {
   agentCommand: string;
   runningVersion: string | null;
   harnessDir: string;
-  send: (event: unknown) => void;
+  send: (event: unknown, except?: { send(data: string): unknown }) => void;
   log?: (line: string) => void;
   environment?: Record<string, string | undefined>;
   pollMs?: number;
@@ -83,7 +83,7 @@ export class ScoutBridge {
   private readonly agentCommand: string;
   private readonly runningVersion: string | null;
   private readonly harnessDir: string;
-  private readonly send: (event: unknown) => void;
+  private readonly send: (event: unknown, except?: { send(data: string): unknown }) => void;
   private readonly environment: Record<string, string | undefined>;
   private readonly repository: () => string | null;
   private readonly preflight: NonNullable<ScoutBridgeOptions["preflight"]>;
@@ -209,7 +209,12 @@ export class ScoutBridge {
     };
   }
 
-  /** A connect-time replay: state, then the newest scan's whole activity. */
+  /**
+   * A connect-time replay: state to the caller, then the newest scan's whole
+   * activity to the caller and every other client. The baseline is shared, so
+   * advancing it for one client alone would make the next delta skip what the
+   * older clients missed.
+   */
   replay(target?: { send(data: string): unknown }): void {
     const deliver =
       target === undefined
@@ -228,12 +233,16 @@ export class ScoutBridge {
     const activity = this.readActivity(scanId);
     this.lastActivityScanId = scanId;
     this.lastActivity = activity;
-    deliver({
+    const event = {
       type: "scoutActivity",
       scanId,
       replay: true,
       entries: activity.map((text) => ({ text, append: false })),
-    });
+    };
+    deliver(event);
+    // A targeted replay also reaches the other clients: the baseline is shared,
+    // so a replay only the new client saw would make the next delta skip it.
+    if (target !== undefined) this.send(event, target);
   }
 
   private readActivity(scanId: string): string[] {

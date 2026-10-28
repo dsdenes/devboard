@@ -22,6 +22,7 @@ const FILE_ALLOWLIST = [
   "templates",
   "server",
   "client",
+  "public",
   "lib",
   "watchdog",
   "issues",

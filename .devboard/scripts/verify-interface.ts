@@ -623,7 +623,7 @@ async function seedIssuesState(
           title: `Fixture issue ${number}`,
           url: `https://github.com/fixture/host/issues/${number}`,
           createdAt: "2026-10-26T00:00:00Z",
-          labels: [] as string[],
+          labels: number === 19 ? ["goal"] : ([] as string[]),
           handled: false,
           runId: null,
           agentRunId: agents.find((agent) => agent.issueNumber === number)?.runId ?? null,
@@ -4373,6 +4373,7 @@ try {
   const overview = await page.eval<{
     cooldowns: string;
     summaryIssues: string[];
+    summaryIssueLinks: Array<{ tag: string; text: string; href: string; target: string }>;
     sideBeforeOutput: boolean;
     leftOfOutput: boolean;
     summaryBelowAutomation: boolean;
@@ -4398,6 +4399,14 @@ try {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
       summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
+      ),
+      summaryIssueLinks: [...(summary?.querySelectorAll(".issues-agent-row__issue") ?? [])].map(
+        (link) => ({
+          tag: link.tagName,
+          text: link.textContent?.trim() ?? "",
+          href: link.getAttribute("href") ?? "",
+          target: link.getAttribute("target") ?? "",
+        }),
       ),
       sideBeforeOutput: side !== null && output !== null && side.nextElementSibling === output,
       leftOfOutput:
@@ -4497,6 +4506,18 @@ try {
     "the overview does not list every running agent",
     overview,
   );
+  check(
+    overview.summaryIssueLinks.length === 3 &&
+      overview.summaryIssueLinks.every(
+        (link, index) =>
+          link.tag === "A" &&
+          link.text === `#${[17, 18, 19][index]}` &&
+          link.href === `https://github.com/fixture/host/issues/${[17, 18, 19][index]}` &&
+          link.target === "_blank",
+      ),
+    "the overview running-agent issue numbers are not tracker links",
+    overview.summaryIssueLinks,
+  );
   check(overview.sideBeforeOutput, "the agent list is not in the left column", overview);
   check(overview.leftOfOutput, "the side column does not sit to the left of the output", overview);
   check(
@@ -4521,7 +4542,7 @@ try {
     overview,
   );
 
-  await page.click('[data-testid="issues-agent-summary"] [data-issue="18"]');
+  await page.click('[data-testid="issues-agent-summary"] .issues-agent-row__open[data-issue="18"]');
   await page.wait(
     `document.querySelector('[data-testid="issues-overview-output"]')?.getAttribute("data-run") ===
        "2026-10-27T10-00-02-000Z" &&
@@ -4968,7 +4989,7 @@ try {
     queue,
   );
   check(
-    queue.every((entry, index) => entry.goal === (index >= 3 ? "true" : "false")),
+    queue.every((entry, index) => entry.goal === (index >= 2 ? "true" : "false")),
     "a goal label is not visible on its issue",
     queue,
   );
@@ -4986,7 +5007,46 @@ try {
   const goalBadges = await page.eval<number>(
     `document.querySelectorAll('[data-testid="issues-goal-badge"]').length`,
   );
-  check(goalBadges === 2, "the goal issues carry no goal badge", goalBadges);
+  check(goalBadges === 3, "the goal issues carry no goal badge", goalBadges);
+  const queueGeometry = await page.eval<{
+    heights: number[];
+    goalTop: number | null;
+    stateTop: number | null;
+    stateRight: number | null;
+    panelRight: number | null;
+  }>(`(() => {
+    const items = [...document.querySelectorAll('[data-testid="issues-queue-item"]')];
+    const goalItem = items.find((item) => item.querySelector('[data-testid="issues-goal-badge"]') && item.querySelector('[data-testid="issues-running-marker"]'));
+    const goal = goalItem?.querySelector('[data-testid="issues-goal-badge"]')?.getBoundingClientRect();
+    const state = goalItem?.querySelector('[data-testid="issues-running-marker"]')?.getBoundingClientRect();
+    const panel = document.querySelector('[data-testid="issues-queue"]')?.getBoundingClientRect();
+    return {
+      heights: items.map((item) => Math.round(item.getBoundingClientRect().height)),
+      goalTop: goal ? Math.round(goal.top) : null,
+      stateTop: state ? Math.round(state.top) : null,
+      stateRight: state ? Math.round(state.right) : null,
+      panelRight: panel ? Math.round(panel.right) : null,
+    };
+  })()`);
+  check(
+    new Set(queueGeometry.heights).size === 1,
+    "the queue rows do not share one height",
+    queueGeometry.heights,
+  );
+  check(
+    queueGeometry.goalTop !== null &&
+      queueGeometry.stateTop !== null &&
+      Math.abs(queueGeometry.goalTop - queueGeometry.stateTop) <= 1,
+    "the goal and state badges do not sit on one line",
+    queueGeometry,
+  );
+  check(
+    queueGeometry.stateRight !== null &&
+      queueGeometry.panelRight !== null &&
+      Math.abs(queueGeometry.stateRight - queueGeometry.panelRight) <= 13,
+    "the state badge is not on the row's trailing edge",
+    queueGeometry,
+  );
   const pendingMeta = await page.eval<string>(
     `document.querySelector('[data-testid="open-issues-queue"] .sidebar-item__meta')?.textContent ?? ""`,
   );
@@ -5159,11 +5219,17 @@ try {
     "the elaboration question",
     8_000,
   );
-  const draftQuestion = await page.eval<{ message: string; options: number }>(`(() => ({
+  const draftQuestion = await page.eval<{ message: string; options: number; recommended: boolean }>(`(() => ({
     message: document.querySelector('[data-testid="issues-draft-question"]')?.textContent?.includes("Choose an answer") ?? false,
     options: document.querySelectorAll('[data-testid="issues-draft-choice"]').length,
+    recommended:
+      document.querySelector('[data-testid="issues-draft-choice"]')?.querySelector('.choice__recommended') !== null,
   }))()`);
-  check(draftQuestion.message && draftQuestion.options === 2, "the elaboration question is not surfaced", draftQuestion);
+  check(
+    draftQuestion.message && draftQuestion.options === 2 && draftQuestion.recommended,
+    "the elaboration question is not surfaced with a recommended first option",
+    draftQuestion,
+  );
   const questionLayout = await page.eval<{
     ordered: boolean;
     sourceClosed: boolean;

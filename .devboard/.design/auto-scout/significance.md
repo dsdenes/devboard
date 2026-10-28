@@ -19,7 +19,6 @@
 | C17 | Filed issues count | 3 | 3 | 3 | 3 | 1 | 56 | P2 | Keep; table panel header. |
 | C6 | Last successful read | 3 | 2 | 3 | 3 | 1 | 51 | P2 | Keep; beside the read badge. |
 | C13 | Limits explanation | 2 | 4 | 2 | 3 | 1 | 51 | P2 | Keep; one hint under the fields. |
-| C21 | Filing notice | 3 | 2 | 3 | 3 | 1 | 51 | P2 | Keep; success banner after a filing pass. |
 | C18 | Empty table state | 2 | 2 | 2 | 4 | 1 | 44 | P2 | Keep; two lines, no decorative container. |
 | C9 | Worker pid and version | 2 | 2 | 2 | 3 | 1 | 41 | P2 | Keep; one compact worker fact. |
 | C20 | Activity empty state | 2 | 2 | 2 | 3 | 1 | 41 | P2 | Keep; one muted line inside the log. |

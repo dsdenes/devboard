@@ -5,7 +5,7 @@
 | Order | A2UI ID | Region | Journey | Items | Priority |
 |---|---|---|---|---|---|
 | 1 | region_header | Page header: identity, meta, actions | 1, 2, 4 | C1, C2, C3, C5, C6, C4 | P0/P1 |
-| 2 | region_alerts | Conditional banner row | 1, 4 | C7, C21, C22 | P1 |
+| 2 | region_alerts | Conditional banner row | 1, 4 | C7, C22 | P1 |
 | 3 | region_side | Left rail: worker facts, filing limits | 1, 2, 3 | C8, C9, C10, C12, C13, C14 | P1 |
 | 4 | region_main | Main column: filed issues, scan activity | 1, 4 | C11, C15–C20 | P0/P1 |
 
@@ -15,7 +15,7 @@ PageHeader (surface, border, 10/12 padding)
   meta: [lifecycle badge] [GitHub read badge] [Last read time]
   actions: [Stop] or [Start]
 alerts (only when present)
-  [sync error / notice / worker error]
+  [sync error / worker error]
 body (grid: 360px minmax(0,1fr), gap 12, fills height)
   side (column, scrolls)
     panel Scout worker     → C8 count, C9 worker, C10 next attempt
@@ -88,4 +88,5 @@ body (grid: 360px minmax(0,1fr), gap 12, fills height)
 - Lifecycle and read states are words in badges, not colour-only.
 - Error and notice banners keep `role="alert"`/`role="status"` and remain in reading
   order immediately after the header.
-- The table keeps column headers and link text; empty states are plain paragraphs.
+- The table keeps column headers and link text; the empty table is a compact centered message
+  with a decorative mark, not a full-width strip.

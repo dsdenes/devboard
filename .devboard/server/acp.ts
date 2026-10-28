@@ -19,6 +19,8 @@ export interface AcpConnectionOptions {
   cwd: string;
   onActivity: (activity: AcpActivity) => void;
   onQuestion: (question: AcpQuestion) => void;
+  /** Receives assistant message text only; thoughts and tool activity are dropped. */
+  onText?: (text: string) => void;
   onStderr?: (text: string) => void;
 }
 
@@ -108,6 +110,12 @@ function questionOptions(properties: Record<string, unknown>): AcpQuestionOption
       labels.add(option.label);
       options.push({ ...option, recommended: option.label === recommended });
     }
+  }
+  // A question with choices always shows one recommendation: when the peer
+  // omits a default, the first option is the suggestion the UI marks.
+  const first = options[0];
+  if (first !== undefined && !options.some((option) => option.recommended)) {
+    first.recommended = true;
   }
   return options;
 }
@@ -450,6 +458,9 @@ export class AcpConnection {
     if (next === undefined) return;
     this.#activityStream = next.stream;
     this.#options.onActivity(next.activity);
+    if (next.stream?.kind === "agent_message_chunk") {
+      this.#options.onText?.(next.activity.text);
+    }
   }
 
   #handleElicitation(wireId: number | string, params: unknown): void {

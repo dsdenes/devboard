@@ -1016,10 +1016,10 @@ control appears while `stale` is true and restarts the server from the installed
 dashboard serving the canonical source checkout reports `0.1.<commit-count>` on both sides, the
 version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder.
 
-A check that cannot reach the feed at all — an offline host, a DNS or proxy failure, a refused
-or reset connection, or a timeout — leaves the previous package and server intact, writes an
-`activity` record naming the skipped check, and retries with exponential backoff
-(`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for the operator, never an
+A check that cannot reach the feed at all — an offline host, a missing `gh` executable, a DNS
+or proxy failure, a refused or reset connection, or a timeout — leaves the previous package and
+server intact, writes an `activity` record naming the skipped check, and retries with exponential
+backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for the operator, never an
 `update-error` finding. A check that reaches the feed and fails, a checksum mismatch, an
 authentication failure, or a failed npm install writes `update-error` and is retried the same
 way.
@@ -1429,9 +1429,11 @@ facts, and `data-testid="issues-overview"`. It shows the running-agent count as
 `data-testid="issues-running-agents"`, the pending count, the number of issues in cooldown and the
 earliest cooldown time as `data-testid="issues-cooldowns"`. The left column holds the Automation
 panel and, directly after it, the running agents in
-`data-testid="issues-agent-summary"`: one button per agent carrying `data-run` and `data-issue`,
+`data-testid="issues-agent-summary"`: one row per agent carrying `data-run` and `data-issue`,
 sorted by issue number, with `aria-current="true"` on
 the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
+The row's issue number is a tracker link (`data-testid="issues-agent-row-issue"`, opening the
+issue URL from the queue in a new tab) next to a control that selects the agent's output.
 The running-agent panel header carries an aggregate `data-testid="issues-overview-asking"` warning
 badge (`<n> needs answer` or `<n> need answers`) only while at least one agent waits; the fleet
 count is not repeated in that header because the Automation panel states it.
@@ -1443,8 +1445,8 @@ open and reports the reason as an error notification; a successful one reports
 The right column renders only the selected agent's output in
 `data-testid="issues-overview-output"` with `data-run`, its stream in
 `data-testid="issues-overview-activity"`, and its question in
-`data-testid="issues-overview-question"`. The first agent is selected by default, clicking another
-row switches the output, and the pane falls back to the first live agent when the selected run
+`data-testid="issues-overview-question"`. The first agent is selected by default, the row's select
+control switches the output, and the pane falls back to the first live agent when the selected run
 ends; the overview list selects instead of opening a tab. The queue keeps every open issue, its
 `goal` badge, and its handled state, and shows `data-run` and a running marker for an issue with an
 active agent. The Runs page lists every run with its status and issue,
@@ -1553,7 +1555,7 @@ tab, or reloading the dashboard never starts a worker and never files an issue: 
 badge, the last-read time, and the single Start/Stop action. A 360px side rail holds the worker
 facts and the filing limits; the results column holds the filed-issues table and
 `data-testid="scout-activity"` for the current or newest scan. The page also shows
-`data-testid="scout-error"` for the last error and `data-testid="scout-notice"` for the last notice.
+`data-testid="scout-error"` for the last error.
 
 There is no review path. While a worker runs, a scan whose items score at least 4 files each
 accepted item directly as a GitHub issue in the host `origin`, in the same scan cycle, with no
@@ -1612,8 +1614,11 @@ renders `data-testid="scout-issue-title"` as an anchor to the issue URL,
 cell's `title`), `data-testid="scout-issue-type"`,
 `data-testid="scout-issue-state"`, and `data-testid="scout-issue-version"`. The type is the
 recommendation's category, or the issue body's `## Category` value for an adopted issue, or `—`.
-With no rows, `data-testid="scout-issues-empty"` renders. The sidebar `data-testid="scout-count"`
-shows the number of rows whose state is `pending`.
+With no rows, `data-testid="scout-issues-empty"` renders a centered stack: a decorative inbox
+mark, `No issues filed yet`, and one line stating that Auto Scout files significant findings after
+each scan. The empty state adds no control of its own; Start/Stop stays in the page header and the
+row count stays in the panel header. The sidebar `data-testid="scout-count"` shows the number of
+rows whose state is `pending`.
 
 An open issue is `pending`. A closed issue is `implemented` regardless of `stateReason`; a
 reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
@@ -1736,11 +1741,15 @@ context to `POST /api/goal-proposals`; the server writes one Markdown draft unde
 `<REPO_DIR>/.devboard/goal-proposals/` and answers
 `201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
-never writes a goal document, `GOAL.md`, or an ADR, never files an issue, never runs `gh`, and
-starts no agent or conversation. The file name is the report's first non-empty line, lowercased,
-with every run of non-alphanumeric characters replaced by `-`, leading and trailing `-` removed,
-and at most six hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`,
-`-3`, … through an exclusive create, so the first draft is never overwritten. The body opens with
+never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
+The file name is chosen by one bounded naming turn: an ACP peer starts with `AGENT_COMMAND` in
+`REPO_DIR`, receives the operator report marked as data with a read-only instruction, and must
+answer with only a lowercase kebab-case slug, at most six hyphen-separated words, `[a-z0-9-]`, and
+at most 64 characters. A start failure, an exited peer, a question, a 15-second timeout, or an
+unusable answer falls back to the report's first non-empty line, lowercased, with every run of
+non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
+hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
+exclusive create, so the first draft is never overwritten. The body opens with
 `# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, carries the line
 `> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the
@@ -2134,7 +2143,9 @@ The server answers with events:
   lifecycle conversation.
 - A `question` event carries one option per choice. Each option has a `label`, an optional
   `description` stating the consequence of choosing it, and `recommended`, true for the answer
-  the agent suggests. `answer` names the selected label as `value`.
+  the agent suggests. When the peer's schema marks none, the server marks the first option as
+  recommended, so a choice list never lacks a suggestion. `answer` names the selected label as
+  `value`.
 - A record's title and status come from its YAML frontmatter `title` and `status` fields.
 - A record is pending exactly when its status is `draft` or `proposed`; every other status is
   resolved.

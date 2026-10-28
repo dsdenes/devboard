@@ -7,10 +7,10 @@
   - `bun run build`
   - `bun run check` — 0 errors, 0 warnings.
   - `bunx tsc --noEmit` — pass.
-  - `bun test` — 610 pass, 0 fail (includes `client/lib/draft-format.test.ts`).
-  - `bun run verify:interface` — passed: shell, modes, sidebar, pages, splits, palette,
-    keyboard, theme, tables, editors, terminals, accessibility, notifications, status bar,
-    issues mode, ask transcript, persistence, and boundary.
+  - `bun test` — 630 pass, 0 fail (includes `client/lib/draft-format.test.ts`).
+  - `bun run verify:interface` — passed after integrating `origin/main`: shell, modes, sidebar,
+    pages, splits, palette, keyboard, theme, tables, editors, terminals, accessibility,
+    notifications, status bar, issues mode, ask transcript, persistence, and boundary.
 - Playwright source: the project's `@playwright/test` Chromium driven by
   `scripts/verify-interface.ts`, plus OMP browser Playwright for the live draft and wireframe.
 - Viewports: 1440×900 and 1024×720 (the shell's supported floor). The wireframe additionally
@@ -35,7 +35,7 @@
 |---|---|---|
 | Idle with captured context, dark | `idle-dark-1440.png` | heading + path, idle badge, Start; proposal, five facts, collapsed evidence, collapsed source |
 | Idle with captured context, light | `idle-light-1440.png` | same content; labels and borders hold in the light palette |
-| Evidence and source opened, light | `evidence-light-1440.png` | Visible text and DOM excerpt render in bounded blocks; source exposes exact bytes |
+| Evidence opened, light | `evidence-light-1440.png` | Visible text and DOM excerpt render in full; the body owns the scroll |
 | Question pending and running | `question-dark-1440.png` | warning question block above the proposal and log; disabled Start; quiet Stop; activity follows |
 | Question pending at the floor | `question-dark-1024x720.png` | header fits, title truncates, no horizontal overflow |
 | No captured context | `verify:interface` assertion | `No captured UI context.` |
