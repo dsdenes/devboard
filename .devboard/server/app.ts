@@ -50,6 +50,7 @@ import {
   isInsideRepository,
   liveWarnings,
   parseRemoteUrl,
+  claimScratchEntry,
   cleanupRemoteScratch,
   listRetainedProjects,
   publishStaged,
@@ -60,6 +61,7 @@ import {
   remoteCloneRequest,
   remoteProjectDirectory,
   remoteScratchRoot,
+  releaseScratchEntry,
   removeRetainedProject,
   removeStaging,
   restoreLiveSkill,
@@ -1692,7 +1694,16 @@ export function createApp(options: AppOptions) {
   let remoteTarget: RemoteRepository | undefined;
   /** The run's checkout: a clone that never outlives the run that made it. */
   let remoteCheckout: { runId: string; dir: string; target: RemoteRepository } | null = null;
-  let discoverCloning: { url: string } | null = null;
+  let discoverCloning: { url: string; target: RemoteRepository } | null = null;
+
+  /** True when both sides are absent or name the same lowercased owner/repo. */
+  function sameRemoteTarget(
+    a: RemoteRepository | undefined,
+    b: RemoteRepository | undefined,
+  ): boolean {
+    if (a === undefined || b === undefined) return a === b;
+    return remoteCloneName(a.owner, a.repo) === remoteCloneName(b.owner, b.repo);
+  }
 
   /** Every Discover read and write goes through the active target. */
   function targetRoot(): string {
@@ -1709,6 +1720,7 @@ export function createApp(options: AppOptions) {
     } catch {
       // The next start removes a checkout that cannot be removed.
     }
+    releaseScratchEntry(remoteRoot, basename(checkout.dir));
   }
 
   /**
@@ -2341,35 +2353,37 @@ export function createApp(options: AppOptions) {
   }
 
   function discoverStatePayload(): Record<string, unknown> {
-    const artifacts = discoverArtifacts;
+    // A clone or crawl of another remote project is the repository the page is
+    // working on; until it publishes, the active target's artifacts are hidden.
+    const inFlightRemote = discoverCloning?.target ?? remoteCheckout?.target;
+    const showingInFlight =
+      inFlightRemote !== undefined && !sameRemoteTarget(inFlightRemote, remoteTarget);
+    const shownRemote = showingInFlight ? inFlightRemote : remoteTarget;
+    const artifacts = showingInFlight ? null : discoverArtifacts;
     const root = targetRoot();
     return {
       active: discoverRun !== undefined,
       runId: discoverRun?.runId ?? null,
       startedAt: discoverRun?.startedAt ?? null,
       interrupted: discoverInterrupted,
-      stale: discoverStale,
-      warnings: discoverWarnings,
+      stale: showingInFlight ? false : discoverStale,
+      warnings: showingInFlight ? [] : discoverWarnings,
       busy: discoverBusyReason(),
-      error: discoverReadError,
+      error: showingInFlight ? null : discoverReadError,
       remoteAvailable,
       retained: remoteAvailable ? listRetainedProjects(remoteRoot) : [],
       repository:
-        remoteTarget === undefined
-          ? hostRepository
-          : `${remoteTarget.owner}/${remoteTarget.repo}`,
+        shownRemote === undefined ? hostRepository : `${shownRemote.owner}/${shownRemote.repo}`,
       target:
-        remoteTarget === undefined
+        shownRemote === undefined
           ? { kind: "host" }
           : {
               kind: "remote",
-              url: remoteTarget.url,
-              owner: remoteTarget.owner,
-              repo: remoteTarget.repo,
+              url: shownRemote.url,
+              owner: shownRemote.owner,
+              repo: shownRemote.repo,
               checkout:
-                remoteCheckout !== null &&
-                remoteCloneName(remoteCheckout.target.owner, remoteCheckout.target.repo) ===
-                  remoteCloneName(remoteTarget.owner, remoteTarget.repo),
+                remoteCheckout !== null && sameRemoteTarget(remoteCheckout.target, shownRemote),
             },
       cloning: discoverCloning === null ? null : { url: discoverCloning.url },
       manifest: artifacts?.manifest ?? null,
@@ -2377,7 +2391,7 @@ export function createApp(options: AppOptions) {
       sheet: artifacts?.sheet ?? null,
       // The manifest's own invocations for the commands the sheet recorded, so
       // the interface shows `npm test` rather than the program it expands to.
-      commandAliases: declaredCommandAliases(root),
+      commandAliases: artifacts === null ? [] : declaredCommandAliases(root),
       dependencyRepositories:
         artifacts === null ? {} : dependencyRepositories(root, artifacts.sheet),
       glossaries: artifacts?.glossaries ?? [],
@@ -2463,6 +2477,11 @@ export function createApp(options: AppOptions) {
     const staging = join(remoteRoot, `.staging-${runId}`);
     try {
       mkdirSync(remoteRoot, { recursive: true });
+      // The claim must exist before the clone does: another dashboard starting
+      // on the same state directory must never sweep a live checkout.
+      if (!claimScratchEntry(remoteRoot, basename(staging))) {
+        throw new Error(`the scratch root is not writable: ${remoteRoot}`);
+      }
     } catch (error) {
       discoverFailure(
         ws,
@@ -2474,7 +2493,7 @@ export function createApp(options: AppOptions) {
     }
 
     // The clone state leaves before the child spawns, so every client sees it.
-    discoverCloning = { url: target.url };
+    discoverCloning = { url: target.url, target };
     journal.write("lifecycle", "discover-remote-clone");
     broadcastDiscoverState();
 
@@ -2498,6 +2517,7 @@ export function createApp(options: AppOptions) {
       } catch {
         // The next start removes a staging directory that cannot be removed.
       }
+      releaseScratchEntry(remoteRoot, basename(staging));
       discoverFailure(ws, message);
       broadcastDiscoverState();
       return false;
@@ -2639,6 +2659,19 @@ export function createApp(options: AppOptions) {
     if (discoverRun !== run || request !== discoverRequest) return;
 
     try {
+      let present = true;
+      try {
+        present = statSync(root).isDirectory();
+      } catch {
+        present = false;
+      }
+      if (!present) {
+        throw new Error(
+          remote === undefined
+            ? "the host directory disappeared during the crawl"
+            : "the run's checkout was removed during the crawl",
+        );
+      }
       const facts = hostFacts(root);
       if (facts.fingerprint !== factsBefore.fingerprint) {
         throw new Error("the crawl changed host files outside its staging directory");
@@ -6118,6 +6151,8 @@ export function createApp(options: AppOptions) {
         // A staging directory left behind is removed by the replacement.
       }
     }
+    // A stopped dashboard never leaves its checkout for the next start.
+    clearRemoteCheckout();
     return stop(closeActiveConnections);
   };
 

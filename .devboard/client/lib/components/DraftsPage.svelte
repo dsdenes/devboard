@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { draftParts } from "../draft-format";
+  import { draftProposal } from "../draft-format";
   import { issues, markDraftsPage } from "../issues.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
@@ -12,7 +12,7 @@
    * refresh loop stops with the page. Opening the page restores the stored
    * draft path; a path whose file vanished resolves to the list.
    */
-  const parts = $derived(draftParts(issues.draft?.text ?? ""));
+  const proposal = $derived(draftProposal(issues.draft?.text ?? ""));
 
   // The detail reports this draft's run only; another draft's run is not this draft's state.
   const run = $derived(issues.draft !== null ? issues.draftRun : null);
@@ -166,8 +166,8 @@
             </section>
           {/if}
           <section class="issues-draft-detail__section" aria-label="Draft">
-            {#if parts.proposal.length > 0}
-              <pre class="issues-draft-detail__prose mono">{parts.proposal}</pre>
+            {#if proposal.length > 0}
+              <pre class="issues-draft-detail__prose mono">{proposal}</pre>
             {:else}
               <p class="issues-draft-detail__empty">This draft holds no proposal text yet.</p>
             {/if}
@@ -181,31 +181,6 @@
               <IssuesAgentLog lines={run.activity} testid="issues-draft-activity" />
             </section>
           {/if}
-          <section class="issues-draft-detail__section" aria-label="Captured UI context">
-            <h3 class="issues-draft-detail__label">Captured UI context</h3>
-            <div class="issues-draft-detail__context" data-testid="issues-draft-context">
-              {#if parts.facts.length > 0}
-                <dl class="issues-draft-facts">
-                  {#each parts.facts as fact (fact.label)}
-                    <dt>{fact.label}:</dt>
-                    <dd>{fact.value}</dd>
-                  {/each}
-                </dl>
-              {/if}
-              {#if parts.sections.length > 0}
-                {#each parts.sections as section (section.title)}
-                  <section class="issues-draft-evidence__section">
-                    <h4 class="issues-draft-detail__label">{section.title}</h4>
-                    <pre class="issues-draft-evidence__text mono">{section.body}</pre>
-                  </section>
-                {/each}
-              {:else if parts.rawContext.length > 0}
-                <pre class="issues-draft-evidence__text mono">{parts.rawContext}</pre>
-              {:else if parts.facts.length === 0}
-                <p class="issues-draft-detail__empty">No captured UI context.</p>
-              {/if}
-            </div>
-          </section>
         </div>
       </section>
     {:else}

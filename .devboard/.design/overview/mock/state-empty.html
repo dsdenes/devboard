@@ -68,15 +68,6 @@
     color: var(--primary-foreground); display: inline-flex; flex: 0 0 auto; font-family: var(--font-sans);
     font-size: 12px; font-weight: 500; height: 28px; padding: 0 10px;
   }
-  .empty { border-top: 1px solid var(--border); display: grid; gap: 14px 32px; grid-template-columns: minmax(0, 1fr) 300px; padding-top: 16px; }
-  .empty h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
-  .empty p { font-size: 12.5px; line-height: 1.55; margin: 0; max-width: 58ch; }
-  .empty .note { color: var(--muted-foreground); font-size: 11.5px; margin-top: 8px; }
-  .writes { display: flex; flex-direction: column; gap: 9px; margin: 0; padding: 0; list-style: none; }
-  .writes li { display: flex; flex-direction: column; gap: 2px; }
-  .writes .path { color: var(--foreground); }
-  .writes .what { color: var(--muted-foreground); font-size: 11px; }
-  .skill-names { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .chip { border: 1px solid var(--border-subtle); border-radius: 3px; font-family: var(--font-mono); font-size: 10px; padding: 1px 4px; }
   .status-bar { align-items: center; background: var(--surface); border-top: 1px solid var(--border); display: flex; flex: 0 0 26px; font-size: 11px; gap: 10px; height: 26px; padding: 0 8px; }
   .status-bar .spacer { flex: 1; }
@@ -146,39 +137,6 @@
             <div class="sheet-meta">No artifacts have been published for this host.</div>
           </header>
 
-          <section class="empty">
-            <div>
-              <h2>No project sheet yet</h2>
-              <p>
-                One Discover run reads the repository without running its commands and publishes three
-                artifacts. Nothing is written outside <code>.omp/discover/</code> and
-                <code>.omp/skills/</code>, and a field the crawl cannot ground is recorded as unknown
-                instead of guessed.
-              </p>
-              <p class="note">Switching tabs or closing the browser does not start a run.</p>
-            </div>
-            <ul class="writes">
-              <li>
-                <span class="path mono">.omp/discover/sheet.json</span>
-                <span class="what">Project sheet: stack, commands, CI, architecture, unknowns</span>
-              </li>
-              <li>
-                <span class="path mono">.omp/discover/glossary/</span>
-                <span class="what">One UbiLang glossary per bounded context</span>
-              </li>
-              <li>
-                <span class="path mono">.omp/skills/</span>
-                <span class="what">Five project-specific agent skills</span>
-                <span class="skill-names">
-                  <span class="chip">testing-strategy</span>
-                  <span class="chip">naming-conventions</span>
-                  <span class="chip">coding-conventions</span>
-                  <span class="chip">architecture-boundaries</span>
-                  <span class="chip">glossary</span>
-                </span>
-              </li>
-            </ul>
-          </section>
         </div>
       </div>
     </div>

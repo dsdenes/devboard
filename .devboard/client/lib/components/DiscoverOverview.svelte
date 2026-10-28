@@ -77,7 +77,8 @@
       : leafText(definition),
   );
   const projectPath = $derived(
-    freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : ""),
+    discover.remoteTarget?.url ??
+      (freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : "")),
   );
   const projectName = $derived(discover.repository ?? (baseName(projectPath) || "Discover"));
 
@@ -633,10 +634,6 @@
         Inventory this project from repository evidence: stack, commands, testing, architecture, and
         the conventions an agent should follow here.
       </p>
-      <div class="discover-head__meta">
-        No artifacts have been published for this host. Nothing outside
-        <code>.omp/discover/</code> and <code>.omp/skills/</code> is written.
-      </div>
     {/if}
   </header>
 
@@ -652,9 +649,6 @@
             <span class="muted discover-run__started" title={discover.startedAt}>
               Started {startedLabel}
             </span>
-          {/if}
-          {#if discover.runId !== null}
-            <code class="code-chip discover-run__id" title={discover.runId}>{discover.runId}</code>
           {/if}
           <button
             type="button"
@@ -672,10 +666,6 @@
         <div class="discover-run__terminal">
           <Terminal lines={discover.activity} data-testid="discover-activity" label="Discover activity" />
         </div>
-        <p class="discover-run__note">
-          The run is owned by the server. Leaving this view or closing the browser does not stop it;
-          published artifacts stay readable until the run replaces them.
-        </p>
       </div>
     </section>
   {/if}
@@ -904,35 +894,5 @@
         {/if}
       </div>
     </div>
-  {:else}
-    <section class="panel discover-empty" data-testid="discover-empty">
-      <div class="discover-empty__body">
-        <div class="discover-empty__copy">
-          <h2>No project sheet yet</h2>
-          <p>
-            One Discover run reads the repository without running its commands. It publishes a
-            project sheet, one UbiLang glossary per bounded context, and five Agent Skills.
-          </p>
-          <p class="muted">
-            A field the crawl cannot ground is recorded as unknown instead of guessed. Switching
-            views or closing the browser never starts a run.
-          </p>
-        </div>
-        <ul class="discover-writes">
-          <li>
-            <code>.omp/discover/sheet.json</code>
-            <span>Project sheet: stack, commands, CI, architecture, unknowns</span>
-          </li>
-          <li>
-            <code>.omp/discover/glossary/</code>
-            <span>One UbiLang glossary per bounded context</span>
-          </li>
-          <li>
-            <code>.omp/skills/</code>
-            <span>Five project-specific agent skills</span>
-          </li>
-        </ul>
-      </div>
-    </section>
   {/if}
 </div>

@@ -589,21 +589,20 @@ optional meta row, and a right-aligned action group. The Overview frame holds th
 the full path stays in the tooltip), the one-line definition, the discovery date, and the single
 filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
 report it. Below the frame, an active run region appears only while a run exists: a tinted header
-with a `Discover` eyebrow, `Run in progress`, the run identifier as a code chip, `Started 3 minutes
-ago`, and Stop, followed by the activity terminal and its ownership note. A queued question region
-follows while a question waits. The sheet
-follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and Testing in the
-main column on the right, and Bounded contexts below them. The manual-testing strip is the last
-region of the page, so a source checkout never pushes it above the project identity. An error,
-an interrupted-run notice, and a stop notice render above the page in one notice stack.
+with a `Discover` eyebrow, `Run in progress`, `Started 3 minutes ago`, and Stop, followed by the
+activity terminal and its ownership note. A queued question region follows while a question waits.
+The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and
+Testing in the main column on the right, and Bounded contexts below them. The manual-testing strip
+is the last region of the page, so a source checkout never pushes it above the project identity. An
+error, an interrupted-run notice, and a stop notice render above the page in one notice stack.
 
 The Glossary row is a plain section link: it has no disclosure control and no nested submenu, so
 individual terms are never repeated as sidebar menu items. A term opens from its row on the
 Glossary page.
 
-With no published artifacts the Overview page shows an empty state (`data-testid="discover-empty"`)
-and a `Discover project` button (`data-testid="discover-start"`); with artifacts it shows
-`Re-discover`. The button is disabled when the socket is not open, while a Discover run is active,
+With no published artifacts the Overview page shows the header's first-run explanation and a
+`Discover project` button (`data-testid="discover-start"`); with artifacts it shows `Re-discover`.
+The button is disabled when the socket is not open, while a Discover run is active,
 or while Goal or Flow work is active, and its title names the reason. It never starts on page
 load, reconnect, mode switch, or page switch. Selecting it sends `{ "type": "discoverProject" }`;
 the server broadcasts `discoverStarted` and starts exactly one ACP peer whose prompt is exactly
@@ -920,7 +919,9 @@ one directory per discovered repository, named `<owner>-<repo>` in lowercase, an
 a run ends. Each directory keeps the bytes the crawl published — `.omp/discover/` and
 `.omp/skills/` — beside `project.json`, which records `url`, `owner`, `repo`, and the ISO
 `completedAt` time. A run's checkout is a transient `.staging-<run-id>` directory beside those
-projects; it never survives the run.
+projects; it never survives the run. While a run is live it owns a claim at
+`.runs/<checkout-name>.json` naming its process, and the claim and the `.runs/` directory leave
+with the checkout.
 
 A submit broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs
 exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
@@ -957,9 +958,12 @@ it only while `<owner>-<repo>` holds a readable `project.json` and both `.omp` t
 clone or a re-crawl; otherwise it starts on the host target, drops that one stored target, keeps
 every other retained entry, and sends one `discoverError` naming the missing project to the next
 client. Startup removes every `.staging-*` directory and any leftover directory containing `.git`,
-so a restart never resumes a run and never deletes a retained project. A restart during a remote
-crawl interrupts it as a host run does: the recorded child ends, the checkout's staging is removed,
-its retained snapshot stays, and nothing is published or resumed.
+so a restart never resumes a run and never deletes a retained project. The one exception is a
+transient another live dashboard still claims: two dashboards may serve the same repository with
+one `STATE_DIR`, and a starting dashboard never deletes a checkout a running one owns. A restart
+during a remote crawl interrupts it as a host run does: the recorded child ends, the checkout's
+staging is removed, its retained snapshot stays, and nothing is published or resumed. A stopped
+dashboard removes its own checkout and claim.
 
 The protocol adds `{ "type": "discoverRemote", "url": string }`,
 `{ "type": "switchDiscoverRemote", "url": string }`,
@@ -1005,10 +1009,11 @@ removed, restore and rendering without a clone, newest-first ordering and one en
 `owner/repo`, switching with zero clone invocations across a restart, one clone and one crawl on
 re-discovery, unchanged bytes after a failed clone or crawl, clear keeping every project, removal
 of exactly one directory with a restart, busy refusals, the missing-retained-directory fallback, the
-gate refusing every remote command without touching the retained root, and a byte-identical host
-`.omp`. `verify:interface` drives the built UI through a retained render after restart, the
-dropdown's two entries and selection, removal of one entry, and the gate-off host with no remote
-control.
+gate refusing every remote command without touching the retained root, a byte-identical host
+`.omp`, and startup hygiene that keeps a live run's checkout when a second dashboard starts on the
+same state directory. `verify:interface` drives the built UI through a retained render after
+restart, the dropdown's two entries and selection, removal of one entry, and the gate-off host with
+no remote control.
 
 Operator smoke procedure, which needs network and a model endpoint and is therefore not a pass gate:
 
@@ -1577,17 +1582,16 @@ Selecting one opens `data-testid="issues-draft-detail"`: the header carries the 
 the state badge for this draft's run only (absent while the run is `idle`), `issues-draft-start`
 (`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
 body reads the proposal before the `## Captured UI context` marker, then the activity stream in
-`issues-draft-activity` once a run exists, then `issues-draft-context`: the captured facts as a
-compact grid followed by the inline Visible text and DOM excerpt sections. A pending elaboration
-question (`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,
-`issues-draft-answer-input`, and `issues-draft-answer-submit`. Selecting another draft switches
-every one of those surfaces to that path; the previous draft's activity and question are absent.
-The detail refreshes when the page opens, after the report panel writes a draft through
-`POST /api/goal-proposals`, after an elaboration finishes or stops, and when a listed draft
-disappears. The page polls the list every two seconds while it is mounted, so an external deletion
-is visible without a reload, and the report panel's write broadcast reaches an open page
-immediately. A browser reload restores the Draft goals page, the selected path, and every draft's
-run state; when the file no longer exists, the page opens the list.
+`issues-draft-activity` once a run exists; the captured UI context itself is not shown. A pending
+elaboration question (`issues-draft-question`) renders above the proposal, with
+`issues-draft-choice`, `issues-draft-answer-input`, and `issues-draft-answer-submit`. Selecting
+another draft switches every one of those surfaces to that path; the previous draft's activity and
+question are absent. The detail refreshes when the page opens, after the report panel writes a
+draft through `POST /api/goal-proposals`, after an elaboration finishes or stops, and when a
+listed draft disappears. The page polls the list every two seconds while it is mounted, so an
+external deletion is visible without a reload, and the report panel's write broadcast reaches an
+open page immediately. A browser reload restores the Draft goals page, the selected path, and
+every draft's run state; when the file no longer exists, the page opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is

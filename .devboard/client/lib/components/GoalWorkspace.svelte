@@ -1,6 +1,7 @@
 <script lang="ts">
   import { connection } from "../connection.svelte";
   import { goal } from "../goal.svelte";
+  import ChevronRight from "lucide-svelte/icons/chevron-right";
   import Trash2 from "lucide-svelte/icons/trash-2";
   import type { WorkspaceTab } from "../layout.svelte";
   import { recordStatusTone } from "../record-status";
@@ -28,11 +29,10 @@
   let filterQuery = $state("");
   let skillsList = $state<HTMLUListElement | undefined>();
   let deleteTarget = $state<string | null>(null);
-  const selectedSkill = $derived(
-    goal.selectedSkill === null
-      ? null
-      : (goal.skills.find((skill) => skill.name === goal.selectedSkill) ?? null),
-  );
+
+  function skillPanelId(name: string): string {
+    return `skill-content-${name.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  }
 
   const createGoalTitle = $derived(
     goal.creationActive
@@ -60,8 +60,6 @@
   const nextRecord = $derived(
     goal.next === null ? null : (goal.records.find((record) => record.file === goal.next) ?? null),
   );
-  const nextLabel = $derived(nextRecord?.title ?? goal.next ?? "none");
-
   const query = $derived(filterQuery.trim().toLowerCase());
   const filteredRecords = $derived(
     goal.records.filter((record) => {
@@ -106,12 +104,6 @@
         : goal.goalReady
           ? "Saved"
           : "Not written yet",
-  );
-
-  const skillsReady = $derived(
-    goal.skills.length === 0
-      ? "No skills prepared yet"
-      : `${goal.skills.length} prepared · ready for implementation`,
   );
 
   const runActionLabel = $derived(
@@ -436,12 +428,10 @@
       <PageHeader
         eyebrow="Plan"
         title="Decision records"
-        subtitle="Every decision the implementation depends on."
         testid="adrs-header"
       >
         {#snippet meta()}
           <span class="muted" data-testid="pending-summary">{progressLine}</span>
-          <span class="muted">Next: <span class="mono">{nextLabel}</span></span>
         {/snippet}
       </PageHeader>
 
@@ -507,9 +497,6 @@
           {#if operationText !== null}
             <span class="badge" data-tone="accent">{operationText}</span>
           {/if}
-          <span class="muted">
-            {goal.goalDirty ? "Save writes GOAL.md" : "GOAL.md is the source of truth"}
-          </span>
         {/snippet}
         {#snippet actions()}
           {#if goal.skills.length > 0}
@@ -598,14 +585,13 @@
     </div>
   {:else if tab.kind === "skills"}
     <div class="goal-page goal-page--fill">
-      <PageHeader eyebrow="Plan" title="Skills" subtitle={skillsReady} testid="skills-header">
+      <PageHeader title="Skills" testid="skills-header">
         {#snippet meta()}
           {#if goal.contradictions.length > 0}
             <span class="badge" data-tone="error">
               {goal.contradictions.length} contradiction{goal.contradictions.length === 1 ? "" : "s"}
             </span>
           {/if}
-          <span class="muted mono">.omp/skills/</span>
         {/snippet}
         {#snippet actions()}
           <Button
@@ -643,33 +629,64 @@
           {:else}
             <ul class="history-list" bind:this={skillsList}>
               {#each goal.skills as skill (skill.name)}
+                {@const expanded = goal.selectedSkill === skill.name}
+                {@const panelId = skillPanelId(skill.name)}
                 <li class="skill">
-                  <button
-                    type="button"
-                    class="skill__button"
-                    data-testid="skill"
-                    data-name={skill.name}
-                    data-selected={goal.selectedSkill === skill.name}
-                    aria-current={goal.selectedSkill === skill.name ? "true" : undefined}
-                    onclick={() => goal.selectSkill(skill.name)}
-                  >
-                    <span class="mono skill__name">{skill.name}</span>
-                    <span class="muted skill__description">{skill.description}</span>
-                  </button>
-                  {#if (skill.family ?? "prepare") === "prepare"}
+                  <div class="skill__row">
                     <button
                       type="button"
-                      class="skill__delete"
-                      data-command={`goal.skills.delete.${skill.name}`}
-                      data-testid="delete-skill"
+                      class="skill__button"
+                      data-testid="skill"
                       data-name={skill.name}
-                      aria-label={`Delete ${skill.name}`}
-                      title={`Delete ${skill.name} from .omp/skills/`}
-                      disabled={goal.skillDeleteDisabled}
-                      onclick={() => (deleteTarget = skill.name)}
+                      data-selected={expanded}
+                      aria-current={expanded ? "true" : undefined}
+                      aria-expanded={expanded}
+                      aria-controls={expanded ? panelId : undefined}
+                      onclick={() => goal.selectSkill(expanded ? null : skill.name)}
                     >
-                      <Trash2 size={14} aria-hidden="true" />
+                      <span class="skill__text">
+                        <span class="mono skill__name">{skill.name}</span>
+                        <span class="muted skill__description">{skill.description}</span>
+                      </span>
+                      <ChevronRight
+                        size={14}
+                        aria-hidden="true"
+                        class={expanded ? "skill__chevron skill__chevron--open" : "skill__chevron"}
+                      />
                     </button>
+                    {#if (skill.family ?? "prepare") === "prepare"}
+                      <button
+                        type="button"
+                        class="skill__delete"
+                        data-command={`goal.skills.delete.${skill.name}`}
+                        data-testid="delete-skill"
+                        data-name={skill.name}
+                        aria-label={`Delete ${skill.name}`}
+                        title={`Delete ${skill.name} from .omp/skills/`}
+                        disabled={goal.skillDeleteDisabled}
+                        onclick={() => (deleteTarget = skill.name)}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                      </button>
+                    {/if}
+                  </div>
+                  {#if expanded}
+                    <div
+                      class="skill__detail"
+                      id={panelId}
+                      data-testid="skill-content"
+                      data-name={skill.name}
+                      role="region"
+                      aria-label={`${skill.name} content`}
+                    >
+                      {#if skill.content !== undefined && skill.content.length > 0}
+                        <pre class="skill__content mono" data-testid="skill-content-text">{skill.content}</pre>
+                      {:else}
+                        <p class="empty" style="padding: 0;">
+                          This skill has no file on disk; prepare the skills again to write it.
+                        </p>
+                      {/if}
+                    </div>
                   {/if}
                 </li>
               {/each}
@@ -690,23 +707,6 @@
         </div>
       </section>
 
-      {#if selectedSkill !== null}
-        <section class="panel goal-skill-detail" data-testid="skill-content">
-          <div class="panel__header">
-            <h2 class="panel__title mono" data-testid="skill-content-name">{selectedSkill.name}</h2>
-            <span class="muted">{selectedSkill.description}</span>
-          </div>
-          <div class="panel__body">
-            {#if selectedSkill.content !== undefined && selectedSkill.content.length > 0}
-              <pre class="skill__content mono" data-testid="skill-content-text">{selectedSkill.content}</pre>
-            {:else}
-              <p class="empty" style="padding: 0;">
-                This skill has no file on disk; prepare the skills again to write it.
-              </p>
-            {/if}
-          </div>
-        </section>
-      {/if}
     </div>
   {:else if tab.kind === "adr"}
     {#if record === null}

@@ -40,7 +40,7 @@ Real published artifacts of the vitest-turbo host, `sheet.json` schema 1:
 - No nested scroll containers: the page scrolls, tables grow. No Field/Value header tables.
 - Table font 12–14px, rows ≤120px, no sideways overflow at 1024.
 - Keep every contract test id: `discover-panel`, `discover-card` + `data-field`, `discover-sheet`,
-  `discover-start`, `discover-empty`, `discover-command-list`, `discover-pyramid`,
+  `discover-start`, `discover-command-list`, `discover-pyramid`,
   `discover-pyramid-chart`, `discover-suite-command`, `discover-test-summary`.
 - Provenance lives in the sheet and the state payload. The operator rejected rendered evidence chips,
   confidence labels, and the unknowns ledger as noise, so the page shows the values and their empty
