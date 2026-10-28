@@ -51,6 +51,7 @@
     border-radius: 4px;
     display: flex;
     flex: 0 0 auto;
+    flex-wrap: wrap;
     gap: 12px;
     justify-content: space-between;
     min-width: 0;
@@ -66,6 +67,7 @@
 
   .page-header__identity {
     display: flex;
+    flex: 1 1 160px;
     flex-direction: column;
     gap: 2px;
     min-width: 0;
@@ -112,9 +114,11 @@
   .page-header__actions {
     align-items: center;
     display: flex;
-    flex: 0 0 auto;
+    flex: 0 1 auto;
     flex-wrap: wrap;
     gap: 6px;
     justify-content: flex-end;
+    max-width: 100%;
+    min-width: 0;
   }
 </style>

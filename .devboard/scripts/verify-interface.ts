@@ -3042,6 +3042,72 @@ try {
   );
   await page.click('[data-testid="mode-goal"]');
   await page.wait(`document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`, "Goal for the scroll check");
+
+  // A narrow workspace must wrap the page-header actions, never crop one at
+  // the right edge: the Start implementation action is the widest row.
+  if (!(await page.eval<boolean>(`document.querySelector('[data-testid="lifecycle-control"]') !== null`))) {
+    await runPalette("open.goal.overview");
+    await page.wait(`document.querySelector('[data-testid="lifecycle-control"]') !== null`, "the Goal overview for the narrow header check");
+  }
+  await page.focus('[data-testid="pane-handle"]');
+  await page.key("End");
+  await page.wait(
+    `Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width) >= 500`,
+    "the widest sidebar for the narrow header check",
+  );
+  const goalHeader = await page.eval<{
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    scrollWidth: number;
+    clientWidth: number;
+    buttons: Array<{ label: string; left: number; right: number; top: number; bottom: number }>;
+  } | null>(`(() => {
+    const header = document.querySelector('#workspace-goal .page-header');
+    if (header === null) return null;
+    const rect = header.getBoundingClientRect();
+    const actions = header.querySelector('.page-header__actions');
+    if (actions === null) return null;
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      scrollWidth: header.scrollWidth,
+      clientWidth: header.clientWidth,
+      buttons: [...actions.querySelectorAll('button')].map((button) => {
+        const box = button.getBoundingClientRect();
+        return {
+          label: button.textContent.trim(),
+          left: box.left,
+          right: box.right,
+          top: box.top,
+          bottom: box.bottom,
+        };
+      }),
+    };
+  })()`);
+  check(goalHeader !== null && goalHeader.buttons.length >= 3, "the narrow Goal header lost its actions", goalHeader);
+  const header = goalHeader!;
+  check(
+    header.scrollWidth <= header.clientWidth + 1 &&
+      header.buttons.every(
+        (button) =>
+          button.left >= header.left - 0.5 &&
+          button.right <= header.right + 0.5 &&
+          button.top >= header.top - 0.5 &&
+          button.bottom <= header.bottom + 0.5,
+      ),
+    "a page-header action is clipped when the workspace is narrow",
+    header,
+  );
+  await page.doubleClick('[data-testid="pane-handle"]');
+  await page.wait(
+    `Math.abs(Math.round(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width) - 300) <= 12`,
+    "the default sidebar after the narrow header check",
+  );
+
   await page.click('[data-testid="mode-discover"]');
   await page.wait(`document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`, "Discover for the scroll check");
   const discoverScroll = await page.eval<number>(`Math.round(document.querySelector('#workspace-discover .scroll-column')?.scrollTop ?? 0)`);
