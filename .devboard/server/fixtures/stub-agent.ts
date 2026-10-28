@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { frontmatterStatus, isPendingStatus, setFrontmatterStatus } from "./adr-source";
+import { GOAL_SLUG_PROMPT_MARKER } from "../goal-slug";
 
 /**
  * A deterministic ACP peer for the interface's browser verification and tests.
@@ -141,6 +142,8 @@ const askExit = process.argv.includes("--ask-exit");
 /** Draft elaboration mode: simulate the goal-draft command's observable work. */
 const goalDraft = process.argv.includes("--goal-draft");
 const goalDraftFinish = argument("goal-draft-finish");
+/** Draft naming mode: answer a naming turn with this text, verbatim. */
+const goalSlug = argument("goal-slug");
 const ASK_INSTRUCTION = "This conversation is read-only.";
 const ASK_ANSWER_ONE =
   "The issues indicator shows the lifecycle the detached worker published for this repository. " +
@@ -1433,6 +1436,24 @@ async function promptTurn(params: unknown) {
   const text = promptText(params);
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
   const firstLine = text?.split("\n")[0] ?? "";
+
+  if (goalSlug !== undefined && text !== undefined && text.includes(GOAL_SLUG_PROMPT_MARKER)) {
+    log(`goal-slug ${firstLine}`);
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "Considering the report." },
+          messageId: "goal-slug-thought",
+        },
+      },
+    });
+    stream(goalSlug);
+    return;
+  }
 
   if (ask && text !== undefined && text.includes(ASK_INSTRUCTION)) {
     askTurns += 1;

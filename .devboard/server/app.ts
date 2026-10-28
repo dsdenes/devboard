@@ -28,6 +28,7 @@ import {
 } from "./feedback";
 import { FlowController, type FlowOptions } from "./flow";
 import { parseGoalProposalSubmission, writeGoalProposal } from "./goal-proposal";
+import { suggestGoalSlug } from "./goal-slug";
 import {
   GoalDraftError,
   GoalDraftManager,
@@ -152,6 +153,8 @@ export interface AppOptions {
   issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "closeIssue">;
   /** Auto Scout's test seams; production uses the detached worker itself. */
   scout?: Pick<ScoutBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
+  /** Names one proposed-goal draft; production asks the configured ACP agent. */
+  goalSlug?: (report: string) => Promise<string>;
 }
 
 type RunAction = "resolving" | "implementing" | "generating";
@@ -1584,6 +1587,11 @@ export function createApp(options: AppOptions) {
   const creationGoalFile = defaultGoalPath(repoDir);
   const skillsDir = join(repoDir, ".omp", "skills");
   const agentCommand = options.agentCommand ?? process.env.AGENT_COMMAND ?? "omp acp";
+  // A draft name is chosen by an LLM; any failure falls back to the
+  // deterministic slug inside `writeGoalProposal`.
+  const goalSlug =
+    options.goalSlug ??
+    ((report: string) => suggestGoalSlug(report, { command: agentCommand, cwd: repoDir }));
   // Every Ask peer runs in the host repository, whatever the request came from.
   const ask = new AskController({ command: agentCommand, cwd: repoDir });
   const tracker = options.tracker ?? findOpenEpics;
@@ -5419,7 +5427,7 @@ export function createApp(options: AppOptions) {
 
     try {
       const submission = parseGoalProposalSubmission(guarded.value);
-      const proposal = await writeGoalProposal(submission, { repoDir });
+      const proposal = await writeGoalProposal(submission, { repoDir, slugger: goalSlug });
       goalDrafts.publishDrafts();
       return Response.json(proposal, { status: 201 });
     } catch (error) {

@@ -19,6 +19,8 @@ export interface AcpConnectionOptions {
   cwd: string;
   onActivity: (activity: AcpActivity) => void;
   onQuestion: (question: AcpQuestion) => void;
+  /** Receives assistant message text only; thoughts and tool activity are dropped. */
+  onText?: (text: string) => void;
   onStderr?: (text: string) => void;
 }
 
@@ -456,6 +458,9 @@ export class AcpConnection {
     if (next === undefined) return;
     this.#activityStream = next.stream;
     this.#options.onActivity(next.activity);
+    if (next.stream?.kind === "agent_message_chunk") {
+      this.#options.onText?.(next.activity.text);
+    }
   }
 
   #handleElicitation(wireId: number | string, params: unknown): void {

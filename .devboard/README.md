@@ -1734,11 +1734,15 @@ context to `POST /api/goal-proposals`; the server writes one Markdown draft unde
 `<REPO_DIR>/.devboard/goal-proposals/` and answers
 `201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
-never writes a goal document, `GOAL.md`, or an ADR, never files an issue, never runs `gh`, and
-starts no agent or conversation. The file name is the report's first non-empty line, lowercased,
-with every run of non-alphanumeric characters replaced by `-`, leading and trailing `-` removed,
-and at most six hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`,
-`-3`, … through an exclusive create, so the first draft is never overwritten. The body opens with
+never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
+The file name is chosen by one bounded naming turn: an ACP peer starts with `AGENT_COMMAND` in
+`REPO_DIR`, receives the operator report marked as data with a read-only instruction, and must
+answer with only a lowercase kebab-case slug, at most six hyphen-separated words, `[a-z0-9-]`, and
+at most 64 characters. A start failure, an exited peer, a question, a 15-second timeout, or an
+unusable answer falls back to the report's first non-empty line, lowercased, with every run of
+non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
+hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
+exclusive create, so the first draft is never overwritten. The body opens with
 `# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, carries the line
 `> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the
