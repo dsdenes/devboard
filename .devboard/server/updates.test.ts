@@ -173,6 +173,61 @@ describe("startUpdater", () => {
     }
   });
 
+  test("journals an unreachable feed as context, never an update-error", async () => {
+    const prefix = await installedPrefix("0.1.0");
+    const { journal, records } = journalRecorder();
+    const manual = manualSchedule();
+    const offline =
+      'gh api releases/latest failed: Get "https://api.github.com/repos/dsdenes/devboard/releases/latest": ' +
+      "dial tcp 140.82.121.5:443: connect: network is unreachable";
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: "0.1.0",
+      journal,
+      intervalMs: 1000,
+      schedule: manual.schedule,
+      fetchRelease: async () => {
+        throw new Error(offline);
+      },
+      install: async (info) => info.version,
+    });
+    await manual.fire(0);
+    expect(records).toEqual([["activity", `release check skipped: ${offline}`]]);
+    // The offline check still backs off instead of polling at the base interval.
+    expect(manual.delays).toEqual([0, 2000]);
+    updater.stop();
+  });
+
+  test("journals a feed error that is not connectivity as an update-error", async () => {
+    const prefix = await installedPrefix("0.1.0");
+    const { journal, records } = journalRecorder();
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: "0.1.0",
+      journal,
+      startImmediately: false,
+      fetchRelease: async () => {
+        throw new Error("gh api releases/latest failed: HTTP 401: Bad credentials");
+      },
+      install: async (info) => info.version,
+    });
+    try {
+      expect(await updater.checkNow()).toBe("failed");
+      expect(records).toEqual([
+        [
+          "update-error",
+          "release check failed: gh api releases/latest failed: HTTP 401: Bad credentials",
+        ],
+      ]);
+    } finally {
+      updater.stop();
+    }
+  });
+
   test("single-flights concurrent checks", async () => {
     const prefix = await installedPrefix("0.1.0");
     const { journal } = journalRecorder();

@@ -1014,10 +1014,15 @@ package directory, so replacing the package never leaves a child with a deleted 
 directory. `versionState` reports `running`, `installed`, `latest`, and `stale`; the reload
 control appears while `stale` is true and restarts the server from the installed package. A
 dashboard serving the canonical source checkout reports `0.1.<commit-count>` on both sides, the
-version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder. A
-failed check, checksum, authentication, or npm install leaves the previous package and server
-intact, writes `update-error` to the journal, and is retried with exponential backoff
-(`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it).
+version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder.
+
+A check that cannot reach the feed at all — an offline host, a DNS or proxy failure, a refused
+or reset connection, or a timeout — leaves the previous package and server intact, writes an
+`activity` record naming the skipped check, and retries with exponential backoff
+(`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for the operator, never an
+`update-error` finding. A check that reaches the feed and fails, a checksum mismatch, an
+authentication failure, or a failed npm install writes `update-error` and is retried the same
+way.
 
 |Variable|Default|Purpose|
 |---|---|---|

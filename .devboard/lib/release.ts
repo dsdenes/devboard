@@ -131,6 +131,34 @@ function failure(tool: string, result: CommandResult): ReleaseError {
   );
 }
 
+/**
+ * Text the release tools print when the host cannot reach the feed at all:
+ * no route, DNS or proxy failure, refused or reset connection, or a timeout.
+ * The cause is the network, not the harness, so it is retried without being
+ * reported as a defect.
+ */
+const UNREACHABLE_PATTERNS = [
+  "network is unreachable",
+  "no route to host",
+  "error connecting to",
+  "connection refused",
+  "connection reset",
+  "connection timed out",
+  "i/o timeout",
+  "no such host",
+  "server misbehaving",
+  "temporary failure in name resolution",
+  "tls handshake timeout",
+  "context deadline exceeded",
+  "(timed out)",
+];
+
+/** True when a release check failed because the feed was unreachable. */
+export function isReleaseUnreachable(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return UNREACHABLE_PATTERNS.some((pattern) => message.includes(pattern));
+}
+
 export function tarballName(version: string): string {
   return `${RELEASE_PREFIX}${version}.tgz`;
 }

@@ -2,6 +2,7 @@ import {
   installRelease,
   installedHarnessVersion,
   isNewerVersion,
+  isReleaseUnreachable,
   latestRelease,
   releaseSource,
   type ReleaseInfo,
@@ -121,7 +122,14 @@ export function startUpdater(options: UpdateOptions): Updater {
       release = await fetchRelease();
     } catch (error) {
       failures += 1;
-      options.journal.write("update-error", `release check failed: ${detailOf(error)}`);
+      const detail = detailOf(error);
+      if (isReleaseUnreachable(error)) {
+        // An offline host is not a harness defect: the check backs off like any
+        // other failure, but the record is context, never a watchdog finding.
+        options.journal.write("activity", `release check skipped: ${detail}`);
+      } else {
+        options.journal.write("update-error", `release check failed: ${detail}`);
+      }
       return "failed";
     }
     latestVersion = release.version;
