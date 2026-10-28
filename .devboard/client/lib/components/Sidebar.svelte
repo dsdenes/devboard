@@ -276,7 +276,6 @@
 
     {:else if layout.mode === "issues"}
       <section class="sidebar-group" aria-label="Issues surfaces">
-        <div class="sidebar-group__title">Workspace</div>
         <button
           type="button"
           class="sidebar-item"
@@ -350,7 +349,6 @@
       </section>
     {:else if layout.mode === "flow"}
       <section class="sidebar-group" aria-label="Flow surfaces">
-        <div class="sidebar-group__title">Workspace</div>
         <button
           type="button"
           class="sidebar-item"

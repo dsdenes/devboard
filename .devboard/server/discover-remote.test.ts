@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import {
+  cleanupRemoteScratch,
   hostFacts,
   remoteScratchRoot,
   type RemoteCloneRequest,
@@ -400,6 +401,8 @@ async function runRemote(client: TestClient, url: string): Promise<DiscoverState
   client.send({ type: "discoverRemote", url });
   const cloningState = stateOf(await cloning);
   expect((cloningState.cloning as Record<string, unknown>).url).toBe(url.trim());
+  expect(cloningState.repository).not.toBeNull();
+  expect(cloningState.target).toMatchObject({ kind: "remote" });
   await started;
   expect((await stopped).completed).toBe(true);
   return discoverState(client);
@@ -874,7 +877,16 @@ describe("discover remote target", () => {
         const cloning = client.waitNext(isCloningState);
         const stopped = client.waitNext((message) => message.type === "discoverStopped");
         client.send({ type: "discoverRemote", url: "https://github.com/octocat/Other" });
-        await cloning;
+        const cloningState = stateOf(await cloning);
+        expect(cloningState.repository).toBe("octocat/Other");
+        expect(cloningState.target).toEqual({
+          kind: "remote",
+          url: "https://github.com/octocat/Other",
+          owner: "octocat",
+          repo: "Other",
+          checkout: false,
+        });
+        expect(cloningState.sheet).toBeNull();
 
         const refusals = [
           client.waitNext((message) => message.type === "discoverError"),
@@ -902,7 +914,7 @@ describe("discover remote target", () => {
         );
         expect((await discoverState(client)).target).toMatchObject({
           kind: "remote",
-          repo: "Hello-World",
+          repo: "Other",
         });
 
         gate.resolve();
@@ -1375,6 +1387,97 @@ describe("discover remote target", () => {
         restored.close();
         second.server.stop(true);
       }
+    },
+    60_000,
+  );
+
+  test(
+    "startup hygiene never removes a transient another live dashboard owns",
+    async () => {
+      const fixture = createFixture("hygiene-owner");
+      const scratch = remoteScratchRoot(fixture.stateDir);
+      const owned = join(scratch, ".staging-run-live");
+      const stale = join(scratch, ".staging-run-dead");
+      mkdirSync(join(owned, ".git"), { recursive: true });
+      mkdirSync(join(stale, ".git"), { recursive: true });
+      const claims = join(scratch, ".runs");
+      mkdirSync(claims, { recursive: true });
+
+      // The claim file is the persisted contract between dashboard instances:
+      // a live owner keeps its checkout, a dead one is swept.
+      const live = Bun.spawn({ cmd: ["sleep", "30"], stdout: "ignore", stderr: "ignore" });
+      const dead = Bun.spawn({ cmd: ["true"], stdout: "ignore", stderr: "ignore" });
+      const deadPid = dead.pid;
+      await dead.exited;
+      writeFileSync(
+        join(claims, ".staging-run-live.json"),
+        `${JSON.stringify({ pid: live.pid, claimedAt: new Date().toISOString() })}\n`,
+      );
+      writeFileSync(
+        join(claims, ".staging-run-dead.json"),
+        `${JSON.stringify({ pid: deadPid, claimedAt: new Date().toISOString() })}\n`,
+      );
+
+      try {
+        cleanupRemoteScratch(scratch);
+        expect(existsSync(owned)).toBe(true);
+        expect(existsSync(join(claims, ".staging-run-live.json"))).toBe(true);
+        expect(existsSync(stale)).toBe(false);
+        expect(existsSync(join(claims, ".staging-run-dead.json"))).toBe(false);
+      } finally {
+        live.kill();
+        await live.exited;
+      }
+
+      cleanupRemoteScratch(scratch);
+      expect(existsSync(owned)).toBe(false);
+      expect(existsSync(claims)).toBe(false);
+    },
+    30_000,
+  );
+
+  test(
+    "a second dashboard starting on the same state directory keeps a running crawl",
+    async () => {
+      const fixture = createFixture("shared-state");
+      const first = startServer({
+        fixture,
+        clone: cloneHarness({ source: createSourceRepository("shared-state-source") }),
+        stub: ["--discover", "--discover-no-exit"],
+      });
+      const client = await connect(first.url);
+      const scratch = remoteScratchRoot(fixture.stateDir);
+      try {
+        const started = client.waitNext((message) => message.type === "discoverStarted");
+        client.send({ type: "discoverRemote", url: "https://github.com/octocat/Hello-World" });
+        await started;
+        const checkoutName = scratchEntries(fixture).find((entry) =>
+          entry.startsWith(".staging-"),
+        );
+        expect(checkoutName).toBeDefined();
+        const checkout = join(scratch, checkoutName as string);
+        expect(existsSync(join(checkout, ".git"))).toBe(true);
+
+        const second = startServer({ fixture, clone: cloneHarness() });
+        const other = await connect(second.url);
+        try {
+          expect(existsSync(checkout)).toBe(true);
+          expect(existsSync(join(checkout, ".git"))).toBe(true);
+          expect(existsSync(join(scratch, ".runs", `${checkoutName as string}.json`))).toBe(true);
+        } finally {
+          other.close();
+          second.server.stop(true);
+        }
+      } finally {
+        client.close();
+        first.server.stop(true);
+      }
+
+      // The dashboard that owned the run removes its checkout and its claim.
+      expect(
+        scratchEntries(fixture).filter((entry) => entry.startsWith(".staging-")),
+      ).toEqual([]);
+      expect(existsSync(join(scratch, ".runs"))).toBe(false);
     },
     60_000,
   );
