@@ -485,7 +485,6 @@
           <AdrTable
             records={filteredRecords}
             onopen={openAdr}
-            onstart={(entry) => goal.startRecord(entry)}
           />
         </section>
       {/if}
