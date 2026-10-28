@@ -5399,7 +5399,7 @@ try {
   check(
     detail.context.includes("Route:") &&
       detail.context.includes("Selected element:") &&
-      detail.context.includes("Captured at:"),
+      detail.context.includes("Visible text"),
     "the detail lost the captured UI context",
     detail,
   );
