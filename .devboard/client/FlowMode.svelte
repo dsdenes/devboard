@@ -670,14 +670,19 @@
       <section class="panel" data-testid="flow-decisions-section">
         <div class="panel__header flow-decisions__header">
           <div class="flow-decisions__identity">
-            <h2 class="panel__title">Decision board</h2>
+            <h2 class="panel__title flow-decisions__title">Decision board</h2>
             <span
-              class="flow-decisions__state"
+              class="badge flow-decisions__state"
               data-state={flow.decisionsDirty
                 ? "dirty"
                 : flow.decisions.trim().length > 0
                   ? "saved"
                   : "empty"}
+              data-tone={flow.decisionsDirty
+                ? "warning"
+                : flow.decisions.trim().length > 0
+                  ? "success"
+                  : undefined}
               data-testid="flow-decisions-state"
             >
               {flow.decisionsDirty
@@ -689,7 +694,7 @@
           </div>
           <div class="row-sm flow-decisions__actions">
             <Button
-              variant="default"
+              variant={flow.decisionsDirty ? "default" : "secondary"}
               data-command="flow.decisions.save"
               data-testid="save-flow-decisions"
               disabled={!flow.decisionsDirty}
