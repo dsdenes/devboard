@@ -1117,7 +1117,7 @@ try {
     GOAL_FILE: join(host, "GOAL.md"),
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
-    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --ask --ask-delay-ms=600 --goal-draft`,
+    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=1500 --ask --ask-delay-ms=600 --goal-draft`,
     // Harness-owned reporting goes through the local Gitea API stub, never
     // through `gh`, and the recorded requests stay under `.tmp`.
     DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
@@ -3064,6 +3064,27 @@ try {
     mobile: false,
   });
   await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop viewport after the scroll check");
+
+  // Like the Issues overview, the Discover overview names a run in progress.
+  // The fixture holds the turn open so the state is observable.
+  const discoverIdleBadge = await page.eval<string>(
+    `document.querySelector('[data-testid="discover-running"]')?.textContent?.trim() ?? ""`,
+  );
+  check(discoverIdleBadge === "", "the Discover sidebar shows a running label while idle", discoverIdleBadge);
+  await page.click('[data-testid="discover-start"]');
+  await page.wait(
+    `(() => {
+      const badge = document.querySelector('[data-testid="sidebar"] button[data-tab="overview"] [data-testid="discover-running"]');
+      return badge?.textContent?.trim() === "running";
+    })()`,
+    "the running label on the Discover overview",
+    15_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="sidebar"] [data-testid="discover-running"]') === null`,
+    "the Discover running label to clear",
+    30_000,
+  );
 
   await runPalette("discover.tab.glossary");
   await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the glossary term table");

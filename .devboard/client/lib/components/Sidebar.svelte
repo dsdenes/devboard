@@ -561,6 +561,11 @@
             onclick={() => open("discover", tab.id, tab.id, tab.id, tab.label)}
           >
             <span class="sidebar-item__label">{tab.label}</span>
+            {#if tab.id === "overview" && discover.active}
+              <span class="badge" data-tone={statusTone("running")} data-testid="discover-running">
+                running
+              </span>
+            {/if}
             {#if tab.id === "glossary"}
               <span class="sidebar-item__meta">
                 {termCount} {termCount === 1 ? "term" : "terms"}

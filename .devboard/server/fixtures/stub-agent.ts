@@ -158,6 +158,8 @@ const discoverExtraArtifact = process.argv.includes("--discover-extra-artifact")
 const discoverWriteOutside = process.argv.includes("--discover-write-outside");
 const discoverError = process.argv.includes("--discover-error");
 const discoverNoExit = process.argv.includes("--discover-no-exit");
+/** Holds a Discover turn active long enough for the UI to render its state. */
+const discoverDelayMs = Number(argument("discover-delay-ms") ?? 0);
 
 /** Ask mode: a read-only answer, preceded by thought and tool noise. */
 const ask = process.argv.includes("--ask");
@@ -1429,6 +1431,7 @@ async function runDiscover(staging: string) {
   stream("Scanning manifests");
   stream("Reading tests");
   stream("Mapping architecture");
+  if (discoverDelayMs > 0) await Bun.sleep(discoverDelayMs);
   if (discoverQuestion) await askQuestions(1);
 
   if (discoverError) {
