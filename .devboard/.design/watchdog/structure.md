@@ -20,7 +20,7 @@
 │ ISSUE                                         CATEGORY  FILED  STATE  ...  │
 │ [watchdog] ...                                                           │
 ├ Cycle history ───────────────────────────────────────── Newest first ────┤
-│ STARTED  WINDOW  ACTION  FINDINGS  REASON                                │
+│ STARTED  WINDOW  ACTION                                  FINDINGS        │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -31,7 +31,8 @@
 - The page header owns trust; the summary never repeats the sync badge or last-read time.
 - Filed issues and cycle history are peers, each with a 30px header, a table header, 27–28px rows,
   and a `border-subtle` rule. The filed-issue table gets the wider track (`1.25fr` versus
-  `minmax(420px, 1fr)`) because its title is the only wrapping text.
+  `minmax(420px, 1fr)`) because its title is the only wrapping text. The history table has four
+  labelled columns; the findings count is the trailing track, right-aligned tabular mono.
 - Both tables live inside `.panel__body--flush`; the table header is sticky and the body scrolls,
   so the page itself never scrolls and the 100-row history cannot bury the filed issues.
 
@@ -73,5 +74,6 @@
 - Splitting the single scroll column into two self-scrolling panels fixes the observed defect
   where the page grew to 3511px inside an `overflow: hidden` workspace and the filed issues sat
   unreachable below 100 history rows.
-- Labelled table headers fix the five unlabelled history tracks, and a fixed action track stops
-  badge width from shifting the findings and reason columns row to row.
+- Labelled table headers fix the unlabelled history tracks, and a fixed action track stops badge
+  width from shifting the findings column row to row. The per-cycle reason is not repeated: the
+  newest reason sits in the summary, and the integrated main change removed the history column.

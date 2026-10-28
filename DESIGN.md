@@ -463,9 +463,12 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   right-aligned facts group of 10px `overline` labels over 11.5px tabular `mono` values, with a
   4px rhythm and 8px 24px gaps. Both tables use 10px `overline` sticky headers on `surface`, 27px
   rows with `border-subtle` rules, `row-hover` on hover, and 8px cell padding; the filed-issue
-  link is `foreground` with no underline until hover. The filed panel takes `1.25fr` beside a
+  link is `foreground` with no underline until hover. The history table has four labelled columns
+  (`Started`, `Window`, `Action`, `Findings`) with the trailing count right-aligned; the newest
+  reason appears only in the summary. The filed panel takes `1.25fr` beside a
   `minmax(420px, 1fr)` history panel above 1500px; below that the two panels stack as flexible
-  rows at a 12px gap. Each panel owns its scroll, and each empty state reuses the Auto Scout
+  rows at a 12px gap, and below 1100px the repeated issue category and secondary window yield
+  before any value clips. Each panel owns its scroll, and each empty state reuses the Auto Scout
   centered stack with a 20px Lucide inbox or history mark.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The four `role="tab"` controls sit in a `role="tablist"`

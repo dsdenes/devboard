@@ -273,7 +273,6 @@
                 <th scope="col">Window</th>
                 <th scope="col">Action</th>
                 <th scope="col">Findings</th>
-                <th scope="col">Reason</th>
               </tr>
             </thead>
             <tbody>
@@ -289,7 +288,11 @@
                       <time datetime={entry.at}>{stamp(entry.at)}</time>
                     </span>
                   </td>
-                  <td class="mono watchdog-table__muted" data-testid="watchdog-cycle-window">
+                  <td
+                    class="mono watchdog-table__muted"
+                    data-testid="watchdog-cycle-window"
+                    title={windowText(entry.window)}
+                  >
                     {windowText(entry.window)}
                   </td>
                   <td>
@@ -303,13 +306,6 @@
                   </td>
                   <td class="mono watchdog-cycle__findings" data-testid="watchdog-cycle-findings">
                     {entry.findings}
-                  </td>
-                  <td
-                    class="watchdog-table__muted watchdog-cycle__reason"
-                    data-testid="watchdog-cycle-reason"
-                    title={entry.reason ?? ""}
-                  >
-                    {entry.reason ?? ""}
                   </td>
                 </tr>
               {/each}
@@ -481,8 +477,10 @@
   .watchdog-table--cycles th:nth-child(3) {
     width: 100px;
   }
-  .watchdog-table--cycles th:nth-child(4) {
-    width: 70px;
+
+  .watchdog-table--cycles th:nth-child(4),
+  .watchdog-cycle__findings {
+    text-align: right;
   }
 
   .watchdog-issue__title {

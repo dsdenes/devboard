@@ -892,16 +892,6 @@ try {
   const failing = readStore(fixture);
   failing.failReads = true;
   writeStore(fixture, failing);
-  await waitFor(
-    async () => {
-      const state = await devtools!.evaluate(
-        `document.querySelector('[data-testid="scout-sync"]')?.dataset.state ?? ''`,
-      );
-      return state === "error" || state === "stale" ? true : undefined;
-    },
-    "the sync error state",
-    15_000,
-  );
   const syncError = await waitFor(
     async () => {
       const value = await text(devtools, "scout-sync-error");
@@ -926,10 +916,8 @@ try {
   writeStore(fixture, recovered);
   await waitFor(
     async () => {
-      const state = await devtools!.evaluate(
-        `document.querySelector('[data-testid="scout-sync"]')?.dataset.state ?? ''`,
-      );
-      return state === "ok" ? true : undefined;
+      const value = await text(devtools, "scout-sync-error");
+      return value.length === 0 ? true : undefined;
     },
     "the recovered sync",
     15_000,

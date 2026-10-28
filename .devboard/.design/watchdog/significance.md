@@ -13,7 +13,7 @@
 | C20 | Filed issue state | 3 | 4 | 4 | 5 | 4 | 78 | P1 | State badge column |
 | C21 | Shipped version | 3 | 3 | 3 | 5 | 3 | 68 | P1 | Mono column, `—` when absent |
 | C14 | Cycle action | 4 | 3 | 4 | 3 | 3 | 71 | P1 | Labelled column with badge |
-| C16 | Cycle reason | 3 | 2 | 4 | 3 | 3 | 60 | P1 | Labelled column, muted |
+| C16 | Cycle reason | 3 | 1 | 2 | 1 | 2 | 34 | Drop | Removed on main while this redesign was in flight; the summary carries the newest reason |
 | C11 | Newest cycle age | 4 | 2 | 5 | 3 | 3 | 72 | P1 | Summary panel header |
 | C22 | Filed/pending counts | 3 | 2 | 4 | 2 | 3 | 56 | P2 | Filed panel subtitle |
 | C10 | Newest cycle start | 2 | 1 | 4 | 2 | 2 | 42 | P2 | Compact facts line, exact clock |
@@ -33,15 +33,16 @@
 
 - **P0** (80–100): sync state, newest action and reason, sync error, the filed-issue link. These
   occupy the page header and the summary band, above the fold.
-- **P1** (60–79): counts, issue state and version, history action/reason, newest age, page read
-  error. They fill the two panels in the main flow.
+- **P1** (60–79): counts, issue state and version, history action, newest age, page read error.
+  They fill the two panels in the main flow.
 - **P2** (40–59): exact clocks, history findings, counts subtitle, empty states.
 - **P3** (< 40): category, filed time, window, page identity. They stay because they are contract
   columns or page chrome, but they never take emphasis from P0/P1.
 
-Deduplicated twice: no item repeats the newest action in a second visual form, and the summary
-does not repeat every history field. The history row for the newest cycle is retained because the
-panel is the complete audit list.
+Dropped after scoring: the per-cycle reason, which the integrated history change removed; the
+newest reason stays in the summary. Deduplicated twice: no item repeats the newest action in a
+second visual form, and the summary does not repeat every history field. The history row for the
+newest cycle is retained because the panel is the complete audit list.
 
 ## Order
 

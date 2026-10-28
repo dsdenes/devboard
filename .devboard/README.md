@@ -1210,6 +1210,8 @@ stale files are therefore removed after a week. These entries are never deleted 
   which the first Issues Start still reads to migrate handled issue numbers.
 - `.tmp/issues/` in full: every repo-scoped state, ledger, run, activity journal, control file,
   and the repo-anchored worker lock, including the run directory a running worker names.
+- `.tmp/flow/` in full: every repository key and session record, including the machine state,
+  reviewable artifacts, and worktree/PR bookkeeping Flow restore and History read.
 - the run directory of the cycle performing the sweep.
 - a `devboard-<pid>.lock` whose pid is still alive.
 
@@ -1292,12 +1294,12 @@ or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findi
 panel's `watchdog-last-age` shows that cycle's age.
 
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
-first, capped at the newest 100 directories. Its table labels the five columns `Started`,
-`Window`, `Action`, `Findings`, and `Reason`, and its header sticks while the panel scrolls.
-Every `watchdog-cycle` row carries `data-action` and renders `watchdog-cycle-at`,
+first, capped at the newest 100 directories. Its table labels the four columns `Started`,
+`Window`, `Action`, and `Findings`, and its header sticks while the panel scrolls. Every
+`watchdog-cycle` row carries `data-action` and renders `watchdog-cycle-at`,
 `watchdog-cycle-window` (window start and end; a same-day window omits the repeated date),
-`watchdog-cycle-action`, `watchdog-cycle-findings`, and `watchdog-cycle-reason` (empty when the
-report has none). A run directory whose `report.json` is missing or unparsable is skipped without
+`watchdog-cycle-action`, and `watchdog-cycle-findings`; a cycle's reason appears only in the
+newest-cycle panel. A run directory whose `report.json` is missing or unparsable is skipped without
 hiding the other rows. With no run directory at all, the `latest.json` cycle is the single row;
 with no cycle anywhere, `watchdog-cycles-empty` renders `No cycles yet` and the ten-minute cadence.
 
@@ -1574,9 +1576,10 @@ directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each 
 and its first Markdown heading. An empty directory shows `No drafts exist.`.
 
 Selecting one opens `data-testid="issues-draft-detail"`: a two-line header carries the draft's
-first heading and its file name, the state badge for this draft's run only, `issues-draft-start`
-(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
-body reads the proposal before the `## Captured UI context` marker, then the activity stream in
+first heading and its file name, the state badge for this draft's run only (absent while the run
+is `idle`), `issues-draft-start` (`issues.draft.start`) and, while this draft runs,
+`issues-draft-stop` (`issues.draft.stop`). The body reads the proposal before the `## Captured
+UI context` marker, then the activity stream in
 `issues-draft-activity` once a run exists, then `issues-draft-context`: the captured facts as a
 compact grid and the visible text and DOM excerpt behind a `Captured evidence` disclosure. A
 pending elaboration question (`issues-draft-question`) renders above the proposal, with
@@ -1664,8 +1667,8 @@ tab, or reloading the dashboard never starts a worker and never files an issue: 
 `data-testid="scout-start"` starts the worker, and that control becomes
 `data-testid="scout-stop"` while a worker is attached. The page header
 (`data-testid="issues-scout-header"`) carries the repository origin,
-`data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`), the read-health
-badge, the last-read time, and the single Start/Stop action. A 360px side rail holds the worker
+`data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`), the last-read
+time, and the single Start/Stop action. A 360px side rail holds the worker
 facts and the filing limits; the results column holds the filed-issues table and
 `data-testid="scout-activity"` for the current or newest scan. The page also shows
 `data-testid="scout-error"` for the last error.
@@ -1704,8 +1707,8 @@ Every recommendation carries an integer `significance` from 1 to 5 and a non-emp
 impact — a reproducible defect, a real failure mode, or a measured structural cost; polishing
 code that is already correct is at most 2. Items scoring below 4 are dropped before filing and
 recorded in scan activity. A missing or out-of-range score, or a missing reason, fails the whole
-scan atomically and files nothing. Each filed issue body carries `## Significance` with `<n>/5`
-and the reason.
+scan and files nothing unless the correction turn fixes it. Each filed issue body carries
+`## Significance` with `<n>/5` and the reason.
 
 A filed issue carries the exact `scout` label (created first when absent), the recommendation's
 title, and a body with category, summary, impact, significance, evidence, proposed change, files,
@@ -1746,10 +1749,10 @@ blank version on the next read.
 
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
 and immediately on Start; the table, states, and versions reflect a change within one interval. A
-failed read keeps the last known rows, sets `data-testid="scout-sync"` to `data-state="error"`
-(or `"stale"` when no read has succeeded for two intervals), shows the reason in
-`data-testid="scout-sync-error"`, and shows the last success time in
-`data-testid="scout-sync-at"`. Filing stays blocked until a read succeeds.
+failed read keeps the last known rows, shows the reason in
+`data-testid="scout-sync-error"`, and keeps the last success time in
+`data-testid="scout-sync-at"`; the reason clears on the next successful read. Filing stays
+blocked until a read succeeds.
 
 ### Worker lifecycle
 
@@ -1793,13 +1796,15 @@ title of at most 200 characters; a summary, proposed change, significance from 1
 non-empty significance reason, and at least one acceptance criterion; at least one evidence entry
 whose repository-relative path resolves to an existing regular file inside `REPO_DIR` and outside
 `.git/`, `node_modules/`, `dist/`, `.worktree/`, and `.tmp/`, with an in-range `N` or `N-M` span;
-and a non-empty file list whose entries all appear in the evidence. A malformed item, duplicate
-id, path escape, over-count, missing score, or out-of-range score fails the whole answer
-atomically, naming the offending item, so nothing is filed. An item's id is the first 16 hex
-characters of SHA-256 over its category, sorted evidence paths, and normalized title, so the same
-finding keeps its id. Items below significance 4 and duplicate titles are dropped before filing
-and recorded in the activity. The worker never edits source, tests, configuration, a goal, a
-draft, a branch, or a pull request.
+and a non-empty file list whose entries all appear in the evidence. A rejected answer is sent back
+to the same agent session once, with the rejection text and the root-relative path rule, while the
+scan's own deadline still bounds the turn; a repaired file is validated again and filed normally.
+A malformed item, duplicate id, path escape, over-count, missing score, or out-of-range score that
+survives the correction turn fails the whole answer atomically, naming the offending item, so
+nothing is filed. An item's id is the first 16 hex characters of SHA-256 over its category, sorted
+evidence paths, and normalized title, so the same finding keeps its id. Items below significance
+4 and duplicate titles are dropped before filing and recorded in the activity. The worker never
+edits source, tests, configuration, a goal, a draft, a branch, or a pull request.
 
 ## Report, remove, or redesign a UI element
 
@@ -1863,10 +1868,10 @@ unusable answer falls back to the report's first non-empty line, lowercased, wit
 non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
 hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
 exclusive create, so the first draft is never overwritten. The body opens with
-`# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, carries the line
-`> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
+`# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the
-`## Captured UI context` block an issue report carries. A successful click closes the panel,
+`## Captured UI context` block an issue report carries. It carries no notice line or other prose
+the operator did not write. A successful click closes the panel,
 stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
 with the server's error and leaves no draft. The drafts are ignored by git.
@@ -2373,9 +2378,10 @@ its issue), Check now clearing every cooldown, pause draining every peer, Stop c
 without a cooldown, per-agent questions and answer routing, two orphan children on a fresh start,
 version 1 state loading, reopened-issue eligibility, history pruning that keeps every running
 directory, preflight for both wrappers, repo-scoped state and lock isolation, atomic and damaged
-state, ledger migration, the activity bounds, and the conditional tracker. `tests/cleanup.test.ts` proves the watchdog
-preserves repo-scoped issues state and the repo-anchored lock while sweeping legacy orchestrator
-run files. Every fixture stays under `.devboard/.tmp`.
+state, ledger migration, the activity bounds, and the conditional tracker. `tests/cleanup.test.ts`
+proves the watchdog preserves repo-scoped issues state, the repo-anchored lock, and Flow session
+records that Flow restore still reads, while sweeping legacy orchestrator run files. Every fixture
+stays under `.devboard/.tmp`.
 `tests/launcher.test.ts` covers the launcher and harness package boundaries: the help output,
 the launcher's file list and size, the harness tarball's required and forbidden paths, its size,
 and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`

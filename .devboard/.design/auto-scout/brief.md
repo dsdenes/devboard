@@ -70,13 +70,13 @@
 
 ### Journey 4 — Explain a stale read or empty result
 - Trigger: the table is empty, stale, or an error banner appeared.
-- Steps: read the GitHub-read badge and last successful read, then the reason in the
-  banner, then the scan activity.
+- Steps: read the last successful read, then the reason in the banner, then the scan
+  activity.
 - Decision points: wait for the next attempt, restart the worker, or fix access.
 - Success: the operator knows whether the empty table is a real result or a read
   failure.
 - Failure routes: the error text is missing or the last success is overwritten.
-- Recovery: the next successful read clears the badge and keeps the newest rows.
+- Recovery: the next successful read clears the banner and keeps the newest rows.
 - Exit: back to monitoring.
 
 ## Non-goals

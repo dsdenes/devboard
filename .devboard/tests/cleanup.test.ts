@@ -22,6 +22,8 @@ import {
 } from "../watchdog/cleanup";
 import { runCycle } from "../watchdog/coordinator";
 import type { Instance } from "../watchdog/discovery";
+import { FlowController } from "../server/flow";
+import { journalKey } from "../server/journal";
 
 /**
  * Every fixture lives under the repository's `.devboard/.tmp`. Fixture mtimes
@@ -284,6 +286,118 @@ describe("sweepStateDir", () => {
     expect(removed).not.toContain(join(stateDir, "journal"));
     expect(removed).not.toContain(currentRun);
     expect(removed).not.toContain(join(stateDir, "issues"));
+  });
+
+  test("protects Flow session records from the retention sweep", async () => {
+    const base = await temporaryDirectory();
+    const stateDir = join(base, ".tmp");
+    const flowRoot = join(stateDir, "flow", "a".repeat(24));
+    const sessionDir = join(flowRoot, "0123456789abcdef");
+    const sessionFile = join(sessionDir, "session.json");
+    const session = {
+      id: "0123456789abcdef",
+      baseRevision: null,
+      worktree: join(base, "worktree"),
+      branch: "flow/0123456789abcdef",
+      status: "merged",
+      goal: "Keep this session",
+      decisions: "",
+      steering: [],
+      accepted: [],
+      widgets: [],
+      files: [],
+      checkpoints: [],
+      verification: null,
+      blockers: [],
+      pr: null,
+      prError: null,
+      leftover: null,
+      pushedTip: null,
+      prFailedTip: null,
+      lastDiffHash: null,
+      createdAt: new Date(realNow).toISOString(),
+      updatedAt: new Date(realNow).toISOString(),
+    };
+    writeAt(sessionFile, JSON.stringify(session), old);
+    utimesSync(sessionDir, old, old);
+    utimesSync(flowRoot, old, old);
+    writeAt(join(stateDir, "flow.json"), "unrelated", old);
+    const unrelated = join(stateDir, "unrelated", "old.txt");
+    writeAt(unrelated, "old", old);
+    utimesSync(join(stateDir, "unrelated"), old, old);
+
+    const report = sweepStateDir(stateDir, { now: sweepNow, dryRun: false });
+    const candidatePaths = report.candidates.map((candidate) => candidate.path);
+    const removedPaths = report.removed.map((candidate) => candidate.path);
+
+    expect(candidatePaths).not.toContain(sessionDir);
+    expect(candidatePaths).not.toContain(sessionFile);
+    expect(removedPaths).not.toContain(sessionDir);
+    expect(removedPaths).not.toContain(sessionFile);
+    expect(existsSync(sessionFile)).toBe(true);
+    expect(existsSync(flowRoot)).toBe(true);
+    expect(existsSync(unrelated)).toBe(false);
+    expect(candidatePaths).toContain(unrelated);
+  });
+
+  test("leaves a merged Flow session readable by Flow restore", async () => {
+    const base = await temporaryDirectory();
+    const repoDir = join(base, "repo");
+    const stateDir = join(base, ".tmp");
+    const sessionId = "0123456789abcdef";
+    const sessionDir = join(stateDir, "flow", journalKey(repoDir), sessionId);
+    writeAt(
+      join(sessionDir, "session.json"),
+      JSON.stringify({
+        id: sessionId,
+        baseRevision: null,
+        worktree: join(base, "worktree"),
+        branch: `flow/${sessionId}`,
+        status: "merged",
+        goal: "Keep this session",
+        decisions: "",
+        steering: [],
+        accepted: [],
+        widgets: [],
+        files: [],
+        checkpoints: [],
+        verification: null,
+        blockers: [],
+        pr: null,
+        prError: null,
+        leftover: null,
+        pushedTip: null,
+        prFailedTip: null,
+        lastDiffHash: null,
+        createdAt: new Date(realNow).toISOString(),
+        updatedAt: new Date(realNow).toISOString(),
+      }),
+      old,
+    );
+    utimesSync(sessionDir, old, old);
+    utimesSync(join(stateDir, "flow"), old, old);
+    utimesSync(join(stateDir, "flow", journalKey(repoDir)), old, old);
+
+    runCleanup({
+      root: base,
+      now: sweepNow,
+      covered: [{ stateDir, source: "canonical" }],
+    });
+
+    const flow = new FlowController({
+      repoDir,
+      stateDir,
+      agentCommand: "true",
+      broadcast: () => undefined,
+    });
+    try {
+      // #restore is queued as a microtask from the constructor and completes
+      // synchronously for a merged-only history.
+      await Promise.resolve();
+      expect(flow.snapshot().history.map((entry) => entry.sessionId)).toEqual([sessionId]);
+    } finally {
+      flow.dispose();
+    }
   });
 
   test("a dry run reports candidates and changes nothing", async () => {

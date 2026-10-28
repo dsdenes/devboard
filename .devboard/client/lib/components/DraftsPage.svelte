@@ -106,13 +106,15 @@
             </span>
           </div>
           <div class="issues-draft-detail__actions">
-            <span
-              class="badge"
-              data-tone={statusTone(status)}
-              data-testid="issues-draft-state"
-            >
-              {status}
-            </span>
+            {#if status !== "idle"}
+              <span
+                class="badge"
+                data-tone={statusTone(status)}
+                data-testid="issues-draft-state"
+              >
+                {status}
+              </span>
+            {/if}
             <Button
               variant="default"
               data-testid="issues-draft-start"
@@ -160,7 +162,6 @@
             </section>
           {/if}
           <section class="issues-draft-detail__section" aria-label="Draft">
-            <h3 class="issues-draft-detail__label">Draft</h3>
             {#if parts.proposal.length > 0}
               <pre class="issues-draft-detail__prose mono">{parts.proposal}</pre>
             {:else}

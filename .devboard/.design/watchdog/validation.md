@@ -8,7 +8,7 @@ Date: 2026-10-28. Issue: #308 (`#workspace-issues > section.watchdog-page`).
 |---|---|
 | `bun run build` (from `.devboard`) | pass; `dist/index.html` and every referenced asset produced |
 | `bunx tsc --noEmit` | pass; no diagnostics |
-| `bun test` | pass; 678 tests, 0 fail, 4598 expectations, 51 files |
+| `bun test` | pass; 687 tests, 0 fail, 4655 expectations, 52 files |
 | `bun run verify:watchdog` | pass; every `PASS` line listed below |
 
 `verify:watchdog` builds the client and drives the real page in headless Chrome at 1440×900 with a
@@ -32,7 +32,9 @@ PASS no-console-error
 The verifier covers the empty page (`none`, `never`, both empty states), three seeded cycles and
 their order, the summary counts and reason, the filed-issue rows with state and shipped version, a
 failed GitHub read that keeps the rows, recovery, live refresh without reload, the status-bar
-indicator and popover, and zero console errors or uncaught exceptions.
+indicator and popover, and zero console errors or uncaught exceptions. It also asserts that the
+cycle history renders no reason cell after the integrated `45caf55` change; the newest reason lives
+only in the summary.
 
 ## Visual evidence
 
@@ -55,10 +57,10 @@ removed after the screenshots. Screenshots live in `.devboard/.design/watchdog/`
   internally.
 - **Layout.** Two columns at ≥1501px (filed issues `1.25fr`, history `minmax(420px, 1fr)`); one
   column of two flexible rows below that. Both tables keep labelled sticky headers.
-- **Clipping.** No unintended cell overflow at 2101, 1440, or 1024. Titles and history reasons
-  ellipsize by design and keep the full text in `title`; the category and window columns are
-  hidden at ≤1100px instead of clipping their values. The 140px start column fits
-  `Oct 26, 15:00:00`.
+- **Clipping.** No unintended cell overflow at 2101, 1440, or 1024. Issue titles and a
+  cross-midnight window ellipsize by design and keep the full text in `title`; the category and
+  window columns are hidden at ≤1100px instead of clipping their values. The 140px start column
+  fits `Oct 26, 15:00:00`, and the findings count is the trailing right-aligned track.
 - **Empty states.** `No issues filed` and `No cycles yet` render as centered stacks with a 20px
   decorative mark, a 13px/600 title, and one 12px line; the summary shows `none`, `No cycle has
   run yet.`, `never`, and zero counts.

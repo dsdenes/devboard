@@ -168,6 +168,20 @@ export class GoalStore {
   resetting = $state(false);
   resetStatus = $state<string | null>(null);
 
+  /**
+   * Clears the operation flags before a reconnect's state requests are sent.
+   * A stop frame missed during the disconnect otherwise leaves the tab busy.
+   * The server replays the started frame of an operation that is still active
+   * before answering getGoal and getSkills, so a live operation returns.
+   */
+  resetActiveOperations(): void {
+    this.creationActive = false;
+    this.revisionActive = false;
+    this.skillsPrepActive = false;
+    this.question = null;
+    this.draft = "";
+  }
+
   get pendingCount(): number {
     return this.records.filter((record) => record.pending).length;
   }
