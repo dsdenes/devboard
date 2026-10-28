@@ -1862,6 +1862,8 @@ try {
     return item?.getAttribute("data-name") ?? "";
   })()`);
   await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the disclosure");
+  const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
+  check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
   const goalSkillSurface = await page.eval<{ selected: string; current: string }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
     return {

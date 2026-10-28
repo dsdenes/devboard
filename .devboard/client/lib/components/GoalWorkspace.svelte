@@ -596,7 +596,6 @@
               {goal.contradictions.length} contradiction{goal.contradictions.length === 1 ? "" : "s"}
             </span>
           {/if}
-          <span class="muted mono">.omp/skills/</span>
         {/snippet}
         {#snippet actions()}
           <Button
