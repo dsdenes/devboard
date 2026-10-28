@@ -326,17 +326,6 @@
         <button
           type="button"
           class="sidebar-item"
-          aria-current={isActive("runs")}
-          data-command="open.issues.runs"
-          data-testid="open-issues-runs"
-          onclick={() => open("issues", "runs", "runs", "runs", "Runs")}
-        >
-          <span class="sidebar-item__label">Runs</span>
-          <span class="sidebar-item__meta">{issues.runs.length}</span>
-        </button>
-        <button
-          type="button"
-          class="sidebar-item"
           aria-current={isActive("drafts")}
           aria-label="Draft goals, Issues mode, Alt+2"
           data-command="open.issues.drafts"
