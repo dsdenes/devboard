@@ -122,9 +122,11 @@ Auto Scout files significant findings here after each scan.
   - Empty/stopped, dark, 1024×720: `.devboard/.design/scout-filed-issues-empty/empty-1024-dark.png`
   - Empty/stopped, light, 1024×720: `.devboard/.design/scout-filed-issues-empty/empty-1024-light.png`
   - Populated, failed read, limits save, and worker start are exercised by `bun run verify:scout`.
-- Measured result at 1024×720: panel and stack centers both at x=699; natural stack width 317.8px
-  inside the 360px cap; icon 20×20 with `aria-hidden="true"` and `rgb(139,148,158)`; title 13px/600
-  in `rgb(230,237,243)`; copy 12px/400 in `rgb(139,148,158)`; `scrollWidth === clientWidth === 1024`.
+- Measured result at 1024×720 (after merging the upstream worker-facts removal): panel 616.9×128,
+  stack centers and panel centers both at x=699 / y=448; natural stack width 317.8px inside the
+  360px cap; icon 20×20 with `aria-hidden="true"` and `rgb(139,148,158)`; title 13px/600 in
+  `rgb(230,237,243)`; copy 12px/400 in `rgb(139,148,158)`; `scrollWidth === clientWidth === 1024`.
+  Light theme keeps the same geometry with `rgb(31,35,40)` title and `rgb(87,96,106)` icon/copy.
 - Console/network: zero console entries and zero failed requests among 29 observed requests on the
   Auto Scout page at both viewports.
 - Checks: `bun run check` — 0 errors, 0 warnings; `bun test` — 604 pass, 0 fail across 46 files;
