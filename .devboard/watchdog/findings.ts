@@ -37,6 +37,18 @@ const SIGNAL_KINDS: Record<string, FindingCategory> = {
 /** A start this long before window end with no matching stop is a stall. */
 export const STALL_MS = 5 * 60 * 1000;
 
+/**
+ * Stall candidates come from the lookback the coordinator collected, so a
+ * start in one cycle's final stall interval is judged by the next cycle
+ * instead of disappearing with the window. Every other category stays on the
+ * cycle window, which keeps recurrence counts tied to the evidence it covers.
+ */
+export interface AnalysisOptions {
+  window: Window;
+  /** Stall candidates; defaults to the window itself. */
+  stallLookback?: Window;
+}
+
 /** This many questions for one instance in one window is a loop. */
 export const QUESTION_LOOP_COUNT = 3;
 
@@ -118,12 +130,25 @@ function streamKey(event: EvidenceEvent): string {
  */
 export function analyzeEvidence(
   events: EvidenceEvent[],
-  options: { window: Window },
+  options: AnalysisOptions,
 ): Finding[] {
   const findings = new Map<string, Finding>();
   const questions = new Map<string, EvidenceEvent[]>();
   const starts = new Map<string, EvidenceEvent[]>();
   const stops = new Map<string, number[]>();
+  const windowStart = options.window.start.getTime();
+  const windowEnd = options.window.end.getTime();
+  const lookback = options.stallLookback ?? options.window;
+  const lookbackStart = lookback.start.getTime();
+  const lookbackEnd = lookback.end.getTime();
+
+  /** A non-stall signal counts only inside the cycle window. */
+  const inWindow = (instant: number | undefined): instant is number =>
+    instant !== undefined && instant >= windowStart && instant <= windowEnd;
+
+  /** A start or stop is stall evidence anywhere in the collected lookback. */
+  const inLookback = (instant: number | undefined): instant is number =>
+    instant !== undefined && instant >= lookbackStart && instant <= lookbackEnd;
 
   const add = (category: FindingCategory, event: EvidenceEvent) => {
     const quote = normalizeEvidenceLine(event.text);
@@ -153,23 +178,32 @@ export function analyzeEvidence(
   };
 
   for (const event of events) {
+    const occurred = parseTimestamp(event.ts);
     switch (event.kind) {
-      case "question":
-        questions.set(questionKey(event), [...(questions.get(questionKey(event)) ?? []), event]);
+      case "question": {
+        if (!inWindow(occurred)) continue;
+        const key = questionKey(event);
+        questions.set(key, [...(questions.get(key) ?? []), event]);
         continue;
+      }
       case "run-start":
-      case "lane-start":
-        starts.set(streamKey(event), [...(starts.get(streamKey(event)) ?? []), event]);
+      case "lane-start": {
+        if (!inLookback(occurred)) continue;
+        const key = streamKey(event);
+        starts.set(key, [...(starts.get(key) ?? []), event]);
         continue;
+      }
       case "run-stop":
       case "lane-stop": {
-        const parsed = parseTimestamp(event.ts);
-        stops.set(streamKey(event), [
-          ...(stops.get(streamKey(event)) ?? []),
-          ...(parsed === undefined ? [] : [parsed]),
-        ]);
+        if (!inLookback(occurred)) continue;
+        const key = streamKey(event);
+        stops.set(key, [...(stops.get(key) ?? []), occurred]);
         // A stop is only a stall terminator; a failed lane is a finding.
-        if (event.kind === "lane-stop" && laneStatus(event.text) === "failed") {
+        if (
+          event.kind === "lane-stop" &&
+          occurred >= windowStart &&
+          laneStatus(event.text) === "failed"
+        ) {
           add("lane-failed", event);
         }
         continue;
@@ -177,6 +211,7 @@ export function analyzeEvidence(
       default:
         break;
     }
+    if (!inWindow(occurred)) continue;
     if (event.kind === "omp-log" && event.level !== undefined) {
       add(`omp-${event.level}` as FindingCategory, event);
       continue;
