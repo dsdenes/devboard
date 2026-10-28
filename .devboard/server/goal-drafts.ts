@@ -214,15 +214,6 @@ export interface GoalDraftManagerOptions {
   spawnOwner?: (argv: string[], env: Record<string, string | undefined>) => number | undefined;
 }
 
-function firstLine(text: string): string {
-  return (
-    text
-      .split("\n")
-      .map((line) => line.trim())
-      .find((line) => line.length > 0) ?? ""
-  );
-}
-
 const IDLE: GoalDraftRun = {
   status: "idle",
   path: null,
