@@ -380,10 +380,12 @@ export class IssuesStore {
       // A successful closure stays pending until the queue no longer lists the
       // issue, so a paused or stopped worker cannot invite a duplicate call.
       if (message.ok === true) {
-        notifications.push("success", `Closed issue #${number}.`);
+        notifications.push("Issues", "success", `Closed issue #${number}.`);
       } else {
         this.closing = this.closing.filter((entry) => entry !== number);
-        if (typeof message.message === "string") notifications.push("error", message.message);
+        if (typeof message.message === "string") {
+          notifications.push("Issues", "error", message.message);
+        }
       }
       return;
     }

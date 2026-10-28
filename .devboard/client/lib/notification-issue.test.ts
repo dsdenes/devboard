@@ -6,6 +6,7 @@ function notification(overrides: Partial<AppNotification> = {}): AppNotification
   return {
     id: 1,
     severity: "error",
+    source: "Flow",
     text: 'item 1 ("Flow restore re-adds checkpoints.jsonl entries") evidence: server/flow.ts does not exist',
     at: "2026-10-28T11:29:44.932Z",
     ...overrides,
@@ -18,7 +19,17 @@ describe("notification issue report", () => {
     expect(report.split("\n")[0]).toBe(
       'Error notification: item 1 ("Flow restore re-adds checkpoints.jsonl entries") evidence: server/flow.ts does not exist',
     );
-    expect(report).toContain("\n\nRaised at: 2026-10-28T11:29:44.932Z");
+    expect(report).toContain("\n\nSource: Flow\nRaised at: 2026-10-28T11:29:44.932Z");
+  });
+
+  test("names the subsystem that raised the notification", () => {
+    const report = notificationReport(
+      notification({ severity: "success", source: "Auto Scout", text: "Filed 2 issues." }),
+    );
+    expect(report).toBe(
+      "Success notification: Filed 2 issues.\n\nSource: Auto Scout\n" +
+        "Raised at: 2026-10-28T11:29:44.932Z",
+    );
   });
 
   test("labels every severity without changing the notification text", () => {
@@ -43,7 +54,7 @@ describe("notification issue report", () => {
     const long = notification({ text: `  ${"x".repeat(MAX_NOTIFICATION_REPORT)}  ` });
     const report = notificationReport(long);
     expect(report.length).toBeLessThanOrEqual(MAX_NOTIFICATION_REPORT);
-    expect(report.endsWith("…\n\nRaised at: 2026-10-28T11:29:44.932Z")).toBe(true);
+    expect(report.endsWith("…\n\nSource: Flow\nRaised at: 2026-10-28T11:29:44.932Z")).toBe(true);
   });
 
   test("a long first line is truncated without losing the timestamp", () => {

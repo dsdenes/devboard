@@ -326,7 +326,7 @@ export class FlowStore {
     if (type === "flowNotice" && typeof message.message === "string") {
       this.notice = message.message;
       this.noticeMessage = message.message;
-      notifications.push("notice", message.message);
+      notifications.push("Flow", "notice", message.message);
       return;
     }
     if (type === "flowImplementationStarted") {
@@ -345,7 +345,7 @@ export class FlowStore {
     }
     if (type === "flowError" && typeof message.message === "string") {
       this.errorMessage = message.message;
-      notifications.push("error", message.message);
+      notifications.push("Flow", "error", message.message);
       return;
     }
     if (type === "flowFiles" && Array.isArray(message.files)) {

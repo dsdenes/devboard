@@ -13,12 +13,12 @@ const SEVERITY_LABEL: Record<Severity, string> = {
 /**
  * The report a notification button files. Its first line becomes the issue
  * title, so the notification text leads, labelled with its severity; the
- * timestamp follows as context. The whole report stays inside the server's
- * bound even for a long server message.
+ * source and timestamp follow as context. The whole report stays inside the
+ * server's bound even for a long server message.
  */
 export function notificationReport(item: AppNotification): string {
   const prefix = `${SEVERITY_LABEL[item.severity]} notification: `;
-  const suffix = `\n\nRaised at: ${item.at}`;
+  const suffix = `\n\nSource: ${item.source}\nRaised at: ${item.at}`;
   const budget = Math.max(0, MAX_NOTIFICATION_REPORT - prefix.length - suffix.length);
   const text = item.text.trim();
   const body =
