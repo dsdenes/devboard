@@ -642,7 +642,9 @@ Discover artifacts are published it also lists the five skills `Testing Strategy
 `testing-strategy`, `naming-conventions`, `coding-conventions`, `architecture-boundaries`, and
 `glossary-skill`); with no published artifacts the **Skills** group and its header do not render.
 The sidebar has no header, so its first entry is its mode's navigation. The active panel carries
-`data-testid="discover-panel"` and the same `data-tab`.
+`data-testid="discover-panel"` and the same `data-tab`. While a crawl is active, the `Overview`
+entry carries a `running` badge (`data-testid="discover-running"`), matching the Issues overview;
+the badge disappears when the run stops.
 Warnings appears as its own group with a count only while at least one warning exists; the sidebar
 keeps no freshness group and no recent-notice list.
 
