@@ -515,6 +515,64 @@ describe("Flow Mode contract", () => {
     client.close();
   }, 30_000);
 
+  test("a stopped session's watcher never rewrites the goal an interview is writing", async () => {
+    const fixture = createFixture("goal-after-stop");
+    const replacement = join(fixture.root, "replacement-goal.md");
+    const replacementText = "# Replacement goal\n\nWritten during the second interview.\n";
+    const testServer = startServer(fixture, {
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-pre-commit-delay=5000",
+        "--flow-goal-settle=700",
+        `--flow-goal-text-file=${replacement}`,
+      ],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    const id = sessionIds(fixture)[0] as string;
+    const sessionDirectory = join(fixture.stateDir, "flow", journalKey(fixture.root), id);
+    const goalPath = join(sessionDirectory, "goal.md");
+    expect(readSession(fixture, id).goal).toBe(FLOW_GOAL);
+
+    client.send({ type: "startFlowImplementation" });
+    await client.waitFor((event) => event.type === "flowImplementationStarted");
+    await waitForStub(fixture, (line) => line.startsWith("prompt /flow-implement "));
+    client.send({ type: "stopFlowImplementation" });
+    await client.waitFor((event) => event.type === "flowStopped");
+    expect(readSession(fixture, id).status).toBe("stopped");
+
+    // The second interview writes its goal immediately and keeps working for
+    // longer than several ticks; the watcher must leave that draft alone.
+    writeFileSync(replacement, replacementText);
+    const written = stubLog(fixture).filter((line) => line.startsWith("flow-goal-written ")).length;
+    const mark = client.mark();
+    client.send({ type: "createFlowGoal" });
+    const question = await client.waitFor((event) => event.type === "flowQuestion", { from: mark });
+    client.send({ type: "flowAnswer", target: "goal", id: question.id, value: "Alpha" });
+    await waitUntil(
+      () =>
+        stubLog(fixture).filter((line) => line.startsWith("flow-goal-written ")).length >
+        written,
+      "the second interview's goal write",
+    );
+    expect(readFileSync(goalPath, "utf8")).toBe(replacementText);
+    // Real time is the subject: the live watcher's 40 ms ticks must not touch
+    // the file while the stub peer is still inside its turn.
+    await Bun.sleep(700);
+    expect(readFileSync(goalPath, "utf8")).toBe(replacementText);
+
+    const stopped = await client.waitFor((event) => event.type === "flowGoalStopped", {
+      from: mark,
+    });
+    expect(stopped.completed).toBe(true);
+    expect(stopped.text).toBe(replacementText);
+    expect(readSession(fixture, id).goal).toBe(replacementText);
+    expect(readFileSync(goalPath, "utf8")).toBe(replacementText);
+    client.close();
+  }, 30_000);
+
   test("the Flow implementation gets one peer in its own worktree and branch from origin/main", async () => {
     const fixture = createFixture("implement");
     const testServer = startServer(fixture, {

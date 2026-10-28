@@ -3816,8 +3816,8 @@ try {
     goalText,
   );
   check(
-    goalText.includes("Unprocessed draft") && goalText.includes("/goal-spec"),
-    "the draft lost its unprocessed notice",
+    !goalText.includes("Unprocessed draft") && !goalText.includes("/goal-spec"),
+    "the draft carries a notice line",
     goalText,
   );
   check(goalText.includes(goalSentence), "the draft lost the operator text", goalText);
@@ -5406,7 +5406,8 @@ try {
   check(
     detail.title.length > 0 &&
       detail.pathLabel.endsWith(".md") &&
-      !detail.proposal.includes("## Captured UI context"),
+      !detail.proposal.includes("## Captured UI context") &&
+      !detail.proposal.includes("Unprocessed draft"),
     "the detail does not separate identity and proposal from the evidence",
     detail,
   );

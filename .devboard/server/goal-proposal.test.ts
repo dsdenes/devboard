@@ -143,9 +143,9 @@ describe("goal proposal drafts", () => {
         join(root, GOAL_PROPOSALS_DIRECTORY, files[0]!),
         "utf8",
       );
-      expect(text.startsWith("# Proposed goal: The Start button is clipped.\n")).toBe(true);
-      expect(text).toContain("Unprocessed draft");
-      expect(text).toContain("/goal-spec");
+      expect(text.startsWith("# Proposed goal: The Start button is clipped.\n\n")).toBe(true);
+      expect(text).not.toContain("Unprocessed draft");
+      expect(text).not.toContain("/goal-spec");
       expect(text).toContain(report);
       expect(text).toContain("## Captured UI context");
       expect(text).toContain("- Route: `/`");

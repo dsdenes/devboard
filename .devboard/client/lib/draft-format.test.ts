@@ -3,8 +3,6 @@ import { draftParts, parseDraftContext, splitDraftText } from "./draft-format";
 
 const DRAFT = `# Proposed goal: persist remote discoveries
 
-> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.
-
 Persist every remote project and offer a switcher.
 
 ## Captured UI context
@@ -29,7 +27,7 @@ The remote clone is missing.
 describe("draft parts", () => {
   test("splits the proposal from the captured context", () => {
     const parts = draftParts(DRAFT);
-    expect(parts.proposal).toStartWith("> Unprocessed draft.");
+    expect(parts.proposal).toBe("Persist every remote project and offer a switcher.");
     expect(parts.proposal).not.toContain("Proposed goal:");
     expect(parts.proposal).not.toContain("Captured UI context");
     expect(parts.rawContext).toStartWith("- Route:");

@@ -1210,6 +1210,8 @@ stale files are therefore removed after a week. These entries are never deleted 
   which the first Issues Start still reads to migrate handled issue numbers.
 - `.tmp/issues/` in full: every repo-scoped state, ledger, run, activity journal, control file,
   and the repo-anchored worker lock, including the run directory a running worker names.
+- `.tmp/flow/` in full: every repository key and session record, including the machine state,
+  reviewable artifacts, and worktree/PR bookkeeping Flow restore and History read.
 - the run directory of the cycle performing the sweep.
 - a `devboard-<pid>.lock` whose pid is still alive.
 
@@ -1654,8 +1656,8 @@ tab, or reloading the dashboard never starts a worker and never files an issue: 
 `data-testid="scout-start"` starts the worker, and that control becomes
 `data-testid="scout-stop"` while a worker is attached. The page header
 (`data-testid="issues-scout-header"`) carries the repository origin,
-`data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`), the read-health
-badge, the last-read time, and the single Start/Stop action. A 360px side rail holds the worker
+`data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`), the last-read
+time, and the single Start/Stop action. A 360px side rail holds the worker
 facts and the filing limits; the results column holds the filed-issues table and
 `data-testid="scout-activity"` for the current or newest scan. The page also shows
 `data-testid="scout-error"` for the last error.
@@ -1736,10 +1738,10 @@ blank version on the next read.
 
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
 and immediately on Start; the table, states, and versions reflect a change within one interval. A
-failed read keeps the last known rows, sets `data-testid="scout-sync"` to `data-state="error"`
-(or `"stale"` when no read has succeeded for two intervals), shows the reason in
-`data-testid="scout-sync-error"`, and shows the last success time in
-`data-testid="scout-sync-at"`. Filing stays blocked until a read succeeds.
+failed read keeps the last known rows, shows the reason in
+`data-testid="scout-sync-error"`, and keeps the last success time in
+`data-testid="scout-sync-at"`; the reason clears on the next successful read. Filing stays
+blocked until a read succeeds.
 
 ### Worker lifecycle
 
@@ -1853,10 +1855,10 @@ unusable answer falls back to the report's first non-empty line, lowercased, wit
 non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
 hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
 exclusive create, so the first draft is never overwritten. The body opens with
-`# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, carries the line
-`> Unprocessed draft. Refine it with \`/goal-spec\` before it becomes a goal.`, then the operator's
+`# Proposed goal: <first line, whitespace collapsed, at most 200 characters>`, then the operator's
 text verbatim, the `## Ask conversation` block when the panel has one, and the
-`## Captured UI context` block an issue report carries. A successful click closes the panel,
+`## Captured UI context` block an issue report carries. It carries no notice line or other prose
+the operator did not write. A successful click closes the panel,
 stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <path>` toast as plain text with no link; a failed write keeps the panel open
 with the server's error and leaves no draft. The drafts are ignored by git.
@@ -2363,9 +2365,10 @@ its issue), Check now clearing every cooldown, pause draining every peer, Stop c
 without a cooldown, per-agent questions and answer routing, two orphan children on a fresh start,
 version 1 state loading, reopened-issue eligibility, history pruning that keeps every running
 directory, preflight for both wrappers, repo-scoped state and lock isolation, atomic and damaged
-state, ledger migration, the activity bounds, and the conditional tracker. `tests/cleanup.test.ts` proves the watchdog
-preserves repo-scoped issues state and the repo-anchored lock while sweeping legacy orchestrator
-run files. Every fixture stays under `.devboard/.tmp`.
+state, ledger migration, the activity bounds, and the conditional tracker. `tests/cleanup.test.ts`
+proves the watchdog preserves repo-scoped issues state, the repo-anchored lock, and Flow session
+records that Flow restore still reads, while sweeping legacy orchestrator run files. Every fixture
+stays under `.devboard/.tmp`.
 `tests/launcher.test.ts` covers the launcher and harness package boundaries: the help output,
 the launcher's file list and size, the harness tarball's required and forbidden paths, its size,
 and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`
