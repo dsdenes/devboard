@@ -336,28 +336,126 @@ function countDiffLines(chunk: string): { insertions: number; deletions: number 
   return { insertions, deletions };
 }
 
+/**
+ * Decodes one path token of a `diff --git` header. Git quotes a token with a
+ * C-style escape when the path holds a quote, a backslash, a control byte, or
+ * (with `core.quotePath`, the default) a non-ASCII byte.
+ */
+function unquoteGitPath(token: string): string {
+  if (token.length < 2 || !token.startsWith('"') || !token.endsWith('"')) return token;
+  const end = token.length - 1;
+  const bytes: number[] = [];
+  const escapes: Record<string, number> = {
+    a: 7,
+    b: 8,
+    f: 12,
+    n: 10,
+    r: 13,
+    t: 9,
+    v: 11,
+    '"': 34,
+    "\\": 92,
+  };
+  let index = 1;
+  while (index < end) {
+    const char = token[index] ?? "";
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char, "utf8"));
+      index += 1;
+      continue;
+    }
+    const next = token[index + 1];
+    if (next === undefined) {
+      bytes.push(92);
+      break;
+    }
+    const simple = escapes[next];
+    if (simple !== undefined) {
+      bytes.push(simple);
+      index += 2;
+      continue;
+    }
+    if (next >= "0" && next <= "7") {
+      const octal = /^[0-7]{1,3}/.exec(token.slice(index + 1))?.[0] ?? "";
+      bytes.push(Number.parseInt(octal, 8));
+      index += 1 + octal.length;
+      continue;
+    }
+    bytes.push(92);
+    index += 1;
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * The two paths of a `diff --git` header, without the `a/` and `b/` prefixes.
+ * Quoted headers are decoded; a plain header keeps the usual greedy split.
+ */
+function diffHeaderPaths(rest: string): [string, string] | undefined {
+  let first: string;
+  let second: string;
+  if (rest.startsWith('"')) {
+    let index = 1;
+    while (index < rest.length && rest[index] !== '"') {
+      index += rest[index] === "\\" ? 2 : 1;
+    }
+    const closing = rest[index];
+    if (closing !== '"' || rest[index + 1] !== " ") return undefined;
+    first = unquoteGitPath(rest.slice(0, index + 1));
+    second = unquoteGitPath(rest.slice(index + 2));
+  } else {
+    const plain = /^a\/(.+) b\/(.+)$/.exec(rest);
+    if (plain === null) return undefined;
+    first = plain[1] ?? "";
+    second = plain[2] ?? "";
+    if (first.length === 0 || second.length === 0) return undefined;
+    return [first, second];
+  }
+  if (!first.startsWith("a/") || !second.startsWith("b/")) return undefined;
+  return [first.slice(2), second.slice(2)];
+}
+
 /** Splits one `git diff` result into per-path chunks. */
 export function splitDiffFiles(text: string): Map<string, string> {
   const files = new Map<string, string>();
   let currentPath: string | undefined;
   let lines: string[] = [];
   const flush = () => {
-    if (currentPath !== undefined) files.set(currentPath, lines.join("\n"));
+    // Dropping the separator newline keeps a chunk identical whether or not
+    // another file follows it, so diffHash ignores file order and neighbours.
+    if (currentPath !== undefined) files.set(currentPath, lines.join("\n").replace(/\n+$/, ""));
     currentPath = undefined;
     lines = [];
   };
   for (const line of text.split("\n")) {
-    const header = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-    if (header !== null) {
-      flush();
-      currentPath = header[2] ?? "";
-      lines = [line];
+    if (!line.startsWith("diff --git ")) {
+      if (currentPath !== undefined) lines.push(line);
       continue;
     }
-    if (currentPath !== undefined) lines.push(line);
+    // A file head always ends the previous chunk, so an unreadable header can
+    // never fold its body into another file's diff.
+    flush();
+    const paths = diffHeaderPaths(line.slice("diff --git ".length));
+    if (paths === undefined) continue;
+    currentPath = paths[1];
+    lines = [line];
   }
   flush();
   return files;
+}
+
+/** The tracked files one `git diff` result touches, with per-file counts. */
+export function diffFiles(text: string): FlowFile[] {
+  return [...splitDiffFiles(text)].map(([path, chunk]) => {
+    const counts = countDiffLines(chunk);
+    return {
+      path,
+      status: fileStatus(chunk),
+      insertions: counts.insertions,
+      deletions: counts.deletions,
+      diff: chunk,
+    };
+  });
 }
 
 function fileStatus(chunk: string): FlowFile["status"] {
@@ -1399,17 +1497,7 @@ export class FlowController {
     if (status.code !== 0) return undefined;
 
     const files = new Map<string, FlowFile>();
-    const chunks = splitDiffFiles(tracked.stdout);
-    for (const [path, chunk] of chunks) {
-      const counts = countDiffLines(chunk);
-      files.set(path, {
-        path,
-        status: fileStatus(chunk),
-        insertions: counts.insertions,
-        deletions: counts.deletions,
-        diff: chunk,
-      });
-    }
+    for (const file of diffFiles(tracked.stdout)) files.set(file.path, file);
 
     for (const entry of parseStatusZ(status.stdout)) {
       if (entry.status === "untracked") {
