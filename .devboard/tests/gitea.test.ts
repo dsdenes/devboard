@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { resolveForgeAuth } from "../lib/forge-auth.ts";
 import { giteaBaseUrl, parseForgeRemote } from "../lib/forge.ts";
-import type { FetchLike } from "../lib/gitea.ts";
+import { giteaLabels, giteaListIssues, type FetchLike } from "../lib/gitea.ts";
 import { pollOpenIssues } from "../issues/tracker";
 import { closeIssue } from "../server/issue-close";
 import { CommandFlowForge } from "../server/forge-pr";
@@ -74,7 +74,7 @@ function fakeGitea(calls: Recorded[] = []): FetchLike {
       ]);
     }
     if (method === "PATCH" && /\/issues\/5$/.test(url)) return json({ state: "closed" });
-    if (method === "GET" && /\/labels\?limit=100$/.test(url)) return json([]);
+    if (method === "GET" && /\/labels\?limit=50&page=\d+$/.test(url)) return json([]);
     if (method === "POST" && /\/labels$/.test(url)) return json({ id: 9, name: "scout" }, 201);
     if (method === "POST" && /\/issues$/.test(url)) {
       return json(
@@ -186,6 +186,82 @@ describe("Gitea issues", () => {
     expect(
       calls.some((call) => call.method === "PATCH" && call.url.endsWith("/issues/5")),
     ).toBe(true);
+  });
+});
+
+describe("Gitea pagination", () => {
+  /**
+   * A server with `MAX_RESPONSE_ITEMS` set to `cap`: it never returns more
+   * than that, even when the caller asks for a larger page.
+   */
+  function capped(total: number, cap = 50): FetchLike {
+    return async (input) => {
+      const url = new URL(String(input));
+      const requested = Number(url.searchParams.get("limit") ?? cap);
+      const limit = Math.min(Number.isFinite(requested) && requested > 0 ? requested : cap, cap);
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const start = (page - 1) * limit;
+      const count = Math.max(0, Math.min(limit, total - start));
+      const json = (value: unknown) =>
+        new Response(JSON.stringify(value), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      if (url.pathname.endsWith("/issues")) {
+        return json(
+          Array.from({ length: count }, (_, offset) => {
+            const number = start + offset + 1;
+            return {
+              number,
+              title: `issue ${number}`,
+              html_url: `http://gitea.test/acme/fixture/issues/${number}`,
+              created_at: "2026-10-01T00:00:00Z",
+              state: "open",
+              body: "",
+              labels: [],
+            };
+          }),
+        );
+      }
+      if (url.pathname.endsWith("/labels")) {
+        return json(
+          Array.from({ length: count }, (_, offset) => {
+            const id = start + offset + 1;
+            return { id, name: `label-${id}` };
+          }),
+        );
+      }
+      return json({ message: `unexpected ${url}` });
+    };
+  }
+
+  test("lists every issue when the server caps a response below the request", async () => {
+    const calls: Recorded[] = [];
+    const fetchImpl = capped(120);
+    const issues = await giteaListIssues(
+      { baseUrl: "http://gitea.test", project: "acme/fixture" },
+      "open",
+      async (input, init) => {
+        calls.push({ method: init?.method ?? "GET", url: String(input) });
+        return fetchImpl(input, init);
+      },
+    );
+    expect(issues).toHaveLength(120);
+    expect(issues.map((issue) => issue.number)).toEqual(
+      Array.from({ length: 120 }, (_, index) => index + 1),
+    );
+    expect(calls.length).toBe(4);
+    expect(calls[0]!.url).toContain("limit=50");
+  });
+
+  test("lists every label when the server caps a response below the request", async () => {
+    const labels = await giteaLabels(
+      { baseUrl: "http://gitea.test", project: "acme/fixture" },
+      capped(60),
+    );
+    expect(labels.map((label) => label.id)).toEqual(
+      Array.from({ length: 60 }, (_, index) => index + 1),
+    );
   });
 });
 

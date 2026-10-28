@@ -399,6 +399,14 @@ function issueFromDocument(value: unknown): GiteaIssueDocument | undefined {
   };
 }
 
+/**
+ * Gitea caps one response at its `MAX_RESPONSE_ITEMS` setting (50 by default),
+ * whatever larger `limit` a caller asks for. Requesting that cap and paging
+ * until a response adds nothing is the only way to see every issue.
+ */
+const GITEA_PAGE_SIZE = 50;
+const GITEA_MAX_PAGES = 100;
+
 /** Every issue in the requested state, pull requests excluded. */
 export async function giteaListIssues(
   target: GiteaTarget,
@@ -407,21 +415,25 @@ export async function giteaListIssues(
 ): Promise<GiteaIssueDocument[]> {
   const issues: GiteaIssueDocument[] = [];
   const seen = new Set<number>();
-  for (let page = 1; page <= 20; page += 1) {
+  for (let page = 1; page <= GITEA_MAX_PAGES; page += 1) {
     const document = await giteaJson<unknown>(
       target,
-      `${repoPath(target)}/issues?state=${state}&type=issues&limit=100&page=${page}`,
+      `${repoPath(target)}/issues?state=${state}&type=issues&limit=${GITEA_PAGE_SIZE}&page=${page}`,
       undefined,
       fetchImpl,
     );
     if (!Array.isArray(document) || document.length === 0) break;
+    let added = 0;
     for (const entry of document) {
       const issue = issueFromDocument(entry);
       if (issue === undefined || seen.has(issue.number)) continue;
       seen.add(issue.number);
       issues.push(issue);
+      added += 1;
     }
-    if (document.length < 100) break;
+    // A server that ignores the page parameter repeats the first response;
+    // treating a page without new issues as the end keeps this loop finite.
+    if (added === 0) break;
   }
   return issues.sort((left, right) => left.number - right.number);
 }
@@ -492,20 +504,27 @@ export async function giteaLabels(
   target: GiteaTarget,
   fetchImpl: FetchLike = fetch,
 ): Promise<GiteaLabel[]> {
-  const document = await giteaJson<unknown>(
-    target,
-    `${repoPath(target)}/labels?limit=100`,
-    undefined,
-    fetchImpl,
-  );
-  if (!Array.isArray(document)) return [];
   const labels: GiteaLabel[] = [];
-  for (const entry of document) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as Record<string, unknown>;
-    if (typeof record.id === "number" && typeof record.name === "string") {
+  const seen = new Set<number>();
+  for (let page = 1; page <= GITEA_MAX_PAGES; page += 1) {
+    const document = await giteaJson<unknown>(
+      target,
+      `${repoPath(target)}/labels?limit=${GITEA_PAGE_SIZE}&page=${page}`,
+      undefined,
+      fetchImpl,
+    );
+    if (!Array.isArray(document) || document.length === 0) break;
+    let added = 0;
+    for (const entry of document) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const record = entry as Record<string, unknown>;
+      if (typeof record.id !== "number" || typeof record.name !== "string") continue;
+      if (seen.has(record.id)) continue;
+      seen.add(record.id);
       labels.push({ id: record.id, name: record.name });
+      added += 1;
     }
+    if (added === 0) break;
   }
   return labels;
 }
