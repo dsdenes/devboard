@@ -274,7 +274,15 @@ while (Date.now() < deadline) {
     }
   }
   if (!launcherOk) {
-    const viewed = run(["npm", "view", `${LAUNCHER_PACKAGE}@${version}`, "version"]);
+    const viewed = run([
+      "npm",
+      "view",
+      `${LAUNCHER_PACKAGE}@${version}`,
+      "version",
+      "--cache",
+      join(harnessRoot, ".tmp", "npm-cache"),
+      "--prefer-online",
+    ]);
     launcherOk = viewed.code === 0 && viewed.stdout === version;
   }
   if (releaseOk && launcherOk) break;

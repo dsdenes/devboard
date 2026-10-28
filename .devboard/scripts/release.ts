@@ -87,7 +87,14 @@ const tag = `v${version}`;
 const token = configuredGiteaToken(process.env);
 const target = releaseTarget(token);
 
-const publishable = run("npm", ["view", `${LAUNCHER_PACKAGE}@${version}`, "version"]);
+const publishable = run("npm", [
+  "view",
+  `${LAUNCHER_PACKAGE}@${version}`,
+  "version",
+  "--cache",
+  join(harnessRoot, ".tmp", "npm-cache"),
+  "--prefer-online",
+]);
 const launcherExists = publishable.code === 0 && publishable.stdout === version;
 
 let existing;
@@ -121,7 +128,17 @@ if (launcherExists) {
   manifest.version = version;
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(`release: publishing ${LAUNCHER_PACKAGE}@${version}`);
-  const published = run("npm", ["publish", "--access", "public"], staged);
+  // npm reads ~/.npmrc, which can hold a stale token that shadows the release
+  // credential. Use an explicit, private userconfig for this publish instead.
+  const npmToken = process.env.NPM_TOKEN ?? process.env.NODE_AUTH_TOKEN ?? "";
+  const npmrc = join(releaseRoot, "npmrc");
+  await writeFile(npmrc, `//registry.npmjs.org/:_authToken=${npmToken}\n`, { mode: 0o600 });
+  const published = run(
+    "npm",
+    ["publish", "--access", "public", "--userconfig", npmrc],
+    staged,
+  );
+  await rm(npmrc, { force: true });
   if (published.code !== 0) {
     fail(`npm publish failed: ${published.stderr.split("\n").slice(-3).join(" ")}`);
   }
