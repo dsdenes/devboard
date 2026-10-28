@@ -202,7 +202,9 @@ export async function giteaJson<T>(
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new GiteaError(`${init?.method ?? "GET"} ${path} returned invalid JSON`);
+    const first = text.trim().split("\n")[0]?.trim() ?? "";
+    const snippet = first.length === 0 ? "no output" : first.length > 300 ? `${first.slice(0, 300)}…` : first;
+    throw new GiteaError(`${init?.method ?? "GET"} ${path} returned invalid JSON: ${snippet}`);
   }
 }
 

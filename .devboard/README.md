@@ -1706,41 +1706,55 @@ unchanged.
 
 Selecting one opens `data-testid="issues-draft-detail"`: the header carries the draft's file name,
 the state badge for this draft's run only (absent while the run is `idle`), `issues-draft-start`
-(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
-body reads the proposal before the `## Captured UI context` marker, then the activity stream in
-`issues-draft-activity` once a run exists; the captured UI context itself is not shown. A pending
-elaboration question (`issues-draft-question`) renders above the proposal, with
-`issues-draft-choice`, `issues-draft-answer-input`, and `issues-draft-answer-submit`. The detail
-refreshes when the page opens, after the report panel writes a draft through
-`POST /api/goal-proposals`, after an elaboration finishes or stops, and when a listed draft
-disappears. The page polls the list every two seconds while it is mounted, so an external
-deletion is visible without a reload, and the report panel's write broadcast reaches an open page
-immediately. A browser reload restores the Draft goals page and the selected path; when the file
-no longer exists, the page opens the list.
+(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). Each
+row carries its own `data-status`, renders that state as text, and has its own
+`issues-draft-row-start` control. A row whose elaboration waits for an answer carries
+`data-question="true"` and renders an `issues-draft-waiting` marker, so the wait is visible without
+opening that draft; answering clears both. The body reads the proposal before the
+`## Captured UI context` marker, then the activity stream in `issues-draft-activity` once a run
+exists; the captured UI context itself is not shown. A pending elaboration question
+(`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,
+`issues-draft-answer-input`, and `issues-draft-answer-submit`. Selecting another draft switches the
+detail to that path's own state, activity, and question, and reselecting the first restores its
+transcript and still-pending question. The detail refreshes when the page opens, after the report
+panel writes a draft through `POST /api/goal-proposals`, after an elaboration finishes or stops,
+and when a listed draft disappears. The page polls the list every two seconds while it is mounted,
+so an external deletion is visible without a reload, and the report panel's write broadcast
+reaches an open page immediately. A browser reload restores the Draft goals page and the selected
+path; when the file no longer exists, the page opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
 refused with a visible error, and nothing outside the directory is read. The list never follows
 symlinks.
 
-Only one elaboration runs at a time. Starting one spawns exactly one ACP peer with `AGENT_COMMAND`
-in `REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-relative path>`. Its
-activity streams into `issues-draft-activity`, its `ask` question renders as options plus a
-free-text answer, and an answer goes only to that peer. While it runs, every other draft's start
-control is disabled with the stated reason; Stop closes the peer, records `stopped`, keeps the
-draft, and re-enables the controls; a successful or failed run closes its peer before recording
-`succeeded` or `failed`, so no elaboration leaves an agent process behind; a failed peer keeps
-the draft, shows the error, and accepts a retry as a new peer.
+Every draft may elaborate at the same time; there is no concurrency cap beyond the repository's
+own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND` in `REPO_DIR`,
+opens one session, and sends exactly `/goal-draft <repository-relative path>`. Each path has at
+most one live peer: a start for a path already running is refused with
+`This draft is being elaborated.` and starts no second peer. While a draft runs, only its own row
+and detail show the disabled start control and the `issues-draft-blocked` reason
+`This draft is being elaborated.`; every other draft stays startable. Each peer's activity
+streams only into its own run's `issues-draft-activity`, its `ask` question renders only for that
+draft, and an answer goes only to the addressed draft's peer; an answer for a draft with no
+pending question is refused without reaching any peer. Stop closes only the selected draft's peer,
+records `stopped`, keeps that draft, and leaves every other elaboration running. A successful or
+failed run closes only its own peer before recording `succeeded` or `failed`; a failed peer keeps
+its draft, shows its error there, and accepts a retry as a new peer. A successful completion
+removes its draft from the list when the agent deleted the file, without clearing another draft's
+state. Browser reload and WebSocket reconnect replay every draft's own run state, activity, and
+pending question.
 
-The peer is not held by the server process. A detached owner process carries every running
-elaboration, persists its run under `STATE_DIR`, and consumes answer and Stop commands, so a
-version reload hands the running elaboration to the replacement: the reload control writes a
-handoff before this server exits, and the replacement attaches to the same owner, peer, prompt,
-activity, and pending question before it serves the Draft goals page. An answer after the reload
-reaches that peer and Stop closes it; no second peer and no second question appear. Any other
-dashboard exit, abrupt or not, ends the owner and its peer within ten seconds and records one
-`failed` run whose error names that the server exit interrupted the elaboration; the draft stays
-listed and startable, and nothing resumes automatically.
+The peers are not held by the server process. One detached owner process per draft carries each
+running elaboration, persists its run under `STATE_DIR`, and consumes that draft's answer and Stop
+commands, so a version reload hands every running elaboration to the replacement: the reload
+control writes a handoff before this server exits, and the replacement attaches to the same
+owners, peers, prompts, activity, and pending questions before it serves the Draft goals page. An
+answer or Stop after the reload reaches the original peer for its own draft, and no second peer
+or second question appears. Any other dashboard exit, abrupt or not, ends every owner and its peer
+within ten seconds and records one `failed` run per interrupted draft whose error names that the
+server exit interrupted the elaboration; each draft stays listed and startable, and nothing
+resumes automatically.
 
 `.devboard/prompts/goal-draft.md` is the elaboration contract and
 `.devboard/omp/commands/goal-draft.md` its command wrapper, which reads the prompt and passes
@@ -2097,8 +2111,8 @@ The client sends:
 { "type": "getGoalDrafts" }
 { "type": "getGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "startGoalDraft", "path": ".devboard/goal-proposals/example.md" }
-{ "type": "stopGoalDraft" }
-{ "type": "answerGoalDraft", "id": 4, "value": "The whole goal" }
+{ "type": "stopGoalDraft", "path": ".devboard/goal-proposals/example.md" }
+{ "type": "answerGoalDraft", "path": ".devboard/goal-proposals/example.md", "id": 4, "value": "The whole goal" }
 
 { "type": "getScout" }
 { "type": "startScout" }
@@ -2169,12 +2183,14 @@ The client sends:
   on failure, the reason in `message`; a missing number answers `error`. A running agent is not
   interrupted, and the queue drops the issue on the worker's next poll.
 - `getGoalDrafts` answers `issuesDrafts` with the sorted list of `{ path, name, heading }` and
-  `issuesDraftState` with the current elaboration. `getGoalDraft` answers `issuesDraftDetail` with
-  the draft's exact bytes, or `issuesDraftError` when the path is refused or missing.
-  `startGoalDraft` starts the one elaboration peer and broadcasts `issuesDraftState` and
-  `issuesDrafts`; `stopGoalDraft` closes it, records `stopped`, and keeps the draft.
-  `answerGoalDraft` routes one answer to the elaboration question. Activity is sent as
-  `issuesDraftState` snapshots while the peer runs.
+  `runs`, the full per-path run snapshot (live runs plus finished runs whose draft still exists).
+  `getGoalDraft` answers `issuesDraftDetail` with the draft's exact bytes, or `issuesDraftError`
+  carrying `path` when the path is refused or missing. `startGoalDraft` starts one peer for its
+  `path` and broadcasts that run's `issuesDraftState` and the list; starting a path that is
+  already running is refused with `This draft is being elaborated.` and starts no peer.
+  `stopGoalDraft` and `answerGoalDraft` carry the draft `path`; stop closes only that peer and
+  records `stopped`, and an answer reaches only that path's pending question. Each run's activity
+  is sent as its own `issuesDraftState` snapshot while its peer runs.
 
   lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
   next attempt, errors, and the harness version the worker loaded. A missing state and no live

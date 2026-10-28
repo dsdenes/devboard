@@ -53,9 +53,13 @@ function draftRun(reply: Record<string, unknown>): Record<string, unknown> | und
   return typeof draft === "object" && draft !== null ? (draft as Record<string, unknown>) : undefined;
 }
 
-async function readDraftRun(port: number): Promise<Record<string, unknown>> {
-  const reply = await websocketCommand(port, { type: "getGoalDrafts" }, "issuesDraftState");
-  const run = draftRun(reply);
+async function readDraftRun(port: number, path: string): Promise<Record<string, unknown>> {
+  const reply = await websocketCommand(port, { type: "getGoalDrafts" }, "issuesDrafts");
+  const runs = Array.isArray(reply.runs) ? reply.runs : [];
+  const run = runs.find(
+    (entry): entry is Record<string, unknown> =>
+      typeof entry === "object" && entry !== null && (entry as Record<string, unknown>).path === path,
+  );
   assertTrue(run !== undefined, "the dashboard returned no draft run");
   return run;
 }
@@ -253,7 +257,7 @@ try {
   assertTrue(peerPid > 0 && processRunning(peerPid), "the stub peer is not running");
   await waitFor(
     async () => {
-      const run = await readDraftRun(draftServer.port);
+      const run = await readDraftRun(draftServer.port, draftPath);
       return run.status === "running" && Array.isArray(run.activity) && run.activity.length > 0
         ? true
         : undefined;
@@ -285,7 +289,7 @@ try {
     "the replacement version after the draft reload",
     30_000,
   );
-  const adopted = await readDraftRun(draftServer.port);
+  const adopted = await readDraftRun(draftServer.port, draftPath);
   assertEquals(
     [adopted.status, adopted.path],
     ["running", draftPath],
@@ -304,10 +308,10 @@ try {
   );
   assertTrue(ownerPids(host).length === 1, "the elaboration has no owner process");
 
-  await sendDraftCommand(draftServer.port, { type: "stopGoalDraft" });
+  await sendDraftCommand(draftServer.port, { type: "stopGoalDraft", path: draftPath });
   const stopped = await waitFor(
     async () => {
-      const run = await readDraftRun(draftServer.port);
+      const run = await readDraftRun(draftServer.port, draftPath);
       return run.status === "stopped" ? run : undefined;
     },
     "the stopped draft elaboration",

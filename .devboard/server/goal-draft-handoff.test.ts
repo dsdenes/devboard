@@ -5,12 +5,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { projectLabel } from "./app";
 import { saveSubscriptions } from "./providers";
+import { readGoalDraftOwnerState } from "./goal-draft-owner";
 
 /**
- * The detached elaboration owner against a real dashboard process: the reload
- * control's replacement adopts the same agent, prompt, activity, and question;
- * an abrupt or non-reload exit ends that agent and leaves one interrupted
- * failure with the draft startable.
+ * The detached elaboration owners against a real dashboard process: the reload
+ * control's replacement adopts every running agent, prompt, activity, and
+ * question; an abrupt or non-reload exit ends those agents and leaves one
+ * interrupted failure per draft, each still startable.
  *
  * Every file lives under `.devboard/.tmp`. The stub agent stands in for
  * `omp acp`, and the release directory is an offline fixture, so no test
@@ -262,12 +263,6 @@ function startPids(log: string): number[] {
     .map((line) => Number(line.slice("goal-draft-start ".length)));
 }
 
-function peerPids(log: string): number[] {
-  return logLines(log)
-    .filter((line) => line.startsWith("spawn "))
-    .map((line) => Number(line.slice("spawn ".length)));
-}
-
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -278,13 +273,13 @@ function alive(pid: number): boolean {
 }
 
 async function waitFor<T>(
-  read: () => T | undefined,
+  read: () => T | undefined | Promise<T | undefined>,
   description: string,
   timeoutMs = 15_000,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const value = read();
+    const value = await read();
     if (value !== undefined && value !== null) return value;
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${description}`);
     await Bun.sleep(25);
@@ -311,7 +306,6 @@ async function connect(url: string): Promise<Client> {
       socket.onopen = () => opened.resolve();
       socket.onerror = () => opened.reject(new Error("websocket error"));
       await opened.promise;
-      const events: Record<string, unknown>[] = [];
       const buffered: Record<string, unknown>[] = [];
       const waiters: Array<{
         predicate: (message: Record<string, unknown>) => boolean;
@@ -327,7 +321,6 @@ async function connect(url: string): Promise<Client> {
         } catch {
           return;
         }
-        events.push(message);
         const index = waiters.findIndex((waiter) => waiter.predicate(message));
         if (index >= 0) {
           const waiter = waiters.splice(index, 1)[0];
@@ -382,12 +375,59 @@ async function connect(url: string): Promise<Client> {
   }
 }
 
+/** One fresh `getGoalDrafts` replay; never a broadcast buffered earlier. */
+async function readRuns(fixture: Fixture, timeoutMs = 15_000): Promise<Record<string, unknown>[]> {
+  const { promise, resolve: settle, reject } = Promise.withResolvers<Record<string, unknown>[]>();
+  const socket = new WebSocket(`ws://${fixture.url}/ws`);
+  const timer = setTimeout(() => {
+    try {
+      socket.close();
+    } catch {
+      // Already closed.
+    }
+    reject(new Error("timed out waiting for the draft runs"));
+  }, timeoutMs);
+  socket.onopen = () => socket.send(JSON.stringify({ type: "getGoalDrafts" }));
+  socket.onerror = () => {
+    clearTimeout(timer);
+    reject(new Error("websocket error"));
+  };
+  socket.onmessage = (event) => {
+    let message: unknown;
+    try {
+      message = JSON.parse(String(event.data)) as unknown;
+    } catch {
+      return;
+    }
+    if (typeof message !== "object" || message === null) return;
+    if (!("type" in message) || message.type !== "issuesDrafts") return;
+    clearTimeout(timer);
+    socket.close();
+    settle(runsOf(message as Record<string, unknown>));
+  };
+  return promise;
+}
+
 function recordOf(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function runsOf(message: Record<string, unknown>): Record<string, unknown>[] {
+  if (!Array.isArray(message.runs)) return [];
+  return message.runs
+    .map(recordOf)
+    .filter((run): run is Record<string, unknown> => run !== undefined);
+}
+
+function runAt(
+  runs: Record<string, unknown>[],
+  path: string,
+): Record<string, unknown> | undefined {
+  return runs.find((run) => run.path === path);
 }
 
 function draftPaths(message: Record<string, unknown>): string[] {
@@ -401,8 +441,21 @@ function draftPaths(message: Record<string, unknown>): string[] {
   return paths;
 }
 
-function draftState(message: Record<string, unknown>): Record<string, unknown> | undefined {
-  return message.type === "issuesDraftState" ? recordOf(message.draft) : undefined;
+async function waitForRun(
+  fixture: Fixture,
+  path: string,
+  predicate: (run: Record<string, unknown>) => boolean,
+  description: string,
+  timeoutMs = 15_000,
+): Promise<Record<string, unknown>> {
+  return waitFor(
+    async () => {
+      const run = runAt(await readRuns(fixture), path);
+      return run !== undefined && predicate(run) ? run : undefined;
+    },
+    description,
+    timeoutMs,
+  );
 }
 
 async function waitForReplacement(
@@ -421,9 +474,11 @@ async function waitForReplacement(
 
 describe("graceful reload handoff", () => {
   test(
-    "adopts the same peer, prompt, activity, and question, then answers and stops it",
+    "adopts every running peer, its prompt, activity, and question, then answers and stops them",
     async () => {
       const fixture = await createFixture();
+      const questionPath = ".devboard/goal-proposals/question.md";
+      const hangPath = ".devboard/goal-proposals/hang.md";
       await writeFile(
         join(fixture.drafts, "question.md"),
         "# Question draft\n\n> Unprocessed draft. STUB-QUESTION\n",
@@ -434,34 +489,41 @@ describe("graceful reload handoff", () => {
       );
       const dashboard = await startServer(fixture);
       let client = await connect(fixture.url);
-      let firstPid = 0;
-      let activity: string[] = [];
-      let question: Record<string, unknown> | null = null;
       try {
-        client.send({ type: "getGoalDrafts" });
-        await client.waitFor(
-          (message) => draftState(message)?.status === "idle",
-          "the idle draft state",
+        client.send({ type: "startGoalDraft", path: questionPath });
+        client.send({ type: "startGoalDraft", path: hangPath });
+        const questionRun = await waitForRun(
+          fixture,
+          questionPath,
+          (run) => run.status === "running" && run.question !== null && stringList(run.activity).length > 0,
+          "the question draft's pending question",
         );
-        client.send({
-          type: "startGoalDraft",
-          path: ".devboard/goal-proposals/question.md",
-        });
-        const running = await client.waitFor(
-          (message) => (draftState(message)?.status === "running" ? true : false),
-          "the running elaboration",
+        const hangRun = await waitForRun(
+          fixture,
+          hangPath,
+          (run) => run.status === "running" && stringList(run.activity).length > 0,
+          "the hang draft's activity",
         );
-        expect(draftState(running)?.path).toBe(".devboard/goal-proposals/question.md");
-        firstPid = await waitFor(() => startPids(fixture.log)[0], "the stub peer's start line");
-        const questioned = await client.waitFor(
-          (message) => (draftState(message)?.question ? true : false),
-          "the pending question",
+        const questionState = await waitFor(
+          () => readGoalDraftOwnerState(fixture.stateDir, fixture.repo, questionPath),
+          "the question owner state",
         );
-        const asked = draftState(questioned);
-        activity = stringList(asked?.activity);
-        question = recordOf(asked?.question) ?? null;
-        expect(activity.length).toBeGreaterThan(0);
-        expect(question?.message).toBe("Choose an answer");
+        const hangState = await waitFor(
+          () => readGoalDraftOwnerState(fixture.stateDir, fixture.repo, hangPath),
+          "the hang owner state",
+        );
+        const questionPeer = questionState.peer?.pid ?? 0;
+        const hangPeer = hangState.peer?.pid ?? 0;
+        expect(questionPeer).toBeGreaterThan(0);
+        expect(hangPeer).toBeGreaterThan(0);
+        expect(alive(questionPeer)).toBe(true);
+        expect(alive(hangPeer)).toBe(true);
+        const startedAt = questionRun.startedAt;
+        const hangStartedAt = hangRun.startedAt;
+        const question = recordOf(questionRun.question);
+        expect(question).not.toBeUndefined();
+        const activity = stringList(questionRun.activity);
+        const hangActivity = stringList(hangRun.activity);
 
         client.send({ type: "restartServer" });
         await client.waitClosed();
@@ -470,92 +532,85 @@ describe("graceful reload handoff", () => {
         expect(replacement.port).toBe(fixture.port);
 
         client = await connect(fixture.url);
-        client.send({ type: "getGoalDrafts" });
-        const adopted = await client.waitFor(
-          (message) => (draftState(message)?.status === "running" ? true : false),
-          "the adopted running elaboration",
+        const adoptedQuestion = await waitForRun(
+          fixture,
+          questionPath,
+          (run) =>
+            run.status === "running" &&
+            run.startedAt === startedAt &&
+            recordOf(run.question) !== undefined &&
+            stringList(run.activity).join("\n").startsWith(activity.join("\n")),
+          "the adopted question run",
+          20_000,
         );
-        const run = draftState(adopted)!;
-        expect(run.path).toBe(".devboard/goal-proposals/question.md");
-        expect(run.startedAt).toBe(asked?.startedAt);
-        expect(stringList(run.activity).slice(0, activity.length)).toEqual(activity);
-        expect(recordOf(run.question)).toEqual(question ?? undefined);
-        expect(alive(firstPid)).toBe(true);
-        expect(startPids(fixture.log)).toEqual([firstPid]);
-        expect(logLines(fixture.log).filter((line) => line.startsWith("goal-draft "))).toEqual([
-          "goal-draft .devboard/goal-proposals/question.md",
-        ]);
-        expect(ownerPids(fixture.repo).length).toBe(1);
+        const adoptedHang = await waitForRun(
+          fixture,
+          hangPath,
+          (run) =>
+            run.status === "running" &&
+            run.startedAt === hangStartedAt &&
+            stringList(run.activity).join("\n").startsWith(hangActivity.join("\n")),
+          "the adopted hang run",
+          20_000,
+        );
+        expect(recordOf(adoptedQuestion.question)).toEqual(question);
+        expect(alive(questionPeer)).toBe(true);
+        expect(alive(hangPeer)).toBe(true);
+        expect(startPids(fixture.log)).toHaveLength(2);
+        expect(
+          logLines(fixture.log).filter((line) => line === `goal-draft ${questionPath}`),
+        ).toHaveLength(1);
+        expect(
+          logLines(fixture.log).filter((line) => line === `goal-draft ${hangPath}`),
+        ).toHaveLength(1);
+        expect(ownerPids(fixture.repo)).toHaveLength(2);
+        expect(adoptedHang.path).toBe(hangPath);
 
-        if (question === null || !("id" in question)) throw new Error("the question has no id");
         client.send({
           type: "answerGoalDraft",
-          id: question.id,
+          path: questionPath,
+          id: question?.id,
           value: "Alpha",
         });
         await waitFor(
           () => (logLines(fixture.log).includes("answer Alpha") ? true : undefined),
           "the answer reaching the original peer",
         );
+        expect(logLines(fixture.log).filter((line) => line === "answer Alpha")).toHaveLength(1);
         await waitFor(
-          () => (logLines(fixture.log).filter((line) => line === "answer Alpha").length === 1 ? true : undefined),
-          "exactly one answer line",
+          () =>
+            !existsSync(join(fixture.drafts, "question.md")) ? true : undefined,
+          "the answered draft to leave the list",
+          10_000,
         );
-        const succeeded = await client.waitFor(
-          (message) => (draftState(message)?.status === "succeeded" ? true : false),
-          "the completed elaboration",
-        );
-        expect(draftState(succeeded)?.question).toBeNull();
-        expect(existsSync(join(fixture.drafts, "question.md"))).toBe(false);
         expect(existsSync(join(fixture.repo, ".devboard", "goals", "question.md"))).toBe(true);
-        expect(startPids(fixture.log)).toEqual([firstPid]);
-        await waitFor(() => (alive(firstPid) ? undefined : true), "the completed peer to exit");
-        await waitFor(
-          () => (ownerPids(fixture.repo).length === 0 ? true : undefined),
-          "the completed owner to exit",
+        const stillHanging = await waitForRun(
+          fixture,
+          hangPath,
+          (run) => run.status === "running",
+          "the other elaboration to stay running",
         );
+        expect(stillHanging.startedAt).toBe(hangStartedAt);
+        expect(alive(hangPeer)).toBe(true);
 
-        // The second draft reloads at a pending state, then Stop ends its peer.
-        client.send({ type: "startGoalDraft", path: ".devboard/goal-proposals/hang.md" });
-        await client.waitFor(
-          (message) =>
-            draftState(message)?.status === "running" &&
-            stringList(draftState(message)?.activity).length > 0,
-          "the hanging elaboration activity",
-        );
-        const hangPid = await waitFor(
-          () => startPids(fixture.log)[1],
-          "the hanging peer's start line",
-        );
-        const beforeReload = dashboards(fixture.repo)[0]!;
-        client.send({ type: "restartServer" });
-        await client.waitClosed();
-        client.close();
-        const secondReplacement = await waitForReplacement(fixture, beforeReload.pid);
-        expect(secondReplacement.port).toBe(fixture.port);
-        client = await connect(fixture.url);
-        client.send({ type: "getGoalDrafts" });
-        const hanging = await client.waitFor(
-          (message) =>
-            draftState(message)?.status === "running" &&
-            draftState(message)?.path === ".devboard/goal-proposals/hang.md",
-          "the adopted hanging elaboration",
-        );
-        expect(stringList(draftState(hanging)?.activity).length).toBeGreaterThan(0);
-        expect(alive(hangPid)).toBe(true);
-        client.send({ type: "stopGoalDraft" });
-        const stopped = await client.waitFor(
-          (message) => (draftState(message)?.status === "stopped" ? true : false),
+        client.send({ type: "stopGoalDraft", path: hangPath });
+        const stopped = await waitForRun(
+          fixture,
+          hangPath,
+          (run) => run.status === "stopped",
           "the stopped elaboration",
         );
-        expect(draftState(stopped)?.path).toBe(".devboard/goal-proposals/hang.md");
+        expect(stopped.path).toBe(hangPath);
         expect(existsSync(join(fixture.drafts, "hang.md"))).toBe(true);
-        await waitFor(() => (alive(hangPid) ? undefined : true), "the stopped peer to exit");
+        await waitFor(() => (alive(hangPeer) ? undefined : true), "the stopped peer to exit");
+        await waitFor(
+          () => (alive(questionPeer) ? undefined : true),
+          "the completed question peer to exit",
+        );
         await waitFor(
           () => (ownerPids(fixture.repo).length === 0 ? true : undefined),
-          "the stopped owner to exit",
+          "every owner to exit",
         );
-        expect(startPids(fixture.log)).toHaveLength(2);
       } finally {
         client.close();
         for (const entry of dashboards(fixture.repo)) {
@@ -588,17 +643,8 @@ describe("graceful reload handoff", () => {
       const dashboard = await startServer(fixture);
       let client = await connect(fixture.url);
       try {
-        client.send({ type: "getGoalDrafts" });
-        const drafts = await client.waitFor(
-          (message) => (message.type === "issuesDrafts" ? true : false),
-          "the draft list",
-        );
-        expect(draftPaths(drafts)).toEqual([".devboard/goal-proposals/idle.md"]);
-        const state = await client.waitFor(
-          (message) => (draftState(message)?.status === "idle" ? true : false),
-          "the idle state",
-        );
-        expect(draftState(state)?.activity).toEqual([]);
+        const runs = await readRuns(fixture);
+        expect(runs).toEqual([]);
         client.send({ type: "restartServer" });
         await client.waitClosed();
         client.close();
@@ -607,14 +653,10 @@ describe("graceful reload handoff", () => {
         expect(ownerPids(fixture.repo)).toEqual([]);
 
         client = await connect(fixture.url);
-        client.send({ type: "getGoalDrafts" });
-        const replayed = await client.waitFor(
-          (message) => (draftState(message)?.status === "idle" ? true : false),
-          "the idle state after the reload",
-        );
-        expect(draftState(replayed)?.path).toBeNull();
-        expect(draftState(replayed)?.activity).toEqual([]);
+        const adopted = await readRuns(fixture);
+        expect(adopted).toEqual([]);
         expect(ownerPids(fixture.repo)).toEqual([]);
+        expect(startPids(fixture.log)).toEqual([]);
       } finally {
         client.close();
         for (const entry of dashboards(fixture.repo)) {
@@ -632,34 +674,53 @@ describe("graceful reload handoff", () => {
 
 describe("interrupted elaborations", () => {
   test(
-    "SIGKILL ends the peer and the replacement reports one interrupted failure",
+    "SIGKILL ends every peer and the replacement reports one interrupted failure each",
     async () => {
       const fixture = await createFixture();
+      const paths = [
+        ".devboard/goal-proposals/killed-question.md",
+        ".devboard/goal-proposals/killed-hang.md",
+      ];
       await writeFile(
-        join(fixture.drafts, "killed.md"),
-        "# Killed draft\n\n> Unprocessed draft. STUB-QUESTION\n",
+        join(fixture.drafts, "killed-question.md"),
+        "# Killed question\n\n> Unprocessed draft. STUB-QUESTION\n",
+      );
+      await writeFile(
+        join(fixture.drafts, "killed-hang.md"),
+        "# Killed hang\n\n> Unprocessed draft. STUB-HANG\n",
       );
       const dashboard = await startServer(fixture);
       let client = await connect(fixture.url);
-      let peerPid = 0;
+      const peers: number[] = [];
       try {
-        client.send({ type: "startGoalDraft", path: ".devboard/goal-proposals/killed.md" });
-        await client.waitFor(
-          (message) => (draftState(message)?.question ? true : false),
+        for (const path of paths) client.send({ type: "startGoalDraft", path });
+        await waitForRun(
+          fixture,
+          paths[0]!,
+          (run) => run.question !== null,
           "the pending question before the kill",
         );
-        peerPid = await waitFor(() => startPids(fixture.log)[0], "the peer before the kill");
-        expect(ownerPids(fixture.repo)).toHaveLength(1);
+        for (const path of paths) {
+          const state = await waitFor(
+            () => readGoalDraftOwnerState(fixture.stateDir, fixture.repo, path),
+            `the owner state for ${path}`,
+          );
+          if (state.peer !== null) peers.push(state.peer.pid);
+        }
+        expect(peers).toHaveLength(2);
+        expect(ownerPids(fixture.repo)).toHaveLength(2);
       } finally {
         client.close();
       }
 
       dashboard.kill("SIGKILL");
       await dashboard.exited;
-      await waitFor(() => (alive(peerPid) ? undefined : true), "the peer after SIGKILL", 10_000);
+      for (const pid of peers) {
+        await waitFor(() => (alive(pid) ? undefined : true), `peer ${pid} after SIGKILL`, 10_000);
+      }
       await waitFor(
         () => (ownerPids(fixture.repo).length === 0 ? true : undefined),
-        "the owner after SIGKILL",
+        "every owner after SIGKILL",
         10_000,
       );
 
@@ -667,24 +728,31 @@ describe("interrupted elaborations", () => {
       const replacement = await startServer(fixture);
       client = await connect(fixture.url);
       try {
-        client.send({ type: "getGoalDrafts" });
-        const failed = await client.waitFor(
-          (message) => (draftState(message)?.status === "failed" ? true : false),
-          "the interrupted failure",
+        const runs = await waitFor(
+          async () => {
+            const listed = await readRuns(fixture);
+            return paths.every((path) => runAt(listed, path)?.status === "failed") ? listed : undefined;
+          },
+          "both interrupted failures",
         );
-        const run = draftState(failed)!;
-        expect(run.path).toBe(".devboard/goal-proposals/killed.md");
-        expect(String(run.error)).toContain("server exit interrupted the elaboration");
+        for (const path of paths) {
+          expect(String(runAt(runs, path)?.error)).toContain(
+            "server exit interrupted the elaboration",
+          );
+        }
+        client.send({ type: "getGoalDrafts" });
         const list = await client.waitFor(
-          (message) => (message.type === "issuesDrafts" ? true : false),
+          (message) => message.type === "issuesDrafts",
           "the draft list after the interruption",
         );
-        expect(draftPaths(list)).toEqual([".devboard/goal-proposals/killed.md"]);
+        expect(draftPaths(list).sort()).toEqual([...paths].sort());
         expect(startPids(fixture.log)).toHaveLength(startsBefore);
 
-        client.send({ type: "startGoalDraft", path: ".devboard/goal-proposals/killed.md" });
-        await client.waitFor(
-          (message) => (draftState(message)?.status === "running" ? true : false),
+        client.send({ type: "startGoalDraft", path: paths[0]! });
+        await waitForRun(
+          fixture,
+          paths[0]!,
+          (run) => run.status === "running",
           "the restarted elaboration",
         );
         await waitFor(
@@ -715,9 +783,10 @@ describe("interrupted elaborations", () => {
   );
 
   test(
-    "SIGTERM without a replacement ends the peer and the next dashboard reports the failure",
+    "SIGTERM without a replacement ends its peer and the next dashboard reports the failure",
     async () => {
       const fixture = await createFixture();
+      const path = ".devboard/goal-proposals/terminated.md";
       await writeFile(
         join(fixture.drafts, "terminated.md"),
         "# Terminated draft\n\n> Unprocessed draft. STUB-HANG\n",
@@ -726,14 +795,19 @@ describe("interrupted elaborations", () => {
       let client = await connect(fixture.url);
       let peerPid = 0;
       try {
-        client.send({ type: "startGoalDraft", path: ".devboard/goal-proposals/terminated.md" });
-        await client.waitFor(
-          (message) =>
-            draftState(message)?.status === "running" &&
-            ((draftState(message)?.activity as string[] | undefined)?.length ?? 0) > 0,
+        client.send({ type: "startGoalDraft", path });
+        await waitForRun(
+          fixture,
+          path,
+          (run) => run.status === "running" && stringList(run.activity).length > 0,
           "the running elaboration before SIGTERM",
         );
-        peerPid = await waitFor(() => startPids(fixture.log)[0], "the peer before SIGTERM");
+        const state = await waitFor(
+          () => readGoalDraftOwnerState(fixture.stateDir, fixture.repo, path),
+          "the owner state before SIGTERM",
+        );
+        peerPid = state.peer?.pid ?? 0;
+        expect(peerPid).toBeGreaterThan(0);
       } finally {
         client.close();
       }
@@ -751,16 +825,21 @@ describe("interrupted elaborations", () => {
       const replacement = await startServer(fixture);
       client = await connect(fixture.url);
       try {
-        client.send({ type: "getGoalDrafts" });
-        const failed = await client.waitFor(
-          (message) => (draftState(message)?.status === "failed" ? true : false),
+        const failed = await waitForRun(
+          fixture,
+          path,
+          (run) => run.status === "failed",
           "the interrupted failure after SIGTERM",
         );
-        expect(draftState(failed)?.path).toBe(".devboard/goal-proposals/terminated.md");
-        expect(String(draftState(failed)?.error)).toContain(
-          "server exit interrupted the elaboration",
-        );
+        expect(String(failed.error)).toContain("server exit interrupted the elaboration");
         expect(startPids(fixture.log)).toHaveLength(startsBefore);
+        client.send({ type: "startGoalDraft", path });
+        await waitForRun(
+          fixture,
+          path,
+          (run) => run.status === "running",
+          "the restarted elaboration after SIGTERM",
+        );
       } finally {
         client.close();
         replacement.kill("SIGKILL");
@@ -780,6 +859,6 @@ describe("interrupted elaborations", () => {
   test("the owner state is keyed under the dashboard state directory", async () => {
     const fixture = await createFixture();
     expect(existsSync(join(fixture.stateDir, "goal-drafts"))).toBe(false);
-    expect(peerPids(fixture.log)).toEqual([]);
+    expect(startPids(fixture.log)).toEqual([]);
   });
 });

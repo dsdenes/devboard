@@ -1,33 +1,42 @@
 /**
- * Proposed-goal drafts and their one elaboration peer.
+ * Proposed-goal drafts and their elaboration peers.
  *
  * A draft is unprocessed Markdown under `<REPO_DIR>/.devboard/goal-proposals/`.
  * The Drafts view lists them, shows one verbatim, and can start the harness
- * `/goal-draft <path>` command in one ACP peer at a time. The peer itself owns
- * the interview, the goal spec under `.devboard/goals/`, the GitHub issue, and
- * the draft removal; this module only validates paths, streams the transcript,
- * and refuses a second concurrent elaboration.
+ * `/goal-draft <path>` command in one ACP peer per draft. Any number of drafts
+ * may elaborate at once; each path has at most one live peer. The peer itself
+ * owns the interview, the goal spec under `.devboard/goals/`, the GitHub issue,
+ * and the draft removal; this module only validates paths, keeps one run record
+ * per path, streams each transcript, and refuses only a duplicate start of the
+ * path already running.
  *
- * The peer is not a child of this server. A detached owner process
+ * A peer is not a child of this server. One detached owner process per draft
  * (`goal-draft-owner.ts`) holds the agent and persists its run under
- * `STATE_DIR`, so a version reload's replacement attaches to the same agent;
- * any other server exit ends it with an interrupted `failed` run.
+ * `STATE_DIR`, so a version reload's replacement attaches to every running
+ * owner; any other server exit ends them with interrupted `failed` runs.
  */
 
 import { spawn } from "node:child_process";
-import { readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  type Dirent,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { GOAL_PROPOSALS_DIRECTORY } from "./goal-proposal";
 import { pidAlive } from "../issues/lock";
-import { journalKey } from "./journal";
 import {
   GOAL_DRAFT_INTERRUPTED,
   GOAL_DRAFT_OWNER_VERSION,
   goalDraftControlDirectory,
+  listGoalDraftOwnerStates,
   readGoalDraftHandoff,
   readGoalDraftLease,
-  readGoalDraftOwnerState,
   removeGoalDraftHandoff,
+  resetGoalDraftRun,
   writeGoalDraftHandoff,
   writeGoalDraftLease,
   writeGoalDraftOwnerCommand,
@@ -232,7 +241,7 @@ const STOPPED_START: GoalDraftStartResult = {
 };
 
 const DEFAULT_POLL_MS = 150;
-/** The owner is told its supervisor is alive at this cadence, not every poll. */
+/** The owners are told their supervisor is alive at this cadence, not every poll. */
 const LEASE_INTERVAL_MS = 400;
 
 function copyRun(run: GoalDraftRun): GoalDraftRun {
@@ -246,7 +255,7 @@ function copyRun(run: GoalDraftRun): GoalDraftRun {
   };
 }
 
-/** One elaboration at a time, scoped to one repository. */
+/** One run per draft path, many concurrent elaborations, scoped to one repository. */
 export class GoalDraftManager {
   private readonly repoDir: string;
   private readonly stateDir: string;
@@ -258,11 +267,13 @@ export class GoalDraftManager {
   private readonly ownerScript: string;
   private readonly spawnOwner: NonNullable<GoalDraftManagerOptions["spawnOwner"]>;
 
-  private run: GoalDraftRun = { ...IDLE };
-  private state: GoalDraftOwnerState | undefined;
-  /** The run whose environment is resolving, before its owner is spawned. */
-  private starting: GoalDraftRun | undefined;
-  /** True when this dashboard is the owner's supervisor, not an observer. */
+  /** Runs that still matter: every live run plus finished runs whose draft is listed. */
+  private readonly runs = new Map<string, GoalDraftRun>();
+  /** The runs whose environment is still resolving, before their owner exists. */
+  private readonly starting = new Map<string, GoalDraftRun>();
+  /** The last durable owner state read for each path. */
+  private readonly owners = new Map<string, GoalDraftOwnerState>();
+  /** True when this dashboard supervises the owners, not merely observes them. */
   private supervises = false;
   private timer: Timer | undefined;
   private lastLeaseAt = 0;
@@ -305,20 +316,39 @@ export class GoalDraftManager {
     this.timer.unref?.();
   }
 
-  snapshot(): GoalDraftRun {
-    return copyRun(this.run);
+  snapshot(): GoalDraftRun[];
+  snapshot(path: string): GoalDraftRun;
+  snapshot(path?: string): GoalDraftRun[] | GoalDraftRun {
+    if (path !== undefined) return copyRun(this.runs.get(path) ?? IDLE);
+    const runs: GoalDraftRun[] = [];
+    for (const [runPath, run] of this.runs) {
+      if (run.status === "running" || existsSync(resolve(this.repoDir, runPath))) {
+        runs.push(copyRun(run));
+      }
+    }
+    return runs.sort((left, right) => ((left.path ?? "") < (right.path ?? "") ? -1 : 1));
   }
 
-  private get controlDirectory(): string {
-    return goalDraftControlDirectory(this.stateDir, this.repoDir);
+  isRunning(path: string): boolean {
+    const run = this.runs.get(path);
+    return run?.status === "running" && (this.starting.has(path) || this.ownerAlive(path));
   }
 
-  private ownerAlive(state: GoalDraftOwnerState | undefined = this.state): boolean {
+  private ownerAlive(path: string): boolean {
+    const state = this.owners.get(path);
     return state?.owner != null && recordedChildAlive(state.owner);
   }
 
-  private emit(): void {
-    this.send({ type: "issuesDraftState", draft: this.snapshot() });
+  private static stateOwnerAlive(state: GoalDraftOwnerState): boolean {
+    return state.owner != null && recordedChildAlive(state.owner);
+  }
+
+  private emit(path: string): void {
+    this.send({ type: "issuesDraftState", draft: this.snapshot(path) });
+  }
+
+  publishDrafts(): void {
+    this.send({ type: "issuesDrafts", drafts: listGoalDrafts(this.repoDir) });
   }
 
   private writeLease(): void {
@@ -328,19 +358,23 @@ export class GoalDraftManager {
     writeGoalDraftLease(this.stateDir, this.repoDir, { pid: process.pid, updatedAt: now });
   }
 
-  private persistRun(run: GoalDraftRun, owner: RecordedChild | null): GoalDraftOwnerState {
+  private persistRun(
+    path: string,
+    run: GoalDraftRun,
+    owner: RecordedChild | null,
+  ): GoalDraftOwnerState {
     const updatedAt = this.clock().toISOString();
     const state: GoalDraftOwnerState = {
       version: GOAL_DRAFT_OWNER_VERSION,
       run: copyRun(run),
       owner,
-      peer: null,
+      peer: this.owners.get(path)?.peer ?? null,
       supervisorPid: process.pid,
       updatedAt,
     };
-    writeGoalDraftOwnerState(this.stateDir, this.repoDir, state);
-    this.state = state;
-    this.run = copyRun(run);
+    writeGoalDraftOwnerState(this.stateDir, this.repoDir, path, state);
+    this.owners.set(path, state);
+    this.runs.set(path, copyRun(run));
     return state;
   }
 
@@ -362,89 +396,93 @@ export class GoalDraftManager {
       peer: null,
       updatedAt,
     };
-    writeGoalDraftOwnerState(this.stateDir, this.repoDir, next);
+    writeGoalDraftOwnerState(this.stateDir, this.repoDir, next.run.path!, next);
+    this.owners.set(next.run.path!, next);
+    this.runs.set(next.run.path!, copyRun(next.run));
     return next;
   }
 
   /**
-   * Attaches this dashboard to a durable run before it serves the Drafts
-   * page. A reload's handoff is adopted; an owner left without a live
-   * supervisor is interrupted; another live dashboard's run is only observed.
+   * Attaches this dashboard to every durable run before it serves the Drafts
+   * page. A reload's handoff adopts each live owner; owners left without a
+   * live supervisor are interrupted; another live dashboard's runs are only
+   * observed.
    */
   private attach(): void {
-    const state = readGoalDraftOwnerState(this.stateDir, this.repoDir);
-    if (state === undefined) {
+    const states = listGoalDraftOwnerStates(this.stateDir, this.repoDir);
+    const handoff = readGoalDraftHandoff(this.stateDir, this.repoDir);
+    let adoptable = false;
+    for (const state of states) {
+      const path = state.run.path!;
+      this.owners.set(path, state);
+      this.runs.set(path, copyRun(state.run));
+      if (state.run.status !== "running") continue;
+      if (!GoalDraftManager.stateOwnerAlive(state)) {
+        this.markInterrupted(state);
+        continue;
+      }
+      if (handoff !== null) adoptable = true;
+    }
+
+    if (adoptable) {
+      writeGoalDraftLease(this.stateDir, this.repoDir, { pid: process.pid, updatedAt: Date.now() });
+      this.lastLeaseAt = Date.now();
       removeGoalDraftHandoff(this.stateDir, this.repoDir);
+      this.supervises = true;
       return;
     }
-    if (state.run.status === "running") {
-      if (!this.ownerAlive(state)) {
-        this.state = this.markInterrupted(state);
-        this.run = copyRun(this.state.run);
-        return;
-      }
-      if (readGoalDraftHandoff(this.stateDir, this.repoDir) !== null) {
-        writeGoalDraftLease(this.stateDir, this.repoDir, { pid: process.pid, updatedAt: Date.now() });
-        this.lastLeaseAt = Date.now();
-        removeGoalDraftHandoff(this.stateDir, this.repoDir);
-        this.supervises = true;
-      } else {
-        const lease = readGoalDraftLease(this.stateDir, this.repoDir);
-        if (lease === null || lease.pid === process.pid || !pidAlive(lease.pid)) {
-          writeGoalDraftOwnerCommand(this.controlDirectory, { type: "interrupt" });
-        }
-      }
-    } else {
-      removeGoalDraftHandoff(this.stateDir, this.repoDir);
+
+    removeGoalDraftHandoff(this.stateDir, this.repoDir);
+    const lease = readGoalDraftLease(this.stateDir, this.repoDir);
+    const observedByAnother =
+      lease !== null && lease.pid !== process.pid && pidAlive(lease.pid);
+    if (observedByAnother) return;
+    for (const state of states) {
+      if (state.run.status !== "running") continue;
+      if (!GoalDraftManager.stateOwnerAlive(state)) continue;
+      writeGoalDraftOwnerCommand(
+        goalDraftControlDirectory(this.stateDir, this.repoDir, state.run.path!),
+        { type: "interrupt" },
+      );
     }
-    this.state = state;
-    this.run = copyRun(state.run);
   }
 
-  /** Re-reads the owner's run; publishes only what changed. */
+  /** Re-reads every owner's run; publishes only what changed. */
   private refresh(): void {
-    if (this.starting !== undefined) return;
-    const previous = this.run;
-    const stored = readGoalDraftOwnerState(this.stateDir, this.repoDir);
-    if (stored === undefined) {
-      if (previous.status === "idle" && previous.activity.length === 0) {
-        this.state = undefined;
-        return;
-      }
-      this.state = undefined;
-      this.run = { ...IDLE };
-      this.emit();
-      if (previous.status === "running") this.publishDrafts();
-      return;
+    const states = listGoalDraftOwnerStates(this.stateDir, this.repoDir);
+    const seen = new Set<string>();
+    let terminalTransition = false;
+    for (const stored of states) {
+      const path = stored.run.path!;
+      seen.add(path);
+      if (this.starting.has(path)) continue;
+      const previous = this.runs.get(path);
+      const current =
+        stored.run.status === "running" && !GoalDraftManager.stateOwnerAlive(stored)
+          ? this.markInterrupted(stored)
+          : stored;
+      this.owners.set(path, current);
+      const next = current.run;
+      if (JSON.stringify(next) === JSON.stringify(previous)) continue;
+      this.runs.set(path, copyRun(next));
+      this.emit(path);
+      if (previous?.status === "running" && next.status !== "running") terminalTransition = true;
     }
-
-    const current =
-      stored.run.status === "running" && !this.ownerAlive(stored)
-        ? this.markInterrupted(stored)
-        : stored;
-    this.state = current;
-    const next = current.run;
-    const changed = JSON.stringify(next) !== JSON.stringify(previous);
-    this.run = copyRun(next);
-    if (changed) {
-      this.emit();
-      if (previous.status === "running" && next.status !== "running") this.publishDrafts();
+    for (const path of [...this.runs.keys()]) {
+      if (seen.has(path) || this.starting.has(path)) continue;
+      const previous = this.runs.get(path);
+      this.runs.delete(path);
+      this.owners.delete(path);
+      if (previous?.status === "running") terminalTransition = true;
     }
-    if (this.supervises && next.status === "running") this.writeLease();
-  }
-
-  publishDrafts(): void {
-    this.send({ type: "issuesDrafts", drafts: listGoalDrafts(this.repoDir) });
+    if (terminalTransition) this.publishDrafts();
+    if (this.supervises && [...this.runs.values()].some((run) => run.status === "running")) {
+      this.writeLease();
+    }
   }
 
   async start(relativePath: unknown): Promise<GoalDraftStartResult> {
     this.refresh();
-    if (this.run.status === "running" && (this.starting !== undefined || this.ownerAlive())) {
-      return {
-        ok: false,
-        message: `An elaboration is already running for ${this.run.path}. Stop it before starting another draft.`,
-      };
-    }
     let draft: GoalDraft;
     try {
       draft = readGoalDraft(this.repoDir, relativePath);
@@ -454,21 +492,24 @@ export class GoalDraftManager {
         message: error instanceof GoalDraftError ? error.message : String(error),
       };
     }
+    const path = draft.path;
+    if (this.starting.has(path) || (this.runs.get(path)?.status === "running" && this.ownerAlive(path))) {
+      return { ok: false, message: "This draft is being elaborated." };
+    }
 
-    removeGoalDraftHandoff(this.stateDir, this.repoDir);
     const startedAt = this.clock().toISOString();
     const run: GoalDraftRun = {
       status: "running",
-      path: draft.path,
+      path,
       startedAt,
       finishedAt: null,
       error: null,
       activity: [],
       question: null,
     };
-    this.starting = run;
-    this.run = copyRun(run);
-    this.emit();
+    this.starting.set(path, run);
+    this.runs.set(path, copyRun(run));
+    this.emit(path);
     this.publishDrafts();
 
     let env: Record<string, string | undefined>;
@@ -477,10 +518,11 @@ export class GoalDraftManager {
     } catch (error) {
       // A stop outranks a late start failure: the operator's `stopped` state
       // must not become `failed` after the environment rejected.
-      if (this.starting !== run) return STOPPED_START;
-      this.starting = undefined;
+      if (this.starting.get(path) !== run) return STOPPED_START;
+      this.starting.delete(path);
       const message = error instanceof Error ? error.message : String(error);
       this.persistRun(
+        path,
         {
           ...run,
           status: "failed",
@@ -489,15 +531,23 @@ export class GoalDraftManager {
         },
         null,
       );
-      this.emit();
+      this.emit(path);
       this.publishDrafts();
       return { ok: false, message };
     }
 
     // A stop can land while the environment resolves. No owner exists yet, so
     // close nothing and keep the operator's `stopped` state as the final one.
-    if (this.starting !== run) return STOPPED_START;
-    this.starting = undefined;
+    if (this.starting.get(path) !== run) return STOPPED_START;
+    this.starting.delete(path);
+
+    resetGoalDraftRun(this.stateDir, this.repoDir, path);
+    this.persistRun(path, run, null);
+    if (!this.supervises) {
+      writeGoalDraftLease(this.stateDir, this.repoDir, { pid: process.pid, updatedAt: Date.now() });
+      this.lastLeaseAt = Date.now();
+      this.supervises = true;
+    }
 
     const argv = [
       process.execPath,
@@ -506,14 +556,9 @@ export class GoalDraftManager {
       this.repoDir,
       "--state-dir",
       this.stateDir,
+      "--path",
+      path,
     ];
-    this.persistRun(run, null);
-    this.lastLeaseAt = Date.now();
-    writeGoalDraftLease(this.stateDir, this.repoDir, {
-      pid: process.pid,
-      updatedAt: this.lastLeaseAt,
-    });
-
     const pid = this.spawnOwner(argv, {
       ...env,
       AGENT_COMMAND: this.command,
@@ -521,6 +566,7 @@ export class GoalDraftManager {
     if (pid === undefined) {
       const message = "the elaboration peer could not be started";
       this.persistRun(
+        path,
         {
           ...run,
           status: "failed",
@@ -529,88 +575,98 @@ export class GoalDraftManager {
         },
         null,
       );
-      this.emit();
+      this.emit(path);
       this.publishDrafts();
       return { ok: false, message };
     }
 
-    this.persistRun(run, { pid, argv, cwd: this.repoDir });
-    this.supervises = true;
-    this.emit();
+    this.persistRun(path, run, { pid, argv, cwd: this.repoDir });
+    this.emit(path);
     this.publishDrafts();
-    return { ok: true, path: draft.path };
+    return { ok: true, path };
   }
 
-  stop(): boolean {
-    if (this.starting !== undefined) {
-      const run = this.starting;
-      this.starting = undefined;
+  stop(path: string): boolean {
+    const starting = this.starting.get(path);
+    if (starting !== undefined) {
+      this.starting.delete(path);
       const stopped: GoalDraftRun = {
-        ...run,
+        ...starting,
         status: "stopped",
         finishedAt: this.clock().toISOString(),
         error: null,
         question: null,
       };
-      this.persistRun(stopped, null);
-      this.emit();
+      this.persistRun(path, stopped, null);
+      this.emit(path);
       this.publishDrafts();
       return true;
     }
     this.refresh();
-    if (this.run.status !== "running") return false;
-    if (!this.ownerAlive()) {
-      if (this.state !== undefined) {
-        this.state = this.markInterrupted(this.state);
-        this.run = copyRun(this.state.run);
-        this.emit();
+    const run = this.runs.get(path);
+    if (run?.status !== "running") return false;
+    if (!this.ownerAlive(path)) {
+      const state = this.owners.get(path);
+      if (state !== undefined) {
+        this.markInterrupted(state);
+        this.emit(path);
+        this.publishDrafts();
       }
       return false;
     }
-    writeGoalDraftOwnerCommand(this.controlDirectory, { type: "stop" });
+    writeGoalDraftOwnerCommand(
+      goalDraftControlDirectory(this.stateDir, this.repoDir, path),
+      { type: "stop" },
+    );
     return true;
   }
 
-  answer(id: number | string, value: string): boolean {
+  answer(path: string, id: number | string, value: string): boolean {
     this.refresh();
-    if (this.run.status !== "running" || this.run.question === null) return false;
-    if (String(this.run.question.id) !== String(id)) return false;
-    if (!this.ownerAlive()) return false;
-    writeGoalDraftOwnerCommand(this.controlDirectory, { type: "answer", id, value });
+    const run = this.runs.get(path);
+    if (run?.status !== "running" || run.question === null) return false;
+    if (String(run.question.id) !== String(id)) return false;
+    if (!this.ownerAlive(path)) return false;
+    writeGoalDraftOwnerCommand(
+      goalDraftControlDirectory(this.stateDir, this.repoDir, path),
+      { type: "answer", id, value },
+    );
     return true;
   }
 
   /**
-   * Tells the owner a replacement is coming, so it keeps the agent across the
-   * reload. Written before the server stops; only the reload control calls it.
+   * Tells the owners a replacement is coming, so they keep their agents across
+   * the reload. Written before the server stops; only the reload control calls it.
    */
   handoff(): void {
     this.refresh();
     if (!this.supervises) return;
-    if (this.run.status !== "running" || !this.ownerAlive()) return;
+    if (![...this.runs.values()].some((run) => run.status === "running" && this.ownerAlive(run.path!))) {
+      return;
+    }
     writeGoalDraftHandoff(this.stateDir, this.repoDir, { at: Date.now(), pid: process.pid });
   }
 
   /**
-   * Stops observing; a graceful reload keeps the owner for its replacement,
-   * and any other stop ends the elaboration with the interrupted failure.
+   * Stops observing; a graceful reload keeps the owners for its replacement,
+   * and any other stop ends every elaboration with the interrupted failure.
    */
   dispose(handoff = false): void {
     clearInterval(this.timer);
     this.timer = undefined;
-    if (this.starting !== undefined) {
-      this.starting = undefined;
-      if (!handoff) removeGoalDraftHandoff(this.stateDir, this.repoDir);
-      return;
-    }
+    this.starting.clear();
     if (!this.supervises) {
       if (!handoff) removeGoalDraftHandoff(this.stateDir, this.repoDir);
       return;
     }
     this.supervises = false;
     if (handoff) return;
-    if (this.run.status === "running" && this.ownerAlive()) {
-      writeGoalDraftOwnerCommand(this.controlDirectory, { type: "interrupt" });
+    for (const [path, run] of this.runs) {
+      if (run.status !== "running" || !this.ownerAlive(path)) continue;
+      writeGoalDraftOwnerCommand(
+        goalDraftControlDirectory(this.stateDir, this.repoDir, path),
+        { type: "interrupt" },
+      );
     }
     removeGoalDraftHandoff(this.stateDir, this.repoDir);
   }

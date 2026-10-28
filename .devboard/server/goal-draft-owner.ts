@@ -1,25 +1,28 @@
 /**
- * The detached owner of a running draft elaboration.
+ * The detached owner of one running draft elaboration.
  *
- * The dashboard starts one owner per elaboration and never holds the ACP peer
+ * The dashboard starts one owner per draft and never holds the ACP peer
  * itself. The owner spawns the agent, streams its activity and question into a
- * repository-keyed state file under `STATE_DIR`, and consumes answer/stop
- * commands from a control directory beside it. Because the owner is in its own
- * session, a replacement dashboard that the reload control starts attaches to
- * the same owner and the same agent process.
+ * draft-keyed state file under `STATE_DIR`, and consumes answer/stop commands
+ * from a control directory beside it. Because the owner is in its own session,
+ * a replacement dashboard that the reload control starts attaches to the same
+ * owners and the same agent processes.
  *
  * The owner watches the dashboard that supervises it. A reload writes a
  * handoff marker before it exits, so the owner waits for the replacement to
  * take the lease; any other exit ends the agent and records one `failed` run
  * naming the interruption, which the next dashboard shows while leaving the
- * draft startable.
+ * draft startable. Every owner watches the same repository-level lease and
+ * marker, so a replacement adopts each running draft independently.
  */
 
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -49,7 +52,7 @@ export const GOAL_DRAFT_INTERRUPTED =
 const OWNER_CHECK_MS = 200;
 const PEER_CLOSE_GRACE_MS = 1_500;
 
-/** Everything one detached owner persists for its repository. */
+/** Everything one detached owner persists for one draft. */
 export interface GoalDraftOwnerState {
   version: number;
   run: GoalDraftRun;
@@ -67,13 +70,13 @@ export type GoalDraftOwnerCommand =
   | { type: "stop" }
   | { type: "interrupt" };
 
-/** The marker a reload writes so its replacement may adopt the owner. */
+/** The marker a reload writes so its replacement may adopt the owners. */
 export interface GoalDraftHandoff {
   at: number;
   pid: number;
 }
 
-/** The dashboard that currently supervises the owner. */
+/** The dashboard that currently supervises the owners. */
 export interface GoalDraftLease {
   pid: number;
   updatedAt: number;
@@ -84,12 +87,31 @@ export function goalDraftStateDirectory(stateDir: string, repoDir: string): stri
   return join(resolve(stateDir), "goal-drafts", journalKey(resolve(repoDir)));
 }
 
-export function goalDraftOwnerStatePath(stateDir: string, repoDir: string): string {
-  return join(goalDraftStateDirectory(stateDir, repoDir), "state.json");
+/** The directory holding one state directory per running or finished draft. */
+export function goalDraftRunsDirectory(stateDir: string, repoDir: string): string {
+  return join(goalDraftStateDirectory(stateDir, repoDir), "runs");
 }
 
-export function goalDraftControlDirectory(stateDir: string, repoDir: string): string {
-  return join(goalDraftStateDirectory(stateDir, repoDir), "control");
+/** The draft-keyed directory; the path never becomes a filename. */
+export function goalDraftRunDirectory(stateDir: string, repoDir: string, path: string): string {
+  const key = createHash("sha256").update(path).digest("hex").slice(0, 24);
+  return join(goalDraftRunsDirectory(stateDir, repoDir), key);
+}
+
+export function goalDraftOwnerStatePath(
+  stateDir: string,
+  repoDir: string,
+  path: string,
+): string {
+  return join(goalDraftRunDirectory(stateDir, repoDir, path), "state.json");
+}
+
+export function goalDraftControlDirectory(
+  stateDir: string,
+  repoDir: string,
+  path: string,
+): string {
+  return join(goalDraftRunDirectory(stateDir, repoDir, path), "control");
 }
 
 export function goalDraftHandoffPath(stateDir: string, repoDir: string): string {
@@ -182,32 +204,66 @@ function parseRun(value: unknown): GoalDraftRun | undefined {
   };
 }
 
-/** Reads one repository's owner state; unusable bytes read as absent. */
-export function readGoalDraftOwnerState(
-  stateDir: string,
-  repoDir: string,
-): GoalDraftOwnerState | undefined {
-  const parsed = readJson(goalDraftOwnerStatePath(stateDir, repoDir));
-  if (!isRecord(parsed) || parsed.version !== GOAL_DRAFT_OWNER_VERSION) return undefined;
-  const run = parseRun(parsed.run);
-  if (run === undefined) return undefined;
-  const supervisorPid = isInteger(parsed.supervisorPid) ? parsed.supervisorPid : null;
+function parseState(value: unknown): GoalDraftOwnerState | undefined {
+  if (!isRecord(value) || value.version !== GOAL_DRAFT_OWNER_VERSION) return undefined;
+  const run = parseRun(value.run);
+  if (run === undefined || run.path === null) return undefined;
+  const supervisorPid = isInteger(value.supervisorPid) ? value.supervisorPid : null;
   return {
     version: GOAL_DRAFT_OWNER_VERSION,
     run,
-    owner: parseChild(parsed.owner),
-    peer: parseChild(parsed.peer),
+    owner: parseChild(value.owner),
+    peer: parseChild(value.peer),
     supervisorPid,
-    updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
   };
+}
+
+/** Reads one draft's owner state; unusable bytes read as absent. */
+export function readGoalDraftOwnerState(
+  stateDir: string,
+  repoDir: string,
+  path: string,
+): GoalDraftOwnerState | undefined {
+  return parseState(readJson(goalDraftOwnerStatePath(stateDir, repoDir, path)));
+}
+
+/** Every readable owner state under the repository's runs directory. */
+export function listGoalDraftOwnerStates(
+  stateDir: string,
+  repoDir: string,
+): GoalDraftOwnerState[] {
+  let names: string[];
+  try {
+    names = readdirSync(goalDraftRunsDirectory(stateDir, repoDir));
+  } catch {
+    return [];
+  }
+  const states: GoalDraftOwnerState[] = [];
+  for (const name of names.sort()) {
+    const state = parseState(
+      readJson(join(goalDraftRunsDirectory(stateDir, repoDir), name, "state.json")),
+    );
+    if (state !== undefined) states.push(state);
+  }
+  return states;
 }
 
 export function writeGoalDraftOwnerState(
   stateDir: string,
   repoDir: string,
+  path: string,
   state: GoalDraftOwnerState,
 ): void {
-  writeJson(goalDraftOwnerStatePath(stateDir, repoDir), state);
+  writeJson(goalDraftOwnerStatePath(stateDir, repoDir, path), state);
+}
+
+/**
+ * Forgets one draft's previous run and its queued commands, so a fresh owner
+ * never consumes a stop or answer meant for its predecessor.
+ */
+export function resetGoalDraftRun(stateDir: string, repoDir: string, path: string): void {
+  rmSync(goalDraftRunDirectory(stateDir, repoDir, path), { recursive: true, force: true });
 }
 
 export function readGoalDraftHandoff(
@@ -339,23 +395,28 @@ async function closePeer(peer: AcpConnection | undefined, child: RecordedChild |
   while (Date.now() < forced && recordedChildAlive(child)) await Bun.sleep(25);
 }
 
-/** Runs the owner until the elaboration ends; the entry point of its process. */
+/** Runs one draft's owner until its elaboration ends; the entry point of its process. */
 export async function runGoalDraftOwner(argv: string[]): Promise<void> {
   const repoDir = resolve(argument(argv, "--repo") ?? "");
   const stateDir = resolve(argument(argv, "--state-dir") ?? "");
-  if (argument(argv, "--repo") === undefined || argument(argv, "--state-dir") === undefined) {
-    process.stderr.write("goal-draft owner: --repo and --state-dir are required.\n");
+  const draftPath = argument(argv, "--path");
+  if (
+    argument(argv, "--repo") === undefined ||
+    argument(argv, "--state-dir") === undefined ||
+    draftPath === undefined
+  ) {
+    process.stderr.write("goal-draft owner: --repo, --state-dir, and --path are required.\n");
     process.exit(2);
   }
 
   // The dashboard writes the running state before it spawns this process.
   const launchDeadline = Date.now() + 2_000;
-  let stored = readGoalDraftOwnerState(stateDir, repoDir);
+  let stored = readGoalDraftOwnerState(stateDir, repoDir, draftPath);
   while ((stored === undefined || stored.run.status !== "running") && Date.now() < launchDeadline) {
     await Bun.sleep(20);
-    stored = readGoalDraftOwnerState(stateDir, repoDir);
+    stored = readGoalDraftOwnerState(stateDir, repoDir, draftPath);
   }
-  if (stored === undefined || stored.run.status !== "running" || stored.run.path === null) {
+  if (stored === undefined || stored.run.status !== "running") {
     process.exit(0);
   }
 
@@ -373,10 +434,10 @@ export async function runGoalDraftOwner(argv: string[]): Promise<void> {
   let timer: Timer | undefined;
   let handoffDeadline: number | undefined;
 
-  const controlDirectory = goalDraftControlDirectory(stateDir, repoDir);
+  const controlDirectory = goalDraftControlDirectory(stateDir, repoDir, draftPath);
 
   const persist = (): void => {
-    writeGoalDraftOwnerState(stateDir, repoDir, {
+    writeGoalDraftOwnerState(stateDir, repoDir, draftPath, {
       version: GOAL_DRAFT_OWNER_VERSION,
       run,
       owner,
