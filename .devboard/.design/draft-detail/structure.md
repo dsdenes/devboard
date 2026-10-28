@@ -10,7 +10,7 @@
 | 4 | region_question | Elaboration question, only while pending | Start | C14, C15, C16 | P0 while pending |
 | 5 | region_proposal | Proposed goal text | Review | C8 | P0 |
 | 6 | region_activity | Streamed elaboration log, only while a run exists | Start | C13 | P1 |
-| 7 | region_context | Captured facts, then a collapsed evidence disclosure | Review | C9, C10, C11, C20 | P1 / P2 |
+| 7 | region_context | Captured facts, then inline Visible text and DOM excerpt | Review | C9, C10, C11, C20 | P1 / P2 |
 | 8 | region_source | Exact draft bytes, collapsed | Review | C12 | P3 (hard contract) |
 
 ```
@@ -37,7 +37,7 @@ Panel (surface, border, 4px radius, fills the grid cell)
     section captured context
       overline "Captured UI context"
       fact grid: Route, URL, Selected element, Viewport, Captured at   P1
-      details "Captured evidence": Visible text, DOM excerpt            P2
+      inline sections: Visible text, DOM excerpt                        P2
     details source
       summary "Draft source" + byte count                              P3
       exact bytes in a bounded mono block
@@ -59,10 +59,10 @@ Panel (surface, border, 4px radius, fills the grid cell)
 - A pending question moves above the proposal and the log: it is the only thing blocking the
   elaboration, and the old layout buried it below a long activity stream.
 - The proposal is the first content block because the review decision precedes the run.
-- Activity sits above the captured evidence: live progress is P1 and changes; the capture is
+- Activity sits above the captured facts: live progress is P1 and changes; the capture is
   reference. It is omitted entirely when no run exists, instead of showing an empty box.
-- Captured facts are one compact grid. The long visible text and DOM excerpt spend their
-  P2 budget inside one disclosure; the exact bytes spend their P3 budget in a second one.
+- Captured facts are one compact grid; the visible text and DOM excerpt follow inline, and the
+  exact bytes spend their P3 budget in a disclosure.
 
 ## State coverage
 
@@ -83,7 +83,7 @@ Panel (surface, border, 4px radius, fills the grid cell)
 - <1100px: the list and the detail stack; the detail keeps the same internal order.
 - At the 1024×720 floor the header title truncates, the path truncates, and the action group
   keeps its size; nothing wraps below the identity and no horizontal scroll appears.
-- The body owns vertical scrolling; the log and the evidence blocks never create a scroll
+- The body owns vertical scrolling; the log and the source block never create a scroll
   trap outside it.
 
 ## Rationale
@@ -92,7 +92,7 @@ Panel (surface, border, 4px radius, fills the grid cell)
   draft (context again), then a nested `Activity` header, then the log, then the question.
   Reading order follows data storage, not the operator's decisions.
 - Splitting the bytes at the writer's `## Captured UI context` marker is the only parsing the
-  writers guarantee. It removes the duplicate evidence from the reading surface while the
+  writers guarantee. It removes the duplicate context from the reading surface while the
   exact bytes stay available.
 - Reusing `IssuesQuestion` (generalised from `IssuesAgentQuestion`) and `IssuesAgentLog`
   keeps the question grammar and the auto-following log identical to the Agents surface.

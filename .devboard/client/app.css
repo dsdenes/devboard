@@ -3687,19 +3687,6 @@ a.code-chip--link:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.issues-draft-evidence > summary {
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.issues-draft-evidence__body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-}
-
 .issues-draft-evidence__section {
   display: flex;
   flex-direction: column;
