@@ -30,6 +30,9 @@ const stubAgent = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
 const sourceVersion = readHarnessVersion(runningHarnessDir());
 // The deterministic `gh` stub always answers with this issue URL.
 const stubIssueUrl = "https://gitea.example/dsdenes/devboard/issues/42";
+// A tracker title longer than any supported line: it must truncate instead of
+// widening a page or pushing a header's trailing controls outside the pane.
+const longIssueTitle = "long".repeat(60);
 const chromeCandidates = [
   "/usr/bin/google-chrome",
   "/usr/bin/google-chrome-stable",
@@ -622,7 +625,7 @@ async function seedIssuesState(
     ? [
         ...["17", "18", "19"].map((value) => Number(value)).map((number) => ({
           number,
-          title: `Fixture issue ${number}`,
+          title: number === 17 ? longIssueTitle : `Fixture issue ${number}`,
           url: `https://github.com/fixture/host/issues/${number}`,
           createdAt: "2026-10-26T00:00:00Z",
           labels: number === 19 ? ["goal"] : ([] as string[]),
@@ -5730,6 +5733,59 @@ try {
     focus,
   );
   check(focus.rawSubtitle === "", "the focus tab still renders a bare run-id subtitle", focus);
+  const longFocusTitle = await page.eval<{
+    text: string;
+    tooltip: string;
+    clipped: boolean;
+    closeInside: boolean;
+    statusInside: boolean;
+    scrollWidth: number;
+    clientWidth: number;
+  }>(`(() => {
+    const surface = document.querySelector('[data-testid="issues-agent-focus"]');
+    const title = surface?.querySelector('.issues-overview__title');
+    const close = document.querySelector('[data-testid="issues-agent-focus-close"]');
+    const status = document.querySelector('[data-testid="issues-agent-focus-status"]');
+    const surfaceRect = surface?.getBoundingClientRect();
+    const closeRect = close?.getBoundingClientRect();
+    const statusRect = status?.getBoundingClientRect();
+    return {
+      text: title?.textContent ?? "",
+      tooltip: title?.getAttribute("title") ?? "",
+      clipped: title !== null && title !== undefined && title.scrollWidth > title.clientWidth,
+      closeInside:
+        surfaceRect !== undefined &&
+        closeRect !== undefined &&
+        closeRect.right <= surfaceRect.right + 0.5,
+      statusInside:
+        surfaceRect !== undefined &&
+        statusRect !== undefined &&
+        statusRect.right <= surfaceRect.right + 0.5,
+      scrollWidth: surface?.scrollWidth ?? 0,
+      clientWidth: surface?.clientWidth ?? 0,
+    };
+  })()`);
+  check(
+    longFocusTitle.text === `#17 ${longIssueTitle}`,
+    "the focus tab lost the issue title",
+    longFocusTitle,
+  );
+  check(
+    longFocusTitle.tooltip === `#17 ${longIssueTitle}`,
+    "the focus tab does not expose the full issue title",
+    longFocusTitle,
+  );
+  check(longFocusTitle.clipped, "a long issue title is not truncated", longFocusTitle);
+  check(
+    longFocusTitle.closeInside && longFocusTitle.statusInside,
+    "a long issue title pushes the focus header controls outside the pane",
+    longFocusTitle,
+  );
+  check(
+    longFocusTitle.scrollWidth <= longFocusTitle.clientWidth + 1,
+    "a long issue title widens the focus page",
+    longFocusTitle,
+  );
   await saveShot("issues-agent-focus");
   await page.click('[data-testid="theme-toggle"]');
   await page.wait(
@@ -5950,7 +6006,12 @@ try {
   );
   check(pendingMeta.trim() === "5 pending", "the sidebar does not count every pending issue", pendingMeta);
 
-  await page.click('[data-testid="open-issues-runs"]');
+  // The sidebar no longer lists Runs; the palette still opens the tab.
+  check(
+    await page.eval<boolean>(`document.querySelector('[data-testid="open-issues-runs"]') === null`),
+    "the Issues sidebar still lists Runs",
+  );
+  await runPalette("open.issues.runs");
   await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the runs page");
   const runsHeader = await page.eval<string[]>(
     `[...document.querySelectorAll('.issues-runs-page > .issues-overview__header > div > *')].map((node) => \`\${node.tagName}:\${node.className}\`)`,
@@ -5988,17 +6049,17 @@ try {
     command: string;
     label: string;
     count: string;
-    afterRuns: boolean;
+    afterIssues: boolean;
     palette: boolean;
   }>(`(() => {
     const entry = document.querySelector('[data-testid="open-issues-drafts"]');
-    const runs = document.querySelector('[data-testid="open-issues-runs"]');
+    const issuesEntry = document.querySelector('[data-testid="open-issues-queue"]');
     return {
       entryTestid: entry?.getAttribute("data-testid") ?? "",
       command: entry?.getAttribute("data-command") ?? "",
       label: entry?.getAttribute("aria-label") ?? "",
       count: entry?.querySelector(".sidebar-item__meta")?.textContent?.trim() ?? "",
-      afterRuns: runs !== null && runs.nextElementSibling === entry,
+      afterIssues: issuesEntry !== null && issuesEntry.nextElementSibling === entry,
       palette: window.__viFrames.some((frame) => frame.includes("open.issues.drafts")) ||
         [...document.querySelectorAll('[data-command="open.issues.drafts"]')].length > 0,
     };
@@ -6011,7 +6072,7 @@ try {
     draftsChrome,
   );
   check(draftsChrome.count === "3", "the Drafts entry does not count the listed drafts", draftsChrome);
-  check(draftsChrome.afterRuns, "the Drafts entry is not after Runs", draftsChrome);
+  check(draftsChrome.afterIssues, "the Drafts entry is not after Issues", draftsChrome);
 
   const listedDrafts = await page.eval<string[]>(
     `[...document.querySelectorAll('[data-testid="issues-draft"]')].map((item) => item.getAttribute("data-path") ?? "")`,

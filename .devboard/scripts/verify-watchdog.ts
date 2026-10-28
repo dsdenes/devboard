@@ -516,6 +516,12 @@ try {
       )) === "Watchdog",
       "the page title is Watchdog",
     );
+    assertTrue(
+      !(await devtools.evaluate(
+        `document.querySelector('[data-testid="watchdog-header"] .page-header__eyebrow') !== null`,
+      )),
+      "the Watchdog header still carries its Issues eyebrow",
+    );
     assertTrue(await present(devtools, "watchdog-cycles-empty"), "no cycle renders no empty state");
     assertTrue(await present(devtools, "watchdog-issues-empty"), "no issue renders no empty state");
     // The first projection arrives asynchronously; "none" is the server's answer.

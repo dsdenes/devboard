@@ -6,6 +6,7 @@ import { giteaBaseUrl, parseForgeRemote } from "../lib/forge.ts";
 import { giteaLabels, giteaListIssues, type FetchLike } from "../lib/gitea.ts";
 import { pollOpenIssues } from "../issues/tracker";
 import { closeIssue } from "../server/issue-close";
+import { fakeGiteaPull } from "../server/fixtures/fake-gitea-pull";
 import { CommandFlowForge } from "../server/forge-pr";
 import { fileScoutIssue } from "../issues/scout/actions";
 import { createWatchdogDelivery } from "../watchdog/delivery";
@@ -296,6 +297,56 @@ describe("Gitea Flow pull requests", () => {
     await forge.merge(input.cwd, target, 3);
     expect(calls.some((call) => call.method === "POST" && call.url.endsWith("/pulls/3/merge")))
       .toBe(true);
+  });
+
+  test("a checkpoint after Ready updates a live pull request without readding WIP", async () => {
+    const fake = fakeGiteaPull();
+    const forge = new CommandFlowForge(
+      async () => ({ code: 1, stdout: "", stderr: "" }),
+      {},
+      async () => ({
+        forge: "gitea",
+        host: "localhost",
+        project: "acme/fixture",
+        login: "fixture",
+        token: "fixture-secret-token",
+        source: "test",
+        baseUrl: "http://gitea.test",
+        active: true,
+        permission: "push",
+        canWrite: true,
+      }),
+      fake.fetch,
+    );
+    const input = {
+      cwd: "/repo",
+      target: {
+        forge: "gitea" as const,
+        host: "localhost",
+        project: "acme/fixture",
+        baseUrl: "http://gitea.test",
+      },
+      head: "flow-branch",
+      base: "main",
+      title: "Flow change",
+      body: "## Goal",
+    };
+
+    await forge.createDraft(input);
+    expect(fake.title()).toBe("WIP: Flow change");
+    await forge.markReady(input.cwd, input.target, 3);
+    expect(fake.title()).toBe("Flow change");
+
+    await forge.update({ ...input, number: 3, body: "## Goal\n\nsecond checkpoint" });
+    const patch = fake.calls
+      .filter((call) => call.method === "PATCH" && call.url.endsWith("/pulls/3"))
+      .at(-1);
+    expect(JSON.parse(patch?.body ?? "{}")).toMatchObject({
+      title: "Flow change",
+      body: "## Goal\n\nsecond checkpoint",
+    });
+    expect(JSON.parse(patch?.body ?? "{}").title).not.toContain("WIP:");
+    expect((await forge.view(input.cwd, input.target, 3)).draft).toBe(false);
   });
 });
 
