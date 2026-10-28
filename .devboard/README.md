@@ -1322,7 +1322,8 @@ from installed hosts and the canonical source checkout are covered alike; an ins
 state directory has no journal is reported `uninstrumented`. A process whose `REPO_DIR` lies
 inside a `.devboard/.tmp` directory is verification scratch, not a monitored host: verification
 scripts create those fixtures to assert deliberate failures, so discovery skips them before any
-evidence is read.
+evidence is read. The live watchdog verification, which seeds a fixture to exercise the whole
+loop, sets `DEVBOARD_WATCHDOG_FIXTURE=1` to stay discoverable.
 
 Findings derive only from machine-checkable evidence: a `server-error`, `update-error`, or
 `acp-stderr` journal record; a `lane-stop` whose status token is `failed`; an omp log record at
