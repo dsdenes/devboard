@@ -1862,6 +1862,8 @@ try {
     return item?.getAttribute("data-name") ?? "";
   })()`);
   await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the disclosure");
+  const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
+  check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
   const goalSkillSurface = await page.eval<{ selected: string; current: string; expanded: string }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
     return {
@@ -1877,18 +1879,22 @@ try {
     "clicking a prepared skill does not expand it",
     { clickedSkill, goalSkillSurface },
   );
-  const skillDocument = await page.eval<{ name: string; text: string; inline: boolean }>(`(() => {
+  const skillDocument = await page.eval<{ name: string; text: string; inline: boolean; description: boolean }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
     const detail = item?.closest("li")?.querySelector('[data-testid="skill-content"]') ?? null;
     return {
       name: detail?.getAttribute("data-name") ?? "",
       text: detail?.querySelector('[data-testid="skill-content-text"]')?.textContent?.trim() ?? "",
       inline: detail !== null,
+      description: detail?.querySelector(".muted") !== null,
     };
   })()`);
   check(
-    skillDocument.inline && skillDocument.name === clickedSkill && skillDocument.text.length > 0,
-    "expanding a prepared skill does not show its document in the list",
+    skillDocument.inline &&
+      skillDocument.name === clickedSkill &&
+      skillDocument.text.length > 0 &&
+      !skillDocument.description,
+    "expanding a prepared skill does not show its document in the list without a description",
     { clickedSkill, skillDocument },
   );
   const collapsingSkill = await page.eval<string>(`document.querySelector('[data-testid="skill"][data-selected="true"]')?.getAttribute("data-name") ?? ""`);
@@ -1981,6 +1987,7 @@ try {
     revision: number;
     panelBottom: number;
     revisionBottom: number;
+    eyebrow: boolean;
   }>(`(() => {
     const editor = document.querySelector('[data-testid="goal-text"]');
     const panel = document.querySelector('[data-testid="goal-editor"]');
@@ -1991,8 +1998,10 @@ try {
       revision: revision === null ? 0 : Math.round(revision.getBoundingClientRect().height),
       panelBottom: panel === null ? 0 : Math.round(panel.getBoundingClientRect().bottom),
       revisionBottom: revision === null ? 0 : Math.round(revision.getBoundingClientRect().bottom),
+      eyebrow: document.querySelector('[data-testid="document-header"] .page-header__eyebrow') !== null,
     };
   })()`);
+  check(!goalLayout.eyebrow, "the goal document header still carries its Plan eyebrow", goalLayout);
   check(goalLayout.editor >= 400 && goalLayout.editor >= goalLayout.panel * 0.6, "the goal document does not fill the page", goalLayout);
   check(goalLayout.revision >= 60 && Math.abs(goalLayout.revisionBottom - goalLayout.panelBottom) <= 24, "the revision guidance is not a tall field at the bottom", goalLayout);
   await saveShot("goal-document");
@@ -5386,29 +5395,23 @@ try {
   await page.wait(`document.querySelector('[data-testid="issues-draft-detail"]') !== null`, "the draft detail");
   const detail = await page.eval<{
     path: string;
-    context: string;
     start: string;
     startCommand: string;
     stop: boolean;
     pathLabel: string;
     proposal: string;
-    facts: number;
-    evidence: number;
-    evidenceDisclosure: boolean;
+    contextSection: boolean;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const start = document.querySelector('[data-testid="issues-draft-start"]');
     return {
       path: panel?.getAttribute("data-path") ?? "",
-      context: document.querySelector('[data-testid="issues-draft-context"]')?.textContent ?? "",
       start: document.querySelector('[data-testid="issues-draft-start"]') !== null ? "yes" : "",
       startCommand: start?.getAttribute("data-command") ?? "",
       stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
       pathLabel: panel?.querySelector(".issues-draft-detail__path")?.textContent?.trim() ?? "",
       proposal: panel?.querySelector(".issues-draft-detail__prose")?.textContent ?? "",
-      facts: panel?.querySelectorAll('[data-testid="issues-draft-context"] dt').length ?? 0,
-      evidence: panel?.querySelectorAll(".issues-draft-evidence__section").length ?? 0,
-      evidenceDisclosure: panel?.querySelector("details.issues-draft-evidence") !== null,
+      contextSection: panel?.querySelector('section[aria-label="Captured UI context"]') !== null,
     };
   })()`);
   check(detail.path === reportDraftPath, "the detail does not name the selected draft", detail);
@@ -5422,10 +5425,8 @@ try {
     storedSelection,
   );
   check(
-    detail.context.includes("Route:") &&
-      detail.context.includes("Selected element:") &&
-      detail.context.includes("Visible text"),
-    "the detail lost the captured UI context",
+    !detail.contextSection,
+    "the draft detail still shows the captured UI context",
     detail,
   );
   check(
@@ -5433,11 +5434,6 @@ try {
       !detail.proposal.includes("## Captured UI context") &&
       !detail.proposal.includes("Unprocessed draft"),
     "the detail does not separate identity and proposal from the evidence",
-    detail,
-  );
-  check(
-    detail.facts > 0 && detail.evidence > 0 && !detail.evidenceDisclosure,
-    "the compact context or the inline evidence is missing",
     detail,
   );
   await dismissNotifications();
@@ -5478,24 +5474,17 @@ try {
   );
   const questionLayout = await page.eval<{
     ordered: boolean;
-    contextEmpty: string;
   }>(`(() => {
     const question = document.querySelector('[data-testid="issues-draft-question"]');
     const activity = document.querySelector('[data-testid="issues-draft-activity"]');
     return {
       ordered: question !== null && activity !== null &&
         (question.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
-      contextEmpty: document.querySelector('[data-testid="issues-draft-context"]')?.textContent?.trim() ?? "",
     };
   })()`);
   check(
     questionLayout.ordered,
     "the pending question is not above the activity log",
-    questionLayout,
-  );
-  check(
-    questionLayout.contextEmpty === "No captured UI context.",
-    "a draft without captured context does not say so",
     questionLayout,
   );
   await dismissNotifications();

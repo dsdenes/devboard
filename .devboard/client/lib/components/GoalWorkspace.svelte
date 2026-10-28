@@ -60,8 +60,6 @@
   const nextRecord = $derived(
     goal.next === null ? null : (goal.records.find((record) => record.file === goal.next) ?? null),
   );
-  const nextLabel = $derived(nextRecord?.title ?? goal.next ?? "none");
-
   const query = $derived(filterQuery.trim().toLowerCase());
   const filteredRecords = $derived(
     goal.records.filter((record) => {
@@ -106,12 +104,6 @@
         : goal.goalReady
           ? "Saved"
           : "Not written yet",
-  );
-
-  const skillsReady = $derived(
-    goal.skills.length === 0
-      ? "No skills prepared yet"
-      : `${goal.skills.length} prepared · ready for implementation`,
   );
 
   const runActionLabel = $derived(
@@ -441,7 +433,6 @@
       >
         {#snippet meta()}
           <span class="muted" data-testid="pending-summary">{progressLine}</span>
-          <span class="muted">Next: <span class="mono">{nextLabel}</span></span>
         {/snippet}
       </PageHeader>
 
@@ -502,7 +493,7 @@
     </div>
   {:else if tab.kind === "goal-document"}
     <div class="goal-page goal-page--fill">
-      <PageHeader eyebrow="Plan" title="Goal document" subtitle={documentState} testid="document-header">
+      <PageHeader title="Goal document" subtitle={documentState} testid="document-header">
         {#snippet meta()}
           {#if operationText !== null}
             <span class="badge" data-tone="accent">{operationText}</span>
@@ -598,14 +589,13 @@
     </div>
   {:else if tab.kind === "skills"}
     <div class="goal-page goal-page--fill">
-      <PageHeader eyebrow="Plan" title="Skills" subtitle={skillsReady} testid="skills-header">
+      <PageHeader title="Skills" testid="skills-header">
         {#snippet meta()}
           {#if goal.contradictions.length > 0}
             <span class="badge" data-tone="error">
               {goal.contradictions.length} contradiction{goal.contradictions.length === 1 ? "" : "s"}
             </span>
           {/if}
-          <span class="muted mono">.omp/skills/</span>
         {/snippet}
         {#snippet actions()}
           <Button
@@ -707,9 +697,7 @@
             </ul>
           {/if}
 
-          {#if goal.contradictions.length === 0}
-            <p class="muted" data-testid="skills-no-contradictions">No contradictions</p>
-          {:else}
+          {#if goal.contradictions.length > 0}
             <ul class="history-list goal-contradictions" data-testid="skills-contradictions">
               {#each goal.contradictions as contradiction (`${contradiction.skills[0]}:${contradiction.skills[1]}`)}
                 <li class="message" data-severity="warning">
@@ -722,6 +710,7 @@
           {/if}
         </div>
       </section>
+
     </div>
   {:else if tab.kind === "adr"}
     {#if record === null}
