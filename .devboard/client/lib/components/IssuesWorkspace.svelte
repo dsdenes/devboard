@@ -9,6 +9,7 @@
   import IssuesAgentQuestion from "./IssuesAgentQuestion.svelte";
   import PageHeader from "./ui/page-header.svelte";
   import ScoutWorkspace from "./ScoutWorkspace.svelte";
+  import WatchdogWorkspace from "./WatchdogWorkspace.svelte";
   import { pollStatus } from "../poll-status";
 
   interface Props {
@@ -32,7 +33,9 @@
               ? "agent"
               : tab?.kind === "scout"
                 ? "scout"
-                : "overview",
+                : tab?.kind === "watchdog"
+                  ? "watchdog"
+                  : "overview",
   );
 
   const runCount = $derived(issues.runs.length);
@@ -120,6 +123,8 @@
 
 {#if page === "scout"}
   <ScoutWorkspace />
+{:else if page === "watchdog"}
+  <WatchdogWorkspace />
 {:else if page === "overview"}
   <section class="issues-overview" data-testid="issues-overview" aria-label="Issues overview">
     <header class="issues-overview__header">

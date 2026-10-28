@@ -11,7 +11,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { readWatchdogStatus } from "../watchdog/status";
+import { WatchdogActivity, type WatchdogActivityOptions } from "./watchdog";
 import {
   AcpConnection,
   agentPrompt,
@@ -152,6 +152,8 @@ export interface AppOptions {
   issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "closeIssue">;
   /** Auto Scout's test seams; production uses the detached worker itself. */
   scout?: Pick<ScoutBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
+  /** Watchdog page's test seams; production reads `gh` in the background. */
+  watchdog?: Pick<WatchdogActivityOptions, "reader" | "now" | "intervalMs" | "staleAfterMs">;
 }
 
 type RunAction = "resolving" | "implementing" | "generating";
@@ -1600,6 +1602,20 @@ export function createApp(options: AppOptions) {
   // The state belongs to this checkout, not to the harness installation: hosts
   // share one harness through a symlink, so the repository path keys the file.
   const stateDir = resolve(options.stateDir ?? join(import.meta.dir, "..", ".tmp"));
+  // The Issues-mode watchdog page: local facts every request, GitHub in the
+  // background at most once per interval. It never writes watchdog state.
+  const watchdog = new WatchdogActivity({
+    watchdogDir: join(stateDir, "watchdog"),
+    repoDir,
+    ...(options.watchdog?.reader === undefined ? {} : { reader: options.watchdog.reader }),
+    ...(options.watchdog?.now === undefined ? {} : { now: options.watchdog.now }),
+    ...(options.watchdog?.intervalMs === undefined
+      ? {}
+      : { intervalMs: options.watchdog.intervalMs }),
+    ...(options.watchdog?.staleAfterMs === undefined
+      ? {}
+      : { staleAfterMs: options.watchdog.staleAfterMs }),
+  });
   // The journal records what happened for the watchdog. It is never part of a
   // run's behavior: a failed write only adds a line to stderr.
   const journal =
@@ -5452,7 +5468,7 @@ export function createApp(options: AppOptions) {
         if (request.method !== "GET") {
           return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
         }
-        return Response.json(readWatchdogStatus(join(stateDir, "watchdog")));
+        return Response.json(watchdog.view());
       }
 
       if (url.pathname === "/ws") {

@@ -1224,11 +1224,62 @@ and exits without filing. A stale lock whose pid is gone is reclaimed.
 The cycle never spawns an agent, creates a worktree, commits, merges, pushes, or publishes; it
 leaves `HEAD`, `origin/main`, the worktree list, and the working tree exactly as it found them.
 
-`GET /api/watchdog` reports the newest cycle as JSON: `cycle` (ISO 8601 or null), `action`, the
-optional `reason`, the `findings` count, `issues` as `{url, category, line, filedAt}` newest
-first, and the `pending` count. The status bar's watchdog indicator shows the last action and its
-age; activating it opens a popover listing up to ten filed issues, each link opening in a new tab,
-and Escape closes it.
+### The Watchdog page
+
+The Issues sidebar lists `Watchdog` (`open-issues-watchdog`) directly after Auto Scout. Activating
+it opens the full workspace page `watchdog-page`, titled `Watchdog`, in place of the Overview tab;
+it stays the Issues mode's active tab until another Issues page is opened. The page reads only
+`GET /api/watchdog` and sends no command that files, comments, closes, starts, stops, or fixes
+anything.
+
+`watchdog-last-cycle` is the newest cycle from `latest.json`: `watchdog-last-cycle-at` (a `<time>`,
+or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findings`,
+`watchdog-last-pending`, and `watchdog-last-reason` only when the report carries a reason. The
+panel's `watchdog-last-age` shows that cycle's age.
+
+`watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
+first, capped at the newest 100 directories. Every `watchdog-cycle` row carries `data-action` and
+renders `watchdog-cycle-at`, `watchdog-cycle-window` (window start and end),
+`watchdog-cycle-action`, `watchdog-cycle-findings`, and `watchdog-cycle-reason` (empty when the
+report has none). A run directory whose `report.json` is missing or unparsable is skipped without
+hiding the other rows. With no run directory at all, the `latest.json` cycle is the single row;
+with no cycle anywhere, `watchdog-cycles-empty` is rendered.
+
+`watchdog-issues` lists every ledger entry whose disposition is `filed:<url>`, newest `filedAt`
+first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `data-state`, and
+`data-version` and renders `watchdog-issue-title` (an anchor to the issue reading
+`[watchdog] <category>: <line>`), `watchdog-issue-category`, `watchdog-issue-filed` (a `<time>`),
+`watchdog-issue-state`, and `watchdog-issue-version` (the tag, or `—`). A pending-only fingerprint
+is counted in `watchdog-last-pending` and never becomes a row; `watchdog-issues-empty` renders
+when nothing is filed. `watchdog-issues-count` summarizes the rows and pending filings.
+
+The server prints `watchdog-issue-state` as `pending` for an open issue and `implemented` for a
+closed one, whatever its `stateReason`; a reopened issue returns to `pending` within one refresh
+interval. State is read from the repository in each ledger URL. For an implemented issue the
+server resolves the closing commit from the issue timeline, or the last 7–40 character hex SHA in
+the newest comment carrying one, resolved to one full commit. The version is the earliest
+published release of that issue's repository whose history contains the commit, ordered by
+`publishedAt` and breaking a tie by tag, or `—` when no commit or release resolves. A blank
+version is recomputed on every read, so a release published later fills it.
+
+The server refreshes its GitHub projection at most once per 60 seconds. Any `GET /api/watchdog`
+request triggers a due refresh in the background and is answered from the last projection without
+waiting for `gh`; the refresh result appears on a later request. A failed read keeps every last
+known state and version and the whole table, and sets `watchdog-sync` to `data-state="error"` with
+the reason in `watchdog-sync-error`. A success sets `data-state="ok"`, clears the reason, and
+updates `watchdog-sync-at`; a success older than 120 seconds with no later failure reports
+`stale`. `watchdog-sync-at` reads `never` before the first success. The page polls every 15
+seconds, so a newly written run directory or filed ledger entry appears without a reload.
+
+`GET /api/watchdog` is GET-only and leaves `<STATE_DIR>/watchdog/` byte-identical: no run
+directory, ledger write, or lock. Its existing fields keep their meaning: `cycle` (ISO 8601 or
+null), `action`, the optional `reason`, the `findings` count, `issues`
+(`{url, category, line, filedAt, state, version}`) newest first, and the `pending` count; it adds
+`cycles` and `sync`. A dashboard-endpoint failure renders `watchdog-error`.
+
+The status bar's watchdog indicator is unchanged: `status-watchdog` shows the last action and its
+age; activating it opens `watchdog-popover` listing up to ten filed issues, each link opening in a
+new tab, and Escape closes it.
 
 Operate it from the canonical `.devboard`:
 
@@ -1243,9 +1294,12 @@ bun run watchdog:uninstall   # stop, disable, and remove the units
 the absolute Bun executable plus the `omp` and `git` directories for the unit's `PATH`, and is
 idempotent. `watchdog:uninstall` changes no repository file. To pause the watchdog without
 uninstalling, `systemctl --user stop devboard-watchdog.timer`; `systemctl --user start
-devboard-watchdog.timer` resumes it. `bun run verify:watchdog` proves the indicator, popover, and
-issue links against a freshly built bundle; `bun run verify:watchdog-live` starts a seeded
-dashboard, waits for the installed timer to file a real issue, and closes it as not planned.
+devboard-watchdog.timer` resumes it. `bun run verify:watchdog` builds the client, seeds run
+directories, a ledger, and a stub `gh`, and proves the Watchdog page's empty states, cycle history,
+state and version columns, sync badge and failure text, 60-second refresh, freshness, and the
+unchanged footer indicator, popover, issue links, and Escape. `bun run verify:watchdog-live`
+starts a seeded dashboard, waits for the installed timer to file a real issue, and closes it as not
+planned.
 
 ## Issues mode
 
@@ -2336,5 +2390,9 @@ legacy logs), the inclusive ten-minute window, omp-log attribution and self-excl
 evidence mapping (prose never produces a finding), host-independent fingerprints, filing and
 commenting against a stub `gh`, pending retries after a failed call, duplicate windows, the
 version 1 ledger migration, and the absence of any commit, merge, push, or publish.
-`tests/watchdog-api.test.ts` covers the read-only endpoint and its status projection. All new
+`tests/watchdog-api.test.ts` covers the read-only endpoint, the newest-cycle projection, the
+cycle history's newest-first order, 100-directory cap, `latest.json` fallback, and malformed-report
+skip, issue row order and fields, open/closed state mapping, timeline and comment shipped-version
+resolution with the earliest-release rule, the `ok`/`error`/`stale` transitions against a stubbed
+GitHub reader and clock, the request-never-waits contract, and byte-identical state. All new
 fixtures live under `.devboard/.tmp`; no test uses the network or a real model.
