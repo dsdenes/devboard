@@ -1654,8 +1654,8 @@ tab, or reloading the dashboard never starts a worker and never files an issue: 
 `data-testid="scout-start"` starts the worker, and that control becomes
 `data-testid="scout-stop"` while a worker is attached. The page header
 (`data-testid="issues-scout-header"`) carries the repository origin,
-`data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`), the read-health
-badge, the last-read time, and the single Start/Stop action. A 360px side rail holds the worker
+`data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`), the last-read
+time, and the single Start/Stop action. A 360px side rail holds the worker
 facts and the filing limits; the results column holds the filed-issues table and
 `data-testid="scout-activity"` for the current or newest scan. The page also shows
 `data-testid="scout-error"` for the last error.
@@ -1736,10 +1736,10 @@ blank version on the next read.
 
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
 and immediately on Start; the table, states, and versions reflect a change within one interval. A
-failed read keeps the last known rows, sets `data-testid="scout-sync"` to `data-state="error"`
-(or `"stale"` when no read has succeeded for two intervals), shows the reason in
-`data-testid="scout-sync-error"`, and shows the last success time in
-`data-testid="scout-sync-at"`. Filing stays blocked until a read succeeds.
+failed read keeps the last known rows, shows the reason in
+`data-testid="scout-sync-error"`, and keeps the last success time in
+`data-testid="scout-sync-at"`; the reason clears on the next successful read. Filing stays
+blocked until a read succeeds.
 
 ### Worker lifecycle
 

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { BadgeTone } from "../record-status";
   import { scout } from "../scout.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
@@ -10,9 +9,6 @@
 
   const lifecycleTone = $derived(statusTone(scout.lifecycle));
   const sync = $derived(scout.sync);
-  const syncTone = $derived<BadgeTone>(
-    sync.state === "ok" ? "success" : sync.state === "error" ? "error" : "stale",
-  );
   const scanLabel = $derived(
     scout.snapshot?.scan?.scanId ?? scout.snapshot?.newestScanId ?? "No scan yet",
   );
@@ -77,14 +73,6 @@
     {#snippet meta()}
       <span class="badge" data-tone={lifecycleTone} data-testid="scout-lifecycle">
         {scout.lifecycle}
-      </span>
-      <span
-        class="badge"
-        data-tone={syncTone}
-        data-testid="scout-sync"
-        data-state={sync.state}
-      >
-        GitHub read {sync.state}
       </span>
       <span class="scout-sync-at muted">
         Last read
