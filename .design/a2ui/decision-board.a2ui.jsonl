@@ -1,0 +1,5 @@
+{"version":"v0.9.1","createSurface":{"surfaceId":"decision-board","catalogId":"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json","sendDataModel":false}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"decision-board","components":[{"id":"root","component":"Column","children":["region_header","region_editor"]}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"decision-board","components":[{"id":"region_header","component":"Row","children":["region_identity","region_actions"]},{"id":"region_identity","component":"Row","children":["surface_title","board_state"]},{"id":"surface_title","component":"Text","text":"Decision board","variant":"h2"},{"id":"board_state","component":"Text","text":"No decisions yet"},{"id":"region_actions","component":"Row","children":["save_board"]},{"id":"save_board","component":"Button","text":"Save","variant":"primary","disabled":true}]}}
+{"version":"v0.9.1","updateComponents":{"surfaceId":"decision-board","components":[{"id":"region_editor","component":"Text","text":"Markdown editor (unchanged)"}]}}
+{"version":"v0.9.1","updateDataModel":{"surfaceId":"decision-board","path":"/","value":{}}}

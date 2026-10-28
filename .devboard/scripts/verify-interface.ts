@@ -1738,6 +1738,7 @@ try {
     next: string;
     pending: string;
     tabStrips: number;
+    eyebrow: boolean;
   }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="record"]')];
     const table = document.querySelector('[data-testid="adr-table"]');
@@ -1755,9 +1756,11 @@ try {
       next: document.querySelector('[data-testid="next-marker"]')?.textContent?.trim() ?? "",
       pending: document.querySelector('[data-testid="pending-summary"]')?.textContent?.trim() ?? "",
       tabStrips: document.querySelectorAll('[data-testid="workspace-tabs"]').length,
+      eyebrow: document.querySelector('[data-testid="adrs-header"] .page-header__eyebrow') !== null,
     };
   })()`);
   check(adr.rows === 8, "the fixture does not render eight ADR rows", adr);
+  check(!adr.eyebrow, "the ADRs header still carries its Plan eyebrow", adr);
   const stateText = await page.eval<string>(`document.querySelector('[data-testid="record"] td:nth-child(3)')?.textContent?.trim() ?? ""`);
   check(stateText === "Resolved" || stateText === "Pending", "the ADR state is conveyed by color alone", stateText);
   const tableTones = await page.eval<Array<{ file: string; text: string; tone: string }>>(`(() => {
@@ -2305,18 +2308,52 @@ try {
   const decisionLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-decisions"] textarea')?.getAttribute("aria-label") ?? ""`);
   check(decisionLabel.length > 0, "the decision board has no accessible label", decisionLabel);
   const decisionHeader = () =>
-    page.eval<{ state: string; saveDisabled: boolean }>(`(() => {
+    page.eval<{
+      state: string;
+      saveDisabled: boolean;
+      badge: boolean;
+      tone: string;
+      headerHeight: number;
+      aligned: boolean;
+      startPadding: string;
+    }>(`(() => {
       const state = document.querySelector('[data-testid="flow-decisions-state"]');
       const save = document.querySelector('[data-testid="save-flow-decisions"]');
+      const header = state?.closest(".flow-decisions__header");
+      const title = header?.querySelector(".flow-decisions__title");
+      const center = (element) => {
+        const box = element?.getBoundingClientRect();
+        return box === undefined ? Number.NaN : box.top + box.height / 2;
+      };
       return {
         state: state?.textContent?.trim() ?? "",
         saveDisabled: save?.disabled !== false,
+        badge: state?.classList.contains("badge") ?? false,
+        tone: state?.getAttribute("data-tone") ?? "",
+        headerHeight: Math.round(header?.getBoundingClientRect().height ?? 0),
+        aligned: Math.abs(center(state) - center(title)) <= 1,
+        startPadding: header ? getComputedStyle(header).paddingLeft : "",
       };
     })()`);
   const decisionSaved = await decisionHeader();
   check(
     decisionSaved.state === "Saved" && decisionSaved.saveDisabled,
     "the decision board header does not state its saved state",
+    decisionSaved,
+  );
+  check(
+    decisionSaved.badge && decisionSaved.tone === "success",
+    "the decision board saved state is not a success badge",
+    decisionSaved,
+  );
+  check(
+    decisionSaved.headerHeight === 44 && decisionSaved.aligned,
+    "the decision board header is not a 44px row aligned on one line",
+    decisionSaved,
+  );
+  check(
+    decisionSaved.startPadding === "12px",
+    "the decision board header does not use the design-system horizontal padding",
     decisionSaved,
   );
   await page.eval(`window.__devboardEditors.get("flow-decisions").focus()`);
@@ -2327,6 +2364,11 @@ try {
   check(
     decisionDirty.state === "Unsaved changes" && !decisionDirty.saveDisabled,
     "the decision board header does not state its unsaved state",
+    decisionDirty,
+  );
+  check(
+    decisionDirty.badge && decisionDirty.tone === "warning",
+    "the decision board unsaved state is not a warning badge",
     decisionDirty,
   );
   const decisionText = await page.eval<string>(`window.__devboardEditors.get("flow-decisions").getValue()`);

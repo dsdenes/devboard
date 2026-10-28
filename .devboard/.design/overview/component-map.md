@@ -18,7 +18,6 @@
 | External boundaries / shared kernels | chip lists | `.discover-subtitle`, `.discover-chips` | extend: chip group |
 | Active run panel | run id, start time, stop, activity | `.panel`, `Terminal`, `Button` | reuse (same markup, moved component) |
 | Question panel | run question and answer | `.panel`, `.choice-list`, `.answer-form`, `Button` | reuse unchanged |
-| Empty state | first-run explanation and outputs | `.panel`, `.discover-empty__body`, `.discover-writes` | extend: two-column copy/output list |
 | Error / warning / interrupted banners | run state | `.message`, `.badge` | reuse untouched |
 | Glossary page | context cards, term table, term detail | `DiscoverWorkspace`, `DataTable`, `ConceptKind` | reuse; Kind first, no header row, fixed Kind/Term widths |
 | Skill, term, warnings pages | other Discover pages | existing markup and CSS | reuse untouched |
@@ -27,7 +26,7 @@
 
 | Module | Contents | Why |
 |---|---|---|
-| `client/lib/components/DiscoverOverview.svelte` | the whole Overview surface: header, sheet, active/question panels, empty state | `DiscoverWorkspace.svelte` keeps the other pages and delegates the sheet; the surface is ~500 lines and has its own data derivation |
+| `client/lib/components/DiscoverOverview.svelte` | the whole Overview surface: header, sheet, active/question panels | `DiscoverWorkspace.svelte` keeps the other pages and delegates the sheet; the surface is ~500 lines and has its own data derivation |
 | `lib/dependencies.ts` | `dependencyName`, `normalizeRepositoryUrl` | the overview and the server derive the same package name and repository URL; one pure module keeps them from drifting |
 | `server/discover.ts` additions | `packageRepository`, `dependencyRepositories` | a chip links only to a repository an installed manifest declares; no URL is guessed |
 | `DataTable` additions | `hideHeader`, `columnWidths` (`colgroup`, fixed layout) | commands and glossary drop their header row and align columns across cards |

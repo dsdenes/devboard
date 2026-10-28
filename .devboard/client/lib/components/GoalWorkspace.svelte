@@ -427,7 +427,6 @@
   {:else if tab.kind === "adrs"}
     <div class="goal-page">
       <PageHeader
-        eyebrow="Plan"
         title="Decision records"
         testid="adrs-header"
       >
@@ -498,9 +497,6 @@
           {#if operationText !== null}
             <span class="badge" data-tone="accent">{operationText}</span>
           {/if}
-          <span class="muted">
-            {goal.goalDirty ? "Save writes GOAL.md" : "GOAL.md is the source of truth"}
-          </span>
         {/snippet}
         {#snippet actions()}
           {#if goal.skills.length > 0}

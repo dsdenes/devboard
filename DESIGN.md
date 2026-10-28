@@ -457,6 +457,19 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   each scan. The stack is capped at 360px, uses 24px 16px padding and a 4px rhythm, and adds no
   frame, fill, shadow, or action; the page header keeps the only Start/Stop control and the panel
   header keeps the count.
+- **Watchdog summary and tables** (`.watchdog-latest`, `.watchdog-table`) — the Issues mode's
+  Watchdog page: a full-width 30px-header summary band over two labelled table panels. The summary
+  body is one row: a `badge` carrying the newest action beside the 12px `foreground` reason, and a
+  right-aligned facts group of 10px `overline` labels over 11.5px tabular `mono` values, with a
+  4px rhythm and 8px 24px gaps. Both tables use 10px `overline` sticky headers on `surface`, 27px
+  rows with `border-subtle` rules, `row-hover` on hover, and 8px cell padding; the filed-issue
+  link is `foreground` with no underline until hover. The history table has three labelled columns
+  (`Started`, `Action`, `Issues`) and links each cycle's filed issues as `#<number>` anchors in
+  `accent`; the newest reason appears only in the summary. The filed panel takes `1.25fr` beside a
+  `minmax(420px, 1fr)` history panel above 1500px; below that the two panels stack as flexible
+  rows at a 12px gap, and below 1100px the repeated issue category yields before any value clips.
+  Each panel owns its scroll, and each empty state reuses the Auto Scout centered stack with a
+  20px Lucide inbox or history mark.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The four `role="tab"` controls sit in a `role="tablist"`
   group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px
@@ -508,11 +521,11 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   a full-width textarea followed by a right-aligned primary `Send` at 6px, disabled while the draft
   is blank, so the action sits with the field it acts on instead of the header bar. Notes follow
   as left-ruled rows with source, timestamp, and status words.
-- **Decision board header** (`.flow-decisions__header`) — the Decision board's header: the
-  `panel-title` word with an 11px state line (`Saved` success, `Unsaved changes` warning,
-  `No decisions yet` muted), and a right-aligned primary `Save` disabled until the draft differs
-  from the saved text, matching the Discover skill header's draft line. The two-line identity is
-  sized to the 30px panel header.
+- **Decision board header** (`.flow-decisions__header`) — the Decision board's lead editor
+  header on a 44px row: one 18px `section-title` word, a labeled status badge (`No decisions yet`
+  muted, `Saved` success, `Unsaved changes` warning), and a right-aligned `Save` that is the
+  filled primary only while the draft differs from the saved text and a neutral secondary control
+  otherwise. The identity and action group are centered on the row, matching the Flow goal header.
 - **Discover skill header** (`.discover-skill__header`) — the skill editor's header: the
   relative path `<skill>/SKILL.md` in the `panel-title` size, with the skill name in `foreground`
   and the file name in `muted-foreground`; a second 11px draft line (`No unsaved changes` muted,
