@@ -301,6 +301,10 @@ console.log(`publish: ${PACKAGE_NAME}@${version} is published`);
 
 if (remotes.includes("github")) {
   console.log("publish: pushing the GitHub mirror");
+  // Only the published main and the release tags are mirrored. Another
+  // task's branch can legitimately be behind the mirror's copy, and a
+  // non-fast-forward rejection of that unrelated ref must not fail the
+  // publish whose main is already correct.
   const mirrored = run(
     [
       "git",
@@ -312,7 +316,7 @@ if (remotes.includes("github")) {
       "credential.https://github.com.helper=!/usr/bin/gh auth git-credential",
       "push",
       "github",
-      "refs/heads/*:refs/heads/*",
+      "refs/heads/main:refs/heads/main",
       "refs/tags/*:refs/tags/*",
     ],
   );
