@@ -685,7 +685,6 @@
         <section class="panel goal-skill-detail" data-testid="skill-content">
           <div class="panel__header">
             <h2 class="panel__title mono" data-testid="skill-content-name">{selectedSkill.name}</h2>
-            <span class="muted">{selectedSkill.description}</span>
           </div>
           <div class="panel__body">
             {#if selectedSkill.content !== undefined && selectedSkill.content.length > 0}

@@ -1870,13 +1870,14 @@ try {
     };
   })()`);
   check(goalSkillSurface.selected === clickedSkill && goalSkillSurface.current === "true", "clicking a prepared skill does not select it", { clickedSkill, goalSkillSurface });
-  const skillDocument = await page.eval<{ name: string; text: string }>(`(() => ({
+  const skillDocument = await page.eval<{ name: string; text: string; description: boolean }>(`(() => ({
     name: document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() ?? "",
     text: document.querySelector('[data-testid="skill-content-text"]')?.textContent?.trim() ?? "",
+    description: document.querySelector('[data-testid="skill-content"] .panel__header .muted') !== null,
   }))()`);
   check(
-    skillDocument.name === clickedSkill && skillDocument.text.length > 0,
-    "selecting a prepared skill does not open its document",
+    skillDocument.name === clickedSkill && skillDocument.text.length > 0 && !skillDocument.description,
+    "selecting a prepared skill does not open its document without a description",
     { clickedSkill, skillDocument },
   );
   const deletion = await page.eval<{ rows: number; controls: string[]; discoverControls: number }>(`(() => {
