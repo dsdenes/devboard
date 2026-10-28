@@ -1120,10 +1120,10 @@ bun run publish
 diverged from its canonical remote; fetches and fast-forwards `main` without discarding
 uncommitted work; installs dependencies and rebuilds `dist/`; waits for the release workflow of
 `HEAD`; verifies the Gitea release assets and `npm view @dsdenes/devboard@<version> version`;
-pushes the `github` mirror remote and proves its `main` names the published commit; and reports
-every running dashboard's running and installed version. It never restarts a dashboard and never
-writes into a host. `--wait-timeout N` bounds the workflow and propagation wait (default 1800
-seconds).
+pushes the `github` mirror remote's `main` and the release tags, then proves `main` names the
+published commit; and reports every running dashboard's running and installed version. It never
+restarts a dashboard and never writes into a host. `--wait-timeout N` bounds the workflow and
+propagation wait (default 1800 seconds).
 
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a

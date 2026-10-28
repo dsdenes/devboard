@@ -312,7 +312,9 @@ if (remotes.includes("github")) {
       "credential.https://github.com.helper=!/usr/bin/gh auth git-credential",
       "push",
       "github",
-      "refs/heads/*:refs/heads/*",
+      // Only the published branch and its tags: a stale local feature branch
+      // in the integration checkout must not fail the release verification.
+      "refs/heads/main:refs/heads/main",
       "refs/tags/*:refs/tags/*",
     ],
   );
