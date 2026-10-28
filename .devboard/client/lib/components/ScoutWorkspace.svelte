@@ -68,6 +68,7 @@
     eyebrow="Issues"
     title="Auto Scout"
     subtitle={scout.repoLabel}
+    layout="bar"
     testid="issues-scout-header"
   >
     {#snippet meta()}
