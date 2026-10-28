@@ -9,7 +9,7 @@ import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { writeCommand } from "../issues/control";
 import { migrateLegacyLedger, legacyLiveLock, legacyLockRefusal } from "../issues/legacy";
 import { pruneLedger } from "../issues/ledger";
-import { acquireLock, liveLockOwner } from "../issues/lock";
+import { acquireLock, liveLockOwner, readLock, type LockResult } from "../issues/lock";
 import {
   controlDirectory,
   ledgerPath,
@@ -876,6 +876,46 @@ describe("repository lock", () => {
     } finally {
       held.release();
     }
+  });
+
+  test("a paused reclaimer never replaces the fresh lock of a concurrent starter", async () => {
+    const { root, stateDir } = await lockRoot("lock-reclaim-race");
+    writeFileSync(
+      lockPath(root),
+      JSON.stringify({
+        pid: 999_999_999,
+        startedAt: new Date(0).toISOString(),
+        repo: root,
+        stateDir,
+        harnessVersion: null,
+        argv: ["stale"],
+      }),
+    );
+    // While this caller sits between inspecting the stale holder and
+    // reclaiming it, a second starter reclaims the stale file itself and
+    // creates a live lock.
+    let winner: LockResult | undefined;
+    const losing = acquireLock(
+      lockPath(root),
+      { repo: root, stateDir, harnessVersion: null, argv: ["losing"] },
+      {
+        onStaleLock: () => {
+          winner = acquireLock(lockPath(root), {
+            repo: root,
+            stateDir,
+            harnessVersion: null,
+            argv: ["winner"],
+          });
+        },
+      },
+    );
+    expect(winner?.acquired).toBe(true);
+    expect(losing.acquired).toBe(false);
+    const held = readLock(lockPath(root));
+    expect(held?.argv).toEqual(["winner"]);
+    expect(held?.pid).toBe(process.pid);
+    if (winner?.acquired) winner.release();
+    expect(existsSync(lockPath(root))).toBe(false);
   });
 
   for (const [label, startedAt] of [

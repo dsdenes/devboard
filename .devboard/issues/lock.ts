@@ -1,4 +1,15 @@
-import { mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  closeSync,
+  fstatSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { isInteger, isRecord } from "./guards";
 
@@ -91,24 +102,130 @@ function ownerAlive(owner: LockOwner): boolean {
   return Math.abs(actual - recorded) <= START_TIME_TOLERANCE_MS;
 }
 
+interface ParsedLock {
+  owner: LockOwner | undefined;
+  /** Per-acquisition identity; absent on locks written by older harnesses. */
+  token: string | undefined;
+}
+
+function parseLock(content: string): ParsedLock {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (!isRecord(parsed)) return { owner: undefined, token: undefined };
+    if (!isInteger(parsed.pid) || typeof parsed.startedAt !== "string") {
+      return { owner: undefined, token: undefined };
+    }
+    return {
+      owner: {
+        pid: parsed.pid,
+        startedAt: parsed.startedAt,
+        repo: typeof parsed.repo === "string" ? parsed.repo : "",
+        stateDir: typeof parsed.stateDir === "string" ? parsed.stateDir : "",
+        harnessVersion: typeof parsed.harnessVersion === "string" ? parsed.harnessVersion : null,
+        argv: Array.isArray(parsed.argv)
+          ? parsed.argv.filter((entry): entry is string => typeof entry === "string")
+          : [],
+      },
+      token: typeof parsed.token === "string" ? parsed.token : undefined,
+    };
+  } catch {
+    return { owner: undefined, token: undefined };
+  }
+}
+
 /** The lock's owner, if the file is present and readable. */
 export function readLock(path: string): LockOwner | undefined {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (!isRecord(parsed)) return undefined;
-    if (!isInteger(parsed.pid) || typeof parsed.startedAt !== "string") return undefined;
+    return parseLock(readFileSync(path, "utf8")).owner;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A lock file's owner together with the identity of the file that carried it.
+ * The token distinguishes two lock files with the same owner fields, which is
+ * exactly what a stale lock and a freshly created one by the same process look
+ * like; the inode covers locks written before tokens existed.
+ */
+interface LockSnapshot {
+  owner: LockOwner | undefined;
+  token: string | undefined;
+  device: number;
+  inode: number;
+}
+
+/** Reads one lock file through a single descriptor, so content and identity agree. */
+function readSnapshot(path: string): LockSnapshot | undefined {
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, "r");
+  } catch {
+    return undefined;
+  }
+  try {
+    const stats = fstatSync(descriptor);
+    const parsed = parseLock(readFileSync(descriptor, "utf8"));
     return {
-      pid: parsed.pid,
-      startedAt: parsed.startedAt,
-      repo: typeof parsed.repo === "string" ? parsed.repo : "",
-      stateDir: typeof parsed.stateDir === "string" ? parsed.stateDir : "",
-      harnessVersion: typeof parsed.harnessVersion === "string" ? parsed.harnessVersion : null,
-      argv: Array.isArray(parsed.argv)
-        ? parsed.argv.filter((entry): entry is string => typeof entry === "string")
-        : [],
+      owner: parsed.owner,
+      token: parsed.token,
+      device: stats.dev,
+      inode: stats.ino,
     };
   } catch {
     return undefined;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/**
+ * True when two snapshots are the same lock file. The written token is the
+ * primary identity because the filesystem can reuse a freed inode for the
+ * very lock that won the race; locks from older harnesses fall back to the
+ * inode.
+ */
+function sameLockFile(left: LockSnapshot, right: LockSnapshot): boolean {
+  if (left.token !== undefined || right.token !== undefined) {
+    return left.token !== undefined && left.token === right.token;
+  }
+  return left.device === right.device && left.inode === right.inode;
+}
+
+/**
+ * Reclaims `inspected` without ever deleting whatever currently sits at
+ * `path` by guess. The path is moved aside atomically; only a file that is
+ * still the inspected lock is discarded. A newer lock that arrived after the
+ * inspection is moved back instead of being destroyed.
+ */
+function reclaimStaleLock(path: string, inspected: LockSnapshot): void {
+  const aside = `${path}.reclaim-${process.pid}-${randomUUID()}`;
+  try {
+    renameSync(path, aside);
+  } catch {
+    // A concurrent starter already removed or replaced it; retry the create.
+    return;
+  }
+  const moved = readSnapshot(aside);
+  if (moved === undefined || !sameLockFile(inspected, moved)) {
+    try {
+      linkSync(aside, path);
+    } catch {
+      // The path holds a still newer lock; leave the moved file untouched
+      // rather than deleting a lock some live owner believes it holds.
+      return;
+    }
+    try {
+      unlinkSync(aside);
+    } catch {
+      // The restore already linked it back; the orphaned name is harmless.
+    }
+    return;
+  }
+  try {
+    unlinkSync(aside);
+  } catch {
+    // Another reclaimer observed the same stale inode and removed it.
   }
 }
 
@@ -119,26 +236,53 @@ export function liveLockOwner(path: string): LockOwner | undefined {
   return owner;
 }
 
+export interface AcquireLockOptions {
+  /**
+   * Test seam: called with the stale holder after inspection and before
+   * reclamation, so an interleaving starter can be driven deterministically.
+   */
+  onStaleLock?: (owner: LockOwner | undefined) => void;
+}
+
 /**
  * Takes the lock, or reports the live owner. A lock whose owner is gone or
  * whose pid was recycled is reclaimed once; a second failure means a
  * concurrent start won the race.
  */
-export function acquireLock(path: string, details: Omit<LockOwner, "pid" | "startedAt">): LockResult {
+export function acquireLock(
+  path: string,
+  details: Omit<LockOwner, "pid" | "startedAt">,
+  options: AcquireLockOptions = {},
+): LockResult {
   mkdirSync(dirname(path), { recursive: true });
   const owner: LockOwner = { ...details, pid: process.pid, startedAt: ownStartedAt() };
+  const token = randomUUID();
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const descriptor = openSync(path, "wx");
-      writeSync(descriptor, `${JSON.stringify(owner)}\n`);
+      // Publish a complete lock atomically: a reader that inspects the path
+      // must never see the empty or half-written window of a live lock.
+      const staged = `${path}.new-${process.pid}-${randomUUID()}`;
+      try {
+        const descriptor = openSync(staged, "wx");
+        try {
+          writeSync(descriptor, `${JSON.stringify({ ...owner, token })}\n`);
+        } finally {
+          closeSync(descriptor);
+        }
+        linkSync(staged, path);
+      } finally {
+        try {
+          unlinkSync(staged);
+        } catch {
+          // The staged name is removed whether the link won or lost.
+        }
+      }
       return {
         acquired: true,
         owner,
         release() {
-          const current = readLock(path);
-          if (current !== undefined && (current.pid !== owner.pid || current.startedAt !== owner.startedAt)) {
-            return;
-          }
+          const current = readSnapshot(path);
+          if (current !== undefined && current.token !== token) return;
           try {
             unlinkSync(path);
           } catch {
@@ -148,15 +292,13 @@ export function acquireLock(path: string, details: Omit<LockOwner, "pid" | "star
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const holder = readLock(path);
-      if (holder !== undefined && ownerAlive(holder)) {
-        return { acquired: false, owner: holder };
+      const snapshot = readSnapshot(path);
+      if (snapshot === undefined) continue;
+      if (snapshot.owner !== undefined && ownerAlive(snapshot.owner)) {
+        return { acquired: false, owner: snapshot.owner };
       }
-      try {
-        unlinkSync(path);
-      } catch {
-        // A concurrent start removed it first; retry the exclusive create.
-      }
+      options.onStaleLock?.(snapshot.owner);
+      reclaimStaleLock(path, snapshot);
     }
   }
   return { acquired: false };
