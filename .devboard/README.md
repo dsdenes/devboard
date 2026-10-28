@@ -1652,7 +1652,7 @@ lifecycle and the running-agent count in its title and still opens Issues mode.
 
 ## Draft goals and proposed goals
 
-The Issues sidebar carries a fourth entry after Runs: `Draft goals`, with `data-command="open.issues.drafts"`
+The Issues sidebar carries `Draft goals` after `Issues`, with `data-command="open.issues.drafts"`
 and `data-testid="open-issues-drafts"`. It trails the number of listed drafts, its accessible
 name names the Issues mode and the `Alt+2` shortcut, and the command palette lists it under the
 same command id. Opening it renders `data-testid="issues-drafts"`: every regular `.md` file
@@ -1742,8 +1742,9 @@ agent leaves the queue on the next poll.
 
 ## Auto Scout
 
-The Issues sidebar lists `Overview`, `Auto Scout`, `Issues`, `Runs`, and then `Draft goals`
-in that order. Auto Scout (`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`,
+The Issues sidebar lists `Overview`, `Auto Scout`, `Watchdog`, `Issues`, and then `Draft goals`
+in that order; it carries no `Runs` entry, and the command palette opens that tab. Auto Scout
+(`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`,
 palette `Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its
 tab, or reloading the dashboard never starts a worker and never files an issue: only
 `data-testid="scout-start"` starts the worker, and that control becomes
