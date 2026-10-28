@@ -27,6 +27,9 @@ export const GOAL_PROPOSALS_DIRECTORY = ".devboard/goal-proposals";
 
 const MAX_HEADING = 200;
 const MAX_NAME_WORDS = 6;
+/** The bounds a draft's base name must respect, whether chosen or derived. */
+const MAX_SLUG_WORDS = MAX_NAME_WORDS;
+const MAX_SLUG_LENGTH = 64;
 const FALLBACK_NAME = "ui-goal";
 const BODY_VISIBLE_TEXT = 1500;
 /** Bounds the `-2`, `-3`, … search; far past any real click count. */
@@ -72,7 +75,10 @@ export function goalProposalHeading(report: string): string {
   return line.length <= MAX_HEADING ? line : line.slice(0, MAX_HEADING);
 }
 
-/** The draft's deterministic fallback name: lowercase, hyphenated, at most six words. */
+/**
+ * The draft's deterministic fallback name: lowercase, hyphenated, at most six
+ * words and `MAX_SLUG_LENGTH` characters, so it is always usable as a file name.
+ */
 export function goalProposalName(report: string): string {
   const slug = firstReportLine(report)
     .toLowerCase()
@@ -83,12 +89,10 @@ export function goalProposalName(report: string): string {
     .filter((word) => word.length > 0)
     .slice(0, MAX_NAME_WORDS)
     .join("-");
-  return name.length === 0 ? FALLBACK_NAME : name;
+  if (name.length === 0) return FALLBACK_NAME;
+  if (name.length <= MAX_SLUG_LENGTH) return name;
+  return name.slice(0, MAX_SLUG_LENGTH).replace(/-+$/, "");
 }
-
-/** The bounds a naming agent's answer must respect before it becomes a file name. */
-const MAX_SLUG_WORDS = MAX_NAME_WORDS;
-const MAX_SLUG_LENGTH = 64;
 
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
