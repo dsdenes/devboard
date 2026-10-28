@@ -443,7 +443,16 @@ export interface Freshness {
   discoveredAt: string;
 }
 
-/** The target Discover reads and writes: this host, or a manual-testing clone. */
+/** One remote project whose published bytes the dashboard retains. */
+export interface RetainedRemoteProject {
+  url: string;
+  owner: string;
+  repo: string;
+  /** ISO time the discovery that produced the retained bytes completed. */
+  completedAt: string;
+}
+
+/** The target Discover reads and writes: this host, or a retained remote project. */
 export type DiscoverTarget =
   | { kind: "host" }
   | {
@@ -451,8 +460,8 @@ export type DiscoverTarget =
       url: string;
       owner: string;
       repo: string;
-      /** Repo-root-relative clone directory, never absolute. */
-      cloneDir: string;
+      /** True while the active project's transient clone exists for a run. */
+      checkout: boolean;
     };
 
 export interface DiscoverStatePayload {
@@ -466,6 +475,8 @@ export interface DiscoverStatePayload {
   error: string | null;
   /** True only when the dashboard serves a harness source checkout. */
   remoteAvailable: boolean;
+  /** Retained remote projects, newest completed discovery first. */
+  retained: RetainedRemoteProject[];
   /** `owner/name` of the repository being read, or null outside a GitHub remote. */
   repository: string | null;
   target: DiscoverTarget;

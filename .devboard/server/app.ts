@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -41,7 +41,6 @@ import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import {
   DISCOVER_SKILLS,
-  artifactRelative,
   artifactsStale,
   confirmGlossaryTerm,
   declaredCommandAliases,
@@ -50,16 +49,21 @@ import {
   isInsideRepository,
   liveWarnings,
   parseRemoteUrl,
-  prepareRemoteScratch,
+  cleanupRemoteScratch,
+  listRetainedProjects,
   publishStaged,
   readArtifacts,
+  readRetainedProject,
   rejectGlossaryTerm,
-  remoteCloneDirectory,
   remoteCloneName,
   remoteCloneRequest,
+  remoteProjectDirectory,
   remoteScratchRoot,
+  removeRetainedProject,
   removeStaging,
   restoreLiveSkill,
+  retainRemoteProject,
+  retainedProjectReady,
   saveLiveSkill,
   stagingDirectory,
   validateStaged,
@@ -68,6 +72,7 @@ import {
   type RemoteCloneResult,
   type RemoteCloneRunner,
   type RemoteRepository,
+  type RetainedRemoteProject,
 } from "./discover";
 import { readRecords, type AdrRecord } from "./records";
 import {
@@ -511,6 +516,8 @@ type ClientMessage =
   | { type: "answer"; id?: unknown; value?: unknown; lane?: unknown }
   | { type: "discoverProject" }
   | { type: "discoverRemote"; url?: unknown }
+  | { type: "switchDiscoverRemote"; url?: unknown }
+  | { type: "removeDiscoverRemote"; url?: unknown }
   | { type: "clearDiscoverRemote" }
   | { type: "stopDiscover" }
   | { type: "answerDiscover"; id?: unknown; value?: unknown }
@@ -671,6 +678,14 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       // A missing or non-string URL is a malformed payload, never a command.
       return "url" in value && typeof value.url === "string"
         ? { type: "discoverRemote", url: value.url }
+        : undefined;
+    case "switchDiscoverRemote":
+      return "url" in value && typeof value.url === "string"
+        ? { type: "switchDiscoverRemote", url: value.url }
+        : undefined;
+    case "removeDiscoverRemote":
+      return "url" in value && typeof value.url === "string"
+        ? { type: "removeDiscoverRemote", url: value.url }
         : undefined;
     case "clearDiscoverRemote":
       return { type: "clearDiscoverRemote" };
@@ -1619,12 +1634,14 @@ export function createApp(options: AppOptions) {
   interface DiscoverRun {
     runId: string;
     stagingDir: string;
-    /** The target root the crawl was started against. */
+    /** The target root the crawl was started against: host, or a run's checkout. */
     cwd: string;
     startedAt: string;
     agent: AcpConnection | undefined;
     activity: string[];
     question: RunQuestion | null;
+    /** The remote project this run re-discovers, when the target is remote. */
+    remote?: RemoteRepository;
   }
   let discoverRun: DiscoverRun | undefined;
   let discoverInterrupted = false;
@@ -1640,22 +1657,33 @@ export function createApp(options: AppOptions) {
 
   /**
    * The remote target is a source-checkout-only manual-testing aid: the
-   * dashboard clones a public GitHub repository under its own state directory
-   * and crawls that clone instead of this host. Installed hosts never see it.
+   * dashboard keeps a public GitHub project's published artifacts under its own
+   * state directory and crawls a fresh checkout of it on demand. Installed hosts
+   * never see it, and never read or write the retained root.
    */
   const remoteAvailable = isHarnessSourceCheckout(repoDir);
   const remoteRoot = remoteScratchRoot(stateDir);
   const cloneRunner = options.discoverClone ?? spawnClone;
   let remoteTarget: RemoteRepository | undefined;
+  /** The run's checkout: a clone that never outlives the run that made it. */
+  let remoteCheckout: { runId: string; dir: string; target: RemoteRepository } | null = null;
   let discoverCloning: { url: string } | null = null;
-
-  function cloneDirectoryOf(target: RemoteRepository): string {
-    return remoteCloneDirectory(remoteRoot, target.owner, target.repo);
-  }
 
   /** Every Discover read and write goes through the active target. */
   function targetRoot(): string {
-    return remoteTarget === undefined ? repoDir : cloneDirectoryOf(remoteTarget);
+    if (remoteTarget === undefined) return repoDir;
+    return remoteProjectDirectory(remoteRoot, remoteTarget.owner, remoteTarget.repo);
+  }
+
+  function clearRemoteCheckout(): void {
+    const checkout = remoteCheckout;
+    remoteCheckout = null;
+    if (checkout === null) return;
+    try {
+      rmSync(checkout.dir, { recursive: true, force: true });
+    } catch {
+      // The next start removes a checkout that cannot be removed.
+    }
   }
 
   /**
@@ -1986,8 +2014,8 @@ export function createApp(options: AppOptions) {
   }
 
   /**
-   * Drops a stored Discover target whose clone is gone, rewriting only that
-   * field. A full `persistState` here would also replace the recorded
+   * Drops a stored Discover target whose retained project is missing, rewriting
+   * only that field. A full `persistState` here would also replace the recorded
    * interrupted run before the replacement has read and reported it.
    */
   function dropStoredDiscoverTarget(): void {
@@ -2015,33 +2043,20 @@ export function createApp(options: AppOptions) {
     lifecyclePausedForManualRun = stored.lifecyclePausedForManualRun;
     restartWhenIdle = stored.restartWhenIdle;
     discoverInterrupted = stored.discoverInterrupted;
-    // The scratch root holds at most the stored target; staging never survives.
-    // An installed host has no remote target, whatever an older state recorded.
+    // A retained project is the durable record; a run's checkout never survives.
+    // An installed host has no remote target, whatever an older state recorded,
+    // and never reads or writes the retained root.
     const storedTarget = remoteAvailable ? stored.discoverTarget : null;
-    // A clone is disposable scratch, so a target is restorable only while its
-    // clone is on disk. The durable target never outlives the clone: keeping it
-    // would repeat the fallback notice on every start.
-    const restoredTarget =
-      storedTarget !== null &&
-      existsSync(
-        join(
-          remoteCloneDirectory(remoteRoot, storedTarget.owner, storedTarget.repo),
-          ".git",
-        ),
-      )
-        ? storedTarget
-        : null;
-    prepareRemoteScratch(
-      remoteRoot,
-      restoredTarget === null
-        ? null
-        : remoteCloneName(restoredTarget.owner, restoredTarget.repo),
-    );
-    if (restoredTarget !== null) {
-      remoteTarget = restoredTarget;
-    } else if (storedTarget !== null) {
-      discoverTargetNotice = `The remote Discover clone for ${storedTarget.url} is missing, so the host target is active.`;
-      dropStoredDiscoverTarget();
+    if (remoteAvailable) cleanupRemoteScratch(remoteRoot);
+    if (storedTarget !== null) {
+      const directory = remoteProjectDirectory(remoteRoot, storedTarget.owner, storedTarget.repo);
+      const record = readRetainedProject(directory);
+      if (record !== null && retainedProjectReady(directory, record)) {
+        remoteTarget = storedTarget;
+      } else {
+        discoverTargetNotice = `The retained Discover project for ${storedTarget.url} is missing, so the host target is active.`;
+        dropStoredDiscoverTarget();
+      }
     }
     if (stored.discover !== null) {
       // The replacement never resumes a crawl: it interrupts it and keeps the
@@ -2179,14 +2194,14 @@ export function createApp(options: AppOptions) {
   }
 
   if (loadedState.kind === "damaged") {
-    prepareRemoteScratch(remoteRoot, null);
+    if (remoteAvailable) cleanupRemoteScratch(remoteRoot);
     const message = `The saved dashboard state could not be restored: ${loadedState.reason}. Starting from an empty dashboard.`;
     process.stderr.write(`${message}\n`);
     startupNotices.push({ type: "error", message });
   } else if (loadedState.kind === "loaded") {
     const stored = parseStoredState(loadedState.value);
     if (stored === undefined) {
-      prepareRemoteScratch(remoteRoot, null);
+      if (remoteAvailable) cleanupRemoteScratch(remoteRoot);
       preserveStateFile(statePath);
       const message =
         "The saved dashboard state could not be restored: its contents are not a dashboard state. Starting from an empty dashboard.";
@@ -2210,8 +2225,8 @@ export function createApp(options: AppOptions) {
         process.stderr.write(`state: could not resume: ${detail}\n`);
       });
     }
-  } else {
-    prepareRemoteScratch(remoteRoot, null);
+  } else if (remoteAvailable) {
+    cleanupRemoteScratch(remoteRoot);
   }
 
   function sendVersion(ws: { send(data: string): unknown }) {
@@ -2235,7 +2250,8 @@ export function createApp(options: AppOptions) {
       generationQueued ||
       flow.hasActiveWork() ||
       discoverRun !== undefined ||
-      discoverCloning !== null
+      discoverCloning !== null ||
+      remoteCheckout !== null
     );
   }
 
@@ -2253,6 +2269,7 @@ export function createApp(options: AppOptions) {
   /** Names the Goal Mode work Flow Mode would contend with, if any. */
   function activeGoalWork(): string | undefined {
     if (discoverCloning !== null) return "a repository clone";
+    if (remoteCheckout !== null) return "a repository checkout";
     return goalWorkLabel() ?? (discoverRun === undefined ? undefined : "a Discover run");
   }
 
@@ -2277,7 +2294,7 @@ export function createApp(options: AppOptions) {
 
   function refreshDiscoverSnapshot(): void {
     const root = targetRoot();
-    const read = readArtifacts(root);
+    const read = readArtifacts(root, { trustGrounding: remoteTarget !== undefined });
     discoverArtifacts = read.artifacts;
     discoverReadError = read.error;
     if (read.artifacts === null) {
@@ -2290,7 +2307,9 @@ export function createApp(options: AppOptions) {
     } catch {
       discoverWarnings = [];
     }
-    discoverStale = artifactsStale(root, read.artifacts);
+    // A retained remote project is a snapshot, not a checkout: there is no
+    // tree of its own to compare against, so it is never reported stale.
+    discoverStale = remoteTarget === undefined ? artifactsStale(root, read.artifacts) : false;
   }
 
   function discoverStatePayload(): Record<string, unknown> {
@@ -2306,6 +2325,7 @@ export function createApp(options: AppOptions) {
       busy: discoverBusyReason(),
       error: discoverReadError,
       remoteAvailable,
+      retained: remoteAvailable ? listRetainedProjects(remoteRoot) : [],
       repository:
         remoteTarget === undefined
           ? hostRepository
@@ -2318,7 +2338,10 @@ export function createApp(options: AppOptions) {
               url: remoteTarget.url,
               owner: remoteTarget.owner,
               repo: remoteTarget.repo,
-              cloneDir: artifactRelative(repoDir, cloneDirectoryOf(remoteTarget)),
+              checkout:
+                remoteCheckout !== null &&
+                remoteCloneName(remoteCheckout.target.owner, remoteCheckout.target.repo) ===
+                  remoteCloneName(remoteTarget.owner, remoteTarget.repo),
             },
       cloning: discoverCloning === null ? null : { url: discoverCloning.url },
       manifest: artifacts?.manifest ?? null,
@@ -2374,6 +2397,9 @@ export function createApp(options: AppOptions) {
     } catch {
       // A staging directory that cannot be removed is reported by the next run.
     }
+    // A failed remote run leaves no checkout and no partial snapshot: the
+    // retained project and the active target are exactly what they were.
+    clearRemoteCheckout();
     refreshDiscoverSnapshot();
     broadcast({ type: "discoverError", message });
     broadcastDiscoverState();
@@ -2397,6 +2423,80 @@ export function createApp(options: AppOptions) {
     return true;
   }
 
+  /**
+   * Clones one remote project into a transient checkout. The checkout is the
+   * crawl root; the retained snapshot is only replaced once the crawl publishes.
+   */
+  async function cloneRemoteProject(
+    ws: { send(data: string): unknown },
+    target: RemoteRepository,
+  ): Promise<boolean> {
+    const runId = `run-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const staging = join(remoteRoot, `.staging-${runId}`);
+    try {
+      mkdirSync(remoteRoot, { recursive: true });
+    } catch (error) {
+      discoverFailure(
+        ws,
+        `Could not prepare the Discover scratch root: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    }
+
+    // The clone state leaves before the child spawns, so every client sees it.
+    discoverCloning = { url: target.url };
+    journal.write("lifecycle", "discover-remote-clone");
+    broadcastDiscoverState();
+
+    const request = remoteCloneRequest(target.url, remoteRoot, runId);
+    const requestTimeoutSeconds = Math.round(request.timeoutMs / 1000);
+    let result: RemoteCloneResult;
+    try {
+      result = await cloneRunner(request);
+    } catch (error) {
+      result = {
+        code: -1,
+        stderr: error instanceof Error ? error.message : String(error),
+        timedOut: false,
+      };
+    }
+
+    const cloneFailed = (message: string): false => {
+      discoverCloning = null;
+      try {
+        rmSync(staging, { recursive: true, force: true });
+      } catch {
+        // The next start removes a staging directory that cannot be removed.
+      }
+      discoverFailure(ws, message);
+      broadcastDiscoverState();
+      return false;
+    };
+
+    if (result.timedOut) {
+      return cloneFailed(`The repository clone timed out after ${requestTimeoutSeconds} seconds.`);
+    }
+    if (result.code !== 0) {
+      return cloneFailed(`The repository clone failed: git exited with status ${result.code}.`);
+    }
+    let readable = false;
+    try {
+      readable = statSync(staging).isDirectory();
+    } catch {
+      readable = false;
+    }
+    if (!readable) {
+      return cloneFailed("The repository clone produced no readable directory.");
+    }
+
+    discoverCloning = null;
+    remoteCheckout = { runId, dir: staging, target };
+    broadcastDiscoverState();
+    return true;
+  }
+
   async function startDiscoverProject(ws: { send(data: string): unknown }) {
     if (discoverCloning !== null) {
       discoverFailure(ws, "A repository clone is active. Wait for it to finish.");
@@ -2412,8 +2512,15 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    const root = targetRoot();
-    const projectName = remoteTarget === undefined ? project : projectLabel(root);
+    // A retained remote project has no checkout: the run recreates one first.
+    if (remoteTarget !== undefined && remoteCheckout === null) {
+      if (!(await cloneRemoteProject(ws, remoteTarget))) return;
+    }
+
+    const checkout = remoteCheckout;
+    const remote = checkout?.target;
+    const root = checkout === null ? repoDir : checkout.dir;
+    const projectName = remote === undefined ? project : `${remote.owner}/${remote.repo}`;
     let factsBefore;
     const runId = `run-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
     const stagingDir = stagingDirectory(root, runId);
@@ -2439,6 +2546,7 @@ export function createApp(options: AppOptions) {
       agent: undefined,
       activity: [],
       question: null,
+      ...(remote === undefined ? {} : { remote }),
     };
     discoverRun = run;
     discoverInterrupted = false;
@@ -2523,14 +2631,36 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    discoverRun = undefined;
-    run.question = null;
-    run.agent?.close();
     try {
       removeStaging(root, runId);
     } catch {
       // The run's staging is best-effort; the published set is already valid.
     }
+    if (remote !== undefined) {
+      // Only a successful crawl replaces the snapshot, and it does so before
+      // the run is torn down so a failed retention reports like a failed crawl.
+      const retained = retainRemoteProject(
+        remoteRoot,
+        root,
+        {
+          url: remote.url,
+          owner: remote.owner,
+          repo: remote.repo,
+          completedAt: new Date().toISOString(),
+        },
+        run.runId,
+      );
+      if (retained !== null) {
+        failDiscover(run, `Discover failed: ${retained}`);
+        return;
+      }
+    }
+
+    discoverRun = undefined;
+    run.question = null;
+    run.agent?.close();
+    if (remote !== undefined) remoteTarget = remote;
+    clearRemoteCheckout();
     discoverInterrupted = false;
     refreshDiscoverSnapshot();
     broadcast({ type: "discoverState", state: discoverStatePayload() });
@@ -2548,8 +2678,9 @@ export function createApp(options: AppOptions) {
   }
 
   /**
-   * Clones a public repository under the state directory and crawls the clone.
-   * The previous target and its artifacts stay untouched when the clone fails.
+   * Clones a public repository, crawls the clone once, and retains the result.
+   * The previous target and its retained artifacts stay untouched when the
+   * clone or the crawl fails.
    */
   async function startDiscoverRemote(ws: { send(data: string): unknown }, url: string) {
     if (remoteUnavailable(ws)) return;
@@ -2578,93 +2709,82 @@ export function createApp(options: AppOptions) {
       discoverFailure(ws, `Could not clone the repository: ${parsed.reason}.`);
       return;
     }
-
-    const target = parsed.repository;
-    const runId = `run-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
-    const staging = join(remoteRoot, `.staging-${runId}`);
-    try {
-      mkdirSync(remoteRoot, { recursive: true });
-    } catch (error) {
-      discoverFailure(
-        ws,
-        `Could not prepare the Discover scratch root: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return;
-    }
-
-    // The clone state leaves before the child spawns, so every client sees it.
-    discoverCloning = { url: target.url };
-    journal.write("lifecycle", "discover-remote-clone");
-    broadcastDiscoverState();
-
-    const request = remoteCloneRequest(target.url, remoteRoot, runId);
-    const requestTimeoutSeconds = Math.round(request.timeoutMs / 1000);
-    let result: RemoteCloneResult;
-    try {
-      result = await cloneRunner(request);
-    } catch (error) {
-      result = {
-        code: -1,
-        stderr: error instanceof Error ? error.message : String(error),
-        timedOut: false,
-      };
-    }
-
-    const cloneFailed = (message: string) => {
-      discoverCloning = null;
-      try {
-        rmSync(staging, { recursive: true, force: true });
-      } catch {
-        // The next start removes a staging directory that cannot be removed.
-      }
-      discoverFailure(ws, message);
-      broadcastDiscoverState();
-    };
-
-    if (result.timedOut) {
-      cloneFailed(`The repository clone timed out after ${requestTimeoutSeconds} seconds.`);
-      return;
-    }
-    if (result.code !== 0) {
-      cloneFailed(`The repository clone failed: git exited with status ${result.code}.`);
-      return;
-    }
-    let readable = false;
-    try {
-      readable = statSync(staging).isDirectory();
-    } catch {
-      readable = false;
-    }
-    if (!readable) {
-      cloneFailed("The repository clone produced no readable directory.");
-      return;
-    }
-
-    const destination = cloneDirectoryOf(target);
-    const previous =
-      remoteTarget === undefined ? undefined : cloneDirectoryOf(remoteTarget);
-    try {
-      if (existsSync(destination)) rmSync(destination, { recursive: true, force: true });
-      renameSync(staging, destination);
-      // The previous clone goes only once the new one is in place.
-      if (previous !== undefined && resolve(previous) !== resolve(destination)) {
-        rmSync(previous, { recursive: true, force: true });
-      }
-    } catch (error) {
-      cloneFailed(
-        `The repository clone could not be stored: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return;
-    }
-
-    remoteTarget = target;
-    discoverCloning = null;
-    broadcastDiscoverState();
+    if (!(await cloneRemoteProject(ws, parsed.repository))) return;
     await startDiscoverProject(ws);
+  }
+
+  /** The retained project a submitted URL names, by lowercased owner/repo. */
+  function retainedProjectFor(url: string): RetainedRemoteProject | null {
+    const parsed = parseRemoteUrl(url);
+    if (!parsed.ok) return null;
+    const name = remoteCloneName(parsed.repository.owner, parsed.repository.repo);
+    return (
+      listRetainedProjects(remoteRoot).find(
+        (project) => remoteCloneName(project.owner, project.repo) === name,
+      ) ?? null
+    );
+  }
+
+  /** Refuses a target change while a clone or run holds the checkout. */
+  function remoteChangeRefusal(
+    ws: { send(data: string): unknown },
+    action: string,
+  ): boolean {
+    if (discoverCloning !== null) {
+      discoverFailure(ws, "A repository clone is active. Wait for it to finish.");
+      return true;
+    }
+    if (discoverRun !== undefined) {
+      discoverFailure(ws, `A Discover run is active. Stop it before ${action}.`);
+      return true;
+    }
+    const busy = discoverBusyReason();
+    if (busy !== null) {
+      discoverFailure(ws, `The remote target cannot be changed: ${busy}`);
+      return true;
+    }
+    return false;
+  }
+
+  /** Switches to a retained project without cloning, crawling, or networking. */
+  function switchDiscoverRemote(ws: { send(data: string): unknown }, url: string) {
+    if (remoteUnavailable(ws)) return;
+    if (remoteChangeRefusal(ws, "switching projects")) return;
+    const retained = retainedProjectFor(url);
+    if (retained === null) {
+      discoverFailure(ws, `No retained Discover project matches ${url.trim()}.`);
+      return;
+    }
+    remoteTarget = { url: retained.url, owner: retained.owner, repo: retained.repo };
+    journal.write("lifecycle", "discover-remote-switch");
+    refreshDiscoverSnapshot();
+    broadcastDiscoverState();
+  }
+
+  /** Deletes exactly one retained project, returning to the host when it was active. */
+  function removeDiscoverRemote(ws: { send(data: string): unknown }, url: string) {
+    if (remoteUnavailable(ws)) return;
+    if (remoteChangeRefusal(ws, "removing a project")) return;
+    const retained = retainedProjectFor(url);
+    if (retained === null) {
+      discoverFailure(ws, `No retained Discover project matches ${url.trim()}.`);
+      return;
+    }
+    const removed = removeRetainedProject(remoteRoot, retained);
+    if (removed !== null) {
+      discoverFailure(ws, `The retained Discover project could not be removed: ${removed}`);
+      return;
+    }
+    if (
+      remoteTarget !== undefined &&
+      remoteCloneName(remoteTarget.owner, remoteTarget.repo) ===
+        remoteCloneName(retained.owner, retained.repo)
+    ) {
+      remoteTarget = undefined;
+    }
+    journal.write("lifecycle", "discover-remote-remove");
+    refreshDiscoverSnapshot();
+    broadcastDiscoverState();
   }
 
   /** Returns the Overview to this checkout's own published artifacts. */
@@ -2687,17 +2807,7 @@ export function createApp(options: AppOptions) {
       discoverFailure(ws, "No remote Discover target is active.");
       return;
     }
-    try {
-      rmSync(cloneDirectoryOf(remoteTarget), { recursive: true, force: true });
-    } catch (error) {
-      discoverFailure(
-        ws,
-        `The remote clone could not be removed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return;
-    }
+    // Clearing changes the target only: every retained project keeps its bytes.
     remoteTarget = undefined;
     journal.write("lifecycle", "discover-remote-clear");
     refreshDiscoverSnapshot();
@@ -2719,6 +2829,7 @@ export function createApp(options: AppOptions) {
     } catch {
       // The staging directory may already be gone.
     }
+    clearRemoteCheckout();
     refreshDiscoverSnapshot();
     broadcast({ type: "discoverStopped", completed: false });
     broadcastDiscoverState();
@@ -5157,10 +5268,11 @@ export function createApp(options: AppOptions) {
       discovering.question = null;
       discovering.agent?.close();
       try {
-        removeStaging(repoDir, discovering.runId);
+        removeStaging(discovering.cwd, discovering.runId);
       } catch {
         // Reset preserves `.omp`, so a leftover staging directory is harmless.
       }
+      clearRemoteCheckout();
       broadcast({ type: "discoverStopped", completed: false });
     }
 
@@ -5807,6 +5919,10 @@ export function createApp(options: AppOptions) {
             await startDiscoverProject(ws);
           } else if (command.type === "discoverRemote") {
             if (typeof command.url === "string") await startDiscoverRemote(ws, command.url);
+          } else if (command.type === "switchDiscoverRemote") {
+            if (typeof command.url === "string") switchDiscoverRemote(ws, command.url);
+          } else if (command.type === "removeDiscoverRemote") {
+            if (typeof command.url === "string") removeDiscoverRemote(ws, command.url);
           } else if (command.type === "clearDiscoverRemote") {
             clearDiscoverRemote(ws);
           } else if (command.type === "stopDiscover") {
@@ -5822,7 +5938,10 @@ export function createApp(options: AppOptions) {
             if (term === null) {
               discoverFailure(ws, "Confirming a term needs its bounded context and id.");
             } else {
-              afterDiscoverMutation(ws, confirmGlossaryTerm(targetRoot(), term.context, term.id));
+              afterDiscoverMutation(
+                ws,
+                confirmGlossaryTerm(targetRoot(), term.context, term.id, remoteTarget !== undefined),
+              );
             }
           } else if (command.type === "rejectGlossaryTerm") {
             const term = discoverTermRequest(command.context, command.id);
@@ -5831,7 +5950,13 @@ export function createApp(options: AppOptions) {
             } else {
               afterDiscoverMutation(
                 ws,
-                rejectGlossaryTerm(targetRoot(), term.context, term.id, command.reason),
+                rejectGlossaryTerm(
+                  targetRoot(),
+                  term.context,
+                  term.id,
+                  command.reason,
+                  remoteTarget !== undefined,
+                ),
               );
             }
           } else if (command.type === "ask") {

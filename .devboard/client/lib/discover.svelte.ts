@@ -21,6 +21,7 @@ import type {
   Glossary,
   GlossarySignificance,
   GlossaryUsage,
+  RetainedRemoteProject,
   RunQuestion,
   RunQuestionOption,
 } from "./types";
@@ -81,6 +82,23 @@ export class DiscoverStore {
   get remoteTarget(): Extract<DiscoverTarget, { kind: "remote" }> | null {
     const target = this.target;
     return target.kind === "remote" ? target : null;
+  }
+
+  /** Every retained remote project, newest completed discovery first. */
+  get retained(): RetainedRemoteProject[] {
+    return Array.isArray(this.state?.retained) ? this.state.retained : [];
+  }
+
+  /** True while the remote target cannot be changed without a refusal. */
+  get remoteChangeDisabled(): boolean {
+    return this.remoteChangeTitle !== undefined;
+  }
+
+  get remoteChangeTitle(): string | undefined {
+    if (!connection.open) return "Not connected";
+    if (this.cloning !== null) return "A repository clone is running";
+    if (this.active) return "A Discover run is active";
+    return this.busy ?? undefined;
   }
 
   get cloning(): { url: string } | null {
@@ -230,10 +248,22 @@ export class DiscoverStore {
     connection.send({ type: "discoverRemote", url });
   }
 
-  /** Returns to this checkout's own artifacts; the field stays empty. */
+  /** Returns to this checkout's own artifacts; retained projects are kept. */
   clearRemote(): void {
     this.remoteUrl = "";
     connection.send({ type: "clearDiscoverRemote" });
+  }
+
+  /** Switches to a retained project; never clones or crawls. */
+  switchRemote(url: string): void {
+    if (url.length === 0 || url === this.remoteTarget?.url) return;
+    connection.send({ type: "switchDiscoverRemote", url });
+  }
+
+  /** Deletes one retained project; the host target returns when it was active. */
+  removeRemote(url: string): void {
+    if (url.length === 0) return;
+    connection.send({ type: "removeDiscoverRemote", url });
   }
 
   stop(): void {

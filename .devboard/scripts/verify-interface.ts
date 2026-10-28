@@ -12,7 +12,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fixtureRecord } from "../server/fixtures/adr-source";
 import { journalKey } from "../server/journal";
@@ -861,86 +861,49 @@ async function ompDigest(host: string): Promise<string> {
   return digest.digest("hex");
 }
 
-/** A local repository whose files the remote clone and its crawl can read. */
-async function createRemoteSource(root: string): Promise<string> {
-  const source = join(root, "remote-source");
-  await mkdir(join(source, "adrs"), { recursive: true });
-  await mkdir(join(source, "src"), { recursive: true });
-  await mkdir(join(source, "test"), { recursive: true });
-  await mkdir(join(source, ".github", "workflows"), { recursive: true });
-  await writeFile(join(source, "README.md"), "# Remote fixture\n\nA repository cloned for Discover.\n");
-  await writeFile(
-    join(source, "package.json"),
-    `${JSON.stringify({ name: "remote-fixture", scripts: { test: "bun test", "test:unit": "bun test" } }, null, 2)}\n`,
-  );
-  await writeFile(join(source, "src", "catalog.ts"), "export const catalogSize = 3;\n");
-  await writeFile(
-    join(source, "test", "catalog.test.ts"),
-    'import { test, expect } from "bun:test";\ntest("catalog", () => expect(3).toBe(3));\n',
-  );
-  await writeFile(
-    join(source, ".github", "workflows", "ci.yml"),
-    "name: CI\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bun test\n",
-  );
-  await writeFile(join(source, "adrs", "0001-remote.md"), fixtureRecord("0001-remote.md", "Remote decision"));
-  await writeFile(join(source, ".gitignore"), ".omp/\nnode_modules/\n");
-  await git(source, ["init", "-q"]);
-  await git(source, ["add", "-A"]);
-  await git(source, ["commit", "-q", "-m", "chore: remote fixture"]);
-  return source;
-}
-
 /**
- * Clones a local repository into the state scratch root and crawls it through a
- * temporary dashboard, so the restored remote target holds real artifacts.
+ * Seeds one retained remote project from this checkout's published Discover
+ * trees. The fixture has no checkout: the dashboard must render and switch
+ * from the retained bytes alone.
  */
-async function seedRemoteClone(root: string, stateDir: string): Promise<string> {
-  const source = await createRemoteSource(root);
-  const cloneDir = join(stateDir, "discover-remote", "octocat-hello-world");
-  await mkdir(dirname(cloneDir), { recursive: true });
-  // A local clone: no network, and the result is a real git work tree.
-  await git(root, ["clone", "-q", source, cloneDir]);
-  const port = await freePort();
-  const env = {
-    ...process.env,
-    HOST: "127.0.0.1",
-    PORT: String(port),
-    ADRS_DIR: join(cloneDir, "adrs"),
-    REPO_DIR: cloneDir,
-    GOAL_FILE: join(cloneDir, "GOAL.md"),
-    STATIC_DIR: join(harnessRoot, "dist"),
-    STATE_DIR: join(root, "remote-seed-state"),
-    AGENT_COMMAND: `bun ${stubAgent} --log=${join(root, "remote-seed-agent.log")} --discover`,
-    DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
-    GIT_TERMINAL_PROMPT: "0",
-    GIT_ASKPASS: "true",
-  };
-  const log = join(root, "remote-seed-server.log");
-  const writer = Bun.file(log).writer();
-  const child = spawn("bun", ["run", "server/index.ts"], {
-    cwd: harnessRoot,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
+async function seedRetainedProject(
+  stateDir: string,
+  host: string,
+  owner: string,
+  repo: string,
+  completedAt: string,
+): Promise<string> {
+  const directory = join(stateDir, "discover-remote", `${owner}-${repo}`.toLowerCase());
+  await mkdir(join(directory, ".omp"), { recursive: true });
+  await cp(join(host, ".omp", "discover"), join(directory, ".omp", "discover"), {
+    recursive: true,
   });
-  child.stdout?.on("data", (chunk) => writer.write(chunk));
-  child.stderr?.on("data", (chunk) => writer.write(chunk));
-  try {
-    await waitForHttp(`http://127.0.0.1:${port}/`);
-    await seedDiscover(port);
-  } finally {
-    const exited = new Promise<void>((settle) => child.once("exit", () => settle()));
-    child.kill("SIGTERM");
-    await exited;
-  }
-  check(
-    Bun.file(join(cloneDir, ".omp", "discover", "sheet.json")).size > 0,
-    "the remote clone was not seeded with Discover artifacts",
+  await cp(join(host, ".omp", "skills"), join(directory, ".omp", "skills"), {
+    recursive: true,
+  });
+  await writeFile(
+    join(directory, "project.json"),
+    `${JSON.stringify(
+      {
+        url: `https://github.com/${owner}/${repo}`,
+        owner,
+        repo,
+        completedAt,
+      },
+      null,
+      2,
+    )}\n`,
   );
-  return cloneDir;
+  return directory;
 }
 
-/** Writes the remote target into the stopped dashboard's durable state. */
-async function seedRemoteTarget(stateDir: string, host: string): Promise<void> {
+/** Writes the active remote target into the stopped dashboard's durable state. */
+async function seedRemoteTarget(
+  stateDir: string,
+  host: string,
+  owner: string,
+  repo: string,
+): Promise<void> {
   const path = stateFile(stateDir, resolve(host));
   const envelope = JSON.parse(await readFile(path, "utf8")) as {
     state?: Record<string, unknown>;
@@ -951,9 +914,9 @@ async function seedRemoteTarget(stateDir: string, host: string): Promise<void> {
     path,
   );
   envelope.state.discoverTarget = {
-    url: "https://github.com/octocat/Hello-World",
-    owner: "octocat",
-    repo: "Hello-World",
+    url: `https://github.com/${owner}/${repo}`,
+    owner,
+    repo,
   };
   await writeFile(path, JSON.stringify(envelope));
 }
@@ -3128,59 +3091,115 @@ try {
   check(!afterReload.stored.includes('"sidebarVisible"'), "layout localStorage still stores sidebar visibility", afterReload.stored.slice(0, 120));
 
 
-  // 12b. The remote target exists only for a harness source checkout.
+  // 12b. Retained remote projects render without a clone, switch, and remove.
   const hostOmpBefore = await ompDigest(host);
+  const helloUrl = "https://github.com/octocat/Hello-World";
+  const secondUrl = "https://github.com/octocat/Second-Project";
   await stopServer();
-  const remoteClone = await seedRemoteClone(root, stateDir);
-  await seedRemoteTarget(stateDir, host);
+  const helloRetained = await seedRetainedProject(
+    stateDir,
+    host,
+    "octocat",
+    "Hello-World",
+    "2026-01-02T00:00:00.000Z",
+  );
+  const secondRetained = await seedRetainedProject(
+    stateDir,
+    host,
+    "octocat",
+    "Second-Project",
+    "2026-01-03T00:00:00.000Z",
+  );
+  const helloBytes = await ompDigest(helloRetained);
+  await seedRemoteTarget(stateDir, host, "octocat", "Hello-World");
   startServer();
   await waitForHttp(baseUrl);
   await page.wait(
     `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
-    "the reconnection after the remote restart",
+    "the reconnection after the retained remote restart",
     30_000,
   );
   await runPalette("discover.tab.overview");
   await page.wait(
     `document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null`,
-    "the Discover overview with a remote target",
+    "the Discover overview with a retained remote project",
   );
   await page.wait(
     `document.querySelector('[data-testid="discover-remote-target"]') !== null`,
-    "the remote target banner",
+    "the retained remote target banner",
   );
   const remoteStrip = await page.eval<{
+    select: boolean;
+    options: string[];
+    selected: string;
+    selectedIndex: number;
+    removes: Array<string | null>;
+    error: string | null;
+    banner: string;
     input: boolean;
     placeholder: string;
     label: string;
     start: string;
     disabled: boolean;
     title: string;
-    banner: string;
     clear: boolean;
     sheet: boolean;
-    target: string;
     first: boolean;
   }>(`(() => {
+    const select = document.querySelector('[data-testid="discover-remote-select"]');
+    const banner = document.querySelector('[data-testid="discover-remote-target"]');
     const input = document.querySelector('[data-testid="discover-remote-url"]');
     const start = document.querySelector('[data-testid="discover-remote-start"]');
-    const banner = document.querySelector('[data-testid="discover-remote-target"]');
+    const error = document.querySelector('[data-testid="discover-error"]');
     return {
+      select: select !== null,
+      options: select === null ? [] : [...select.options].map((option) => option.value),
+      selected: select?.value ?? "",
+      selectedIndex: select?.selectedIndex ?? -2,
+      removes: [...document.querySelectorAll('[data-testid="discover-remote-remove"]')].map(
+        (button) => button.getAttribute("data-url"),
+      ),
+      error: error?.textContent ?? null,
+      banner: banner?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
       input: input !== null,
       placeholder: input?.getAttribute("placeholder") ?? "",
       label: input?.getAttribute("aria-label") ?? "",
       start: start?.textContent?.trim() ?? "",
       disabled: start?.disabled === true,
       title: start?.getAttribute("title") ?? "",
-      banner: banner?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
       clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
       sheet: document.querySelector('[data-testid="discover-sheet"]') !== null,
-      target: document.querySelector('[data-testid="discover-remote-target"]')?.textContent ?? "",
       first:
         document.querySelector('[data-testid="discover-panel"][data-tab="overview"]')
           ?.firstElementChild?.getAttribute("data-testid") === "discover-remote",
     };
   })()`);
+  check(remoteStrip.select, "the retained-project dropdown is missing", remoteStrip);
+  check(
+    JSON.stringify(remoteStrip.options) === JSON.stringify([secondUrl, helloUrl]),
+    "the retained dropdown does not list both projects newest first",
+    remoteStrip,
+  );
+  check(
+    remoteStrip.selected === helloUrl && remoteStrip.selectedIndex === 1,
+    "the active retained project is not the selected option",
+    remoteStrip,
+  );
+  check(
+    JSON.stringify(remoteStrip.removes) === JSON.stringify([secondUrl, helloUrl]),
+    "the remove controls do not carry each retained project's URL",
+    remoteStrip,
+  );
+  check(
+    remoteStrip.error === null || !remoteStrip.error.includes("missing"),
+    "a retained project produced a missing-clone error",
+    remoteStrip,
+  );
+  check(
+    remoteStrip.banner.includes(helloUrl) && remoteStrip.banner.includes("Manual testing"),
+    "the retained banner does not name the active URL with its marker",
+    remoteStrip,
+  );
   check(
     remoteStrip.input && remoteStrip.placeholder === "https://github.com/owner/repo" && remoteStrip.label.length > 0,
     "the remote URL field is missing or unlabelled",
@@ -3192,35 +3211,213 @@ try {
     "an empty URL field does not disable the remote start control",
     remoteStrip,
   );
-  check(
-    remoteStrip.banner.includes("https://github.com/octocat/Hello-World") &&
-      remoteStrip.banner.includes("Manual testing"),
-    "the remote banner does not name the active URL with its marker",
-    remoteStrip,
-  );
   check(remoteStrip.clear, "the clear control is missing for a remote target", remoteStrip);
-  check(remoteStrip.sheet, "the clone's sheet does not render", remoteStrip);
+  check(remoteStrip.sheet, "the retained project's sheet does not render", remoteStrip);
   check(
     remoteStrip.first,
     "the remote target strip is not the first region of the Discover overview",
     remoteStrip,
   );
-  const remoteTitle = await page.eval<string>(
+  const retainedTitle = await page.eval<string>(
     `document.querySelector('#workspace-discover .discover-head__title')?.textContent?.trim() ?? ""`,
   );
   check(
-    remoteTitle === "octocat/Hello-World",
-    "the Discover head does not name the repository as owner/name",
-    remoteTitle,
+    retainedTitle === "octocat/Hello-World",
+    "the Discover head does not name the restored repository",
+    retainedTitle,
   );
-
   await runPalette("discover.tab.glossary");
-  await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the clone's glossary");
+  await page.wait(`document.querySelector('[data-testid="discover-term"]') !== null`, "the retained glossary");
   await runPalette("discover.tab.overview");
 
-  // An invalid URL is refused once, spawns nothing, and leaves the target.
+  // Selecting another retained option switches with no clone and no crawl.
+  const framesBeforeRetainedSwitch = await page.eval<number>(`(window.__viFrames ?? []).length`);
+  await page.eval(`(() => {
+    const select = document.querySelector('[data-testid="discover-remote-select"]');
+    select.value = ${JSON.stringify(secondUrl)};
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  await page.wait(
+    `document.querySelector('[data-testid="discover-remote-target"]')?.textContent?.includes(${JSON.stringify(secondUrl)}) === true`,
+    "the switched retained project",
+    20_000,
+  );
+  const switchedTitle = await page.eval<string>(
+    `document.querySelector('#workspace-discover .discover-head__title')?.textContent?.trim() ?? ""`,
+  );
+  check(
+    switchedTitle === "octocat/Second-Project",
+    "switching a retained option did not render that project",
+    switchedTitle,
+  );
+  const switchedBanner = await page.eval<string>(
+    `document.querySelector('[data-testid="discover-remote-target"]')?.textContent ?? ""`,
+  );
+  check(
+    switchedBanner.includes(secondUrl),
+    "switching a retained option did not move the target banner",
+    switchedBanner,
+  );
+  const switchFrames = await page.eval<{ frames: Array<{ type?: string; url?: string } | null> }>(`(() => ({
+    frames: (window.__viFrames ?? []).slice(${framesBeforeRetainedSwitch}).map((frame) => {
+      try { return JSON.parse(frame); } catch (error) { return null; }
+    }),
+  }))()`);
+  const switchSpawns = switchFrames.frames.filter(
+    (frame) => frame?.type === "discoverRemote" || frame?.type === "discoverProject",
+  );
+  check(switchSpawns.length === 0, "switching a retained option spawned a clone or crawl", switchFrames);
+  const switchCommands = switchFrames.frames.filter((frame) => frame?.type === "switchDiscoverRemote");
+  check(
+    switchCommands.length === 1 && switchCommands[0]?.url === secondUrl,
+    "one selection did not send exactly one switchDiscoverRemote",
+    switchFrames,
+  );
+  const scratchAfterSwitch = await readdir(join(stateDir, "discover-remote"));
+  check(
+    JSON.stringify(scratchAfterSwitch.sort()) ===
+      JSON.stringify(["octocat-hello-world", "octocat-second-project"]),
+    "switching created a checkout or removed a retained project",
+    scratchAfterSwitch,
+  );
+
+  // One remote skill save lands in the active retained project, never this checkout.
+  await runPalette("discover.tab.testing-strategy");
+  await page.wait(`document.querySelector('[data-testid="discover-skill-text"] .monaco-editor') !== null`, "the retained skill editor");
+  const retainedSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
+  await page.eval(
+    `window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(
+      `${retainedSkill}\n- Retained interface edit.\n`,
+    )})`,
+  );
+  await page.wait(`document.querySelector('[data-testid="discover-skill-dirty"]') !== null`, "the retained skill dirty marker");
+  await page.click('[data-testid="discover-skill-save"]');
+  await waitFor(
+    async () => {
+      try {
+        const text = await readFile(
+          join(secondRetained, ".omp", "skills", "discover-testing-strategy", "SKILL.md"),
+          "utf8",
+        );
+        return text.includes("Retained interface edit") ? true : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    "the retained skill save",
+    20_000,
+  );
+  check(await ompDigest(host) === hostOmpBefore, "a retained skill save changed this checkout's .omp");
+
+  // Removing the active project deletes exactly it and returns to the host.
+  await runPalette("discover.tab.overview");
+  await page.eval(`document.querySelector('[data-testid="discover-remote-remove"][data-url="${secondUrl}"]').click()`);
+  await page.wait(
+    `document.querySelector('[data-testid="discover-remote-target"]') === null`,
+    "the host target after removing the active retained project",
+    20_000,
+  );
+  await waitFor(
+    () => (existsSync(secondRetained) ? undefined : true),
+    "the removed retained project",
+    20_000,
+  );
+  const afterRemove = await page.eval<{ options: string[]; removes: Array<string | null>; selectedIndex: number }>(`(() => {
+    const select = document.querySelector('[data-testid="discover-remote-select"]');
+    return {
+      options: select === null ? [] : [...select.options].map((option) => option.value),
+      removes: [...document.querySelectorAll('[data-testid="discover-remote-remove"]')].map(
+        (button) => button.getAttribute("data-url"),
+      ),
+      selectedIndex: select?.selectedIndex ?? -2,
+    };
+  })()`);
+  check(
+    JSON.stringify(afterRemove.options) === JSON.stringify([helloUrl]),
+    "removing the active project kept its dropdown entry",
+    afterRemove,
+  );
+  check(
+    JSON.stringify(afterRemove.removes) === JSON.stringify([helloUrl]),
+    "removing the active project kept its remove control",
+    afterRemove,
+  );
+  check(afterRemove.selectedIndex === -1, "the host target still selects a retained option", afterRemove);
+  check(existsSync(helloRetained), "removing one project deleted another");
+  check(await ompDigest(helloRetained) === helloBytes, "removing one project changed another");
+
+  // The removal survives a restart.
+  await stopServer();
+  startServer();
+  await waitForHttp(baseUrl);
+  await page.navigate(baseUrl);
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reconnection after the removal restart",
+    30_000,
+  );
+  await runPalette("discover.tab.overview");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-remote-select"]') !== null`,
+    "the retained dropdown after the removal restart",
+  );
+  const afterRestart = await page.eval<{ options: string[]; target: boolean; error: string | null }>(`(() => ({
+    options: [...document.querySelector('[data-testid="discover-remote-select"]').options].map(
+      (option) => option.value,
+    ),
+    target: document.querySelector('[data-testid="discover-remote-target"]') !== null,
+    error: document.querySelector('[data-testid="discover-error"]')?.textContent ?? null,
+  }))()`);
+  check(
+    JSON.stringify(afterRestart.options) === JSON.stringify([helloUrl]),
+    "the removed project returned after a restart",
+    afterRestart,
+  );
+  check(!afterRestart.target, "a restart reactivated a removed project", afterRestart);
+  check(
+    afterRestart.error === null || !afterRestart.error.includes("missing"),
+    "the removal restart reported a missing checkout",
+    afterRestart,
+  );
+  check(!existsSync(secondRetained) && existsSync(helloRetained), "a restart changed the retained directories");
+
+  // Selecting the remaining project renders it; clearing keeps every byte.
+  await page.eval(`(() => {
+    const select = document.querySelector('[data-testid="discover-remote-select"]');
+    select.value = ${JSON.stringify(helloUrl)};
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  await page.wait(
+    `document.querySelector('[data-testid="discover-remote-target"]')?.textContent?.includes(${JSON.stringify(helloUrl)}) === true`,
+    "the selected remaining retained project",
+    20_000,
+  );
+  await page.click('[data-testid="discover-remote-clear"]');
+  await page.wait(
+    `document.querySelector('[data-testid="discover-remote-target"]') === null`,
+    "the cleared remote banner",
+    20_000,
+  );
+  const cleared = await page.eval<{ input: string; clear: boolean; options: string[] }>(`(() => ({
+    input: document.querySelector('[data-testid="discover-remote-url"]')?.value ?? "missing",
+    clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
+    options: [...document.querySelector('[data-testid="discover-remote-select"]').options].map(
+      (option) => option.value,
+    ),
+  }))()`);
+  check(cleared.input === "", "clearing did not empty the URL field", cleared);
+  check(!cleared.clear, "the clear control survived the host target", cleared);
+  check(
+    JSON.stringify(cleared.options) === JSON.stringify([helloUrl]),
+    "clearing removed a retained project",
+    cleared,
+  );
+  check(await ompDigest(helloRetained) === helloBytes, "clearing changed a retained project");
+  check(await ompDigest(host) === hostOmpBefore, "clearing changed this checkout's .omp");
+
+  // An invalid URL is refused once and creates no checkout.
   await page.fill('[data-testid="discover-remote-url"]', "http://github.com/octocat/Hello-World");
-  const framesBefore = await page.eval<number>(`(window.__viFrames ?? []).length`);
+  const framesBeforeInvalid = await page.eval<number>(`(window.__viFrames ?? []).length`);
   await page.click('[data-testid="discover-remote-start"]');
   await page.wait(
     `document.querySelector('[data-testid="discover-error"]')?.textContent?.includes("Could not clone") === true`,
@@ -3228,74 +3425,23 @@ try {
     20_000,
   );
   const invalid = await page.eval<{ frames: Array<{ type?: string; url?: string } | null> }>(`(() => ({
-    frames: (window.__viFrames ?? []).slice(${framesBefore}).map((frame) => {
+    frames: (window.__viFrames ?? []).slice(${framesBeforeInvalid}).map((frame) => {
       try { return JSON.parse(frame); } catch (error) { return null; }
     }),
   }))()`);
-  const sent = invalid.frames.filter((frame) => frame?.type === "discoverRemote");
-  check(sent.length === 1, "one invalid URL did not send exactly one discoverRemote frame", invalid);
+  const invalidSent = invalid.frames.filter((frame) => frame?.type === "discoverRemote");
+  check(invalidSent.length === 1, "one invalid URL did not send exactly one discoverRemote frame", invalid);
   check(
-    sent[0]?.url === "http://github.com/octocat/Hello-World",
+    invalidSent[0]?.url === "http://github.com/octocat/Hello-World",
     "the invalid URL frame did not carry the trimmed value",
     invalid,
   );
   const scratchAfterInvalid = await readdir(join(stateDir, "discover-remote"));
   check(
-    scratchAfterInvalid.length === 1 && scratchAfterInvalid[0] === "octocat-hello-world",
-    "an invalid URL created a clone",
+    JSON.stringify(scratchAfterInvalid.sort()) === JSON.stringify(["octocat-hello-world"]),
+    "an invalid URL created or removed a retained project",
     scratchAfterInvalid,
   );
-
-  // One remote skill save lands in the clone, never in this checkout.
-  await runPalette("discover.tab.testing-strategy");
-  await page.wait(`document.querySelector('[data-testid="discover-skill-text"] .monaco-editor') !== null`, "the remote skill editor");
-  const remoteSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
-  await page.eval(
-    `window.__devboardEditors.get("discover-skill-text").setValue(${JSON.stringify(
-      `${remoteSkill}\n- Remote interface edit.\n`,
-    )})`,
-  );
-  await page.wait(`document.querySelector('[data-testid="discover-skill-dirty"]') !== null`, "the remote skill dirty marker");
-  await page.click('[data-testid="discover-skill-save"]');
-  await waitFor(
-    async () => {
-      try {
-        const text = await readFile(
-          join(remoteClone, ".omp", "skills", "discover-testing-strategy", "SKILL.md"),
-          "utf8",
-        );
-        return text.includes("Remote interface edit") ? true : undefined;
-      } catch {
-        return undefined;
-      }
-    },
-    "the remote skill save",
-    20_000,
-  );
-  check(await ompDigest(host) === hostOmpBefore, "a remote skill save changed this checkout's .omp");
-
-  // Clearing returns to this checkout's artifacts with an empty field.
-  await runPalette("discover.tab.overview");
-  await page.click('[data-testid="discover-remote-clear"]');
-  await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]') === null`,
-    "the cleared remote banner",
-    20_000,
-  );
-  const cleared = await page.eval<{ input: string; start: string; clear: boolean }>(`(() => ({
-    input: document.querySelector('[data-testid="discover-remote-url"]')?.value ?? "missing",
-    start: document.querySelector('[data-testid="discover-start"]')?.textContent?.trim() ?? "",
-    clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
-  }))()`);
-  check(cleared.input === "", "clearing did not empty the URL field", cleared);
-  check(cleared.start === "Re-discover", "clearing did not restore the host artifacts", cleared);
-  check(!cleared.clear, "the clear control survived the host target", cleared);
-  await waitFor(
-    () => (existsSync(remoteClone) ? undefined : true),
-    "the removed remote clone",
-    20_000,
-  );
-  check(await ompDigest(host) === hostOmpBefore, "clearing changed this checkout's .omp");
 
   // The installed gate renders none of the remote controls.
   const gateOffHost = await writeGateOffHost(root);
@@ -3327,16 +3473,22 @@ try {
     start: document.querySelector('[data-testid="discover-remote-start"]') !== null,
     banner: document.querySelector('[data-testid="discover-remote-target"]') !== null,
     clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
+    select: document.querySelector('[data-testid="discover-remote-select"]') !== null,
+    remove: document.querySelector('[data-testid="discover-remote-remove"]') !== null,
     panel: document.querySelector('[data-testid="discover-panel"][data-tab="overview"]') !== null,
     skills: document.querySelector('[data-testid="sidebar"] section[aria-label="Skills"]') !== null,
   })`);
   check(gateOff.panel, "the gate-off host has no Discover overview", gateOff);
   check(
-    !gateOff.url && !gateOff.start && !gateOff.banner && !gateOff.clear,
+    !gateOff.url && !gateOff.start && !gateOff.banner && !gateOff.clear && !gateOff.select && !gateOff.remove,
     "the gate-off host renders a remote control",
     gateOff,
   );
   check(!gateOff.skills, "the host without Discover artifacts renders a Skills group", gateOff);
+  check(
+    !existsSync(join(root, "gate-off-state", "discover-remote")),
+    "the gate-off host read or wrote the retained root",
+  );
   gateOffProcess.kill("SIGTERM");
   gateOffProcess = undefined;
   await page.navigate(baseUrl);

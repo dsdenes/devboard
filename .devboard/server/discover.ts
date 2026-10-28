@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -272,12 +273,168 @@ export function remoteCloneName(owner: string, repo: string): string {
   return `${owner}-${repo}`.toLowerCase();
 }
 
-export function remoteCloneDirectory(
+/**
+ * The retained project's directory. A run's checkout lives beside the retained
+ * projects under a dotted `.staging-*` name, so it never displaces them.
+ */
+export function remoteProjectDirectory(
   scratchRoot: string,
   owner: string,
   repo: string,
 ): string {
   return join(scratchRoot, remoteCloneName(owner, repo));
+}
+
+/** The record naming one retained project; it sits beside the two `.omp` trees. */
+export const REMOTE_RECORD_NAME = "project.json";
+
+/** Every transient directory a run creates starts with this prefix. */
+export const REMOTE_TRANSIENT_PREFIX = ".staging-";
+
+/** What a retained project keeps after the run's checkout is gone. */
+export interface RetainedRemoteProject {
+  url: string;
+  owner: string;
+  repo: string;
+  /** ISO time the discovery that produced the retained bytes completed. */
+  completedAt: string;
+}
+
+function parseRetainedProject(raw: unknown): RetainedRemoteProject | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const record = raw as Record<string, unknown>;
+  const url = record.url;
+  const owner = record.owner;
+  const repo = record.repo;
+  const completedAt = record.completedAt;
+  if (typeof url !== "string" || typeof owner !== "string" || typeof repo !== "string") {
+    return null;
+  }
+  if (typeof completedAt !== "string" || !Number.isFinite(Date.parse(completedAt))) return null;
+  const parsed = parseRemoteUrl(url);
+  if (!parsed.ok) return null;
+  if (parsed.repository.owner !== owner || parsed.repository.repo !== repo) return null;
+  return { url: parsed.repository.url, owner, repo, completedAt };
+}
+
+/** Reads the record a retained project wrote, or null when it is unusable. */
+export function readRetainedProject(directory: string): RetainedRemoteProject | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(join(directory, REMOTE_RECORD_NAME), "utf8"));
+  } catch {
+    return null;
+  }
+  return parseRetainedProject(raw);
+}
+
+/**
+ * A retained project is usable only when its record names the directory and
+ * both published trees are on disk. Nothing is repaired or re-crawled here.
+ */
+export function retainedProjectReady(
+  directory: string,
+  record: RetainedRemoteProject,
+): boolean {
+  if (basename(resolve(directory)) !== remoteCloneName(record.owner, record.repo)) return false;
+  return (
+    existsSync(join(directory, ".omp", "discover")) &&
+    existsSync(join(directory, ".omp", "skills"))
+  );
+}
+
+/** Every readable retained project, newest completed discovery first. */
+export function listRetainedProjects(scratchRoot: string): RetainedRemoteProject[] {
+  let entries;
+  try {
+    entries = readdirSync(scratchRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const projects: RetainedRemoteProject[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const directory = join(scratchRoot, entry.name);
+    const record = readRetainedProject(directory);
+    if (record === null) continue;
+    if (remoteCloneName(record.owner, record.repo) !== entry.name) continue;
+    if (!retainedProjectReady(directory, record)) continue;
+    projects.push(record);
+  }
+  projects.sort((left, right) => {
+    const newer = Date.parse(right.completedAt) - Date.parse(left.completedAt);
+    return newer !== 0 ? newer : left.url.localeCompare(right.url);
+  });
+  return projects;
+}
+
+/**
+ * Copies a finished run's published `.omp/discover` and `.omp/skills` bytes out
+ * of its checkout and records the completion time. The previous snapshot is
+ * restored when the rename fails, so a failed retention never loses bytes.
+ */
+export function retainRemoteProject(
+  scratchRoot: string,
+  checkoutDir: string,
+  record: RetainedRemoteProject,
+  runId: string,
+): string | null {
+  const published = join(checkoutDir, ".omp");
+  const discoverSource = join(published, "discover");
+  const skillsSource = join(published, "skills");
+  if (!existsSync(discoverSource) || !existsSync(skillsSource)) {
+    return "the crawl published no Discover artifacts to retain";
+  }
+  const staging = join(scratchRoot, `${REMOTE_TRANSIENT_PREFIX}retain-${runId}`);
+  const previous = join(scratchRoot, `${REMOTE_TRANSIENT_PREFIX}previous-${runId}`);
+  const destination = remoteProjectDirectory(scratchRoot, record.owner, record.repo);
+  try {
+    rmSync(staging, { recursive: true, force: true });
+    mkdirSync(join(staging, ".omp"), { recursive: true });
+    cpSync(discoverSource, join(staging, ".omp", "discover"), { recursive: true });
+    cpSync(skillsSource, join(staging, ".omp", "skills"), { recursive: true });
+    writeFileSync(join(staging, REMOTE_RECORD_NAME), `${JSON.stringify(record, null, 2)}\n`);
+    rmSync(previous, { recursive: true, force: true });
+    const hadPrevious = existsSync(destination);
+    if (hadPrevious) renameSync(destination, previous);
+    try {
+      renameSync(staging, destination);
+    } catch (error) {
+      if (hadPrevious) {
+        try {
+          renameSync(previous, destination);
+        } catch {
+          // The snapshot stays at the previous name; the caller reports it.
+        }
+      }
+      throw error;
+    }
+    rmSync(previous, { recursive: true, force: true });
+    return null;
+  } catch (error) {
+    try {
+      rmSync(staging, { recursive: true, force: true });
+    } catch {
+      // A staging directory that cannot be removed is removed by the next start.
+    }
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** Deletes one project's retained bytes. Every other project stays untouched. */
+export function removeRetainedProject(
+  scratchRoot: string,
+  record: RetainedRemoteProject,
+): string | null {
+  try {
+    rmSync(remoteProjectDirectory(scratchRoot, record.owner, record.repo), {
+      recursive: true,
+      force: true,
+    });
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 /** True when `path` is a strict descendant of `root`. */
@@ -340,11 +497,10 @@ export function remoteCloneRequest(
 }
 
 /**
- * Startup hygiene: the scratch root holds at most one clone, and never a
- * half-finished staging directory. A clone is never resumed.
+ * Startup hygiene: a run's checkout, its clone staging, and its copy staging
+ * never survive a restart. Retained projects are never touched.
  */
-export function prepareRemoteScratch(scratchRoot: string, keepName: string | null): void {
-  if (!existsSync(scratchRoot)) return;
+export function cleanupRemoteScratch(scratchRoot: string): void {
   let entries;
   try {
     entries = readdirSync(scratchRoot, { withFileTypes: true });
@@ -353,12 +509,19 @@ export function prepareRemoteScratch(scratchRoot: string, keepName: string | nul
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    if (entry.name.startsWith(".staging-") || entry.name !== keepName) {
-      try {
-        rmSync(join(scratchRoot, entry.name), { recursive: true, force: true });
-      } catch {
-        // A directory that cannot be removed is left for the next start.
-      }
+    const directory = join(scratchRoot, entry.name);
+    const transient = entry.name.startsWith(REMOTE_TRANSIENT_PREFIX);
+    let checkout = false;
+    try {
+      checkout = existsSync(join(directory, ".git"));
+    } catch {
+      checkout = false;
+    }
+    if (!transient && !checkout) continue;
+    try {
+      rmSync(directory, { recursive: true, force: true });
+    } catch {
+      // A directory that cannot be removed is left for the next start.
     }
   }
 }
@@ -1393,6 +1556,7 @@ function groundingList(
   value: unknown,
   path: string,
   context: { repoDir: string; files: string[] },
+  trustGrounding: boolean,
 ): string[] {
   if (!Array.isArray(value)) invalid(path, "must be a list of grounding entries");
   const entries = new Set<string>();
@@ -1404,7 +1568,7 @@ function groundingList(
         invalid(`${path}[${index}]`, "must name a repository-relative path");
       }
       const absolute = join(context.repoDir, target);
-      if (!existsSync(absolute)) {
+      if (!trustGrounding && !existsSync(absolute)) {
         invalid(`${path}[${index}]`, `names ${target}, which the host does not carry`);
       }
     } else if (text.startsWith("model:")) {
@@ -1412,7 +1576,7 @@ function groundingList(
       if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) {
         invalid(`${path}[${index}]`, "must name a model element");
       }
-      if (!modelNameExists(context, name)) {
+      if (!trustGrounding && !modelNameExists(context, name)) {
         invalid(`${path}[${index}]`, `names ${name}, which the host does not carry`);
       }
     } else {
@@ -1457,7 +1621,12 @@ function modelNameExists(context: { repoDir: string; files: string[] }, name: st
   return found;
 }
 
-function conceptValue(raw: unknown, path: string, context: { repoDir: string; files: string[] }): Concept {
+function conceptValue(
+  raw: unknown,
+  path: string,
+  context: { repoDir: string; files: string[] },
+  trustGrounding: boolean,
+): Concept {
   if (!isRecord(raw)) invalid(path, "must be an object");
   const known = new Set<string>(CONCEPT_FIELDS);
   for (const key of Object.keys(raw)) {
@@ -1506,7 +1675,7 @@ function conceptValue(raw: unknown, path: string, context: { repoDir: string; fi
   if (origin === "standard" && standardRef === null) {
     invalid(`${path}.standardRef`, "is required when origin is standard");
   }
-  const grounding = groundingList(raw.grounding, `${path}.grounding`, context);
+  const grounding = groundingList(raw.grounding, `${path}.grounding`, context, trustGrounding);
   if (grounding.length === 0) invalid(`${path}.grounding`, "must ground the concept");
 
   const broaderRaw = raw.broader;
@@ -1541,7 +1710,7 @@ export function parseGlossary(
   text: string,
   source: string,
   context: { repoDir: string; files: string[] },
-  options: { staged: boolean },
+  options: { staged: boolean; trustGrounding?: boolean },
 ): Glossary {
   let parsed: unknown;
   try {
@@ -1569,7 +1738,7 @@ export function parseGlossary(
   if (!Array.isArray(rawConcepts)) invalid(`${source}:concepts`, "must be a list");
   if (rawConcepts.length === 0) invalid(`${source}:concepts`, "must carry at least one concept");
   const concepts = rawConcepts.map((entry, index) =>
-    conceptValue(entry, `${source}:concepts[${index}]`, context),
+    conceptValue(entry, `${source}:concepts[${index}]`, context, options.trustGrounding === true),
   );
   const ids = new Set<string>();
   for (const concept of concepts) {
@@ -2277,7 +2446,10 @@ interface PublishedRead {
   decisions: Decision[];
 }
 
-function readPublished(repoDir: string): PublishedRead | undefined {
+function readPublished(
+  repoDir: string,
+  trustGrounding = false,
+): PublishedRead | undefined {
   const manifest = readManifest(repoDir);
   if (manifest === undefined) return undefined;
   const context = { repoDir, files: hostFiles(repoDir) };
@@ -2314,7 +2486,7 @@ function readPublished(repoDir: string): PublishedRead | undefined {
         `${relativePath} is unreadable: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    glossaries.push(parseGlossary(text, relativePath, context, { staged: false }));
+    glossaries.push(parseGlossary(text, relativePath, context, { staged: false, trustGrounding }));
   }
   const significance =
     manifest.paths.significance === undefined
@@ -2680,10 +2852,17 @@ export function dependencyRepositories(
   return links;
 }
 
-/** Reads the published artifacts from disk; never writes or repairs them. */
-export function readArtifacts(repoDir: string): ArtifactsRead {
+/**
+ * Reads the published artifacts from disk; never writes or repairs them.
+ * A retained remote snapshot carries the crawl's grounding evidence but not
+ * the source tree, so its stored grounding is trusted rather than re-proved.
+ */
+export function readArtifacts(
+  repoDir: string,
+  options: { trustGrounding?: boolean } = {},
+): ArtifactsRead {
   try {
-    const published = readPublished(repoDir);
+    const published = readPublished(repoDir, options.trustGrounding === true);
     if (published === undefined) return { artifacts: null, error: null };
     const skills = DISCOVER_SKILLS.map((name) =>
       readSkillView(repoDir, published.manifest, name),
@@ -2805,7 +2984,11 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function readGlossaryFile(repoDir: string, context: string): Glossary {
+function readGlossaryFile(
+  repoDir: string,
+  context: string,
+  trustGrounding = false,
+): Glossary {
   if (!CONTEXT_PATTERN.test(context)) invalid("context", "must be a bounded context name");
   const file = glossaryPath(repoDir, context);
   if (!existsSync(file)) invalid("context", `has no glossary at ${context}.glossary.yaml`);
@@ -2813,7 +2996,7 @@ function readGlossaryFile(repoDir: string, context: string): Glossary {
   return parseGlossary(parsed, `${context}.glossary.yaml`, {
     repoDir,
     files: hostFiles(repoDir),
-  }, { staged: false });
+  }, { staged: false, trustGrounding });
 }
 
 function updateTerm(
@@ -2822,12 +3005,13 @@ function updateTerm(
   id: string,
   update: (concept: Concept) => string | null,
   decision: Omit<Decision, "context" | "id" | "date">,
+  trustGrounding = false,
 ): string | null {
   const manifest = readManifest(repoDir);
   if (manifest === undefined) return "no Discover artifacts are published";
   let glossary: Glossary;
   try {
-    glossary = readGlossaryFile(repoDir, context);
+    glossary = readGlossaryFile(repoDir, context, trustGrounding);
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
@@ -2855,7 +3039,12 @@ function updateTerm(
   return null;
 }
 
-export function confirmGlossaryTerm(repoDir: string, context: string, id: string): string | null {
+export function confirmGlossaryTerm(
+  repoDir: string,
+  context: string,
+  id: string,
+  trustGrounding = false,
+): string | null {
   return updateTerm(
     repoDir,
     context,
@@ -2868,6 +3057,7 @@ export function confirmGlossaryTerm(repoDir: string, context: string, id: string
       return null;
     },
     { action: "confirm", reason: null },
+    trustGrounding,
   );
 }
 
@@ -2876,6 +3066,7 @@ export function rejectGlossaryTerm(
   context: string,
   id: string,
   reason: string,
+  trustGrounding = false,
 ): string | null {
   const trimmed = typeof reason === "string" ? reason.trim() : "";
   if (trimmed.length === 0) return "a rejection requires a non-empty reason";
@@ -2895,5 +3086,6 @@ export function rejectGlossaryTerm(
       return null;
     },
     { action: "reject", reason: trimmed },
+    trustGrounding,
   );
 }
