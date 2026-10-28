@@ -272,6 +272,34 @@ describe("startUpdater", () => {
     updater.stop();
   });
 
+  test("journals a rate-limited feed as context, never an update-error", async () => {
+    const prefix = await installedPrefix("0.1.0");
+    const { journal, records } = journalRecorder();
+    const manual = manualSchedule();
+    const limited =
+      "gh api releases/latest failed: gh: API rate limit exceeded for user ID 123850. " +
+      "If you reach out to GitHub Support for help, please include the request ID " +
+      "C078:C6E1C:11323A2:18BF786:6AE201F6.";
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: "0.1.0",
+      journal,
+      intervalMs: 1000,
+      schedule: manual.schedule,
+      fetchRelease: async () => {
+        throw new Error(limited);
+      },
+      install: async (info) => info.version,
+    });
+    await manual.fire(0);
+    expect(records).toEqual([["activity", `release check skipped: ${limited}`]]);
+    // The rate-limited check still backs off instead of polling at the base interval.
+    expect(manual.delays).toEqual([0, 2000]);
+    updater.stop();
+  });
+
   test("journals a missing release client as context, never an update-error", async () => {
     const prefix = await installedPrefix("0.1.0");
     const { journal, records } = journalRecorder();
