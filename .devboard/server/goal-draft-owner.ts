@@ -58,8 +58,10 @@ export interface GoalDraftOwnerState {
   run: GoalDraftRun;
   /** The owner process itself, used to prove identity before signalling it. */
   owner: RecordedChild | null;
-  /** The ACP peer process the owner holds. */
+  /** The recorded ACP peer process the owner holds. */
   peer: RecordedChild | null;
+  /** The dashboard that launched this owner; the lease holder may differ. */
+  launcherPid: number | null;
   supervisorPid: number | null;
   updatedAt: string;
 }
@@ -80,6 +82,12 @@ export interface GoalDraftHandoff {
 export interface GoalDraftLease {
   pid: number;
   updatedAt: number;
+  /**
+   * The dashboard instance that wrote the lease. Two managers can share one
+   * process, so the pid alone cannot tell this manager's lease from another's;
+   * absent in leases written before this field existed.
+   */
+  instance?: string;
 }
 
 /** `<STATE_DIR>/goal-drafts/<repository key>`. */
@@ -209,11 +217,13 @@ function parseState(value: unknown): GoalDraftOwnerState | undefined {
   const run = parseRun(value.run);
   if (run === undefined || run.path === null) return undefined;
   const supervisorPid = isInteger(value.supervisorPid) ? value.supervisorPid : null;
+  const launcherPid = isInteger(value.launcherPid) ? value.launcherPid : supervisorPid;
   return {
     version: GOAL_DRAFT_OWNER_VERSION,
     run,
     owner: parseChild(value.owner),
     peer: parseChild(value.peer),
+    launcherPid,
     supervisorPid,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
   };
@@ -293,7 +303,13 @@ export function readGoalDraftLease(
 ): GoalDraftLease | null {
   const parsed = readJson(goalDraftLeasePath(stateDir, repoDir));
   if (!isRecord(parsed) || !isInteger(parsed.pid) || !isInteger(parsed.updatedAt)) return null;
-  return { pid: parsed.pid, updatedAt: parsed.updatedAt };
+  return {
+    pid: parsed.pid,
+    updatedAt: parsed.updatedAt,
+    ...(typeof parsed.instance === "string" && parsed.instance.length > 0
+      ? { instance: parsed.instance }
+      : {}),
+  };
 }
 
 export function writeGoalDraftLease(
@@ -426,6 +442,7 @@ export async function runGoalDraftOwner(argv: string[]): Promise<void> {
     question: stored.run.question,
   };
   const owner = selfChild(repoDir);
+  const launcherPid = stored.launcherPid;
   let supervisorPid: number | null = stored.supervisorPid;
   let peer: AcpConnection | undefined;
   let peerChild: RecordedChild | null = stored.peer;
@@ -442,6 +459,7 @@ export async function runGoalDraftOwner(argv: string[]): Promise<void> {
       run,
       owner,
       peer: peerChild,
+      launcherPid,
       supervisorPid,
       updatedAt: new Date().toISOString(),
     });
@@ -475,6 +493,9 @@ export async function runGoalDraftOwner(argv: string[]): Promise<void> {
       handoffDeadline = undefined;
       return;
     }
+    // Another live dashboard may hold this owner's lease while this manager
+    // stays alive; losing the lease must not end what the launcher still owns.
+    if (launcherPid !== null && pidAlive(launcherPid)) return;
     if (supervisorPid !== null && pidAlive(supervisorPid)) return;
     const handoff = readGoalDraftHandoff(stateDir, repoDir);
     if (handoff !== null) {

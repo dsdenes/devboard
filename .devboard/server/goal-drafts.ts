@@ -17,6 +17,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   readdirSync,
@@ -41,6 +42,7 @@ import {
   writeGoalDraftLease,
   writeGoalDraftOwnerCommand,
   writeGoalDraftOwnerState,
+  type GoalDraftLease,
   type GoalDraftOwnerState,
 } from "./goal-draft-owner";
 import { recordedChildAlive, type RecordedChild } from "./state";
@@ -273,6 +275,10 @@ export class GoalDraftManager {
   private readonly starting = new Map<string, GoalDraftRun>();
   /** The last durable owner state read for each path. */
   private readonly owners = new Map<string, GoalDraftOwnerState>();
+  /** The owners this dashboard launched or adopted across its own reload. */
+  private readonly owned = new Set<string>();
+  /** Distinguishes this manager's lease from another manager in one process. */
+  private readonly instanceId = randomUUID();
   /** True when this dashboard supervises the owners, not merely observes them. */
   private supervises = false;
   private timer: Timer | undefined;
@@ -339,6 +345,13 @@ export class GoalDraftManager {
     return state?.owner != null && recordedChildAlive(state.owner);
   }
 
+  /** True when this manager has a live owner of its own to supervise. */
+  private hasOwnedRunning(): boolean {
+    return [...this.owned].some(
+      (path) => this.runs.get(path)?.status === "running" && this.ownerAlive(path),
+    );
+  }
+
   private static stateOwnerAlive(state: GoalDraftOwnerState): boolean {
     return state.owner != null && recordedChildAlive(state.owner);
   }
@@ -355,7 +368,31 @@ export class GoalDraftManager {
     const now = Date.now();
     if (now - this.lastLeaseAt < LEASE_INTERVAL_MS) return;
     this.lastLeaseAt = now;
-    writeGoalDraftLease(this.stateDir, this.repoDir, { pid: process.pid, updatedAt: now });
+    writeGoalDraftLease(this.stateDir, this.repoDir, {
+      pid: process.pid,
+      updatedAt: now,
+      instance: this.instanceId,
+    });
+  }
+
+  /** True when a live dashboard other than this manager holds the lease. */
+  private leaseHeldByAnother(lease: GoalDraftLease | null): boolean {
+    if (lease === null || !pidAlive(lease.pid)) return false;
+    if (lease.pid !== process.pid) return true;
+    return lease.instance !== undefined && lease.instance !== this.instanceId;
+  }
+
+  /** Takes supervision only while no live dashboard already holds it. */
+  private takeLease(): void {
+    if (this.supervises) return;
+    if (this.leaseHeldByAnother(readGoalDraftLease(this.stateDir, this.repoDir))) return;
+    writeGoalDraftLease(this.stateDir, this.repoDir, {
+      pid: process.pid,
+      updatedAt: Date.now(),
+      instance: this.instanceId,
+    });
+    this.lastLeaseAt = Date.now();
+    this.supervises = true;
   }
 
   private persistRun(
@@ -369,6 +406,7 @@ export class GoalDraftManager {
       run: copyRun(run),
       owner,
       peer: this.owners.get(path)?.peer ?? null,
+      launcherPid: process.pid,
       supervisorPid: process.pid,
       updatedAt,
     };
@@ -421,11 +459,18 @@ export class GoalDraftManager {
         this.markInterrupted(state);
         continue;
       }
-      if (handoff !== null) adoptable = true;
+      if (handoff !== null) {
+        adoptable = true;
+        this.owned.add(path);
+      }
     }
 
     if (adoptable) {
-      writeGoalDraftLease(this.stateDir, this.repoDir, { pid: process.pid, updatedAt: Date.now() });
+      writeGoalDraftLease(this.stateDir, this.repoDir, {
+        pid: process.pid,
+        updatedAt: Date.now(),
+        instance: this.instanceId,
+      });
       this.lastLeaseAt = Date.now();
       removeGoalDraftHandoff(this.stateDir, this.repoDir);
       this.supervises = true;
@@ -433,13 +478,11 @@ export class GoalDraftManager {
     }
 
     removeGoalDraftHandoff(this.stateDir, this.repoDir);
-    const lease = readGoalDraftLease(this.stateDir, this.repoDir);
-    const observedByAnother =
-      lease !== null && lease.pid !== process.pid && pidAlive(lease.pid);
-    if (observedByAnother) return;
+    if (this.leaseHeldByAnother(readGoalDraftLease(this.stateDir, this.repoDir))) return;
     for (const state of states) {
       if (state.run.status !== "running") continue;
       if (!GoalDraftManager.stateOwnerAlive(state)) continue;
+      if (state.launcherPid !== null && pidAlive(state.launcherPid)) continue;
       writeGoalDraftOwnerCommand(
         goalDraftControlDirectory(this.stateDir, this.repoDir, state.run.path!),
         { type: "interrupt" },
@@ -474,6 +517,13 @@ export class GoalDraftManager {
       this.runs.delete(path);
       this.owners.delete(path);
       if (previous?.status === "running") terminalTransition = true;
+    }
+    if (this.supervises) {
+      if (this.leaseHeldByAnother(readGoalDraftLease(this.stateDir, this.repoDir))) {
+        this.supervises = false;
+      }
+    } else if (this.hasOwnedRunning()) {
+      this.takeLease();
     }
     if (terminalTransition) this.publishDrafts();
     if (this.supervises && [...this.runs.values()].some((run) => run.status === "running")) {
@@ -543,11 +593,7 @@ export class GoalDraftManager {
 
     resetGoalDraftRun(this.stateDir, this.repoDir, path);
     this.persistRun(path, run, null);
-    if (!this.supervises) {
-      writeGoalDraftLease(this.stateDir, this.repoDir, { pid: process.pid, updatedAt: Date.now() });
-      this.lastLeaseAt = Date.now();
-      this.supervises = true;
-    }
+    this.takeLease();
 
     const argv = [
       process.execPath,
@@ -581,6 +627,7 @@ export class GoalDraftManager {
     }
 
     this.persistRun(path, run, { pid, argv, cwd: this.repoDir });
+    this.owned.add(path);
     this.emit(path);
     this.publishDrafts();
     return { ok: true, path };
@@ -641,28 +688,27 @@ export class GoalDraftManager {
   handoff(): void {
     this.refresh();
     if (!this.supervises) return;
-    if (![...this.runs.values()].some((run) => run.status === "running" && this.ownerAlive(run.path!))) {
-      return;
-    }
+    if (!this.hasOwnedRunning()) return;
     writeGoalDraftHandoff(this.stateDir, this.repoDir, { at: Date.now(), pid: process.pid });
   }
 
   /**
    * Stops observing; a graceful reload keeps the owners for its replacement,
-   * and any other stop ends every elaboration with the interrupted failure.
+   * and any other stop interrupts only the owners this manager launched or
+   * adopted, never another live dashboard's elaborations.
    */
   dispose(handoff = false): void {
     clearInterval(this.timer);
     this.timer = undefined;
     this.starting.clear();
-    if (!this.supervises) {
+    if (!this.supervises && this.owned.size === 0) {
       if (!handoff) removeGoalDraftHandoff(this.stateDir, this.repoDir);
       return;
     }
     this.supervises = false;
     if (handoff) return;
-    for (const [path, run] of this.runs) {
-      if (run.status !== "running" || !this.ownerAlive(path)) continue;
+    for (const path of this.owned) {
+      if (this.runs.get(path)?.status !== "running" || !this.ownerAlive(path)) continue;
       writeGoalDraftOwnerCommand(
         goalDraftControlDirectory(this.stateDir, this.repoDir, path),
         { type: "interrupt" },
