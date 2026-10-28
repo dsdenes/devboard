@@ -400,6 +400,8 @@ async function runRemote(client: TestClient, url: string): Promise<DiscoverState
   client.send({ type: "discoverRemote", url });
   const cloningState = stateOf(await cloning);
   expect((cloningState.cloning as Record<string, unknown>).url).toBe(url.trim());
+  expect(cloningState.repository).not.toBeNull();
+  expect(cloningState.target).toMatchObject({ kind: "remote" });
   await started;
   expect((await stopped).completed).toBe(true);
   return discoverState(client);
@@ -874,7 +876,16 @@ describe("discover remote target", () => {
         const cloning = client.waitNext(isCloningState);
         const stopped = client.waitNext((message) => message.type === "discoverStopped");
         client.send({ type: "discoverRemote", url: "https://github.com/octocat/Other" });
-        await cloning;
+        const cloningState = stateOf(await cloning);
+        expect(cloningState.repository).toBe("octocat/Other");
+        expect(cloningState.target).toEqual({
+          kind: "remote",
+          url: "https://github.com/octocat/Other",
+          owner: "octocat",
+          repo: "Other",
+          checkout: false,
+        });
+        expect(cloningState.sheet).toBeNull();
 
         const refusals = [
           client.waitNext((message) => message.type === "discoverError"),
@@ -902,7 +913,7 @@ describe("discover remote target", () => {
         );
         expect((await discoverState(client)).target).toMatchObject({
           kind: "remote",
-          repo: "Hello-World",
+          repo: "Other",
         });
 
         gate.resolve();

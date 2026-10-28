@@ -77,7 +77,8 @@
       : leafText(definition),
   );
   const projectPath = $derived(
-    freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : ""),
+    discover.remoteTarget?.url ??
+      (freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : "")),
   );
   const projectName = $derived(discover.repository ?? (baseName(projectPath) || "Discover"));
 
@@ -634,7 +635,7 @@
         the conventions an agent should follow here.
       </p>
       <div class="discover-head__meta">
-        No artifacts have been published for this host. Nothing outside
+        No artifacts have been published for this target. Nothing outside
         <code>.omp/discover/</code> and <code>.omp/skills/</code> is written.
       </div>
     {/if}
