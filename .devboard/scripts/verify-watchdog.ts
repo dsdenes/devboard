@@ -332,11 +332,16 @@ function ledgerFixture(entries: EntryFixture[], pending: string[]): Ledger {
 const GH_STUB = `#!/bin/sh
 set -u
 fixtures="$(cd "$(dirname "$0")/.." && pwd)/gh"
-if [ -f "$fixtures/fail" ]; then
-  echo "HTTP 401: Bad credentials" >&2
-  exit 1
-fi
 args="$*"
+# The fail marker simulates an expired credential for the tracker reads the
+# watchdog page makes. The dashboard's update check shares this stub, so keep
+# answering its latest-release read or the fixture journals an update-error.
+if [ -f "$fixtures/fail" ]; then
+  case "$args" in
+    *"repos/dsdenes/devboard/releases/latest"*) ;;
+    *) echo "HTTP 401: Bad credentials" >&2; exit 1 ;;
+  esac
+fi
 case "$args" in
   *"repos/dsdenes/devboard/issues/901 --jq .state"*) echo open ;;
   *"repos/dsdenes/devboard/issues/902 --jq .state"*) echo closed ;;
@@ -706,6 +711,28 @@ try {
     /* 4. A failed read keeps the rows and reports its reason            */
     /* ---------------------------------------------------------------- */
     await writeFile(join(ghFixtures, "fail"), "");
+    // The marker fakes an expired credential for tracker reads. The update
+    // check shares the same gh, so prove its release read still succeeds:
+    // otherwise the fixture itself journals an update-error the watchdog files.
+    const failEnv = { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` };
+    const releaseWhileFailing = run(
+      join(binDir, "gh"),
+      ["api", "repos/dsdenes/devboard/releases/latest"],
+      { env: failEnv },
+    );
+    assertTrue(
+      releaseWhileFailing.code === 0 && releaseWhileFailing.stdout.includes('"tag_name"'),
+      `the fail fixture broke the update release check: ${releaseWhileFailing.stderr}`,
+    );
+    const trackerWhileFailing = run(
+      join(binDir, "gh"),
+      ["api", "repos/dsdenes/devboard/issues/901"],
+      { env: failEnv },
+    );
+    assertTrue(
+      trackerWhileFailing.code !== 0 && trackerWhileFailing.stderr.includes("Bad credentials"),
+      "the fail fixture no longer fails tracker reads",
+    );
     const failed = await waitFor(
       async () => {
         const state = await devtools
