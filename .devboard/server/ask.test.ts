@@ -182,7 +182,7 @@ function askLog(logPath: string): {
 } {
   const lines = logLines(logPath);
   return {
-    spawns: lines.filter((line) => line.startsWith("ask-spawn ")).length,
+    spawns: lines.filter((line) => line.startsWith("ask-start ")).length,
     prompts: lines
       .filter((line) => line.startsWith("ask-prompt "))
       .map((line) => line.slice("ask-prompt ".length)),
@@ -468,6 +468,42 @@ describe("ask conversations", () => {
     } finally {
       client.close();
       testServer.server.stop(true);
+    }
+  });
+
+  test("recovers from an alive peer that refuses the handshake", async () => {
+    for (const mode of ["--ask-refuse-initialize", "--ask-no-session"]) {
+      const testServer = await startServer({ agentArguments: [mode] });
+      const client = await connect(testServer.url);
+      try {
+        client.ask("conversation-handshake", "What does the issues label mean?");
+        const failed = await client.waitFor(
+          (message) =>
+            message.type === "askError" &&
+            message.conversationId === "conversation-handshake",
+        );
+        expect(String(failed.message).length).toBeGreaterThan(0);
+
+        // The process is still alive, but the peer has no session; the next ask
+        // must start a new peer and replay the conversation instead of taking
+        // the follow-up path of the sessionless one.
+        client.ask("conversation-handshake", "Which file renders it?");
+        await client.waitFor(
+          (message) =>
+            message.type === "askDone" && message.conversationId === "conversation-handshake",
+        );
+        const logged = askLog(testServer.logPath);
+        expect(logged.spawns).toBe(2);
+        expect(logged.prompts).toHaveLength(1);
+        expect(logged.texts[0]).toContain("Earlier in this conversation:");
+        expect(logged.texts[0]).toContain("Developer: What does the issues label mean?");
+        expect(logged.texts[0]).toContain("Question: Which file renders it?");
+        const answer = chunks(client, "conversation-handshake");
+        expect(answer.includes("The issues indicator shows")).toBe(true);
+      } finally {
+        client.close();
+        testServer.server.stop(true);
+      }
     }
   });
 
