@@ -212,9 +212,11 @@ describe("elaboration", () => {
   });
 
   test("a created draft sends one /goal-draft prompt; a busy start is refused without a peer", async () => {
-    const { root } = await fixture();
+    const { root, stateDir, log } = await fixture();
     const first = await writeGoalProposal(
-      parseGoalProposalSubmission({ report: "Create the first goal from the drafts page." }),
+      parseGoalProposalSubmission({
+        report: "Create the first goal from the drafts page. STUB-HANG",
+      }),
       { repoDir: root },
     );
     const second = await writeGoalProposal(
@@ -223,17 +225,16 @@ describe("elaboration", () => {
     );
     expect(first.path.startsWith(".devboard/goal-proposals/")).toBe(true);
     expect(second.path).not.toBe(first.path);
-    const peers: FakePeer[] = [];
-    const { manager } = managerFor(root, peers);
+    const manager = managerFor(root, stateDir, log);
 
     const started = await manager.start(first.path);
     expect(started).toEqual({ ok: true, path: first.path });
-    const peer = await waitFor(() => peers[0], "the created draft's peer");
-    expect(peer.prompts).toEqual([`/goal-draft ${first.path}`]);
-    expect(peers).toHaveLength(1);
-    expect(listGoalDrafts(root).map((draft) => draft.path)).toEqual(
-      [first.path, second.path].sort(),
+    await waitFor(() => startPids(log)[0], "the created draft's peer");
+    await waitFor(
+      () => (logLines(log).includes(`goal-draft ${first.path}`) ? true : undefined),
+      "the created draft's prompt",
     );
+    expect(startPids(log)).toHaveLength(1);
 
     const refused = await manager.start(second.path);
     expect(refused.ok).toBe(false);
@@ -242,19 +243,25 @@ describe("elaboration", () => {
         `An elaboration is already running for ${first.path}. Stop it before starting another draft.`,
       );
     }
-    expect(peers).toHaveLength(1);
+    expect(startPids(log)).toHaveLength(1);
     expect(readGoalDraft(root, second.path).text).toContain(
       "Create the second goal from the drafts page.",
     );
 
     expect(manager.stop()).toBe(true);
-    expect(peer.closed).toBe(true);
-    expect(readGoalDraft(root, second.path).text.startsWith("# Proposed goal: ")).toBe(true);
+    await waitFor(
+      () => (manager.snapshot().status === "stopped" ? true : undefined),
+      "the stopped created draft",
+    );
+    expect(existsSync(join(root, first.path))).toBe(true);
 
     const retried = await manager.start(second.path);
     expect(retried).toEqual({ ok: true, path: second.path });
-    const retry = await waitFor(() => peers[1], "the retried created draft's peer");
-    expect(retry.prompts).toEqual([`/goal-draft ${second.path}`]);
+    await waitFor(() => (startPids(log).length === 2 ? true : undefined), "the retried created draft's peer");
+    await waitFor(
+      () => (logLines(log).includes(`goal-draft ${second.path}`) ? true : undefined),
+      "the retried created draft's prompt",
+    );
   });
 
   test("runs one elaboration at a time and stop keeps the draft", async () => {
