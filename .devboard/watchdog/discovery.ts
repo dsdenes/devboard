@@ -84,6 +84,8 @@ export function servingHarness(process: ProcessSnapshot): string | undefined {
  * scratch (`<anything>/.devboard/.tmp`). Verification scripts create hosts
  * there and deliberately fail update checks, installs, and servers; that
  * evidence proves the script's assertion, not a defect an operator must see.
+ * Such a fixture opts in with `DEVBOARD_WATCHDOG_FIXTURE=1` when a live cycle
+ * must still discover it.
  */
 export function isVerificationScratch(repoDir: string): boolean {
   const segments = repoDir.split(/[\\/]+/);
@@ -93,9 +95,16 @@ export function isVerificationScratch(repoDir: string): boolean {
 }
 
 /**
+ * The live watchdog verification seeds a scratch dashboard on purpose and must
+ * still be discovered; every other fixture stays invisible.
+ */
+const WATCHDOG_FIXTURE_ENV = "DEVBOARD_WATCHDOG_FIXTURE";
+
+/**
  * Builds instances from a process table. Excludes the watchdog, its
- * descendants, and verification fixtures, de-duplicates by `(REPO_DIR, PORT)`,
- * and resolves the journal and legacy log through the serving harness.
+ * descendants, and verification fixtures unless they opt in, de-duplicates by
+ * `(REPO_DIR, PORT)`, and resolves the journal and legacy log through the
+ * serving harness.
  */
 export function instancesFromProcesses(
   processes: ProcessSnapshot[],
@@ -111,7 +120,12 @@ export function instancesFromProcesses(
     const repoDir = process.env.get("REPO_DIR");
     const port = Number(process.env.get("PORT"));
     if (repoDir === undefined || !Number.isInteger(port) || port <= 0) continue;
-    if (isVerificationScratch(repoDir)) continue;
+    if (
+      isVerificationScratch(repoDir) &&
+      process.env.get(WATCHDOG_FIXTURE_ENV) !== "1"
+    ) {
+      continue;
+    }
     const harness = servingHarness(process);
     if (harness === undefined) continue;
     const key = `${repoDir}\0${port}`;
