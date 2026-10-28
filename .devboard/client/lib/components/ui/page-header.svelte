@@ -11,6 +11,12 @@
     actions?: Snippet;
     /** Renders without the panel frame so a parent panel can own the border. */
     flat?: boolean;
+    /**
+     * `stacked` keeps the identity, meta, and actions on their own lines. `bar`
+     * puts the title, subtitle, meta, and actions on one row for operational
+     * pages whose status belongs beside the action it qualifies.
+     */
+    layout?: "stacked" | "bar";
     testid?: string;
   }
 
@@ -21,24 +27,43 @@
     meta,
     actions,
     flat = false,
+    layout = "stacked",
     testid,
   }: Props = $props();
 </script>
 
-<header class="page-header" class:page-header--flat={flat} data-testid={testid}>
+<header
+  class="page-header"
+  class:page-header--flat={flat}
+  class:page-header--bar={layout === "bar"}
+  data-testid={testid}
+>
   <div class="page-header__identity">
     {#if eyebrow}
       <p class="page-header__eyebrow">{eyebrow}</p>
     {/if}
-    <h1 class="page-header__title" title={title}>{title}</h1>
-    {#if subtitle}
-      <p class="page-header__subtitle">{subtitle}</p>
-    {/if}
-    {#if meta}
+    <div class="page-header__headline">
+      <h1 class="page-header__title" title={title}>{title}</h1>
+      {#if subtitle}
+        <p class="page-header__subtitle">{subtitle}</p>
+      {/if}
+    </div>
+    {#if meta && layout === "stacked"}
       <div class="page-header__meta">{@render meta()}</div>
     {/if}
   </div>
-  {#if actions}
+  {#if layout === "bar"}
+    {#if meta || actions}
+      <div class="page-header__tail">
+        {#if meta}
+          <div class="page-header__meta">{@render meta()}</div>
+        {/if}
+        {#if actions}
+          <div class="page-header__actions">{@render actions()}</div>
+        {/if}
+      </div>
+    {/if}
+  {:else if actions}
     <div class="page-header__actions">{@render actions()}</div>
   {/if}
 </header>
@@ -51,6 +76,7 @@
     border-radius: 4px;
     display: flex;
     flex: 0 0 auto;
+    flex-wrap: wrap;
     gap: 12px;
     justify-content: space-between;
     min-width: 0;
@@ -65,6 +91,14 @@
   }
 
   .page-header__identity {
+    display: flex;
+    flex: 1 1 160px;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .page-header__headline {
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -112,9 +146,51 @@
   .page-header__actions {
     align-items: center;
     display: flex;
-    flex: 0 0 auto;
+    flex: 0 1 auto;
     flex-wrap: wrap;
     gap: 6px;
     justify-content: flex-end;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* The bar layout is one dense row: the title and repository on the left, then
+     the state cluster and its action on the right. */
+  .page-header--bar {
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    padding: 8px 12px;
+  }
+
+  .page-header--bar .page-header__identity {
+    min-width: 200px;
+  }
+
+  .page-header--bar .page-header__headline {
+    align-items: baseline;
+    flex-direction: row;
+    gap: 8px;
+  }
+
+  .page-header--bar .page-header__subtitle {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .page-header__tail {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: flex-end;
+    margin-left: auto;
+  }
+
+  .page-header--bar .page-header__meta {
+    flex-wrap: nowrap;
+    margin-top: 0;
   }
 </style>

@@ -395,7 +395,10 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   10px `overline` eyebrow, one 20px `page-title` `h1` (truncates with a tooltip, never wraps), an
   optional 12px `body-small` subtitle, an optional meta row of badges and counts (4px rows, 12px
   columns), and a right-aligned action group (6px gaps, one filled primary at most). It renders a
-  native `<header>`; `flat` drops the frame when a parent panel owns it. 10px 12px padding.
+  native `<header>`; `flat` drops the frame when a parent panel owns it. 10px 12px padding. The
+  `bar` layout is the operational variant: the eyebrow sits over one title/subtitle line and the
+  meta row moves into a right-aligned cluster beside the action group, so the state and the action
+  it qualifies share a 56px band with 8px 12px padding. The stacked layout stays the default.
 - **Stage track** (`stage-track.svelte`) — five equal-width stage cells (Goal, Epics, ADRs,
   Implementation, Finished) at 11px/600, 4px gaps, 3px radius, `border-subtle` for future stages,
   `border` for complete stages, and `accent-surface` plus a 1px `accent` edge for the current
