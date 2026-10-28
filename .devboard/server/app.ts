@@ -1781,9 +1781,10 @@ export function createApp(options: AppOptions) {
    * is on disk. A SIGKILL after delivery therefore loses nothing the client
    * already saw, and a replacement replays at least that state.
    */
-  function sendAll(event: unknown) {
+  function sendAll(event: unknown, except?: { send(data: string): unknown }) {
     const payload = JSON.stringify(event);
     for (const client of clients) {
+      if (client === except) continue;
       try {
         client.send(payload);
       } catch {
@@ -1811,7 +1812,7 @@ export function createApp(options: AppOptions) {
     agentCommand,
     runningVersion,
     harnessDir: runningHarnessDir(),
-    send: (event) => sendAll(event),
+    send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.issues?.pollMs === undefined ? {} : { pollMs: options.issues.pollMs }),
     ...(options.issues?.preflight === undefined ? {} : { preflight: options.issues.preflight }),
@@ -1842,7 +1843,7 @@ export function createApp(options: AppOptions) {
     agentCommand,
     runningVersion,
     harnessDir: runningHarnessDir(),
-    send: (event) => sendAll(event),
+    send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.scout?.pollMs === undefined ? {} : { pollMs: options.scout.pollMs }),
     ...(options.scout?.preflight === undefined ? {} : { preflight: options.scout.preflight }),

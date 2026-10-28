@@ -64,7 +64,7 @@ export interface IssuesBridgeOptions {
   agentCommand: string;
   runningVersion: string | null;
   harnessDir: string;
-  send: (event: unknown) => void;
+  send: (event: unknown, except?: { send(data: string): unknown }) => void;
   log?: (line: string) => void;
   environment?: Record<string, string | undefined>;
   pollMs?: number;
@@ -86,7 +86,7 @@ export class IssuesBridge {
   private readonly agentCommand: string;
   private readonly runningVersion: string | null;
   private readonly harnessDir: string;
-  private readonly send: (event: unknown) => void;
+  private readonly send: (event: unknown, except?: { send(data: string): unknown }) => void;
   private readonly environment: Record<string, string | undefined>;
   private readonly repository: () => string | null;
   private readonly preflight: NonNullable<IssuesBridgeOptions["preflight"]>;
@@ -212,7 +212,12 @@ export class IssuesBridge {
     };
   }
 
-  /** A connect-time replay: state, then every running agent's activity. */
+  /**
+   * A connect-time replay: state to the caller, then every running agent's
+   * whole activity to the caller and every other client. The baselines are
+   * shared, so advancing one for a single client would make the next delta skip
+   * what the older clients missed.
+   */
   replay(target?: { send(data: string): unknown }): void {
     const deliver = target === undefined ? this.send : (event: unknown) => {
       try {
@@ -221,11 +226,22 @@ export class IssuesBridge {
         // The socket closed before the replay finished.
       }
     };
-    deliver({ type: "issuesState", ...this.snapshot() });
-    for (const runId of this.activeRunIds(this.snapshot())) {
+    const snapshot = this.snapshot();
+    deliver({ type: "issuesState", ...snapshot });
+    for (const runId of this.activeRunIds(snapshot)) {
       const activity = this.readActivity(runId);
       this.lastActivities.set(runId, activity);
-      deliver({ type: "issuesActivity", runId, replay: true, entries: this.entries(activity) });
+      const event = {
+        type: "issuesActivity",
+        runId,
+        replay: true,
+        entries: this.entries(activity),
+      };
+      deliver(event);
+      // A targeted replay also reaches the other clients: the baseline is
+      // shared, so a replay only the new client saw would make the next delta
+      // skip it.
+      if (target !== undefined) this.send(event, target);
     }
   }
 

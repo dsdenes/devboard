@@ -1005,6 +1005,79 @@ describe("dashboard bridge", () => {
     }
   });
 
+  test("a connect-time replay reaches the clients that were already attached", async () => {
+    const f = await fixture({ label: "replay-shared" });
+    try {
+      await scan(f, 0, uniqueItems(1, 1));
+      const scanId = readdirSync(scansDirectory(f.root))[0]!;
+      const activityFile = join(scanDirectory(f.root, scanId), "activity.json");
+      writeFileSync(activityFile, JSON.stringify(["first"]));
+      const first: Array<Record<string, unknown>> = [];
+      const second: Array<Record<string, unknown>> = [];
+      const firstSocket = {
+        send: (data: string) => first.push(JSON.parse(data) as Record<string, unknown>),
+      };
+      const secondSocket = {
+        send: (data: string) => second.push(JSON.parse(data) as Record<string, unknown>),
+      };
+      const attached = new Map<object, Array<Record<string, unknown>>>([
+        [firstSocket, first],
+        [secondSocket, second],
+      ]);
+      const bridge = new ScoutBridge({
+        repoDir: f.root,
+        stateDir: f.stateDir,
+        agentCommand: "stub",
+        runningVersion: "0.1.0",
+        harnessDir: join(import.meta.dir, ".."),
+        send: (event, except) => {
+          for (const [socket, messages] of attached) {
+            if (socket !== except) messages.push(event as Record<string, unknown>);
+          }
+        },
+        pollMs: 60_000,
+        spawnWorker: () => undefined,
+      });
+
+      bridge.replay(firstSocket);
+      const firstReplay = first.findLast((event) => event.type === "scoutActivity");
+      expect((firstReplay?.entries as Array<{ text: string }>).map((entry) => entry.text)).toEqual([
+        "first",
+      ]);
+
+      // Activity grows after the first client's last poll; the second client's
+      // replay now advances the shared baseline, so it must reach every client.
+      writeFileSync(activityFile, JSON.stringify(["first", "second"]));
+      bridge.replay(secondSocket);
+
+      for (const client of [first, second]) {
+        const replay = client.findLast(
+          (event) => event.type === "scoutActivity" && event.replay === true,
+        );
+        expect((replay?.entries as Array<{ text: string }>).map((entry) => entry.text)).toEqual([
+          "first",
+          "second",
+        ]);
+      }
+
+      // The next refresh resumes from that baseline and appends only the new line.
+      writeFileSync(activityFile, JSON.stringify(["first", "second", "third"]));
+      bridge.refresh();
+      expect(first.at(-1)).toMatchObject({
+        type: "scoutActivity",
+        entries: [{ text: "third", append: false }],
+      });
+      expect(first.at(-1)?.replay).toBeUndefined();
+      expect(second.at(-1)).toMatchObject({
+        type: "scoutActivity",
+        entries: [{ text: "third", append: false }],
+      });
+      bridge.dispose();
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
   test("a different STATE_DIR is refused without spawning a worker", async () => {
     const f = await fixture({ label: "state-refusal" });
     try {

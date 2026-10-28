@@ -1,15 +1,23 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readlinkSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { AcpActivity, AcpQuestion } from "../server/acp";
+import { IssuesBridge } from "../server/issues";
 import { recordedChildAlive } from "../server/state";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { writeCommand } from "../issues/control";
 import { migrateLegacyLedger, legacyLiveLock, legacyLockRefusal } from "../issues/legacy";
 import { pruneLedger } from "../issues/ledger";
 import { acquireLock, liveLockOwner } from "../issues/lock";
-import { controlDirectory, ledgerPath, lockPath, runsDirectory, statePath } from "../issues/paths";
+import {
+  controlDirectory,
+  ledgerPath,
+  lockPath,
+  runDirectory,
+  runsDirectory,
+  statePath,
+} from "../issues/paths";
 import { preflightIssues } from "../issues/preflight";
 import {
   appendActivityLine,
@@ -19,6 +27,7 @@ import {
   parseState,
   readActivity,
   trimActivityLines,
+  writeActivity,
   writeState,
   type IssuesIssue,
   type IssuesState,
@@ -1177,5 +1186,100 @@ describe("prompt contract", () => {
     expect(readFileSync(join(harnessRoot, "issues", "worker.ts"), "utf8")).not.toContain(
       "implement-all-issues",
     );
+  });
+});
+
+describe("dashboard bridge", () => {
+  test("a connect-time replay reaches the clients that were already attached", async () => {
+    const root = await temporaryDirectory("bridge-replay");
+    const stateDir = join(root, "state");
+    const runId = "2026-10-27T10-00-01-000Z";
+    writeActivity(runDirectory(stateDir, root, runId), ["first"]);
+    writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root }),
+      lifecycle: "running",
+      enabled: true,
+      agents: [
+        {
+          runId,
+          issueNumber: 7,
+          startedAt: "2026-10-27T10:00:00.000Z",
+          question: null,
+          acp: null,
+        },
+      ],
+    });
+    await mkdir(dirname(lockPath(root)), { recursive: true });
+    writeFileSync(
+      lockPath(root),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: "2026-10-27T10:00:00.000Z",
+        repo: resolve(root),
+        stateDir,
+        harnessVersion: "0.1.0",
+        argv: ["bun", "issues/worker.ts"],
+      }),
+    );
+
+    const first: Array<Record<string, unknown>> = [];
+    const second: Array<Record<string, unknown>> = [];
+    const firstSocket = {
+      send: (data: string) => first.push(JSON.parse(data) as Record<string, unknown>),
+    };
+    const secondSocket = {
+      send: (data: string) => second.push(JSON.parse(data) as Record<string, unknown>),
+    };
+    const attached = new Map<object, Array<Record<string, unknown>>>([
+      [firstSocket, first],
+      [secondSocket, second],
+    ]);
+    const bridge = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      runningVersion: "0.1.0",
+      harnessDir: harnessRoot,
+      send: (event, except) => {
+        for (const [socket, messages] of attached) {
+          if (socket !== except) messages.push(event as Record<string, unknown>);
+        }
+      },
+      pollMs: 60_000,
+    });
+
+    bridge.replay(firstSocket);
+    const firstReplay = first.findLast((event) => event.type === "issuesActivity");
+    expect((firstReplay?.entries as Array<{ text: string }>).map((entry) => entry.text)).toEqual([
+      "first",
+    ]);
+
+    // Activity grows after the first client's last poll; the second client's
+    // replay now advances the shared baseline, so it must reach every client.
+    writeActivity(runDirectory(stateDir, root, runId), ["first", "second"]);
+    bridge.replay(secondSocket);
+
+    for (const client of [first, second]) {
+      const replay = client.findLast(
+        (event) => event.type === "issuesActivity" && event.replay === true,
+      );
+      expect((replay?.entries as Array<{ text: string }>).map((entry) => entry.text)).toEqual([
+        "first",
+        "second",
+      ]);
+    }
+
+    // The next refresh resumes from that baseline and appends only the new line.
+    writeActivity(runDirectory(stateDir, root, runId), ["first", "second", "third"]);
+    bridge.refresh();
+    for (const client of [first, second]) {
+      expect(client.at(-1)).toMatchObject({
+        type: "issuesActivity",
+        runId,
+        entries: [{ text: "third", append: false }],
+      });
+      expect(client.at(-1)?.replay).toBeUndefined();
+    }
+    bridge.dispose();
   });
 });
