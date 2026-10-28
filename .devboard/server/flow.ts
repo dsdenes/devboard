@@ -522,6 +522,8 @@ export class FlowController {
 
   #session: FlowSession | undefined;
   #history: FlowHistoryEntry[] = [];
+  /** The goal text already on disk, or null when goal.md may not match it. */
+  #persistedGoal: string | null = null;
   #implementation:
     | { agent: AcpConnection | undefined; activity: string[]; finished: boolean }
     | undefined;
@@ -818,7 +820,13 @@ export class FlowController {
     const session = this.#session;
     if (session === undefined) return;
     try {
-      writeText(this.#path("goal.md"), session.goal);
+      // goal.md is the goal interview's own output channel: while a turn is
+      // live, writing the in-memory goal here would overwrite its draft with
+      // the previous goal. Outside an interview, write only on a real change.
+      if (this.#goalCreation === undefined && this.#persistedGoal !== session.goal) {
+        writeText(this.#path("goal.md"), session.goal);
+        this.#persistedGoal = session.goal;
+      }
       writeText(this.#path("decisions.md"), session.decisions);
       writeJson(this.#path("accepted.json"), { signatures: session.accepted });
       writeJson(this.#path("changes.json"), session.files);
@@ -884,7 +892,9 @@ export class FlowController {
       const session = current.session;
       // The files beside the machine state are authoritative for the text a
       // developer or agent may have appended while the process was down.
-      session.goal = readText(join(current.directory, "goal.md")) ?? session.goal;
+      const storedGoal = readText(join(current.directory, "goal.md"));
+      if (storedGoal !== undefined) session.goal = storedGoal;
+      this.#persistedGoal = storedGoal ?? null;
       session.decisions = readText(join(current.directory, "decisions.md")) ?? session.decisions;
       const acks = new Set(
         readJsonLines<{ id?: unknown } | string>(join(current.directory, "steering-ack.jsonl")).map(
@@ -1090,6 +1100,7 @@ export class FlowController {
       updatedAt: nowIso(this.#now),
     };
     this.#session = session;
+    this.#persistedGoal = null;
     this.#persist();
     this.#persistArtifacts();
   }
@@ -1110,6 +1121,7 @@ export class FlowController {
     } catch {
       // No goal file exists yet.
     }
+    this.#persistedGoal = null;
     try {
       const agent = new AcpConnection({
         command: this.#agentCommand,
