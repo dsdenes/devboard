@@ -4,14 +4,16 @@
   import { goal } from "../goal.svelte";
   import { recordStatusTone } from "../record-status";
   import type { AdrRecord } from "../types";
+  import Button from "./ui/button.svelte";
 
   interface Props {
     /** The rows to render; the page owns filtering, the table owns density. */
     records: AdrRecord[];
     onopen: (record: AdrRecord) => void;
+    onstart: (record: AdrRecord) => void;
   }
 
-  let { records, onopen }: Props = $props();
+  let { records, onopen, onstart }: Props = $props();
 
   const features = tableFeatures({});
 
@@ -90,9 +92,25 @@
           <td class="adr-summary" data-testid="record-summary" title={record.summary}>
             {record.summary || "No decision summary recorded."}
           </td>
-          <td>
-            {#if !record.pending}
-              <span class="muted">Resolved</span>
+          <td class="adr-action">
+            {#if record.pending}
+              <Button
+                variant={goal.next === record.file ? "default" : "outline"}
+                size="sm"
+                class="cursor-pointer"
+                data-testid="start"
+                data-file={record.file}
+                data-command={`goal.adr.start.${record.file}`}
+                title={goal.startLifecycleTitle}
+                aria-label={`Start the implementation of ${record.title}`}
+                disabled={goal.runStartDisabled}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  onstart(record);
+                }}
+              >
+                Start
+              </Button>
             {/if}
           </td>
         </tr>
@@ -199,6 +217,11 @@
 
   .adr-title .badge {
     flex: 0 0 auto;
+  }
+
+  .adr-action {
+    line-height: 24px;
+    vertical-align: middle;
   }
 
   .empty {

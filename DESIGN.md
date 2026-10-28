@@ -410,6 +410,14 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   header carries one status badge, colored by meaning: `accepted` success, `proposed` pending,
   `superseded`/`deprecated` stale, `rejected` error; the implementation state is never repeated
   as a second resolved/pending badge.
+- **Decision record start control** (`.adr-action` in `AdrTable.svelte`) — the only per-row action
+  on the Decision records table: the shipped `Button` at `sm` size (24px tall, 11px/500 type, 4px
+  radius) centered in the 28px row. The record marked `Next` takes the filled `default` variant
+  and every other pending record an `outline` variant, so the surface carries exactly one filled
+  primary and the lifecycle order is visible in the column. Each control is labelled `Start` and
+  names its record in the accessible name; it is disabled at 45% opacity while goal creation,
+  revision, skills preparation, or a manual run owns the workspace. A resolved row leaves the
+  cell empty instead of repeating the Implementation column's state word.
 - **Inline code chip** (`.code-chip`) — one presentation for every command, path, package, and
   boundary value: `mono-small` type, `background` fill, 1px `border-subtle` outline, 3px radius,
   2px 6px padding. A runnable command carries a `$` prompt; a path does not. No surface may draw
@@ -460,19 +468,30 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   each scan. The stack is capped at 360px, uses 24px 16px padding and a 4px rhythm, and adds no
   frame, fill, shadow, or action; the page header keeps the only Start/Stop control and the panel
   header keeps the count.
-- **Watchdog summary and tables** (`.watchdog-latest`, `.watchdog-table`) — the Issues mode's
-  Watchdog page: a full-width 30px-header summary band over two labelled table panels. The summary
-  body is one row: a `badge` carrying the newest action beside the 12px `foreground` reason, and a
-  right-aligned facts group of 10px `overline` labels over 11.5px tabular `mono` values, with a
-  4px rhythm and 8px 24px gaps. Both tables use 10px `overline` sticky headers on `surface`, 27px
-  rows with `border-subtle` rules, `row-hover` on hover, and 8px cell padding; the filed-issue
-  link is `foreground` with no underline until hover. The history table has three labelled columns
-  (`Started`, `Action`, `Issues`) and links each cycle's filed issues as `#<number>` anchors in
-  `accent`; the newest reason appears only in the summary. The filed panel takes `1.25fr` beside a
-  `minmax(420px, 1fr)` history panel above 1500px; below that the two panels stack as flexible
-  rows at a 12px gap, and below 1100px the repeated issue category yields before any value clips.
-  Each panel owns its scroll, and each empty state reuses the Auto Scout centered stack with a
-  20px Lucide inbox or history mark.
+- **Watchdog page** (`.watchdog-page`, `.watchdog-body`) — the Issues mode's watchdog surface: a
+  framed page header with the `Watchdog` title, its one-sentence purpose, and the GitHub read
+  badge with the mono last-read time (no mode eyebrow — the rail and sidebar already name it).
+  The body is two columns while the page container is wider than 1300px and one column below
+  that. The primary column stacks the newest-cycle panel over the filed-issues panel; the
+  cycle-history panel is the 0.9fr aside with a 340px floor. The newest-cycle panel puts the
+  action badge and the cycle age in its header, then a three-cell stat rail (Started, Findings,
+  Pending filings) with `border-subtle` dividers, a 10px/700 `overline` label over a 12px mono
+  value, and one
+  12px reason line under a `border-subtle` rule; a pending count above zero takes `warning` text
+  while keeping its word. The filed-issues table is fixed-layout at 12px with a sticky 11px/600
+  `label` header on `surface`, 110/132/86/76px category, filed, state, and version tracks, 27px
+  rows on 5px 8px cells, `border-subtle` row rules, and one-line ellipsis for the title and mono
+  cells; hover tints the row with `row-hover`, and the title link is `foreground` with no
+  underline until hover. The cycle-history list uses 118px, 86px, and flexible tracks per 27px
+  row on 5px 10px padding, with the time in 11.5px mono tabular `muted-foreground`, the action as
+  the shared outline badge, and `#<n>` links in 11.5px mono `accent`, 6px apart; the list has no
+  header and no row hover because only its links are controls. In the two-column layout both
+  panels fill the height under the header and their bodies own the scroll; in the stacked layout
+  the page scrolls and each body caps itself (`clamp(240px, 48vh, 520px)` for the table,
+  `clamp(280px, 58vh, 580px)` for history). Their empty states are one 12px muted padded line.
+  When the primary column is narrower than 900px the table drops its category, filed, and
+  version columns so the issue title keeps enough width to identify the finding; the title still
+  carries the category.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The four `role="tab"` controls sit in a `role="tablist"`
   group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px
