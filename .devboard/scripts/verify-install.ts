@@ -96,6 +96,14 @@ try {
   const installed = launcher(["install", "--host", host.directory], oldEnv);
   startedHosts.push(host.directory);
   assertTrue(installed.code === 0, `install failed:\n${installed.stdout}\n${installed.stderr}`);
+  const fallbackLine = installed.stdout
+    .split("\n")
+    .find((line) => line.includes("used release tarball"));
+  assertTrue(
+    fallbackLine !== undefined,
+    `install did not report the tarball fallback after npm failed:\n${installed.stdout}`,
+  );
+  step(fallbackLine ?? "tarball fallback used");
   const prefix = join(host.directory, ".devboard");
   assertTrue(!isSymlink(prefix), ".devboard must be a real directory");
   assertTrue(!isSymlink(join(host.directory, ".omp", "commands")), ".omp/commands must be real");

@@ -55,6 +55,14 @@ async function installFixture(name: string, releaseDir: string): Promise<string>
     DEVBOARD_NPM: failingNpm,
   });
   assertTrue(installed.code === 0, `fixture install failed: ${installed.stderr}`);
+  const fallbackLine = installed.stdout
+    .split("\n")
+    .find((line) => line.includes("used release tarball"));
+  assertTrue(
+    fallbackLine !== undefined,
+    `fixture install did not report the tarball fallback after npm failed:\n${installed.stdout}`,
+  );
+  step(fallbackLine ?? "tarball fallback used");
   startedHosts.push(host.directory);
   return host.directory;
 }

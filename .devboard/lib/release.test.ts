@@ -1,7 +1,15 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createServer } from "node:net";
 import type { AddressInfo, Socket } from "node:net";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   checksumName,
@@ -11,6 +19,7 @@ import {
   installHarnessTarball,
   installRelease,
   isReleaseUnreachable,
+  latestRelease,
   parseReleaseDescription,
   ReleaseError,
   ReleaseFeedError,
@@ -266,4 +275,49 @@ describe("release download deadline", () => {
       server.close();
     }
   }, 20_000);
+});
+
+describe("npm fallback", () => {
+  test("uses the configured Gitea release when npm cannot resolve a version", async () => {
+    const root = workspace("npm-fallback");
+    const npm = join(root, "failing-npm");
+    writeFileSync(npm, "#!/bin/sh\necho 'simulated npm outage' >&2\nexit 1\n");
+    chmodSync(npm, 0o755);
+    const server = Bun.serve({
+      port: 0,
+      fetch(request) {
+        const url = new URL(request.url);
+        if (url.pathname.endsWith("/releases/latest")) {
+          return Response.json({ tag_name: "v0.1.42", assets: [] });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const release = await latestRelease({
+        kind: "npm",
+        env: { DEVBOARD_NPM: npm },
+        fallback: {
+          kind: "gitea",
+          baseUrl: `http://127.0.0.1:${server.port}`,
+          repo: "acme/fixture",
+        },
+      });
+      expect(release.version).toBe("0.1.42");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("names npm when it fails and no fallback is configured", async () => {
+    const root = workspace("npm-no-fallback");
+    const npm = join(root, "failing-npm");
+    writeFileSync(npm, "#!/bin/sh\necho 'simulated npm outage' >&2\nexit 1\n");
+    chmodSync(npm, 0o755);
+    const error = await latestRelease({ kind: "npm", env: { DEVBOARD_NPM: npm } }).catch(
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(ReleaseError);
+    expect((error as Error).message).toContain("npm could not resolve");
+  });
 });
