@@ -610,11 +610,6 @@
           <span>{discoveredLabel(freshness.discoveredAt)}</span>
         </div>
       {/if}
-    {:else}
-      <p class="discover-head__definition">
-        Inventory this project from repository evidence: stack, commands, testing, architecture, and
-        the conventions an agent should follow here.
-      </p>
     {/if}
   </header>
 
