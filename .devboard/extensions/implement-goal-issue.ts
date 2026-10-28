@@ -18,12 +18,13 @@ import {
   execWithEnvironment,
   forgeAuthCommand,
   goalModeFromBranch,
-  parseRemote,
   planWorktree,
   slugify,
   type RemoteInfo,
 } from "./implement-next-epic.ts";
 import type { Exec } from "../lib/forge-auth.ts";
+import { parseForgeRemote, type Forge } from "../lib/forge.ts";
+import { giteaIssue, giteaTarget, type FetchLike } from "../lib/gitea.ts";
 
 interface ExecResult {
   stdout: string;
@@ -146,15 +147,44 @@ function normalizedLabels(raw: unknown): string[] {
   return labels;
 }
 
-/** Fetches one issue through `gh`; any unusable answer is a failure. */
+/**
+ * Fetches one issue from the origin forge; any unusable answer is a failure.
+ * GitHub uses `gh`; Gitea uses the API the same identity resolves against.
+ */
 export async function fetchGoalIssue(
   pi: ExtensionAPI,
   info: RemoteInfo,
   number: number,
   cwd: string,
+  giteaFetch?: FetchLike,
 ): Promise<Outcome<GoalIssue>> {
+  if (info.forge === "gitea") {
+    try {
+      const target = giteaTarget({
+        project: info.project,
+        ...(info.baseUrl === undefined ? {} : { baseUrl: info.baseUrl }),
+      });
+      if (target === undefined) {
+        return { error: "the Gitea address is not configured; set DEVBOARD_GITEA_URL" };
+      }
+      const issue = await giteaIssue(target, number, giteaFetch);
+      return {
+        number: issue.number,
+        title: issue.title,
+        url: issue.url,
+        body: issue.body,
+        labels: issue.labels,
+      };
+    } catch (error) {
+      return {
+        error: `gitea issue view ${number} failed: ${
+          error instanceof Error ? firstLine(error.message) : String(error)
+        }`,
+      };
+    }
+  }
   if (info.forge !== "github") {
-    return { error: "goal issues are filed with gh, so the origin must be GitHub" };
+    return { error: "goal issues are filed with gh or the Gitea API; this origin supports neither" };
   }
   const result = await run(
     pi,
@@ -203,8 +233,18 @@ export function buildGoalIssuePrompt(
   repo: string,
   worktree: string,
   branch: string,
+  forge: Forge,
+  project: string,
   authCommand: string,
 ): string {
+  const closeCommand =
+    forge === "github"
+      ? `${authCommand} gh issue close ${issue.number}`
+      : forge === "gitlab"
+        ? `${authCommand} glab issue close ${issue.number}`
+        : `${authCommand} curl -sS -X PATCH -H "Authorization: token $GITEA_TOKEN" ` +
+          `-H "Content-Type: application/json" -d '{"state":"closed"}' ` +
+          `"$DEVBOARD_GITEA_URL/api/v1/repos/${project}/issues/${issue.number}"`;
   return `Implement the goal filed as issue ${issue.number}. This run is fully autonomous.
 
 Autonomy contract:
@@ -238,9 +278,9 @@ After the goal tool succeeds, implement the issue end to end:
 - Never end a turn while a background job you started is still running: when a \`wait\` returns a still-running snapshot, call \`wait\` again. Leave the turn only once the work is finished or the exact blocker is known.
 - Keep the goal active until every criterion is verified. Call the \`goal\` tool with {"op":"complete"} only then.
 - When complete, merge ${branch} into main from ${repo}. First fetch the latest main and integrate it into ${branch}; then merge. If the merge fails, fetch the latest main again, integrate it, and retry. Never force-push. After the merge succeeds, push main to origin and remove the worktree and branch, per AGENTS.md. If the push is rejected, fetch and integrate the new main and push again.
-- Never call \`gh\` or \`glab\` directly. Route every tracker command through the harness auth wrapper, which selects the authenticated account with write access to this repository and overrides any stale ambient token:
-  \`${authCommand} gh issue close <n>\`
-- When complete, close issue ${issue.number} in ${repo} with \`${authCommand} gh issue close ${issue.number}\`. Close it only after the merge succeeded, main was pushed, and the worktree was removed. If closing fails, report that failure once as the run's blocker.
+- Never call a tracker CLI directly. Route every tracker command through the harness auth wrapper, which selects the authenticated account with write access to this repository and overrides any stale ambient token:
+  \`${closeCommand}\`
+- When complete, close issue ${issue.number} in ${repo} with \`${closeCommand}\`. Close it only after the merge succeeded, main was pushed, and the worktree was removed. If closing fails, report that failure once as the run's blocker.
 - If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once on a line beginning \`DEVBOARD-BLOCKED:\`. Do not ask for permission or guidance.`;
 }
 
@@ -254,6 +294,11 @@ function notify(ctx: ExtensionCommandContext, message: string, type: "info" | "w
 
 function fail(ctx: ExtensionCommandContext, message: string): RunResult {
   notify(ctx, message, "error");
+  try {
+    process.stderr.write(`implement-goal-issue: ${message}\n`);
+  } catch {
+    // A closed stderr must not change the command's outcome.
+  }
   return { ok: false, message };
 }
 
@@ -262,6 +307,7 @@ export async function runImplementGoalIssue(
   ctx: ExtensionCommandContext,
   args = "",
   authExec: Exec = execWithEnvironment,
+  giteaFetch?: FetchLike,
 ): Promise<RunResult> {
   const requested = args.trim();
   if (requested.length === 0) {
@@ -287,13 +333,15 @@ export async function runImplementGoalIssue(
   if (origin.code !== 0 || !origin.stdout.trim()) {
     return fail(ctx, "origin remote is not configured; a goal issue cannot be implemented");
   }
-  const remote = parseRemote(origin.stdout);
-  if (remote === null) return fail(ctx, `cannot parse origin remote: ${origin.stdout.trim()}`);
+  const remote = parseForgeRemote(origin.stdout, process.env);
+  if (remote === undefined) {
+    return fail(ctx, `cannot parse origin remote: ${origin.stdout.trim()}`);
+  }
 
-  const info = await detectForge(remote, repo, authExec);
+  const info = await detectForge(remote, repo, authExec, giteaFetch);
   if (isFailure(info)) return fail(ctx, info.error);
 
-  const fetched = await fetchGoalIssue(pi, info, number, repo);
+  const fetched = await fetchGoalIssue(pi, info, number, repo, giteaFetch);
   if (isFailure(fetched)) return fail(ctx, fetched.error);
   const issue = fetched;
   if (!issue.labels.includes(GOAL_LABEL)) {
@@ -327,7 +375,15 @@ export async function runImplementGoalIssue(
 
   await ctx.waitForIdle?.();
 
-  const prompt = buildGoalIssuePrompt(issue, repo, worktree.path, worktree.branch, forgeAuthCommand(repo, info));
+  const prompt = buildGoalIssuePrompt(
+    issue,
+    repo,
+    worktree.path,
+    worktree.branch,
+    info.forge,
+    info.project,
+    forgeAuthCommand(repo, info),
+  );
   try {
     pi.sendUserMessage(prompt);
   } catch (error) {
@@ -357,11 +413,15 @@ export default function implementGoalIssueExtension(pi: ExtensionAPI): void {
       try {
         await runImplementGoalIssue(pi, ctx, args);
       } catch (error) {
-        notify(
-          ctx,
-          `unexpected failure: ${error instanceof Error ? error.message : String(error)}`,
-          "error",
-        );
+        const message = `unexpected failure: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+        notify(ctx, message, "error");
+        try {
+          process.stderr.write(`implement-goal-issue: ${message}\n`);
+        } catch {
+          // A closed stderr must not change the command's outcome.
+        }
       }
     },
   });

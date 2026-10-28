@@ -1524,7 +1524,10 @@ and without committing unrelated work. A successful agent removes only the workt
 created; a failed or blocked agent leaves its worktree in place and reports its path.
 
 The `goal` label keeps its goal-mode implementation contract: every goal-labeled issue runs
-`/implement-goal-issue <number>` concurrently with the rest.
+`/implement-goal-issue <number>` concurrently with the rest. The command follows the origin's
+forge: GitHub reads and closes the issue through `gh` under the forge-auth wrapper, and Gitea
+reads it through the API (`GET /api/v1/repos/<owner/repo>/issues/<number>`) and closes it with an
+API `PATCH` through the same wrapper. A GitLab goal issue is refused with that reason.
 
 ### Per-agent state, lifecycle, and history
 
@@ -1534,8 +1537,12 @@ slot with another. The published state carries `agents`, one entry per running i
 `issueNumber`, `startedAt`, `question`, and `acp`; the queue carries each issue's `handled`, last
 handling `runId`, and `agentRunId`; and `cooldowns` maps an issue number to its ISO 8601 retry
 time. A failed agent finishes its run as `failed` with its first stderr line, leaves its issue
-open and unhandled, and writes only its own cooldown. A successful agent finishes its run as
-`succeeded`, records only its issue as handled, and does not touch another issue. The five-minute
+open and unhandled, and writes only its own cooldown. A clean ACP turn is not proof of work: a
+refused slash command still ends the turn normally, so before a run can succeed the worker asks the
+tracker for that issue's state. Only an issue the tracker now reports closed finishes as
+`succeeded`, records only its issue as handled, and does not touch another issue; one that is still
+open, or whose state cannot be read, finishes as `failed` with a cooldown and stays unhandled. The
+five-minute
 cooldown remains: an issue in cooldown is retried when it expires, and other issues keep running
 and start normally.
 
@@ -1735,13 +1742,15 @@ the fetched issue body verbatim as the objective: no distillation, no section fi
 appended requirements. It then implements the body, verifies every criterion through the product
 surface, merges into `main` with conflict integration and retry, pushes `main` to origin, removes
 the worktree and branch, and closes the issue only after the push, through the same forge-auth
-wrapper.
+wrapper. On Gitea it fetches the issue through the API and closes it with an API `PATCH`; GitHub
+keeps `gh issue view` and `gh issue close` under the wrapper.
 
 Pause lets every active peer finish, then reports `paused` and starts no new peer or poll.
 Resume polls immediately. Stop closes every peer, records every active run as `stopped`, leaves
 every issue unhandled, releases the lock, and writes no cooldown. A successful run records only
-its issue as handled in the ledger; a failed one records `failed` with its first stderr line and
-gates only that issue for five minutes, leaving it open and unhandled. An issue closed by its
+its issue as handled in the ledger once the tracker reports it closed; an open issue after a clean
+turn, or a failed state lookup, records `failed` and gates only that issue for five minutes,
+leaving it open and unhandled. A failed run records its first stderr line. An issue closed by its
 agent leaves the queue on the next poll.
 
 ## Auto Scout
