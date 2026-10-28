@@ -8,6 +8,7 @@ RUN bun install --frozen-lockfile
 COPY index.html tsconfig.json vite.config.ts svelte.config.js ./
 COPY lib ./lib
 COPY client ./client
+COPY public ./public
 COPY server ./server
 COPY issues ./issues
 COPY watchdog ./watchdog
