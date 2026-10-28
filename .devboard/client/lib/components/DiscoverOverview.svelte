@@ -87,6 +87,14 @@
       : null,
   );
   let commandsOpen = $state(false);
+  /** The retained dropdown; a host target leaves it with no option chosen. */
+  let remoteSelect = $state<HTMLSelectElement | null>(null);
+  $effect(() => {
+    const select = remoteSelect;
+    if (select === null) return;
+    const active = discover.remoteTarget?.url ?? "";
+    select.selectedIndex = discover.retained.findIndex((project) => project.url === active);
+  });
   const foundCommandRows = $derived(
     commandRowsOf(commandsSection, discover.testCommand, { includeMissing: false }),
   );
@@ -510,6 +518,46 @@
               <span>Discover reads <code>{discover.remoteTarget.url}</code>.</span>
             </p>
           {/if}
+          {#if discover.retained.length > 0}
+            <div class="discover-remote__retained">
+              <label class="discover-remote__label" for="discover-remote-select">Retained project</label>
+              <select
+                id="discover-remote-select"
+                class="discover-remote__select"
+                data-testid="discover-remote-select"
+                aria-label="Retained remote project"
+                bind:this={remoteSelect}
+                disabled={discover.remoteChangeDisabled}
+                title={discover.remoteChangeTitle}
+                onchange={(event) => discover.switchRemote(event.currentTarget.value)}
+              >
+                {#each discover.retained as project (project.url)}
+                  <option value={project.url}>{project.url}</option>
+                {/each}
+              </select>
+            </div>
+            <ul class="discover-remote__list" aria-label="Retained projects">
+              {#each discover.retained as project (project.url)}
+                <li
+                  class="discover-remote__item"
+                  class:discover-remote__item--active={project.url === discover.remoteTarget?.url}
+                >
+                  <span class="discover-remote__url">{project.url}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    data-testid="discover-remote-remove"
+                    data-url={project.url}
+                    disabled={discover.remoteChangeDisabled}
+                    title={discover.remoteChangeTitle}
+                    onclick={() => discover.removeRemote(project.url)}
+                  >
+                    Remove
+                  </Button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
           <form
             class="discover-remote__form"
             onsubmit={(event) => {
@@ -540,6 +588,8 @@
               <Button
                 variant="ghost"
                 data-testid="discover-remote-clear"
+                disabled={discover.remoteChangeDisabled}
+                title={discover.remoteChangeTitle}
                 onclick={() => discover.clearRemote()}
               >
                 Clear remote target

@@ -741,8 +741,18 @@ describe("filing", () => {
     );
     expect(later.report.action).toBe("commented");
     expect(calls).toHaveLength(2);
-    expect(calls[1]?.argv).toEqual(["issue", "comment", url, "--body", "-"]);
-    expect(calls[1]?.stdin).toContain(fingerprint);
+    expect(calls[1]?.argv).toEqual(["issue", "comment", url, "--body-file", "-"]);
+    const body = calls[1]?.stdin ?? "";
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    expect(body).toContain(fingerprint);
+    expect(body).toContain(`- Count: ${loadLedger(stateDir).findings[fingerprint]?.count}`);
+    expect(body).toContain(`- Window: ${later.report.window.start} .. ${later.report.window.end}`);
+    expect(body).toContain(
+      `- Last seen: ${new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000).toISOString()}`,
+    );
+    expect(body).toContain(SERVER_ERROR);
+    expect(body.trim()).not.toBe("-");
+    expect(calls.some((call) => call.argv.join(" ").includes("--body -"))).toBe(false);
     expect(later.report.issues).toEqual([]);
     const ledger = loadLedger(join(root, ".devboard", ".tmp", "watchdog"));
     expect(ledger.findings[fingerprint]?.lastCommentAt).toBe(
@@ -751,6 +761,42 @@ describe("filing", () => {
     expect(calls.some((call) => call.argv.includes("close"))).toBe(false);
     expect(calls.some((call) => call.argv.includes("create"))).toBe(true);
     expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(1);
+  });
+
+  test("a rejected recurrence comment is not marked and is retried", async () => {
+    const { root } = await fixtureRepository();
+    const events = [event(root, 1, SERVER_ERROR, "server-error", instanceFor(root, 8080))];
+    const { gh, calls } = ghStub((_call, index) =>
+      index === 1 ? { code: 1, stderr: "HTTP 422: Validation failed\nsecond line" } : {},
+    );
+    const first = await runCycle(cycleFor(root, { events, gh }));
+    const fingerprint = first.report.issues[0]?.fingerprint as string;
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+
+    const rejected = await runCycle(
+      cycleFor(root, { events, gh, now: new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000) }),
+    );
+    expect(rejected.report.action).toBe("failed");
+    expect(rejected.report.reason).toBe("HTTP 422: Validation failed");
+    expect(calls[1]?.stdin).toContain(fingerprint);
+    expect(loadLedger(stateDir).findings[fingerprint]?.lastCommentAt).toBeUndefined();
+
+    const retried = await runCycle(
+      cycleFor(root, { events, gh, now: new Date(fixedNow.getTime() + 26 * 60 * 60 * 1000) }),
+    );
+    expect(retried.report.action).toBe("commented");
+    expect(calls).toHaveLength(3);
+    expect(calls[2]?.argv).toEqual([
+      "issue",
+      "comment",
+      first.report.issues[0]?.url,
+      "--body-file",
+      "-",
+    ]);
+    expect(calls[2]?.stdin).toContain(fingerprint);
+    expect(loadLedger(stateDir).findings[fingerprint]?.lastCommentAt).toBe(
+      new Date(fixedNow.getTime() + 26 * 60 * 60 * 1000).toISOString(),
+    );
   });
 
   test("a failed gh call retries the pending fingerprint before new ones", async () => {

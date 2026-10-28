@@ -1795,6 +1795,63 @@ kbd {
   max-width: 520px;
 }
 
+.discover-remote__retained {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.discover-remote__label {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.discover-remote__select {
+  background: var(--background);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--foreground);
+  flex: 1 1 280px;
+  font-size: 12px;
+  height: 28px;
+  max-width: 520px;
+  padding: 0 6px;
+}
+
+.discover-remote__select:disabled {
+  opacity: 0.55;
+}
+
+.discover-remote__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.discover-remote__item {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-height: 24px;
+}
+
+.discover-remote__url {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discover-remote__item--active .discover-remote__url {
+  color: var(--foreground);
+}
+
 /* Filtered glossary empty state. */
 .discover-filter-empty__body {
   align-items: center;
