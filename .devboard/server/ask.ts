@@ -205,6 +205,11 @@ class AskPeer {
     return this.#closed;
   }
 
+  /** Whether the handshake completed far enough to prompt this peer. */
+  get hasSession(): boolean {
+    return this.#sessionId !== undefined;
+  }
+
   async run(prompt: string): Promise<unknown> {
     await this.#request("initialize", {
       protocolVersion: 1,
@@ -481,6 +486,14 @@ export class AskController {
     const fail = (error: unknown): void => {
       if (!live()) return;
       conversation.busy = false;
+      // A peer that never opened a session cannot answer a follow-up, yet its
+      // process may stay alive after a refused handshake. Drop it so the next
+      // ask rebuilds the replacement prompt and spawns a fresh peer.
+      const failedPeer = conversation.peer;
+      if (failedPeer !== undefined && !failedPeer.hasSession) {
+        failedPeer.close();
+        conversation.peer = undefined;
+      }
       this.#send(conversation.socket, {
         type: "askError",
         conversationId: conversation.id,

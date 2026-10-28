@@ -142,6 +142,20 @@ const ask = process.argv.includes("--ask");
 const askDelayMs = Number(argument("ask-delay-ms") ?? 0);
 const askFail = process.argv.includes("--ask-fail");
 const askExit = process.argv.includes("--ask-exit");
+/** Refuses the ACP initialize of the first Ask peer; later peers succeed. */
+const askRefuseInitialize = process.argv.includes("--ask-refuse-initialize");
+/** Answers the first session/new without a session id; later peers succeed. */
+const askNoSession = process.argv.includes("--ask-no-session");
+if (ask) log(`ask-start ${process.pid}`);
+
+/** True once per flag, so only the first peer fails that handshake step. */
+function firstAskHandshake(flag: string): boolean {
+  if (logPath === undefined) return false;
+  const marker = `${logPath}.${flag}`;
+  if (existsSync(marker)) return false;
+  writeFileSync(marker, "");
+  return true;
+}
 
 /** Draft elaboration mode: simulate the goal-draft command's observable work. */
 const goalDraft = process.argv.includes("--goal-draft");
@@ -1471,7 +1485,6 @@ async function promptTurn(params: unknown) {
 
   if (ask && text !== undefined && text.includes(ASK_INSTRUCTION)) {
     askTurns += 1;
-    if (askTurns === 1) log(`ask-spawn ${process.pid}`);
     const question = /(?:^|\n)Question: ([^\n]*)/.exec(text)?.[1] ?? "";
     log(`ask-prompt ${askTurns} ${question}`);
     log(`ask-text ${askTurns} ${JSON.stringify(text)}`);
@@ -1744,6 +1757,14 @@ async function promptTurn(params: unknown) {
 function handleMessage(message: Record<string, unknown>) {
   if (typeof message.method === "string" && message.id !== undefined) {
     if (message.method === "initialize") {
+      if (askRefuseInitialize && firstAskHandshake("initialize")) {
+        write({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32603, message: "The Ask agent refused the handshake." },
+        });
+        return;
+      }
       write({
         jsonrpc: "2.0",
         id: message.id,
@@ -1753,6 +1774,10 @@ function handleMessage(message: Record<string, unknown>) {
         },
       });
     } else if (message.method === "session/new") {
+      if (askNoSession && firstAskHandshake("session")) {
+        write({ jsonrpc: "2.0", id: message.id, result: {} });
+        return;
+      }
       write({ jsonrpc: "2.0", id: message.id, result: { sessionId: "stub-session" } });
     } else if (message.method === "session/prompt") {
       const text = promptText(message.params) ?? "";
