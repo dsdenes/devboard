@@ -12,7 +12,6 @@
 | Proposal | Compose | — | — | leading H1 removed (header owns it), long lines wrap, empty proposal | plain text block after an `h3` | mono, body spacing |
 | Context facts | Compose | — | — | zero facts when the marker is absent; long URL/element wrap; five known labels | `dl`/`dt`/`dd`; label text includes the colon | overline, mono-small, muted |
 | Captured evidence | Compose | — | — | Visible text and DOM excerpt inline below the facts; absent sections; long DOM scrolls in its block | section headings; native `pre` text | surface-raised, border-subtle |
-| Exact draft source | Compose (details) | — | — | full bytes, empty file, 6 KB+ file; collapsed; byte count in summary; text must equal the file exactly | native `details`, selectable text | mono-small, background, border-subtle |
 
 ## Component details
 
@@ -45,13 +44,6 @@
 - Why: it already follows the newest line without fighting manual scrolling and highlights
   shell commands. The previous draft log was a plain `pre` with no follow behaviour.
 - Mounted only while `draftRun` exists; the empty state is its own text.
-
-### Source disclosure
-- Decision: compose one native `<details>`.
-- Why: the exact bytes are P3; native disclosure keeps keyboard and screen-reader semantics
-  without a bespoke component.
-- Edge cases: closed content still satisfies the exact-bytes check; long source scrolls inside
-  its `pre`, not the page.
 
 ## Design-system action
 - No token, color, radius, typography, or primitive variant changes. `Button`, `Input`,

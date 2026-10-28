@@ -15,19 +15,19 @@ Scores follow `20 × (0.35·Goal + 0.25·Action + 0.15·Frequency + 0.15·Unique
 | C9 | Context facts | 4 | 3 | 4 | 4 | 0 | 67 | P1 | Fact grid above the evidence |
 | C10 | Visible text | 3 | 3 | 3 | 4 | 0 | 57 | P2 | Inline below the facts |
 | C11 | DOM excerpt | 3 | 3 | 3 | 5 | 0 | 60 | P1 | Inline, scroll-bounded |
-| C12 | Exact draft bytes | 1 | 1 | 1 | 5 | 2 | 34 | P3 | Collapsed source disclosure |
 | C13 | Activity stream | 4 | 3 | 5 | 4 | 1 | 72 | P1 | Section below the proposal while a run exists |
 | C14 | Question message | 5 | 5 | 3 | 5 | 2 | 88 | P0 | First block after the header while pending |
 | C15 | Question options | 4 | 5 | 3 | 4 | 1 | 76 | P1 | Inside the question block |
 | C16 | Free-text answer | 3 | 4 | 2 | 4 | 0 | 59 | P2 | Inside the question block |
 | C20 | No-context empty state | 2 | 2 | 1 | 3 | 0 | 36 | P3 | Shown only when the marker is absent |
 
-Dropped: C17 nested activity header (score below 20, duplicate identity), C19 `No
+Dropped: C12 exact draft bytes (34, duplicate of C8 and redundant with the structured
+evidence), C17 nested activity header (score below 20, duplicate identity), C19 `No
 elaboration` subtitle (score below 20, adds no decision).
 
 ## Duplicates after scoring
-- C8 and C12 carry the same bytes. C8 wins the primary surface (90 vs 34); C12 survives
-  only because the README and `verify:interface` contract require the exact bytes in the DOM.
+- C8 carries the only copy of the draft text; C12 rendered the same bytes verbatim and was
+  removed with its source disclosure.
 - C1 and C2 both identify the draft; both stay because one is recognisable and the other is
   durable and matches the list and the spec outcome.
 - C3 is unique only after filtering by the selected path; the unfiltered global status is a

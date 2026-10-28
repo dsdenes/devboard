@@ -1572,17 +1572,15 @@ Selecting one opens `data-testid="issues-draft-detail"`: the header carries the 
 the state badge for this draft's run only (absent while the run is `idle`), `issues-draft-start`
 (`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
 body reads the proposal before the `## Captured UI context` marker, then the activity stream in
-`issues-draft-activity` once a run exists, then `issues-draft-context`: the captured facts as a
-compact grid followed by the inline Visible text and DOM excerpt sections. A pending elaboration
-question (`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,
-`issues-draft-answer-input`, and `issues-draft-answer-submit`. The exact draft bytes remain in
-`issues-draft-text`, collapsed under `Draft source`. The detail refreshes when the page opens,
-after the report panel writes a draft through `POST /api/goal-proposals`, after an elaboration
-finishes or stops, and when a listed draft disappears. The page polls the list every two seconds
-while it is mounted, so an external deletion is visible without a reload, and the report panel's
-write broadcast reaches an open page immediately. A browser reload
-restores the Draft goals page and the selected path; when the file no longer exists, the page
-opens the list.
+`issues-draft-activity` once a run exists; the captured UI context itself is not shown. A pending
+elaboration question (`issues-draft-question`) renders above the proposal, with
+`issues-draft-choice`, `issues-draft-answer-input`, and `issues-draft-answer-submit`. The detail
+refreshes when the page opens, after the report panel writes a draft through
+`POST /api/goal-proposals`, after an elaboration finishes or stops, and when a listed draft
+disappears. The page polls the list every two seconds while it is mounted, so an external
+deletion is visible without a reload, and the report panel's write broadcast reaches an open page
+immediately. A browser reload restores the Draft goals page and the selected path; when the file
+no longer exists, the page opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
@@ -2303,8 +2301,8 @@ The server answers with events:
   the current contradiction list; `getSkills` requests it, and a client that connects or
   reconnects during preparation first receives `skillsPreparationStarted`, every recorded
   `activity` line, and the pending `question` if one exists. The panel lists managed skills only
-  and shows `No contradictions` when the list is empty; the contradiction review itself covers
-  every skill directory, managed or not.
+  and shows a contradiction list only when the review found one; the review itself covers every
+  skill directory, managed or not.
 - The server reads ADR files and never writes them; the agent changes the status line. The server reads the tracker and never writes issues. The goal document is written verbatim by `saveGoal` and by the revision and creation agents, and the server reads it to answer `getGoal` and to report `goalRevisionStopped` or `goalCreationStopped`; a creation always writes `<REPO_DIR>/GOAL.md` even when `GOAL_FILE` names another file.
 - Skills preparation writes only under `<REPO_DIR>/.omp/skills/` and only through its ACP peer;
   the server deletes managed skill directories before the run and restores the snapshot after a
