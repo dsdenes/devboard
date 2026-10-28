@@ -1596,10 +1596,6 @@ kbd {
   gap: 4px 8px;
 }
 
-.discover-head__meta code {
-  font-size: 11px;
-}
-
 .discover-sheet {
   align-items: start;
   display: grid;
