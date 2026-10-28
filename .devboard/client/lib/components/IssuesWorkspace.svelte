@@ -6,7 +6,7 @@
   import DraftsPage from "./DraftsPage.svelte";
   import IssuesAgentFocus from "./IssuesAgentFocus.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
-  import IssuesAgentQuestion from "./IssuesAgentQuestion.svelte";
+  import IssuesQuestion from "./IssuesQuestion.svelte";
   import PageHeader from "./ui/page-header.svelte";
   import ScoutWorkspace from "./ScoutWorkspace.svelte";
   import { pollStatus } from "../poll-status";
@@ -315,7 +315,7 @@
               runId={selectedAgent.runId}
             />
             {#if selectedAgent.question}
-              <IssuesAgentQuestion
+              <IssuesQuestion
                 runId={selectedAgent.runId}
                 question={selectedAgent.question}
                 testid="issues-overview-question"
@@ -423,7 +423,7 @@
               />
             </div>
             {#if agent.question}
-              <IssuesAgentQuestion
+              <IssuesQuestion
                 runId={agent.runId}
                 question={agent.question}
                 testid="issues-agent-question"

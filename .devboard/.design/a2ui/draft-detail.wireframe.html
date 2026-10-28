@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Draft detail — wireframe</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: #333;
+        background: #fff;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 16px; }
+      .frame { max-width: 1100px; margin: 0 auto; }
+      .note { color: #666; font-size: 12px; margin: 0 0 12px; }
+      .panel { border: 1px solid #999; border-radius: 4px; }
+      .region { position: relative; border: 1px dashed #b5b5b5; padding: 10px; margin: 8px; }
+      .region > .id {
+        position: absolute; top: -9px; left: 6px; background: #fff; padding: 0 4px;
+        font-size: 10px; color: #777;
+      }
+      header.panel { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+      .identity { min-width: 0; }
+      .identity h1 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+      .identity .path { font-family: ui-monospace, monospace; font-size: 11px; color: #666; }
+      .actions { display: flex; gap: 6px; align-items: center; flex: none; }
+      .badge { border: 1px solid #999; border-radius: 999px; font-size: 10px; padding: 2px 6px; }
+      button { font: inherit; font-size: 11px; padding: 4px 8px; border: 1px solid #777; background: #f4f4f4; border-radius: 3px; }
+      button.primary { background: #d8d8d8; border-color: #555; font-weight: 600; }
+      .body { margin: 8px; }
+      .alert { border: 1px solid #999; background: #f2f2f2; padding: 6px 8px; font-size: 11px; margin: 8px; }
+      .label { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #666; margin: 0 0 6px; }
+      .question { border: 1px solid #777; background: #fafafa; padding: 10px; margin: 8px; }
+      .question p { margin: 0 0 8px; font-size: 12px; }
+      .option { border: 1px solid #999; border-radius: 3px; padding: 6px 8px; margin-bottom: 4px; font-size: 11px; }
+      .option b { display: block; font-size: 12px; margin-bottom: 2px; }
+      .answer { display: flex; gap: 6px; margin-top: 8px; }
+      .answer .field { flex: 1; border: 1px solid #999; border-radius: 3px; padding: 5px 6px; font-size: 11px; color: #888; }
+      .prose { font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; margin: 0; }
+      .log { border: 1px solid #bbb; padding: 8px; font-family: ui-monospace, monospace; font-size: 11px; min-height: 110px; background: #fcfcfc; }
+      .facts { display: grid; grid-template-columns: 120px 1fr; gap: 4px 10px; margin: 0; font-size: 11px; }
+      .facts dt { color: #666; }
+      .facts dd { margin: 0; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+      .disclosure { border-top: 1px solid #ddd; margin-top: 8px; padding-top: 8px; font-size: 11px; color: #555; }
+      footer { font-size: 11px; color: #777; margin-top: 12px; }
+      @media (max-width: 768px) {
+        header.panel { flex-direction: column; }
+        .actions { flex-wrap: wrap; }
+        .facts { grid-template-columns: 1fr; }
+        .facts dt { margin-top: 4px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      <p class="note">Wireframe only. Neutral primitives; no product components, tokens, or brand assets.</p>
+      <div class="panel">
+        <header class="region" data-id="region_header + region_identity + region_actions">
+          <span class="id">region_header · P0</span>
+          <div class="identity">
+            <h1>Proposed goal: once I discover a remote project…</h1>
+            <div class="path">once-i-discover-a-remote-project.md</div>
+          </div>
+          <div class="actions">
+            <span class="badge">idle</span>
+            <button class="primary">Start elaboration</button>
+            <button>Stop</button>
+          </div>
+        </header>
+
+        <div class="region alert" data-id="region_alert">
+          <span class="id">region_alert · P1</span>
+          Error reason appears here only when the read or the peer failed.
+        </div>
+
+        <main class="body">
+          <section class="region question" data-id="region_question">
+            <span class="id">region_question · P0 while pending</span>
+            <p class="label">Elaboration question</p>
+            <p>What does one entry in the remote-project dropdown represent?</p>
+            <div class="option"><b>Latest per repository · Recommended</b>One entry per repository, newest first.</div>
+            <div class="option"><b>One entry per crawl</b>A repository may appear more than once.</div>
+            <div class="option"><b>Every submission</b>Failed clones and crawls survive restarts.</div>
+            <div class="answer"><div class="field">Your answer</div><button>Answer</button></div>
+          </section>
+
+          <section class="region" data-id="region_proposal">
+            <span class="id">region_proposal · P0</span>
+            <p class="label">Draft</p>
+            <p class="prose">&gt; Unprocessed draft. Refine it with /goal-spec before it becomes a goal.
+
+once I discover a remote project I want it to be persisted, so it survives restarts; I also want a dropdown to switch between the previous remote discoveries.</p>
+          </section>
+
+          <section class="region" data-id="region_activity">
+            <span class="id">region_activity · P1</span>
+            <p class="label">Elaboration activity</p>
+            <div class="log">Reading the draft.
+$ git rev-parse --show-toplevel
+Reading goal-draft prompt instructions</div>
+          </section>
+
+          <section class="region" data-id="region_context">
+            <span class="id">region_context · P1 facts, P2 evidence</span>
+            <p class="label">Captured UI context</p>
+            <dl class="facts">
+              <dt>Route:</dt><dd>/</dd>
+              <dt>URL:</dt><dd>http://127.0.0.1:8081/</dd>
+              <dt>Selected element:</dt><dd>section.issues-draft-detail:nth-of-type(2)</dd>
+              <dt>Viewport:</dt><dd>2101×1017 @1.21875x</dd>
+              <dt>Captured at:</dt><dd>2026-10-28T10:30:03.635Z</dd>
+            </dl>
+            <div class="disclosure">Captured evidence (collapsed): Visible text, DOM excerpt</div>
+          </section>
+
+          <section class="region" data-id="region_source">
+            <span class="id">region_source · P3 hard contract</span>
+            <div class="disclosure">Draft source (collapsed) · 6069 bytes</div>
+          </section>
+        </main>
+      </div>
+      <footer>Journeys: review a draft (proposal + captured facts), start and supervise (question above the log).</footer>
+    </div>
+  </body>
+</html>

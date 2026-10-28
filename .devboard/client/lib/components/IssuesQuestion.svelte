@@ -5,18 +5,36 @@
   import Input from "./ui/input.svelte";
 
   interface Props {
-    runId: string;
     question: RunQuestion;
     testid: string;
+    /** The agent run answering through the shared store; omitted by the draft surface. */
+    runId?: string;
+    /** Submits the answer; defaults to the agent-run store call for `runId`. */
+    onanswer?: (value: string) => void;
+    choiceTestid?: string;
+    inputTestid?: string;
+    submitTestid?: string;
+    command?: string;
   }
 
-  let { runId, question, testid }: Props = $props();
+  let {
+    question,
+    testid,
+    runId,
+    onanswer,
+    choiceTestid = "issues-agent-choice",
+    inputTestid = "issues-agent-answer-input",
+    submitTestid = "issues-agent-answer-submit",
+    command = "issues.answer",
+  }: Props = $props();
 
   let answer = $state("");
 
   function submit(value: string): void {
-    if (value.trim().length === 0) return;
-    issues.submitAgentAnswer(runId, question.id, value.trim());
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return;
+    if (onanswer !== undefined) onanswer(trimmed);
+    else if (runId !== undefined) issues.submitAgentAnswer(runId, question.id, trimmed);
     answer = "";
   }
 </script>
@@ -29,9 +47,9 @@
         <button
           type="button"
           class="choice"
-          data-testid="issues-agent-choice"
+          data-testid={choiceTestid}
           data-run={runId}
-          data-command="issues.answer"
+          data-command={command}
           onclick={() => submit(option.label)}
         >
           <span class="choice__label">
@@ -60,14 +78,14 @@
       oninput={(event) => (answer = event.currentTarget.value)}
       placeholder="Your answer"
       aria-label="Your answer"
-      data-testid="issues-agent-answer-input"
+      data-testid={inputTestid}
       data-run={runId}
     />
     <Button
       variant="default"
       type="submit"
-      data-command="issues.answer"
-      data-testid="issues-agent-answer-submit"
+      data-command={command}
+      data-testid={submitTestid}
       data-run={runId}
       disabled={answer.trim().length === 0}
     >

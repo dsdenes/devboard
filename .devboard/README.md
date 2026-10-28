@@ -1461,14 +1461,21 @@ directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each 
 `data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
 and its first Markdown heading. An empty directory shows `No drafts exist.`.
 
-Selecting one opens `data-testid="issues-draft-detail"` with the draft's bytes exactly, its
-`## Captured UI context` block, and `issues-draft-start` (`issues.draft.start`) plus, while an
-elaboration runs, `issues-draft-stop` (`issues.draft.stop`). The detail refreshes when the page
-opens, after the report panel writes a draft through `POST /api/goal-proposals`, after an
-elaboration finishes or stops, and when a listed draft disappears. The page polls the list every
-two seconds while it is mounted, so an external deletion is visible without a reload, and the
-report panel's write broadcast reaches an open page immediately. A browser reload restores the
-Draft goals page and the selected path; when the file no longer exists, the page opens the list.
+Selecting one opens `data-testid="issues-draft-detail"`: a two-line header carries the draft's
+first heading and its file name, the state badge for this draft's run only, `issues-draft-start`
+(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
+body reads the proposal before the `## Captured UI context` marker, then the activity stream in
+`issues-draft-activity` once a run exists, then `issues-draft-context`: the captured facts as a
+compact grid and the visible text and DOM excerpt behind a `Captured evidence` disclosure. A
+pending elaboration question (`issues-draft-question`) renders above the proposal, with
+`issues-draft-choice`, `issues-draft-answer-input`, and `issues-draft-answer-submit`. The exact
+draft bytes remain in `issues-draft-text`, collapsed under `Draft source`. The detail refreshes
+when the page opens, after the report panel writes a draft through `POST /api/goal-proposals`,
+after an elaboration finishes or stops, and when a listed draft disappears. The page polls the
+list every two seconds while it is mounted, so an external deletion is visible without a reload,
+and the report panel's write broadcast reaches an open page immediately. A browser reload
+restores the Draft goals page and the selected path; when the file no longer exists, the page
+opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
