@@ -72,6 +72,27 @@ function firstLine(text: string): string {
   );
 }
 
+/**
+ * Text `gh` prints when GitHub refuses a request because the caller spent its
+ * request budget: a primary limit, a secondary limit or abuse detection, and
+ * the HTTP 429 that can carry either. The operator's credential is shared with
+ * every other process on the host, so the refusal is environmental and clears
+ * itself; it is never a harness defect.
+ */
+const RATE_LIMIT_PATTERNS = [
+  "rate limit exceeded",
+  "secondary rate limit",
+  "abuse detection",
+  "too many requests",
+  "http 429",
+];
+
+/** True when a `gh` diagnostic reports GitHub rate-limiting the request. */
+export function isGitHubRateLimited(text: string): boolean {
+  const message = text.toLowerCase();
+  return RATE_LIMIT_PATTERNS.some((pattern) => message.includes(pattern));
+}
+
 /** Parses a JSON array `gh` printed, refusing a shape it does not know. */
 function parseIssues(text: string): unknown[] | undefined {
   try {
