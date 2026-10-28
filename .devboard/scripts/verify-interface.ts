@@ -654,10 +654,10 @@ async function seedIssuesState(
         },
         ...agents.map((agent) => ({
           runId: agent.runId,
-          status: "running",
+          status: running ? "running" : "succeeded",
           startedAt: "2026-10-27T10:00:01.000Z",
-          finishedAt: null,
-          exitCode: null,
+          finishedAt: running ? null : "2026-10-27T10:01:00.000Z",
+          exitCode: running ? null : 0,
           issueNumbers: [agent.issueNumber],
           activity: agent.activity.length,
           firstStderrLine: null,
@@ -751,7 +751,7 @@ async function seedIssuesState(
     "Implementing issue 16",
   ]);
   for (const agent of agents) {
-    await seedRun(agent.runId, "running", agent.issueNumber, agent.activity);
+    await seedRun(agent.runId, running ? "running" : "succeeded", agent.issueNumber, agent.activity);
   }
   const lockDirectory = join(host, ".devboard", ".tmp", "issues");
   await mkdir(lockDirectory, { recursive: true });
@@ -4963,6 +4963,73 @@ try {
       `document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() === "running"`,
     ),
     "reload lost the focus status",
+  );
+
+  // A finished run restored from a persisted agent tab requests its history
+  // only after the socket opens: exactly one frame, no connection error, and
+  // the run detail instead of the permanent loading state.
+  await seedIssuesState(stateDir, host, "paused");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() === "succeeded"`,
+    "the finished run before the restore",
+    8_000,
+  );
+  await devtools.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const frames = [];
+      window.__devboardSentCommands = frames;
+      const send = WebSocket.prototype.send;
+      WebSocket.prototype.send = function (data) {
+        try {
+          const command = JSON.parse(String(data));
+          if (command !== null && typeof command === "object") frames.push(command);
+        } catch {
+          // A non-JSON frame is not a client command.
+        }
+        return send.call(this, data);
+      };
+    })();`,
+  });
+  await page.reload();
+  await page.wait(
+    `document.querySelector('[data-testid="issues-agent-focus-activity"]')?.textContent?.includes("Implementing issue 17") === true &&
+     document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() === "succeeded"`,
+    "the restored finished run",
+    20_000,
+  );
+  const restoredRun = await page.eval<{
+    frames: Array<{ type?: unknown; runId?: unknown }>;
+    loading: boolean;
+    activity: string;
+    notifications: string;
+  }>(`(() => ({
+    frames: (window.__devboardSentCommands ?? []).filter((command) => command.type === "getIssuesRun"),
+    loading: (document.querySelector('[data-testid="issues-agent-focus"]')?.textContent ?? "").includes("Loading the run from history"),
+    activity: document.querySelector('[data-testid="issues-agent-focus-activity"]')?.textContent ?? "",
+    notifications: document.querySelector('[data-testid="notifications"]')?.textContent ?? "",
+  }))()`);
+  check(
+    restoredRun.frames.length === 1 &&
+      restoredRun.frames[0]?.runId === "2026-10-27T10-00-01-000Z",
+    "restoring the agent tab did not send exactly one run request",
+    restoredRun.frames,
+  );
+  check(!restoredRun.loading, "the restored run stayed in the loading state", restoredRun);
+  check(
+    restoredRun.activity.includes("Implementing issue 17"),
+    "the restored run lost its activity",
+    restoredRun,
+  );
+  check(
+    !restoredRun.notifications.includes("Not connected to the server."),
+    "restoring the agent tab raised a connection error",
+    restoredRun.notifications,
+  );
+  await seedIssuesState(stateDir, host, "running");
+  await page.wait(
+    `document.querySelector('[data-testid="issues-agent-focus-status"]')?.textContent?.trim() === "running"`,
+    "the running focus tab after the restore check",
+    8_000,
   );
 
   await page.click('[data-testid="issues-agent-focus-close"]');

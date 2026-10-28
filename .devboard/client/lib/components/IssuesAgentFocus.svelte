@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { connection } from "../connection.svelte";
   import { relativeTime } from "../discover-format";
   import { issues } from "../issues.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
@@ -32,9 +33,12 @@
     return () => clearInterval(timer);
   });
 
-  // A finished run's final status and activity come from run history.
+  // A finished run's final status and activity come from run history. A reload
+  // restores this tab before the socket opens and before the replay names the
+  // live agents, so the request waits for both: a send rejected while closed,
+  // or one made before the replay, would strand or stale the run detail.
   $effect(() => {
-    if (agent !== null) return;
+    if (agent !== null || !connection.open || !issues.ready) return;
     issues.loadRun(runId);
   });
 </script>

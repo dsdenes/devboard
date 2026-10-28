@@ -104,6 +104,14 @@ export class IssuesStore {
   draftPath = $state<string | null>(readDraftPath());
   draftError = $state<string | null>(null);
 
+  /**
+   * True once the connect-time replay has named the live agents. A run request
+   * made before the replay cannot tell a finished run from a running one.
+   */
+  get ready(): boolean {
+    return this.snapshot !== null;
+  }
+
   get lifecycle(): string {
     return this.snapshot?.lifecycle ?? "stopped";
   }
@@ -307,12 +315,17 @@ export class IssuesStore {
     });
   }
 
+  /**
+   * Requests one run's history. The selection and the requested marker move
+   * only after the frame reaches the socket, so a rejected send leaves loadRun
+   * free to retry instead of claiming a request that never happened.
+   */
   openRun(runId: string): void {
+    if (!connection.send({ type: "getIssuesRun", runId })) return;
     this.selectedRun = runId;
     this.requestedRun = runId;
     this.run = null;
     this.runError = null;
-    connection.send({ type: "getIssuesRun", runId });
   }
 
   /** Fetches one run's history once unless it is already selected. */
