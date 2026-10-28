@@ -2127,7 +2127,9 @@ The server answers with events:
   lifecycle conversation.
 - A `question` event carries one option per choice. Each option has a `label`, an optional
   `description` stating the consequence of choosing it, and `recommended`, true for the answer
-  the agent suggests. `answer` names the selected label as `value`.
+  the agent suggests. When the peer's schema marks none, the server marks the first option as
+  recommended, so a choice list never lacks a suggestion. `answer` names the selected label as
+  `value`.
 - A record's title and status come from its YAML frontmatter `title` and `status` fields.
 - A record is pending exactly when its status is `draft` or `proposed`; every other status is
   resolved.

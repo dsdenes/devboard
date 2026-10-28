@@ -5123,11 +5123,17 @@ try {
     "the elaboration question",
     8_000,
   );
-  const draftQuestion = await page.eval<{ message: string; options: number }>(`(() => ({
+  const draftQuestion = await page.eval<{ message: string; options: number; recommended: boolean }>(`(() => ({
     message: document.querySelector('[data-testid="issues-draft-question"]')?.textContent?.includes("Choose an answer") ?? false,
     options: document.querySelectorAll('[data-testid="issues-draft-choice"]').length,
+    recommended:
+      document.querySelector('[data-testid="issues-draft-choice"]')?.querySelector('.choice__recommended') !== null,
   }))()`);
-  check(draftQuestion.message && draftQuestion.options === 2, "the elaboration question is not surfaced", draftQuestion);
+  check(
+    draftQuestion.message && draftQuestion.options === 2 && draftQuestion.recommended,
+    "the elaboration question is not surfaced with a recommended first option",
+    draftQuestion,
+  );
   const blocked = await page.eval<string[]>(
     `[...document.querySelectorAll('[data-testid="issues-draft-blocked"]')].map((item) => item.textContent ?? "")`,
   );
