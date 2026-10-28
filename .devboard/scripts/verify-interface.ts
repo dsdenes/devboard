@@ -5529,16 +5529,20 @@ try {
     `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
     "the idle draft beside a running elaboration",
   );
-  const otherState = await page.eval<string>(
-    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? ""`,
+  const otherState = await page.eval<string | null>(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? null`,
   );
-  check(otherState === "idle", "a draft borrowed another draft's run status", otherState);
+  check(otherState === null, "an idle draft still shows a run-state badge", otherState);
   await page.click('[data-testid="issues-draft"][data-path=".devboard/goal-proposals/001-question.md"]');
   await page.wait(
     `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/001-question.md" &&
       document.querySelector('[data-testid="issues-draft-question"]') !== null`,
     "the running draft's question after reselecting it",
   );
+  const runningState = await page.eval<string>(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? ""`,
+  );
+  check(runningState === "running", "a running draft hides its run-state badge", runningState);
 
   const blocked = await page.eval<string[]>(
     `[...document.querySelectorAll('[data-testid="issues-draft-blocked"]')].map((item) => item.textContent ?? "")`,
