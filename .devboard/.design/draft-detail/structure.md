@@ -11,7 +11,6 @@
 | 5 | region_proposal | Proposed goal text | Review | C8 | P0 |
 | 6 | region_activity | Streamed elaboration log, only while a run exists | Start | C13 | P1 |
 | 7 | region_context | Captured facts, then inline Visible text and DOM excerpt | Review | C9, C10, C11, C20 | P1 / P2 |
-| 8 | region_source | Exact draft bytes, collapsed | Review | C12 | P3 (hard contract) |
 
 ```
 Panel (surface, border, 4px radius, fills the grid cell)
@@ -38,9 +37,6 @@ Panel (surface, border, 4px radius, fills the grid cell)
       overline "Captured UI context"
       fact grid: Route, URL, Selected element, Viewport, Captured at   P1
       inline sections: Visible text, DOM excerpt                        P2
-    details source
-      summary "Draft source" + byte count                              P3
-      exact bytes in a bounded mono block
 ```
 
 ## Primary action
@@ -61,8 +57,7 @@ Panel (surface, border, 4px radius, fills the grid cell)
 - The proposal is the first content block because the review decision precedes the run.
 - Activity sits above the captured facts: live progress is P1 and changes; the capture is
   reference. It is omitted entirely when no run exists, instead of showing an empty box.
-- Captured facts are one compact grid; the visible text and DOM excerpt follow inline, and the
-  exact bytes spend their P3 budget in a disclosure.
+- Captured facts are one compact grid; the visible text and DOM excerpt follow inline.
 
 ## State coverage
 
@@ -83,7 +78,7 @@ Panel (surface, border, 4px radius, fills the grid cell)
 - <1100px: the list and the detail stack; the detail keeps the same internal order.
 - At the 1024×720 floor the header title truncates, the path truncates, and the action group
   keeps its size; nothing wraps below the identity and no horizontal scroll appears.
-- The body owns vertical scrolling; the log and the source block never create a scroll
+- The body owns vertical scrolling; the log and the context sections never create a scroll
   trap outside it.
 
 ## Rationale
@@ -92,11 +87,11 @@ Panel (surface, border, 4px radius, fills the grid cell)
   draft (context again), then a nested `Activity` header, then the log, then the question.
   Reading order follows data storage, not the operator's decisions.
 - Splitting the bytes at the writer's `## Captured UI context` marker is the only parsing the
-  writers guarantee. It removes the duplicate context from the reading surface while the
-  exact bytes stay available.
+  writers guarantee. It removes the duplicate context from the reading surface; the raw source
+  block added no content the structured proposal and evidence do not already show.
 - Reusing `IssuesQuestion` (generalised from `IssuesAgentQuestion`) and `IssuesAgentLog`
   keeps the question grammar and the auto-following log identical to the Agents surface.
 - Alternatives rejected: a three-column layout (the panel is a side column already), a
   modal question (the activity would disappear), tabs for proposal/context (the proposal must
-  stay visible while the question is answered), and rendering Markdown (the source must stay
-  byte-identical and no Markdown renderer is wired into the client).
+  stay visible while the question is answered), and rendering Markdown (the proposal is shown
+  as plain text and no Markdown renderer is wired into the client).

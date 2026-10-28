@@ -196,13 +196,6 @@
               {/if}
             </div>
           </section>
-          <details class="issues-draft-source">
-            <summary>
-              <span class="issues-draft-detail__label">Draft source</span>
-              <span class="issues-draft-source__meta mono">{issues.draft.text.length} bytes</span>
-            </summary>
-            <pre class="issues-draft-text mono" data-testid="issues-draft-text">{issues.draft.text}</pre>
-          </details>
         </div>
       </section>
     {:else}
