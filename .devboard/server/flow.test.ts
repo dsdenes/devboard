@@ -1,11 +1,20 @@
 import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import { StubForge } from "./fixtures/stub-forge";
+import { UNTRACKED_BODY_MAX_BYTES } from "./flow";
 import { journalKey } from "./journal";
 import { testProviderService } from "./fixtures/test-providers";
 import type { ProviderService } from "./providers";
@@ -885,6 +894,77 @@ describe("Flow change widgets", () => {
     }[];
     expect(fallback.every((widget) => widget.category === "structure")).toBe(true);
     failingClient.close();
+  }, 60_000);
+});
+
+describe("Flow untracked file bounds", () => {
+  test("large and binary untracked files stay visible without an embedded body", async () => {
+    const fixture = createFixture("untracked-bounds");
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", "--flow-implement"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "startFlowImplementation" });
+    const started = await client.waitFor((event) => event.type === "flowImplementationStarted");
+    const sessionId = String(started.sessionId);
+    const worktree = String(started.worktree);
+    await client.waitFor((event) => event.type === "flowStopped");
+
+    writeFileSync(join(worktree, "large.dump"), "x".repeat(UNTRACKED_BODY_MAX_BYTES + 1));
+    writeFileSync(join(worktree, "binary.bin"), Buffer.from([0x00, 0x01, 0x02, 0xfe, 0xff]));
+    writeFileSync(join(worktree, "small.txt"), "hello\n");
+
+    await waitUntil(
+      () => {
+        const files = latest(client, "flowFiles")?.files as { path: string }[] | undefined;
+        return (
+          Array.isArray(files) &&
+          files.some((file) => file.path === "large.dump") &&
+          files.some((file) => file.path === "binary.bin") &&
+          files.some((file) => file.path === "small.txt")
+        );
+      },
+      "the untracked files in a flowFiles frame",
+    );
+
+    const filesEvent = latest(client, "flowFiles");
+    const files = filesEvent?.files as {
+      path: string;
+      status: string;
+      insertions: number;
+      deletions: number;
+      diff: string;
+      omitted?: string;
+    }[];
+    const large = files.find((file) => file.path === "large.dump");
+    expect(large).toEqual({
+      path: "large.dump",
+      status: "added",
+      insertions: 0,
+      deletions: 0,
+      diff: "",
+      omitted: "large",
+    });
+    const binary = files.find((file) => file.path === "binary.bin");
+    expect(binary?.status).toBe("added");
+    expect(binary?.omitted).toBe("binary");
+    expect(binary?.diff).toBe("");
+    expect(binary?.diff).not.toContain("\u0000");
+    const small = files.find((file) => file.path === "small.txt");
+    expect(small?.omitted).toBeUndefined();
+    expect(small?.diff).toContain("+hello");
+    expect(JSON.stringify(filesEvent).length).toBeLessThan(64 * 1024);
+
+    const sessionDirectory = join(fixture.stateDir, "flow", journalKey(fixture.root), sessionId);
+    for (const name of ["session.json", "changes.json"]) {
+      const path = join(sessionDirectory, name);
+      expect(statSync(path).size).toBeLessThan(64 * 1024);
+      const state = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      expect(JSON.stringify(state)).not.toContain("x".repeat(1024));
+    }
+    client.close();
   }, 60_000);
 });
 

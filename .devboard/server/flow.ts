@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -53,6 +54,8 @@ export interface FlowFile {
   insertions: number;
   deletions: number;
   diff: string;
+  /** Why an untracked file's body was omitted; absent when `diff` holds it. */
+  omitted?: "binary" | "large";
 }
 
 export interface FlowWidget {
@@ -229,6 +232,8 @@ interface CommandResult {
 
 const STALE_VERIFICATION: FlowVerification["status"] = "not-run";
 const DEFAULT_WATCH_MS = 400;
+/** Bound on the text the watcher keeps for one untracked file. */
+export const UNTRACKED_BODY_MAX_BYTES = 1_048_576;
 const DEFAULT_ANALYST_TIMEOUT_MS = 60_000;
 const DEFAULT_GOAL_TIMEOUT_MS = 120_000;
 const OUTPUT_TAIL_MAX = 4000;
@@ -474,7 +479,7 @@ function fileStatus(chunk: string): FlowFile["status"] {
 export function diffHash(files: FlowFile[]): string {
   return sha256(
     files
-      .map((file) => `${file.path}\0${normalizeDiff(file.diff)}`)
+      .map((file) => `${file.path}\0${file.omitted ?? ""}\0${normalizeDiff(file.diff)}`)
       .sort()
       .join("\0"),
   );
@@ -508,6 +513,44 @@ function untrackedDiff(path: string, content: string): string {
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   const body = [`@@ -0,0 +1,${lines.length} @@`, ...lines.map((line) => `+${line}`)];
   return [...header, ...body].join("\n");
+}
+
+function omittedFile(path: string, omitted: "binary" | "large"): FlowFile {
+  return { path, status: "added", insertions: 0, deletions: 0, diff: "", omitted };
+}
+
+/**
+ * One untracked file as a bounded FlowFile. A body above the limit or holding
+ * a NUL byte never enters the session or the frame: the path stays visible
+ * with zero counts and the reason the body is absent.
+ */
+function untrackedFile(worktree: string, path: string): FlowFile | undefined {
+  const absolute = join(worktree, path);
+  try {
+    const stats = statSync(absolute);
+    if (!stats.isFile()) return undefined;
+    if (stats.size > UNTRACKED_BODY_MAX_BYTES) return omittedFile(path, "large");
+  } catch {
+    return undefined;
+  }
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(absolute);
+  } catch {
+    return undefined;
+  }
+  // The file may have grown between the stat and the read.
+  if (bytes.length > UNTRACKED_BODY_MAX_BYTES) return omittedFile(path, "large");
+  if (bytes.includes(0)) return omittedFile(path, "binary");
+  const diff = untrackedDiff(path, bytes.toString("utf8"));
+  const counts = countDiffLines(diff);
+  return {
+    path,
+    status: "added",
+    insertions: counts.insertions,
+    deletions: counts.deletions,
+    diff,
+  };
 }
 
 export class FlowController {
@@ -1560,21 +1603,9 @@ export class FlowController {
     for (const entry of parseStatusZ(status.stdout)) {
       if (entry.status === "untracked") {
         if (files.has(entry.path)) continue;
-        let content = "";
-        try {
-          content = readFileSync(join(session.worktree, entry.path), "utf8");
-        } catch {
-          continue;
-        }
-        const diff = untrackedDiff(entry.path, content);
-        const counts = countDiffLines(diff);
-        files.set(entry.path, {
-          path: entry.path,
-          status: "added",
-          insertions: counts.insertions,
-          deletions: counts.deletions,
-          diff,
-        });
+        const file = untrackedFile(session.worktree, entry.path);
+        if (file === undefined) continue;
+        files.set(entry.path, file);
         continue;
       }
       const existing = files.get(entry.path);
