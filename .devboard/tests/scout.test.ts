@@ -8,6 +8,7 @@ import { fileScoutIssue, issueBody, type GhRunner } from "../issues/scout/action
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
 import {
   createScoutGitHub,
+  isGitHubRateLimited,
   type ScoutGitHubClient,
   type ScoutGitHubIssue,
   type ScoutRelease,
@@ -152,6 +153,32 @@ class ControlledPeer implements AcpPeer {
   }
 }
 
+/** The first line of `gh issue list` when GitHub throttles the operator's token. */
+const RATE_LIMIT_ERROR =
+  "gh: API rate limit exceeded for user ID 123850. If you reach out to GitHub Support for help, " +
+  "please include the request ID D6E0:2832D4:EE3810:157BF95:6AE1FE3B. For more on scraping " +
+  "GitHub and how it may affect your rights, please review our Terms of Service " +
+  "(https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) (HTTP 403)";
+
+describe("isGitHubRateLimited", () => {
+  test("recognizes every throttling diagnostic gh prints", () => {
+    for (const message of [
+      RATE_LIMIT_ERROR,
+      "You have exceeded a secondary rate limit.",
+      "gh: You have triggered an abuse detection mechanism.",
+      "gh: HTTP 429: Too Many Requests",
+    ]) {
+      expect(isGitHubRateLimited(message)).toBe(true);
+    }
+  });
+
+  test("leaves an authorization failure an error", () => {
+    expect(isGitHubRateLimited("gh: HTTP 403: Resource not accessible by integration")).toBe(
+      false,
+    );
+  });
+});
+
 class FakeGitHub implements ScoutGitHubClient {
   readonly issues: ScoutGitHubIssue[] = [];
   readonly releases: ScoutRelease[] = [];
@@ -160,6 +187,8 @@ class FakeGitHub implements ScoutGitHubClient {
   readonly commits = new Map<string, string>();
   readonly containing = new Map<string, string[]>();
   failIssues = false;
+  /** Replaces the generic issue-read failure when set. */
+  issuesError: string | null = null;
   failReleases = false;
   nextNumber = 100;
 
@@ -177,12 +206,12 @@ class FakeGitHub implements ScoutGitHubClient {
   }
 
   async listIssues(): Promise<ScoutGitHubIssue[]> {
-    if (this.failIssues) throw new Error("the GitHub read failed");
+    if (this.failIssues) throw new Error(this.issuesError ?? "the GitHub read failed");
     return this.issues.map((issue) => ({ ...issue }));
   }
 
   async listOpenIssueTitles(): Promise<string[]> {
-    if (this.failIssues) throw new Error("the GitHub read failed");
+    if (this.failIssues) throw new Error(this.issuesError ?? "the GitHub read failed");
     return [...this.openTitles];
   }
 
@@ -904,6 +933,30 @@ describe("periodic reads and state mapping", () => {
     }
   });
 
+  test("a rate-limited read stays in the sync reason and raises no error", async () => {
+    const github = new FakeGitHub();
+    github.failIssues = true;
+    github.issuesError = RATE_LIMIT_ERROR;
+    const f = await fixture({ label: "rate-limited", github });
+    try {
+      const failed = await waitFor(
+        () => (f.state().sync.state === "error" ? f.state() : undefined),
+        "the rate-limited read",
+      );
+      expect(failed.sync.error).toContain("API rate limit exceeded");
+      // `lastError` is what the page raises as a global error notification.
+      expect(failed.lastError).toBeNull();
+      await f.worker.beginScan();
+      expect(f.peers).toEqual([]);
+
+      github.failIssues = false;
+      await f.worker.refresh();
+      expect(f.state().sync.state).toBe("ok");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
   test("a release read failure fails the sync", async () => {
     const github = new FakeGitHub();
     github.failReleases = true;
@@ -937,6 +990,30 @@ describe("periodic reads and state mapping", () => {
       expect(f.filed).toEqual([]);
       expect(failed.lastError).toContain("GitHub read failed");
       expect(failed.sync.error).toContain("GitHub read failed");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a rate-limited fresh read files nothing and raises no error", async () => {
+    const f = await fixture({ label: "fresh-rate-limited" });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      f.github.failIssues = true;
+      f.github.issuesError = RATE_LIMIT_ERROR;
+      writeRecommendations(
+        scanDirectoryOf(peer.prompts[0]!),
+        scanDocument(uniqueItems(1, 3)),
+      );
+      peer.succeed();
+      // Wait for the scan to settle: `finishScan` runs after the sync failure.
+      const failed = await waitFor(
+        () => (f.state().lifecycle === "failed" ? f.state() : undefined),
+        "the rate-limited pre-filing read",
+      );
+      expect(f.filed).toEqual([]);
+      expect(failed.sync.error).toContain("API rate limit exceeded");
+      expect(failed.lastError).toBeNull();
     } finally {
       await f.worker.stop();
     }
