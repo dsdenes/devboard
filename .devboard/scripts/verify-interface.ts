@@ -1738,6 +1738,7 @@ try {
     next: string;
     pending: string;
     tabStrips: number;
+    eyebrow: boolean;
   }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="record"]')];
     const table = document.querySelector('[data-testid="adr-table"]');
@@ -1755,9 +1756,11 @@ try {
       next: document.querySelector('[data-testid="next-marker"]')?.textContent?.trim() ?? "",
       pending: document.querySelector('[data-testid="pending-summary"]')?.textContent?.trim() ?? "",
       tabStrips: document.querySelectorAll('[data-testid="workspace-tabs"]').length,
+      eyebrow: document.querySelector('[data-testid="adrs-header"] .page-header__eyebrow') !== null,
     };
   })()`);
   check(adr.rows === 8, "the fixture does not render eight ADR rows", adr);
+  check(!adr.eyebrow, "the ADRs header still carries its Plan eyebrow", adr);
   const stateText = await page.eval<string>(`document.querySelector('[data-testid="record"] td:nth-child(3)')?.textContent?.trim() ?? ""`);
   check(stateText === "Resolved" || stateText === "Pending", "the ADR state is conveyed by color alone", stateText);
   const tableTones = await page.eval<Array<{ file: string; text: string; tone: string }>>(`(() => {
@@ -1943,6 +1946,18 @@ try {
   await page.wait(`document.querySelector('[data-testid="reset-confirmation"]') === null`, "the reset confirmation to close");
   await runPalette("goal.document.open");
   await page.wait(`document.querySelector('[data-testid="goal-text"] .monaco-editor') !== null`, "the Goal Monaco editor");
+  const documentHeader = await page.eval<{ title: string; eyebrow: boolean }>(`(() => {
+    const header = document.querySelector('[data-testid="document-header"]');
+    return {
+      title: header?.querySelector(".page-header__title")?.textContent?.trim() ?? "",
+      eyebrow: header !== null && header.querySelector(".page-header__eyebrow") !== null,
+    };
+  })()`);
+  check(
+    documentHeader.title === "Goal document" && !documentHeader.eyebrow,
+    "the Goal document header still carries its Plan eyebrow",
+    documentHeader,
+  );
   const goalLayout = await page.eval<{
     editor: number;
     panel: number;

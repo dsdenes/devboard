@@ -434,7 +434,6 @@
   {:else if tab.kind === "adrs"}
     <div class="goal-page">
       <PageHeader
-        eyebrow="Plan"
         title="Decision records"
         subtitle="Every decision the implementation depends on."
         testid="adrs-header"
@@ -502,7 +501,7 @@
     </div>
   {:else if tab.kind === "goal-document"}
     <div class="goal-page goal-page--fill">
-      <PageHeader eyebrow="Plan" title="Goal document" subtitle={documentState} testid="document-header">
+      <PageHeader title="Goal document" subtitle={documentState} testid="document-header">
         {#snippet meta()}
           {#if operationText !== null}
             <span class="badge" data-tone="accent">{operationText}</span>
@@ -598,7 +597,7 @@
     </div>
   {:else if tab.kind === "skills"}
     <div class="goal-page goal-page--fill">
-      <PageHeader eyebrow="Plan" title="Skills" subtitle={skillsReady} testid="skills-header">
+      <PageHeader title="Skills" subtitle={skillsReady} testid="skills-header">
         {#snippet meta()}
           {#if goal.contradictions.length > 0}
             <span class="badge" data-tone="error">
