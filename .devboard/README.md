@@ -1740,11 +1740,14 @@ blank version on the next read.
 ### Periodic check
 
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
-and immediately on Start; the table, states, and versions reflect a change within one interval. A
-failed read keeps the last known rows, shows the reason in
-`data-testid="scout-sync-error"`, and keeps the last success time in
-`data-testid="scout-sync-at"`; the reason clears on the next successful read. Filing stays
-blocked until a read succeeds.
+and immediately on Start; the table, states, and versions reflect a change within one interval. One
+periodic read, including every `gh` child it starts, is bounded to 30 seconds; a read that does not
+finish records a sync error and releases the worker, so the next interval reads again. A failed
+read keeps the last known rows, shows the reason in `data-testid="scout-sync-error"`, and keeps the
+last success time in `data-testid="scout-sync-at"`; the reason clears on the next successful read.
+Filing stays blocked until a read succeeds. An injected GitHub client owns its own command bounds;
+the worker still races the whole read against the deadline, but it cannot cancel work that client
+never settles.
 
 ### Worker lifecycle
 
@@ -2360,10 +2363,11 @@ refusals, and the activity delta.
 duplicates against closed issues, open issues, and drafts, both caps across a restart, the
 effective batch, zero capacity, a close freeing a slot, limits applying live and surviving a
 restart, state mapping and a reopen, a later release filling a blank version, a failed periodic
-read and a failed pre-filing read, migration from a version-1 board, a missing score failing the
-scan atomically, a failed filing, Stop keeping the rows, the live lock, a replacement closing an
-interrupted scan, bridge replay without a spawn, another `STATE_DIR` refused, a harness-version
-notice, the issue body and label creation, and the scan prompt's rubric.
+read, a periodic read that never settles failing at its deadline and releasing the worker, the
+default client's bounded `gh` calls, a failed pre-filing read, migration from a version-1 board, a
+missing score failing the scan atomically, a failed filing, Stop keeping the rows, the live lock,
+a replacement closing an interrupted scan, bridge replay without a spawn, another `STATE_DIR`
+refused, a harness-version notice, the issue body and label creation, and the scan prompt's rubric.
 `tests/issues.test.ts` covers the fleet (four mixed issues, twelve peers with no cap, duplicate
 prevention, an issue opened mid-run, per-issue success and ledger entries, one failure cooling only
 its issue), Check now clearing every cooldown, pause draining every peer, Stop closing every peer

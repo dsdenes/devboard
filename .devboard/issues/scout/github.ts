@@ -75,7 +75,18 @@ export interface ScoutGitHubOptions {
   repository: string;
   repoDir: string;
   environment?: Record<string, string | undefined>;
-  /** Injectable forge command; defaults to the operator's `gh`. */
+  /**
+   * Deadline for each command the default runner starts. The worker passes
+   * its periodic read deadline so a stalled `gh` always settles.
+   */
+  timeoutMs?: number;
+  /** Aborts the default runner's in-flight commands; ignored by an injected `run`. */
+  signal?: AbortSignal;
+  /**
+   * Injectable forge command; defaults to the operator's `gh`. An injected
+   * runner owns its own deadline: `createScoutGitHub` cannot bound a promise
+   * the runner never settles.
+   */
   run?: GhRunner;
 }
 
@@ -85,7 +96,13 @@ export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClien
   for (const [key, value] of Object.entries(options.environment ?? process.env)) {
     if (value !== undefined) environment[key] = value;
   }
-  const run = options.run ?? ((argv, env) => ghCommand(argv, env));
+  const run =
+    options.run ??
+    ((argv, env) =>
+      ghCommand(argv, env, {
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      }));
   const repositoryGitHub = createRepositoryGitHub({
     repository,
     repoDir: options.repoDir,
