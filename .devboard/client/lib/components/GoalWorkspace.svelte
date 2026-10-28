@@ -641,7 +641,6 @@
                     >
                       <span class="skill__text">
                         <span class="mono skill__name">{skill.name}</span>
-                        <span class="muted skill__description">{skill.description}</span>
                       </span>
                       <ChevronRight
                         size={14}

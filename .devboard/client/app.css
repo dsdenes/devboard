@@ -2805,10 +2805,6 @@ a.code-chip--link:focus-visible {
   border-color: var(--border-strong);
 }
 
-.skill__description {
-  font-size: 11px;
-}
-
 .skill__detail {
   border-left: 2px solid var(--border-strong);
   margin: 0 0 4px 8px;
