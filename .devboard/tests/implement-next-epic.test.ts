@@ -3,7 +3,6 @@ import {
   distillObjective,
   fetchEpic,
   listOpenEpics,
-  parseRemote,
   runImplementNextEpic,
   slugify,
 } from "../extensions/implement-next-epic.ts";
@@ -27,6 +26,10 @@ const AUTH_ENV_KEYS = [
   "GH_PROMPT_DISABLED",
   "NO_COLOR",
   "GIT_TERMINAL_PROMPT",
+  "GITEA_TOKEN",
+  "DEVBOARD_GITEA_TOKEN",
+  "DEVBOARD_GITEA_URL",
+  "DEVBOARD_FORGE",
 ] as const;
 
 const savedEnvironment = new Map<string, string | undefined>();
@@ -277,27 +280,42 @@ function baseTable(overrides: Record<string, Reply> = {}) {
   return (command: string, args: string[]): Reply | undefined => replies[[command, ...args].join(" ")];
 }
 
-describe("parseRemote", () => {
-  test("parses the three supported remote shapes", () => {
-    expect(parseRemote("https://github.com/owner/repo.git")).toEqual({
-      host: "github.com",
-      project: "owner/repo",
-    });
-    expect(parseRemote("ssh://git@gitlab.example.com:2222/group/sub/project.git")).toEqual({
-      host: "gitlab.example.com",
-      project: "group/sub/project",
-    });
-    expect(parseRemote("git@github.com:owner/repo.git")).toEqual({
-      host: "github.com",
-      project: "owner/repo",
-    });
-  });
+const GITEA_REMOTE = "ssh://git@localhost:2223/owner/repo.git";
+const GITEA_EPIC = {
+  number: 42,
+  title: "Add export command",
+  html_url: "http://localhost:3001/owner/repo/issues/42",
+  state: "open",
+  body: BODY,
+  labels: [{ id: 1, name: "epic" }],
+};
 
-  test("rejects empty and unparseable remotes", () => {
-    expect(parseRemote("")).toBeNull();
-    expect(parseRemote("not-a-remote")).toBeNull();
+function jsonReply(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json" },
   });
-});
+}
+
+function giteaFetch() {
+  const calls: string[] = [];
+  const fetchImpl = async (input: string): Promise<Response> => {
+    const url = new URL(input);
+    const path = url.pathname;
+    calls.push(`${path}?${url.searchParams.toString()}`);
+    if (path === "/api/v1/repos/owner/repo") {
+      return jsonReply({ permissions: { admin: true, push: true } });
+    }
+    if (path === "/api/v1/user") return jsonReply({ login: "ds" });
+    if (path === "/api/v1/repos/owner/repo/labels") return jsonReply([{ id: 1, name: "epic" }]);
+    if (path === "/api/v1/repos/owner/repo/issues") {
+      return jsonReply(url.searchParams.get("page") === "1" ? [GITEA_EPIC] : []);
+    }
+    if (path === "/api/v1/repos/owner/repo/issues/42") return jsonReply(GITEA_EPIC);
+    return new Response("not found", { status: 404 });
+  };
+  return { calls, fetchImpl };
+}
 
 describe("distillObjective", () => {
   test("keeps the executable sections and drops the marker and non-goals", () => {
@@ -510,6 +528,34 @@ describe("runImplementNextEpic", () => {
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("origin remote is not configured");
+  });
+
+  test("supports Gitea epics", async () => {
+    process.env.GITEA_TOKEN = "test-token";
+    process.env.DEVBOARD_GITEA_URL = "http://localhost:3001";
+    const gitea = giteaFetch();
+    const harness = makeHarness(
+      baseTable({ "git remote get-url origin": { stdout: `${GITEA_REMOTE}\n` } }),
+    );
+
+    const result = await runImplementNextEpic(
+      harness.pi,
+      harness.ctx,
+      "",
+      harness.authExec,
+      gitea.fetchImpl,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(harness.sent).toHaveLength(1);
+    expect(harness.sent[0]).toContain(GITEA_EPIC.html_url);
+    expect(harness.sent[0]).toContain(
+      '"$DEVBOARD_GITEA_URL/api/v1/repos/owner/repo/issues/42"',
+    );
+    expect(harness.sent[0]).not.toContain("gh issue close 42");
+    expect(gitea.calls.some((call) => call.startsWith("/api/v1/repos/owner/repo/issues?"))).toBe(
+      true,
+    );
   });
 
   test("supports GitLab issues", async () => {

@@ -23,6 +23,14 @@ import {
   resolveForgeAuth,
   type Exec,
 } from "../lib/forge-auth.ts";
+import { giteaBaseUrl, parseForgeRemote, type Forge, type ForgeRemote } from "../lib/forge.ts";
+import {
+  giteaIssue,
+  giteaLabels,
+  giteaListIssues,
+  giteaTarget,
+  type FetchLike,
+} from "../lib/gitea.ts";
 
 interface ExecResult {
   stdout: string;
@@ -71,9 +79,11 @@ interface ExtensionCommandContext {
 export interface RemoteInfo {
   host: string;
   project: string;
-  forge: "github" | "gitlab";
+  forge: Forge;
   /** The authenticated account selected for this repository. */
   login?: string;
+  /** Gitea HTTP origin, when the forge is Gitea. */
+  baseUrl?: string;
 }
 
 export interface EpicSummary {
@@ -170,41 +180,6 @@ function parseJsonObject(stdout: string): Record<string, unknown> | null {
 }
 
 /**
- * Parse the three remote shapes accepted by `/epic-next`:
- * `https://host/path`, `ssh://user@host[:port]/path`, `user@host:path`.
- */
-export function parseRemote(url: string): { host: string; project: string } | null {
-  const value = url.trim();
-  if (!value) return null;
-
-  let host = "";
-  let project = "";
-
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
-    try {
-      const parsed = new URL(value);
-      host = parsed.hostname;
-      project = parsed.pathname;
-    } catch {
-      return null;
-    }
-  } else {
-    const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(value);
-    if (!scp) return null;
-    host = scp[1];
-    project = scp[2];
-  }
-
-  project = project
-    .replace(/^\/+/, "")
-    .replace(/\.git$/i, "")
-    .replace(/\/+$/, "");
-
-  if (!host || !project) return null;
-  return { host, project };
-}
-
-/**
  * Run one auth probe with an explicit environment. `pi.exec` cannot set env,
  * so credential validation cannot use it; every probe starts its own child and
  * the selected token only ever travels in that child's environment.
@@ -240,67 +215,40 @@ export async function execWithEnvironment(
 }
 
 export async function detectForge(
-  remote: { host: string; project: string },
+  remote: ForgeRemote,
   cwd: string,
   authExec: Exec = execWithEnvironment,
+  giteaFetch?: FetchLike,
 ): Promise<Outcome<RemoteInfo>> {
-  const host = remote.host;
-  const lower = host.toLowerCase();
-  const resolveFor = (forge: "github" | "gitlab") =>
-    resolveForgeAuth(authExec, {
-      forge,
-      host,
-      project: remote.project,
-      cwd,
-      required: "write",
-      env: process.env,
-    });
-
-  if (host === "github.com") {
-    const github = await resolveFor("github");
-    if (isAuthFailure(github)) return { error: github.error };
-    applyAuthToProcess(github);
-    return { ...remote, forge: "github", login: github.login };
-  }
-
-  if (lower.includes("gitlab")) {
-    const gitlab = await resolveFor("gitlab");
-    if (isAuthFailure(gitlab)) return { error: gitlab.error };
-    applyAuthToProcess(gitlab);
-    return { ...remote, forge: "gitlab", login: gitlab.login };
-  }
-
-  // Self-hosted: use whichever forge CLI is authenticated for this exact host.
-  // Both configured means the forge cannot be told apart.
-  const gitlab = await resolveFor("gitlab");
-  const github = await resolveFor("github");
-  if (!isAuthFailure(gitlab) && !isAuthFailure(github)) {
-    return {
-      error: `both gh and glab are configured for ${host}; cannot tell which forge serves the remote`,
-    };
-  }
-  if (!isAuthFailure(gitlab)) {
-    applyAuthToProcess(gitlab);
-    return { ...remote, forge: "gitlab", login: gitlab.login };
-  }
-  if (!isAuthFailure(github)) {
-    applyAuthToProcess(github);
-    return { ...remote, forge: "github", login: github.login };
-  }
+  const auth = await resolveForgeAuth(authExec, {
+    forge: remote.forge,
+    host: remote.host,
+    project: remote.project,
+    cwd,
+    required: "write",
+    env: process.env,
+    ...(remote.forge === "gitea"
+      ? { baseUrl: giteaBaseUrl(remote, process.env) }
+      : {}),
+    ...(giteaFetch === undefined ? {} : { giteaFetch }),
+  });
+  if (isAuthFailure(auth)) return { error: auth.error };
+  applyAuthToProcess(auth);
   return {
-    error: [
-      `no authenticated gh or glab account has write access to ${remote.project} on ${host}`,
-      `gh: ${github.error}`,
-      `glab: ${gitlab.error}`,
-    ].join("\n"),
+    host: remote.host,
+    project: remote.project,
+    forge: remote.forge,
+    login: auth.login,
+    ...(auth.baseUrl === undefined ? {} : { baseUrl: auth.baseUrl }),
   };
 }
 
-function normalizeSummary(forge: "github" | "gitlab", raw: unknown): EpicSummary | null {
+function normalizeSummary(forge: Forge, raw: unknown): EpicSummary | null {
   if (typeof raw !== "object" || raw === null) return null;
   const record = raw as Record<string, unknown>;
-  const ref = forge === "github" ? record.number : (record.iid ?? record.number);
-  const url = forge === "github" ? record.url : (record.web_url ?? record.url);
+  const ref = forge === "gitlab" ? (record.iid ?? record.number) : record.number;
+  const url =
+    forge === "gitlab" ? (record.web_url ?? record.url) : (record.html_url ?? record.url);
   const title = record.title;
   if (typeof ref !== "number" || typeof title !== "string" || typeof url !== "string") {
     return null;
@@ -312,7 +260,39 @@ export async function listOpenEpics(
   pi: ExtensionAPI,
   info: RemoteInfo,
   cwd: string,
+  giteaFetch?: FetchLike,
 ): Promise<Outcome<{ epics: EpicSummary[]; matchedByLabel: boolean }>> {
+  if (info.forge === "gitea") {
+    try {
+      const target = giteaTarget({
+        project: info.project,
+        ...(info.baseUrl === undefined ? {} : { baseUrl: info.baseUrl }),
+      });
+      if (target === undefined) {
+        return { error: "the Gitea address is not configured; set DEVBOARD_GITEA_URL" };
+      }
+      const labels = await giteaLabels(target, giteaFetch);
+      const label = labels.find((entry) => entry.name.toLowerCase() === "epic");
+      const issues = await giteaListIssues(target, "open", giteaFetch);
+      const rows = label
+        ? issues.filter((issue) => issue.labels.includes(label.name))
+        : issues.filter((issue) => issue.body.includes("<!-- devboard-epic -->"));
+      return {
+        epics: rows.map((issue) => ({
+          ref: issue.number,
+          title: issue.title,
+          url: issue.url,
+        })),
+        matchedByLabel: Boolean(label),
+      };
+    } catch (error) {
+      return {
+        error: `gitea issue listing failed: ${
+          error instanceof Error ? firstLine(error.message) : String(error)
+        }`,
+      };
+    }
+  }
   if (info.forge === "github") {
     const labelsResult = await run(
       pi,
@@ -425,7 +405,32 @@ export async function fetchEpic(
   info: RemoteInfo,
   ref: number,
   cwd: string,
+  giteaFetch?: FetchLike,
 ): Promise<Outcome<Epic>> {
+  if (info.forge === "gitea") {
+    try {
+      const target = giteaTarget({
+        project: info.project,
+        ...(info.baseUrl === undefined ? {} : { baseUrl: info.baseUrl }),
+      });
+      if (target === undefined) {
+        return { error: "the Gitea address is not configured; set DEVBOARD_GITEA_URL" };
+      }
+      const issue = await giteaIssue(target, ref, giteaFetch);
+      return {
+        ref: issue.number,
+        title: issue.title,
+        url: issue.url,
+        body: issue.body,
+      };
+    } catch (error) {
+      return {
+        error: `gitea issue view failed: ${
+          error instanceof Error ? firstLine(error.message) : String(error)
+        }`,
+      };
+    }
+  }
   const result =
     info.forge === "github"
       ? await run(
@@ -598,8 +603,17 @@ export function buildGoalPrompt(
   worktree: string,
   branch: string,
   forge: RemoteInfo["forge"],
+  project: string,
   authCommand: string,
 ): string {
+  const closeCommand =
+    forge === "github"
+      ? `${authCommand} gh issue close ${epic.ref}`
+      : forge === "gitlab"
+        ? `${authCommand} glab issue close ${epic.ref}`
+        : `${authCommand} curl -sS -X PATCH -H "Authorization: token $GITEA_TOKEN" ` +
+          `-H "Content-Type: application/json" -d '{"state":"closed"}' ` +
+          `"$DEVBOARD_GITEA_URL/api/v1/repos/${project}/issues/${epic.ref}"`;
   return `Implement the next epic from the tracker. This run is fully autonomous.
 
 Autonomy contract:
@@ -640,8 +654,8 @@ After the goal tool succeeds, implement the epic end to end:
   worktree and branch, per AGENTS.md. If the push is rejected, fetch and integrate the new main
   and push again.
 - Never call \`gh\` or \`glab\` directly. Route every tracker command through the harness auth wrapper, which selects the authenticated account with write access to this repository and overrides any stale ambient token:
-  \`${authCommand} gh issue close <n>\`
-- When complete, close the epic issue ${epic.ref} in ${repo} with \`${authCommand} ${forge === "github" ? "gh" : "glab"} issue close ${epic.ref}\`. Close it only after the merge succeeded, main was pushed, and the worktree was removed. If closing fails, report that failure once as the run's blocker.
+  \`${closeCommand}\`
+- When complete, close the epic issue ${epic.ref} in ${repo} with \`${closeCommand}\`. Close it only after the merge succeeded, main was pushed, and the worktree was removed. If closing fails, report that failure once as the run's blocker.
 - If a hard blocker makes completion impossible (a missing prerequisite that cannot be created, an unavailable external dependency, or an operation that would destroy uncommitted user work), end the run and report the exact blocker once on a line beginning \`DEVBOARD-BLOCKED:\`. Do not ask for permission or guidance.`;
 }
 
@@ -666,6 +680,7 @@ export async function runImplementNextEpic(
   ctx: ExtensionCommandContext,
   args = "",
   authExec: Exec = execWithEnvironment,
+  giteaFetch?: FetchLike,
 ): Promise<RunResult> {
   const requested = args.trim();
   if (requested.length > 0 && !/^\d+$/.test(requested)) {
@@ -695,15 +710,15 @@ export async function runImplementNextEpic(
     return fail(ctx, "origin remote is not configured; /epic-next cannot have filed an epic");
   }
 
-  const remote = parseRemote(origin.stdout);
+  const remote = parseForgeRemote(origin.stdout, process.env);
   if (!remote) {
     return fail(ctx, `cannot parse origin remote: ${origin.stdout.trim()}`);
   }
 
-  const info = await detectForge(remote, repo, authExec);
+  const info = await detectForge(remote, repo, authExec, giteaFetch);
   if (isFailure(info)) return fail(ctx, info.error);
 
-  const listed = await listOpenEpics(pi, info, repo);
+  const listed = await listOpenEpics(pi, info, repo, giteaFetch);
   if (isFailure(listed)) return fail(ctx, listed.error);
 
   let epics = listed.epics;
@@ -711,7 +726,7 @@ export async function runImplementNextEpic(
     // The marker search is a candidate fetch; confirm the marker in the body.
     const confirmed: EpicSummary[] = [];
     for (const candidate of epics) {
-      const full = await fetchEpic(pi, info, candidate.ref, repo);
+      const full = await fetchEpic(pi, info, candidate.ref, repo, giteaFetch);
       if (isFailure(full)) return fail(ctx, full.error);
       if (full.body.includes("<!-- devboard-epic -->")) confirmed.push(candidate);
     }
@@ -748,7 +763,7 @@ export async function runImplementNextEpic(
     return fail(ctx, "no open epic found; run /epic-next first");
   }
 
-  const fetched = await fetchEpic(pi, info, selected.ref, repo);
+  const fetched = await fetchEpic(pi, info, selected.ref, repo, giteaFetch);
   if (isFailure(fetched)) return fail(ctx, fetched.error);
   const epic = fetched;
 
@@ -789,6 +804,7 @@ export async function runImplementNextEpic(
     worktree.path,
     worktree.branch,
     info.forge,
+    info.project,
     forgeAuthCommand(repo, info),
   );
   try {

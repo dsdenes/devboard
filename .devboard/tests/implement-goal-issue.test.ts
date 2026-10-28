@@ -47,6 +47,10 @@ const AUTH_ENV_KEYS = [
   "GH_PROMPT_DISABLED",
   "NO_COLOR",
   "GIT_TERMINAL_PROMPT",
+  "GITEA_TOKEN",
+  "DEVBOARD_GITEA_TOKEN",
+  "DEVBOARD_GITEA_URL",
+  "DEVBOARD_FORGE",
 ] as const;
 
 const savedEnvironment = new Map<string, string | undefined>();
@@ -152,6 +156,60 @@ function makeHarness(
   };
 
   return { pi, ctx, notifications, sent, activeTools, calls };
+}
+
+const GITEA_REMOTE = "ssh://git@localhost:2223/owner/repo.git";
+
+function jsonReply(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function giteaIssueDoc(overrides: Record<string, unknown> = {}) {
+  return {
+    number: 42,
+    title: "Add export command",
+    html_url: "http://localhost:3001/owner/repo/issues/42",
+    state: "open",
+    body: BODY,
+    labels: [
+      { id: 1, name: "goal" },
+      { id: 2, name: "enhancement" },
+    ],
+    ...overrides,
+  };
+}
+
+function giteaFetch(issue = giteaIssueDoc()) {
+  const calls: string[] = [];
+  const fetchImpl = async (input: string): Promise<Response> => {
+    const path = new URL(input).pathname;
+    calls.push(path);
+    if (path === "/api/v1/repos/owner/repo") {
+      return jsonReply({ permissions: { admin: true, push: true } });
+    }
+    if (path === "/api/v1/user") return jsonReply({ login: "ds" });
+    if (path === "/api/v1/repos/owner/repo/issues/42") return jsonReply(issue);
+    return new Response("not found", { status: 404 });
+  };
+  return { calls, fetchImpl };
+}
+
+function giteaTable(overrides: Record<string, Reply> = {}) {
+  const replies: Record<string, Reply> = {
+    "git rev-parse --show-toplevel": { stdout: "/repo\n" },
+    "git remote get-url origin": { stdout: `${GITEA_REMOTE}\n` },
+    "git worktree list --porcelain": { stdout: "worktree /repo\n" },
+    "git show-ref --verify --quiet refs/heads/devboard/goal-42-add-export-command": { code: 1 },
+    "git rev-parse --verify main": { code: 0 },
+    "git worktree add /repo/.worktree/goal-42-add-export-command -b devboard/goal-42-add-export-command main": {
+      code: 0,
+    },
+    ...overrides,
+  };
+  return (command: string, args: string[]): Reply | undefined => replies[[command, ...args].join(" ")];
 }
 
 function baseTable(overrides: Record<string, Reply> = {}) {
@@ -267,6 +325,52 @@ describe("runImplementGoalIssue", () => {
     expect(harness.notifications.at(-1)?.type).toBe("info");
   });
 
+  test("fetches a Gitea goal and gives the API close command", async () => {
+    process.env.GITEA_TOKEN = "test-token";
+    process.env.DEVBOARD_GITEA_URL = "http://localhost:3001";
+    const harness = makeHarness(giteaTable());
+    const gitea = giteaFetch();
+
+    const result = await runImplementGoalIssue(
+      harness.pi,
+      harness.ctx,
+      "42",
+      authExec,
+      gitea.fetchImpl,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(harness.sent).toHaveLength(1);
+    const prompt = harness.sent[0] ?? "";
+    expect(prompt).toContain("curl -sS -X PATCH");
+    expect(prompt).toContain('"$DEVBOARD_GITEA_URL/api/v1/repos/owner/repo/issues/42"');
+    expect(prompt).toContain("Authorization: token $GITEA_TOKEN");
+    expect(prompt).not.toContain("gh issue close 42");
+    expect(harness.calls.some((call) => call.startsWith("gh issue view"))).toBe(false);
+    expect(gitea.calls).toContain("/api/v1/repos/owner/repo/issues/42");
+    expect(gitea.calls).toContain("/api/v1/repos/owner/repo");
+  });
+
+  test("refuses a Gitea issue without the exact goal label", async () => {
+    process.env.GITEA_TOKEN = "test-token";
+    process.env.DEVBOARD_GITEA_URL = "http://localhost:3001";
+    const harness = makeHarness(giteaTable());
+    const gitea = giteaFetch(giteaIssueDoc({ labels: [{ id: 1, name: "bug" }] }));
+
+    const result = await runImplementGoalIssue(
+      harness.pi,
+      harness.ctx,
+      "42",
+      authExec,
+      gitea.fetchImpl,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('exact "goal" label');
+    expect(harness.calls.some((call) => call.startsWith("git worktree add"))).toBe(false);
+    expect(harness.sent).toHaveLength(0);
+  });
+
   test("refuses when the goal tool cannot be activated", async () => {
     const harness = makeHarness(baseTable(), { goalEnabled: false });
     const result = await runImplementGoalIssue(harness.pi, harness.ctx, "42", authExec);
@@ -285,7 +389,15 @@ describe("prompt and title", () => {
       body: BODY,
       labels: ["goal"],
     };
-    const prompt = buildGoalIssuePrompt(issue, "/repo", "/repo/.worktree/g", "devboard/g", "auth");
+    const prompt = buildGoalIssuePrompt(
+      issue,
+      "/repo",
+      "/repo/.worktree/g",
+      "devboard/g",
+      "github",
+      "owner/repo",
+      "auth",
+    );
     const start = prompt.indexOf("<<<OBJECTIVE\n") + "<<<OBJECTIVE\n".length;
     const end = prompt.indexOf("\nOBJECTIVE>>>");
     expect(prompt.slice(start, end)).toBe(BODY);
