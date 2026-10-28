@@ -6,9 +6,8 @@
 | C2 | Repository origin (`owner/repo`) | `scout.repoLabel` | 1, 4 | Confirm the worker targets the intended checkout | yes | A wrong origin is the first cause of an empty result. |
 | C3 | Lifecycle (`stopped`, `idle`, `scanning`, `failed`) | `scout.lifecycle` | 1, 2 | Decide whether to start, wait, or stop | yes | The primary status of the surface. |
 | C4 | Start/Stop action | `scout.canStart`, `scout.canStop`, `scout.start`, `scout.stop` | 1, 2 | Starts or stops the worker | yes | The primary action; exactly one is available. |
-| C5 | GitHub-read state (`ok`, `error`, `stale`) | `scout.sync.state` | 4 | Separates a real empty result from a failed read | yes | Staleness changes the meaning of the table. |
-| C6 | Last successful read | `scout.sync.at` | 4 | Shows how old the table is | yes | One timestamp beside the read state. |
-| C7 | Last read error | `scout.sync.error` | 4 | Explains a failed or stale read | yes | The badge cannot carry the reason. |
+| C6 | Last successful read | `scout.sync.at` | 4 | Shows how old the table is | yes | One timestamp in the header meta line. |
+| C7 | Last read error | `scout.sync.error` | 4 | Explains a failed read and clears on recovery | yes | The banner names the reason; no separate state badge. |
 | C8 | Pending issues count | `scout.count` | 1, 3 | Shows the open-issue pressure against the budget | yes | The page-level count, not repeated in the table header. |
 | C9 | Worker process (`pid`, harness version) | `scout.snapshot.worker` | 1 | Confirms a worker is attached and which build runs it | yes | Diagnostic detail, secondary to lifecycle. |
 | C10 | Next attempt | `scout.nextAttemptAt` | 1 | Tells the operator whether waiting is productive | yes | The only timing fact for an idle or failed worker. |

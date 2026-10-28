@@ -172,6 +172,10 @@ export function sweepStateDir(
     // and the repo-anchored lock a worker holds. A running worker's run
     // directory is therefore never swept.
     join(directory, ISSUES_DIRECTORY),
+    // Flow session records: machine state, reviewable artifacts, and the
+    // worktree/PR bookkeeping Flow restore and History read. Nothing
+    // recreates a swept session, so an untouched one must survive.
+    join(directory, "flow"),
     ...(options.watchdogRunDir === undefined ? [] : [resolve(options.watchdogRunDir)]),
   ];
   const protectedExact = new Set([
