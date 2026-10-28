@@ -106,12 +106,6 @@
           : "Not written yet",
   );
 
-  const skillsReady = $derived(
-    goal.skills.length === 0
-      ? "No skills prepared yet"
-      : `${goal.skills.length} prepared · ready for implementation`,
-  );
-
   const runActionLabel = $derived(
     goal.runAction === "implementing"
       ? "implementing"
@@ -595,7 +589,7 @@
     </div>
   {:else if tab.kind === "skills"}
     <div class="goal-page goal-page--fill">
-      <PageHeader title="Skills" subtitle={skillsReady} testid="skills-header">
+      <PageHeader title="Skills" testid="skills-header">
         {#snippet meta()}
           {#if goal.contradictions.length > 0}
             <span class="badge" data-tone="error">
