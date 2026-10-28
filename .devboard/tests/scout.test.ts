@@ -65,8 +65,17 @@ class ControlledPeer implements AcpPeer {
   readonly pid = undefined;
   readonly argv = ["stub-scout-acp"];
   readonly prompts: string[] = [];
+  /** Correction turns sent after a rejected answer. */
+  readonly corrections: string[] = [];
+  /** When false, a correction is refused so a rejected scan settles at once. */
+  correctionEnabled = false;
   closed = false;
   private settled = false;
+  private correction: {
+    promise: Promise<unknown>;
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+  } | null = null;
   private readonly resolveRun: (value: unknown) => void;
   private readonly rejectRun: (error: Error) => void;
   private readonly options: IssuesPeerOptions;
@@ -86,6 +95,21 @@ class ControlledPeer implements AcpPeer {
     return this.promise;
   }
 
+  prompt(prompt: string): Promise<unknown> {
+    this.corrections.push(prompt);
+    if (!this.correctionEnabled) {
+      return Promise.reject(new Error("the stub peer does not answer corrections"));
+    }
+    this.correction = Promise.withResolvers<unknown>();
+    return this.correction.promise;
+  }
+
+  /** Ends the pending correction turn. */
+  resolveCorrection(): void {
+    this.correction?.resolve({});
+    this.correction = null;
+  }
+
   answer(id: number | string, value: string): boolean {
     this.emit(`answered ${String(id)} ${value}`);
     return true;
@@ -97,6 +121,8 @@ class ControlledPeer implements AcpPeer {
       this.settled = true;
       this.rejectRun(new Error("Agent process exited before answering."));
     }
+    this.correction?.reject(new Error("Agent process exited before answering."));
+    this.correction = null;
   }
 
   emit(text: string, append = false): void {
@@ -402,6 +428,90 @@ describe("direct filing", () => {
       expect(activityOf(scanDirectoryOf(peer.prompts[0]!))).toContain(
         "significance 3/5 is below 4",
       );
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a rejected answer gets one correction turn and the repaired file is filed", async () => {
+    const f = await fixture({ label: "correction" });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      peer.correctionEnabled = true;
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      const document = scanDocument([recommendation(1)]);
+      (document.recommendations as Record<string, unknown>[])[0]!.evidence = [
+        { path: "server/app.ts", lines: "1" },
+      ];
+      writeRecommendations(scanPath, document);
+      peer.succeed();
+      await waitFor(
+        () => (peer.corrections.length === 1 ? true : undefined),
+        "the correction prompt",
+      );
+      expect(peer.corrections[0]).toContain("server/app.ts does not exist");
+      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 1)));
+      peer.resolveCorrection();
+      const settled = await waitSettled(f.root, peer.prompts[0]!);
+      expect(settled.status).toBe("succeeded");
+      expect(f.filed.map((entry) => entry.title)).toEqual(["Simplify module 1 control flow"]);
+      expect(f.state().lastError).toBeNull();
+      expect(peer.corrections).toHaveLength(1);
+      const activity = activityOf(scanPath);
+      expect(activity).toContain("server/app.ts does not exist");
+      expect(activity).toContain("asked the agent to correct the answer");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a still-rejected answer after the correction turn fails the scan once", async () => {
+    const f = await fixture({ label: "correction-failed" });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      peer.correctionEnabled = true;
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      const document = scanDocument([recommendation(1)]);
+      (document.recommendations as Record<string, unknown>[])[0]!.evidence = [
+        { path: "server/app.ts", lines: "1" },
+      ];
+      writeRecommendations(scanPath, document);
+      peer.succeed();
+      await waitFor(
+        () => (peer.corrections.length === 1 ? true : undefined),
+        "the correction prompt",
+      );
+      peer.resolveCorrection();
+      const failed = await waitFor(
+        () => (f.state().lifecycle === "failed" ? f.state() : undefined),
+        "the refused scan",
+      );
+      expect(peer.corrections).toHaveLength(1);
+      expect(f.filed).toEqual([]);
+      expect(failed.lastError).toContain("server/app.ts does not exist");
+      expect(readScanFile(scanDirectory(f.root, basename(scanPath)))?.status).toBe("failed");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a scan with no answer file gets a correction turn before it fails", async () => {
+    const f = await fixture({ label: "correction-missing" });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      peer.correctionEnabled = true;
+      const scanPath = scanDirectoryOf(peer.prompts[0]!);
+      peer.succeed();
+      await waitFor(
+        () => (peer.corrections.length === 1 ? true : undefined),
+        "the correction prompt",
+      );
+      expect(peer.corrections[0]).toContain("wrote no recommendations.json");
+      writeRecommendations(scanPath, scanDocument(uniqueItems(1, 1)));
+      peer.resolveCorrection();
+      const settled = await waitSettled(f.root, peer.prompts[0]!);
+      expect(settled.status).toBe("succeeded");
+      expect(f.filed).toHaveLength(1);
     } finally {
       await f.worker.stop();
     }

@@ -83,6 +83,8 @@ export interface AcpPeer {
   readonly pid: number | undefined;
   readonly argv: string[];
   run(prompt: string): Promise<unknown>;
+  /** Sends another prompt on the session `run` opened. */
+  prompt(prompt: string): Promise<unknown>;
   answer(id: number | string, value: string): boolean;
   close(): void;
 }
