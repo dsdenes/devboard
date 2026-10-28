@@ -50,6 +50,7 @@ import {
   isInsideRepository,
   liveWarnings,
   parseRemoteUrl,
+  claimScratchEntry,
   cleanupRemoteScratch,
   listRetainedProjects,
   publishStaged,
@@ -60,6 +61,7 @@ import {
   remoteCloneRequest,
   remoteProjectDirectory,
   remoteScratchRoot,
+  releaseScratchEntry,
   removeRetainedProject,
   removeStaging,
   restoreLiveSkill,
@@ -1708,6 +1710,7 @@ export function createApp(options: AppOptions) {
     } catch {
       // The next start removes a checkout that cannot be removed.
     }
+    releaseScratchEntry(remoteRoot, basename(checkout.dir));
   }
 
   /**
@@ -2462,6 +2465,11 @@ export function createApp(options: AppOptions) {
     const staging = join(remoteRoot, `.staging-${runId}`);
     try {
       mkdirSync(remoteRoot, { recursive: true });
+      // The claim must exist before the clone does: another dashboard starting
+      // on the same state directory must never sweep a live checkout.
+      if (!claimScratchEntry(remoteRoot, basename(staging))) {
+        throw new Error(`the scratch root is not writable: ${remoteRoot}`);
+      }
     } catch (error) {
       discoverFailure(
         ws,
@@ -2497,6 +2505,7 @@ export function createApp(options: AppOptions) {
       } catch {
         // The next start removes a staging directory that cannot be removed.
       }
+      releaseScratchEntry(remoteRoot, basename(staging));
       discoverFailure(ws, message);
       broadcastDiscoverState();
       return false;
@@ -2638,6 +2647,19 @@ export function createApp(options: AppOptions) {
     if (discoverRun !== run || request !== discoverRequest) return;
 
     try {
+      let present = true;
+      try {
+        present = statSync(root).isDirectory();
+      } catch {
+        present = false;
+      }
+      if (!present) {
+        throw new Error(
+          remote === undefined
+            ? "the host directory disappeared during the crawl"
+            : "the run's checkout was removed during the crawl",
+        );
+      }
       const facts = hostFacts(root);
       if (facts.fingerprint !== factsBefore.fingerprint) {
         throw new Error("the crawl changed host files outside its staging directory");
@@ -6118,6 +6140,8 @@ export function createApp(options: AppOptions) {
         // A staging directory left behind is removed by the replacement.
       }
     }
+    // A stopped dashboard never leaves its checkout for the next start.
+    clearRemoteCheckout();
     return stop(closeActiveConnections);
   };
 
