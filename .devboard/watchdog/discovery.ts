@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { journalFile } from "../server/journal";
 
 /**
@@ -80,14 +80,17 @@ export function servingHarness(process: ProcessSnapshot): string | undefined {
 }
 
 /**
- * True for a host root inside harness scratch (`<checkout>/.devboard/.tmp/...`).
- * Verification fixtures live there and record failures on purpose, so they are
- * never operator dashboards and never produce a finding unless they opt in.
+ * True when a dashboard serves a repository inside harness verification
+ * scratch (`<anything>/.devboard/.tmp`). Verification scripts create hosts
+ * there and deliberately fail update checks, installs, and servers; that
+ * evidence proves the script's assertion, not a defect an operator must see.
+ * Such a fixture opts in with `DEVBOARD_WATCHDOG_FIXTURE=1` when a live cycle
+ * must still discover it.
  */
-export function isHarnessScratch(repoDir: string): boolean {
-  const parts = resolve(repoDir).split(sep);
-  return parts.some(
-    (part, index) => part === ".devboard" && parts[index + 1] === ".tmp",
+export function isVerificationScratch(repoDir: string): boolean {
+  const segments = repoDir.split(/[\\/]+/);
+  return segments.some(
+    (segment, index) => segment === ".devboard" && segments[index + 1] === ".tmp",
   );
 }
 
@@ -98,10 +101,10 @@ export function isHarnessScratch(repoDir: string): boolean {
 const WATCHDOG_FIXTURE_ENV = "DEVBOARD_WATCHDOG_FIXTURE";
 
 /**
- * Builds instances from a process table. Excludes the watchdog and its
- * descendants, harness verification fixtures (unless they opt in), and
- * duplicates by `(REPO_DIR, PORT)`, and resolves the journal and legacy log
- * through the serving harness.
+ * Builds instances from a process table. Excludes the watchdog, its
+ * descendants, and verification fixtures unless they opt in, de-duplicates by
+ * `(REPO_DIR, PORT)`, and resolves the journal and legacy log through the
+ * serving harness.
  */
 export function instancesFromProcesses(
   processes: ProcessSnapshot[],
@@ -118,7 +121,7 @@ export function instancesFromProcesses(
     const port = Number(process.env.get("PORT"));
     if (repoDir === undefined || !Number.isInteger(port) || port <= 0) continue;
     if (
-      isHarnessScratch(repoDir) &&
+      isVerificationScratch(repoDir) &&
       process.env.get(WATCHDOG_FIXTURE_ENV) !== "1"
     ) {
       continue;

@@ -305,6 +305,7 @@ describe("discovery", () => {
         snapshot(23, scratchRepo, "8083", join(harness, "dist"), [
           ["DEVBOARD_WATCHDOG_FIXTURE", "1"],
         ]),
+        snapshot(24, "../.devboard/.tmp/verify-update-1/checksum", "8084", join(harness, "dist")),
       ],
       { selfPids: new Set() },
     );

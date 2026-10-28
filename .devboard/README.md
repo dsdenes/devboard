@@ -1142,9 +1142,12 @@ failure, a refused or reset connection, a timeout, an API rate limit, or an answ
 readable release description (a proxy page, a truncated body, an unexpected payload) — leaves the
 previous package and server intact, writes an `activity` record naming the skipped check, and
 retries with exponential backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for
-the operator, never an `update-error` finding. A check that reaches the feed and fails, a release
-without a tag, a checksum mismatch, an authentication failure, or a failed npm install writes
-`update-error` and is retried the same way.
+the operator, never an `update-error` finding. A registry that advertises a version but does not
+serve that version's own tarball yet (npm answers 404 or 410) is the same kind of external,
+temporary refusal: the install is skipped with an `activity` record and retried with the backoff.
+A check that reaches the feed and fails, a release without a tag, a missing dependency tarball, a
+checksum mismatch, an authentication failure, or any other failed npm install writes `update-error`
+and is retried the same way.
 
 |Variable|Default|Purpose|
 |---|---|---|
@@ -1316,11 +1319,11 @@ Discovery scans `/proc` for every process running `server/index.ts` that supplie
 `PORT`, de-duplicates by `(REPO_DIR, PORT)`, resolves the serving harness from `STATIC_DIR` or
 the process working directory, and reads the journal from the process's `STATE_DIR`. Instances
 from installed hosts and the canonical source checkout are covered alike; an instance whose
-state directory has no journal is reported `uninstrumented`. A repository root inside harness
-scratch — any path with a `.devboard/.tmp/` component — is a verification fixture and is skipped:
-those dashboards record failures on purpose, so they never produce a finding or an issue. The
-live watchdog verification, which seeds a fixture to exercise the whole loop, sets
-`DEVBOARD_WATCHDOG_FIXTURE=1` to stay discoverable.
+state directory has no journal is reported `uninstrumented`. A process whose `REPO_DIR` lies
+inside a `.devboard/.tmp` directory is verification scratch, not a monitored host: verification
+scripts create those fixtures to assert deliberate failures, so discovery skips them before any
+evidence is read. The live watchdog verification, which seeds a fixture to exercise the whole
+loop, sets `DEVBOARD_WATCHDOG_FIXTURE=1` to stay discoverable.
 
 Findings derive only from machine-checkable evidence: a `server-error`, `update-error`, or
 `acp-stderr` journal record; a `lane-stop` whose status token is `failed`; an omp log record at
