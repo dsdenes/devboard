@@ -193,6 +193,8 @@ interface FlowSession {
   pr: FlowPr | null;
   prError: string | null;
   leftover: string | null;
+  /** True from the merge's terminal write until cleanup has finished. */
+  cleanupPending: boolean;
   question: FlowQuestion | null;
   pushedTip: string | null;
   prFailedTip: string | null;
@@ -789,6 +791,9 @@ export class FlowController {
   }
 
   #publish(): void {
+    // A merge's snapshot is published only once its cleanup has finished, so
+    // "merged" never appears while the worktree and branches still stand.
+    if (this.#session?.cleanupPending === true) return;
     this.#broadcast({ type: "flowSnapshot", ...this.snapshot() });
   }
 
@@ -809,9 +814,14 @@ export class FlowController {
   #persist(): void {
     const session = this.#session;
     if (session === undefined) return;
+    this.#persistSession(session, this.#path("session.json"));
+  }
+
+  /** Writes one session's machine state, current or restored, without switching. */
+  #persistSession(session: FlowSession, file: string): void {
     session.updatedAt = nowIso(this.#now);
     try {
-      writeJson(this.#path("session.json"), this.#sessionFile(session));
+      writeJson(file, this.#sessionFile(session));
     } catch (error) {
       this.#journal?.write(
         "server-error",
@@ -884,12 +894,34 @@ export class FlowController {
       if (sessions.length === 0) return;
 
       sessions.sort((left, right) => right.session.createdAt.localeCompare(left.session.createdAt));
+      // A merge's terminal write makes `pr.state` and `status` agree, so a
+      // stored merged request beside any other status can only be an older
+      // revision's torn state: finish that merge's cleanup and record it.
+      for (const entry of sessions) {
+        if (entry.session.pr?.state !== "merged" || entry.session.status === "merged") continue;
+        entry.session.status = "merged";
+        entry.session.question = null;
+        entry.session.cleanupPending = true;
+      }
       const merged = sessions.filter((entry) => entry.session.status === "merged");
       this.#history = merged.map((entry) => ({
         sessionId: entry.session.id,
         goal: entry.session.goal,
         pr: entry.session.pr,
       }));
+      for (const entry of merged) {
+        if (!entry.session.cleanupPending) continue;
+        try {
+          entry.session.leftover = await this.#cleanupAfterMerge(entry.session);
+          entry.session.cleanupPending = false;
+        } catch (error) {
+          this.#journal?.write(
+            "server-error",
+            `flow: could not finish the merge cleanup for ${entry.session.id}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        this.#persistSession(entry.session, join(entry.directory, "session.json"));
+      }
 
       const current = sessions.find((entry) => entry.session.status !== "merged");
       if (current === undefined) return;
@@ -1004,6 +1036,7 @@ export class FlowController {
         typeof stored.pr === "object" && stored.pr !== null ? (stored.pr as FlowPr) : null,
       prError: typeof stored.prError === "string" ? stored.prError : null,
       leftover: typeof stored.leftover === "string" ? stored.leftover : null,
+      cleanupPending: stored.cleanupPending === true,
       question: null,
       pushedTip: typeof stored.pushedTip === "string" ? stored.pushedTip : null,
       prFailedTip: typeof stored.prFailedTip === "string" ? stored.prFailedTip : null,
@@ -1097,6 +1130,7 @@ export class FlowController {
       pr: null,
       prError: null,
       leftover: null,
+      cleanupPending: false,
       question: null,
       pushedTip: null,
       prFailedTip: null,
@@ -1242,8 +1276,13 @@ export class FlowController {
       this.#error("Create a Flow goal before starting the implementation.");
       return;
     }
-    if (session.status === "merged") {
-      this.#error("This Flow session is merged. Create a new Flow goal to start again.");
+    if (session.status === "merged" || session.pr?.state === "merged") {
+      const mergedPr = session.pr?.state === "merged" ? session.pr : null;
+      this.#error(
+        mergedPr === null
+          ? "This Flow session is merged. Create a new Flow goal to start again."
+          : `The pull request #${mergedPr.number} (${mergedPr.url}) is already merged, so this Flow session cannot start again. Create a new Flow goal.`,
+      );
       return;
     }
     if (this.#goalCreation !== undefined) {
@@ -1997,19 +2036,25 @@ export class FlowController {
         throw new Error("The forge did not report the pull request as merged.");
       }
       session.pr = { ...session.pr, url: state.url, state: "merged" };
+      // One write carries the merged request, the merged status, and the
+      // pending cleanup: a restart can never restore a merged request beside
+      // a status that still allows starting work on it.
+      session.status = "merged";
+      session.leftover = null;
+      session.cleanupPending = true;
       this.#persist();
       this.#broadcast({ type: "flowPr", pr: session.pr });
+      this.#registerHistory();
+      this.#stopWatchdog();
     } catch (error) {
       this.#error(error instanceof Error ? error.message : String(error));
       return;
     }
 
     const leftover = await this.#cleanupAfterMerge(session);
-    session.status = "merged";
     session.leftover = leftover;
+    session.cleanupPending = false;
     this.#persist();
-    this.#registerHistory();
-    this.#stopWatchdog();
     if (leftover !== null) {
       this.#error(`The merge completed, but cleanup left ${leftover}.`);
     }
@@ -2032,31 +2077,57 @@ export class FlowController {
       }
     }
 
-    const tip = await this.#git(session.worktree, ["rev-parse", "HEAD"]);
-    const tipRevision = tip.code === 0 ? tip.stdout.trim() : "";
-    const removed = await this.#git(this.repoDir, ["worktree", "remove", session.worktree]);
-    if (removed.code !== 0) {
-      leftovers.push(`the worktree at ${session.worktree} (${session.branch})`);
-    } else {
+    const tip = existsSync(session.worktree)
+      ? await this.#git(session.worktree, ["rev-parse", "HEAD"])
+      : undefined;
+    const tipRevision = tip !== undefined && tip.code === 0 ? tip.stdout.trim() : "";
+    if (tip !== undefined) {
+      const removed = await this.#git(this.repoDir, ["worktree", "remove", session.worktree]);
+      if (removed.code !== 0) {
+        leftovers.push(`the worktree at ${session.worktree} (${session.branch})`);
+        return leftovers.join("; ");
+      }
+    }
+    // A resumed cleanup finds the worktree already removed; the branch's own
+    // tip then stands in for the revision that had to reach origin/main.
+    const branchRef = await this.#git(this.repoDir, [
+      "rev-parse",
+      "--verify",
+      `refs/heads/${session.branch}`,
+    ]);
+    let branchGone = branchRef.code !== 0;
+    if (!branchGone) {
+      const revision = tipRevision.length > 0 ? tipRevision : branchRef.stdout.trim();
       const ancestor =
-        tipRevision.length === 0
+        revision.length === 0
           ? { code: 1 }
-          : await this.#git(this.repoDir, [
-              "merge-base",
-              "--is-ancestor",
-              tipRevision,
-              "origin/main",
-            ]);
+          : await this.#git(this.repoDir, ["merge-base", "--is-ancestor", revision, "origin/main"]);
       if (ancestor.code !== 0) {
         leftovers.push(`the branch ${session.branch} (its tip is not an ancestor of origin/main)`);
       } else {
         const local = await this.#git(this.repoDir, ["branch", "-d", session.branch]);
         if (local.code !== 0) leftovers.push(`the local branch ${session.branch}`);
+        else branchGone = true;
+      }
+    }
+    if (branchGone) {
+      // Only a remote branch that still exists is a deletion candidate, so
+      // finishing a cleanup that already deleted it stays silent.
+      const remote = await this.#git(this.repoDir, [
+        "ls-remote",
+        "--exit-code",
+        "--heads",
+        "origin",
+        session.branch,
+      ]);
+      if (remote.code === 0) {
         try {
           await this.#forge.deleteRemoteBranch(this.repoDir, session.branch);
         } catch {
           leftovers.push(`the remote branch ${session.branch}`);
         }
+      } else if (remote.code !== 2) {
+        leftovers.push(`the remote branch ${session.branch} (could not check it)`);
       }
     }
 
