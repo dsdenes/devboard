@@ -32,6 +32,7 @@ import {
   categoryFromBody,
   normalizeTitle,
   parseScanResult,
+  type ScanResult,
   type ScoutRecommendation,
 } from "./recommendation";
 import {
@@ -39,6 +40,7 @@ import {
   createScanDirectory,
   promptFor,
   readDraftGoalHeadings,
+  repairPrompt,
   writeRequest,
 } from "./scan";
 import {
@@ -105,6 +107,8 @@ interface ActiveScan {
   firstLine: string | null;
   /** Issues filed so far, so a failed settle records the real count. */
   filed: number;
+  /** Correction turns already requested for a rejected answer; at most one. */
+  repairs: number;
   /** Present while reading and filing, where the scan timer no longer guards. */
   settle?: {
     controller: AbortController;
@@ -615,6 +619,7 @@ export class ScoutWorker {
         timer: undefined,
         firstLine: null,
         filed: 0,
+        repairs: 0,
       };
       this.active = active;
       this.state.scan = { scanId: scan.scanId, startedAt: scan.startedAt, requested: capacity.batch };
@@ -882,57 +887,76 @@ export class ScoutWorker {
   }
 
   /**
-   * Reads and validates the answer, re-reads GitHub immediately before filing,
-   * then files every significant, novel item the caps allow. A malformed or
-   * insignificant item never reaches `gh`; a failed read files nothing.
+   * Reads and validates the answer file. A missing file, invalid JSON, and a
+   * rejected document are all the same kind of failure: the correction turn
+   * gets the message, and an uncorrected scan files nothing.
    */
-  private async completeScan(active: ActiveScan): Promise<void> {
-    if (active.finished) return;
-    // Claim the terminal path before touching the answer, so the timeout can
-    // no longer close a scan that is already settling.
-    active.finished = true;
-    clearTimeout(active.timer);
-    active.timer = undefined;
-    this.closePeer(active);
-
+  private readAnswer(
+    active: ActiveScan,
+  ): { ok: true; result: Extract<ScanResult, { ok: true }> } | { ok: false; error: string } {
     let text: string;
     try {
       text = readFileSync(recommendationsPath(active.directory), "utf8");
     } catch {
-      this.writeScan(active, "failed", {
-        requested: active.requested,
-        filed: 0,
-        error: "the agent wrote no recommendations.json",
-      });
-      this.finishScan(active, "the agent wrote no recommendations.json");
-      return;
+      return { ok: false, error: "the agent wrote no recommendations.json" };
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
     } catch {
-      this.writeScan(active, "failed", {
-        requested: active.requested,
-        filed: 0,
-        error: "recommendations.json is not valid JSON",
-      });
-      this.finishScan(active, "recommendations.json is not valid JSON");
-      return;
+      return { ok: false, error: "recommendations.json is not valid JSON" };
     }
     const result = parseScanResult(parsed, {
       requested: active.requested,
       repoDir: this.repoDir,
     });
-    if (!result.ok) {
-      this.recordScanLine(active, `rejected: ${result.error}`);
+    return result.ok ? { ok: true, result } : { ok: false, error: result.error };
+  }
+
+  /**
+   * Reads and validates the answer, asks the agent for one correction when the
+   * answer is rejected while the scan timer still guards the phase, re-reads
+   * GitHub immediately before filing, then files every significant, novel item
+   * the caps allow. A malformed or insignificant item never reaches `gh`; a
+   * failed read files nothing.
+   */
+  private async completeScan(active: ActiveScan): Promise<void> {
+    if (active.finished) return;
+
+    let answer = this.readAnswer(active);
+    if (!answer.ok) {
+      this.recordScanLine(active, `rejected: ${answer.error}`);
+      if (active.repairs === 0) {
+        active.repairs = 1;
+        this.recordScanLine(active, "asked the agent to correct the answer");
+        try {
+          await active.peer.prompt(repairPrompt(active.directory, answer.error));
+        } catch (error) {
+          if (active.finished || this.active !== active) return;
+          this.recordScanLine(active, `correction failed: ${detailOf(error)}`);
+        }
+        if (active.finished || this.active !== active) return;
+        answer = this.readAnswer(active);
+        if (!answer.ok) this.recordScanLine(active, `rejected: ${answer.error}`);
+      }
+    }
+    if (!answer.ok) {
       this.writeScan(active, "failed", {
         requested: active.requested,
         filed: 0,
-        error: result.error,
+        error: answer.error,
       });
-      this.finishScan(active, result.error);
+      this.finishScan(active, answer.error);
       return;
     }
+
+    // The answer is final: claim the terminal path before touching the
+    // tracker, so the scan timer can no longer close a scan that is settling.
+    active.finished = true;
+    clearTimeout(active.timer);
+    active.timer = undefined;
+    this.closePeer(active);
+    const result = answer.result;
 
     // Immediately before filing, read every scout issue again. The periodic
     // read stands aside until this scan has finished filing, so a stale apply
