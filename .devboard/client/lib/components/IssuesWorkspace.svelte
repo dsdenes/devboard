@@ -522,7 +522,6 @@
   <section class="issues-runs-page" aria-label="Issues runs">
     <header class="issues-overview__header">
       <div>
-        <p class="muted">Issues</p>
         <h1 class="issues-overview__title">Runs</h1>
         <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
