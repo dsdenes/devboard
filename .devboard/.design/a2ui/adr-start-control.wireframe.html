@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Wireframe — decision record start control</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #fafafa;
+    color: #222;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .sheet { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+  .note { color: #666; font-size: 12px; margin: 4px 0 16px; }
+  header.page { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  .progress { color: #555; font-size: 12px; margin: 0; }
+  .panel { border: 1px solid #bbb; border-radius: 4px; background: #fff; margin-top: 16px; }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th {
+    border-bottom: 1px solid #bbb;
+    color: #555;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    padding: 4px 8px;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  td {
+    border-bottom: 1px solid #ddd;
+    font-size: 12px;
+    height: 28px;
+    overflow: hidden;
+    padding: 0 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  tr:hover td { background: #f3f3f3; }
+  th:nth-child(1) { width: 24%; }
+  th:nth-child(2) { width: 10%; }
+  th:nth-child(3) { width: 10%; }
+  th:nth-child(4) { width: 20%; }
+  th:nth-child(5) { width: 26%; }
+  th:nth-child(6) { width: 10%; }
+  .badge { border: 1px solid #777; border-radius: 999px; font-size: 10px; padding: 2px 6px; }
+  .next { border: 1px solid #555; border-radius: 999px; font-size: 10px; padding: 2px 6px; margin-left: 6px; }
+  .action { display: inline-flex; align-items: center; justify-content: center; }
+  .control {
+    background: #fff;
+    border: 1px solid #777;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    font-size: 11px;
+    height: 24px;
+    padding: 0 8px;
+  }
+  .control.primary { border: 2px solid #222; font-weight: 600; }
+  .annotation {
+    border: 1px dashed #aaa;
+    border-radius: 3px;
+    color: #666;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 10px;
+    padding: 1px 4px;
+  }
+  .annotated { margin: 8px 0 0; }
+  .detail { margin-top: 16px; border: 1px dashed #aaa; padding: 12px; }
+  .detail h2 { font-size: 13px; margin: 0 0 8px; }
+  .detail li { font-size: 12px; margin: 4px 0; }
+  @media (max-width: 768px) {
+    .sheet { padding: 16px 10px; }
+    td, th { padding: 0 4px; }
+  }
+</style>
+</head>
+<body>
+<main class="sheet">
+  <p class="note">Structural wireframe — neutral primitives only. Not a visual design.</p>
+
+  <header class="page" id="region_header">
+    <div>
+      <h1 id="header_title">Decision records</h1>
+      <p class="progress" id="header_progress">9 of 12 resolved · 3 ADRs pending</p>
+    </div>
+  </header>
+  <p class="annotated">
+    <span class="annotation">region_header · P2</span>
+    <span class="annotation">header_title · header_progress</span>
+  </p>
+
+  <section class="panel" id="region_records" aria-labelledby="records-heading">
+    <table>
+      <caption id="records-heading" hidden>Decision records</caption>
+      <thead>
+        <tr id="records_head">
+          <th>Title</th>
+          <th>Status</th>
+          <th>State</th>
+          <th>File</th>
+          <th>Summary</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr id="row_next">
+          <td id="next_title">Browser UI framework <span class="next">Next</span></td>
+          <td><span class="badge" id="next_status">Proposed</span></td>
+          <td id="next_state">Pending</td>
+          <td id="next_file">0002-browser-ui-framework.md</td>
+          <td id="next_summary">Use Svelte with Vite for the browser shell.</td>
+          <td id="next_action" class="action">
+            <button class="control primary" type="button" aria-label="Start the implementation of Browser UI framework">Start</button>
+          </td>
+        </tr>
+        <tr id="row_pending">
+          <td id="pending_title">Lifecycle control protocol</td>
+          <td><span class="badge" id="pending_status">Proposed</span></td>
+          <td id="pending_state">Pending</td>
+          <td id="pending_file">0010-lifecycle-control-protocol.md</td>
+          <td id="pending_summary">The client starts a lifecycle run with a recorded file.</td>
+          <td id="pending_action" class="action">
+            <button class="control" type="button" aria-label="Start the implementation of Lifecycle control protocol">Start</button>
+          </td>
+        </tr>
+        <tr id="row_resolved">
+          <td id="resolved_title">Interface runtime and language</td>
+          <td><span class="badge" id="resolved_status">Accepted</span></td>
+          <td id="resolved_state">Resolved</td>
+          <td id="resolved_file">0001-interface-runtime-and-language.md</td>
+          <td id="resolved_summary">Use TypeScript on the Bun runtime.</td>
+          <td id="resolved_action"></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+  <p class="annotated">
+    <span class="annotation">region_records · P0</span>
+    <span class="annotation">row_next: filled variant</span>
+    <span class="annotation">row_pending: outline variant</span>
+    <span class="annotation">row_resolved: empty action cell</span>
+  </p>
+
+  <div class="detail" id="region_action_cell">
+    <h2>Action cell contract</h2>
+    <ul>
+      <li>S1: visible label <code>Start</code>; never icon-only.</li>
+      <li>S2: exactly one filled control, on the <code>Next</code> row.</li>
+      <li>S3: accessible name <code>Start the implementation of &lt;record title&gt;</code>.</li>
+      <li>S4: a resolved row prints no action and no second state word.</li>
+      <li>S5: disabled is 45% opacity with the label intact.</li>
+      <li>S6: hover, focus, and press come from the shipped button primitive.</li>
+    </ul>
+    <p class="annotated">
+      <span class="annotation">24px control in a 28px row</span>
+      <span class="annotation">4px radius</span>
+      <span class="annotation">11px / 500 label</span>
+    </p>
+  </div>
+</main>
+</body>
+</html>

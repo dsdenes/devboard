@@ -4,6 +4,7 @@
   import { goal } from "../goal.svelte";
   import { recordStatusTone } from "../record-status";
   import type { AdrRecord } from "../types";
+  import Button from "./ui/button.svelte";
 
   interface Props {
     /** The rows to render; the page owns filtering, the table owns density. */
@@ -91,15 +92,17 @@
           <td class="adr-summary" data-testid="record-summary" title={record.summary}>
             {record.summary || "No decision summary recorded."}
           </td>
-          <td>
+          <td class="adr-action">
             {#if record.pending}
-              <button
-                type="button"
-                class="start-button"
+              <Button
+                variant={goal.next === record.file ? "default" : "outline"}
+                size="sm"
+                class="cursor-pointer"
                 data-testid="start"
                 data-file={record.file}
                 data-command={`goal.adr.start.${record.file}`}
                 title={goal.startLifecycleTitle}
+                aria-label={`Start the implementation of ${record.title}`}
                 disabled={goal.runStartDisabled}
                 onclick={(event) => {
                   event.stopPropagation();
@@ -107,9 +110,7 @@
                 }}
               >
                 Start
-              </button>
-            {:else}
-              <span class="muted">Resolved</span>
+              </Button>
             {/if}
           </td>
         </tr>
@@ -218,20 +219,9 @@
     flex: 0 0 auto;
   }
 
-  .start-button {
-    background: var(--primary);
-    border: 1px solid var(--primary);
-    border-radius: 3px;
-    color: var(--primary-foreground);
-    cursor: pointer;
-    font: inherit;
-    font-size: 11px;
-    height: 20px;
-    padding: 0 6px;
-  }
-
-  .start-button:disabled {
-    opacity: 0.45;
+  .adr-action {
+    line-height: 24px;
+    vertical-align: middle;
   }
 
   .empty {

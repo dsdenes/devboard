@@ -407,6 +407,14 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   header carries one status badge, colored by meaning: `accepted` success, `proposed` pending,
   `superseded`/`deprecated` stale, `rejected` error; the implementation state is never repeated
   as a second resolved/pending badge.
+- **Decision record start control** (`.adr-action` in `AdrTable.svelte`) — the only per-row action
+  on the Decision records table: the shipped `Button` at `sm` size (24px tall, 11px/500 type, 4px
+  radius) centered in the 28px row. The record marked `Next` takes the filled `default` variant
+  and every other pending record an `outline` variant, so the surface carries exactly one filled
+  primary and the lifecycle order is visible in the column. Each control is labelled `Start` and
+  names its record in the accessible name; it is disabled at 45% opacity while goal creation,
+  revision, skills preparation, or a manual run owns the workspace. A resolved row leaves the
+  cell empty instead of repeating the Implementation column's state word.
 - **Inline code chip** (`.code-chip`) — one presentation for every command, path, package, and
   boundary value: `mono-small` type, `background` fill, 1px `border-subtle` outline, 3px radius,
   2px 6px padding. A runnable command carries a `$` prompt; a path does not. No surface may draw
