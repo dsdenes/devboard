@@ -1288,8 +1288,8 @@ panel's `watchdog-last-age` shows that cycle's age.
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
 first, capped at the newest 100 directories. Every `watchdog-cycle` row carries `data-action` and
 renders `watchdog-cycle-at`, `watchdog-cycle-window` (window start and end),
-`watchdog-cycle-action`, `watchdog-cycle-findings`, and `watchdog-cycle-reason` (empty when the
-report has none). A run directory whose `report.json` is missing or unparsable is skipped without
+`watchdog-cycle-action`, and `watchdog-cycle-findings`; a cycle's reason appears only in the
+newest-cycle panel. A run directory whose `report.json` is missing or unparsable is skipped without
 hiding the other rows. With no run directory at all, the `latest.json` cycle is the single row;
 with no cycle anywhere, `watchdog-cycles-empty` is rendered.
 
