@@ -72,5 +72,3 @@
 - The draft's first heading is the human title; the file name remains the durable identity.
 - `## Captured UI context` is the only structural marker guaranteed by the writers
   (`server/feedback.ts`, `server/goal-proposal.ts`). Inferred from those writers.
-- The exact draft bytes must stay in the DOM for the existing contract, even when a
-  structured reading surface renders the same content.
