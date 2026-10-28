@@ -78,7 +78,7 @@ import {
   type RetainedRemoteProject,
 } from "./discover";
 import { readRecords, type AdrRecord } from "./records";
-import { ProviderService, ProviderUnavailableError } from "./providers";
+import { ProviderService, ProviderUnavailableError, USAGE_TTL_MS } from "./providers";
 import {
   appendActivity,
   preserveStateFile,
@@ -170,6 +170,11 @@ export interface AppOptions {
   goalSlug?: (report: string) => Promise<string>;
   /** The credential store and selection; defaults to the state directory's. */
   providers?: ProviderService;
+  /**
+   * How often a connected dashboard refreshes provider usage; the usage TTL
+   * by default, and at least 10ms.
+   */
+  providersRefreshMs?: number;
 }
 
 type RunAction = "resolving" | "implementing" | "generating";
@@ -1661,6 +1666,7 @@ export function createApp(options: AppOptions) {
   const laneBackoffMs = Math.max(0, options.laneBackoffMs ?? LANE_BACKOFF_MS);
   const laneRetentionMs = Math.max(0, options.laneRetentionMs ?? LANE_RETENTION_MS);
   const mainPollMs = Math.max(10, options.mainPollMs ?? MAIN_POLL_MS);
+  const providersRefreshMs = Math.max(10, options.providersRefreshMs ?? USAGE_TTL_MS);
   const feedbackBaseUrl = options.feedback?.baseUrl ?? "";
   const feedbackEnabled = feedbackBaseUrl.length > 0;
   const feedbackRepo = options.feedback?.repo ?? "dsdenes/devboard";
@@ -1854,6 +1860,7 @@ export function createApp(options: AppOptions) {
   const lifecycleWaiters: (() => void)[] = [];
   let mainTimer: Timer | undefined;
   let mainPolling = false;
+  let providerRefreshTimer: Timer | undefined;
 
   /** Events a restored process owes the first client before its own replies. */
   const startupNotices: unknown[] = [];
@@ -1920,6 +1927,28 @@ export function createApp(options: AppOptions) {
     await providers.refresh(force);
     broadcast({ type: "providersState", ...providers.view() });
   }
+
+  /**
+   * Usage is otherwise fetched only when someone asks, so an open dashboard
+   * would show a stale quota forever. While at least one client is connected,
+   * force one refresh per interval and push the masked state; an idle server
+   * makes no provider call, and a new client's `getProviders` refreshes first.
+   */
+  function startProviderRefresh() {
+    if (providerRefreshTimer !== undefined) return;
+    providerRefreshTimer = setInterval(() => {
+      if (clients.size === 0) return;
+      void publishProviders(true).catch((error) => {
+        process.stderr.write(
+          `providers: periodic refresh failed: ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      });
+    }, providersRefreshMs);
+    providerRefreshTimer.unref?.();
+  }
+  startProviderRefresh();
 
   /**
    * Issues mode reads and commands the detached worker for this checkout. The
@@ -6245,6 +6274,10 @@ export function createApp(options: AppOptions) {
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);
       restartWhenIdleTimer = undefined;
+    }
+    if (providerRefreshTimer !== undefined) {
+      clearInterval(providerRefreshTimer);
+      providerRefreshTimer = undefined;
     }
     restartWhenIdle = false;
     sequencing = false;
