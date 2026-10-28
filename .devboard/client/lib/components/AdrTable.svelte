@@ -9,10 +9,9 @@
     /** The rows to render; the page owns filtering, the table owns density. */
     records: AdrRecord[];
     onopen: (record: AdrRecord) => void;
-    onstart: (record: AdrRecord) => void;
   }
 
-  let { records, onopen, onstart }: Props = $props();
+  let { records, onopen }: Props = $props();
 
   const features = tableFeatures({});
 
@@ -92,23 +91,7 @@
             {record.summary || "No decision summary recorded."}
           </td>
           <td>
-            {#if record.pending}
-              <button
-                type="button"
-                class="start-button"
-                data-testid="start"
-                data-file={record.file}
-                data-command={`goal.adr.start.${record.file}`}
-                title={goal.startLifecycleTitle}
-                disabled={goal.runStartDisabled}
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onstart(record);
-                }}
-              >
-                Start
-              </button>
-            {:else}
+            {#if !record.pending}
               <span class="muted">Resolved</span>
             {/if}
           </td>
@@ -216,22 +199,6 @@
 
   .adr-title .badge {
     flex: 0 0 auto;
-  }
-
-  .start-button {
-    background: var(--primary);
-    border: 1px solid var(--primary);
-    border-radius: 3px;
-    color: var(--primary-foreground);
-    cursor: pointer;
-    font: inherit;
-    font-size: 11px;
-    height: 20px;
-    padding: 0 6px;
-  }
-
-  .start-button:disabled {
-    opacity: 0.45;
   }
 
   .empty {

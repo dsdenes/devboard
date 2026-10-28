@@ -58,9 +58,6 @@
       pendingCount === 1 ? "" : "s"
     } pending`,
   );
-  const nextRecord = $derived(
-    goal.next === null ? null : (goal.records.find((record) => record.file === goal.next) ?? null),
-  );
   const query = $derived(filterQuery.trim().toLowerCase());
   const filteredRecords = $derived(
     goal.records.filter((record) => {
@@ -296,9 +293,6 @@
           <span class="muted" data-testid="pending-summary">
             {pendingCount} ADR{pendingCount === 1 ? "" : "s"} pending
           </span>
-          {#if nextRecord !== null && pendingCount > 0}
-            <span class="muted">Next: <span class="mono">{nextRecord.title}</span></span>
-          {/if}
         {/snippet}
         {#snippet actions()}
           {#if goal.lifecycleActive}
@@ -485,7 +479,6 @@
           <AdrTable
             records={filteredRecords}
             onopen={openAdr}
-            onstart={(entry) => goal.startRecord(entry)}
           />
         </section>
       {/if}
@@ -648,7 +641,6 @@
                     >
                       <span class="skill__text">
                         <span class="mono skill__name">{skill.name}</span>
-                        <span class="muted skill__description">{skill.description}</span>
                       </span>
                       <ChevronRight
                         size={14}

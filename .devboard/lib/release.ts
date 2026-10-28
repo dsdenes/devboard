@@ -14,8 +14,8 @@ import { basename, join, resolve } from "node:path";
 import { configuredGiteaToken, configuredGiteaUrl } from "./forge";
 import {
   giteaDownloadAsset,
+  giteaLatestRelease,
   giteaReleaseByTag,
-  repoPath,
   type GiteaAsset,
   type GiteaReleaseDocument,
   type GiteaTarget,
@@ -225,6 +225,28 @@ export function isReleaseUnreachable(error: unknown): boolean {
   return failure?.code === "ENOENT" && (message.includes("spawn") || syscall.startsWith("spawn"));
 }
 
+/**
+ * Text the release registry or feed prints when it refuses requests because
+ * the caller exceeded a quota. The feed is reachable; the refusal is temporary
+ * and caused by shared or rapid polling, not by the harness, so the check is
+ * retried without being reported as a defect.
+ */
+const RATE_LIMIT_PATTERNS = [
+  "rate limit exceeded",
+  "secondary rate limit",
+  "rate-limited",
+  "http 429",
+  "429 too many requests",
+  "too many requests",
+  "code e429",
+];
+
+/** True when a release check failed because the registry or feed rate-limited the caller. */
+export function isReleaseRateLimited(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return RATE_LIMIT_PATTERNS.some((pattern) => message.includes(pattern));
+}
+
 export function tarballName(version: string): string {
   return `${RELEASE_PREFIX}${version}.tgz`;
 }
@@ -408,22 +430,7 @@ async function giteaRelease(source: GiteaSource): Promise<ReleaseInfo> {
       "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
     );
   }
-  const target = giteaTarget(source);
-  const response = await fetch(
-    `${target.baseUrl}/api/v1/repos/${repoPath(target)}/releases/latest`,
-    {
-      headers: {
-        Accept: "application/json",
-        ...(source.token === undefined ? {} : { Authorization: `token ${source.token}` }),
-      },
-    },
-  );
-  if (!response.ok) {
-    throw new ReleaseError(
-      `the release feed answered HTTP ${response.status}: ${await response.text().catch(() => "")}`,
-    );
-  }
-  return parseReleaseDescription(await response.text());
+  return releaseFromDocument(await giteaLatestRelease(giteaTarget(source)));
 }
 
 async function giteaReleaseForVersion(
