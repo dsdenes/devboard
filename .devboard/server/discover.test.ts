@@ -354,6 +354,11 @@ function hashText(text: string): string {
 const SECRET_PATTERN =
   /(?<![A-Za-z0-9_/-])(?:ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})(?![A-Za-z0-9_/-])/;
 
+// An absolute host path at a value boundary, never a `/home/` directory inside
+// a repository-relative path such as `app/home/page.tsx`.
+const ABSOLUTE_HOST_PATH_PATTERN =
+  /(?:^|[\s"'(=:])\/(?:home|Users)\/|[A-Za-z]:\\\\/;
+
 function leaves(node: unknown, trail: string, out: Array<{ path: string; leaf: Record<string, unknown> }>) {
   if (typeof node !== "object" || node === null) return;
   if (Array.isArray(node)) {
@@ -608,7 +613,7 @@ describe("discover mode", () => {
         for (const [, bytes] of ompBytes(root)) {
           const text = Buffer.from(bytes, "base64").toString("utf8");
           expect(text).not.toMatch(SECRET_PATTERN);
-          expect(text).not.toMatch(/\/home\/|\/Users\/|[A-Za-z]:\\\\/);
+          expect(text).not.toMatch(ABSOLUTE_HOST_PATH_PATTERN);
         }
 
         expect(readFileSync(fixture.goalFile)).toEqual(goalBefore);
@@ -619,6 +624,72 @@ describe("discover mode", () => {
       }
     },
     30000,
+  );
+
+  test(
+    "publishes a glossary grounded in a repository path whose directory is named home",
+    async () => {
+      const fixture = createFixture("home-segment");
+      mkdirSync(join(fixture.root, "app", "home"), { recursive: true });
+      writeFileSync(
+        join(fixture.root, "app", "home", "page.tsx"),
+        "export default function HomePage() {\n  return null;\n}\n",
+      );
+      git(fixture.root, ["add", "-A"]);
+      git(fixture.root, ["commit", "-m", "chore: add a home page"]);
+
+      const { server, url } = startServer({
+        fixture,
+        stub: ["--discover", "--discover-glossary-home-path"],
+      });
+      const client = await connect(url);
+      try {
+        const state = await runDiscover(client);
+        const glossary = state.glossaries[0] as Record<string, unknown>;
+        const concepts = glossary.concepts as Array<Record<string, unknown>>;
+        expect(concepts.find((concept) => concept.id === "order")?.grounding).toEqual([
+          "code:app/home/page.tsx",
+        ]);
+
+        // The published artifact carries the path and still holds no absolute
+        // host path at a value boundary.
+        const published = readFileSync(
+          join(fixture.root, ".omp", "discover", "glossary", "orders.glossary.yaml"),
+          "utf8",
+        );
+        expect(published).toContain("code:app/home/page.tsx");
+        for (const [, bytes] of ompBytes(fixture.root)) {
+          const text = Buffer.from(bytes, "base64").toString("utf8");
+          expect(text).not.toMatch(ABSOLUTE_HOST_PATH_PATTERN);
+        }
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "rejects a value that begins with a stripped absolute host path",
+    async () => {
+      const { server, fixture, url } = startServer({
+        stub: ["--discover", "--discover-sheet-stripped-home"],
+      });
+      const client = await connect(url);
+      try {
+        client.send({ type: "discoverProject" });
+        await client.waitFor((message) => message.type === "discoverStarted");
+        const errored = await client.waitFor((message) => message.type === "discoverError");
+        expect(String(errored.message)).toContain("absolute host path");
+        expect(existsSync(join(fixture.root, ".omp", "discover", "manifest.json"))).toBe(false);
+        await client.waitFor((message) => message.type === "discoverStopped");
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
   );
 
   test(
@@ -727,6 +798,7 @@ describe("discover mode", () => {
       const variants = [
         "--discover-invalid-sheet",
         "--discover-sheet-absolute",
+        "--discover-sheet-stripped-home",
         "--discover-sheet-no-evidence",
         "--discover-sheet-secret",
         "--discover-sheet-two-sentences",
