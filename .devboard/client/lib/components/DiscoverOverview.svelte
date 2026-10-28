@@ -669,10 +669,6 @@
         <div class="discover-run__terminal">
           <Terminal lines={discover.activity} data-testid="discover-activity" label="Discover activity" />
         </div>
-        <p class="discover-run__note">
-          The run is owned by the server. Leaving this view or closing the browser does not stop it;
-          published artifacts stay readable until the run replaces them.
-        </p>
       </div>
     </section>
   {/if}
