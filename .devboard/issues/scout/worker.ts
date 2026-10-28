@@ -71,6 +71,8 @@ const TICK_MS = 100;
 const DEFAULT_AGENT_COMMAND = "omp acp";
 const FIRST_LINE_MAX = 400;
 const MAX_ACTIVITY_LINE = 2000;
+/** One periodic read, including its default `gh` calls, may not outlive this. */
+const READ_TIMEOUT_MS = 30_000;
 
 export interface ScoutWorkerOptions {
   repoDir: string;
@@ -79,12 +81,23 @@ export interface ScoutWorkerOptions {
   environment?: Record<string, string | undefined>;
   /** The periodic GitHub read; 60 seconds in production. */
   syncMs?: number;
+  /**
+   * One periodic GitHub read is abandoned after this many milliseconds; the
+   * sync records a failure and the next tick may read again. The default
+   * client applies the same deadline to each `gh` child.
+   */
+  readTimeoutMs?: number;
   /** A scan that exceeds this is closed as failed. */
   timeoutMs?: number;
   now?: () => Date;
   /** Injected for tests; defaults to the real ACP client. */
   connect?: (options: IssuesPeerOptions) => AcpPeer;
-  /** Injected for tests; defaults to the checkout's `gh` reads. */
+  /**
+   * Injected for tests; defaults to the checkout's `gh` reads. An injected
+   * client owns its own bound: `refresh` races the whole read against
+   * `readTimeoutMs`, but a call that never settles still leaks its pending
+   * work, so production clients must bound every command they start.
+   */
   github?: ScoutGitHubClient;
   fileIssue?: typeof fileScoutIssue;
   harnessVersion?: string | null;
@@ -173,6 +186,7 @@ export class ScoutWorker {
   readonly repoDir: string;
   readonly stateDir: string;
   readonly syncMs: number;
+  readonly readTimeoutMs: number;
   readonly timeoutMs: number;
   private readonly agentCommand: string;
   private readonly environment: Record<string, string | undefined>;
@@ -206,6 +220,7 @@ export class ScoutWorker {
     this.repoDir = resolve(options.repoDir);
     this.stateDir = resolve(options.stateDir);
     this.syncMs = Math.max(1000, options.syncMs ?? SYNC_INTERVAL_MS);
+    this.readTimeoutMs = Math.max(1, options.readTimeoutMs ?? READ_TIMEOUT_MS);
     this.timeoutMs = Math.max(1000, options.timeoutMs ?? SCAN_TIMEOUT_MS);
     this.agentCommand =
       options.agentCommand ??
@@ -281,6 +296,7 @@ export class ScoutWorker {
         repository,
         repoDir: this.repoDir,
         environment: this.environment,
+        timeoutMs: this.readTimeoutMs,
       });
     this.nextSyncAt = 0;
     this.publish();
@@ -480,6 +496,26 @@ export class ScoutWorker {
   }
 
   /**
+   * One periodic read, raced against its deadline. The default client bounds
+   * each `gh` child itself; this race also releases the worker from an
+   * injected client that never settles, so a stall can never leave `syncing`
+   * set forever.
+   */
+  private async readGitHubWithinDeadline(): Promise<GitHubRead> {
+    const timedOut = Promise.withResolvers<never>();
+    let timer: Timer | undefined;
+    timer = setTimeout(() => {
+      timedOut.reject(new Error(`the GitHub read did not finish within ${this.readTimeoutMs} ms`));
+    }, this.readTimeoutMs);
+    timer.unref?.();
+    try {
+      return await Promise.race([this.readGitHub(), timedOut.promise]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * The periodic check: every `scout` issue, every published release, and the
    * open titles the next scan must not restate. A failed read keeps the last
    * known rows, records the reason, and blocks filing until a read succeeds.
@@ -490,7 +526,7 @@ export class ScoutWorker {
     try {
       let read: GitHubRead;
       try {
-        read = await this.readGitHub();
+        read = await this.readGitHubWithinDeadline();
       } catch (error) {
         this.recordSyncFailure(detailOf(error));
         return;

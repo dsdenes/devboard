@@ -1,7 +1,7 @@
 import { pendingRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync, utimesSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, utimesSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { Server } from "bun";
@@ -272,6 +272,37 @@ describe("journal", () => {
     expect(removed).toEqual([oldName]);
     expect(existsSync(old)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
+  });
+
+  test("keeps an old live journal in retention and restores it after deletion", async () => {
+    const stateDir = await temporaryDirectory();
+    const failures: string[] = [];
+    const journal = openJournal({
+      stateDir,
+      repoDir: "/fixture/project",
+      port: 8080,
+      rotateBytes: 200,
+      reportError: (message) => failures.push(message),
+    });
+    journal.write("activity", `line 0 ${"z".repeat(120)}`);
+    const now = new Date("2026-10-24T12:00:00.000Z");
+    const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
+    utimesSync(journal.path, eightDaysAgo, eightDaysAgo);
+
+    const removed = pruneJournal(stateDir, {
+      now,
+      windowStart: new Date(now.getTime() - 10 * 60 * 1000),
+    });
+
+    expect(removed).toEqual([]);
+    expect(existsSync(journal.path)).toBe(true);
+
+    // The writer keeps its stale size; the next write crosses rotateBytes.
+    unlinkSync(journal.path);
+    journal.write("activity", `line 1 ${"z".repeat(120)}`);
+
+    expect(failures).toEqual([]);
+    expect(readFileSync(journal.path, "utf8")).toContain("line 1");
   });
 
   test("counts rotated journals toward the size bound outside the live window", async () => {

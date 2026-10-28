@@ -6,7 +6,12 @@ import type { AcpActivity, AcpQuestion } from "../server/acp";
 import { ScoutBridge } from "../server/scout";
 import { fileScoutIssue, issueBody, type GhRunner } from "../issues/scout/actions";
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
-import type { ScoutGitHubClient, ScoutGitHubIssue, ScoutRelease } from "../issues/scout/github";
+import {
+  createScoutGitHub,
+  type ScoutGitHubClient,
+  type ScoutGitHubIssue,
+  type ScoutRelease,
+} from "../issues/scout/github";
 import {
   controlDirectory,
   lockPath,
@@ -200,6 +205,16 @@ class FakeGitHub implements ScoutGitHubClient {
   }
 }
 
+/** A client whose issue list never settles while `hanging` is set. */
+class HangingGitHub extends FakeGitHub {
+  hanging = true;
+
+  override async listIssues(): Promise<ScoutGitHubIssue[]> {
+    if (this.hanging) return await new Promise<ScoutGitHubIssue[]>(() => undefined);
+    return await super.listIssues();
+  }
+}
+
 /** The injected `gh issue create`: records the issue and mirrors it on GitHub. */
 function fakeFiling(f: Fixture): typeof fileScoutIssue {
   return async (request) => {
@@ -291,6 +306,7 @@ async function fixture(options: {
   github?: FakeGitHub;
   files?: Record<string, string>;
   syncMs?: number;
+  readTimeoutMs?: number;
   timeoutMs?: number;
   limit?: { maxPerHour: number; maxPending: number };
   harnessVersion?: string;
@@ -341,6 +357,7 @@ async function fixture(options: {
     repoDir: root,
     stateDir,
     syncMs: options.syncMs ?? 900_000,
+    ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
     now: () => new Date(clock.now),
@@ -1372,6 +1389,55 @@ describe("filing actions", () => {
 });
 
 describe("bounded commands", () => {
+  test("a periodic read that never resolves fails the sync and releases the worker", async () => {
+    const github = new HangingGitHub();
+    github.add({ number: 7, title: "Recovered finding", createdAt: "2026-10-27T09:00:00.000Z" });
+    const started = Date.now();
+    const f = await fixture({ label: "sync-deadline", github, readTimeoutMs: 1000 });
+    try {
+      const failed = await waitFor(
+        () => (f.state().sync.state === "error" ? f.state() : undefined),
+        "the timed out read",
+      );
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(failed.sync.error).toContain("the GitHub read did not finish within 1000 ms");
+      expect(failed.lastError).toContain("the GitHub read did not finish within 1000 ms");
+
+      // The failed read released `syncing`: a later refresh runs and succeeds.
+      github.hanging = false;
+      await f.worker.refresh();
+      expect(f.state().sync.state).toBe("ok");
+      expect(f.state().issues.map((row) => row.number)).toContain(7);
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("the default scout client bounds every periodic gh call", async () => {
+    const directory = await temporaryDirectory("scout-gh-deadline");
+    const script = join(directory, "gh");
+    writeFileSync(script, `#!/bin/sh\ntrap '' TERM\nwhile :; do :; done\n`);
+    await chmod(script, 0o755);
+    const client = createScoutGitHub({
+      repository: "acme/fixture",
+      repoDir: directory,
+      environment: { PATH: `${directory}:${process.env.PATH ?? ""}` },
+      timeoutMs: 300,
+    });
+
+    const started = Date.now();
+    const results = await Promise.allSettled([
+      client.listIssues(),
+      client.listReleases(),
+      client.listOpenIssueTitles(),
+    ]);
+    expect(Date.now() - started).toBeLessThan(5000);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      expect(result.status === "rejected" ? String(result.reason) : "").toContain("deadline");
+    }
+  });
+
   test("a gh child that ignores SIGTERM is killed at the deadline", async () => {
     const directory = await temporaryDirectory("gh-deadline");
     const script = join(directory, "gh");
