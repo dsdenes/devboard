@@ -145,7 +145,15 @@
           </span>
           <span class="mono muted">+{file.insertions}/-{file.deletions}</span>
         </p>
-        <div>{@html diffHtml(file.diff, DIFF_OPTIONS)}</div>
+        {#if file.omitted}
+          <p class="muted" style="margin: 4px 6px;" data-testid="flow-diff-omitted">
+            {file.omitted === "large"
+              ? "Content omitted: the file is larger than the review limit."
+              : "Content omitted: the file is binary."}
+          </p>
+        {:else}
+          <div>{@html diffHtml(file.diff, DIFF_OPTIONS)}</div>
+        {/if}
       </div>
     {:else}
       <p class="empty">No diff is available for this selection.</p>
