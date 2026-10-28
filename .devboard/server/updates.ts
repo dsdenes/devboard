@@ -7,6 +7,7 @@ import {
   latestRelease,
   releaseSource,
   ReleaseFeedError,
+  ReleaseNotServedError,
   type ReleaseInfo,
   type ReleaseSource,
 } from "../lib/release";
@@ -163,10 +164,16 @@ export function startUpdater(options: UpdateOptions): Updater {
       return "installed";
     } catch (error) {
       failures += 1;
-      options.journal.write(
-        "update-error",
-        `could not install ${release.version}: ${detailOf(error)}`,
-      );
+      const detail = detailOf(error);
+      if (error instanceof ReleaseNotServedError) {
+        // npm's metadata advertised a version whose own artifact has not
+        // propagated yet. The registry, not the harness, is behind the
+        // install: the check backs off like any other failure, but the record
+        // is context, never a watchdog finding.
+        options.journal.write("activity", `release install skipped: ${detail}`);
+      } else {
+        options.journal.write("update-error", `could not install ${release.version}: ${detail}`);
+      }
       return "failed";
     }
   }
