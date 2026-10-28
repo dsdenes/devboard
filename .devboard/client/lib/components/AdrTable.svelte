@@ -193,8 +193,10 @@
   th:nth-child(5) {
     width: 22%;
   }
+  /* The action cell holds one fixed control. A percentage column shrinks with
+     a narrow window or a wide sidebar until the Start button is clipped. */
   th:nth-child(6) {
-    width: 10%;
+    width: 72px;
   }
 
   .adr-title {

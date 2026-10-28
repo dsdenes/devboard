@@ -2128,6 +2128,73 @@ try {
   check(adr.maxWidth >= 1440, "the shell has an application max-width", adr.maxWidth);
   check(adr.summary.length > 0 && adr.next === "Next" && adr.pending.includes("pending"), "ADR fields are not rendered", adr);
   check(adr.tabStrips === 0, "the workspace still renders a tab strip", adr.tabStrips);
+
+  // The action column holds the Start control. A narrow window with a wide
+  // sidebar must leave the whole button inside its cell.
+  const startFit = async (label: string): Promise<void> => {
+    const fit = await page.eval<{
+      buttons: number;
+      clipped: Array<{ file: string; button: number[]; content: number[] }>;
+    }>(`(() => {
+      const buttons = [...document.querySelectorAll('[data-testid="adr-table"] [data-testid="start"]')];
+      const clipped = buttons.flatMap((button) => {
+        const cell = button.closest("td");
+        if (cell === null) return [];
+        const box = button.getBoundingClientRect();
+        const cellBox = cell.getBoundingClientRect();
+        const style = getComputedStyle(cell);
+        const left = cellBox.left + Number.parseFloat(style.paddingLeft);
+        const right = cellBox.right - Number.parseFloat(style.paddingRight);
+        const inside =
+          box.left >= left - 0.5 &&
+          box.right <= right + 0.5 &&
+          box.top >= cellBox.top - 0.5 &&
+          box.bottom <= cellBox.bottom + 0.5;
+        return inside
+          ? []
+          : [{
+              file: button.getAttribute("data-file") ?? "",
+              button: [box.left, box.right, box.top, box.bottom].map((value) => Math.round(value * 10) / 10),
+              content: [left, right, cellBox.top, cellBox.bottom].map((value) => Math.round(value * 10) / 10),
+            }];
+      });
+      return { buttons: buttons.length, clipped };
+    })()`);
+    check(fit.buttons > 0 && fit.clipped.length === 0, `the Start action is clipped ${label}`, fit);
+  };
+  await startFit("at 1440×900");
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1024 && innerHeight === 720`, "the 1024×720 viewport for the Start action");
+  await startFit("at 1024×720");
+  const narrowSeparator = await page.rect('[data-testid="pane-handle"]');
+  check(narrowSeparator !== null, "the sidebar separator is missing at 1024×720");
+  await page.drag(narrowSeparator!, 500);
+  await page.wait(
+    `document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width >= 540`,
+    "the wide sidebar for the Start action",
+  );
+  await startFit("with the sidebar at its maximum width");
+  await page.doubleClick('[data-testid="pane-handle"]');
+  await page.wait(
+    `Math.abs(document.querySelector('[data-testid="sidebar"]').getBoundingClientRect().width - 300) <= 12`,
+    "the sidebar reset after the Start action check",
+  );
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(
+    `innerWidth === 1440 && innerHeight === 900`,
+    "the desktop viewport after the Start action check",
+  );
+
   const adrSidebar = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"] section[aria-label="ADR records"]') !== null`);
   check(adrSidebar, "the sidebar hides pending ADR records");
   const framesBeforeRow = await page.eval<number>("window.__viFrames.length");
