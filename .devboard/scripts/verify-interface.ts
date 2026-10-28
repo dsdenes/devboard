@@ -5950,7 +5950,12 @@ try {
   );
   check(pendingMeta.trim() === "5 pending", "the sidebar does not count every pending issue", pendingMeta);
 
-  await page.click('[data-testid="open-issues-runs"]');
+  // The sidebar no longer lists Runs; the palette still opens the tab.
+  check(
+    await page.eval<boolean>(`document.querySelector('[data-testid="open-issues-runs"]') === null`),
+    "the Issues sidebar still lists Runs",
+  );
+  await runPalette("open.issues.runs");
   await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the runs page");
   const runsHeader = await page.eval<string[]>(
     `[...document.querySelectorAll('.issues-runs-page > .issues-overview__header > div > *')].map((node) => \`\${node.tagName}:\${node.className}\`)`,
@@ -5988,17 +5993,17 @@ try {
     command: string;
     label: string;
     count: string;
-    afterRuns: boolean;
+    afterIssues: boolean;
     palette: boolean;
   }>(`(() => {
     const entry = document.querySelector('[data-testid="open-issues-drafts"]');
-    const runs = document.querySelector('[data-testid="open-issues-runs"]');
+    const issuesEntry = document.querySelector('[data-testid="open-issues-queue"]');
     return {
       entryTestid: entry?.getAttribute("data-testid") ?? "",
       command: entry?.getAttribute("data-command") ?? "",
       label: entry?.getAttribute("aria-label") ?? "",
       count: entry?.querySelector(".sidebar-item__meta")?.textContent?.trim() ?? "",
-      afterRuns: runs !== null && runs.nextElementSibling === entry,
+      afterIssues: issuesEntry !== null && issuesEntry.nextElementSibling === entry,
       palette: window.__viFrames.some((frame) => frame.includes("open.issues.drafts")) ||
         [...document.querySelectorAll('[data-command="open.issues.drafts"]')].length > 0,
     };
@@ -6011,7 +6016,7 @@ try {
     draftsChrome,
   );
   check(draftsChrome.count === "3", "the Drafts entry does not count the listed drafts", draftsChrome);
-  check(draftsChrome.afterRuns, "the Drafts entry is not after Runs", draftsChrome);
+  check(draftsChrome.afterIssues, "the Drafts entry is not after Issues", draftsChrome);
 
   const listedDrafts = await page.eval<string[]>(
     `[...document.querySelectorAll('[data-testid="issues-draft"]')].map((item) => item.getAttribute("data-path") ?? "")`,
