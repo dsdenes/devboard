@@ -1109,6 +1109,14 @@ the same tarball plus its `.sha256` as a fallback. The version is `0.1.<commit-c
 full history; a rerun on the same commit leaves the existing npm version and release assets
 untouched. Nothing is published under `@dsdenes/devboard-harness`.
 
+A release takes the `latest` dist-tag only when its version is newer than every version already
+published; otherwise it publishes under the `next` tag. npm refuses to move `latest` backwards,
+so this keeps an out-of-order release publishable without rewriting the tag. A runner that
+executes release jobs concurrently must also point `DEVBOARD_RELEASE_LOCK` at a path its jobs
+share: the release step then serialises the npm publish and release creation through that lock,
+so the next job sees the previous version before it chooses its tag. Without the variable the
+step is unchanged and assumes one release at a time.
+
 After the push, verify from the integration checkout:
 
 ```bash
@@ -1120,10 +1128,11 @@ bun run publish
 diverged from its canonical remote; fetches and fast-forwards `main` without discarding
 uncommitted work; installs dependencies and rebuilds `dist/`; waits for the release workflow of
 `HEAD`; verifies the Gitea release assets and `npm view @dsdenes/devboard@<version> version`;
-pushes the `github` mirror remote and proves its `main` names the published commit; and reports
-every running dashboard's running and installed version. It never restarts a dashboard and never
-writes into a host. `--wait-timeout N` bounds the workflow and propagation wait (default 1800
-seconds).
+pushes the `github` mirror remote's `main` and the release tags, then proves `main` is the
+published commit or a descendant that still contains it (another agent may merge while the
+release workflow runs); and reports every running dashboard's running and installed version. It never
+restarts a dashboard and never writes into a host. `--wait-timeout N` bounds the workflow and
+propagation wait (default 1800 seconds).
 
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
@@ -1164,6 +1173,7 @@ and is retried the same way.
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
 |`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads the newest Gitea release over the public HTTP API.|
+|`DEVBOARD_RELEASE_LOCK`|unset|Lock path shared by a runner's jobs; the release step serialises its npm publish and release creation through it. Set it when one runner executes releases concurrently.|
 |`DEVBOARD_GITEA_URL` / `GITEA_URL`|unset|Gitea HTTP origin; an HTTP(S) `origin` remote supplies it when unset, and a source-checkout dashboard discovers a local SSH Gitea listener. Installed hosts never probe.|
 |`GITEA_TOKEN`|unset|Gitea credential for issue, PR, scout, and watchdog writes; public reads need none.|
 

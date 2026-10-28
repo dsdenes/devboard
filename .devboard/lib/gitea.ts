@@ -257,6 +257,25 @@ export async function giteaReleaseByTag(
   }
 }
 
+/**
+ * One page of releases, newest first. The release script reads every page so
+ * the highest published tag is known even when older releases are numerous.
+ */
+export async function giteaListReleases(
+  target: GiteaTarget,
+  options: { limit?: number; page?: number } = {},
+  fetchImpl: FetchLike = fetch,
+): Promise<GiteaReleaseDocument[]> {
+  const limit = options.limit ?? 50;
+  const page = options.page ?? 1;
+  return await giteaJson<GiteaReleaseDocument[]>(
+    target,
+    `${repoPath(target)}/releases?limit=${limit}&page=${page}`,
+    undefined,
+    fetchImpl,
+  );
+}
+
 export interface CreateReleaseInput {
   tag: string;
   title: string;

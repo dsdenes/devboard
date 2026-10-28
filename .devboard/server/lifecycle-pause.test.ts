@@ -179,6 +179,13 @@ function lifecycleStates(client: TestClient): Record<string, unknown>[] {
   return client.events.filter((message) => message.type === "lifecycleState");
 }
 
+/**
+ * A paused lifecycle answers `resumeLifecycle` with a state event. The server
+ * can be busy with other work, so a loaded CI runner needs more than the
+ * default wait before calling the resume lost.
+ */
+const resumeDeadlineMs = 20_000;
+
 async function waitUntil(
   predicate: () => boolean,
   message: string,
@@ -373,6 +380,7 @@ async function exercisePausedRevision(request: string | undefined) {
         resumeIndex,
         (message) => message.type === "lifecycleState" && message.paused === false,
         "the paused lifecycle did not resume",
+        resumeDeadlineMs,
       ),
     ).toEqual({
       type: "lifecycleState",
@@ -1122,6 +1130,7 @@ describe("lifecycle pause and resume", () => {
             resumedIndex,
             (message) => message.type === "lifecycleState" && message.paused === false,
             "the paused lifecycle did not resume",
+            resumeDeadlineMs,
           ),
         ).toMatchObject({
           stage: "implementation",
