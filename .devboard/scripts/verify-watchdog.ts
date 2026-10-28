@@ -3,11 +3,11 @@
  * Browser contract for the watchdog: the Issues-mode Watchdog page and the
  * footer indicator. Builds the client, seeds watchdog run directories, a
  * ledger, and a stub `gh`, starts a source dashboard, and drives headless
- * Chrome over the DevTools protocol. It proves the empty states, the newest
- * cycle, the cycle history, the filed-issue table with GitHub state and
- * shipped version, the 60-second background refresh, a failed read that keeps
- * the rows, a later release that fills a blank version, freshness without a
- * reload, and the unchanged footer indicator and popover.
+ * Chrome over the DevTools protocol. It proves the empty states, the removed
+ * newest-cycle summary, the cycle history, the filed-issue table with GitHub
+ * state and shipped version, the 60-second background refresh, a failed read
+ * that keeps the rows, a later release that fills a blank version, freshness
+ * without a reload, and the unchanged footer indicator and popover.
  */
 
 import { spawn } from "node:child_process";
@@ -524,19 +524,9 @@ try {
     );
     assertTrue(await present(devtools, "watchdog-cycles-empty"), "no cycle renders no empty state");
     assertTrue(await present(devtools, "watchdog-issues-empty"), "no issue renders no empty state");
-    // The first projection arrives asynchronously; "none" is the server's answer.
-    const emptyAction = await waitFor(
-      async () => {
-        const value = await text(devtools, "watchdog-last-action").catch(() => "");
-        return value === "none" ? value : undefined;
-      },
-      "the empty watchdog projection",
-      10_000,
-    );
-    assertTrue(emptyAction === "none", "an empty page invents an action");
     assertTrue(
-      (await text(devtools, "watchdog-last-cycle-at")) === "never",
-      "an empty page does not show `never`",
+      !(await present(devtools, "watchdog-last-cycle")),
+      "the newest-cycle summary is still rendered",
     );
     const current = await devtools.evaluate(
       `document.querySelector('[data-testid="open-issues-watchdog"]')?.getAttribute('aria-current') ?? ''`,
@@ -652,17 +642,8 @@ try {
       `the table is not newest first: ${JSON.stringify(localIssues.map((issue) => issue.url))}`,
     );
     assertTrue(
-      (await devtools.evaluate(
-        `document.querySelector('[data-testid="watchdog-last-cycle-at"] time')?.getAttribute('datetime') ?? ''`,
-      )) === "2026-10-24T12:00:00.000Z",
-      "the newest cycle does not show its start time",
-    );
-    assertTrue((await text(devtools, "watchdog-last-action")) === "filed", "the newest action is wrong");
-    assertTrue((await text(devtools, "watchdog-last-findings")) === "2", "the newest finding count is wrong");
-    assertTrue((await text(devtools, "watchdog-last-pending")) === "1", "the pending filing count is wrong");
-    assertTrue(
-      (await text(devtools, "watchdog-last-reason")) === "filed 2 issue(s)",
-      "the newest reason is missing",
+      !(await present(devtools, "watchdog-last-cycle")),
+      "a seeded cycle brings the newest-cycle summary back",
     );
     console.log("PASS watchdog-fresh-ledger");
 
@@ -855,8 +836,8 @@ try {
       "a newly filed ledger entry did not become the newest row",
     );
     assertTrue(
-      (await text(devtools, "watchdog-last-findings")) === "3",
-      "the newest cycle did not refresh without a reload",
+      (await text(devtools, "watchdog-issues-count")).startsWith("4 filed"),
+      "the filed-issue count did not refresh without a reload",
     );
     console.log("PASS watchdog-freshness");
 

@@ -1591,13 +1591,6 @@ kbd {
   justify-content: flex-end;
 }
 
-.discover-head__definition {
-  font-size: 13px;
-  line-height: 1.45;
-  margin: 0;
-  max-width: 72ch;
-}
-
 .discover-head__meta {
   align-items: center;
   color: var(--muted-foreground);

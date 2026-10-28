@@ -269,9 +269,13 @@ export function remoteScratchRoot(stateDir: string): string {
   return join(resolve(stateDir), REMOTE_SCRATCH_NAME);
 }
 
-/** The one clone directory name a repository gets; always lowercase. */
+/**
+ * The one clone directory name a repository gets; always lowercase. The `~`
+ * separator is outside the accepted URL grammar, so distinct `owner/repo`
+ * pairs can never produce the same name (`a/b-c` and `a-b/c` stay apart).
+ */
 export function remoteCloneName(owner: string, repo: string): string {
-  return `${owner}-${repo}`.toLowerCase();
+  return `${owner}~${repo}`.toLowerCase();
 }
 
 /**
@@ -971,9 +975,9 @@ function textValue(value: unknown, path: string, max = CELL_MAX): string {
   if (!singleLine(text)) invalid(path, "must be a single line");
   if (text.length > max) invalid(path, `must be at most ${max} characters`);
   if (ABSOLUTE_PATH_PATTERN.test(text)) invalid(path, "must not be an absolute path");
-  if (text.split("/").some((segment) => segment === "home" || segment === "Users")) {
-    invalid(path, "must not carry an absolute host path");
-  }
+  // An absolute host path with its leading slash stripped. The segments may
+  // name a directory anywhere else in a legitimate repository-relative path.
+  if (/^(?:home|Users)\//.test(text)) invalid(path, "must not carry an absolute host path");
   if (/[A-Za-z]:\\/.test(text)) invalid(path, "must not carry an absolute host path");
   if (hasSecret(text)) invalid(path, "must not carry a secret value");
   return text;
