@@ -259,6 +259,34 @@ describe("discovery", () => {
     expect(instances[2]?.journal).toBe(installedJournal);
     expect(instances[2]?.instrumented).toBe(true);
   });
+
+  test("skips dashboards whose repository is verification scratch", () => {
+    const worktree = "/projects/.worktree/issue-1";
+    const host = "/projects/host";
+    const snapshot = (pid: number, repoDir: string, port: string): ProcessSnapshot => ({
+      pid,
+      cmdline: "bun /x/server/index.ts",
+      env: new Map([
+        ["REPO_DIR", repoDir],
+        ["PORT", port],
+        ["HOST", "127.0.0.1"],
+      ]),
+      cwd: process.cwd(),
+      ancestors: [],
+    });
+
+    const instances = instancesFromProcesses(
+      [
+        snapshot(20, "/projects/.devboard/.tmp/verify-update-1/asset", "8080"),
+        snapshot(21, "../.devboard/.tmp/verify-update-1/checksum", "8081"),
+        snapshot(22, worktree, "8082"),
+        snapshot(23, host, "8083"),
+      ],
+      { selfPids: new Set() },
+    );
+
+    expect(instances.map((instance) => instance.repoDir)).toEqual([worktree, host]);
+  });
 });
 
 describe("window and attribution", () => {
