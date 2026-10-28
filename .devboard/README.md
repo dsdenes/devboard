@@ -1047,8 +1047,7 @@ active project selected and no host option; one row per retained project with a 
 (`data-testid="discover-remote-remove"`, carrying the URL in `data-url`); an input
 (`data-testid="discover-remote-url"`) labelled for a GitHub repository URL with the placeholder
 `https://github.com/owner/repo`; a submit control (`data-testid="discover-remote-start"`) labelled
-`Discover from URL`; a banner (`data-testid="discover-remote-target"`) naming the active URL with a
-`Manual testing` marker; and a clear control (`data-testid="discover-remote-clear"`) only while the
+`Discover from URL`; and a clear control (`data-testid="discover-remote-clear"`) only while the
 target is remote. The strip is secondary in weight yet first in reading order, so an operator sees
 the active target before anything it affects. A source checkout with nothing published still learns
 the gate: the server replays one `discoverState` on connect when `remoteAvailable` is true, even
