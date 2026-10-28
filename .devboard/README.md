@@ -1332,9 +1332,13 @@ quote, first and last sighting, count, window, every contributing instance (repo
 pid, journal path), and the cycle report path. There is no per-cycle cap. A failing `gh` call
 reports `failed` with its first stderr line and leaves the fingerprint in `pendingFiling`; the
 next cycle retries pending fingerprints before new ones, so a transient failure never loses
-evidence. A fingerprint already `filed:<url>` is never filed again: when it recurs at least 24
-hours after the last comment (or after the filing when no comment exists), the cycle comments
-once on the existing issue with the new window, sighting, and count. No cycle closes an issue.
+evidence. A delivery configuration failure (an unsupported origin, or a Gitea origin without
+`DEVBOARD_GITEA_URL` or `GITEA_TOKEN`) is reported the same way: every queued fingerprint stays
+pending, the action is `failed` with that reason, and the ledger, `report.json`, `report.md`, and
+`latest.json` are still written. A fingerprint already `filed:<url>` is never filed again: when
+it recurs at least 24 hours after the last comment (or after the filing when no comment exists),
+the cycle comments once on the existing issue with the new window, sighting, and count. No cycle
+closes an issue.
 
 Each cycle writes one run directory, `<harness>/.tmp/watchdog/runs/<UTC timestamp>/`, containing
 `report.json`, `report.md`, and `coordinator.log`; the newest report is also
