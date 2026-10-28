@@ -7,11 +7,12 @@
  * Fixture hosts and releases live under `.devboard/.tmp`.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createReleaseDirectory } from "./harness-package";
+import { saveSubscriptions } from "../server/providers";
 import {
   assertEquals,
   assertTrue,
@@ -44,6 +45,70 @@ const servers: DashboardProcess[] = [];
 
 function step(message: string): void {
   console.log(`verify:update: ${message}`);
+}
+
+/** One `issues-draft-state` payload, narrowed at the websocket boundary. */
+function draftRun(reply: Record<string, unknown>): Record<string, unknown> | undefined {
+  const draft = reply.draft;
+  return typeof draft === "object" && draft !== null ? (draft as Record<string, unknown>) : undefined;
+}
+
+async function readDraftRun(port: number, path: string): Promise<Record<string, unknown>> {
+  const reply = await websocketCommand(port, { type: "getGoalDrafts" }, "issuesDrafts");
+  const runs = Array.isArray(reply.runs) ? reply.runs : [];
+  const run = runs.find(
+    (entry): entry is Record<string, unknown> =>
+      typeof entry === "object" && entry !== null && (entry as Record<string, unknown>).path === path,
+  );
+  assertTrue(run !== undefined, "the dashboard returned no draft run");
+  return run;
+}
+
+/** Sends one command without waiting for its state broadcast. */
+async function sendDraftCommand(port: number, command: unknown): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const timer = setTimeout(resolve, 5_000);
+  socket.onopen = () => {
+    clearTimeout(timer);
+    socket.send(JSON.stringify(command));
+    socket.close();
+    resolve();
+  };
+  socket.onerror = () => {
+    clearTimeout(timer);
+    resolve();
+  };
+  return promise;
+}
+
+function agentLines(log: string): string[] {
+  try {
+    return readFileSync(log, "utf8")
+      .split("\n")
+      .filter((line) => line.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** The detached elaboration owners this checkout currently runs, by their argv. */
+function ownerPids(host: string): number[] {
+  const found: number[] = [];
+  for (const entry of readdirSync("/proc")) {
+    if (!/^[0-9]+$/.test(entry)) continue;
+    const pid = Number(entry);
+    let argv: string[];
+    try {
+      argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
+    } catch {
+      continue;
+    }
+    if (!argv.some((argument) => argument.endsWith("goal-draft-owner.ts"))) continue;
+    if (!argv.includes(host)) continue;
+    found.push(pid);
+  }
+  return found;
 }
 
 let failingNpm = "";
@@ -137,6 +202,132 @@ try {
   const replacement = dashboardsFor(host)[0];
   assertTrue(replacement !== undefined && replacement.pid !== server.pid, "the pid changed");
 
+  step("a running draft elaboration survives the reload");
+  const draftPath = ".devboard/goal-proposals/reload-draft.md";
+  await mkdir(join(prefix, "goal-proposals"), { recursive: true });
+  await writeFile(
+    join(prefix, "goal-proposals", "reload-draft.md"),
+    "# Reload draft\n\n> Unprocessed draft. STUB-HANG\n\nKeep the elaboration running.\n",
+  );
+  // Every peer resolves a provider first. The seeded key's usage endpoints
+  // are closed ports, so it stays eligible with unknown headroom offline.
+  const draftStamp = new Date().toISOString();
+  saveSubscriptions(join(prefix, ".tmp"), [
+    {
+      id: "verify-draft-go",
+      provider: "opencode-go",
+      label: "Draft fixture",
+      key: "fixture-key",
+      enabled: true,
+      createdAt: draftStamp,
+      updatedAt: draftStamp,
+    },
+  ]);
+  const draftLog = join(root, "draft-agent.log");
+  await stopDashboard(host);
+  const draftServer = await startInstalledDashboard(
+    host,
+    {
+      DEVBOARD_RELEASE_DIR: newRelease,
+      DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
+      DEVBOARD_OPENCODE_GO_USAGE_BASE_URL: "http://127.0.0.1:1/zen/go",
+      DEVBOARD_OPENROUTER_USAGE_BASE_URL: "http://127.0.0.1:1/api",
+      AGENT_COMMAND:
+        `bun ${join(installedPackage(prefix), "server", "fixtures", "stub-agent.ts")} ` +
+        `--log=${draftLog} --goal-draft`,
+    },
+    server.port,
+  );
+  servers.push(draftServer);
+  await waitFor(
+    async () => ((await readVersion(draftServer.port)).running === NEW ? true : undefined),
+    "the drafting dashboard version",
+  );
+  const started = await websocketCommand(
+    draftServer.port,
+    { type: "startGoalDraft", path: draftPath },
+    "issuesDraftState",
+  );
+  assertEquals(draftRun(started)?.status, "running", "the draft elaboration did not start");
+  const peerLine = await waitFor(
+    () => agentLines(draftLog).find((line) => line.startsWith("goal-draft-start ")),
+    "the stub peer's start line",
+  );
+  const peerPid = Number(peerLine.slice("goal-draft-start ".length));
+  assertTrue(peerPid > 0 && processRunning(peerPid), "the stub peer is not running");
+  await waitFor(
+    async () => {
+      const run = await readDraftRun(draftServer.port, draftPath);
+      return run.status === "running" && Array.isArray(run.activity) && run.activity.length > 0
+        ? true
+        : undefined;
+    },
+    "the streamed draft activity",
+  );
+
+  const beforeReload = dashboardsFor(host).find((entry) => entry.port === draftServer.port);
+  const previousPid = beforeReload?.pid;
+  assertTrue(previousPid !== undefined, "the drafting dashboard process");
+  await websocketCommand(draftServer.port, { type: "restartServer" }, "serverRestarting");
+  await waitFor(
+    () => {
+      const current = dashboardsFor(host).find((entry) => entry.port === draftServer.port);
+      return current !== undefined && current.pid !== previousPid ? current : undefined;
+    },
+    "the draft reload replacement",
+    30_000,
+  );
+  await waitFor(
+    async () => {
+      try {
+        const state = await readVersion(draftServer.port);
+        return state.running === NEW ? state : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    "the replacement version after the draft reload",
+    30_000,
+  );
+  const adopted = await readDraftRun(draftServer.port, draftPath);
+  assertEquals(
+    [adopted.status, adopted.path],
+    ["running", draftPath],
+    "the replacement did not adopt the running draft",
+  );
+  assertTrue(processRunning(peerPid), "the original elaboration peer did not survive the reload");
+  assertEquals(
+    agentLines(draftLog).filter((line) => line.startsWith("goal-draft-start ")).length,
+    1,
+    "the reload started a second elaboration peer",
+  );
+  assertEquals(
+    agentLines(draftLog).filter((line) => line === `goal-draft ${draftPath}`),
+    [`goal-draft ${draftPath}`],
+    "the reload sent the prompt again",
+  );
+  assertTrue(ownerPids(host).length === 1, "the elaboration has no owner process");
+
+  await sendDraftCommand(draftServer.port, { type: "stopGoalDraft", path: draftPath });
+  const stopped = await waitFor(
+    async () => {
+      const run = await readDraftRun(draftServer.port, draftPath);
+      return run.status === "stopped" ? run : undefined;
+    },
+    "the stopped draft elaboration",
+  );
+  assertEquals(stopped.path, draftPath, "Stop lost the draft's path");
+  await waitFor(
+    () => (processRunning(peerPid) ? undefined : true),
+    "the stopped elaboration peer to exit",
+    10_000,
+  );
+  await waitFor(
+    () => (ownerPids(host).length === 0 ? true : undefined),
+    "the stopped elaboration owner to exit",
+    10_000,
+  );
+
   step("checksum failures leave the previous package running");
   const corruptChecksum = join(root, "release-corrupt-checksum");
   await copyRelease(newRelease, corruptChecksum, "0.1.912", {
@@ -226,6 +417,7 @@ try {
   await stopDashboard(unauthorizedHost);
   const unauthorizedServer = await startInstalledDashboard(unauthorizedHost, {
     DEVBOARD_RELEASE_URL: `http://127.0.0.1:${unauthorized.port}`,
+    // An ambient harness origin must not outrank the fixture's feed.
     DEVBOARD_GITEA_URL: "",
     GITEA_TOKEN: "",
     DEVBOARD_GITEA_TOKEN: "",

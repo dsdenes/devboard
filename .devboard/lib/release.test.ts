@@ -13,9 +13,11 @@ import {
 import { join } from "node:path";
 import {
   checksumName,
+  compareReleaseVersions,
   DEFAULT_DOWNLOAD_TIMEOUT_MS,
   downloadRelease,
   exec,
+  highestReleaseVersion,
   installHarnessTarball,
   installRelease,
   isReleaseRateLimited,
@@ -23,9 +25,11 @@ import {
   latestRelease,
   npmInstallError,
   parseReleaseDescription,
+  publishTagFor,
   ReleaseError,
   ReleaseFeedError,
   ReleaseNotServedError,
+  SIDE_RELEASE_TAG,
   tarballName,
   type CommandResult,
   type ReleaseInfo,
@@ -423,6 +427,28 @@ describe("npm fallback", () => {
     }
   });
 
+  test("names an unreadable fallback body as feed context", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response('{"tag":"v1.0.0"}\n{"tag":"v1.1.0"}\n');
+      },
+    });
+    try {
+      const error = await latestRelease({
+        kind: "gitea",
+        baseUrl: `http://127.0.0.1:${server.port}`,
+        repo: "acme/fixture",
+      }).catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(ReleaseFeedError);
+      expect((error as Error).message).toContain(
+        "the release feed returned an unreadable description",
+      );
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("names npm when it fails and no fallback is configured", async () => {
     const root = workspace("npm-no-fallback");
     const npm = join(root, "failing-npm");
@@ -433,5 +459,32 @@ describe("npm fallback", () => {
     );
     expect(error).toBeInstanceOf(ReleaseError);
     expect((error as Error).message).toContain("npm could not resolve");
+  });
+});
+
+describe("release ordering", () => {
+  test("orders dotted versions numerically rather than as text", () => {
+    expect(compareReleaseVersions("0.1.9", "0.1.10")).toBeLessThan(0);
+    expect(compareReleaseVersions("0.1.713", "0.1.713")).toBe(0);
+    expect(compareReleaseVersions("0.1.714", "0.1.713")).toBeGreaterThan(0);
+    expect(compareReleaseVersions("0.1", "0.1.7")).toBeUndefined();
+    expect(compareReleaseVersions("0.1.x", "0.1.7")).toBeUndefined();
+  });
+
+  test("picks the highest release version and ignores malformed tags", () => {
+    expect(highestReleaseVersion(["0.1.704", "0.1.713", "0.1.9"])).toBe("0.1.713");
+    expect(highestReleaseVersion(["v0.1.713", "0.1.6", "", "0.1"])).toBe("0.1.6");
+    expect(highestReleaseVersion([])).toBeUndefined();
+  });
+
+  test("publishes a lower version under the side tag instead of moving latest back", () => {
+    expect(publishTagFor("0.1.713", undefined)).toBe("latest");
+    expect(publishTagFor("0.1.713", "0.1.704")).toBe("latest");
+    expect(publishTagFor("0.1.713", "0.1.713")).toBe(SIDE_RELEASE_TAG);
+    expect(publishTagFor("0.1.707", "0.1.713")).toBe(SIDE_RELEASE_TAG);
+  });
+
+  test("refuses to order a release against an unreadable newest version", () => {
+    expect(() => publishTagFor("0.1.713", "0.1.bad")).toThrow(ReleaseError);
   });
 });

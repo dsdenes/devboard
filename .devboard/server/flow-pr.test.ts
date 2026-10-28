@@ -538,6 +538,33 @@ function readdirSyncSafe(path: string): string[] {
   }
 }
 
+/** One session's persisted machine state, or undefined while it is absent. */
+function storedSession(fixture: Fixture, id: string): Record<string, unknown> | undefined {
+  try {
+    return JSON.parse(
+      readFileSync(join(fixture.stateDir, "flow", journalKey(fixture.root), id, "session.json"), "utf8"),
+    ) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A stored session's pull-request state, without trusting the blob's shape. */
+function prState(stored: Record<string, unknown> | undefined): unknown {
+  const pr = stored?.pr;
+  if (typeof pr !== "object" || pr === null || !("state" in pr)) return undefined;
+  return pr.state;
+}
+
+/** The session ids of a snapshot's history, without trusting its shape. */
+function historyIds(snapshot: Event): unknown[] {
+  const history = snapshot.history;
+  if (!Array.isArray(history)) return [];
+  return history.map((entry) =>
+    typeof entry === "object" && entry !== null && "sessionId" in entry ? entry.sessionId : undefined,
+  );
+}
+
 async function startFlow(
   client: TestClient,
   fixture: Fixture,
@@ -937,6 +964,178 @@ describe("Flow pull-request lifecycle", () => {
     expect(existsSync(session.worktree)).toBe(true);
     expect((merged.pr as { state: string }).state).toBe("merged");
     client.close();
+  }, 90_000);
+
+  test("restore archives a merged request stored beside a stopped status", async () => {
+    const fixture = createFixture("pr-restore-merged");
+    const flowRoot = join(fixture.stateDir, "flow", journalKey(fixture.root));
+    const mergedId = "aaaa1111";
+    const currentId = "bbbb2222";
+    const pr = {
+      forge: "github",
+      number: 7,
+      url: "https://forge.test/acme/fixture/pull/7",
+      state: "merged",
+    };
+    const base = git(fixture.root, ["rev-parse", "main"]).trim();
+    const seed = (id: string, status: string, createdAt: string, mergedPr: unknown) => {
+      mkdirSync(join(flowRoot, id), { recursive: true });
+      writeFileSync(
+        join(flowRoot, id, "session.json"),
+        `${JSON.stringify({
+          version: 1,
+          id,
+          baseRevision: base,
+          worktree: join(fixture.root, ".worktree", `flow-${id}`),
+          branch: `flow/${id}`,
+          status,
+          goal: `# Flow goal\n\n${id}`,
+          decisions: "",
+          steering: [],
+          accepted: [],
+          widgets: [],
+          files: [],
+          checkpoints: [],
+          verification: null,
+          blockers: [],
+          pr: mergedPr,
+          prError: null,
+          leftover: null,
+          question: null,
+          pushedTip: null,
+          prFailedTip: null,
+          lastDiffHash: null,
+          createdAt,
+          updatedAt: createdAt,
+        })}\n`,
+      );
+    };
+    // The older revision's window: the merged request is on disk while the
+    // status still says stopped. A current idle session keeps the snapshot.
+    seed(mergedId, "stopped", "2026-01-01T00:00:00.000Z", pr);
+    seed(currentId, "idle", "2026-02-01T00:00:00.000Z", null);
+
+    const server = startServer(fixture);
+    const client = await connect(server);
+    await connected(client);
+    const snapshot = await client.waitFor((event) => event.type === "flowSnapshot");
+    expect(snapshot.sessionId).toBe(currentId);
+    expect(historyIds(snapshot)).toEqual([mergedId]);
+
+    const stored = storedSession(fixture, mergedId);
+    expect(stored?.status).toBe("merged");
+    expect(prState(stored)).toBe("merged");
+    expect(stored?.cleanupPending).toBe(false);
+    expect(stored?.leftover).toBeNull();
+
+    client.send({ type: "startFlowImplementation" });
+    const started = await client.waitFor(
+      (event) => event.type === "flowImplementationStarted" || event.type === "flowError",
+    );
+    // The restored merged session is archived, so Start can only affect the
+    // current idle session, never the one whose request is already merged.
+    expect(storedSession(fixture, mergedId)?.status).toBe("merged");
+    if (started.type === "flowError") {
+      expect(String(started.message)).not.toContain("merged");
+    }
+    client.close();
+  }, 60_000);
+
+  test("a stop between the merge write and cleanup restores merged and finishes the cleanup", async () => {
+    const fixture = createFixture("pr-merge-restart");
+    const forgeStub = new StubForge();
+    let blockCleanup = false;
+    const reached = Promise.withResolvers<void>();
+    const recorder = recordingExecutor();
+    const blocking: Exec = async (command, args, options) => {
+      if (
+        blockCleanup &&
+        command === "git" &&
+        args.length === 2 &&
+        args[0] === "fetch" &&
+        args[1] === "origin"
+      ) {
+        reached.resolve();
+        return await new Promise(() => {});
+      }
+      return recorder.exec(command, args, options);
+    };
+    const server = startServer(fixture, {
+      forge: forgeStub,
+      exec: blocking,
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-change",
+        "--flow-checkpoints=2",
+        "--flow-step-delay=8000",
+      ],
+    });
+    const client = await connect(server);
+    await connected(client);
+    await createGoal(client);
+    const session = await startFlow(client, fixture);
+    await client.waitFor((event) => event.type === "flowPr" && event.pr !== null);
+    await stopFlow(client);
+    client.send({ type: "markFlowPrReady" });
+    await client.waitFor((event) => event.type === "flowPr" && (event.pr as { state: string }).state === "live");
+
+    const clone = join(fixture.root, ".worktree", "restart-clone");
+    git(fixture.root, ["clone", join(fixture.root, "origin.git"), clone]);
+    git(clone, [
+      "-c",
+      "user.name=Forge",
+      "-c",
+      "user.email=forge@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "merge",
+      "--no-ff",
+      `origin/${session.branch}`,
+      "-m",
+      `Merge pull request #7 from ${session.branch}`,
+    ]);
+    git(clone, ["push", "origin", "main"]);
+
+    blockCleanup = true;
+    client.send({ type: "mergeFlowPr" });
+    await reached.promise;
+    // The merge's terminal write is complete and cleanup has not started:
+    // the state on disk already pairs the merged request with a merged status.
+    await waitUntil(() => {
+      const stored = storedSession(fixture, session.id);
+      return (
+        stored?.status === "merged" &&
+        prState(stored) === "merged" &&
+        stored.cleanupPending === true
+      );
+    }, "the terminal merge write");
+    const interrupted = storedSession(fixture, session.id);
+    expect(prState(interrupted)).toBe("merged");
+    expect(interrupted?.status).toBe("merged");
+    expect(existsSync(session.worktree)).toBe(true);
+
+    client.close();
+    server.server.stop(true);
+
+    startServer(fixture, { forge: new StubForge() });
+    await waitUntil(() => {
+      const stored = storedSession(fixture, session.id);
+      return stored?.cleanupPending === false && stored.status === "merged";
+    }, "restore to finish the merge cleanup");
+
+    const restored = storedSession(fixture, session.id);
+    expect(restored?.status).toBe("merged");
+    expect(prState(restored)).toBe("merged");
+    expect(restored?.leftover).toBeNull();
+    expect(existsSync(session.worktree)).toBe(false);
+    const flowRoot = join(fixture.stateDir, "flow", journalKey(fixture.root));
+    for (const id of readdirSync(flowRoot)) {
+      const stored = storedSession(fixture, id);
+      if (prState(stored) === "merged") {
+        expect(stored?.status).toBe("merged");
+      }
+    }
   }, 90_000);
 
   test("a rejected push produces one error, no PR, and a retry that succeeds", async () => {

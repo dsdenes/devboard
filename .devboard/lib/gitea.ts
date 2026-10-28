@@ -202,7 +202,9 @@ export async function giteaJson<T>(
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new GiteaError(`${init?.method ?? "GET"} ${path} returned invalid JSON`);
+    const first = text.trim().split("\n")[0]?.trim() ?? "";
+    const snippet = first.length === 0 ? "no output" : first.length > 300 ? `${first.slice(0, 300)}…` : first;
+    throw new GiteaError(`${init?.method ?? "GET"} ${path} returned invalid JSON: ${snippet}`);
   }
 }
 
@@ -253,6 +255,25 @@ export async function giteaReleaseByTag(
     if (error instanceof GiteaError && error.status === 404) return undefined;
     throw error;
   }
+}
+
+/**
+ * One page of releases, newest first. The release script reads every page so
+ * the highest published tag is known even when older releases are numerous.
+ */
+export async function giteaListReleases(
+  target: GiteaTarget,
+  options: { limit?: number; page?: number } = {},
+  fetchImpl: FetchLike = fetch,
+): Promise<GiteaReleaseDocument[]> {
+  const limit = options.limit ?? 50;
+  const page = options.page ?? 1;
+  return await giteaJson<GiteaReleaseDocument[]>(
+    target,
+    `${repoPath(target)}/releases?limit=${limit}&page=${page}`,
+    undefined,
+    fetchImpl,
+  );
 }
 
 export interface CreateReleaseInput {

@@ -609,9 +609,13 @@ silently abandoned.
 A graceful stop, launcher restart, or `SIGKILL` leaves the session on disk. The replacement reads
 the session directory and re-emits its complete state. A session that was running is reported
 `stopped`, its pending question is cleared, and the server sends one `flowNotice` saying the Flow
-implementation stopped and that starting it again resumes it. It never re-spawns a Flow agent on
-its own: no goal interview, implementation turn, change analysis, or widget conversation resumes
-automatically. Selecting `Start implementation` re-spawns `/flow-implement` with the same session
+implementation stopped and that starting it again resumes it. The durable child ledger includes
+Flow's own peers: a live implementation (recorded with its worktree as the working directory), goal
+interview, change analyst, and widget conversation are written to the state file, so the
+replacement proves and ends each one before anything can start another implementation in the same
+worktree. It never re-spawns a Flow agent on its own: no goal interview, implementation turn,
+change analysis, or widget conversation resumes automatically. Selecting `Start implementation`
+re-spawns `/flow-implement` with the same session
 directory, and the agent reads the persisted goal, decisions, steering acks, checkpoints, and
 verification before continuing. A session that was idle stays idle. The replacement recomputes the
 diff and widgets from the worktree without spawning an analyst, so a restart can never lose review
@@ -1109,6 +1113,14 @@ the same tarball plus its `.sha256` as a fallback. The version is `0.1.<commit-c
 full history; a rerun on the same commit leaves the existing npm version and release assets
 untouched. Nothing is published under `@dsdenes/devboard-harness`.
 
+A release takes the `latest` dist-tag only when its version is newer than every version already
+published; otherwise it publishes under the `next` tag. npm refuses to move `latest` backwards,
+so this keeps an out-of-order release publishable without rewriting the tag. A runner that
+executes release jobs concurrently must also point `DEVBOARD_RELEASE_LOCK` at a path its jobs
+share: the release step then serialises the npm publish and release creation through that lock,
+so the next job sees the previous version before it chooses its tag. Without the variable the
+step is unchanged and assumes one release at a time.
+
 After the push, verify from the integration checkout:
 
 ```bash
@@ -1120,10 +1132,11 @@ bun run publish
 diverged from its canonical remote; fetches and fast-forwards `main` without discarding
 uncommitted work; installs dependencies and rebuilds `dist/`; waits for the release workflow of
 `HEAD`; verifies the Gitea release assets and `npm view @dsdenes/devboard@<version> version`;
-pushes the `github` mirror remote and proves its `main` names the published commit; and reports
-every running dashboard's running and installed version. It never restarts a dashboard and never
-writes into a host. `--wait-timeout N` bounds the workflow and propagation wait (default 1800
-seconds).
+pushes the `github` mirror remote's `main` and the release tags, then proves `main` is the
+published commit or a descendant that still contains it (another agent may merge while the
+release workflow runs); and reports every running dashboard's running and installed version. It never
+restarts a dashboard and never writes into a host. `--wait-timeout N` bounds the workflow and
+propagation wait (default 1800 seconds).
 
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
@@ -1164,6 +1177,7 @@ and is retried the same way.
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
 |`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads the newest Gitea release over the public HTTP API.|
+|`DEVBOARD_RELEASE_LOCK`|unset|Lock path shared by a runner's jobs; the release step serialises its npm publish and release creation through it. Set it when one runner executes releases concurrently.|
 |`DEVBOARD_GITEA_URL` / `GITEA_URL`|unset|Gitea HTTP origin; an HTTP(S) `origin` remote supplies it when unset, and a source-checkout dashboard discovers a local SSH Gitea listener. Installed hosts never probe.|
 |`GITEA_TOKEN`|unset|Gitea credential for issue, PR, scout, and watchdog writes; public reads need none.|
 
@@ -1365,6 +1379,10 @@ than seven days are deleted; these are never deleted at any age:
 - `.tmp/issues/` and `.tmp/flow/` in full.
 - the run directory of the cycle performing the sweep, and a live `devboard-<pid>.lock`.
 
+- any `lock` file whose content records a live `LockOwner`, such as the checkout-anchored
+  `.tmp/scout/lock` a running Auto Scout holds. A lock whose owner is gone is swept, and the
+  rest of `.tmp/scout/` — stale scans and issue bodies — follows the ordinary age rule.
+
 Run the sweep by hand from `.devboard`:
 
 ```bash
@@ -1417,7 +1435,10 @@ records its pid, argv, state directory, and harness version. A lock whose owner 
 reclaimed before a new worker starts; a lock with a live owner is never taken over. A second
 dashboard with the same `REPO_DIR` and `STATE_DIR` attaches to that worker. A second dashboard
 with the same `REPO_DIR` and another `STATE_DIR` cannot attach and is refused, because the
-repo-anchored lock names the live worker. Different repositories get independent workers.
+repo-anchored lock names the live worker. Start after Stop on the same dashboard waits for the
+stopping worker to exit and only then spawns; if it still lives at the stop proof deadline, Start
+is refused with a message naming it instead of reporting it attached. Concurrent Starts share one
+preflight and spawn. Different repositories get independent workers.
 
 The poll is the GitHub issues endpoint through the operator's `gh` credential every 10 seconds,
 conditional on the previous `ETag` (`If-None-Match`). A `304` is no change; `403`/`429` honor
@@ -1610,35 +1631,85 @@ directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each 
 `data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
 and its first Markdown heading. An empty directory shows `No drafts exist.`.
 
+The list header carries a `New goal` control (`data-testid="issues-draft-new"`,
+`data-command="issues.draft.new"`); the command palette lists the same id, opens the Draft goals
+page, and opens the popover. Activating the control opens
+`data-testid="issues-draft-new-popover"` under the header and writes nothing. The popover holds
+one instructions field (`issues-draft-new-input`), a submit control (`issues-draft-new-submit`),
+and Cancel (`issues-draft-new-cancel`); Escape and Cancel close it without writing a draft or
+starting a peer. One submit posts `{ "report": <instructions> }` with no captured page context to
+`POST /api/goal-proposals`, so exactly one draft lands with the heading, the line
+`> Unprocessed draft. ...`, the instructions verbatim, and a `## Captured UI context` section that
+states `No page context was captured.`; it invents no route, element, viewport, visible text, or
+DOM excerpt. Naming, the exclusive create, and the `-2`, `-3`, … suffix are the report panel's. A
+whitespace-only input submits nothing.
+
+When no elaboration runs, the page sends exactly one `startGoalDraft` for the written path after
+the write, so `/goal-draft <repository-relative path>` starts at once and the popover closes with
+the new draft selected in `issues-draft-detail`, its `running` state, its activity, and
+`issues-draft-stop`; a question for it renders in `issues-draft-question` and its answer reaches
+only that peer. When another elaboration is already running, the submit still writes and selects
+the draft but starts nothing: the new draft's start control is disabled with the running
+elaboration named as its blocker, and it becomes startable once that run ends, with no queued
+start. A write the server refuses leaves no draft and no peer and shows the server's reason in
+`issues-draft-new-error` while the popover and instructions stay; a start the server refuses after
+the write keeps the draft listed, selected, and startable, and shows that reason in the detail. A
+double submit while the write or start is pending produces one draft and one peer. Creation never
+runs `gh`, files an issue, creates a worktree or branch, or writes a goal spec; only the draft file
+is created. The report panel's `Goal` action and the open-then-`Start elaboration` path are
+unchanged.
+
 Selecting one opens `data-testid="issues-draft-detail"`: the header carries the draft's file name,
 the state badge for this draft's run only (absent while the run is `idle`), `issues-draft-start`
-(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
-body reads the proposal before the `## Captured UI context` marker, then the activity stream in
-`issues-draft-activity` once a run exists; the captured UI context itself is not shown. A pending
-elaboration question (`issues-draft-question`) renders above the proposal, with
-`issues-draft-choice`, `issues-draft-answer-input`, and `issues-draft-answer-submit`. The detail
-refreshes when the page opens, after the report panel writes a draft through
-`POST /api/goal-proposals`, after an elaboration finishes or stops, and when a listed draft
-disappears. The page polls the list every two seconds while it is mounted, so an external
-deletion is visible without a reload, and the report panel's write broadcast reaches an open page
-immediately. A browser reload restores the Draft goals page and the selected path; when the file
-no longer exists, the page opens the list.
+(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). Each
+row carries its own `data-status`, renders that state as text, and has its own
+`issues-draft-row-start` control. A row whose elaboration waits for an answer carries
+`data-question="true"` and renders an `issues-draft-waiting` marker, so the wait is visible without
+opening that draft; answering clears both. The body reads the proposal before the
+`## Captured UI context` marker, then the activity stream in `issues-draft-activity` once a run
+exists; the captured UI context itself is not shown. A pending elaboration question
+(`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,
+`issues-draft-answer-input`, and `issues-draft-answer-submit`. Selecting another draft switches the
+detail to that path's own state, activity, and question, and reselecting the first restores its
+transcript and still-pending question. The detail refreshes when the page opens, after the report
+panel writes a draft through `POST /api/goal-proposals`, after an elaboration finishes or stops,
+and when a listed draft disappears. The page polls the list every two seconds while it is mounted,
+so an external deletion is visible without a reload, and the report panel's write broadcast
+reaches an open page immediately. A browser reload restores the Draft goals page and the selected
+path; when the file no longer exists, the page opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
 refused with a visible error, and nothing outside the directory is read. The list never follows
 symlinks.
 
-Only one elaboration runs at a time. Starting one spawns exactly one ACP peer with `AGENT_COMMAND`
-in `REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-relative path>`. Its
-activity streams into `issues-draft-activity`, its `ask` question renders as options plus a
-free-text answer, and an answer goes only to that peer. While it runs, every other draft's start
-control is disabled with the stated reason; Stop closes the peer, records `stopped`, keeps the
-draft, and re-enables the controls; a successful or failed run closes its peer before recording
-`succeeded` or `failed`, so no elaboration leaves an agent process behind; a failed peer keeps
-the draft, shows the error, and accepts a retry as a new peer. The running peer's pid, argv, and
-`cwd` are recorded in the server state, so a replacement server ends one its predecessor left
-running.
+Every draft may elaborate at the same time; there is no concurrency cap beyond the repository's
+own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND` in `REPO_DIR`,
+opens one session, and sends exactly `/goal-draft <repository-relative path>`. Each path has at
+most one live peer: a start for a path already running is refused with
+`This draft is being elaborated.` and starts no second peer. While a draft runs, only its own row
+and detail show the disabled start control and the `issues-draft-blocked` reason
+`This draft is being elaborated.`; every other draft stays startable. Each peer's activity
+streams only into its own run's `issues-draft-activity`, its `ask` question renders only for that
+draft, and an answer goes only to the addressed draft's peer; an answer for a draft with no
+pending question is refused without reaching any peer. Stop closes only the selected draft's peer,
+records `stopped`, keeps that draft, and leaves every other elaboration running. A successful or
+failed run closes only its own peer before recording `succeeded` or `failed`; a failed peer keeps
+its draft, shows its error there, and accepts a retry as a new peer. A successful completion
+removes its draft from the list when the agent deleted the file, without clearing another draft's
+state. Browser reload and WebSocket reconnect replay every draft's own run state, activity, and
+pending question.
+
+The peers are not held by the server process. One detached owner process per draft carries each
+running elaboration, persists its run under `STATE_DIR`, and consumes that draft's answer and Stop
+commands, so a version reload hands every running elaboration to the replacement: the reload
+control writes a handoff before this server exits, and the replacement attaches to the same
+owners, peers, prompts, activity, and pending questions before it serves the Draft goals page. An
+answer or Stop after the reload reaches the original peer for its own draft, and no second peer
+or second question appears. Any other dashboard exit, abrupt or not, ends every owner and its peer
+within ten seconds and records one `failed` run per interrupted draft whose error names that the
+server exit interrupted the elaboration; each draft stays listed and startable, and nothing
+resumes automatically.
 
 `.devboard/prompts/goal-draft.md` is the elaboration contract and
 `.devboard/omp/commands/goal-draft.md` its command wrapper, which reads the prompt and passes
@@ -1733,8 +1804,26 @@ activity, and consumes no cap slot.
 
 An open issue is `pending`; a closed issue is `implemented` regardless of `stateReason`; a
 reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
-the closing commit and the earliest published release whose history contains it; the row shows
-`—` when none resolves, and a later release fills a blank version on the next read.
+the commit that closed it — the timeline's closing commit when present, otherwise the last 7–40
+character hex SHA in the newest comment that contains one — to one unambiguous full commit through
+the checkout or GitHub. It then selects the earliest published GitHub Release tag whose history
+contains that commit, ordered by `publishedAt` and breaking ties by tag name. The row shows `—`
+when no commit resolves or no published release contains it, and a release published later fills a
+blank version on the next read.
+
+### Periodic check
+
+While started, the worker reads every `scout` issue and every published release every 60 seconds,
+and immediately on Start; the table, states, and versions reflect a change within one interval. One
+periodic read, including every `gh` child it starts, is bounded to 30 seconds; a read that does not
+finish records a sync error and releases the worker, so the next interval reads again. A failed
+read keeps the last known rows, shows the reason in `agent-sync-error`, and keeps the last success
+time in `agent-sync-at`; the reason clears on the next successful read. Filing stays blocked until
+a read succeeds. A GitHub rate limit (the `gh` text naming a primary or secondary limit, abuse
+detection, or HTTP 429) is a failed read like any other: it keeps the rows and blocks filing, and
+its reason stays in the sync banner. Because the operator's credential is shared with every other
+process on the host and the limit clears itself, it never raises the dashboard-wide error
+notification.
 
 ## Report, remove, or redesign a UI element
 
@@ -1883,8 +1972,8 @@ The client sends:
 { "type": "getGoalDrafts" }
 { "type": "getGoalDraft", "path": ".devboard/goal-proposals/example.md" }
 { "type": "startGoalDraft", "path": ".devboard/goal-proposals/example.md" }
-{ "type": "stopGoalDraft" }
-{ "type": "answerGoalDraft", "id": 4, "value": "The whole goal" }
+{ "type": "stopGoalDraft", "path": ".devboard/goal-proposals/example.md" }
+{ "type": "answerGoalDraft", "path": ".devboard/goal-proposals/example.md", "id": 4, "value": "The whole goal" }
 
 { "type": "getAgents" }
 { "type": "getAgent", "id": "scout" }
@@ -1958,12 +2047,14 @@ The client sends:
   on failure, the reason in `message`; a missing number answers `error`. A running agent is not
   interrupted, and the queue drops the issue on the worker's next poll.
 - `getGoalDrafts` answers `issuesDrafts` with the sorted list of `{ path, name, heading }` and
-  `issuesDraftState` with the current elaboration. `getGoalDraft` answers `issuesDraftDetail` with
-  the draft's exact bytes, or `issuesDraftError` when the path is refused or missing.
-  `startGoalDraft` starts the one elaboration peer and broadcasts `issuesDraftState` and
-  `issuesDrafts`; `stopGoalDraft` closes it, records `stopped`, and keeps the draft.
-  `answerGoalDraft` routes one answer to the elaboration question. Activity is sent as
-  `issuesDraftState` snapshots while the peer runs.
+  `runs`, the full per-path run snapshot (live runs plus finished runs whose draft still exists).
+  `getGoalDraft` answers `issuesDraftDetail` with the draft's exact bytes, or `issuesDraftError`
+  carrying `path` when the path is refused or missing. `startGoalDraft` starts one peer for its
+  `path` and broadcasts that run's `issuesDraftState` and the list; starting a path that is
+  already running is refused with `This draft is being elaborated.` and starts no peer.
+  `stopGoalDraft` and `answerGoalDraft` carry the draft `path`; stop closes only that peer and
+  records `stopped`, and an answer reaches only that path's pending question. Each run's activity
+  is sent as its own `issuesDraftState` snapshot while its peer runs.
 
   lifecycle, enabled, paused, repository, poll times, queue, run summaries, active run, question,
   next attempt, errors, and the harness version the worker loaded. A missing state and no live

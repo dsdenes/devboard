@@ -187,6 +187,7 @@ function firstAskHandshake(flag: string): boolean {
 
 /** Draft elaboration mode: simulate the goal-draft command's observable work. */
 const goalDraft = process.argv.includes("--goal-draft");
+if (goalDraft) log(`goal-draft-start ${process.pid}`);
 const goalDraftFinish = argument("goal-draft-finish");
 /** Draft naming mode: answer a naming turn with this text, verbatim. */
 const goalSlug = argument("goal-slug");
@@ -596,7 +597,7 @@ async function runGoalDraft(relativePath: string) {
   } catch {
     // A missing draft still produces a deterministic failure.
   }
-  stream("Reading the draft and researching the repository");
+  stream(`Reading the draft and researching the repository ${relativePath}`);
 
   if (source.includes("STUB-QUESTION")) {
     await askQuestions(1, { recommended: false });

@@ -167,6 +167,73 @@ describe("goal proposal drafts", () => {
     }
   });
 
+  test("writes a text-only draft with an unprocessed notice and no fabricated context", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const instructions =
+        "  The Draft goals page should create a goal in one step.\n\n  Keep this second paragraph.\n";
+      const response = await propose(url, { report: instructions });
+
+      expect(response.status).toBe(201);
+      const path = await responsePath(response);
+      expect(path).toBe(
+        ".devboard/goal-proposals/the-draft-goals-page-should-create.md",
+      );
+      expect(await drafts(root)).toEqual([
+        "the-draft-goals-page-should-create.md",
+      ]);
+      const text = await readFile(join(root, path), "utf8");
+      expect(text.startsWith(
+        "# Proposed goal: The Draft goals page should create a goal in one step.\n\n> Unprocessed draft. ",
+      )).toBe(true);
+      expect(text).toContain(instructions);
+      expect(text).toContain("## Captured UI context\n\nNo page context was captured.\n");
+      expect(text).not.toContain("- Route:");
+      expect(text).not.toContain("- URL:");
+      expect(text).not.toContain("- Selected element:");
+      expect(text).not.toContain("- Viewport:");
+      expect(text).not.toContain("- Captured at:");
+      expect(text).not.toContain("### Visible text");
+      expect(text).not.toContain("### DOM excerpt");
+      expect(text).not.toContain("## Ask conversation");
+
+      const blank = await propose(url, { report: " \n\t " });
+      expect(blank.status).toBe(400);
+      expect(await blank.json()).toEqual({ error: "report must not be empty." });
+      expect(await drafts(root)).toEqual([
+        "the-draft-goals-page-should-create.md",
+      ]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a text-only draft earns a suffix without overwriting an existing name", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const report = "Name two editors.";
+      const first = await propose(url, { report });
+      expect(first.status).toBe(201);
+      const firstPath = await responsePath(first);
+      const firstText = await readFile(join(root, firstPath), "utf8");
+
+      const second = await propose(url, { report });
+      expect(second.status).toBe(201);
+      expect(await second.json()).toEqual({
+        path: ".devboard/goal-proposals/name-two-editors-2.md",
+      });
+      expect(await readFile(join(root, firstPath), "utf8")).toBe(firstText);
+      expect(await drafts(root)).toEqual([
+        "name-two-editors-2.md",
+        "name-two-editors.md",
+      ]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("carries the Ask conversation into the draft as context", async () => {
     const { server, root, url } = await startServer();
 

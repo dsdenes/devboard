@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { resolveForgeAuth } from "../lib/forge-auth.ts";
 import { giteaBaseUrl, parseForgeRemote } from "../lib/forge.ts";
-import { giteaLabels, giteaListIssues, type FetchLike } from "../lib/gitea.ts";
+import { giteaLabels, giteaListIssues, giteaListReleases, type FetchLike } from "../lib/gitea.ts";
 import { pollOpenIssues } from "../issues/tracker";
 import { closeIssue } from "../server/issue-close";
 import { fakeGiteaPull } from "../server/fixtures/fake-gitea-pull";
@@ -278,6 +278,25 @@ describe("Gitea pagination", () => {
     );
     expect(labels.map((label) => label.id)).toEqual(
       Array.from({ length: 60 }, (_, index) => index + 1),
+    );
+  });
+
+  test("reads one release page with the requested bounds", async () => {
+    const calls: Recorded[] = [];
+    const releases = await giteaListReleases(
+      { baseUrl: "http://gitea.test", project: "acme/fixture" },
+      { limit: 2, page: 3 },
+      async (input, init) => {
+        calls.push({ method: init?.method ?? "GET", url: String(input) });
+        return new Response(JSON.stringify([{ tag_name: "v0.1.713" }]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    );
+    expect(releases.map((release) => release.tag_name)).toEqual(["v0.1.713"]);
+    expect(calls[0]?.url).toBe(
+      "http://gitea.test/api/v1/repos/acme/fixture/releases?limit=2&page=3",
     );
   });
 });

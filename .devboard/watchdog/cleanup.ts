@@ -7,6 +7,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { liveLockOwner } from "../issues/lock";
 import { ISSUES_DIRECTORY } from "../issues/paths";
 import { JOURNAL_RETENTION_MS } from "../server/journal";
 
@@ -199,6 +200,11 @@ export function sweepStateDir(
   const isProtected = (path: string): boolean => {
     if (protectedExact.has(path)) return true;
     if (liveLegacyLock(path)) return true;
+    // A checked-out worker's repository-anchored lock is held for as long as
+    // the worker runs, however long that is. Its content names the owner, so
+    // protect any `lock` file whose recorded owner is still alive; a lock with
+    // a dead owner stays sweepable, and so does everything else under `scout`.
+    if (basename(path) === "lock" && liveLockOwner(path) !== undefined) return true;
     // A provider store may live below a state directory that is itself nested
     // inside this sweep's root (verification scratch, a worktree). Identify the
     // store by its contents, so no credentials file is ever swept at any depth.

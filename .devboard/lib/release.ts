@@ -13,6 +13,7 @@ import {
 import { basename, join, resolve } from "node:path";
 import { configuredGiteaToken, configuredGiteaUrl } from "./forge";
 import {
+  GiteaError,
   giteaDownloadAsset,
   giteaLatestRelease,
   giteaReleaseByTag,
@@ -371,6 +372,63 @@ export async function npmLatestVersion(env: NodeJS.ProcessEnv): Promise<string> 
   return version;
 }
 
+/**
+ * The dist-tag a release publishes under when a newer version already exists.
+ * npm refuses to move `latest` backwards, so an older release must name a
+ * side tag explicitly instead of relying on the implicit default.
+ */
+export const SIDE_RELEASE_TAG = "next";
+
+/** Orders two dotted numeric versions; undefined when either is unreadable. */
+export function compareReleaseVersions(
+  left: string,
+  right: string,
+): number | undefined {
+  const parse = (version: string): number[] | undefined => {
+    const parts = version.split(".").map(Number);
+    if (parts.length !== 3 || parts.some((part) => !Number.isSafeInteger(part))) {
+      return undefined;
+    }
+    return parts;
+  };
+  const first = parse(left);
+  const second = parse(right);
+  if (first === undefined || second === undefined) return undefined;
+  for (let index = 0; index < first.length; index += 1) {
+    const difference = (first[index] ?? 0) - (second[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+/** The highest release version among published tags; malformed tags are ignored. */
+export function highestReleaseVersion(versions: Iterable<string>): string | undefined {
+  let highest: string | undefined;
+  for (const version of versions) {
+    if (compareReleaseVersions(version, version) === undefined) continue;
+    if (highest === undefined || (compareReleaseVersions(version, highest) ?? 0) > 0) {
+      highest = version;
+    }
+  }
+  return highest;
+}
+
+/**
+ * The dist-tag one release publishes under. `latest` only moves forward, so a
+ * version at or below the newest published one publishes under a side tag.
+ */
+export function publishTagFor(
+  version: string,
+  newest: string | undefined,
+): "latest" | typeof SIDE_RELEASE_TAG {
+  if (newest === undefined) return "latest";
+  const order = compareReleaseVersions(version, newest);
+  if (order === undefined) {
+    throw new ReleaseError(`cannot order release version ${version} against ${newest}`);
+  }
+  return order > 0 ? "latest" : SIDE_RELEASE_TAG;
+}
+
 /** The tarball npm advertises for one published version. */
 export async function npmArtifactUrl(
   env: NodeJS.ProcessEnv,
@@ -473,7 +531,21 @@ async function giteaRelease(source: GiteaSource): Promise<ReleaseInfo> {
       "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
     );
   }
-  return releaseFromDocument(await giteaLatestRelease(giteaTarget(source)));
+  let document: GiteaReleaseDocument;
+  try {
+    document = await giteaLatestRelease(giteaTarget(source));
+  } catch (error) {
+    // A 2xx answer that is not JSON is feed context, not a harness defect,
+    // exactly like the command-based feed's unreadable description. A status
+    // error still names a rejected request.
+    if (error instanceof GiteaError && error.status === undefined) {
+      throw new ReleaseFeedError(
+        `the release feed returned an unreadable description: ${error.message}`,
+      );
+    }
+    throw error;
+  }
+  return releaseFromDocument(document);
 }
 
 async function giteaReleaseForVersion(

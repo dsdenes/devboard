@@ -300,6 +300,19 @@ console.log(`publish: ${tag} carries the fallback tarball and checksum`);
 console.log(`publish: ${PACKAGE_NAME}@${version} is published`);
 
 if (remotes.includes("github")) {
+  // Another agent may merge and push while this run waits for its workflow.
+  // The mirror carries the branch as it is now; the verified commit only has
+  // to remain in its history.
+  const mirrorHead = mustGit(["rev-parse", "HEAD"], "could not read HEAD before the mirror push");
+  if (mirrorHead !== published) {
+    const contains = git(["merge-base", "--is-ancestor", published, mirrorHead]);
+    if (contains.code !== 0) {
+      fail(`main no longer contains the published commit ${published.slice(0, 7)}`);
+    }
+    console.log(
+      `publish: main advanced to ${mirrorHead.slice(0, 7)} after the release was verified`,
+    );
+  }
   console.log("publish: pushing the GitHub mirror");
   const mirrored = run(
     [
@@ -312,7 +325,9 @@ if (remotes.includes("github")) {
       "credential.https://github.com.helper=!/usr/bin/gh auth git-credential",
       "push",
       "github",
-      "refs/heads/*:refs/heads/*",
+      // Only the published branch and its tags: a stale local feature branch
+      // in the integration checkout must not fail the release verification.
+      "refs/heads/main:refs/heads/main",
       "refs/tags/*:refs/tags/*",
     ],
   );
@@ -320,10 +335,22 @@ if (remotes.includes("github")) {
     fail(`could not push the GitHub mirror: ${mirrored.stderr || mirrored.stdout}`);
   }
   const mirrorTip = git(["ls-remote", "github", "refs/heads/main"]);
-  if (mirrorTip.code !== 0 || !mirrorTip.stdout.startsWith(published)) {
-    fail("the GitHub mirror does not name the published commit");
+  const mirrorSha = mirrorTip.stdout.split(/\s+/)[0] ?? "";
+  const mirrorNames =
+    mirrorSha === mirrorHead ||
+    (mirrorSha.length > 0 &&
+      git(["merge-base", "--is-ancestor", mirrorHead, mirrorSha]).code === 0);
+  if (mirrorTip.code !== 0 || !mirrorNames) {
+    fail(
+      `the GitHub mirror main (${mirrorSha.slice(0, 7) || "missing"}) ` +
+        `does not name ${mirrorHead.slice(0, 7)}`,
+    );
   }
-  console.log(`publish: github/main names ${published.slice(0, 7)}`);
+  console.log(
+    mirrorHead === published
+      ? `publish: github/main names ${published.slice(0, 7)}`
+      : `publish: github/main names ${mirrorHead.slice(0, 7)} and contains ${published.slice(0, 7)}`,
+  );
 } else {
   console.log("publish: no github mirror remote; skipped");
 }

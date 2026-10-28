@@ -225,6 +225,43 @@ describe("createApp", () => {
     }
   });
 
+  test("refuses a cross-origin WebSocket upgrade and accepts a same-origin one", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const refused = await fetch(`http://${url}/ws`, {
+        headers: {
+          Origin: "https://evil.example",
+          Upgrade: "websocket",
+          Connection: "Upgrade",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+          "Sec-WebSocket-Version": "13",
+        },
+      });
+      expect(refused.status).toBe(403);
+      expect(await refused.text()).toBe("Cross-origin WebSocket upgrades are refused.");
+
+      // The ambient WebSocket type is the DOM one, which has no Bun options.
+      const Socket = WebSocket as unknown as new (
+        url: string,
+        options: { headers: Record<string, string> },
+      ) => WebSocket;
+      const { promise, resolve } = Promise.withResolvers<boolean>();
+      const socket = new Socket(`ws://${url}/ws`, {
+        headers: { Origin: `http://${url}` },
+      });
+      socket.onopen = () => {
+        socket.close();
+        resolve(true);
+      };
+      socket.onerror = () => resolve(false);
+      socket.onclose = () => resolve(false);
+      expect(await promise).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("restarts once on request and refuses a concurrent restart", async () => {
     let restarts = 0;
     const { server, url } = await startServer({ restart: () => (restarts += 1) });
