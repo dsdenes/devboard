@@ -1584,6 +1584,22 @@ async function spawnClone(request: RemoteCloneRequest): Promise<RemoteCloneResul
 }
 
 /**
+ * Whether a request carries an `Origin` header for a page on another host.
+ * Browsers send the header on cross-site requests, including WebSocket
+ * upgrades; a client without one is not a page and is accepted. The host
+ * comparison is shared so the mutating endpoints and the socket cannot drift.
+ */
+function isCrossOriginRequest(request: Request, url: URL): boolean {
+  const origin = request.headers.get("origin");
+  if (origin === null) return false;
+  try {
+    return new URL(origin).host !== url.host;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * The method, origin, size, and JSON guards shared by the mutating browser
  * endpoints. A cross-origin page must never reach a handler with a side
  * effect; the body is bounded before it is parsed.
@@ -1598,22 +1614,13 @@ async function readMutationBody(
     };
   }
 
-  const origin = request.headers.get("origin");
-  if (origin !== null) {
-    let originHost: string | null = null;
-    try {
-      originHost = new URL(origin).host;
-    } catch {
-      originHost = null;
-    }
-    if (originHost !== url.host) {
-      return {
-        response: Response.json(
-          { error: "Cross-origin feedback is refused." },
-          { status: 403 },
-        ),
-      };
-    }
+  if (isCrossOriginRequest(request, url)) {
+    return {
+      response: Response.json(
+        { error: "Cross-origin feedback is refused." },
+        { status: 403 },
+      ),
+    };
   }
 
   const declared = Number(request.headers.get("content-length") ?? "0");
@@ -5846,6 +5853,9 @@ export function createApp(options: AppOptions) {
       }
 
       if (url.pathname === "/ws") {
+        if (isCrossOriginRequest(request, url)) {
+          return new Response("Cross-origin WebSocket upgrades are refused.", { status: 403 });
+        }
         if (server.upgrade(request)) return;
         return new Response("Expected a WebSocket upgrade", { status: 426 });
       }
