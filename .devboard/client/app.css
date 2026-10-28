@@ -3514,51 +3514,6 @@ a.code-chip--link:focus-visible {
   font-size: 11px;
 }
 
-.scout-facts {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-}
-
-.scout-facts > div {
-  align-items: baseline;
-  border-bottom: 1px solid var(--border-subtle);
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: 6px 0;
-}
-
-.scout-facts > div:first-child {
-  padding-top: 0;
-}
-
-.scout-facts > div:last-child {
-  border-bottom: 0;
-  padding-bottom: 0;
-}
-
-.scout-facts dt {
-  color: var(--muted);
-  font-size: 10.5px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.scout-facts dd {
-  font-size: 12px;
-  margin: 0;
-  max-width: 220px;
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
-.scout-facts__count {
-  font-size: 20px;
-  font-weight: 650;
-  line-height: 1;
-}
-
 .scout-limits {
   display: flex;
   flex-direction: column;
