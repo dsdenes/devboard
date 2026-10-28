@@ -68,7 +68,7 @@
 </script>
 
 <section class="watchdog-page" data-testid="watchdog-page" aria-label="Watchdog">
-  <PageHeader eyebrow="Issues" title="Watchdog" testid="watchdog-header">
+  <PageHeader title="Watchdog" testid="watchdog-header">
     {#snippet meta()}
       <span class="badge" data-tone={syncTone} data-testid="watchdog-sync" data-state={sync.state}>
         GitHub read {sync.state}
