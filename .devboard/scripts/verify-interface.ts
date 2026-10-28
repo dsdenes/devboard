@@ -5365,10 +5365,8 @@ try {
   check(reportDraftPath !== undefined, "the report panel's draft is missing from the list", expectedDrafts);
   await page.click(`[data-testid="issues-draft"][data-path="${reportDraftPath}"]`);
   await page.wait(`document.querySelector('[data-testid="issues-draft-detail"]') !== null`, "the draft detail");
-  const reportDraftText = await readFile(join(host, reportDraftPath!), "utf8");
   const detail = await page.eval<{
     path: string;
-    text: string;
     context: string;
     start: string;
     startCommand: string;
@@ -5378,14 +5376,11 @@ try {
     facts: number;
     evidence: number;
     evidenceDisclosure: boolean;
-    sourceClosed: boolean;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const start = document.querySelector('[data-testid="issues-draft-start"]');
-    const source = panel?.querySelector("details.issues-draft-source");
     return {
       path: panel?.getAttribute("data-path") ?? "",
-      text: document.querySelector('[data-testid="issues-draft-text"]')?.textContent ?? "",
       context: document.querySelector('[data-testid="issues-draft-context"]')?.textContent ?? "",
       start: document.querySelector('[data-testid="issues-draft-start"]') !== null ? "yes" : "",
       startCommand: start?.getAttribute("data-command") ?? "",
@@ -5395,7 +5390,6 @@ try {
       facts: panel?.querySelectorAll('[data-testid="issues-draft-context"] dt').length ?? 0,
       evidence: panel?.querySelectorAll(".issues-draft-evidence__section").length ?? 0,
       evidenceDisclosure: panel?.querySelector("details.issues-draft-evidence") !== null,
-      sourceClosed: source instanceof HTMLDetailsElement && !source.open,
     };
   })()`);
   check(detail.path === reportDraftPath, "the detail does not name the selected draft", detail);
@@ -5408,7 +5402,6 @@ try {
     "the draft selection is not persisted",
     storedSelection,
   );
-  check(detail.text === reportDraftText, "the detail does not show the draft bytes exactly", detail);
   check(
     detail.context.includes("Route:") &&
       detail.context.includes("Selected element:") &&
@@ -5424,8 +5417,8 @@ try {
     detail,
   );
   check(
-    detail.facts > 0 && detail.evidence > 0 && !detail.evidenceDisclosure && detail.sourceClosed,
-    "the compact context, the inline evidence, or the closed source disclosure is missing",
+    detail.facts > 0 && detail.evidence > 0 && !detail.evidenceDisclosure,
+    "the compact context or the inline evidence is missing",
     detail,
   );
   await dismissNotifications();
@@ -5466,17 +5459,13 @@ try {
   );
   const questionLayout = await page.eval<{
     ordered: boolean;
-    sourceClosed: boolean;
     contextEmpty: string;
   }>(`(() => {
     const question = document.querySelector('[data-testid="issues-draft-question"]');
     const activity = document.querySelector('[data-testid="issues-draft-activity"]');
-    const panel = document.querySelector('[data-testid="issues-draft-detail"]');
-    const source = panel?.querySelector("details.issues-draft-source");
     return {
       ordered: question !== null && activity !== null &&
         (question.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
-      sourceClosed: source instanceof HTMLDetailsElement && !source.open,
       contextEmpty: document.querySelector('[data-testid="issues-draft-context"]')?.textContent?.trim() ?? "",
     };
   })()`);
@@ -5485,7 +5474,6 @@ try {
     "the pending question is not above the activity log",
     questionLayout,
   );
-  check(questionLayout.sourceClosed, "the exact draft source is not collapsed", questionLayout);
   check(
     questionLayout.contextEmpty === "No captured UI context.",
     "a draft without captured context does not say so",
@@ -5624,19 +5612,12 @@ try {
   );
   check(refreshedCount === "3", "the Drafts count did not follow the new draft", refreshedCount);
 
-  // Reload restores the drafts page and the selected path's bytes.
+  // Reload restores the drafts page and the selected path.
   await page.reload();
   await page.wait(
     `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,
     "the selected draft after reload",
     20_000,
-  );
-  const restoredText = await page.eval<string>(
-    `document.querySelector('[data-testid="issues-draft-text"]')?.textContent ?? ""`,
-  );
-  check(
-    restoredText === (await readFile(join(host, ".devboard", "goal-proposals", "002-hang.md"), "utf8")),
-    "reload lost the selected draft's bytes",
   );
 
   // A vanished draft leaves the list and selection; a reload opens the list.

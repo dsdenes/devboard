@@ -3589,8 +3589,7 @@ a.code-chip--link:focus-visible {
   min-width: 0;
 }
 
-.issues-draft-detail__section + .issues-draft-detail__section,
-.issues-draft-detail__section + .issues-draft-source {
+.issues-draft-detail__section + .issues-draft-detail__section {
   border-top: 1px solid var(--border-subtle);
   padding-top: 16px;
 }
@@ -3701,42 +3700,6 @@ a.code-chip--link:focus-visible {
   line-height: 1.45;
   margin: 0;
   overflow-wrap: anywhere;
-  padding: 8px 10px;
-  white-space: pre-wrap;
-}
-
-.issues-draft-source {
-  flex: 0 0 auto;
-}
-
-.issues-draft-source > summary {
-  align-items: center;
-  cursor: pointer;
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-}
-
-.issues-draft-source[open] > summary {
-  margin-bottom: 8px;
-}
-
-.issues-draft-source__meta {
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-
-.issues-draft-text {
-  background: var(--background);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  font-size: 11.5px;
-  line-height: 1.5;
-  margin: 0;
-  max-height: 320px;
-  overflow: auto;
-  overflow-wrap: anywhere;
-  overscroll-behavior: contain;
   padding: 8px 10px;
   white-space: pre-wrap;
 }
