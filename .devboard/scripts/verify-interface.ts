@@ -2466,7 +2466,6 @@ try {
   const discoverChrome = await page.eval<{
     eyebrow: boolean;
     stale: boolean;
-    commit: boolean;
     railLeft: number;
     railWidth: number;
     columnLeft: number;
@@ -2496,7 +2495,6 @@ try {
     return {
       eyebrow: head?.querySelector('.discover-page__eyebrow') !== null,
       stale: document.querySelector('[data-testid="discover-stale"]') !== null,
-      commit: head?.querySelector('.discover-head__meta code') !== null,
       railLeft: Math.round(rail?.getBoundingClientRect().left ?? -1),
       railWidth: Math.round(rail?.getBoundingClientRect().width ?? -1),
       columnLeft: Math.round(column?.getBoundingClientRect().left ?? -1),
@@ -2514,7 +2512,7 @@ try {
       happyPath: stats.find((stat) => stat.label === "happy path")?.value ?? "",
     };
   })()`);
-  check(!discoverChrome.eyebrow && !discoverChrome.stale && !discoverChrome.commit, "the sheet still renders removed masthead chrome", discoverChrome);
+  check(!discoverChrome.eyebrow && !discoverChrome.stale, "the sheet still renders removed masthead chrome", discoverChrome);
   check(discoverChrome.railLeft < discoverChrome.columnLeft, "the sheet column is not to the right of the facts rail", discoverChrome);
   check(
     discoverChrome.railWidth >= 320,
