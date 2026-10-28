@@ -44,9 +44,11 @@ import {
 /**
  * The detached worker for exactly one repository. It owns the poll loop, the
  * ACP peers, the ledger, the repository lock, and the activity, so it outlives
- * any dashboard process. Every open, unhandled issue gets its own peer in the
- * same poll, with no concurrency cap, and all of them run at the same time.
+ * any dashboard process. Every open, unhandled issue gets its own peer, up to
+ * `MAX_CONCURRENT_PEERS`; the rest wait in the queue for a free slot.
  */
+
+export const MAX_CONCURRENT_PEERS = 30;
 
 const DEFAULT_INTERVAL_MS = 10_000;
 const COOLDOWN_MS = 5 * 60_000;
@@ -694,6 +696,7 @@ export class IssuesWorker {
   private maybeTrigger(): void {
     if (this.stopping || this.state.paused || !this.state.enabled) return;
     for (const issue of this.state.queue) {
+      if (this.active.size >= MAX_CONCURRENT_PEERS) break;
       if (issue.handled) continue;
       if (this.active.has(issue.number)) continue;
       if (this.cooldownRemaining(issue.number)) continue;

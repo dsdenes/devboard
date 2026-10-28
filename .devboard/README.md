@@ -285,8 +285,11 @@ durable state file under `<stateDir>/state/` carries no key material.
 Usage is read from `https://opencode.ai/zen/go/v1/usage` (`rolling`, `weekly`, and `monthly`
 percent used) and `https://openrouter.ai/api/v1/key` (`limit_remaining` and `limit`).
 `DEVBOARD_OPENCODE_GO_USAGE_BASE_URL` and `DEVBOARD_OPENROUTER_USAGE_BASE_URL` override the base
-URLs for tests and offline verification. A key's usage is fetched at most once per 60 seconds
-unless the operator forces a refresh.
+URLs for tests and offline verification. On-demand reads fetch a key's usage at most once per
+60 seconds unless the operator forces a refresh; while at least one dashboard is connected, the
+server forces one refresh and pushes a fresh `providersState` every 60 seconds, so the
+status-bar indicator never stays stale. With no client connected the periodic refresh makes no
+provider call, and the next client's `getProviders` refreshes first.
 
 Remaining is `1 - percent/100` for each Go window and `limit_remaining / limit` for OpenRouter,
 or unlimited when the account has no limit. A subscription is eligible only when every gating
@@ -304,9 +307,13 @@ drafts, and skills preparation — starts with `PI_CODING_AGENT_DIR` pointing at
 directory under `<stateDir>/providers/agents/`. Its `config.yml` pins `default`, `plan`, `smol`,
 `slow`, and `task` to the selected model. A Go selection also sets `retry.modelFallback: true`,
 `retry.fallbackOn: any`, and a chain from `opencode-go/*` to the OpenRouter fallback; an
-OpenRouter selection sets no chain. The peer environment removes the operator's inherited
-`OPENCODE_API_KEY` and `OPENROUTER_API_KEY` first, then adds only the selected keys (a Go peer
-also receives an OpenRouter key when one exists, for its fallback chain).
+OpenRouter selection sets no chain. Every selection also names `ollama`, `lm-studio`,
+`llama.cpp`, and `apple` in `disabledProviders`: OMP discovers those implicit local model
+servers on every start, a peer can only run the two catalog providers, and the failed probes
+would otherwise log warnings the watchdog files as evidence. The peer environment removes the
+operator's inherited `OPENCODE_API_KEY` and `OPENROUTER_API_KEY` first, then adds only the
+selected keys (a Go peer also receives an OpenRouter key when one exists, for its fallback
+chain).
 
 `omp/config.yml` is still installed as `<host>/.omp/config.yml`, but it no longer pins
 `modelRoles`: a project-level pin would override the per-peer selection. The interactive agent
@@ -1436,10 +1443,11 @@ planned.
 
 Issues is the fourth mode in the activity rail, below Goal. Each dashboard controls exactly one
 repository: its own `REPO_DIR`. Starting Issues in one checkout's dashboard polls that checkout's
-origin open issues and starts one ACP agent for every open, unhandled issue in that same poll. Each
-issue without the exact `goal` label receives exactly `/implement-issue <number>`; each
-`goal`-labeled issue receives exactly `/implement-goal-issue <number>`. There is no concurrency
-cap: ten ready issues start ten peers, and no peer waits for another to finish. A detached worker
+origin open issues and starts one ACP agent for every open, unhandled issue in that same poll, up to
+thirty at once. Each issue without the exact `goal` label receives exactly
+`/implement-issue <number>`; each `goal`-labeled issue receives exactly
+`/implement-goal-issue <number>`. A thirty-first ready issue waits in the queue and starts as soon
+as a running peer finishes; no peer waits for another to finish. A detached worker
 owns the poll loop, the peers, the ledger, the lock, and the activity for one repository, so it
 survives a dashboard restart and two repositories never share a worker. No systemd unit, timer, or
 machine-level scheduler is involved, and neither starting nor restarting a dashboard starts a
@@ -2082,7 +2090,9 @@ The client sends:
   while an unreachable endpoint or 5xx saves the subscription with status `unknown`. Editing a
   label without a key never revalidates. `deleteProvider` and `setProviderEnabled` persist the
   store without touching a running peer. `refreshProviders` bypasses the 60-second usage cache.
-  Every mutation broadcasts a fresh `providersState`; failures answer `providerError`.
+  Every mutation broadcasts a fresh `providersState`; failures answer `providerError`. While at
+  least one client is connected, the server forces a refresh and broadcasts a fresh
+  `providersState` every 60 seconds; an idle server makes no provider call.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
   lifecycle, enabled, paused, repository, poll times, queue entries with `labels`, `handled`,
   `runId`, and `agentRunId`, run summaries, the running `agents` (run id, issue number, startedAt,
@@ -2473,16 +2483,16 @@ default client's bounded `gh` calls, a failed pre-filing read, migration from a 
 missing score failing the scan atomically, a failed filing, Stop keeping the rows, the live lock,
 a replacement closing an interrupted scan, bridge replay without a spawn, another `STATE_DIR`
 refused, a harness-version notice, the issue body and label creation, and the scan prompt's rubric.
-`tests/issues.test.ts` covers the fleet (four mixed issues, twelve peers with no cap, duplicate
-prevention, an issue opened mid-run, per-issue success and ledger entries, one failure cooling only
-its issue), Check now clearing every cooldown, pause draining every peer, Stop closing every peer
-without a cooldown, per-agent questions and answer routing, two orphan children on a fresh start,
-version 1 state loading, reopened-issue eligibility, history pruning that keeps every running
-directory, preflight for both wrappers, repo-scoped state and lock isolation, atomic and damaged
-state, ledger migration, the activity bounds, and the conditional tracker. `tests/cleanup.test.ts`
-proves the watchdog preserves repo-scoped issues state, the repo-anchored lock, and Flow session
-records that Flow restore still reads, while sweeping legacy orchestrator run files. Every fixture
-stays under `.devboard/.tmp`.
+`tests/issues.test.ts` covers the fleet (four mixed issues, the thirty-peer cap with a queued peer
+starting when one finishes, duplicate prevention, an issue opened mid-run, per-issue success and
+ledger entries, one failure cooling only its issue), Check now clearing every cooldown, pause
+draining every peer, Stop closing every peer without a cooldown, per-agent questions and answer
+routing, two orphan children on a fresh start, version 1 state loading, reopened-issue eligibility,
+history pruning that keeps every running directory, preflight for both wrappers, repo-scoped state
+and lock isolation, atomic and damaged state, ledger migration, the activity bounds, and the
+conditional tracker. `tests/cleanup.test.ts` proves the watchdog preserves repo-scoped issues state,
+the repo-anchored lock, and Flow session records that Flow restore still reads, while sweeping
+legacy orchestrator run files. Every fixture stays under `.devboard/.tmp`.
 `tests/launcher.test.ts` covers the single public package: the manifest, the help output, the
 tarball's required and forbidden paths, the fallback asset name, and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`
 covers installing a release when the process working directory has been deleted.
