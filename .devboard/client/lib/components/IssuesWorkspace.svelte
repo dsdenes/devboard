@@ -251,30 +251,45 @@
           <ol class="issues-agent-summary" data-testid="issues-agent-summary">
             {#each agents as agent (agent.runId)}
               <li class="issues-agent-summary__item">
-                <button
-                  type="button"
+                <div
                   class="issues-agent-row"
-                  data-command="issues.agent.open"
                   data-run={agent.runId}
                   data-issue={agent.issueNumber}
                   title={issueTitle(agent.issueNumber)}
                   aria-current={selectedAgent?.runId === agent.runId}
-                  onclick={() => (selectedRunId = agent.runId)}
                 >
-                  <span class="issues-agent-row__issue mono">#{agent.issueNumber}</span>
-                  <span class="issues-agent-row__title">{issueTitle(agent.issueNumber)}</span>
-                  <span class="issues-agent-row__meta">
-                    {#if agent.question !== null}
-                      <span class="badge" data-tone="warning">needs answer</span>
-                    {/if}
-                    <span
-                      class="issues-agent-row__elapsed mono"
-                      title={`Started ${startedClock(agent.startedAt)}`}
-                    >
-                      {elapsedShort(agent.startedAt)}
+                  <a
+                    class="issues-agent-row__issue mono"
+                    data-testid="issues-agent-row-issue"
+                    href={issueUrl(agent.issueNumber)}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Open issue #${agent.issueNumber}: ${issueTitle(agent.issueNumber)}`}
+                  >
+                    #{agent.issueNumber}
+                  </a>
+                  <button
+                    type="button"
+                    class="issues-agent-row__open"
+                    data-command="issues.agent.open"
+                    data-run={agent.runId}
+                    data-issue={agent.issueNumber}
+                    onclick={() => (selectedRunId = agent.runId)}
+                  >
+                    <span class="issues-agent-row__title">{issueTitle(agent.issueNumber)}</span>
+                    <span class="issues-agent-row__meta">
+                      {#if agent.question !== null}
+                        <span class="badge" data-tone="warning">needs answer</span>
+                      {/if}
+                      <span
+                        class="issues-agent-row__elapsed mono"
+                        title={`Started ${startedClock(agent.startedAt)}`}
+                      >
+                        {elapsedShort(agent.startedAt)}
+                      </span>
                     </span>
-                  </span>
-                </button>
+                  </button>
+                </div>
                 <button
                   type="button"
                   class="issues-agent-row__close"

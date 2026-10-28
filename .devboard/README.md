@@ -1429,9 +1429,11 @@ facts, and `data-testid="issues-overview"`. It shows the running-agent count as
 `data-testid="issues-running-agents"`, the pending count, the number of issues in cooldown and the
 earliest cooldown time as `data-testid="issues-cooldowns"`. The left column holds the Automation
 panel and, directly after it, the running agents in
-`data-testid="issues-agent-summary"`: one button per agent carrying `data-run` and `data-issue`,
+`data-testid="issues-agent-summary"`: one row per agent carrying `data-run` and `data-issue`,
 sorted by issue number, with `aria-current="true"` on
 the selected agent, the issue title, a `needs answer` badge while it asks, and its elapsed time.
+The row's issue number is a tracker link (`data-testid="issues-agent-row-issue"`, opening the
+issue URL from the queue in a new tab) next to a control that selects the agent's output.
 The running-agent panel header carries an aggregate `data-testid="issues-overview-asking"` warning
 badge (`<n> needs answer` or `<n> need answers`) only while at least one agent waits; the fleet
 count is not repeated in that header because the Automation panel states it.
@@ -1443,8 +1445,8 @@ open and reports the reason as an error notification; a successful one reports
 The right column renders only the selected agent's output in
 `data-testid="issues-overview-output"` with `data-run`, its stream in
 `data-testid="issues-overview-activity"`, and its question in
-`data-testid="issues-overview-question"`. The first agent is selected by default, clicking another
-row switches the output, and the pane falls back to the first live agent when the selected run
+`data-testid="issues-overview-question"`. The first agent is selected by default, the row's select
+control switches the output, and the pane falls back to the first live agent when the selected run
 ends; the overview list selects instead of opening a tab. The queue keeps every open issue, its
 `goal` badge, and its handled state, and shows `data-run` and a running marker for an issue with an
 active agent. The Runs page lists every run with its status and issue,

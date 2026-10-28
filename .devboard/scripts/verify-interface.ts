@@ -4364,6 +4364,7 @@ try {
   const overview = await page.eval<{
     cooldowns: string;
     summaryIssues: string[];
+    summaryIssueLinks: Array<{ tag: string; text: string; href: string; target: string }>;
     sideBeforeOutput: boolean;
     leftOfOutput: boolean;
     summaryBelowAutomation: boolean;
@@ -4389,6 +4390,14 @@ try {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
       summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
+      ),
+      summaryIssueLinks: [...(summary?.querySelectorAll(".issues-agent-row__issue") ?? [])].map(
+        (link) => ({
+          tag: link.tagName,
+          text: link.textContent?.trim() ?? "",
+          href: link.getAttribute("href") ?? "",
+          target: link.getAttribute("target") ?? "",
+        }),
       ),
       sideBeforeOutput: side !== null && output !== null && side.nextElementSibling === output,
       leftOfOutput:
@@ -4488,6 +4497,18 @@ try {
     "the overview does not list every running agent",
     overview,
   );
+  check(
+    overview.summaryIssueLinks.length === 3 &&
+      overview.summaryIssueLinks.every(
+        (link, index) =>
+          link.tag === "A" &&
+          link.text === `#${[17, 18, 19][index]}` &&
+          link.href === `https://github.com/fixture/host/issues/${[17, 18, 19][index]}` &&
+          link.target === "_blank",
+      ),
+    "the overview running-agent issue numbers are not tracker links",
+    overview.summaryIssueLinks,
+  );
   check(overview.sideBeforeOutput, "the agent list is not in the left column", overview);
   check(overview.leftOfOutput, "the side column does not sit to the left of the output", overview);
   check(
@@ -4512,7 +4533,7 @@ try {
     overview,
   );
 
-  await page.click('[data-testid="issues-agent-summary"] [data-issue="18"]');
+  await page.click('[data-testid="issues-agent-summary"] .issues-agent-row__open[data-issue="18"]');
   await page.wait(
     `document.querySelector('[data-testid="issues-overview-output"]')?.getAttribute("data-run") ===
        "2026-10-27T10-00-02-000Z" &&
