@@ -78,6 +78,7 @@ import {
   type RetainedRemoteProject,
 } from "./discover";
 import { readRecords, type AdrRecord } from "./records";
+import { ProviderService, ProviderUnavailableError } from "./providers";
 import {
   appendActivity,
   preserveStateFile,
@@ -167,6 +168,8 @@ export interface AppOptions {
   watchdog?: Pick<WatchdogActivityOptions, "reader" | "now" | "intervalMs" | "staleAfterMs">;
   /** Names one proposed-goal draft; production asks the configured ACP agent. */
   goalSlug?: (report: string) => Promise<string>;
+  /** The credential store and selection; defaults to the state directory's. */
+  providers?: ProviderService;
 }
 
 type RunAction = "resolving" | "implementing" | "generating";
@@ -537,7 +540,12 @@ type ClientMessage =
   | { type: "confirmGlossaryTerm"; context?: unknown; id?: unknown }
   | { type: "rejectGlossaryTerm"; context?: unknown; id?: unknown; reason?: unknown }
   | { type: "ask"; conversationId?: unknown; question?: unknown; context?: unknown }
-  | { type: "closeAsk"; conversationId?: unknown };
+  | { type: "closeAsk"; conversationId?: unknown }
+  | { type: "getProviders" }
+  | { type: "saveProvider"; id?: unknown; provider?: unknown; label?: unknown; key?: unknown }
+  | { type: "deleteProvider"; id?: unknown }
+  | { type: "setProviderEnabled"; id?: unknown; enabled?: unknown }
+  | { type: "refreshProviders" };
 
 function parseClientMessage(value: unknown): ClientMessage | undefined {
   if (typeof value !== "object" || value === null || !("type" in value)) return undefined;
@@ -742,6 +750,26 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
         type: "closeAsk",
         conversationId: "conversationId" in value ? value.conversationId : undefined,
       };
+    case "getProviders":
+      return { type: "getProviders" };
+    case "saveProvider":
+      return {
+        type: "saveProvider",
+        id: "id" in value ? value.id : undefined,
+        provider: "provider" in value ? value.provider : undefined,
+        label: "label" in value ? value.label : undefined,
+        key: "key" in value ? value.key : undefined,
+      };
+    case "deleteProvider":
+      return { type: "deleteProvider", id: "id" in value ? value.id : undefined };
+    case "setProviderEnabled":
+      return {
+        type: "setProviderEnabled",
+        id: "id" in value ? value.id : undefined,
+        enabled: "enabled" in value ? value.enabled : undefined,
+      };
+    case "refreshProviders":
+      return { type: "refreshProviders" };
     default:
       return undefined;
   }
@@ -1613,9 +1641,18 @@ export function createApp(options: AppOptions) {
   // deterministic slug inside `writeGoalProposal`.
   const goalSlug =
     options.goalSlug ??
-    ((report: string) => suggestGoalSlug(report, { command: agentCommand, cwd: repoDir }));
+    (async (report: string) =>
+      suggestGoalSlug(report, {
+        command: agentCommand,
+        cwd: repoDir,
+        env: await peerEnvironment(),
+      }));
   // Every Ask peer runs in the host repository, whatever the request came from.
-  const ask = new AskController({ command: agentCommand, cwd: repoDir });
+  const ask = new AskController({
+    command: agentCommand,
+    cwd: repoDir,
+    environment: peerEnvironment,
+  });
   const tracker = options.tracker ?? findOpenEpics;
   const trackerSettle: TrackerSettle = {
     attempts: Math.max(1, options.trackerSettle?.attempts ?? TRACKER_SETTLE_ATTEMPTS),
@@ -1632,6 +1669,21 @@ export function createApp(options: AppOptions) {
   // The state belongs to this checkout, not to the harness installation: hosts
   // share one harness through a symlink, so the repository path keys the file.
   const stateDir = resolve(options.stateDir ?? join(import.meta.dir, "..", ".tmp"));
+  // The operator's provider credentials and the per-peer selection. OMP's own
+  // login state is never consulted for these two providers.
+  const providers =
+    options.providers ??
+    new ProviderService({
+      stateDir,
+      log: (line) => process.stderr.write(`${line}\n`),
+    });
+  /**
+   * The environment one ACP peer receives. It throws before a process is
+   * spawned when no subscription can serve the peer.
+   */
+  async function peerEnvironment(): Promise<Record<string, string | undefined>> {
+    return (await providers.select()).env;
+  }
   // The Issues-mode watchdog page: local facts every request, GitHub in the
   // background at most once per interval. It never writes watchdog state.
   const watchdog = new WatchdogActivity({
@@ -1736,6 +1788,7 @@ export function createApp(options: AppOptions) {
     repoDir,
     stateDir,
     agentCommand,
+    agentEnvironment: peerEnvironment,
     journal,
     goalWorkActive: activeGoalWork,
     broadcast: (event) => broadcast(event),
@@ -1862,6 +1915,12 @@ export function createApp(options: AppOptions) {
     syncDiscoverBusy();
   }
 
+  /** Re-reads stale usage and pushes the masked provider state to everyone. */
+  async function publishProviders(force = false): Promise<void> {
+    await providers.refresh(force);
+    broadcast({ type: "providersState", ...providers.view() });
+  }
+
   /**
    * Issues mode reads and commands the detached worker for this checkout. The
    * bridge never owns the worker: starting one is detached, stopping this
@@ -1871,6 +1930,7 @@ export function createApp(options: AppOptions) {
     repoDir,
     stateDir,
     agentCommand,
+    agentEnvironment: peerEnvironment,
     runningVersion,
     harnessDir: runningHarnessDir(),
     send: (event, except) => sendAll(event, except),
@@ -1889,6 +1949,7 @@ export function createApp(options: AppOptions) {
   const goalDrafts = new GoalDraftManager({
     repoDir,
     command: agentCommand,
+    environment: peerEnvironment,
     send: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });
@@ -1902,6 +1963,7 @@ export function createApp(options: AppOptions) {
     repoDir,
     stateDir,
     agentCommand,
+    agentEnvironment: peerEnvironment,
     runningVersion,
     harnessDir: runningHarnessDir(),
     send: (event, except) => sendAll(event, except),
@@ -2611,6 +2673,7 @@ export function createApp(options: AppOptions) {
       agent = new AcpConnection({
         command: agentCommand,
         cwd: root,
+        env: await peerEnvironment(),
         onActivity(activity: AcpActivity) {
           if (discoverRun !== run) return;
           journal.write("activity", activity.text);
@@ -3639,6 +3702,7 @@ export function createApp(options: AppOptions) {
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
+        env: await peerEnvironment(),
         onActivity(activity) {
           if (skillsPreparation !== preparation) return;
           recordActivity(preparation.activity, activity);
@@ -3803,6 +3867,7 @@ export function createApp(options: AppOptions) {
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
+        env: await peerEnvironment(),
         onActivity(activity) {
           if (goalCreation !== creation) return;
           recordActivity(creation.activity, activity);
@@ -3912,6 +3977,7 @@ export function createApp(options: AppOptions) {
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
+        env: await peerEnvironment(),
         onActivity(activity) {
           if (goalRevision !== revision) return;
           recordActivity(revision.activity, activity);
@@ -3956,6 +4022,7 @@ export function createApp(options: AppOptions) {
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
+        env: await peerEnvironment(),
         onActivity(activity) {
           if (!isLiveRun(run)) return;
           recordActivity(run.activity, activity);
@@ -4429,6 +4496,7 @@ export function createApp(options: AppOptions) {
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
+        env: await peerEnvironment(),
         onActivity(activity) {
           recordLaneActivity(lane, activity);
         },
@@ -5869,7 +5937,8 @@ export function createApp(options: AppOptions) {
           command.type === "getGoalDraft" ||
           command.type === "getScout" ||
           command.type === "getSkills" ||
-          command.type === "getDiscover";
+          command.type === "getDiscover" ||
+          command.type === "getProviders";
         if (implementationReset !== undefined && !readOnly) {
           send(ws, { type: "error", message: "An implementation reset is active." });
           return;
@@ -5967,7 +6036,7 @@ export function createApp(options: AppOptions) {
               });
             }
           } else if (command.type === "startGoalDraft") {
-            const started = goalDrafts.start(command.path);
+            const started = await goalDrafts.start(command.path);
             if (!started.ok) {
               send(ws, { type: "issuesDraftError", message: started.message });
             } else {
@@ -6052,7 +6121,7 @@ export function createApp(options: AppOptions) {
           } else if (command.type === "refuseFlowWidget") {
             flow.refuseWidget(command.id, command.reason);
           } else if (command.type === "openFlowWidget") {
-            flow.openConversation(command.id);
+            await flow.openConversation(command.id);
           } else if (command.type === "closeFlowWidget") {
             flow.closeConversation();
           } else if (command.type === "sendFlowConversation") {
@@ -6113,11 +6182,50 @@ export function createApp(options: AppOptions) {
               );
             }
           } else if (command.type === "ask") {
-            ask.ask(ws, command);
+            await ask.ask(ws, command);
           } else if (command.type === "closeAsk") {
             ask.close(ws, command.conversationId);
+          } else if (command.type === "getProviders") {
+            await providers.refresh(false);
+            send(ws, { type: "providersState", ...providers.view() });
+          } else if (command.type === "refreshProviders") {
+            await publishProviders(true);
+          } else if (command.type === "saveProvider") {
+            const saved = await providers.save({
+              id: typeof command.id === "string" ? command.id : undefined,
+              provider: command.provider,
+              label: command.label,
+              key: command.key,
+            });
+            if (!saved.ok) {
+              send(ws, { type: "providerError", message: saved.message });
+            } else {
+              await publishProviders(false);
+            }
+          } else if (command.type === "deleteProvider") {
+            if (typeof command.id !== "string") {
+              send(ws, { type: "providerError", message: "A delete needs the subscription id." });
+            } else {
+              const removed = providers.remove(command.id);
+              if (!removed.ok) send(ws, { type: "providerError", message: removed.message });
+              else await publishProviders(false);
+            }
+          } else if (command.type === "setProviderEnabled") {
+            if (typeof command.id !== "string" || typeof command.enabled !== "boolean") {
+              send(ws, {
+                type: "providerError",
+                message: "Enabling a subscription needs its id and a boolean.",
+              });
+            } else {
+              const changed = providers.setEnabled(command.id, command.enabled);
+              if (!changed.ok) send(ws, { type: "providerError", message: changed.message });
+              else await publishProviders(false);
+            }
           }
         } catch (error) {
+          if (error instanceof ProviderUnavailableError) {
+            send(ws, { type: "providersState", ...providers.view() });
+          }
           send(ws, {
             type: "error",
             message: error instanceof Error ? error.message : String(error),

@@ -155,6 +155,8 @@ export interface FlowOptions {
   repoDir: string;
   stateDir: string;
   agentCommand: string;
+  /** Resolves the selected provider's environment for every ACP peer. */
+  agentEnvironment: () => Promise<Record<string, string | undefined>>;
   broadcast: (event: unknown) => void;
   journal?: Pick<Journal, "write">;
   /** Injected fake forge, or a real one built from `exec`. */
@@ -510,6 +512,7 @@ export class FlowController {
   readonly repoDir: string;
   readonly stateDir: string;
   readonly #agentCommand: string;
+  readonly #agentEnvironment: () => Promise<Record<string, string | undefined>>;
   readonly #broadcast: (event: unknown) => void;
   readonly #journal: Pick<Journal, "write"> | undefined;
   readonly #forge: FlowPrAdapter;
@@ -554,6 +557,7 @@ export class FlowController {
     this.repoDir = resolve(options.repoDir);
     this.stateDir = resolve(options.stateDir);
     this.#agentCommand = options.agentCommand;
+    this.#agentEnvironment = options.agentEnvironment;
     this.#broadcast = options.broadcast;
     this.#journal = options.journal;
     this.#forgeTarget = options.forgeTarget;
@@ -1127,6 +1131,7 @@ export class FlowController {
       const agent = new AcpConnection({
         command: this.#agentCommand,
         cwd: this.repoDir,
+        env: await this.#agentEnvironment(),
         onActivity: (activity: AcpActivity) => {
           if (this.#goalCreation !== creation) return;
           const append = activity.append && creation.activity.length > 0;
@@ -1288,6 +1293,7 @@ export class FlowController {
       const agent = new AcpConnection({
         command: this.#agentCommand,
         cwd: session.worktree,
+        env: await this.#agentEnvironment(),
         onActivity: (update: AcpActivity) => {
           if (this.#implementation !== implementation) return;
           const append = update.append && activity.length > 0;
@@ -1604,6 +1610,7 @@ export class FlowController {
     const agent = new AcpConnection({
       command: this.#agentCommand,
       cwd: this.repoDir,
+      env: await this.#agentEnvironment(),
       onActivity: () => {},
       onQuestion: (question) => {
         agent.answer(question.id, question.options[0]?.label ?? "Continue");
@@ -2209,7 +2216,7 @@ export class FlowController {
 
   // ------------------------------------------------------- conversation
 
-  openConversation(widgetId: unknown): void {
+  async openConversation(widgetId: unknown): Promise<void> {
     const session = this.#session;
     if (session === undefined) {
       this.#error("No Flow session exists.");
@@ -2266,6 +2273,7 @@ export class FlowController {
       const agent = new AcpConnection({
         command: this.#agentCommand,
         cwd: this.repoDir,
+        env: await this.#agentEnvironment(),
         onActivity: (activity: AcpActivity) => {
           if (this.#conversation !== conversation) return;
           const append = activity.append && conversation.activity.length > 0;

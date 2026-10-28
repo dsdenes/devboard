@@ -27,6 +27,8 @@ export interface GoalSlugOptions {
   command: string;
   /** The host repository root the peer runs in. */
   cwd: string;
+  /** The selected provider's environment. */
+  env?: Record<string, string | undefined>;
   timeoutMs?: number;
   /** Test seam; production spawns a real ACP peer. */
   connect?: (options: AcpConnectionOptions) => GoalSlugPeer;
@@ -72,6 +74,7 @@ export async function suggestGoalSlug(report: string, options: GoalSlugOptions):
     peer = connect({
       command: options.command,
       cwd: options.cwd,
+      ...(options.env === undefined ? {} : { env: options.env }),
       onActivity: () => {},
       onText: (text) => {
         answer += text;

@@ -13,6 +13,7 @@ import {
 import { join } from "node:path";
 import { createApp } from "./app";
 import type { EpicLookup, OpenEpic } from "./tracker";
+import { testProviderService } from "./fixtures/test-providers";
 
 // Every temporary checkout, remote, and hook lives inside the repository so a
 // failed run leaves nothing outside the project.
@@ -188,6 +189,7 @@ async function startServer(
     port: 0,
     repoDir: options.repoDir ?? host.host,
     stateDir: join(host.root, "state"),
+    providers: testProviderService(join(host.root, "state")),
     goalFile: options.goalFile ?? join(host.host, "GOAL.md"),
     agentCommand: options.agentCommand,
     ...(options.tracker === undefined ? {} : { tracker: options.tracker }),

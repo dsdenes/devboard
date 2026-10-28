@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import type { OpenEpic } from "./tracker";
+import { testProviderService } from "./fixtures/test-providers";
 
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
 /** Every temporary host lives inside the worktree, never the system temp directory. */
@@ -153,6 +154,7 @@ async function startServer(
     port: 0,
     repoDir: host.root,
     stateDir: join(host.root, "state"),
+    providers: testProviderService(join(host.root, "state")),
     goalFile: host.goalFile,
     agentCommand: command,
     tracker: async () => readTracker(host.trackerFile),

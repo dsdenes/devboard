@@ -1418,6 +1418,7 @@ describe("dashboard bridge", () => {
       repoDir: root,
       stateDir,
       agentCommand: "stub",
+      agentEnvironment: async () => ({}),
       runningVersion: "0.1.0",
       harnessDir: harnessRoot,
       send: (event, except) => {

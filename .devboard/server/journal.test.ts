@@ -13,6 +13,7 @@ import {
   type Journal,
   type JournalRecord,
 } from "./journal";
+import { testProviderService } from "./fixtures/test-providers";
 
 /**
  * New tests keep their temporary directories inside the repository. The app
@@ -126,6 +127,7 @@ async function startServer(options: {
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
+    providers: testProviderService(join(root, "state")),
     agentCommand: options.agentCommand,
     ...(options.journal === undefined ? {} : { journal: options.journal }),
   });

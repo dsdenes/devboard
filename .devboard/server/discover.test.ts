@@ -14,6 +14,7 @@ import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import { declaredCommandAliases } from "./discover";
+import { testProviderService } from "./fixtures/test-providers";
 
 /**
  * Discover Mode's deterministic contract. It drives the app over its WebSocket
@@ -168,6 +169,7 @@ function startServer(options: StartOptions = {}): TestServer {
     port: 0,
     repoDir: fixture.root,
     stateDir,
+    providers: testProviderService(stateDir),
     goalFile: fixture.goalFile,
     agentCommand: command.join(" "),
     tracker: async () => undefined,

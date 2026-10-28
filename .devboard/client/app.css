@@ -3814,6 +3814,36 @@ a.code-chip--link:focus-visible {
   text-overflow: ellipsis;
 }
 
+.status-providers {
+  border: 1px solid transparent;
+  max-width: 240px;
+}
+
+.status-providers__dot {
+  background: var(--border-strong);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 6px;
+  width: 6px;
+}
+
+.status-providers[data-state="opencode-go"] .status-providers__dot {
+  background: var(--success);
+}
+
+.status-providers[data-state="openrouter"] .status-providers__dot {
+  background: var(--warning);
+}
+
+.status-providers[data-state="none"] .status-providers__dot {
+  background: var(--error);
+}
+
+.status-providers__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Auto Scout */
 .issues-scout {
   display: flex;

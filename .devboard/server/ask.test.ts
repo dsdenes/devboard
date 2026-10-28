@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
+import { testProviderService } from "./fixtures/test-providers";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
@@ -64,6 +65,7 @@ async function startServer(options: ServerOptions = {}): Promise<TestServer> {
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
+    providers: testProviderService(join(root, "state")),
     agentCommand: command,
     tracker: async () => undefined,
     trackerSettle: { attempts: 1 },

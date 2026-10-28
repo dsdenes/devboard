@@ -17,6 +17,8 @@ export interface AcpQuestion {
 export interface AcpConnectionOptions {
   command: string;
   cwd: string;
+  /** The exact peer environment; omitted means the server's own. */
+  env?: Record<string, string | undefined>;
   onActivity: (activity: AcpActivity) => void;
   onQuestion: (question: AcpQuestion) => void;
   /** Receives assistant message text only; thoughts and tool activity are dropped. */
@@ -237,6 +239,7 @@ export class AcpConnection {
 
     this.#process = Bun.spawn(argv, {
       cwd: options.cwd,
+      ...(options.env === undefined ? {} : { env: options.env }),
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",

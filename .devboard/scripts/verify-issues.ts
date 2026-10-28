@@ -21,6 +21,7 @@ import { writeCommand } from "../issues/control";
 import { lockPath, controlDirectory, runsDirectory, statePath } from "../issues/paths";
 import { readState, type IssuesState } from "../issues/state";
 import { freePort, run, waitFor } from "./verification";
+import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const root = join(harnessRoot, ".tmp", `verify-issues-${Date.now()}`);
@@ -151,6 +152,7 @@ async function startDashboard(
 ): Promise<Dashboard> {
   const port = await freePort();
   const staticDir = join(harnessRoot, "dist");
+  seedVerificationProvider(paths.stateDir);
   const child = spawn(process.execPath, [join(harnessRoot, "server", "index.ts")], {
     cwd: harnessRoot,
     env: {
@@ -165,6 +167,7 @@ async function startDashboard(
       HOME: tools.home,
       PATH: `${tools.bin}:${process.env.PATH ?? ""}`,
       AGENT_COMMAND: `${process.execPath} ${stubAcp}`,
+      ...verificationProviderUsageEnv(),
       ISSUES_STUB_STORE: paths.store,
       ISSUES_STUB_GH_LOG: paths.ghLog,
       ISSUES_STUB_ACP_LOG: paths.acpLog,

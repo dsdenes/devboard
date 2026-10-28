@@ -106,6 +106,7 @@ function managerFor(root: string, peers: FakePeer[]): { manager: GoalDraftManage
     repoDir: root,
     command: "omp acp",
     send: (event) => events.push(event),
+    environment: async () => ({}),
     connect: (options) => {
       const peer = new FakePeer(options);
       peers.push(peer);
@@ -190,7 +191,7 @@ describe("elaboration", () => {
     const peers: FakePeer[] = [];
     const { manager, events } = managerFor(root, peers);
 
-    const started = manager.start(".devboard/goal-proposals/elaborate-me.md");
+    const started = await manager.start(".devboard/goal-proposals/elaborate-me.md");
     expect(started.ok).toBe(true);
     const peer = await waitFor(() => peers[0], "the peer");
     expect(peer.prompts).toEqual(["/goal-draft .devboard/goal-proposals/elaborate-me.md"]);
@@ -228,9 +229,9 @@ describe("elaboration", () => {
     const peers: FakePeer[] = [];
     const { manager } = managerFor(root, peers);
 
-    expect(manager.start(".devboard/goal-proposals/one.md").ok).toBe(true);
+    expect((await manager.start(".devboard/goal-proposals/one.md")).ok).toBe(true);
     const first = await waitFor(() => peers[0], "the first peer");
-    const refused = manager.start(".devboard/goal-proposals/two.md");
+    const refused = await manager.start(".devboard/goal-proposals/two.md");
     expect(refused.ok).toBe(false);
     if (!refused.ok) {
       expect(refused.message).toContain("An elaboration is already running for");
@@ -243,7 +244,7 @@ describe("elaboration", () => {
     expect(manager.snapshot().status).toBe("stopped");
     expect(existsSync(join(drafts, "one.md"))).toBe(true);
 
-    expect(manager.start(".devboard/goal-proposals/two.md").ok).toBe(true);
+    expect((await manager.start(".devboard/goal-proposals/two.md")).ok).toBe(true);
     const second = await waitFor(() => peers[1], "the retried peer");
     expect(second.prompts).toEqual(["/goal-draft .devboard/goal-proposals/two.md"]);
   });
@@ -254,7 +255,7 @@ describe("elaboration", () => {
     const peers: FakePeer[] = [];
     const { manager } = managerFor(root, peers);
 
-    manager.start(".devboard/goal-proposals/fail.md");
+    await manager.start(".devboard/goal-proposals/fail.md");
     const peer = await waitFor(() => peers[0], "the peer");
     peer.fail("the model is unavailable");
     const failed = await waitFor(
@@ -264,7 +265,7 @@ describe("elaboration", () => {
     expect(failed.error).toBe("the model is unavailable");
     expect(existsSync(join(drafts, "fail.md"))).toBe(true);
 
-    manager.start(".devboard/goal-proposals/fail.md");
+    await manager.start(".devboard/goal-proposals/fail.md");
     const retry = await waitFor(() => peers[1], "the retry peer");
     expect(retry.prompts).toEqual(["/goal-draft .devboard/goal-proposals/fail.md"]);
   });
@@ -276,7 +277,7 @@ describe("elaboration", () => {
     const peers: FakePeer[] = [];
     const { manager } = managerFor(root, peers);
 
-    manager.start(".devboard/goal-proposals/verified.md");
+    await manager.start(".devboard/goal-proposals/verified.md");
     const verified = await waitFor(() => peers[0], "the verifying peer");
     // The stub stands in for the agent: file the spec, read the issue back,
     // and delete only when that read carries the goal label and same bytes.
@@ -297,7 +298,7 @@ describe("elaboration", () => {
     expect(manager.child()).toBeUndefined();
     expect(listGoalDrafts(root).map((draft) => draft.name)).toEqual(["unverified.md"]);
 
-    manager.start(".devboard/goal-proposals/unverified.md");
+    await manager.start(".devboard/goal-proposals/unverified.md");
     const unverified = await waitFor(() => peers[1], "the failing verification peer");
     expect(manager.child()).toEqual({ pid: unverified.pid, argv: ["stub-acp"], cwd: root });
     const verifiedLabelOnCreate = false;

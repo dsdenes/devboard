@@ -14,6 +14,7 @@ import {
 import { CYCLE_HISTORY_LIMIT, readWatchdogCycles } from "../watchdog/history";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
 import { readWatchdogStatus } from "../watchdog/status";
+import { testProviderService } from "../server/fixtures/test-providers";
 
 /**
  * `GET /api/watchdog` and the Issues-mode Watchdog page are read-only: they
@@ -504,6 +505,7 @@ describe("WatchdogActivity", () => {
       port: 0,
       repoDir: root,
       stateDir: root,
+      providers: testProviderService(root),
       watchdog: { reader },
     });
     try {
@@ -558,6 +560,7 @@ describe("WatchdogActivity", () => {
       port: 0,
       repoDir: root,
       stateDir: root,
+      providers: testProviderService(root),
       watchdog: {
         reader: fakeReader(
           new Map<string, WatchdogFacts>([
@@ -601,6 +604,7 @@ describe("GET /api/watchdog", () => {
       port: 0,
       repoDir: root,
       stateDir,
+      providers: testProviderService(stateDir),
     });
     try {
       const response = await fetch(`http://127.0.0.1:${server.port}/api/watchdog`);
@@ -656,6 +660,7 @@ describe("GET /api/watchdog", () => {
       port: 0,
       repoDir: root,
       stateDir: join(root, "state"),
+      providers: testProviderService(join(root, "state")),
     });
     try {
       const response = await fetch(`http://127.0.0.1:${server.port}/api/watchdog`, {

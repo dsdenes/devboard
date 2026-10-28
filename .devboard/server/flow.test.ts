@@ -7,6 +7,7 @@ import type { Server } from "bun";
 import { createApp } from "./app";
 import { StubForge } from "./fixtures/stub-forge";
 import { journalKey } from "./journal";
+import { testProviderService } from "./fixtures/test-providers";
 
 /**
  * Flow Mode's deterministic contract, driven over the app's WebSocket with the
@@ -146,6 +147,7 @@ function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
     port: 0,
     repoDir: fixture.root,
     stateDir: options.stateDir ?? fixture.stateDir,
+    providers: testProviderService(options.stateDir ?? fixture.stateDir),
     goalFile: fixture.goalFile,
     agentCommand: command,
     tracker:

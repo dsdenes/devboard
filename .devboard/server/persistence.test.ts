@@ -19,6 +19,7 @@ import {
   writeStateFile,
 } from "./state";
 import type { EpicLookup, OpenEpic } from "./tracker";
+import { testProviderService } from "./fixtures/test-providers";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -142,6 +143,7 @@ function startHost(fixture: Fixture, options: HostOptions = {}): Server<unknown>
     port: 0,
     repoDir: fixture.root,
     stateDir: options.stateDir ?? fixture.stateDir,
+    providers: testProviderService(options.stateDir ?? fixture.stateDir),
     goalFile: fixture.goalFile,
     agentCommand: `bun ${STUB_AGENT} --log=${fixture.logPath} ${options.agentArguments ?? ""}`.trim(),
     tracker: options.tracker ?? (async () => undefined),

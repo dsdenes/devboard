@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { createApp, projectLabel } from "./app";
 import { journalFile, journalKey } from "./journal";
 import { acquireLock } from "../issues/lock";
+import { testProviderService } from "./fixtures/test-providers";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -69,6 +70,7 @@ async function startServer(
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
+    providers: testProviderService(join(root, "state")),
     goalFile: options.goalFile,
     agentCommand: options.agentCommand,
     restart: options.restart,

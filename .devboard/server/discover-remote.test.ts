@@ -21,6 +21,7 @@ import {
 } from "./discover";
 import { readStateFile, stateFile } from "./state";
 import { journalFile } from "./journal";
+import { testProviderService } from "./fixtures/test-providers";
 
 /**
  * Discover's remote target: the source-checkout gate, URL validation, the one
@@ -240,6 +241,7 @@ function startServer(options: StartOptions = {}): TestServer {
     port: 0,
     repoDir: fixture.root,
     stateDir,
+    providers: testProviderService(stateDir),
     goalFile: fixture.goalFile,
     agentCommand: command,
     tracker: async () => undefined,

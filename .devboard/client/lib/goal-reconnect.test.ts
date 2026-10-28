@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "../../server/app";
+import { testProviderService } from "../../server/fixtures/test-providers";
 import { ConnectionStore, connection } from "./connection.svelte";
 import { GoalStore, goal } from "./goal.svelte";
 
@@ -221,6 +222,7 @@ test(
         port: 0,
         repoDir: root,
         stateDir,
+        providers: testProviderService(stateDir),
         goalFile,
         agentCommand,
       });

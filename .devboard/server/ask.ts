@@ -167,6 +167,8 @@ interface JsonRpcMessage {
 interface AskPeerOptions {
   command: string;
   cwd: string;
+  /** The exact peer environment, resolved from the provider selection. */
+  env: Record<string, string | undefined>;
   /** Receives assistant message text only; thoughts and tool activity are dropped. */
   onText: (text: string) => void;
 }
@@ -193,6 +195,7 @@ class AskPeer {
     this.#onText = options.onText;
     this.#process = Bun.spawn(argv, {
       cwd: options.cwd,
+      env: options.env,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -420,6 +423,8 @@ export interface AskControllerOptions {
   command: string;
   /** The host repository root every peer runs in. */
   cwd: string;
+  /** Resolves the selected provider's environment; throws when none is eligible. */
+  environment: () => Promise<Record<string, string | undefined>>;
 }
 
 /**
@@ -434,7 +439,7 @@ export class AskController {
     this.#options = options;
   }
 
-  ask(socket: AskSocket, message: { conversationId?: unknown; question?: unknown; context?: unknown }): void {
+  async ask(socket: AskSocket, message: { conversationId?: unknown; question?: unknown; context?: unknown }): Promise<void> {
     const candidateId =
       typeof message.conversationId === "string" ? message.conversationId : "";
     const refuse = (text: string): void =>
@@ -507,6 +512,7 @@ export class AskController {
         peer = new AskPeer({
           command: this.#options.command,
           cwd: this.#options.cwd,
+          env: await this.#options.environment(),
           onText: (text) => {
             if (conversation.closed || !conversation.busy) return;
             conversation.answer += text;

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createApp } from "./app";
 import { REDESIGN_INSTRUCTION } from "./feedback";
+import { testProviderService } from "./fixtures/test-providers";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
@@ -80,6 +81,7 @@ async function startServer(options: { enabled?: boolean; mode?: Mode; timeoutMs?
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
+    providers: testProviderService(join(root, "state")),
     feedback:
       options.enabled === false
         ? undefined

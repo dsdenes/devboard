@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import type { EpicLookup } from "./tracker";
+import { testProviderService } from "./fixtures/test-providers";
 
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
 const QUESTION_OPTIONS = [
@@ -84,6 +85,7 @@ async function startServer(options: ServerOptions = {}): Promise<TestServer> {
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
+    providers: testProviderService(join(root, "state")),
     goalFile,
     agentCommand: command,
     tracker: options.tracker ?? (async () => undefined),

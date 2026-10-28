@@ -10,12 +10,14 @@
  */
 
 import { spawn } from "node:child_process";
+import type { Server } from "bun";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fixtureRecord } from "../server/fixtures/adr-source";
 import { journalKey } from "../server/journal";
+import { saveSubscriptions } from "../server/providers";
 import { REDESIGN_INSTRUCTION as redesignInstruction, REMOVAL_INSTRUCTION as removalInstruction } from "../server/feedback";
 import { stateFile } from "../server/state";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
@@ -755,13 +757,14 @@ async function seedIssuesState(
   }
   const lockDirectory = join(host, ".devboard", ".tmp", "issues");
   await mkdir(lockDirectory, { recursive: true });
+  // The lock proves ownership by matching this process's actual start time;
+  // a fixed date would go stale as the calendar moves.
+  const lockStartedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
   await writeFile(
     join(lockDirectory, "lock"),
     JSON.stringify({
       pid: process.pid,
-      // The lock owner must look alive: its recorded start has to match the
-      // process's real start within the lock's tolerance.
-      startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+      startedAt: lockStartedAt,
       repo: resolve(host),
       stateDir,
       harnessVersion: sourceVersion ?? "0.1.0",
@@ -968,6 +971,19 @@ interface FeedbackCall {
   body: string;
 }
 
+const PROVIDER_GO_KEY = "sk-go-verify-interface-0000abcd";
+const PROVIDER_GO_EDGE_KEY = "sk-go-verify-interface-edge-1111cafe";
+const PROVIDER_OR_KEY = "sk-or-verify-interface-0000beef";
+const PROVIDER_OR_SECOND_KEY = "sk-or-verify-interface-second-2222f00d";
+const PROVIDER_INVALID_KEY = "sk-verify-interface-invalid-3333dead";
+
+const providerBehaviors = new Map<string, { status?: number; go?: number[]; or?: { limit: number | null; remaining: number } }>();
+providerBehaviors.set(PROVIDER_GO_KEY, { go: [10, 20, 30] });
+providerBehaviors.set(PROVIDER_GO_EDGE_KEY, { go: [99, 99, 99] });
+providerBehaviors.set(PROVIDER_OR_KEY, { or: { limit: 100, remaining: 40 } });
+providerBehaviors.set(PROVIDER_OR_SECOND_KEY, { or: { limit: 100, remaining: 0 } });
+providerBehaviors.set(PROVIDER_INVALID_KEY, { status: 401 });
+
 const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
 let serverProcess: ReturnType<typeof spawn> | undefined;
@@ -975,6 +991,7 @@ let feedbackApi: ReturnType<typeof Bun.serve> | undefined;
 let gateOffProcess: ReturnType<typeof spawn> | undefined;
 let feedbackOffProcess: ReturnType<typeof spawn> | undefined;
 let chromeProcess: ReturnType<typeof spawn> | undefined;
+let providerUsage: Server<unknown> | undefined;
 
 try {
   const build = run("bun", ["run", "build"], { cwd: harnessRoot });
@@ -987,6 +1004,66 @@ try {
   // state stays under the excluded `.devboard/` tree.
   const stateDir = join(host, ".devboard", ".tmp", "state");
   await mkdir(stateDir, { recursive: true });
+  const providerStamp = new Date().toISOString();
+  saveSubscriptions(stateDir, [
+    {
+      id: "verify-go",
+      provider: "opencode-go",
+      label: "Primary Go",
+      key: PROVIDER_GO_KEY,
+      enabled: true,
+      createdAt: providerStamp,
+      updatedAt: providerStamp,
+    },
+    {
+      id: "verify-go-edge",
+      provider: "opencode-go",
+      label: "Near-limit Go",
+      key: PROVIDER_GO_EDGE_KEY,
+      enabled: true,
+      createdAt: providerStamp,
+      updatedAt: providerStamp,
+    },
+    {
+      id: "verify-openrouter",
+      provider: "openrouter",
+      label: "Fallback",
+      key: PROVIDER_OR_KEY,
+      enabled: true,
+      createdAt: providerStamp,
+      updatedAt: providerStamp,
+    },
+  ]);
+  providerUsage = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      const token = (request.headers.get("authorization") ?? "").replace(/^Bearer /, "");
+      const behavior = providerBehaviors.get(token);
+      if (behavior?.status !== undefined) {
+        return new Response(JSON.stringify({ error: { message: "rejected" } }), {
+          status: behavior.status,
+        });
+      }
+      if (url.pathname === "/zen/go/v1/usage" && behavior?.go !== undefined) {
+        const [rolling, weekly, monthly] = behavior.go;
+        return Response.json({
+          usage: {
+            rolling: { percent: rolling, status: "ok", resetsAt: "2030-01-01T00:00:00Z" },
+            weekly: { percent: weekly, status: "ok", resetsAt: "2030-01-07T00:00:00Z" },
+            monthly: { percent: monthly, status: "ok", resetsAt: "2030-02-01T00:00:00Z" },
+          },
+        });
+      }
+      if (url.pathname === "/api/v1/key" && behavior?.or !== undefined) {
+        return Response.json({
+          data: { limit: behavior.or.limit, limit_remaining: behavior.or.remaining },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
   await seedFlow(stateDir, host);
   const agentLog = join(root, "agent.log");
   const port = await freePort();
@@ -1047,6 +1124,8 @@ try {
     GITEA_TOKEN: "verify-token",
     DEVBOARD_RELEASE_REPO: "dsdenes/devboard",
     DEVBOARD_UPDATE_INTERVAL_MS: "3600000",
+    DEVBOARD_OPENCODE_GO_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/zen/go`,
+    DEVBOARD_OPENROUTER_USAGE_BASE_URL: `http://127.0.0.1:${providerUsage.port}/api`,
     GIT_TERMINAL_PROMPT: "0",
     GIT_ASKPASS: "true",
   };
@@ -1523,6 +1602,220 @@ try {
   check(statusBar.themeLabel.length > 0 && statusBar.notificationLabel.includes("Notifications"), "a status-bar icon lacks a name", statusBar);
   const sidebarToggle = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar-toggle"]') !== null`);
   check(!sidebarToggle, "the sidebar still renders a hide control");
+
+  // 4b. Providers: indicator, dialog, exactly two providers, masked keys,
+  // usage rows, validation, edit, enable, delete, refresh, palette entry,
+  // and focus trapping.
+  await page.wait(
+    `document.querySelector('[data-testid="providers-indicator"]')?.textContent?.includes("OpenCode Go") === true`,
+    "the provider indicator to show the selection",
+  );
+  const providerIndicator = await page.eval<string>(
+    `document.querySelector('[data-testid="providers-indicator"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? ""`,
+  );
+  check(
+    providerIndicator.includes("OpenCode Go") && providerIndicator.includes("70%"),
+    "the indicator does not show the selection and lowest remaining percentage",
+    providerIndicator,
+  );
+
+  await page.click('[data-testid="providers-indicator"]');
+  await page.wait(
+    `document.querySelector('[data-testid="providers-dialog"]') !== null`,
+    "the providers dialog",
+  );
+  const providers = await page.eval<{
+    options: Array<{ value: string; label: string }>;
+    rule: string;
+    rows: number;
+    masks: string[];
+    statuses: string[];
+    windows: string[];
+    checked: string[];
+    text: string;
+    html: string;
+    focusInside: boolean;
+  }>(`(() => {
+    const dialog = document.querySelector('[data-testid="providers-dialog"]');
+    const select = document.querySelector('[data-testid="provider-select"]');
+    return {
+      options: select === null ? [] : [...select.options].map((option) => ({ value: option.value, label: option.textContent?.trim() ?? "" })),
+      rule: document.querySelector('[data-testid="provider-rule"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      rows: document.querySelectorAll('[data-testid="provider-row"]').length,
+      masks: [...document.querySelectorAll('[data-testid="provider-mask"]')].map((node) => node.textContent?.trim() ?? ""),
+      statuses: [...document.querySelectorAll('[data-testid="provider-status"]')].map((node) => node.textContent?.trim() ?? ""),
+      windows: [...document.querySelectorAll('[data-testid="provider-window"]')].map((node) => node.textContent?.replace(/\\s+/g, " ").trim() ?? ""),
+      checked: [...document.querySelectorAll('[data-testid="provider-last-checked"]')].map((node) => node.textContent?.replace(/\\s+/g, " ").trim() ?? ""),
+      text: dialog?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      html: document.body.innerHTML,
+      focusInside: document.activeElement?.closest('[data-testid="providers-dialog"]') !== null,
+    };
+  })()`);
+  check(
+    providers.options.length === 2 &&
+      providers.options[0]?.value === "opencode-go" &&
+      providers.options[0]?.label === "OpenCode Go" &&
+      providers.options[1]?.value === "openrouter" &&
+      providers.options[1]?.label === "OpenRouter",
+    "the provider control does not offer exactly OpenCode Go and OpenRouter",
+    providers.options,
+  );
+  check(providers.rule.includes("rotates at 1% remaining"), "the dialog omits the 1% rule", providers.rule);
+  check(providers.rows === 3, "the dialog does not list every saved subscription", providers.rows);
+  check(
+    providers.masks.some((mask) => mask.endsWith(PROVIDER_GO_KEY.slice(-4))) &&
+      providers.masks.some((mask) => mask.endsWith(PROVIDER_OR_KEY.slice(-4))),
+    "the dialog does not carry masked keys",
+    providers.masks,
+  );
+  for (const key of [PROVIDER_GO_KEY, PROVIDER_GO_EDGE_KEY, PROVIDER_OR_KEY]) {
+    check(!providers.text.includes(key) && !providers.html.includes(key), "a full key reached the DOM", key);
+  }
+  check(
+    providers.statuses.includes("ok") && providers.statuses.includes("near limit"),
+    "the dialog does not show per-key status",
+    providers.statuses,
+  );
+  check(
+    providers.windows.some((row) => row.includes("Rolling 5h")) &&
+      providers.windows.some((row) => row.includes("Weekly")) &&
+      providers.windows.some((row) => row.includes("Monthly")),
+    "the dialog does not show per-window remaining",
+    providers.windows,
+  );
+  check(
+    providers.checked.every((value) => value.includes("checked") && !value.includes("never")),
+    "the dialog does not show the last check time",
+    providers.checked,
+  );
+  check(providers.focusInside, "the dialog does not take focus");
+  await page.key("Tab");
+  await page.key("Tab");
+  const focusTrapped = await page.eval<boolean>(
+    `document.activeElement?.closest('[data-testid="providers-dialog"]') !== null`,
+  );
+  check(focusTrapped, "the providers dialog does not trap focus");
+  await saveShot("providers");
+
+  // An invalid key is refused with a visible error.
+  await page.fill('[data-testid="provider-key-input"]', PROVIDER_INVALID_KEY);
+  await page.click('[data-testid="provider-save"]');
+  await page.wait(
+    `document.querySelector('[data-testid="provider-error"]')?.textContent?.includes("401") === true`,
+    "the invalid-key error",
+  );
+
+  // Add a second OpenRouter key: exhausted usage is saved but displayed as such.
+  await page.fill('[data-testid="provider-key-input"]', PROVIDER_OR_SECOND_KEY);
+  await page.fill('[data-testid="provider-label-input"]', "Second fallback");
+  await page.eval(`(() => {
+    const select = document.querySelector('[data-testid="provider-select"]');
+    select.value = "openrouter";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    return select.value;
+  })()`);
+  await page.click('[data-testid="provider-save"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="provider-row"]').length === 4`,
+    "the added provider row",
+  );
+  const added = await page.eval<{ statuses: string[]; text: string; inputs: string[]; html: string }>(`(() => ({
+    statuses: [...document.querySelectorAll('[data-testid="provider-status"]')].map((node) => node.textContent?.trim() ?? ""),
+    text: document.querySelector('[data-testid="providers-dialog"]')?.textContent ?? "",
+    inputs: [...document.querySelectorAll('[data-testid="providers-dialog"] input')].map((input) => input.value),
+    html: document.body.innerHTML,
+  }))()`);
+  check(added.statuses.includes("exhausted"), "an exhausted subscription has no status", added.statuses);
+  check(!added.text.includes(PROVIDER_OR_SECOND_KEY), "the added key is rendered in the dialog text");
+  for (const key of [PROVIDER_GO_KEY, PROVIDER_OR_KEY, PROVIDER_OR_SECOND_KEY]) {
+    check(!added.inputs.some((value) => value.includes(key)), "a key stayed in a form field", key);
+    check(!added.html.includes(key), "a key stayed in the DOM", key);
+  }
+
+  // Editing a label changes only the label.
+  await page.click('[data-testid="provider-edit"]', 0);
+  await page.fill('[data-testid="provider-label-input"]', "Primary renamed");
+  await page.click('[data-testid="provider-save"]');
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="provider-row"]')].some((row) => row.textContent?.includes("Primary renamed"))`,
+    "the edited provider label",
+  );
+
+  // Enable/disable and refresh.
+  await page.click('[data-testid="provider-enabled"]', 0);
+  await page.wait(
+    `document.querySelectorAll('[data-testid="provider-enabled"]')[0]?.checked === false`,
+    "the disabled provider",
+  );
+  await page.click('[data-testid="provider-enabled"]', 0);
+  await page.wait(
+    `document.querySelectorAll('[data-testid="provider-enabled"]')[0]?.checked === true`,
+    "the re-enabled provider",
+  );
+  await page.click('[data-testid="provider-refresh"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="provider-row"]').length === 4`,
+    "the refreshed provider rows",
+  );
+
+  // Delete with confirmation.
+  await page.click('[data-testid="provider-delete"]', 3);
+  await page.wait(
+    `document.querySelector('[data-testid="provider-delete-confirm"]') !== null`,
+    "the delete confirmation",
+  );
+  await page.click('[data-testid="provider-delete-confirm"]');
+  await page.wait(
+    `document.querySelectorAll('[data-testid="provider-row"]').length === 3`,
+    "the deleted provider row",
+  );
+  const afterProviderDelete = await page.eval<{ masks: string[]; text: string }>(`(() => ({
+    masks: [...document.querySelectorAll('[data-testid="provider-mask"]')].map((node) => node.textContent?.trim() ?? ""),
+    text: document.querySelector('[data-testid="providers-dialog"]')?.textContent ?? "",
+  }))()`);
+  check(
+    !afterProviderDelete.masks.some((mask) => mask.endsWith(PROVIDER_OR_SECOND_KEY.slice(-4))),
+    "the deleted subscription is still listed",
+    afterProviderDelete.masks,
+  );
+
+  // The palette reaches the same dialog.
+  await page.key("Escape");
+  await page.wait(`document.querySelector('[data-testid="providers-dialog"]') === null`, "the dialog to close");
+  await page.key("k", 2);
+  await page.wait(
+    `document.querySelector('[data-testid="command-palette"]') !== null`,
+    "the palette for Providers",
+  );
+  await page.fill('[data-testid="command-palette-input"]', "Providers");
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="command-item"]')].some((item) => item.getAttribute("data-command") === "settings.providers")`,
+    "the Providers palette entry",
+  );
+  await page.key("Enter");
+  await page.wait(
+    `document.querySelector('[data-testid="providers-dialog"]') !== null`,
+    "the palette-opened providers dialog",
+  );
+  await page.key("Escape");
+  await page.wait(`document.querySelector('[data-testid="providers-dialog"]') === null`, "the palette dialog to close");
+  const providerLeaks = await page.eval<string[]>(`(() => {
+    const keys = ${JSON.stringify([
+      PROVIDER_GO_KEY,
+      PROVIDER_GO_EDGE_KEY,
+      PROVIDER_OR_KEY,
+      PROVIDER_OR_SECOND_KEY,
+      PROVIDER_INVALID_KEY,
+    ])};
+    const found = keys.filter((key) => document.body.innerHTML.includes(key));
+    for (const input of document.querySelectorAll("input")) {
+      const value = input instanceof HTMLInputElement ? input.value : "";
+      for (const key of keys) if (value.includes(key)) found.push(key);
+    }
+    return found;
+  })()`);
+  check(providerLeaks.length === 0, "a full key remains in the rendered DOM", providerLeaks);
+
   await page.key("k", 2);
   await page.wait(`document.querySelector('[data-testid="command-palette"]') !== null`, "the palette for shortcut labels");
   const shortcutLabels = await page.eval<string[]>(`[...document.querySelectorAll('[data-testid="command-item"]')].map((item) => item.querySelector(".palette__shortcut")?.textContent ?? "").filter(Boolean)`);
@@ -4584,6 +4877,7 @@ try {
   // Filing after asking carries the conversation into the issue as context.
   const callsBeforeAsking = feedbackCalls.length;
   await page.click('.feedback-actions button');
+  await delay(150);
   await page.wait(
     `document.querySelector('.feedback-panel') === null && document.querySelector('.feedback-hint') !== null`,
     "the selection mode after filing the asked issue",
@@ -4706,11 +5000,21 @@ try {
   );
 
   await seedIssuesState(stateDir, host, "idle");
-  await page.wait(
-    `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues idle"`,
-    "the idle issues indicator",
-    8_000,
-  );
+  try {
+    await page.wait(
+      `document.querySelector('[data-testid="issues-indicator"]')?.textContent?.trim() === "issues idle"`,
+      "the idle issues indicator",
+      8_000,
+    );
+  } catch (error) {
+    console.log("DEBUG idle", await page.eval(`({
+      indicator: document.querySelector('[data-testid="issues-indicator"]')?.outerHTML ?? null,
+      frames: (window.__viFrames ?? []).filter((frame) => frame.includes("issues") || frame.includes("Issues")).slice(-8),
+      errors: window.__viExceptions ?? [],
+      mode: document.querySelector('[data-testid="mode-issues"]')?.getAttribute("aria-selected") ?? null,
+    })`));
+    throw error;
+  }
   const idleControls = await page.eval<{ start: boolean; check: boolean }>(`(() => ({
     start: document.querySelector('[data-testid="issues-start"]')?.disabled === true,
     check: document.querySelector('[data-testid="issues-check-now"]')?.disabled === true,
@@ -6207,4 +6511,5 @@ try {
     // Already gone.
   }
   feedbackApi?.stop(true);
+  providerUsage?.stop(true);
 }

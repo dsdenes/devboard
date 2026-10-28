@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import { frontmatterStatus, isPendingStatus, setFrontmatterStatus } from "./adr-source";
 import { GOAL_SLUG_PROMPT_MARKER } from "../goal-slug";
 
@@ -62,6 +63,23 @@ const generationBudget = Number(argument("generation-budget") ?? generatedEpics.
 const laneDelayMs = Number(argument("lane-delay-ms") ?? 0);
 const laneSettleMs = Number(argument("lane-settle-ms") ?? 0);
 const logPath = argument("log");
+/** Records the provider environment a peer received, without the keys. */
+const providerEnvLog = argument("provider-env");
+if (providerEnvLog !== undefined) {
+  const fingerprint = (value: string | undefined): string | null =>
+    value === undefined ? null : createHash("sha256").update(value).digest("hex").slice(0, 16);
+  appendFileSync(
+    providerEnvLog,
+    `${JSON.stringify({
+      pid: process.pid,
+      argv: process.argv.slice(2),
+      cwd: process.cwd(),
+      agentDir: process.env.PI_CODING_AGENT_DIR ?? null,
+      opencode: fingerprint(process.env.OPENCODE_API_KEY),
+      openrouter: fingerprint(process.env.OPENROUTER_API_KEY),
+    })}\n`,
+  );
+}
 const delayMs = Number(argument("delay-ms") ?? 0);
 const forcedQuestions = argument("questions");
 /** Omits the schema default so the fixture question has no recommended option. */

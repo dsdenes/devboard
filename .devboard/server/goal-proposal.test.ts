@@ -11,6 +11,7 @@ import {
   parseGoalProposalSubmission,
   writeGoalProposal,
 } from "./goal-proposal";
+import { testProviderService } from "./fixtures/test-providers";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
@@ -67,6 +68,7 @@ async function startServer(options: StartOptions = {}) {
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
+    providers: testProviderService(join(root, "state")),
     ...(agentCommand === undefined ? {} : { agentCommand }),
     ...(goalSlug === undefined ? {} : { goalSlug }),
   });

@@ -183,6 +183,7 @@ export interface GoalDraftPeer {
 export interface GoalDraftPeerOptions {
   command: string;
   cwd: string;
+  env: Record<string, string | undefined>;
   onActivity: (activity: AcpActivity) => void;
   onQuestion: (question: AcpQuestion) => void;
   onStderr: (text: string) => void;
@@ -192,6 +193,8 @@ export interface GoalDraftManagerOptions {
   repoDir: string;
   command: string;
   send: (event: unknown) => void;
+  /** Resolves the selected provider's environment; throws when none is eligible. */
+  environment: () => Promise<Record<string, string | undefined>>;
   /** Injected for tests; defaults to the real ACP client. */
   connect?: (options: GoalDraftPeerOptions) => GoalDraftPeer;
   now?: () => Date;
@@ -231,6 +234,7 @@ export class GoalDraftManager {
   private readonly repoDir: string;
   private readonly command: string;
   private readonly send: (event: unknown) => void;
+  private readonly environment: () => Promise<Record<string, string | undefined>>;
   private readonly connect: (options: GoalDraftPeerOptions) => GoalDraftPeer;
   private readonly clock: () => Date;
   private readonly log: (line: string) => void;
@@ -242,6 +246,7 @@ export class GoalDraftManager {
     this.repoDir = resolve(options.repoDir);
     this.command = options.command;
     this.send = options.send;
+    this.environment = options.environment;
     this.connect =
       options.connect ??
       ((peerOptions) => new AcpConnection(peerOptions) as unknown as GoalDraftPeer);
@@ -310,7 +315,9 @@ export class GoalDraftManager {
     return { pid, argv: peer.argv, cwd: this.repoDir };
   }
 
-  start(relativePath: unknown): { ok: true; path: string } | { ok: false; message: string } {
+  async start(
+    relativePath: unknown,
+  ): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
     if (this.current !== undefined) {
       const path = this.current.path;
       return {
@@ -352,6 +359,7 @@ export class GoalDraftManager {
       peer = this.connect({
         command: this.command,
         cwd: this.repoDir,
+        env: await this.environment(),
         onActivity: (entry) => {
           if (this.current !== elaboration) return;
           appendActivityLine(elaboration.activity, entry.text, entry.append);

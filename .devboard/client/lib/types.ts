@@ -576,3 +576,44 @@ export interface AskContext {
   visible_text: string;
   dom_excerpt: string;
 }
+
+/** The two providers the harness can authenticate. */
+export type ProviderId = "opencode-go" | "openrouter";
+export type ProviderKeyStatus = "ok" | "near-limit" | "exhausted" | "invalid" | "unknown";
+
+export interface ProviderWindow {
+  key: string;
+  label: string;
+  percentUsed: number | null;
+  remainingFraction: number;
+  resetsAt: string | null;
+}
+
+export interface ProviderSubscription {
+  id: string;
+  provider: ProviderId;
+  providerName: string;
+  label: string;
+  enabled: boolean;
+  maskedKey: string;
+  status: ProviderKeyStatus;
+  windows: ProviderWindow[];
+  remainingFraction: number | null;
+  lastCheckedAt: string | null;
+  error: string | null;
+}
+
+export interface ProviderSelection {
+  provider: ProviderId;
+  providerName: string;
+  label: string;
+  model: string;
+  remainingFraction: number | null;
+}
+
+export interface ProvidersState {
+  subscriptions: ProviderSubscription[];
+  selection: ProviderSelection | null;
+  refusal: string | null;
+  rule: string;
+}

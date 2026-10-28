@@ -1,0 +1,248 @@
+import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+import {
+  ELIGIBILITY_THRESHOLD,
+  MODEL_ROLES,
+  OPENROUTER_FALLBACK_MODEL,
+  PROVIDERS,
+  type ProviderId,
+} from "./catalog";
+import type { StoredSubscription } from "./store";
+import type { UsageReport } from "./usage";
+
+/**
+ * Headroom selection and the per-peer binding. Eligible subscriptions rank by
+ * their lowest remaining window; unknown headroom ranks below every known one;
+ * ties keep the operator's list order. A peer gets one generated agent
+ * directory and only the keys the selection names.
+ */
+
+export interface RankedSubscription {
+  subscription: StoredSubscription;
+  usage: UsageReport | undefined;
+  /** The lowest remaining fraction, or null when the headroom is unknown. */
+  headroom: number | null;
+  eligible: boolean;
+  /** Position in the operator's list; the tie-breaker. */
+  index: number;
+}
+
+export type ProviderDecision =
+  | {
+      kind: "selected";
+      subscription: StoredSubscription;
+      usage: UsageReport | undefined;
+      /** The best enabled OpenRouter key, attached for a Go fallback chain. */
+      fallback: StoredSubscription | undefined;
+      fallbackUsage: UsageReport | undefined;
+    }
+  | { kind: "refused"; reason: string };
+
+function isEligible(usage: UsageReport | undefined): boolean {
+  if (usage === undefined) return true;
+  if (usage.status === "invalid") return false;
+  if (usage.status === "unknown" || usage.remainingFraction === null) return true;
+  // 1 - 99/100 is 0.010000000000000009, so compare with a small tolerance:
+  // exactly 1% remaining is not above the threshold.
+  return usage.remainingFraction > ELIGIBILITY_THRESHOLD + 1e-9;
+}
+
+/** Ranks every subscription; disabled ones are reported but never eligible. */
+export function rankSubscriptions(
+  subscriptions: StoredSubscription[],
+  usageById: Map<string, UsageReport>,
+): RankedSubscription[] {
+  return subscriptions.map((subscription, index) => {
+    const usage = usageById.get(subscription.id);
+    return {
+      subscription,
+      usage,
+      headroom: usage?.remainingFraction ?? null,
+      eligible: subscription.enabled && isEligible(usage),
+      index,
+    };
+  });
+}
+
+function best(candidates: RankedSubscription[]): RankedSubscription | undefined {
+  const eligible = candidates
+    .filter((candidate) => candidate.eligible)
+    .sort((left, right) => {
+      if (left.headroom === null && right.headroom === null) return left.index - right.index;
+      if (left.headroom === null) return 1;
+      if (right.headroom === null) return -1;
+      if (right.headroom !== left.headroom) return right.headroom - left.headroom;
+      return left.index - right.index;
+    });
+  return eligible[0];
+}
+
+/** Best enabled subscription of one provider, eligible or not. */
+function bestEnabled(candidates: RankedSubscription[]): RankedSubscription | undefined {
+  return candidates
+    .filter((candidate) => candidate.subscription.enabled)
+    .sort((left, right) => {
+      if (left.headroom === null && right.headroom === null) return left.index - right.index;
+      if (left.headroom === null) return 1;
+      if (right.headroom === null) return -1;
+      if (right.headroom !== left.headroom) return right.headroom - left.headroom;
+      return left.index - right.index;
+    })[0];
+}
+
+function providerReason(name: string, candidates: RankedSubscription[]): string {
+  if (candidates.length === 0) return `${name} has no subscription`;
+  const enabled = candidates.filter((candidate) => candidate.subscription.enabled);
+  if (enabled.length === 0) return `${name} has no enabled subscription`;
+  if (enabled.every((candidate) => candidate.usage?.status === "invalid")) {
+    return `${name} rejected every key`;
+  }
+  return `${name} has no subscription above 1% remaining`;
+}
+
+/**
+ * Chooses the provider for one peer. An eligible OpenCode Go subscription
+ * wins; otherwise an eligible OpenRouter subscription serves the fallback
+ * model; otherwise the peer is refused with a reason naming both providers.
+ */
+export function decideProvider(
+  ranked: RankedSubscription[],
+  configured: boolean,
+): ProviderDecision {
+  if (!configured) {
+    return {
+      kind: "refused",
+      reason:
+        "No provider is configured. Open the Providers dialog (settings.providers) and add an OpenCode Go or OpenRouter API key.",
+    };
+  }
+
+  const goCandidates = ranked.filter((candidate) => candidate.subscription.provider === "opencode-go");
+  const openRouterCandidates = ranked.filter(
+    (candidate) => candidate.subscription.provider === "openrouter",
+  );
+  const openRouter = best(openRouterCandidates);
+  const go = best(goCandidates);
+
+  if (go !== undefined) {
+    const fallback = bestEnabled(openRouterCandidates);
+    return {
+      kind: "selected",
+      subscription: go.subscription,
+      usage: go.usage,
+      fallback: fallback?.subscription,
+      fallbackUsage: fallback?.usage,
+    };
+  }
+  if (openRouter !== undefined) {
+    return {
+      kind: "selected",
+      subscription: openRouter.subscription,
+      usage: openRouter.usage,
+      fallback: undefined,
+      fallbackUsage: undefined,
+    };
+  }
+
+  return {
+    kind: "refused",
+    reason: `No provider subscription is eligible: ${providerReason(
+      "OpenCode Go",
+      goCandidates,
+    )}; ${providerReason("OpenRouter", openRouterCandidates)}. Open the Providers dialog (settings.providers) to add or refresh a key.`,
+  };
+}
+
+/** A path-safe, stable directory name for one selection. */
+export function selectionId(provider: ProviderId, subscriptionId: string): string {
+  const safe = subscriptionId.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 96);
+  return `${provider}-${safe}`;
+}
+
+export function agentDirectory(stateDir: string, provider: ProviderId, subscriptionId: string): string {
+  return join(stateDir, "providers", "agents", selectionId(provider, subscriptionId));
+}
+
+/**
+ * The generated config pins every model role and, for a Go selection, walks
+ * to the OpenRouter fallback model on any provider error.
+ */
+export function generatedConfig(provider: ProviderId, model: string): string {
+  const lines = ["# Generated by devboard for one ACP peer. Do not edit.", "modelRoles:"];
+  for (const role of MODEL_ROLES) lines.push(`  ${role}: ${model}`);
+  if (provider === "opencode-go") {
+    lines.push(
+      "retry:",
+      "  modelFallback: true",
+      "  fallbackOn: any",
+      "  fallbackChains:",
+      '    "opencode-go/*":',
+      `      - ${OPENROUTER_FALLBACK_MODEL}`,
+    );
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+/** Writes the generated config atomically; the directory is 0700, the file 0600. */
+export function writeAgentDirectory(directory: string, config: string): void {
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
+  const path = join(directory, "config.yml");
+  const temporary = join(directory, `config.yml.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    writeFileSync(temporary, config, { mode: 0o600 });
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, path);
+    chmodSync(path, 0o600);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The temporary file was never created or is already gone.
+    }
+    throw error;
+  }
+}
+
+export interface PeerBinding {
+  provider: ProviderId;
+  providerName: string;
+  subscriptionId: string;
+  subscriptionLabel: string;
+  model: string;
+  /** The selected key's lowest remaining fraction, or null when unknown. */
+  remainingFraction: number | null;
+  agentDir: string;
+  env: Record<string, string | undefined>;
+}
+
+/**
+ * Builds the peer environment. Both provider variables are removed before the
+ * selected values are applied, so the operator's shell cannot leak in.
+ */
+export function peerEnvironment(
+  base: NodeJS.ProcessEnv,
+  binding: Omit<PeerBinding, "env">,
+  selectedKey: string,
+  fallbackKey: string | undefined,
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...base };
+  delete env.OPENCODE_API_KEY;
+  delete env.OPENROUTER_API_KEY;
+  delete env.PI_CODING_AGENT_DIR;
+  if (binding.provider === "opencode-go") {
+    env.OPENCODE_API_KEY = selectedKey;
+    if (fallbackKey !== undefined) env.OPENROUTER_API_KEY = fallbackKey;
+  } else {
+    env.OPENROUTER_API_KEY = selectedKey;
+  }
+  env.PI_CODING_AGENT_DIR = binding.agentDir;
+  return env;
+}
+
+/** The provider definition for a selection, for its model and env variable. */
+export function selectedProvider(binding: Pick<PeerBinding, "provider">) {
+  return PROVIDERS[binding.provider];
+}

@@ -388,6 +388,7 @@ describe("sweepStateDir", () => {
       repoDir,
       stateDir,
       agentCommand: "true",
+      agentEnvironment: async () => ({}),
       broadcast: () => undefined,
     });
     try {

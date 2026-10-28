@@ -6,6 +6,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stateFile } from "./state";
+import { seedVerificationProvider, verificationProviderUsageEnv } from "../scripts/provider-fixture";
 
 /**
  * A real server process over a fixture repository holds its state across a
@@ -172,6 +173,7 @@ async function freePort(): Promise<number> {
 
 async function startProcess(fixture: Fixture, port?: number): Promise<RunningServer> {
   const chosen = port ?? (await freePort());
+  seedVerificationProvider(fixture.stateDir);
   const child = Bun.spawn({
     cmd: [process.execPath, SERVER],
     cwd: join(import.meta.dir, ".."),
@@ -184,6 +186,7 @@ async function startProcess(fixture: Fixture, port?: number): Promise<RunningSer
       GOAL_FILE: fixture.goalFile,
       STATIC_DIR: fixture.staticDir,
       STATE_DIR: fixture.stateDir,
+      ...verificationProviderUsageEnv(),
       AGENT_COMMAND: [
         `bun ${STUB_AGENT}`,
         `--log=${fixture.logPath}`,

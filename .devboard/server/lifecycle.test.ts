@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import type { EpicLookup, OpenEpic } from "./tracker";
+import { testProviderService } from "./fixtures/test-providers";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -93,6 +94,7 @@ async function startServer(
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
+    providers: testProviderService(join(root, "state")),
     goalFile,
     agentCommand: `bun ${STUB_AGENT} --log=${logPath} ${options.agentArguments ?? ""}`.trim(),
     tracker: options.tracker ?? (async () => undefined),

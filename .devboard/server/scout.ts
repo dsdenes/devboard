@@ -62,6 +62,8 @@ export interface ScoutBridgeOptions {
   repoDir: string;
   stateDir: string;
   agentCommand: string;
+  /** Resolves the selected provider's environment for the detached worker. */
+  agentEnvironment: () => Promise<Record<string, string | undefined>>;
   runningVersion: string | null;
   harnessDir: string;
   send: (event: unknown, except?: { send(data: string): unknown }) => void;
@@ -81,6 +83,7 @@ export class ScoutBridge {
   private readonly repoDir: string;
   private readonly stateDir: string;
   private readonly agentCommand: string;
+  private readonly agentEnvironment: () => Promise<Record<string, string | undefined>>;
   private readonly runningVersion: string | null;
   private readonly harnessDir: string;
   private readonly send: (event: unknown, except?: { send(data: string): unknown }) => void;
@@ -102,6 +105,7 @@ export class ScoutBridge {
     this.repoDir = resolve(options.repoDir);
     this.stateDir = resolve(options.stateDir);
     this.agentCommand = options.agentCommand;
+    this.agentEnvironment = options.agentEnvironment;
     this.runningVersion = options.runningVersion;
     this.harnessDir = options.harnessDir;
     this.send = options.send;
@@ -332,8 +336,14 @@ export class ScoutBridge {
       "--state-dir",
       this.stateDir,
     ];
+    let base: Record<string, string | undefined>;
+    try {
+      base = await this.agentEnvironment();
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
     const pid = this.spawnWorker(argv, {
-      ...this.environment,
+      ...base,
       REPO_DIR: this.repoDir,
       STATE_DIR: this.stateDir,
       AGENT_COMMAND: this.agentCommand,

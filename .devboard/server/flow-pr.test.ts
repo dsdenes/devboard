@@ -7,6 +7,7 @@ import { createApp } from "./app";
 import { CommandFlowForge, type ForgeTarget } from "./forge-pr";
 import { StubForge } from "./fixtures/stub-forge";
 import { journalKey } from "./journal";
+import { testProviderService } from "./fixtures/test-providers";
 
 /**
  * Flow's PR/MR lifecycle: command shapes against a recording executor, and the
@@ -359,6 +360,7 @@ function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
     port: 0,
     repoDir: fixture.root,
     stateDir: fixture.stateDir,
+    providers: testProviderService(fixture.stateDir),
     goalFile: fixture.goalFile,
     agentCommand: command,
     tracker: async () => undefined,

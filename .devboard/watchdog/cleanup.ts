@@ -6,7 +6,7 @@ import {
   rmdirSync,
   unlinkSync,
 } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { ISSUES_DIRECTORY } from "../issues/paths";
 import { JOURNAL_RETENTION_MS } from "../server/journal";
 
@@ -168,6 +168,10 @@ export function sweepStateDir(
   const protectedPrefixes = [
     join(directory, "state"),
     join(directory, "journal"),
+    // The operator's provider credentials and the generated per-peer agent
+    // directories survive every sweep, however old they are: a credential is
+    // operator input, not scratch, and nothing recreates it.
+    join(directory, "providers"),
     // Every repo-scoped issues record: state, ledger, runs, activity, control,
     // and the repo-anchored lock a worker holds. A running worker's run
     // directory is therefore never swept.
@@ -190,6 +194,14 @@ export function sweepStateDir(
   const isProtected = (path: string): boolean => {
     if (protectedExact.has(path)) return true;
     if (liveLegacyLock(path)) return true;
+    // A provider store may live below a state directory that is itself nested
+    // inside this sweep's root (verification scratch, a worktree). Identify the
+    // store by its contents, so no credentials file is ever swept at any depth.
+    if (basename(path) === "providers") {
+      if (existsSync(join(path, "credentials.json")) || existsSync(join(path, "agents"))) {
+        return true;
+      }
+    }
     return protectedPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}${sep}`));
   };
 

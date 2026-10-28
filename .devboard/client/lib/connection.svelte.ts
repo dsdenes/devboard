@@ -91,6 +91,7 @@ export class ConnectionStore {
       current.send(JSON.stringify({ type: "getSkills" }));
       current.send(JSON.stringify({ type: "getProject" }));
       current.send(JSON.stringify({ type: "getVersion" }));
+      current.send(JSON.stringify({ type: "getProviders" }));
     };
 
     current.onmessage = (event) => {

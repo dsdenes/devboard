@@ -6,6 +6,7 @@ import type { IssuesStore } from "./issues.svelte";
 import type { LayoutStore, WorkspaceTab } from "./layout.svelte";
 import type { ConnectionStore } from "./connection.svelte";
 import type { NotificationStore } from "./notifications.svelte";
+import { providers } from "./providers.svelte";
 import type { Mode } from "./types";
 
 export interface CommandDef {
@@ -110,6 +111,13 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     title: "Show notification history",
     group: "Application",
     run: () => notifications.openHistory(),
+  });
+  add({
+    id: "settings.providers",
+    title: "Providers",
+    group: "Settings",
+    keywords: "authentication api key opencode go openrouter budget fallback subscription",
+    run: () => providers.openDialog(),
   });
   add({
     id: "app.report",

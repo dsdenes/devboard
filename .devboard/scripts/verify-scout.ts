@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import { lockPath, scansDirectory, settingsPath, statePath } from "../issues/scout/paths";
 import { readSettings, readState, type ScoutState } from "../issues/scout/state";
 import { freePort, run, waitFor } from "./verification";
+import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const root = join(harnessRoot, ".tmp", `verify-scout-${Date.now()}`);
@@ -229,6 +230,7 @@ interface Dashboard {
 
 async function startDashboard(fixture: Fixture): Promise<Dashboard> {
   const port = await freePort();
+  seedVerificationProvider(fixture.stateDir);
   const child = spawn(process.execPath, [join(harnessRoot, "server", "index.ts")], {
     cwd: harnessRoot,
     env: {
@@ -243,6 +245,7 @@ async function startDashboard(fixture: Fixture): Promise<Dashboard> {
       HOME: fixture.home,
       PATH: `${fixture.bin}:${process.env.PATH ?? ""}`,
       AGENT_COMMAND: `${process.execPath} ${stubAcp}`,
+      ...verificationProviderUsageEnv(),
       SCOUT_STUB_POOL: fixture.pool,
       SCOUT_STUB_WAVES: JSON.stringify(WAVES),
       SCOUT_STUB_GH_LOG: fixture.ghLog,

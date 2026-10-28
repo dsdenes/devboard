@@ -12,6 +12,7 @@
   import IssuesWorkspace from "./lib/components/IssuesWorkspace.svelte";
   import NotificationRegion from "./lib/components/NotificationRegion.svelte";
   import PaneHandle from "./lib/components/PaneHandle.svelte";
+  import ProvidersDialog from "./lib/components/ProvidersDialog.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
   import Button from "./lib/components/ui/button.svelte";
@@ -25,6 +26,7 @@
   import { applyTheme, layout } from "./lib/layout.svelte";
   import type { WorkspaceTab } from "./lib/layout.svelte";
   import { notifications } from "./lib/notifications.svelte";
+  import { providers } from "./lib/providers.svelte";
   import type { FeedbackAction, FeedbackPhase, Mode } from "./lib/types";
   import { MINIMUM_VIEWPORT, viewport } from "./lib/viewport.svelte";
 
@@ -368,6 +370,7 @@
       scout.handleEvent(record);
       flow.handleEvent(record);
       discover.handleEvent(record);
+      providers.handleEvent(record);
       handleFlowTabEvents(record);
     });
     connection.connect();
@@ -515,6 +518,8 @@
 />
 
 <NotificationRegion feedbackenabled={connection.feedbackEnabled} />
+
+<ProvidersDialog />
 
 <FeedbackOverlay
   bind:this={feedbackOverlay}
