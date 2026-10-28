@@ -31,6 +31,8 @@ export class ConnectionStore {
   state = $state<ConnectionState>("connecting");
   projectPath = $state("");
   version = $state<VersionState | null>(null);
+  /** True when the server has a Gitea address for harness-owned reporting. */
+  feedbackEnabled = $state(false);
   restarting = $state(false);
   awaitingRestart = $state(false);
   upgradePending = $state(false);
@@ -131,6 +133,7 @@ export class ConnectionStore {
         latest: message.latest as string | null,
         stale: message.stale as boolean,
       };
+      this.feedbackEnabled = message.feedbackEnabled === true;
       return;
     }
     if (message.type === "serverRestarting") {

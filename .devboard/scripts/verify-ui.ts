@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createReleaseDirectory } from "./harness-package";
 import {
@@ -143,11 +143,15 @@ try {
   const newRelease = releaseDirectory(root, NEW);
   await createReleaseDirectory(OLD, oldRelease);
   await createReleaseDirectory(NEW, newRelease);
+  const failingNpm = join(root, "failing-npm");
+  await writeFile(failingNpm, "#!/bin/sh\ncase \"$1\" in view) echo 'simulated npm outage' >&2; exit 1;; esac\nexec npm \"$@\"\n");
+  await chmod(failingNpm, 0o755);
 
   const host = await makeHost(root, "ui");
   hostPath = host.directory;
   const installed = launcher(["install", "--host", host.directory], {
     DEVBOARD_RELEASE_DIR: oldRelease,
+    DEVBOARD_NPM: failingNpm,
   });
   assertTrue(installed.code === 0, `fixture install failed: ${installed.stderr}`);
   const prefix = join(host.directory, ".devboard");

@@ -21,7 +21,7 @@ const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
 const PENDING_ONE = pendingRecord("0001-first.md", "First decision", "First.", "Choose the first.");
 /** The offline release the fixture serves; the stub `gh` never answers a release query. */
 const FIXTURE_RELEASE_VERSION = "0.0.0";
-const FIXTURE_RELEASE_TARBALL = `devboard-harness-${FIXTURE_RELEASE_VERSION}.tgz`;
+const FIXTURE_RELEASE_TARBALL = `devboard-${FIXTURE_RELEASE_VERSION}.tgz`;
 const MANAGED_SKILL = [
   "---",
   "name: behavior-first-testing",

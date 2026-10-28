@@ -28,7 +28,7 @@ jobs:
       - name: Check the client
         working-directory: .devboard
         run: bun run check
-      - name: Publish the harness release and launcher
+      - name: Publish the public package and fallback release
         working-directory: .devboard
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

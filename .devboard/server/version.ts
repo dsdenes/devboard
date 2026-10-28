@@ -13,7 +13,7 @@ export interface ServerVersion {
   stale: boolean;
 }
 
-const HARNESS_NAME = "@dsdenes/devboard-harness";
+const HARNESS_NAME = "@dsdenes/devboard";
 /**
  * The version the checked-in manifest records. A release writes its real
  * version into the packed copy, so this value marks an unpacked source tree.
@@ -23,7 +23,7 @@ const GIT_TIMEOUT_MS = 5_000;
 
 /** The installed package a host prefix holds. */
 export function installedPackageDir(prefix: string): string {
-  return join(prefix, "node_modules", "@dsdenes", "devboard-harness");
+  return join(prefix, "node_modules", "@dsdenes", "devboard");
 }
 
 /** The checkout that contains this server's source code. */

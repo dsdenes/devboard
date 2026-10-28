@@ -12,11 +12,13 @@ import {
 import type { Journal } from "./journal";
 
 /**
- * Automatic harness updates. The server checks the private release feed at
- * startup and then on an interval, installs a newer tarball into the host
- * prefix while it keeps serving, and leaves the restart to the operator's
- * reload control. A failure is journaled and retried with exponential backoff;
- * the running package is never replaced by a failed or partial install.
+ * Automatic harness updates. The server checks npm at startup and then on an
+ * interval, installs a newer artifact into the host prefix while it keeps
+ * serving, and leaves the restart to the operator's reload control. When npm
+ * cannot serve the artifact and a Gitea release is configured, the release
+ * tarball and its checksum are the fallback. A failure is journaled and
+ * retried with exponential backoff; the running package is never replaced by
+ * a failed or partial install.
  */
 
 export const DEFAULT_UPDATE_INTERVAL_MS = 60_000;

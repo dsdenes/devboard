@@ -1,3 +1,5 @@
+import { giteaCreateIssue, type FetchLike } from "../lib/gitea";
+
 /**
  * Operator issue reporting for the local interface.
  *
@@ -5,11 +7,13 @@
  * A report also carries the operator's free text and, when the panel answered
  * questions, the Ask conversation; the removal and redesign shortcuts carry
  * only the context and use a fixed instruction. This module
- * validates that payload, renders it as a GitHub issue for an implementation
- * agent, and files the issue through the operator's authenticated `gh` command.
+ * validates that payload, renders it as a Gitea issue for an implementation
+ * agent, and files the issue through the configured Gitea API.
  *
  * Reports describe the harness interface itself, so the issue always lands in
  * the harness repository, never in the host project that embeds the harness.
+ * Without `DEVBOARD_GITEA_URL` reporting is disabled rather than redirected to
+ * another forge.
  */
 
 /** The repository that receives every reported UI issue. */
@@ -84,7 +88,7 @@ export class FeedbackRequestError extends Error {
   }
 }
 
-/** A delivery failure: `gh` could not be started, failed, or timed out. */
+/** A delivery failure: the Gitea API refused the request or timed out. */
 export class FeedbackDeliveryError extends Error {
   readonly status: number;
 
@@ -96,14 +100,15 @@ export class FeedbackDeliveryError extends Error {
 }
 
 export interface FeedbackIssueOptions {
-  /** Executable plus leading arguments, default `["gh"]`. */
-  command: string[];
-  /** Directory `gh` runs in. */
-  repoDir: string;
-  /** Wall-clock bound for the `gh` invocation. */
+  /** Gitea HTTP origin; reporting is disabled when this is absent. */
+  baseUrl: string;
+  /** `owner/name` repository that receives the issue. */
+  repo: string;
+  token?: string;
+  /** Wall-clock bound for the API request. */
   timeoutMs: number;
-  /** Extra environment for the child, merged after the process environment. */
-  env?: Record<string, string>;
+  /** Test seam; production uses the global fetch. */
+  fetchImpl?: FetchLike;
 }
 
 function field(
@@ -334,80 +339,31 @@ export async function fileFeedbackIssue(
 ): Promise<FeedbackIssue> {
   const title = feedbackTitle(submission);
   const body = feedbackBody(submission);
-  const args = [
-    ...options.command,
-    "issue",
-    "create",
-    "--title",
-    title,
-    "--body-file",
-    "-",
-    "--repo",
-    FEEDBACK_REPOSITORY,
-  ];
-
-  let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
-  try {
-    child = Bun.spawn({
-      cmd: args,
-      cwd: options.repoDir,
-      env: {
-        ...process.env,
-        ...options.env,
-        // Never wait for interactive authentication inside a request.
-        GH_PROMPT_DISABLED: "1",
-        NO_COLOR: "1",
-      },
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const withTimeout: FetchLike = (input, init) =>
+    fetchImpl(input, {
+      ...init,
+      signal: AbortSignal.timeout(options.timeoutMs),
     });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new FeedbackDeliveryError(502, `Could not start ${options.command[0]}: ${detail}`);
-  }
-
-  // The body goes through stdin, so the operator's text never becomes a
-  // process argument visible to `ps`.
   try {
-    child.stdin.write(body);
-    child.stdin.end();
-  } catch {
-    // `gh` may have exited before reading; the exit status reports why.
-  }
-
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    child.kill();
-  }, options.timeoutMs);
-  let code: number;
-  try {
-    code = await child.exited;
-  } finally {
-    clearTimeout(timer);
-  }
-  const [stdout, stderr] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-
-  if (timedOut) {
-    throw new FeedbackDeliveryError(
-      504,
-      `Issue creation timed out after ${options.timeoutMs} ms.`,
+    const issue = await giteaCreateIssue(
+      {
+        baseUrl: options.baseUrl,
+        project: options.repo,
+        ...(options.token === undefined ? {} : { token: options.token }),
+      },
+      { title, body },
+      withTimeout,
     );
+    return { url: issue.url, title };
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new FeedbackDeliveryError(
+        504,
+        `Issue creation timed out after ${options.timeoutMs} ms.`,
+      );
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new FeedbackDeliveryError(502, `Issue creation failed: ${firstLine(detail)}`);
   }
-  if (code !== 0) {
-    throw new FeedbackDeliveryError(502, `Issue creation failed: ${firstLine(stderr)}`);
-  }
-  const url = stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("http"))
-    .at(-1);
-  if (url === undefined) {
-    throw new FeedbackDeliveryError(502, "Issue creation returned no URL.");
-  }
-  return { url, title };
 }

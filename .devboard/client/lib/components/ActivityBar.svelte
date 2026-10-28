@@ -27,6 +27,7 @@
     onredesignelement: () => void;
     reportphase: FeedbackPhase;
     reportaction: FeedbackAction | null;
+    feedbackenabled: boolean;
   }
 
   let {
@@ -36,6 +37,7 @@
     onredesignelement,
     reportphase,
     reportaction,
+    feedbackenabled,
   }: Props = $props();
 
   const tooltipClass =
@@ -254,38 +256,40 @@
         <Moon size={15} aria-hidden="true" />
       {/if}
     </IconButton>
-    <IconButton
-      label={reportLabel}
-      command="app.report"
-      data-testid="activity-report"
-      class="activity-bar__action"
-      active={reportaction === "report"}
-      disabled={reportphase === "sending"}
-      onclick={onreportissue}
-    >
-      <Flag size={15} aria-hidden="true" />
-    </IconButton>
-    <IconButton
-      label={removeLabel}
-      command="app.remove"
-      data-testid="activity-remove"
-      class="activity-bar__action"
-      active={reportaction === "remove"}
-      disabled={quickDisabled}
-      onclick={onremoveelement}
-    >
-      <Trash2 size={15} aria-hidden="true" />
-    </IconButton>
-    <IconButton
-      label={redesignLabel}
-      command="app.redesign"
-      data-testid="activity-redesign"
-      class="activity-bar__action"
-      active={reportaction === "redesign"}
-      disabled={quickDisabled}
-      onclick={onredesignelement}
-    >
-      <Sparkles size={15} aria-hidden="true" />
-    </IconButton>
+    {#if feedbackenabled}
+      <IconButton
+        label={reportLabel}
+        command="app.report"
+        data-testid="activity-report"
+        class="activity-bar__action"
+        active={reportaction === "report"}
+        disabled={reportphase === "sending"}
+        onclick={onreportissue}
+      >
+        <Flag size={15} aria-hidden="true" />
+      </IconButton>
+      <IconButton
+        label={removeLabel}
+        command="app.remove"
+        data-testid="activity-remove"
+        class="activity-bar__action"
+        active={reportaction === "remove"}
+        disabled={quickDisabled}
+        onclick={onremoveelement}
+      >
+        <Trash2 size={15} aria-hidden="true" />
+      </IconButton>
+      <IconButton
+        label={redesignLabel}
+        command="app.redesign"
+        data-testid="activity-redesign"
+        class="activity-bar__action"
+        active={reportaction === "redesign"}
+        disabled={quickDisabled}
+        onclick={onredesignelement}
+      >
+        <Sparkles size={15} aria-hidden="true" />
+      </IconButton>
+    {/if}
   </div>
 </div>

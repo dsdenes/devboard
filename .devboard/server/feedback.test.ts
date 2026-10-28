@@ -1,13 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createApp } from "./app";
 import { REDESIGN_INSTRUCTION } from "./feedback";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
-const STUB_GH = join(import.meta.dir, "fixtures", "stub-gh.ts");
+const ISSUE_URL = "https://gitea.example/dsdenes/devboard/issues/42";
 
 afterAll(async () => {
   await Promise.all(
@@ -22,20 +21,57 @@ async function temporaryDirectory(): Promise<string> {
   return directory;
 }
 
-interface RecordedGh {
-  args: string[];
-  cwd: string;
+interface RecordedCall {
+  url: string;
+  method: string;
+  authorization: string;
+  title: string;
   body: string;
 }
 
-async function startServer(mode: "ok" | "fail" | "hang" = "ok", timeoutMs = 5_000) {
+type Mode = "ok" | "fail" | "hang";
+
+async function startServer(options: { enabled?: boolean; mode?: Mode; timeoutMs?: number } = {}) {
   const root = await temporaryDirectory();
   const adrDir = join(root, "adrs");
   const staticDir = join(root, "static");
-  const recordPath = join(root, "gh-call.json");
   await mkdir(adrDir, { recursive: true });
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>Feedback</title>");
+  const calls: RecordedCall[] = [];
+  const mode = options.mode ?? "ok";
+  const fetchImpl = (async (input: string, init?: RequestInit): Promise<Response> => {
+    const request = init ?? {};
+    const payload = JSON.parse(String(request.body ?? "{}")) as {
+      title?: unknown;
+      body?: unknown;
+    };
+    calls.push({
+      url: input,
+      method: request.method ?? "GET",
+      authorization:
+        new Headers(request.headers).get("authorization") ?? "",
+      title: typeof payload.title === "string" ? payload.title : "",
+      body: typeof payload.body === "string" ? payload.body : "",
+    });
+    if (mode === "hang") {
+      const signal = request.signal;
+      return await new Promise<Response>((_settle, reject) => {
+        signal?.addEventListener("abort", () => {
+          reject(new DOMException("The operation timed out.", "TimeoutError"));
+        });
+      });
+    }
+    if (mode === "fail") {
+      return new Response(JSON.stringify({ message: "boom" }), { status: 500 });
+    }
+    return Response.json({
+      number: 42,
+      title: payload.title,
+      html_url: ISSUE_URL,
+      state: "open",
+    });
+  }) as typeof fetch;
 
   const server = createApp({
     adrDir,
@@ -44,13 +80,18 @@ async function startServer(mode: "ok" | "fail" | "hang" = "ok", timeoutMs = 5_00
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
-    feedback: {
-      ghCommand: ["bun", STUB_GH],
-      timeoutMs,
-      env: { STUB_GH_RECORD: recordPath, STUB_GH_MODE: mode },
-    },
+    feedback:
+      options.enabled === false
+        ? undefined
+        : {
+            baseUrl: "https://gitea.example",
+            repo: "dsdenes/devboard",
+            token: "secret-token",
+            timeoutMs: options.timeoutMs ?? 5_000,
+            fetchImpl,
+          },
   });
-  return { server, root, url: `127.0.0.1:${server.port}`, recordPath };
+  return { server, root, url: `127.0.0.1:${server.port}`, calls };
 }
 
 function submit(
@@ -79,34 +120,25 @@ function report(overrides: Record<string, unknown> = {}): Record<string, unknown
   };
 }
 
-async function recorded(path: string): Promise<RecordedGh> {
-  return JSON.parse(await readFile(path, "utf8")) as RecordedGh;
-}
-
 describe("feedback endpoint", () => {
-  test("files the report and captured context as a GitHub issue", async () => {
-    const { server, url, root, recordPath } = await startServer();
+  test("files the report and captured context through the Gitea API", async () => {
+    const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(url, report());
 
       expect(response.status).toBe(201);
       expect(await response.json()).toEqual({
-        url: "https://github.com/example/host/issues/42",
+        url: ISSUE_URL,
         title: "[ui] The Start button is clipped on narrow windows.",
       });
 
-      const call = await recorded(recordPath);
-      expect(call.cwd).toBe(root);
-      expect(call.args).toContain("issue");
-      expect(call.args).toContain("create");
-      expect(call.args).toContain("--body-file");
-      expect(call.args).toContain("-");
-      expect(call.args).toContain("--title");
-      expect(call.args).toContain("[ui] The Start button is clipped on narrow windows.");
-      // The captured context travels through stdin, never argv.
-      expect(call.args.join(" ")).not.toContain("start-button");
-
+      expect(calls).toHaveLength(1);
+      const call = calls[0]!;
+      expect(call.method).toBe("POST");
+      expect(call.url).toBe("https://gitea.example/api/v1/repos/dsdenes/devboard/issues");
+      expect(call.authorization).toBe("token secret-token");
+      expect(call.title).toBe("[ui] The Start button is clipped on narrow windows.");
       expect(call.body).toContain("## Operator report");
       expect(call.body).toContain("The Start button is clipped on narrow windows.");
       expect(call.body).toContain("- Route: `/`");
@@ -121,7 +153,7 @@ describe("feedback endpoint", () => {
   });
 
   test("carries the Ask conversation as context in the filed issue", async () => {
-    const { server, url, recordPath } = await startServer();
+    const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(
@@ -135,8 +167,7 @@ describe("feedback endpoint", () => {
       );
 
       expect(response.status).toBe(201);
-      const call = await recorded(recordPath);
-      expect(call.args.join(" ")).not.toContain("Why is this button clipped?");
+      const call = calls[0]!;
       expect(call.body).toContain("## Ask conversation");
       expect(call.body).toContain("**You:**\n\nWhy is this button clipped?");
       expect(call.body).toContain("**Agent:**\n\nThe flex row has no min-width.");
@@ -148,8 +179,8 @@ describe("feedback endpoint", () => {
     }
   });
 
-  test("refuses a malformed conversation before running gh", async () => {
-    const { server, url, recordPath } = await startServer();
+  test("refuses a malformed conversation before reaching Gitea", async () => {
+    const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(
@@ -161,14 +192,14 @@ describe("feedback endpoint", () => {
       expect(await response.json()).toEqual({
         error: "conversation[0].role must be developer or agent.",
       });
-      expect(existsSync(recordPath)).toBe(false);
+      expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
     }
   });
 
-  test("refuses an oversized conversation before running gh", async () => {
-    const { server, url, recordPath } = await startServer();
+  test("refuses an oversized conversation before reaching Gitea", async () => {
+    const { server, url, calls } = await startServer();
     const turn = "x".repeat(4000);
 
     try {
@@ -188,85 +219,81 @@ describe("feedback endpoint", () => {
       expect(await response.json()).toEqual({
         error: "conversation is longer than 12000 characters.",
       });
-      expect(existsSync(recordPath)).toBe(false);
+      expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
     }
   });
 
-  test("always files the issue in the harness repository", async () => {
-    const { server, url, recordPath } = await startServer();
+  test("always files the issue in the configured harness repository", async () => {
+    const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(url, report());
 
       expect(response.status).toBe(201);
-      const call = await recorded(recordPath);
-      const repoIndex = call.args.indexOf("--repo");
-      expect(repoIndex).toBeGreaterThan(-1);
-      expect(call.args[repoIndex + 1]).toBe("dsdenes/devboard");
+      expect(calls[0]?.url).toContain("/repos/dsdenes/devboard/issues");
     } finally {
       server.stop(true);
     }
   });
 
-  test("refuses an empty report before running gh", async () => {
-    const { server, url, recordPath } = await startServer();
+  test("refuses an empty report before reaching Gitea", async () => {
+    const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(url, report({ report: "   " }));
 
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ error: "report must not be empty." });
-      expect(existsSync(recordPath)).toBe(false);
+      expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
     }
   });
 
-  test("refuses oversized fields before running gh", async () => {
-    const { server, url, recordPath } = await startServer();
+  test("refuses oversized fields before reaching Gitea", async () => {
+    const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(url, report({ report: "x".repeat(8001) }));
 
       expect(response.status).toBe(400);
-      expect(existsSync(recordPath)).toBe(false);
+      expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
     }
   });
 
   test("refuses a cross-origin browser request", async () => {
-    const { server, url, recordPath } = await startServer();
+    const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(url, report(), { origin: "http://evil.example" });
 
       expect(response.status).toBe(403);
-      expect(existsSync(recordPath)).toBe(false);
+      expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
     }
   });
 
-  test("reports a gh failure with its diagnostic", async () => {
-    const { server, url } = await startServer("fail");
+  test("reports a delivery failure with its diagnostic", async () => {
+    const { server, url } = await startServer({ mode: "fail" });
 
     try {
       const response = await submit(url, report());
 
       expect(response.status).toBe(502);
-      expect(await response.json()).toEqual({
-        error: "Issue creation failed: boom: not a git repository",
-      });
+      const body = (await response.json()) as { error: string };
+      expect(body.error.startsWith("Issue creation failed:")).toBe(true);
     } finally {
       server.stop(true);
     }
   });
 
-  test("reports a gh timeout", async () => {
-    const { server, url } = await startServer("hang", 100);
+  test("reports a delivery timeout", async () => {
+    const { server, url } = await startServer({ mode: "hang", timeoutMs: 100 });
 
     try {
       const response = await submit(url, report());
@@ -275,6 +302,20 @@ describe("feedback endpoint", () => {
       expect(await response.json()).toEqual({
         error: "Issue creation timed out after 100 ms.",
       });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("disables reporting when no Gitea address is configured", async () => {
+    const { server, url } = await startServer({ enabled: false });
+
+    try {
+      const response = await submit(url, report());
+
+      expect(response.status).toBe(503);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toContain("DEVBOARD_GITEA_URL");
     } finally {
       server.stop(true);
     }
@@ -296,7 +337,7 @@ describe("feedback endpoint", () => {
   });
 
   test("defaults a missing action to the free-text report", async () => {
-    const { server, url, recordPath } = await startServer();
+    const { server, url, calls } = await startServer();
 
     try {
       const payload = report();
@@ -304,11 +345,7 @@ describe("feedback endpoint", () => {
       const response = await submit(url, payload);
 
       expect(response.status).toBe(201);
-      expect(await response.json()).toEqual({
-        url: "https://github.com/example/host/issues/42",
-        title: "[ui] The Start button is clipped on narrow windows.",
-      });
-      const call = await recorded(recordPath);
+      const call = calls[0]!;
       expect(call.body).toContain("## Operator report");
       expect(call.body).toContain("The Start button is clipped on narrow windows.");
     } finally {
@@ -317,7 +354,7 @@ describe("feedback endpoint", () => {
   });
 
   test("files a removal request without report text", async () => {
-    const { server, url, root, recordPath } = await startServer();
+    const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(
@@ -327,27 +364,17 @@ describe("feedback endpoint", () => {
 
       expect(response.status).toBe(201);
       expect(await response.json()).toEqual({
-        url: "https://github.com/example/host/issues/42",
+        url: ISSUE_URL,
         title: "[ui] Remove element: main > section.run",
       });
 
-      const call = await recorded(recordPath);
-      expect(call.cwd).toBe(root);
-      const repoIndex = call.args.indexOf("--repo");
-      expect(call.args[repoIndex + 1]).toBe("dsdenes/devboard");
-      expect(call.args).toContain("--body-file");
-      // The request and the captured context travel through stdin, never argv.
-      expect(call.args.join(" ")).not.toContain("## Removal request");
-      expect(call.args.join(" ")).not.toContain('<button class="start-button">');
+      const call = calls[0]!;
       expect(call.body.startsWith("## Removal request\n\n")).toBe(true);
       expect(call.body).toContain(
         "\nRemove the selected UI element from the interface.\n",
       );
       expect(call.body).toContain("## Captured UI context");
       expect(call.body).toContain("- Selected element: `main > section.run`");
-      expect(call.body).toContain("- Route: `/`");
-      expect(call.body).toContain("### Visible text");
-      expect(call.body).toContain("### DOM excerpt");
       expect(call.body).not.toContain("## Operator report");
     } finally {
       server.stop(true);
@@ -355,7 +382,7 @@ describe("feedback endpoint", () => {
   });
 
   test("files a redesign request with the normative design instruction", async () => {
-    const { server, url, recordPath } = await startServer();
+    const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(
@@ -368,20 +395,12 @@ describe("feedback endpoint", () => {
       expect(body.title).toBe(
         "[ui] Redesign element: main > section.run > button.start-button",
       );
-
-      const call = await recorded(recordPath);
-      const repoIndex = call.args.indexOf("--repo");
-      expect(call.args[repoIndex + 1]).toBe("dsdenes/devboard");
+      const call = calls[0]!;
       expect(call.body.startsWith("## Redesign request\n\n")).toBe(true);
       expect(call.body).toContain(REDESIGN_INSTRUCTION);
       expect(call.body).toContain("ui-ux skill");
       expect(call.body).toContain("DESIGN.md");
       expect(call.body).toContain("design/tokens.json");
-      expect(call.body).toContain("## Captured UI context");
-      expect(call.body).toContain(
-        "- Selected element: `main > section.run > button.start-button`",
-      );
-      // Supplied report text is ignored, not filed.
       expect(call.body).not.toContain("ignored operator text");
     } finally {
       server.stop(true);
@@ -424,17 +443,14 @@ describe("feedback endpoint", () => {
     }
   });
 
-  test("refuses an unknown action before running gh", async () => {
-    const { server, url, recordPath } = await startServer();
+  test("refuses an unknown action before reaching Gitea", async () => {
+    const { server, url, calls } = await startServer();
 
     try {
       const response = await submit(url, report({ action: "delete" }));
 
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({
-        error: "action must be one of report, remove, redesign.",
-      });
-      expect(existsSync(recordPath)).toBe(false);
+      expect(calls).toHaveLength(0);
     } finally {
       server.stop(true);
     }

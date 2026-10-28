@@ -31,7 +31,7 @@ export function dashboardInventory(instances: DashboardInstance[]): DashboardInv
       instance.repoDir.length === 0
         ? running
         : readHarnessVersion(
-            join(instance.repoDir, ".devboard", "node_modules", "@dsdenes", "devboard-harness"),
+            join(instance.repoDir, ".devboard", "node_modules", "@dsdenes", "devboard"),
           );
     return {
       host: instance.repoDir.length > 0 ? instance.repoDir : "an unknown host",

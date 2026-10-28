@@ -33,7 +33,7 @@ async function temporaryDirectory(): Promise<string> {
 
 async function installedPrefix(version: string): Promise<string> {
   const prefix = await temporaryDirectory();
-  const directory = join(prefix, "node_modules", "@dsdenes", "devboard-harness");
+  const directory = join(prefix, "node_modules", "@dsdenes", "devboard");
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "package.json"), `${JSON.stringify({ version })}\n`);
   return prefix;
@@ -129,7 +129,7 @@ describe("startUpdater", () => {
     }
   });
 
-  test("does not install into a prefix without the harness", async () => {
+  test("does not install into a prefix without the package", async () => {
     const prefix = await temporaryDirectory();
     const { journal } = journalRecorder();
     let installs = 0;
@@ -232,7 +232,7 @@ describe("startUpdater", () => {
         [
           "update-error",
           "could not install 0.1.2: release asset download timed out after 500 ms: " +
-            "devboard-harness-0.1.2.tgz",
+            "devboard-0.1.2.tgz",
         ],
       ]);
       // The failed check schedules its own backoff retry, so a stalled

@@ -14,27 +14,36 @@ import { basename, join, resolve } from "node:path";
 import { configuredGiteaToken, configuredGiteaUrl } from "./forge";
 import {
   giteaDownloadAsset,
-  giteaRequest,
+  giteaReleaseByTag,
   repoPath,
   type GiteaAsset,
+  type GiteaReleaseDocument,
   type GiteaTarget,
 } from "./gitea";
 
 /**
- * Release transport shared by the harness server, its release script, and the
- * verification fixtures. The harness package is never published to a registry:
- * each release is a tarball plus a `.sha256` asset on the canonical Gitea
- * instance, read from the public API with no credential and no `gh`.
+ * Release transport shared by the dashboard server and its verification
+ * scripts. npm is the authority for the version and artifact. A configured
+ * Gitea release is only a fallback for hosts where npm cannot resolve or
+ * serve the package; it is never required for an update check.
  */
 
 export const RELEASE_REPO = "dsdenes/devboard";
-export const HARNESS_PACKAGE = "@dsdenes/devboard-harness";
-export const RELEASE_PREFIX = "devboard-harness-";
+export const PACKAGE_NAME = "@dsdenes/devboard";
+export const RELEASE_PREFIX = "devboard-";
 export const CHECKSUM_SUFFIX = ".sha256";
 
+export interface GiteaSource {
+  kind: "gitea";
+  baseUrl: string;
+  repo: string;
+  token?: string;
+}
+
 export type ReleaseSource =
+  | { kind: "npm"; env: NodeJS.ProcessEnv; fallback?: GiteaSource }
   | { kind: "dir"; directory: string }
-  | { kind: "gitea"; baseUrl: string; repo: string; token?: string };
+  | GiteaSource;
 
 export interface ReleaseAsset {
   name: string;
@@ -72,32 +81,28 @@ export class ReleaseError extends Error {}
  */
 export class ReleaseFeedError extends ReleaseError {}
 
-interface PersistedRelease {
-  url?: string;
-  repo?: string;
+function trimmed(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const text = value.trim();
+  return text.length > 0 ? text.replace(/\/+$/, "") : undefined;
 }
 
-/** The release coordinates a launcher install persisted in `install.json`. */
-function persistedRelease(stateDir: string | undefined): PersistedRelease {
-  if (stateDir === undefined) return {};
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(join(stateDir, "install.json"), "utf8"));
-    if (typeof parsed !== "object" || parsed === null || !("release" in parsed)) return {};
-    const release = parsed.release;
-    if (typeof release !== "object" || release === null) return {};
-    return {
-      ...("url" in release && typeof release.url === "string" ? { url: release.url } : {}),
-      ...("repo" in release && typeof release.repo === "string" ? { repo: release.repo } : {}),
-    };
-  } catch {
-    return {};
-  }
+function giteaFallback(env: NodeJS.ProcessEnv): GiteaSource | undefined {
+  const baseUrl = trimmed(configuredGiteaUrl(env)) ?? trimmed(env.DEVBOARD_RELEASE_URL);
+  if (baseUrl === undefined) return undefined;
+  const token = configuredGiteaToken(env);
+  return {
+    kind: "gitea",
+    baseUrl,
+    repo: env.DEVBOARD_RELEASE_REPO ?? RELEASE_REPO,
+    ...(token === undefined ? {} : { token }),
+  };
 }
 
 /**
- * The release backend the environment asks for. A directory overrides the
- * feed for CI and fixtures; otherwise the public Gitea API is used, with the
- * address taken from configuration or the install state the launcher wrote.
+ * The release backend the environment asks for. A directory overrides every
+ * network source for CI and fixtures. Otherwise npm is the authority, with a
+ * configured Gitea release available as a fallback.
  */
 export function releaseSource(
   env: NodeJS.ProcessEnv = process.env,
@@ -107,19 +112,16 @@ export function releaseSource(
   if (directory !== undefined && directory.length > 0) {
     return { kind: "dir", directory: resolve(directory) };
   }
-  const persisted = persistedRelease(stateDir);
-  const baseUrl =
-    env.DEVBOARD_RELEASE_URL ??
-    configuredGiteaUrl(env) ??
-    persisted.url ??
-    "";
-  const repo = env.DEVBOARD_RELEASE_REPO ?? persisted.repo ?? RELEASE_REPO;
-  const token = configuredGiteaToken(env);
+  const cache = env.npm_config_cache ??
+    (stateDir === undefined ? undefined : join(resolve(stateDir), "npm-cache"));
+  const fallback = giteaFallback(env);
   return {
-    kind: "gitea",
-    baseUrl: baseUrl.replace(/\/+$/, ""),
-    repo,
-    ...(token === undefined ? {} : { token }),
+    kind: "npm",
+    env: {
+      ...env,
+      ...(cache === undefined ? {} : { npm_config_cache: cache }),
+    },
+    ...(fallback === undefined ? {} : { fallback }),
   };
 }
 
@@ -189,7 +191,7 @@ function failure(tool: string, result: CommandResult): ReleaseError {
 }
 
 /**
- * Text the release tools print when the host cannot reach the feed at all:
+ * Text the tools print when the host cannot reach the registry or feed at all:
  * no route, DNS or proxy failure, refused or reset connection, or a timeout.
  * The cause is the network, not the harness, so it is retried without being
  * reported as a defect.
@@ -207,15 +209,17 @@ const UNREACHABLE_PATTERNS = [
   "temporary failure in name resolution",
   "tls handshake timeout",
   "context deadline exceeded",
+  "enotfound",
+  "eai_again",
   "(timed out)",
 ];
 
-/** True when a release check failed because the feed was unreachable. */
+/** True when a release check failed because the network was unreachable. */
 export function isReleaseUnreachable(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
   if (UNREACHABLE_PATTERNS.some((pattern) => message.includes(pattern))) return true;
-  // A host without the release client cannot reach the feed at all. Node and
-  // Bun report the failed spawn as ENOENT before the tool prints anything.
+  // A host without the release client cannot reach the registry at all. Node
+  // and Bun report the failed spawn as ENOENT before the tool prints anything.
   const failure = error as (NodeJS.ErrnoException & { syscall?: unknown }) | undefined;
   const syscall = typeof failure?.syscall === "string" ? failure.syscall : "";
   return failure?.code === "ENOENT" && (message.includes("spawn") || syscall.startsWith("spawn"));
@@ -278,6 +282,53 @@ async function directoryRelease(directory: string): Promise<ReleaseInfo> {
   };
 }
 
+function npmResultText(result: CommandResult): string {
+  const text = (result.stderr || result.stdout).trim().split("\n")[0]?.trim() ?? "";
+  return text.length > 0 ? text : "no output";
+}
+
+/** The newest version npm publishes for this package. */
+export async function npmLatestVersion(env: NodeJS.ProcessEnv): Promise<string> {
+  const npm = env.DEVBOARD_NPM ?? "npm";
+  const result = await exec(
+    npm,
+    ["view", PACKAGE_NAME, "version", "--prefer-online"],
+    { env, timeoutMs: 120_000 },
+  );
+  if (result.code !== 0) {
+    throw new ReleaseError(`npm could not resolve ${PACKAGE_NAME}: ${npmResultText(result)}`);
+  }
+  const lines = result.stdout.trim().split("\n").filter((line) => line.trim().length > 0);
+  const version = lines.at(-1)?.trim() ?? "";
+  if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new ReleaseError(`npm returned an unreadable version: ${npmResultText(result)}`);
+  }
+  return version;
+}
+
+/** The tarball npm advertises for one published version. */
+export async function npmArtifactUrl(
+  env: NodeJS.ProcessEnv,
+  version: string,
+): Promise<string> {
+  const npm = env.DEVBOARD_NPM ?? "npm";
+  const result = await exec(
+    npm,
+    ["view", `${PACKAGE_NAME}@${version}`, "dist.tarball", "--prefer-online"],
+    { env, timeoutMs: 120_000 },
+  );
+  if (result.code !== 0) {
+    throw new ReleaseError(
+      `npm could not serve ${PACKAGE_NAME}@${version}: ${npmResultText(result)}`,
+    );
+  }
+  const value = result.stdout.trim().split("\n").filter((line) => line.length > 0).at(-1) ?? "";
+  if (!/^https?:\/\//.test(value)) {
+    throw new ReleaseError(`npm returned no tarball for ${PACKAGE_NAME}@${version}`);
+  }
+  return value;
+}
+
 /**
  * The error for a body that is not one JSON release object: a proxy page, a
  * truncated response, or a payload from a different tool. The first line is
@@ -332,30 +383,71 @@ export function parseReleaseDescription(stdout: string): ReleaseInfo {
   };
 }
 
-async function giteaRelease(source: Extract<ReleaseSource, { kind: "gitea" }>): Promise<ReleaseInfo> {
+function releaseFromDocument(document: GiteaReleaseDocument): ReleaseInfo {
+  if (typeof document.tag_name !== "string") {
+    throw new ReleaseError("the latest release has no tag");
+  }
+  return {
+    version: versionFromTag(document.tag_name),
+    tag: document.tag_name,
+    assets: releaseAssets(document.assets),
+  };
+}
+
+function giteaTarget(source: GiteaSource): GiteaTarget {
+  return {
+    baseUrl: source.baseUrl,
+    project: source.repo,
+    ...(source.token === undefined ? {} : { token: source.token }),
+  };
+}
+
+async function giteaRelease(source: GiteaSource): Promise<ReleaseInfo> {
   if (source.baseUrl.length === 0) {
     throw new ReleaseError(
       "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
     );
   }
-  const target: GiteaTarget = {
-    baseUrl: source.baseUrl,
-    project: source.repo,
-    ...(source.token === undefined ? {} : { token: source.token }),
-  };
-  const response = await giteaRequest(
-    target,
-    `${repoPath(target)}/releases/latest`,
-    undefined,
-    fetch,
-    "application/json",
+  const target = giteaTarget(source);
+  const response = await fetch(
+    `${target.baseUrl}/api/v1/repos/${repoPath(target)}/releases/latest`,
+    {
+      headers: {
+        Accept: "application/json",
+        ...(source.token === undefined ? {} : { Authorization: `token ${source.token}` }),
+      },
+    },
   );
+  if (!response.ok) {
+    throw new ReleaseError(
+      `the release feed answered HTTP ${response.status}: ${await response.text().catch(() => "")}`,
+    );
+  }
   return parseReleaseDescription(await response.text());
 }
 
-/** Metadata for the latest release the configured backend exposes. */
+async function giteaReleaseForVersion(
+  source: GiteaSource,
+  version: string,
+): Promise<ReleaseInfo> {
+  const document = await giteaReleaseByTag(giteaTarget(source), `v${version}`);
+  if (document === undefined) {
+    throw new ReleaseError(`the release feed has no ${PACKAGE_NAME}@${version}`);
+  }
+  return releaseFromDocument(document);
+}
+
+/** Metadata for the latest version npm publishes, or its configured fallback. */
 export async function latestRelease(source: ReleaseSource): Promise<ReleaseInfo> {
-  return source.kind === "dir" ? directoryRelease(source.directory) : giteaRelease(source);
+  if (source.kind === "dir") return directoryRelease(source.directory);
+  if (source.kind === "gitea") return giteaRelease(source);
+  try {
+    const version = await npmLatestVersion(source.env);
+    return { version, tag: `v${version}`, assets: [] };
+  } catch (error) {
+    if (source.fallback === undefined) throw error;
+    return giteaRelease(source.fallback);
+  }
 }
 
 /** How long one release asset download may run before it is killed. */
@@ -373,6 +465,9 @@ export async function downloadRelease(
   destination: string,
   options: DownloadReleaseOptions = {},
 ): Promise<{ tarball: string; checksum: string }> {
+  if (source.kind === "npm") {
+    throw new ReleaseError("npm installs the registry artifact directly; no tarball download");
+  }
   const tarball = join(destination, tarballName(release.version));
   const checksum = join(destination, checksumName(release.version));
   const names = new Set(release.assets.map((asset) => asset.name));
@@ -392,11 +487,7 @@ export async function downloadRelease(
       "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
     );
   }
-  const target = {
-    baseUrl: source.baseUrl,
-    project: source.repo,
-    ...(source.token === undefined ? {} : { token: source.token }),
-  };
+  const target = giteaTarget(source);
   const timeoutMs = options.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
   const byName = new Map(release.assets.map((asset) => [asset.name, asset]));
   for (const [name, path] of [
@@ -457,15 +548,18 @@ export async function readPackageVersion(directory: string): Promise<string | nu
   }
 }
 
-export function harnessPackageDir(prefix: string): string {
-  return join(prefix, "node_modules", "@dsdenes", "devboard-harness");
+export function packageDir(prefix: string): string {
+  return join(prefix, "node_modules", "@dsdenes", "devboard");
 }
+
+/** The package directory under a host's npm prefix, kept for older callers. */
+export const harnessPackageDir = packageDir;
 
 export async function installedHarnessVersion(prefix: string): Promise<string | null> {
-  return readPackageVersion(harnessPackageDir(prefix));
+  return readPackageVersion(packageDir(prefix));
 }
 
-/** Records the harness dependency the host prefix holds. */
+/** Records the devboard dependency the host prefix holds. */
 export async function writePrefixPackage(prefix: string, version: string): Promise<void> {
   const path = join(prefix, "package.json");
   let existing: Record<string, unknown> = {};
@@ -480,7 +574,8 @@ export async function writePrefixPackage(prefix: string, version: string): Promi
     typeof current === "object" && current !== null
       ? { ...(current as Record<string, unknown>) }
       : {};
-  dependencies[HARNESS_PACKAGE] = version;
+  delete dependencies[`@dsdenes/${"devboard-harness"}`];
+  dependencies[PACKAGE_NAME] = version;
   await writeFile(
     path,
     `${JSON.stringify(
@@ -497,7 +592,7 @@ export async function writePrefixPackage(prefix: string, version: string): Promi
 }
 
 export interface InstallTarballOptions {
-  /** npm prefix that will hold `node_modules/@dsdenes/devboard-harness`. */
+  /** npm prefix that will hold `node_modules/@dsdenes/devboard`. */
   prefix: string;
   tarball: string;
   version: string;
@@ -506,16 +601,41 @@ export interface InstallTarballOptions {
 }
 
 /**
- * Installs one verified tarball through npm into a staging prefix and only then
- * moves the package into place. A failed install never damages the package the
- * running server still has open.
+ * Replaces the prefix's whole dependency tree with the staged one, so the
+ * package and its runtime dependencies move together.
  */
-export async function installHarnessTarball(options: InstallTarballOptions): Promise<string> {
-  const updates = join(options.prefix, ".tmp", "updates");
+async function swapNodeModules(prefix: string, staged: string): Promise<string> {
+  const updates = join(prefix, ".tmp", "updates");
   await mkdir(updates, { recursive: true });
-  const staging = join(updates, `stage-${options.version}-${randomUUID()}`);
+  const target = join(prefix, "node_modules");
+  const backup = join(updates, `previous-${Date.now()}-${randomUUID()}`);
+  let moved = false;
+  if (existsSync(target)) {
+    await rename(target, backup);
+    moved = true;
+  }
+  try {
+    await rename(staged, target);
+  } catch (error) {
+    if (moved) await rename(backup, target).catch(() => undefined);
+    throw error;
+  }
+  await rm(backup, { recursive: true, force: true });
+  return packageDir(prefix);
+}
+
+async function stagedInstall(
+  prefix: string,
+  spec: string,
+  version: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<string> {
+  const updates = join(prefix, ".tmp", "updates");
+  await mkdir(updates, { recursive: true });
+  const staging = join(updates, `stage-${version}-${randomUUID()}`);
   await mkdir(staging, { recursive: true });
-  const npm = options.env?.DEVBOARD_NPM ?? "npm";
+  const npm = env.DEVBOARD_NPM ?? "npm";
   try {
     const result = await exec(
       npm,
@@ -527,7 +647,7 @@ export async function installHarnessTarball(options: InstallTarballOptions): Pro
         "--no-audit",
         "--no-fund",
         "--no-save",
-        options.tarball,
+        spec,
       ],
       {
         // The server's working directory can be the package directory that an
@@ -535,37 +655,88 @@ export async function installHarnessTarball(options: InstallTarballOptions): Pro
         // and cannot start in a missing directory, so run it in the staging
         // directory this call just created.
         cwd: staging,
-        env: options.env ?? process.env,
-        timeoutMs: options.timeoutMs ?? 10 * 60_000,
+        env,
+        timeoutMs,
       },
     );
     if (result.code !== 0) throw failure("npm install", result);
-    const staged = harnessPackageDir(staging);
+    const staged = packageDir(staging);
     const stagedVersion = await readPackageVersion(staged);
-    if (stagedVersion !== options.version) {
+    if (stagedVersion !== version) {
       throw new ReleaseError(
-        `installed package reports ${stagedVersion ?? "no version"}, expected ${options.version}`,
+        `installed package reports ${stagedVersion ?? "no version"}, expected ${version}`,
       );
     }
-    const parent = join(options.prefix, "node_modules", "@dsdenes");
-    await mkdir(parent, { recursive: true });
-    const target = join(parent, "devboard-harness");
-    const backup = join(updates, `previous-${Date.now()}-${randomUUID()}`);
-    let moved = false;
-    if (existsSync(target)) {
-      await rename(target, backup);
-      moved = true;
-    }
-    try {
-      await rename(staged, target);
-    } catch (error) {
-      if (moved) await rename(backup, target).catch(() => undefined);
-      throw error;
-    }
-    await rm(backup, { recursive: true, force: true });
-    return target;
+    return await swapNodeModules(prefix, join(staging, "node_modules"));
   } finally {
     await rm(staging, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Installs one verified tarball through npm into a staging prefix and only then
+ * moves the dependency tree into place. A failed install never damages the
+ * package the running server still has open.
+ */
+export async function installHarnessTarball(options: InstallTarballOptions): Promise<string> {
+  return await stagedInstall(
+    options.prefix,
+    options.tarball,
+    options.version,
+    options.env ?? process.env,
+    options.timeoutMs ?? 10 * 60_000,
+  );
+}
+
+async function installDirectoryRelease(
+  source: Extract<ReleaseSource, { kind: "dir" }>,
+  release: ReleaseInfo,
+  prefix: string,
+  stateDir: string,
+  env: NodeJS.ProcessEnv,
+  downloadTimeoutMs?: number,
+): Promise<string> {
+  const downloadDir = join(stateDir, "updates", `download-${randomUUID()}`);
+  await mkdir(downloadDir, { recursive: true });
+  try {
+    const files = await downloadRelease(source, release, downloadDir, {
+      ...(downloadTimeoutMs === undefined ? {} : { timeoutMs: downloadTimeoutMs }),
+    });
+    await verifyChecksum(files.tarball, files.checksum);
+    return await installHarnessTarball({
+      prefix,
+      tarball: files.tarball,
+      version: release.version,
+      env,
+    });
+  } finally {
+    await rm(downloadDir, { recursive: true, force: true });
+  }
+}
+
+async function installGiteaRelease(
+  source: GiteaSource,
+  release: ReleaseInfo,
+  prefix: string,
+  stateDir: string,
+  env: NodeJS.ProcessEnv,
+  downloadTimeoutMs?: number,
+): Promise<string> {
+  const downloadDir = join(stateDir, "updates", `download-${randomUUID()}`);
+  await mkdir(downloadDir, { recursive: true });
+  try {
+    const files = await downloadRelease(source, release, downloadDir, {
+      ...(downloadTimeoutMs === undefined ? {} : { timeoutMs: downloadTimeoutMs }),
+    });
+    await verifyChecksum(files.tarball, files.checksum);
+    return await installHarnessTarball({
+      prefix,
+      tarball: files.tarball,
+      version: release.version,
+      env,
+    });
+  } finally {
+    await rm(downloadDir, { recursive: true, force: true });
   }
 }
 
@@ -579,24 +750,52 @@ export async function installRelease(options: {
   /** Deadline for each asset download; defaults to `DEFAULT_DOWNLOAD_TIMEOUT_MS`. */
   downloadTimeoutMs?: number;
 }): Promise<string> {
-  const downloadDir = join(options.stateDir, "updates", `download-${randomUUID()}`);
-  await mkdir(downloadDir, { recursive: true });
-  try {
-    const files = await downloadRelease(options.source, options.release, downloadDir, {
-      ...(options.downloadTimeoutMs === undefined
-        ? {}
-        : { timeoutMs: options.downloadTimeoutMs }),
-    });
-    await verifyChecksum(files.tarball, files.checksum);
-    await installHarnessTarball({
-      prefix: options.prefix,
-      tarball: files.tarball,
-      version: options.release.version,
-      ...(options.env === undefined ? {} : { env: options.env }),
-    });
-    await writePrefixPackage(options.prefix, options.release.version);
-    return options.release.version;
-  } finally {
-    await rm(downloadDir, { recursive: true, force: true });
+  const env = options.env ?? process.env;
+  let installed: string;
+  if (options.source.kind === "npm") {
+    try {
+      await stagedInstall(
+        options.prefix,
+        `${PACKAGE_NAME}@${options.release.version}`,
+        options.release.version,
+        options.source.env,
+        10 * 60_000,
+      );
+      installed = options.release.version;
+    } catch (error) {
+      if (options.source.fallback === undefined) throw error;
+      const release = await giteaReleaseForVersion(
+        options.source.fallback,
+        options.release.version,
+      );
+      installed = await installGiteaRelease(
+        options.source.fallback,
+        release,
+        options.prefix,
+        options.stateDir,
+        options.source.env,
+        options.downloadTimeoutMs,
+      );
+    }
+  } else if (options.source.kind === "dir") {
+    installed = await installDirectoryRelease(
+      options.source,
+      options.release,
+      options.prefix,
+      options.stateDir,
+      env,
+      options.downloadTimeoutMs,
+    );
+  } else {
+    installed = await installGiteaRelease(
+      options.source,
+      options.release,
+      options.prefix,
+      options.stateDir,
+      env,
+      options.downloadTimeoutMs,
+    );
   }
+  await writePrefixPackage(options.prefix, installed);
+  return installed;
 }

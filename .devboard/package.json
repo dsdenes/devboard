@@ -1,9 +1,8 @@
 {
-  "name": "@dsdenes/devboard-harness",
+  "name": "@dsdenes/devboard",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "Devboard harness: ADR dashboard server, client bundle, prompts, and omp wrappers.",
+  "description": "Devboard harness: ADR dashboard server, client, prompts, wrappers, and installer.",
   "scripts": {
     "build": "vite build",
     "start": "bun run server/index.ts",
@@ -32,6 +31,7 @@
     "AGENTS.md",
     "README.md",
     "install.sh",
+    "bin/",
     "templates/",
     "server/",
     "client/",
@@ -42,6 +42,7 @@
     "omp/",
     "extensions/",
     "dist/",
+    "public/",
     "index.html",
     "vite.config.ts",
     "svelte.config.js",
@@ -82,5 +83,15 @@
     "dompurify": "^3.4.17",
     "marked": "^18.1.1",
     "mermaid": "^11.12.0"
-  }
+  },
+  "bin": {
+    "devboard": "bin/devboard.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "UNLICENSED"
 }

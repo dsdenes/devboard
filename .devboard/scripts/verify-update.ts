@@ -9,7 +9,7 @@
 
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createReleaseDirectory } from "./harness-package";
 import {
@@ -46,10 +46,13 @@ function step(message: string): void {
   console.log(`verify:update: ${message}`);
 }
 
+let failingNpm = "";
+
 async function installFixture(name: string, releaseDir: string): Promise<string> {
   const host = await makeHost(root, name);
   const installed = launcher(["install", "--host", host.directory], {
     DEVBOARD_RELEASE_DIR: releaseDir,
+    DEVBOARD_NPM: failingNpm,
   });
   assertTrue(installed.code === 0, `fixture install failed: ${installed.stderr}`);
   startedHosts.push(host.directory);
@@ -61,6 +64,9 @@ try {
   const newRelease = releaseDirectory(root, NEW);
   await createReleaseDirectory(OLD, oldRelease);
   await createReleaseDirectory(NEW, newRelease);
+  failingNpm = join(root, "failing-npm");
+  await writeFile(failingNpm, "#!/bin/sh\ncase \"$1\" in view) echo 'simulated npm outage' >&2; exit 1;; esac\nexec npm \"$@\"\n");
+  await chmod(failingNpm, 0o755);
 
   step("auto-installing a newer release on startup");
   const host = await installFixture("auto", oldRelease);
@@ -126,7 +132,7 @@ try {
   step("checksum failures leave the previous package running");
   const corruptChecksum = join(root, "release-corrupt-checksum");
   await copyRelease(newRelease, corruptChecksum, "0.1.912", {
-    checksum: `${"0".repeat(64)}  devboard-harness-0.1.912.tgz\n`,
+    checksum: `${"0".repeat(64)}  devboard-0.1.912.tgz\n`,
   });
   const checksumHost = await installFixture("checksum", oldRelease);
   const checksumPrefix = join(checksumHost, ".devboard");
@@ -179,11 +185,11 @@ try {
   const broken = join(root, "release-broken-tarball");
   await mkdir(broken, { recursive: true });
   const brokenBytes = Buffer.from("this is not a package tarball\n");
-  const brokenTarball = join(broken, "devboard-harness-0.1.914.tgz");
+  const brokenTarball = join(broken, "devboard-0.1.914.tgz");
   await writeFile(brokenTarball, brokenBytes);
   await writeFile(
     `${brokenTarball}.sha256`,
-    `${createHash("sha256").update(brokenBytes).digest("hex")}  devboard-harness-0.1.914.tgz\n`,
+    `${createHash("sha256").update(brokenBytes).digest("hex")}  devboard-0.1.914.tgz\n`,
   );
   const brokenHost = await installFixture("broken", oldRelease);
   const brokenPrefix = join(brokenHost, ".devboard");
@@ -212,6 +218,7 @@ try {
   await stopDashboard(unauthorizedHost);
   const unauthorizedServer = await startInstalledDashboard(unauthorizedHost, {
     DEVBOARD_RELEASE_URL: `http://127.0.0.1:${unauthorized.port}`,
+    DEVBOARD_NPM: failingNpm,
     DEVBOARD_UPDATE_INTERVAL_MS: "200",
   });
   servers.push(unauthorizedServer);
@@ -238,6 +245,7 @@ try {
   await stopDashboard(unreadableHost);
   const unreadableServer = await startInstalledDashboard(unreadableHost, {
     DEVBOARD_RELEASE_URL: `http://127.0.0.1:${unreadableFeed.port}`,
+    DEVBOARD_NPM: failingNpm,
     DEVBOARD_UPDATE_INTERVAL_MS: "200",
   });
   servers.push(unreadableServer);

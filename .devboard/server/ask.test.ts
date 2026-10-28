@@ -8,7 +8,6 @@ import { createApp } from "./app";
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
-const STUB_GH = join(import.meta.dir, "fixtures", "stub-gh.ts");
 
 const READ_ONLY = "This conversation is read-only. Never edit files, run mutating commands, file issues, commit, or push.";
 const BREVITY = "Answer in at most three short sentences and about 400 characters. No preamble and no restating the question.";
@@ -66,10 +65,6 @@ async function startServer(options: ServerOptions = {}): Promise<TestServer> {
     repoDir: root,
     stateDir: join(root, "state"),
     agentCommand: command,
-    feedback: {
-      ghCommand: ["bun", STUB_GH],
-      env: { STUB_GH_RECORD: recordPath, STUB_GH_MODE: "ok" },
-    },
     tracker: async () => undefined,
     trackerSettle: { attempts: 1 },
   });
