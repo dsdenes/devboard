@@ -1316,7 +1316,11 @@ Discovery scans `/proc` for every process running `server/index.ts` that supplie
 `PORT`, de-duplicates by `(REPO_DIR, PORT)`, resolves the serving harness from `STATIC_DIR` or
 the process working directory, and reads the journal from the process's `STATE_DIR`. Instances
 from installed hosts and the canonical source checkout are covered alike; an instance whose
-state directory has no journal is reported `uninstrumented`.
+state directory has no journal is reported `uninstrumented`. A repository root inside harness
+scratch — any path with a `.devboard/.tmp/` component — is a verification fixture and is skipped:
+those dashboards record failures on purpose, so they never produce a finding or an issue. The
+live watchdog verification, which seeds a fixture to exercise the whole loop, sets
+`DEVBOARD_WATCHDOG_FIXTURE=1` to stay discoverable.
 
 Findings derive only from machine-checkable evidence: a `server-error`, `update-error`, or
 `acp-stderr` journal record; a `lane-stop` whose status token is `failed`; an omp log record at

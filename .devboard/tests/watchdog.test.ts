@@ -259,6 +259,61 @@ describe("discovery", () => {
     expect(instances[2]?.journal).toBe(installedJournal);
     expect(instances[2]?.instrumented).toBe(true);
   });
+
+  test("excludes dashboards rooted in harness scratch", async () => {
+    const base = await temporaryDirectory("test-watchdog-scratch");
+    const harness = join(base, "harness");
+    const installedHarness = join(
+      base,
+      ".devboard",
+      ".tmp",
+      "npm-host",
+      ".devboard",
+      "node_modules",
+      "@dsdenes",
+      "devboard",
+    );
+    await mkdir(join(harness, "dist"), { recursive: true });
+    await mkdir(join(installedHarness, "dist"), { recursive: true });
+    const scratchRepo = join(harness, ".tmp", "verify-update-fixture", "broken");
+    const installedScratchRepo = join(base, ".devboard", ".tmp", "npm-host");
+    const realRepo = "/projects/.devboard/host";
+
+    const snapshot = (
+      pid: number,
+      repoDir: string,
+      port: string,
+      staticDir: string,
+      extra: [string, string][] = [],
+    ): ProcessSnapshot => ({
+      pid,
+      cmdline: "bun /x/server/index.ts",
+      env: new Map([
+        ["REPO_DIR", repoDir],
+        ["PORT", port],
+        ["STATIC_DIR", staticDir],
+        ...extra,
+      ]),
+      ancestors: [],
+    });
+
+    const instances = instancesFromProcesses(
+      [
+        snapshot(20, scratchRepo, "8080", join(harness, "dist")),
+        snapshot(21, installedScratchRepo, "8081", join(installedHarness, "dist")),
+        snapshot(22, realRepo, "8082", join(harness, "dist")),
+        snapshot(23, scratchRepo, "8083", join(harness, "dist"), [
+          ["DEVBOARD_WATCHDOG_FIXTURE", "1"],
+        ]),
+      ],
+      { selfPids: new Set() },
+    );
+
+    expect(instances.map((instance) => [instance.pid, instance.port, instance.repoDir])).toEqual([
+      [22, 8082, realRepo],
+      [23, 8083, scratchRepo],
+    ]);
+  });
 });
 
 describe("window and attribution", () => {
