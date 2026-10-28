@@ -1287,11 +1287,14 @@ panel's `watchdog-last-age` shows that cycle's age.
 
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
 first, capped at the newest 100 directories. Every `watchdog-cycle` row carries `data-action` and
-renders `watchdog-cycle-at`, `watchdog-cycle-window` (window start and end),
-`watchdog-cycle-action`, `watchdog-cycle-findings`, and `watchdog-cycle-reason` (empty when the
-report has none). A run directory whose `report.json` is missing or unparsable is skipped without
-hiding the other rows. With no run directory at all, the `latest.json` cycle is the single row;
-with no cycle anywhere, `watchdog-cycles-empty` is rendered.
+renders `watchdog-cycle-at`, `watchdog-cycle-action`, `watchdog-cycle-reason` (empty when the
+report has none), and, only when the cycle's findings map to a filed issue, a
+`watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to those GitHub issues. Each anchor
+reads `#<number>` and opens in a new tab; the row repeats no issue and keeps the finding order. A
+run directory whose `report.json` is missing or unparsable is skipped without hiding the other
+rows. With no run directory at all, the `latest.json` cycle is the single row; with no cycle
+anywhere, `watchdog-cycles-empty` is rendered. A cycle row renders no window interval and no
+finding count.
 
 `watchdog-issues` lists every ledger entry whose disposition is `filed:<url>`, newest `filedAt`
 first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `data-state`, and
@@ -1323,7 +1326,8 @@ seconds, so a newly written run directory or filed ledger entry appears without 
 directory, ledger write, or lock. Its existing fields keep their meaning: `cycle` (ISO 8601 or
 null), `action`, the optional `reason`, the `findings` count, `issues`
 (`{url, category, line, filedAt, state, version}`) newest first, and the `pending` count; it adds
-`cycles` and `sync`. A dashboard-endpoint failure renders `watchdog-error`.
+`cycles` (each `{at, window, action, findings, issues, reason?}`, where `issues` lists the
+connected GitHub issue URLs) and `sync`. A dashboard-endpoint failure renders `watchdog-error`.
 
 The status bar's watchdog indicator is unchanged: `status-watchdog` shows the last action and its
 age; activating it opens `watchdog-popover` listing up to ten filed issues, each link opening in a

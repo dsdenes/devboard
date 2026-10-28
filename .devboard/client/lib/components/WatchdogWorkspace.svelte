@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { BadgeTone } from "../record-status";
-  import type { WatchdogCycle, WatchdogIssueState } from "../types";
+  import type { WatchdogIssueState } from "../types";
   import { watchdog } from "../watchdog.svelte";
   import PageHeader from "./ui/page-header.svelte";
 
@@ -49,13 +49,6 @@
     const hours = Math.floor(minutes / 60);
     if (hours < 24) return `${hours}h ago`;
     return `${Math.floor(hours / 24)}d ago`;
-  }
-
-  function windowText(window: WatchdogCycle["window"]): string {
-    if (window.start === null && window.end === null) return "—";
-    const start = window.start === null ? "never" : stamp(window.start);
-    const end = window.end === null ? "never" : stamp(window.end);
-    return `${start} → ${end}`;
   }
 
   function actionTone(action: string): BadgeTone | undefined {
@@ -152,18 +145,30 @@
             <span class="mono watchdog-cycle__at" data-testid="watchdog-cycle-at">
               <time datetime={entry.at}>{stamp(entry.at)}</time>
             </span>
-            <span class="mono watchdog-cycle__window" data-testid="watchdog-cycle-window">
-              {windowText(entry.window)}
-            </span>
             <span class="badge" data-tone={actionTone(entry.action)} data-testid="watchdog-cycle-action">
               {entry.action}
-            </span>
-            <span class="mono watchdog-cycle__findings" data-testid="watchdog-cycle-findings">
-              {entry.findings}
             </span>
             <span class="watchdog-cycle__reason" data-testid="watchdog-cycle-reason">
               {entry.reason ?? ""}
             </span>
+            {#if entry.issues.length > 0}
+              <span class="watchdog-cycle__issues" data-testid="watchdog-cycle-issues">
+                {#each entry.issues as issue (issue)}
+                  {@const number = issue.slice(issue.lastIndexOf("/") + 1)}
+                  <a
+                    class="watchdog-cycle__issue"
+                    data-testid="watchdog-cycle-issue"
+                    href={issue}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={issue}
+                    aria-label={`GitHub issue ${number.length > 0 ? number : issue}`}
+                  >
+                    {number.length > 0 ? `#${number}` : issue}
+                  </a>
+                {/each}
+              </span>
+            {/if}
           </li>
         {:else}
           <li class="watchdog-empty" data-testid="watchdog-cycles-empty">No cycle has run yet.</li>
@@ -305,7 +310,7 @@
     display: grid;
     font-size: 11px;
     gap: 10px;
-    grid-template-columns: 150px minmax(200px, 1fr) 90px 60px minmax(120px, 2fr);
+    grid-template-columns: 150px 90px minmax(120px, 2fr) minmax(0, auto);
     padding: 5px 12px;
   }
 
@@ -313,13 +318,21 @@
     border-bottom: 0;
   }
 
-  .watchdog-cycle__window {
-    color: var(--muted-foreground);
-  }
-
   .watchdog-cycle__reason {
     color: var(--muted-foreground);
     overflow-wrap: anywhere;
+  }
+
+  .watchdog-cycle__issues {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .watchdog-cycle__issue {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
 
   .watchdog-issues {
