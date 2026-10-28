@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { acquireLock } from "../issues/lock";
 import {
   CLEANUP_RETENTION_MS,
   coveredStateDirs,
@@ -286,6 +287,51 @@ describe("sweepStateDir", () => {
     expect(removed).not.toContain(join(stateDir, "journal"));
     expect(removed).not.toContain(currentRun);
     expect(removed).not.toContain(join(stateDir, "issues"));
+  });
+
+  test("keeps a live scout lock and sweeps a dead owner's lock", async () => {
+    const base = await temporaryDirectory();
+    const stateDir = join(base, ".tmp");
+    const scoutDir = join(stateDir, "scout");
+    const lock = join(scoutDir, "lock");
+    mkdirSync(scoutDir, { recursive: true });
+    const held = acquireLock(lock, {
+      repo: base,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    if (!held.acquired) throw new Error("test lock was not acquired");
+    utimesSync(lock, old, old);
+
+    const scanDir = join(scoutDir, "scans", "2026-10-01T00-00-00-000Z");
+    const staleScan = join(scanDir, "scan.json");
+    writeAt(staleScan, "{}", old);
+    utimesSync(scanDir, old, old);
+    utimesSync(join(scoutDir, "scans"), old, old);
+
+    const live = sweepStateDir(stateDir, { now: sweepNow, dryRun: false });
+    expect(existsSync(lock)).toBe(true);
+    expect(live.removed.map((candidate) => candidate.path)).not.toContain(lock);
+    expect(existsSync(staleScan)).toBe(false);
+
+    // A lock recorded by a process that is gone proves nothing and is swept.
+    held.release();
+    writeAt(
+      lock,
+      JSON.stringify({
+        pid: deadPid(),
+        startedAt: new Date(realNow).toISOString(),
+        repo: base,
+        stateDir,
+        harnessVersion: null,
+        argv: [],
+      }),
+      old,
+    );
+    const dead = sweepStateDir(stateDir, { now: sweepNow, dryRun: false });
+    expect(existsSync(lock)).toBe(false);
+    expect(dead.removed.map((candidate) => candidate.path)).toContain(lock);
   });
 
   test("protects Flow session records from the retention sweep", async () => {

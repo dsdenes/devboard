@@ -1315,6 +1315,9 @@ stale files are therefore removed after a week. These entries are never deleted 
   reviewable artifacts, and worktree/PR bookkeeping Flow restore and History read.
 - the run directory of the cycle performing the sweep.
 - a `devboard-<pid>.lock` whose pid is still alive.
+- any `lock` file whose content records a live `LockOwner`, such as the checkout-anchored
+  `.tmp/scout/lock` a running Auto Scout holds. A lock whose owner is gone is swept, and the
+  rest of `.tmp/scout/` — stale scans and issue bodies — follows the ordinary age rule.
 
 Run it by hand from `.devboard`:
 
