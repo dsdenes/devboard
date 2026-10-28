@@ -60,8 +60,6 @@
   const nextRecord = $derived(
     goal.next === null ? null : (goal.records.find((record) => record.file === goal.next) ?? null),
   );
-  const nextLabel = $derived(nextRecord?.title ?? goal.next ?? "none");
-
   const query = $derived(filterQuery.trim().toLowerCase());
   const filteredRecords = $derived(
     goal.records.filter((record) => {
@@ -106,12 +104,6 @@
         : goal.goalReady
           ? "Saved"
           : "Not written yet",
-  );
-
-  const skillsReady = $derived(
-    goal.skills.length === 0
-      ? "No skills prepared yet"
-      : `${goal.skills.length} prepared · ready for implementation`,
   );
 
   const runActionLabel = $derived(
@@ -440,7 +432,6 @@
       >
         {#snippet meta()}
           <span class="muted" data-testid="pending-summary">{progressLine}</span>
-          <span class="muted">Next: <span class="mono">{nextLabel}</span></span>
         {/snippet}
       </PageHeader>
 
@@ -597,14 +588,13 @@
     </div>
   {:else if tab.kind === "skills"}
     <div class="goal-page goal-page--fill">
-      <PageHeader title="Skills" subtitle={skillsReady} testid="skills-header">
+      <PageHeader title="Skills" testid="skills-header">
         {#snippet meta()}
           {#if goal.contradictions.length > 0}
             <span class="badge" data-tone="error">
               {goal.contradictions.length} contradiction{goal.contradictions.length === 1 ? "" : "s"}
             </span>
           {/if}
-          <span class="muted mono">.omp/skills/</span>
         {/snippet}
         {#snippet actions()}
           <Button
@@ -693,7 +683,6 @@
         <section class="panel goal-skill-detail" data-testid="skill-content">
           <div class="panel__header">
             <h2 class="panel__title mono" data-testid="skill-content-name">{selectedSkill.name}</h2>
-            <span class="muted">{selectedSkill.description}</span>
           </div>
           <div class="panel__body">
             {#if selectedSkill.content !== undefined && selectedSkill.content.length > 0}
