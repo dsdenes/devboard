@@ -8,7 +8,7 @@ split between the two panels.
 
 | Order | A2UI ID | Region | Journey | Items | Priority |
 |---|---|---|---|---|---|
-| 1 | region_skills_header | Skills page header, readiness, `Prepare skills again`, `Close` | 1 | C2, C13 | P0 |
+| 1 | region_skills_header | Skills page header: title, contradiction badge, `Prepare skills again`, `Close` | 1 | C13 | P0 |
 | 2 | region_skills_list | Prepared-skill rows with selection; capped at 40% while a document is open | 1, 3 | C1, C2, C3, C4 | P0 |
 | 3 | region_skill_document | Selected skill: 30px header and the scrolling instructions | 1, 2, 3 | C5, C7, C8, C10, C11 | P0 conditional |
 

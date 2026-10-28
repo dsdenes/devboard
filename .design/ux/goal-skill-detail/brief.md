@@ -29,8 +29,8 @@ the operator may keep the panel open while switching skills.
 
 ## Relationship to other pages
 
-- **Upstream:** Goal document → Skills. The page header states readiness and owns
-  `Prepare skills again` and `Close`.
+- **Upstream:** Goal document → Skills. The page header names Skills and owns
+  `Prepare skills again` and `Close`; the prepared list owns the count.
 - **Downstream:** the operating agent reads the same file from `.omp/skills/`; a contradiction
   found here returns the operator to `Prepare skills again`.
 - **Loop:** selecting another row replaces the document in place.
