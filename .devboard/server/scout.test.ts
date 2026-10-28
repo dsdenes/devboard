@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test, vi } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -727,6 +727,193 @@ describe("bridge", () => {
       bridge.dispose();
     } finally {
       lock.release();
+    }
+  });
+
+  test("Start after Stop waits for the stopping worker and spawns", async () => {
+    const root = await temporaryDirectory("scout-bridge-stop-start");
+    const stateDir = join(root, "state");
+    const script = join(root, "fixture", "scout", "worker.ts");
+    await mkdir(dirname(script), { recursive: true });
+    await writeFile(
+      script,
+      "process.on('SIGTERM', () => undefined);\n" +
+        "console.log('ready');\nsetInterval(() => undefined, 1000);\n",
+    );
+    const worker = Bun.spawn({
+      cmd: [process.execPath, script, root],
+      cwd: root,
+      stdout: "pipe",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    const reader = worker.stdout.getReader();
+    const ready = await reader.read();
+    reader.releaseLock();
+    expect(new TextDecoder().decode(ready.value)).toContain("ready");
+    await mkdir(dirname(lockPath(root)), { recursive: true });
+    await writeFile(
+      lockPath(root),
+      JSON.stringify({
+        pid: worker.pid,
+        startedAt: new Date().toISOString(),
+        repo: root,
+        stateDir,
+        harnessVersion: null,
+        argv: [script, root],
+      }),
+    );
+    const spawned: string[][] = [];
+    const bridge = new ScoutBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      preflight: async () => ({ ok: true, repository: "acme/fixture" }),
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    vi.useFakeTimers();
+    try {
+      expect(bridge.stop()).toEqual({ ok: true });
+      // The proof signals the worker, which ignores SIGTERM; the stop is still
+      // pending through the grace, so Start must wait rather than attach.
+      vi.advanceTimersByTime(3000);
+      const starting = bridge.start();
+      expect(spawned).toHaveLength(0);
+      vi.advanceTimersByTime(2000);
+      await worker.exited;
+      vi.advanceTimersByTime(50);
+      expect(await starting).toEqual({ ok: true, attached: false });
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]!.join(" ")).toContain(join("scout", "worker.ts"));
+    } finally {
+      vi.useRealTimers();
+      bridge.dispose();
+      worker.kill("SIGKILL");
+      await worker.exited;
+      await rm(lockPath(root), { force: true });
+    }
+  }, 20_000);
+
+  test("Start refuses while the stopping worker outlives the proof deadline", async () => {
+    const root = await temporaryDirectory("scout-bridge-still-stopping");
+    const stateDir = join(root, "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    const spawned: string[][] = [];
+    const bridge = new ScoutBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      preflight: async () => ({ ok: true, repository: "acme/fixture" }),
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    vi.useFakeTimers();
+    try {
+      expect(bridge.stop()).toEqual({ ok: true });
+      const starting = bridge.start();
+      vi.advanceTimersByTime(5000);
+      const result = await starting;
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.message).toContain(`pid ${process.pid}`);
+      expect(spawned).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+      bridge.dispose();
+      lock.release();
+    }
+  });
+
+  test("Start attaches to a live worker when no stop is pending", async () => {
+    const root = await temporaryDirectory("scout-bridge-attach");
+    const stateDir = join(root, "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    const spawned: string[][] = [];
+    const bridge = new ScoutBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      expect(await bridge.start()).toEqual({ ok: true, attached: true });
+      expect(spawned).toHaveLength(0);
+    } finally {
+      bridge.dispose();
+      lock.release();
+    }
+  });
+
+  test("concurrent Starts share one spawn", async () => {
+    const root = await temporaryDirectory("scout-bridge-concurrent");
+    const stateDir = join(root, "state");
+    const gate = Promise.withResolvers<void>();
+    const spawned: string[][] = [];
+    const bridge = new ScoutBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      preflight: async () => {
+        await gate.promise;
+        return { ok: true, repository: "acme/fixture" };
+      },
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      const first = bridge.start();
+      const second = bridge.start();
+      gate.resolve();
+      expect(await Promise.all([first, second])).toEqual([
+        { ok: true, attached: false },
+        { ok: true, attached: false },
+      ]);
+      expect(spawned).toHaveLength(1);
+    } finally {
+      bridge.dispose();
     }
   });
 

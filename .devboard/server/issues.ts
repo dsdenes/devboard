@@ -32,6 +32,14 @@ import { activityDelta } from "./activity";
  * so killing this server leaves it running and a replacement reattaches.
  */
 
+/** The command's grace, after which a worker the table proves is signalled. */
+const STOP_PROOF_MS = 3_000;
+/** How long a proven worker gets to exit after SIGTERM before SIGKILL. */
+const STOP_KILL_GRACE_MS = 2_000;
+/** Start waits no longer than the whole stop proof window for the peer to exit. */
+const STOP_DEADLINE_MS = STOP_PROOF_MS + STOP_KILL_GRACE_MS;
+const STOP_POLL_MS = 50;
+
 export interface IssuesSnapshot {
   present: boolean;
   repo: string | null;
@@ -101,8 +109,10 @@ export class IssuesBridge {
   private timer: Timer | undefined;
   private lastSignature = "";
   private lastActivities = new Map<string, string[]>();
-  private stopping: { pid: number; timer: Timer } | undefined;
-  private starting = false;
+  private stopping: { pid: number; timer: Timer; killTimer?: Timer } | undefined;
+  private startTask:
+    | Promise<{ ok: true; attached: boolean } | { ok: false; message: string }>
+    | undefined;
 
   constructor(options: IssuesBridgeOptions) {
     this.repoDir = resolve(options.repoDir);
@@ -140,10 +150,7 @@ export class IssuesBridge {
       clearInterval(this.timer);
       this.timer = undefined;
     }
-    if (this.stopping !== undefined) {
-      clearTimeout(this.stopping.timer);
-      this.stopping = undefined;
-    }
+    if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
   }
 
   private detach(argv: string[], environment: Record<string, string | undefined>): number | undefined {
@@ -305,10 +312,25 @@ export class IssuesBridge {
   /* Commands                                                            */
   /* ------------------------------------------------------------------ */
 
-  async start(): Promise<{ ok: true; attached: boolean } | { ok: false; message: string }> {
-    if (this.starting) return { ok: true, attached: false };
-    const owner = this.lockOwner();
-    if (owner !== undefined) {
+  /**
+   * One in-flight Start for this bridge: a concurrent press joins the same
+   * preflight and spawn instead of reporting success before anything started.
+   */
+  start(): Promise<{ ok: true; attached: boolean } | { ok: false; message: string }> {
+    if (this.startTask !== undefined) return this.startTask;
+    const task = this.startOnce().finally(() => {
+      if (this.startTask === task) this.startTask = undefined;
+    });
+    this.startTask = task;
+    return task;
+  }
+
+  private async startOnce(): Promise<
+    { ok: true; attached: boolean } | { ok: false; message: string }
+  > {
+    for (;;) {
+      const owner = this.lockOwner();
+      if (owner === undefined) break;
       if (resolve(owner.stateDir) !== this.stateDir) {
         return {
           ok: false,
@@ -317,22 +339,44 @@ export class IssuesBridge {
             `this dashboard's STATE_DIR is ${this.stateDir}`,
         };
       }
-      this.refresh();
-      return { ok: true, attached: true };
+      // A live owner that this bridge has told to stop is not attachable: the
+      // worker is already ending, so report its state only after it has exited
+      // and the new spawn holds the lock.
+      if (this.stopping === undefined || this.stopping.pid !== owner.pid) {
+        this.refresh();
+        return { ok: true, attached: true };
+      }
+      if (!(await this.waitForStop(owner.pid))) {
+        return {
+          ok: false,
+          message:
+            `the previous issues worker (pid ${owner.pid}) is still stopping; ` +
+            "press Start once it has exited.",
+        };
+      }
     }
 
-    this.starting = true;
-    try {
-      const result = await this.preflight({
-        repoDir: this.repoDir,
-        stateDir: this.stateDir,
-        environment: this.environment,
-      });
-      if (!result.ok) return result;
-      return await this.spawn();
-    } finally {
-      this.starting = false;
+    const result = await this.preflight({
+      repoDir: this.repoDir,
+      stateDir: this.stateDir,
+      environment: this.environment,
+    });
+    if (!result.ok) return result;
+    return await this.spawn();
+  }
+
+  /**
+   * Waits out Stop's whole proof window for `pid` to exit. The worker is not
+   * signalled here; Stop's own proof does that at its own deadline.
+   */
+  private async waitForStop(pid: number): Promise<boolean> {
+    const deadline = Date.now() + STOP_DEADLINE_MS;
+    while (pidAlive(pid) && Date.now() < deadline) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, STOP_POLL_MS);
+      await promise;
     }
+    return !pidAlive(pid);
   }
 
   private async spawn(): Promise<{ ok: true; attached: boolean } | { ok: false; message: string }> {
@@ -432,29 +476,46 @@ export class IssuesBridge {
    * process the table proves is this checkout's worker is signalled.
    */
   private scheduleStopProof(pid: number): void {
-    if (this.stopping !== undefined) clearTimeout(this.stopping.timer);
+    if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
     const timer = setTimeout(() => {
-      this.stopping = undefined;
-      if (!pidAlive(pid)) return;
-      if (!this.provesWorker(pid)) return;
+      if (!pidAlive(pid) || !this.provesWorker(pid)) {
+        this.clearStopProof(pid);
+        return;
+      }
       try {
         process.kill(pid, "SIGTERM");
       } catch {
+        this.clearStopProof(pid);
         return;
       }
+      // The stop is still pending until the grace ends, so Start must keep
+      // waiting for this pid through it rather than report it attached.
       const killTimer = setTimeout(() => {
-        if (!pidAlive(pid)) return;
-        if (!this.provesWorker(pid)) return;
+        if (!pidAlive(pid) || !this.provesWorker(pid)) {
+          this.clearStopProof(pid);
+          return;
+        }
+        this.clearStopProof(pid);
         try {
           process.kill(pid, "SIGKILL");
         } catch {
           // It exited between the proof and the signal.
         }
-      }, 2000);
+      }, STOP_KILL_GRACE_MS);
       killTimer.unref?.();
-    }, 3000);
+      if (this.stopping !== undefined && this.stopping.pid === pid) {
+        this.stopping.killTimer = killTimer;
+      }
+    }, STOP_PROOF_MS);
     timer.unref?.();
     this.stopping = { pid, timer };
+  }
+
+  private clearStopProof(pid: number): void {
+    if (this.stopping === undefined || this.stopping.pid !== pid) return;
+    clearTimeout(this.stopping.timer);
+    clearTimeout(this.stopping.killTimer);
+    this.stopping = undefined;
   }
 
   private provesWorker(pid: number): boolean {

@@ -1497,7 +1497,10 @@ records its pid, argv, state directory, and harness version. A lock whose owner 
 reclaimed before a new worker starts; a lock with a live owner is never taken over. A second
 dashboard with the same `REPO_DIR` and `STATE_DIR` attaches to that worker. A second dashboard
 with the same `REPO_DIR` and another `STATE_DIR` cannot attach and is refused, because the
-repo-anchored lock names the live worker. Different repositories get independent workers.
+repo-anchored lock names the live worker. Start after Stop on the same dashboard waits for the
+stopping worker to exit and only then spawns; if it still lives at the stop proof deadline, Start
+is refused with a message naming it instead of reporting it attached. Concurrent Starts share one
+preflight and spawn. Different repositories get independent workers.
 
 The poll is the GitHub issues endpoint through the operator's `gh` credential every 10 seconds,
 conditional on the previous `ETag` (`If-None-Match`). A `304` is no change; `403`/`429` honor
@@ -1935,7 +1938,10 @@ push permission, and the `/scout-recommendations` command installed at
 missing fact and writes no scan. The worker is spawned detached from the loaded harness package
 with `REPO_DIR` as its working directory and holds `<REPO_DIR>/.devboard/.tmp/scout/lock`; a live
 owner is never replaced, a different `STATE_DIR` is refused, a dead owner is reclaimed, and a
-second dashboard with the same repository and state directory attaches. Stop ends the peer,
+second dashboard with the same repository and state directory attaches. Start after Stop on the
+same dashboard waits for the stopping worker to exit and only then spawns; one still alive at the
+stop proof deadline is named in a refusal rather than reported attached, and concurrent Starts
+share one preflight and spawn. Stop ends the peer,
 records `enabled: false` and `lifecycle: "stopped"`, keeps every row and the limits, releases the
 lock, and exits; a worker that outlives the command is signalled only after the process table
 proves it. A worker on another harness version is left running with a notice, and Stop then Start
