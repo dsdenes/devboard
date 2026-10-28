@@ -559,6 +559,57 @@ describe("evidence mapping", () => {
     expect(analyzeEvidence(events, { window })).toEqual([]);
   });
 
+  test("a sibling lane's stop never ends another lane's stall", async () => {
+    const root = await temporaryDirectory("test-watchdog-stall-sibling");
+    const owner = instanceFor(root, 8080);
+    const events = [
+      event(root, 8, "lane-1 implementing", "lane-start", owner),
+      event(root, 8, "lane-2 implementing", "lane-start", owner),
+      event(root, 6, "lane-2 closed", "lane-stop", owner),
+    ];
+    const findings = analyzeEvidence(events, { window });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.category).toBe("stall");
+    expect(findings[0]?.quote).toBe("lane-1 implementing");
+  });
+
+  test("a stop only ends a start of its own kind", async () => {
+    const root = await temporaryDirectory("test-watchdog-stall-kind");
+    const owner = instanceFor(root, 8080);
+    const lane = [
+      event(root, 8, "lane-1 implementing", "lane-start", owner),
+      event(root, 6, "0001-first.md: resolved", "run-stop", owner),
+    ];
+    expect(analyzeEvidence(lane, { window }).map((finding) => finding.quote)).toEqual([
+      "lane-1 implementing",
+    ]);
+
+    const run = [
+      event(root, 8, "0001-first.md: First decision", "run-start", owner),
+      event(root, 6, "lane-2 failed", "lane-stop", owner),
+    ];
+    const stalled = analyzeEvidence(run, { window }).filter(
+      (finding) => finding.category === "stall",
+    );
+    expect(stalled.map((finding) => finding.quote)).toEqual(["0001-first.md: First decision"]);
+  });
+
+  test("two stalled lanes are two findings with distinct fingerprints", async () => {
+    const root = await temporaryDirectory("test-watchdog-stall-pair");
+    const owner = instanceFor(root, 8080);
+    const events = [
+      event(root, 8, "lane-1 implementing", "lane-start", owner),
+      event(root, 8, "lane-2 implementing", "lane-start", owner),
+    ];
+    const findings = analyzeEvidence(events, { window });
+    expect(findings).toHaveLength(2);
+    expect(findings.map((finding) => finding.quote).sort()).toEqual([
+      "lane-1 implementing",
+      "lane-2 implementing",
+    ]);
+    expect(new Set(findings.map((finding) => finding.fingerprint)).size).toBe(2);
+  });
+
   test("the same text on two dashboards is one fingerprint", async () => {
     const base = await temporaryDirectory("test-watchdog-shared");
     const first = instanceFor(base, 8080, join(base, "first"));
