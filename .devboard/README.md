@@ -304,9 +304,13 @@ drafts, and skills preparation — starts with `PI_CODING_AGENT_DIR` pointing at
 directory under `<stateDir>/providers/agents/`. Its `config.yml` pins `default`, `plan`, `smol`,
 `slow`, and `task` to the selected model. A Go selection also sets `retry.modelFallback: true`,
 `retry.fallbackOn: any`, and a chain from `opencode-go/*` to the OpenRouter fallback; an
-OpenRouter selection sets no chain. The peer environment removes the operator's inherited
-`OPENCODE_API_KEY` and `OPENROUTER_API_KEY` first, then adds only the selected keys (a Go peer
-also receives an OpenRouter key when one exists, for its fallback chain).
+OpenRouter selection sets no chain. Every selection also names `ollama`, `lm-studio`,
+`llama.cpp`, and `apple` in `disabledProviders`: OMP discovers those implicit local model
+servers on every start, a peer can only run the two catalog providers, and the failed probes
+would otherwise log warnings the watchdog files as evidence. The peer environment removes the
+operator's inherited `OPENCODE_API_KEY` and `OPENROUTER_API_KEY` first, then adds only the
+selected keys (a Go peer also receives an OpenRouter key when one exists, for its fallback
+chain).
 
 `omp/config.yml` is still installed as `<host>/.omp/config.yml`, but it no longer pins
 `modelRoles`: a project-level pin would override the per-peer selection. The interactive agent
