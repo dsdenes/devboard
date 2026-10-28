@@ -1572,15 +1572,15 @@ Selecting one opens `data-testid="issues-draft-detail"`: the header carries the 
 the state badge for this draft's run only (absent while the run is `idle`), `issues-draft-start`
 (`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
 body reads the proposal before the `## Captured UI context` marker, then the activity stream in
-`issues-draft-activity` once a run exists, then `issues-draft-context`: the captured facts as a
-compact grid followed by the inline Visible text and DOM excerpt sections. A pending elaboration
-question (`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,
-`issues-draft-answer-input`, and `issues-draft-answer-submit`. The detail refreshes when the page
-opens, after the report panel writes a draft through `POST /api/goal-proposals`, after an
-elaboration finishes or stops, and when a listed draft disappears. The page polls the list every
-two seconds while it is mounted, so an external deletion is visible without a reload, and the
-report panel's write broadcast reaches an open page immediately. A browser reload restores the
-Draft goals page and the selected path; when the file no longer exists, the page opens the list.
+`issues-draft-activity` once a run exists; the captured UI context itself is not shown. A pending
+elaboration question (`issues-draft-question`) renders above the proposal, with
+`issues-draft-choice`, `issues-draft-answer-input`, and `issues-draft-answer-submit`. The detail
+refreshes when the page opens, after the report panel writes a draft through
+`POST /api/goal-proposals`, after an elaboration finishes or stops, and when a listed draft
+disappears. The page polls the list every two seconds while it is mounted, so an external
+deletion is visible without a reload, and the report panel's write broadcast reaches an open page
+immediately. A browser reload restores the Draft goals page and the selected path; when the file
+no longer exists, the page opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is

@@ -5355,29 +5355,23 @@ try {
   await page.wait(`document.querySelector('[data-testid="issues-draft-detail"]') !== null`, "the draft detail");
   const detail = await page.eval<{
     path: string;
-    context: string;
     start: string;
     startCommand: string;
     stop: boolean;
     pathLabel: string;
     proposal: string;
-    facts: number;
-    evidence: number;
-    evidenceDisclosure: boolean;
+    contextSection: boolean;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const start = document.querySelector('[data-testid="issues-draft-start"]');
     return {
       path: panel?.getAttribute("data-path") ?? "",
-      context: document.querySelector('[data-testid="issues-draft-context"]')?.textContent ?? "",
       start: document.querySelector('[data-testid="issues-draft-start"]') !== null ? "yes" : "",
       startCommand: start?.getAttribute("data-command") ?? "",
       stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
       pathLabel: panel?.querySelector(".issues-draft-detail__path")?.textContent?.trim() ?? "",
       proposal: panel?.querySelector(".issues-draft-detail__prose")?.textContent ?? "",
-      facts: panel?.querySelectorAll('[data-testid="issues-draft-context"] dt').length ?? 0,
-      evidence: panel?.querySelectorAll(".issues-draft-evidence__section").length ?? 0,
-      evidenceDisclosure: panel?.querySelector("details.issues-draft-evidence") !== null,
+      contextSection: panel?.querySelector('section[aria-label="Captured UI context"]') !== null,
     };
   })()`);
   check(detail.path === reportDraftPath, "the detail does not name the selected draft", detail);
@@ -5391,10 +5385,8 @@ try {
     storedSelection,
   );
   check(
-    detail.context.includes("Route:") &&
-      detail.context.includes("Selected element:") &&
-      detail.context.includes("Visible text"),
-    "the detail lost the captured UI context",
+    !detail.contextSection,
+    "the draft detail still shows the captured UI context",
     detail,
   );
   check(
@@ -5402,11 +5394,6 @@ try {
       !detail.proposal.includes("## Captured UI context") &&
       !detail.proposal.includes("Unprocessed draft"),
     "the detail does not separate identity and proposal from the evidence",
-    detail,
-  );
-  check(
-    detail.facts > 0 && detail.evidence > 0 && !detail.evidenceDisclosure,
-    "the compact context or the inline evidence is missing",
     detail,
   );
   await dismissNotifications();
@@ -5447,24 +5434,17 @@ try {
   );
   const questionLayout = await page.eval<{
     ordered: boolean;
-    contextEmpty: string;
   }>(`(() => {
     const question = document.querySelector('[data-testid="issues-draft-question"]');
     const activity = document.querySelector('[data-testid="issues-draft-activity"]');
     return {
       ordered: question !== null && activity !== null &&
         (question.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
-      contextEmpty: document.querySelector('[data-testid="issues-draft-context"]')?.textContent?.trim() ?? "",
     };
   })()`);
   check(
     questionLayout.ordered,
     "the pending question is not above the activity log",
-    questionLayout,
-  );
-  check(
-    questionLayout.contextEmpty === "No captured UI context.",
-    "a draft without captured context does not say so",
     questionLayout,
   );
   await dismissNotifications();
