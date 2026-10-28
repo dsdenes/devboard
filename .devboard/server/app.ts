@@ -6038,7 +6038,12 @@ export function createApp(options: AppOptions) {
           } else if (command.type === "startGoalDraft") {
             const started = await goalDrafts.start(command.path);
             if (!started.ok) {
-              send(ws, { type: "issuesDraftError", message: started.message });
+              // A stop during startup already published `stopped` and the
+              // draft list; reporting an error would contradict the operator
+              // and leave the Drafts view showing a failed start.
+              if (started.stopped !== true) {
+                send(ws, { type: "issuesDraftError", message: started.message });
+              }
             } else {
               send(ws, { type: "issuesDraftState", draft: goalDrafts.snapshot() });
               goalDrafts.publishDrafts();
