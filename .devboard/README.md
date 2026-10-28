@@ -285,8 +285,11 @@ durable state file under `<stateDir>/state/` carries no key material.
 Usage is read from `https://opencode.ai/zen/go/v1/usage` (`rolling`, `weekly`, and `monthly`
 percent used) and `https://openrouter.ai/api/v1/key` (`limit_remaining` and `limit`).
 `DEVBOARD_OPENCODE_GO_USAGE_BASE_URL` and `DEVBOARD_OPENROUTER_USAGE_BASE_URL` override the base
-URLs for tests and offline verification. A key's usage is fetched at most once per 60 seconds
-unless the operator forces a refresh.
+URLs for tests and offline verification. On-demand reads fetch a key's usage at most once per
+60 seconds unless the operator forces a refresh; while at least one dashboard is connected, the
+server forces one refresh and pushes a fresh `providersState` every 60 seconds, so the
+status-bar indicator never stays stale. With no client connected the periodic refresh makes no
+provider call, and the next client's `getProviders` refreshes first.
 
 Remaining is `1 - percent/100` for each Go window and `limit_remaining / limit` for OpenRouter,
 or unlimited when the account has no limit. A subscription is eligible only when every gating
@@ -2087,7 +2090,9 @@ The client sends:
   while an unreachable endpoint or 5xx saves the subscription with status `unknown`. Editing a
   label without a key never revalidates. `deleteProvider` and `setProviderEnabled` persist the
   store without touching a running peer. `refreshProviders` bypasses the 60-second usage cache.
-  Every mutation broadcasts a fresh `providersState`; failures answer `providerError`.
+  Every mutation broadcasts a fresh `providersState`; failures answer `providerError`. While at
+  least one client is connected, the server forces a refresh and broadcasts a fresh
+  `providersState` every 60 seconds; an idle server makes no provider call.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
   lifecycle, enabled, paused, repository, poll times, queue entries with `labels`, `handled`,
   `runId`, and `agentRunId`, run summaries, the running `agents` (run id, issue number, startedAt,
