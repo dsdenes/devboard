@@ -18,6 +18,7 @@ import {
   exec,
   installHarnessTarball,
   installRelease,
+  isReleaseRateLimited,
   isReleaseUnreachable,
   latestRelease,
   parseReleaseDescription,
@@ -70,6 +71,45 @@ describe("isReleaseUnreachable", () => {
     );
     expect(error).toBeInstanceOf(Error);
     expect(isReleaseUnreachable(error)).toBe(true);
+  });
+});
+
+describe("isReleaseRateLimited", () => {
+  test("recognizes a primary or secondary GitHub quota message", () => {
+    for (const detail of [
+      "gh: API rate limit exceeded for user ID 123850. If you reach out to GitHub Support " +
+        "for help, please include the request ID C078:C6E1C:11323A2:18BF786:6AE201F6.",
+      "You have exceeded a secondary rate limit. Please wait a few minutes.",
+      "gh: rate-limited request rejected",
+    ]) {
+      expect(isReleaseRateLimited(new Error(`gh api releases/latest failed: ${detail}`))).toBe(
+        true,
+      );
+    }
+  });
+
+  test("recognizes a registry 429 from npm or Gitea", () => {
+    for (const detail of [
+      "npm error code E429",
+      "npm error 429 Too Many Requests - GET https://registry.npmjs.org/@dsdenes%2fdevboard",
+      "HTTP 429: Too Many Requests",
+      "the feed answered 429 Too Many Requests",
+    ]) {
+      expect(isReleaseRateLimited(new Error(detail))).toBe(true);
+    }
+  });
+
+  test("does not treat an authentication failure or an outage as a rate limit", () => {
+    expect(
+      isReleaseRateLimited(new Error("gh api releases/latest failed: HTTP 401: Bad credentials")),
+    ).toBe(false);
+    expect(
+      isReleaseRateLimited(
+        new Error(
+          'gh api releases/latest failed: Get "https://api.github.com": dial tcp: i/o timeout',
+        ),
+      ),
+    ).toBe(false);
   });
 });
 

@@ -4,14 +4,24 @@
  * with its STATE_DIR under `.devboard/.tmp`, writes one `server-error` carrying
  * a unique marker through the real journal writer, starts the installed
  * `devboard-watchdog.service`, and waits for that cycle to file a real issue in
- * `dsdenes/devboard`. It then proves the issue's title and body, closes it as
- * "not planned", and removes every fixture it created.
+ * the checkout's origin repository. It then proves the issue's title and body,
+ * closes it as "not planned", and removes every fixture it created. A filed
+ * issue is closed from the same forge even when a later check fails, so a
+ * failed verification never leaves a synthetic finding open in the tracker.
  */
 
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+import {
+  giteaCloseIssue,
+  giteaJson,
+  giteaTarget,
+  issueNumberFromUrl,
+  repoPath,
+} from "../lib/gitea";
+import { originForge } from "../issues/repository";
 import { openJournal } from "../server/journal";
 import {
   assertTrue,
@@ -19,6 +29,7 @@ import {
   harnessRoot,
   makeHost,
   makeRoot,
+  repoRoot,
   run,
   waitFor,
 } from "./verification";
@@ -26,6 +37,13 @@ import {
 const WATCHDOG_DIR = join(harnessRoot, ".tmp", "watchdog");
 const ATTEMPTS = 3;
 const CYCLE_WAIT_MS = 120_000;
+
+const remote = originForge(repoRoot);
+if (remote === undefined) {
+  throw new Error("verify:watchdog-live: the checkout's origin does not name a repository");
+}
+const project = remote.project;
+const gitea = remote.forge === "gitea" ? giteaTarget({ remote }) : undefined;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null
@@ -99,11 +117,74 @@ async function ghJson(args: string[]): Promise<Record<string, unknown> | undefin
   }
 }
 
+interface IssueSnapshot {
+  title: string;
+  body: string;
+  state: string;
+}
+
+/** The filed issue as the checkout's own forge reports it. */
+async function issueSnapshot(url: string): Promise<IssueSnapshot> {
+  if (gitea !== undefined) {
+    const number = issueNumberFromUrl(url);
+    if (number === undefined) {
+      throw new Error(`verify:watchdog-live: the issue URL has no number: ${url}`);
+    }
+    const document = asRecord(
+      await giteaJson<unknown>(gitea, `${repoPath(gitea)}/issues/${number}`),
+    );
+    return {
+      title: typeof document?.title === "string" ? document.title : "",
+      body: typeof document?.body === "string" ? document.body : "",
+      state: typeof document?.state === "string" ? document.state : "",
+    };
+  }
+  const view = await ghJson([
+    "issue",
+    "view",
+    url,
+    "--repo",
+    project,
+    "--json",
+    "title,body,state",
+  ]);
+  return {
+    title: typeof view?.title === "string" ? view.title : "",
+    body: typeof view?.body === "string" ? view.body : "",
+    state: typeof view?.state === "string" ? view.state : "",
+  };
+}
+
+/** Closes the filed issue as "not planned" on the checkout's forge. */
+async function closeIssue(url: string): Promise<void> {
+  if (gitea !== undefined) {
+    const number = issueNumberFromUrl(url);
+    if (number === undefined) {
+      throw new Error(`verify:watchdog-live: the issue URL has no number: ${url}`);
+    }
+    await giteaCloseIssue(gitea, number);
+    return;
+  }
+  const closed = run("gh", [
+    "issue",
+    "close",
+    url,
+    "--repo",
+    project,
+    "--reason",
+    "not planned",
+  ]);
+  if (closed.code !== 0) {
+    throw new Error(`verify:watchdog-live: gh issue close failed: ${closed.stderr}`);
+  }
+}
+
 const marker = `verify-watchdog-live-${randomUUID()}`;
 const errorLine = `Synthetic error: ENOTFOUND the fixture endpoint ${marker}`;
 const root = await makeRoot("verify-watchdog-live");
 let dashboardPid = 0;
 let issueUrl = "";
+let issueClosed = false;
 
 try {
   if (Bun.file(join(harnessRoot, "dist", "index.html")).size === 0) {
@@ -210,47 +291,34 @@ try {
     `verify:watchdog-live: the ledger holds filed:${issueUrl}`,
   );
 
-  const view = await ghJson([
-    "issue",
-    "view",
-    issueUrl,
-    "--repo",
-    "dsdenes/devboard",
-    "--json",
-    "title,body,state",
-  ]);
-  const title = typeof view?.title === "string" ? view.title : "";
-  const body = typeof view?.body === "string" ? view.body : "";
+  const view = await issueSnapshot(issueUrl);
   assertTrue(
-    title.startsWith("[watchdog] server-error:"),
-    `the issue title starts with [watchdog] server-error: ${title}`,
+    view.title.startsWith("[watchdog] server-error:"),
+    `the issue title starts with [watchdog] server-error: ${view.title}`,
   );
-  assertTrue(body.includes(marker), "the issue body contains the unique marker");
-  assertTrue(body.includes(issue.fingerprint), "the issue body contains the fingerprint");
+  assertTrue(view.body.includes(marker), "the issue body contains the unique marker");
+  assertTrue(view.body.includes(issue.fingerprint), "the issue body contains the fingerprint");
 
-  const closed = run("gh", [
-    "issue",
-    "close",
-    issueUrl,
-    "--repo",
-    "dsdenes/devboard",
-    "--reason",
-    "not planned",
-  ]);
-  assertTrue(closed.code === 0, `gh issue close failed: ${closed.stderr}`);
-  const after = await ghJson([
-    "issue",
-    "view",
-    issueUrl,
-    "--repo",
-    "dsdenes/devboard",
-    "--json",
-    "state",
-  ]);
-  assertTrue(after?.state === "CLOSED", `the issue is CLOSED: ${String(after?.state)}`);
+  await closeIssue(issueUrl);
+  issueClosed = true;
+  const after = await issueSnapshot(issueUrl);
+  assertTrue(
+    after.state.toUpperCase() === "CLOSED",
+    `the issue is CLOSED: ${after.state}`,
+  );
 
   console.log(`verify:watchdog-live: filed ${issueUrl} (fingerprint ${issue.fingerprint})`);
 } finally {
+  // A failed title, body, or state check must not leave the synthetic finding
+  // open in the tracker.
+  if (issueUrl.length > 0 && !issueClosed) {
+    try {
+      await closeIssue(issueUrl);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error(`verify:watchdog-live: could not close ${issueUrl}: ${detail}`);
+    }
+  }
   if (dashboardPid > 0) {
     try {
       process.kill(dashboardPid, "SIGTERM");
