@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import {
@@ -23,9 +23,10 @@ import { journalFile } from "./journal";
 
 /**
  * Discover's remote target: the source-checkout gate, URL validation, the one
- * `git clone` child, target switching, run parity, durability, restart, and
- * clear. Every child is injected, every fixture lives under the harness
- * `.tmp`, and no test makes a network request.
+ * `git clone` child per run, retention of the published bytes after a crawl,
+ * restore without a clone, switching, removal, and durability. Every child is
+ * injected, every fixture lives under the harness `.tmp`, and no test makes a
+ * network request.
  */
 
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -370,6 +371,7 @@ interface DiscoverState {
   busy: string | null;
   error: string | null;
   remoteAvailable: boolean;
+  retained: Array<{ url: string; owner: string; repo: string; completedAt: string }>;
   repository: string | null;
   target: Record<string, unknown>;
   cloning: Record<string, unknown> | null;
@@ -412,6 +414,30 @@ async function runProject(client: TestClient): Promise<DiscoverState> {
   return discoverState(client);
 }
 
+async function switchRemote(client: TestClient, url: string): Promise<DiscoverState> {
+  const reply = client.waitNext((message) => message.type === "discoverState");
+  client.send({ type: "switchDiscoverRemote", url });
+  return stateOf(await reply);
+}
+
+async function removeRemote(client: TestClient, url: string): Promise<DiscoverState> {
+  const reply = client.waitNext((message) => message.type === "discoverState");
+  client.send({ type: "removeDiscoverRemote", url });
+  return stateOf(await reply);
+}
+
+async function clearRemote(client: TestClient): Promise<DiscoverState> {
+  const reply = client.waitNext((message) => message.type === "discoverState");
+  client.send({ type: "clearDiscoverRemote" });
+  return stateOf(await reply);
+}
+
+async function refusal(client: TestClient, command: unknown): Promise<string> {
+  const reply = client.waitNext((message) => message.type === "discoverError");
+  client.send(command);
+  return String((await reply).message);
+}
+
 /** File bytes of one tree, keyed by relative path, for byte-for-byte checks. */
 function treeBytes(root: string): Map<string, string> {
   const files = new Map<string, string>();
@@ -445,14 +471,47 @@ function scratchEntries(fixture: Fixture, stateDir = fixture.stateDir): string[]
   return readdirSync(root).sort();
 }
 
-function cloneDirectory(fixture: Fixture, owner: string, repo: string): string {
+function retainedDirectory(fixture: Fixture, owner: string, repo: string): string {
   return join(remoteScratchRoot(fixture.stateDir), `${owner}-${repo}`.toLowerCase());
 }
 
-function cloneRelative(fixture: Fixture, owner: string, repo: string): string {
-  return relative(resolve(fixture.root), resolve(cloneDirectory(fixture, owner, repo)))
-    .split(sep)
-    .join("/");
+function retainedRecord(
+  fixture: Fixture,
+  owner: string,
+  repo: string,
+): Record<string, unknown> {
+  return JSON.parse(
+    readFileSync(join(retainedDirectory(fixture, owner, repo), "project.json"), "utf8"),
+  ) as Record<string, unknown>;
+}
+
+/** Seeds a retained project without a checkout, for gate and restore fixtures. */
+function seedRetainedProject(
+  stateDir: string,
+  owner: string,
+  repo: string,
+  url: string,
+  completedAt: string,
+  marker: string,
+): string {
+  const directory = join(remoteScratchRoot(stateDir), `${owner}-${repo}`.toLowerCase());
+  mkdirSync(join(directory, ".omp", "discover"), { recursive: true });
+  mkdirSync(join(directory, ".omp", "skills"), { recursive: true });
+  writeFileSync(join(directory, ".omp", "discover", "marker.txt"), marker);
+  writeFileSync(join(directory, ".omp", "skills", "marker.txt"), marker);
+  writeFileSync(
+    join(directory, "project.json"),
+    `${JSON.stringify({ url, owner, repo, completedAt }, null, 2)}\n`,
+  );
+  return directory;
+}
+
+function expectNoCheckout(fixture: Fixture, stateDir = fixture.stateDir): void {
+  const root = remoteScratchRoot(stateDir);
+  for (const entry of scratchEntries(fixture, stateDir)) {
+    expect(entry.startsWith(".staging-")).toBe(false);
+    expect(existsSync(join(root, entry, ".git"))).toBe(false);
+  }
 }
 
 function persistedState(fixture: Fixture, stateDir = fixture.stateDir): Record<string, unknown> {
@@ -465,9 +524,14 @@ function hostStatus(fixture: Fixture): string {
   return gitRun(fixture.root, ["status", "--porcelain", "--untracked-files=all"]).stdout;
 }
 
+function journalText(fixture: Fixture): string {
+  const path = journalFile(fixture.stateDir, resolve(fixture.root));
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
 describe("discover remote target", () => {
   test(
-    "exposes remote cloning only for a harness source checkout",
+    "exposes remote targets and retained projects only for a harness source checkout",
     async () => {
       const cases: Array<{ gate: Gate; available: boolean }> = [
         { gate: "source", available: true },
@@ -476,41 +540,56 @@ describe("discover remote target", () => {
       ];
       for (const entry of cases) {
         const fixture = createFixture(`gate-${entry.gate}`, entry.gate);
+        mkdirSync(fixture.stateDir, { recursive: true });
+        const seeded = seedRetainedProject(
+          fixture.stateDir,
+          "octocat",
+          "Hello-World",
+          "https://github.com/octocat/Hello-World",
+          "2026-01-01T00:00:00.000Z",
+          `gate-${entry.gate}`,
+        );
+        const seededBefore = treeBytes(seeded);
         const clones = cloneHarness({ source: createSourceRepository(`gate-source-${entry.gate}`) });
         const { server, url } = startServer({ fixture, clone: clones });
         const client = await connect(url);
         try {
-          if (entry.available) {
-            const replayed = stateOf(
-              await client.take((message) => message.type === "discoverState"),
-            );
-            expect(replayed.remoteAvailable).toBe(true);
-          }
           const initial = await discoverState(client);
           expect(initial.remoteAvailable).toBe(entry.available);
-          expect(initial.repository).toBeNull();
-          expect(initial.target).toEqual({ kind: "host" });
           expect(initial.cloning).toBeNull();
 
           if (entry.available) {
+            expect(initial.retained.map((project) => project.url)).toEqual([
+              "https://github.com/octocat/Hello-World",
+            ]);
             const state = await runRemote(client, "https://github.com/octocat/Hello-World");
-            expect(state.target).toMatchObject({ kind: "remote", owner: "octocat" });
+            expect(state.target).toMatchObject({
+              kind: "remote",
+              owner: "octocat",
+              repo: "Hello-World",
+              checkout: false,
+            });
             expect(state.repository).toBe("octocat/Hello-World");
             expect(clones.calls.length).toBe(1);
             continue;
           }
 
-          const refused = client.waitNext((message) => message.type === "discoverError");
-          client.send({ type: "discoverRemote", url: "https://github.com/octocat/Hello-World" });
-          expect(String((await refused).message)).toContain("source checkout");
+          expect(initial.repository).toBeNull();
+          expect(initial.target).toEqual({ kind: "host" });
+          expect(initial.retained).toEqual([]);
+          for (const command of [
+            { type: "discoverRemote", url: "https://github.com/octocat/Hello-World" },
+            { type: "switchDiscoverRemote", url: "https://github.com/octocat/Hello-World" },
+            { type: "removeDiscoverRemote", url: "https://github.com/octocat/Hello-World" },
+            { type: "clearDiscoverRemote" },
+          ]) {
+            const message = await refusal(client, command);
+            expect(message).toContain("source checkout");
+          }
           expect(clones.calls.length).toBe(0);
-          expect(scratchEntries(fixture)).toEqual([]);
+          expect(treeBytes(seeded)).toEqual(seededBefore);
           expect((await discoverState(client)).target).toEqual({ kind: "host" });
-
-          const cleared = client.waitNext((message) => message.type === "discoverError");
-          client.send({ type: "clearDiscoverRemote" });
-          expect(String((await cleared).message)).toContain("source checkout");
-          expect(clones.calls.length).toBe(0);
+          expect((await discoverState(client)).retained).toEqual([]);
         } finally {
           client.close();
           server.stop(true);
@@ -540,16 +619,16 @@ describe("discover remote target", () => {
             url: accepted.trim(),
             owner: "Octocat",
             repo: "Hello-World",
-            cloneDir: cloneRelative(fixture, "octocat", "hello-world"),
+            checkout: false,
           });
-          const cleared = client.waitNext(
-            (message) => message.type === "discoverState" && stateTargetKind(message, "host"),
-          );
-          client.send({ type: "clearDiscoverRemote" });
-          await cleared;
         }
         const acceptedCount = clones.calls.length;
         expect(acceptedCount).toBe(4);
+        // Every accepted spelling names the same lowercased owner/repo.
+        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(retainedRecord(fixture, "octocat", "hello-world").url).toBe(
+          "https://github.com/Octocat/Hello-World",
+        );
 
         const rejected = [
           "",
@@ -577,8 +656,8 @@ describe("discover remote target", () => {
           expect(String((await refused).message)).toContain("Could not clone");
         }
         expect(clones.calls.length).toBe(acceptedCount);
-        expect(scratchEntries(fixture)).toEqual([]);
-        expect((await discoverState(client)).target).toEqual({ kind: "host" });
+        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect((await discoverState(client)).target).toMatchObject({ kind: "remote" });
       } finally {
         client.close();
         server.stop(true);
@@ -596,9 +675,10 @@ describe("discover remote target", () => {
       const { server, url } = startServer({ fixture, stateDir: outside, clone: clones });
       const client = await connect(url);
       try {
-        const refused = client.waitNext((message) => message.type === "discoverError");
-        client.send({ type: "discoverRemote", url: "https://github.com/octocat/Hello-World" });
-        const message = String((await refused).message);
+        const message = await refusal(client, {
+          type: "discoverRemote",
+          url: "https://github.com/octocat/Hello-World",
+        });
         expect(message).toContain("STATE_DIR");
         expect(message).toContain("inside the repository");
         expect(clones.calls.length).toBe(0);
@@ -620,13 +700,23 @@ describe("discover remote target", () => {
       const { server, url } = startServer({ fixture, clone: clones });
       const client = await connect(url);
       try {
-        for (const command of [{ type: "discoverRemote" }, { type: "discoverRemote", url: 5 }]) {
+        const commands = [
+          { type: "discoverRemote" },
+          { type: "discoverRemote", url: 5 },
+          { type: "switchDiscoverRemote" },
+          { type: "switchDiscoverRemote", url: null },
+          { type: "removeDiscoverRemote" },
+          { type: "removeDiscoverRemote", url: [] },
+          { type: "switchDiscoverRemoteUnknown" },
+        ];
+        for (const command of commands) {
           const reply = client.waitNext((message) => message.type === "error");
           client.send(command);
           expect(String((await reply).message)).toBe("Invalid WebSocket message.");
         }
         expect(clones.calls.length).toBe(0);
         expect((await discoverState(client)).target).toEqual({ kind: "host" });
+        expect((await discoverState(client)).retained).toEqual([]);
       } finally {
         client.close();
         server.stop(true);
@@ -636,7 +726,7 @@ describe("discover remote target", () => {
   );
 
   test(
-    "runs exactly one bounded git clone and crawls the clone",
+    "runs exactly one bounded git clone, crawls once, and retains the published bytes",
     async () => {
       const fixture = createFixture("clone");
       const source = createSourceRepository("clone-source");
@@ -668,38 +758,42 @@ describe("discover remote target", () => {
         expect(request.env.GIT_ASKPASS).toBe("true");
         expect(request.env.NO_COLOR).toBe("1");
 
-        const clone = cloneDirectory(fixture, "octocat", "hello-world");
-        expect(existsSync(join(clone, ".git"))).toBe(true);
+        // The checkout is gone; only the retained project remains.
         expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
-        expect(git(clone, ["rev-parse", "--show-toplevel"]).trim()).toBe(clone);
-        expect(git(clone, ["rev-parse", "--short=7", "HEAD"]).trim().length).toBe(7);
+        expectNoCheckout(fixture);
+        const retained = retainedDirectory(fixture, "octocat", "hello-world");
+        expect(existsSync(join(retained, ".git"))).toBe(false);
+        expect(existsSync(join(retained, ".omp", "discover", "manifest.json"))).toBe(true);
+        expect(existsSync(join(retained, ".omp", "discover", "staging"))).toBe(false);
+        for (const name of DISCOVER_SKILLS) {
+          expect(existsSync(join(retained, ".omp", "skills", name, "SKILL.md"))).toBe(true);
+        }
+        expect(retainedRecord(fixture, "octocat", "hello-world")).toEqual({
+          url: "https://github.com/Octocat/Hello-World.git",
+          owner: "Octocat",
+          repo: "Hello-World",
+          completedAt: expect.any(String),
+        });
 
         expect(state.target).toEqual({
           kind: "remote",
           url: "https://github.com/Octocat/Hello-World.git",
           owner: "Octocat",
           repo: "Hello-World",
-          cloneDir: cloneRelative(fixture, "octocat", "hello-world"),
+          checkout: false,
         });
         expect(state.cloning).toBeNull();
-        expect(String((state.target as Record<string, unknown>).cloneDir).startsWith("/")).toBe(
-          false,
-        );
-
-        expect(spawnCount(fixture.logPath)).toBe(1);
-        const prompt = prompts(fixture.logPath)[0] ?? "";
-        expect(prompt.startsWith(`/discover ${join(clone, ".omp", "discover", "staging")}`)).toBe(
-          true,
-        );
-        expect(prompt).toMatch(/\/\.omp\/discover\/staging\/run-[a-z0-9-]+$/);
-        expect(existsSync(join(clone, ".omp", "discover", "staging"))).toBe(false);
-        expect(existsSync(join(clone, ".omp", "discover", "manifest.json"))).toBe(true);
-        for (const name of DISCOVER_SKILLS) {
-          expect(existsSync(join(clone, ".omp", "skills", name, "SKILL.md"))).toBe(true);
-        }
+        expect(state.retained.map((project) => project.url)).toEqual([
+          "https://github.com/Octocat/Hello-World.git",
+        ]);
         expect(state.sheet).not.toBeNull();
         expect(state.glossaries.length).toBe(1);
         expect(state.skills.map((skill) => skill.name)).toEqual([...DISCOVER_SKILLS]);
+
+        expect(spawnCount(fixture.logPath)).toBe(1);
+        const prompt = prompts(fixture.logPath)[0] ?? "";
+        expect(prompt).toMatch(/^\/discover \/.*\/\.staging-run-[a-z0-9-]+\/\.omp\/discover\/staging\/run-[a-z0-9-]+$/);
+        expect(existsSync(join(retained, ".omp", "discover", "staging"))).toBe(false);
 
         // The dashboard's own host is untouched.
         expect(ompBytes(fixture.root)).toEqual(hostOmpBefore);
@@ -715,7 +809,7 @@ describe("discover remote target", () => {
   );
 
   test(
-    "keeps the previous target when the clone exits, times out, or leaves nothing",
+    "keeps the active target when the clone exits, times out, or leaves nothing",
     async () => {
       const cases: Array<{ name: string; behavior: CloneBehavior; expected: string }> = [
         {
@@ -751,6 +845,7 @@ describe("discover remote target", () => {
           expect(String((await failed).message)).toContain(entry.expected);
           await cleared;
           expect((await discoverState(client)).target).toEqual({ kind: "host" });
+          expect((await discoverState(client)).retained).toEqual([]);
           expect(scratchEntries(fixture)).toEqual([]);
           expect(spawnCount(fixture.logPath)).toBe(0);
         } finally {
@@ -763,163 +858,181 @@ describe("discover remote target", () => {
   );
 
   test(
-    "refuses a second clone, a clear, and a project start while cloning",
+    "refuses a second clone, a clear, a start, a switch, and a remove while cloning",
     async () => {
       const fixture = createFixture("cloning");
-      const gate = Promise.withResolvers<void>();
-      const clones = cloneHarness({
-        source: createSourceRepository("cloning-source"),
-        gate: { promise: gate.promise, release: () => gate.resolve() },
-      });
+      const clones = cloneHarness({ source: createSourceRepository("cloning-source") });
       const { server, url } = startServer({ fixture, clone: clones });
       const client = await connect(url);
+      const gate = Promise.withResolvers<void>();
       try {
+        await runRemote(client, "https://github.com/octocat/Hello-World");
+        const retainedBefore = treeBytes(retainedDirectory(fixture, "octocat", "hello-world"));
+
+        clones.behavior.source = createSourceRepository("cloning-source-two");
+        clones.behavior.gate = { promise: gate.promise, release: () => gate.resolve() };
         const cloning = client.waitNext(isCloningState);
+        const stopped = client.waitNext((message) => message.type === "discoverStopped");
+        client.send({ type: "discoverRemote", url: "https://github.com/octocat/Other" });
+        await cloning;
+
         const refusals = [
           client.waitNext((message) => message.type === "discoverError"),
           client.waitNext((message) => message.type === "discoverError"),
           client.waitNext((message) => message.type === "discoverError"),
+          client.waitNext((message) => message.type === "discoverError"),
+          client.waitNext((message) => message.type === "discoverError"),
         ];
-        const stopped = client.waitNext((message) => message.type === "discoverStopped");
-        client.send({ type: "discoverRemote", url: "https://github.com/octocat/Hello-World" });
-        await cloning;
-        client.send({ type: "discoverRemote", url: "https://github.com/octocat/Other" });
+        client.send({ type: "discoverRemote", url: "https://github.com/octocat/Third" });
         client.send({ type: "clearDiscoverRemote" });
         client.send({ type: "discoverProject" });
+        client.send({
+          type: "switchDiscoverRemote",
+          url: "https://github.com/octocat/Hello-World",
+        });
+        client.send({
+          type: "removeDiscoverRemote",
+          url: "https://github.com/octocat/Hello-World",
+        });
         await Promise.all(refusals);
-        expect(clones.calls.length).toBe(1);
-        expect(spawnCount(fixture.logPath)).toBe(0);
+        expect(clones.calls.length).toBe(2);
+        expect(spawnCount(fixture.logPath)).toBe(1);
+        expect(treeBytes(retainedDirectory(fixture, "octocat", "hello-world"))).toEqual(
+          retainedBefore,
+        );
+        expect((await discoverState(client)).target).toMatchObject({
+          kind: "remote",
+          repo: "Hello-World",
+        });
 
         gate.resolve();
         expect((await stopped).completed).toBe(true);
-        expect(spawnCount(fixture.logPath)).toBe(1);
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(spawnCount(fixture.logPath)).toBe(2);
+        expect((await discoverState(client)).retained).toHaveLength(2);
+        expectNoCheckout(fixture);
       } finally {
+        gate.resolve();
         client.close();
         server.stop(true);
       }
     },
-    30_000,
+    90_000,
   );
 
   test(
-    "switches targets and removes the previous clone after the rename",
+    "switches between retained projects with zero clone invocations and survives a restart",
     async () => {
       const fixture = createFixture("switch");
       const clones = cloneHarness({ source: createSourceRepository("switch-source-one") });
-      const { server, url } = startServer({ fixture, clone: clones });
-      const client = await connect(url);
+      const first = startServer({ fixture, clone: clones });
+      const client = await connect(first.url);
+      const hostOmp = ompBytes(fixture.root);
       try {
         await runRemote(client, "https://github.com/octocat/Hello-World");
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
-
         clones.behavior.source = createSourceRepository("switch-source-two");
-        const state = await runRemote(client, "https://github.com/octocat/Other");
-        expect(state.target).toMatchObject({ owner: "octocat", repo: "Other" });
-        expect(scratchEntries(fixture)).toEqual(["octocat-other"]);
+        const second = await runRemote(client, "https://github.com/octocat/Second");
+        expect(second.retained.map((project) => project.url)).toEqual([
+          "https://github.com/octocat/Second",
+          "https://github.com/octocat/Hello-World",
+        ]);
+        expect(second.target).toMatchObject({ repo: "Second" });
+
+        const callsBefore = clones.calls.length;
+        const spawnsBefore = spawnCount(fixture.logPath);
+        const secondBytes = treeBytes(retainedDirectory(fixture, "octocat", "second"));
+        const switched = await switchRemote(client, "https://github.com/octocat/Hello-World");
+        expect(switched.target).toEqual({
+          kind: "remote",
+          url: "https://github.com/octocat/Hello-World",
+          owner: "octocat",
+          repo: "Hello-World",
+          checkout: false,
+        });
+        expect(switched.repository).toBe("octocat/Hello-World");
+        expect(switched.sheet).not.toBeNull();
+        expect(switched.retained.map((project) => project.url)).toEqual([
+          "https://github.com/octocat/Second",
+          "https://github.com/octocat/Hello-World",
+        ]);
+        expect(clones.calls.length).toBe(callsBefore);
+        expect(spawnCount(fixture.logPath)).toBe(spawnsBefore);
+        expect(treeBytes(retainedDirectory(fixture, "octocat", "second"))).toEqual(secondBytes);
+        expect(ompBytes(fixture.root)).toEqual(hostOmp);
       } finally {
         client.close();
-        server.stop(true);
+        first.server.stop(true);
+      }
+
+      // The chosen project is the active target of a replacement with no clone.
+      const guest = cloneHarness();
+      const replacement = startServer({ fixture, clone: guest });
+      const restored = await connect(replacement.url);
+      try {
+        const replay = stateOf(await restored.take((message) => message.type === "discoverState"));
+        expect(replay.target).toMatchObject({
+          kind: "remote",
+          repo: "Hello-World",
+          checkout: false,
+        });
+        expect(replay.retained.map((project) => project.url)).toEqual([
+          "https://github.com/octocat/Second",
+          "https://github.com/octocat/Hello-World",
+        ]);
+        expect(replay.sheet).not.toBeNull();
+        expect(restored.events.some((message) => message.type === "discoverError")).toBe(false);
+        expect(guest.calls.length).toBe(0);
+        expect(spawnCount(fixture.logPath)).toBe(2);
+        expectNoCheckout(fixture);
+      } finally {
+        restored.close();
+        replacement.server.stop(true);
       }
     },
-    60_000,
+    90_000,
   );
 
   test(
-    "crawls, edits, and stops against the clone without touching the host",
+    "holds one entry per lowercased owner/repo, newest first, with the latest URL and time",
     async () => {
-      const fixture = createFixture("parity");
-      const clones = cloneHarness({ source: createSourceRepository("parity-source") });
-      const { server, url } = startServer({
-        fixture,
-        clone: clones,
-        stub: ["--discover", "--discover-question"],
-      });
+      const fixture = createFixture("dedupe");
+      const clones = cloneHarness({ source: createSourceRepository("dedupe-source") });
+      const { server, url } = startServer({ fixture, clone: clones });
       const client = await connect(url);
-      const hostOmpBefore = ompBytes(fixture.root);
-      const fingerprintBefore = hostFacts(fixture.root).fingerprint;
-      const statusBefore = hostStatus(fixture);
-      const clone = cloneDirectory(fixture, "octocat", "hello-world");
       try {
-        const cloning = client.waitNext(isCloningState);
-        const started = client.waitNext((message) => message.type === "discoverStarted");
-        const question = client.waitNext((message) => message.type === "discoverQuestion");
-        client.send({ type: "discoverRemote", url: "https://github.com/octocat/Hello-World" });
-        await cloning;
-        await started;
-        const asked = await question;
-        const answered = client.waitNext(
-          (message) => message.type === "discoverActivity" && message.append !== true,
+        const first = await runRemote(client, "https://github.com/Octocat/Hello-World");
+        const firstRecord = retainedRecord(fixture, "octocat", "hello-world");
+        const firstBytes = treeBytes(retainedDirectory(fixture, "octocat", "hello-world"));
+        const second = await runRemote(client, "https://github.com/octocat/hello-world/");
+        const secondRecord = retainedRecord(fixture, "octocat", "hello-world");
+        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expect(second.retained).toHaveLength(1);
+        expect(secondRecord.url).toBe("https://github.com/octocat/hello-world/");
+        expect(Date.parse(String(secondRecord.completedAt))).toBeGreaterThanOrEqual(
+          Date.parse(String(firstRecord.completedAt)),
         );
-        client.send({ type: "answerDiscover", id: asked.id, value: "Alpha" });
-        await answered;
-        const stopped = client.waitNext((message) => message.type === "discoverStopped");
-        expect((await stopped).completed).toBe(true);
-        const state = await discoverState(client);
+        expect(second.retained[0]?.completedAt).toBe(String(secondRecord.completedAt));
 
-        // A skill save lands in the clone and updates its manifest.
-        const skill = state.skills.find((entry) => entry.name === "discover-testing-strategy");
-        expect(skill).toBeDefined();
-        const live = String(skill?.live ?? skill?.baseline ?? "");
-        const editedText = `${live}\n- Remote edit.\n`;
-        const saved = await discoverStateAndMutation(client, {
-          type: "saveDiscoverSkill",
-          name: "discover-testing-strategy",
-          text: editedText,
-        });
-        expect(
-          readFileSync(join(clone, ".omp", "skills", "discover-testing-strategy", "SKILL.md"), "utf8"),
-        ).toBe(editedText);
-        expect(
-          saved.skills.find((entry) => entry.name === "discover-testing-strategy")?.state,
-        ).toBe("edited");
-        expect(
-          String(
-            (saved.manifest as Record<string, unknown>).fingerprint ?? "",
-          ).length,
-        ).toBe(64);
+        const third = await runRemote(client, "https://github.com/OCTOCAT/HELLO-WORLD.git");
+        expect(third.retained).toHaveLength(1);
+        expect(third.retained[0]?.url).toBe("https://github.com/OCTOCAT/HELLO-WORLD.git");
+        expect(treeBytes(retainedDirectory(fixture, "octocat", "hello-world")).size).toBe(
+          firstBytes.size,
+        );
+        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
 
-        // A glossary decision lands in the clone's decisions.json.
-        const glossary = saved.glossaries[0] as Record<string, unknown>;
-        const concept = (glossary.concepts as Array<Record<string, unknown>>)[0] as Record<string, unknown>;
-        const decided = await discoverStateAndMutation(client, {
-          type: "rejectGlossaryTerm",
-          context: glossary.boundedContext,
-          id: concept.id,
-          reason: "The remote fixture rejected this term.",
-        });
-        const decisions = JSON.parse(
-          readFileSync(join(clone, ".omp", "discover", "decisions.json"), "utf8"),
-        ) as Array<Record<string, unknown>>;
-        expect(decisions).toHaveLength(1);
-        expect(decisions[0]).toMatchObject({
-          context: glossary.boundedContext,
-          id: concept.id,
-          action: "reject",
-          reason: "The remote fixture rejected this term.",
-        });
-        expect(decided.decisions).toHaveLength(1);
-
-        const cloneOmpAfterEdits = ompBytes(clone);
-
-        // A stopped run removes only the clone's staging.
-        const startedAgain = client.waitNext((message) => message.type === "discoverStarted");
-        const questionAgain = client.waitNext((message) => message.type === "discoverQuestion");
-        client.send({ type: "discoverProject" });
-        await startedAgain;
-        await questionAgain;
-        const stoppedRun = client.waitNext((message) => message.type === "discoverStopped");
-        client.send({ type: "stopDiscover" });
-        expect((await stoppedRun).completed).toBe(false);
-        expect(existsSync(join(clone, ".omp", "discover", "staging"))).toBe(false);
-        expect(ompBytes(clone)).toEqual(cloneOmpAfterEdits);
-
-        // Every remote write stayed inside the clone.
-        expect(ompBytes(fixture.root)).toEqual(hostOmpBefore);
-        expect(hostFacts(fixture.root).fingerprint).toBe(fingerprintBefore);
-        expect(hostStatus(fixture)).toBe(statusBefore);
-        expect(existsSync(join(fixture.root, ".omp", "discover"))).toBe(false);
-        expect(existsSync(join(fixture.root, ".omp", "skills"))).toBe(false);
+        clones.behavior.source = createSourceRepository("dedupe-source-other");
+        const fourth = await runRemote(client, "https://github.com/octocat/Other");
+        expect(fourth.retained.map((project) => project.url)).toEqual([
+          "https://github.com/octocat/Other",
+          "https://github.com/OCTOCAT/HELLO-WORLD.git",
+        ]);
+        expect(first.retained).toHaveLength(1);
+        const fifth = await runRemote(client, "https://github.com/Octocat/Hello-World");
+        expect(fifth.retained.map((project) => project.url)).toEqual([
+          "https://github.com/Octocat/Hello-World",
+          "https://github.com/octocat/Other",
+        ]);
+        expect(scratchEntries(fixture)).toHaveLength(2);
       } finally {
         client.close();
         server.stop(true);
@@ -929,52 +1042,10 @@ describe("discover remote target", () => {
   );
 
   test(
-    "clears a remote target back to this checkout's artifacts",
+    "re-discovers a retained target with one clone and one crawl, replacing its snapshot",
     async () => {
-      const fixture = createFixture("clear");
-      const clones = cloneHarness({ source: createSourceRepository("clear-source") });
-      const { server, url } = startServer({ fixture, clone: clones });
-      const client = await connect(url);
-      try {
-        const hostState = await runProject(client);
-        const statusBefore = hostStatus(fixture);
-        const hostOmp = ompBytes(fixture.root);
-        const hostFingerprint = String(
-          (hostState.manifest as Record<string, unknown>).fingerprint ?? "",
-        );
-        expect(hostFingerprint.length).toBe(64);
-
-        const remoteState = await runRemote(client, "https://github.com/octocat/Hello-World");
-        expect(remoteState.target).toMatchObject({ kind: "remote" });
-        expect(ompBytes(fixture.root)).toEqual(hostOmp);
-        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
-
-        const cleared = client.waitNext(
-          (message) => message.type === "discoverState" && stateTargetKind(message, "host"),
-        );
-        client.send({ type: "clearDiscoverRemote" });
-        const afterClear = stateOf(await cleared);
-        expect(afterClear.target).toEqual({ kind: "host" });
-        expect(scratchEntries(fixture)).toEqual([]);
-        expect(existsSync(cloneDirectory(fixture, "octocat", "hello-world"))).toBe(false);
-        expect(
-          String((afterClear.manifest as Record<string, unknown>).fingerprint ?? ""),
-        ).toBe(hostFingerprint);
-        expect(ompBytes(fixture.root)).toEqual(hostOmp);
-        expect(hostStatus(fixture)).toBe(statusBefore);
-      } finally {
-        client.close();
-        server.stop(true);
-      }
-    },
-    60_000,
-  );
-
-  test(
-    "stores only the URL and names and restores the clone without a re-crawl",
-    async () => {
-      const fixture = createFixture("durable");
-      const clones = cloneHarness({ source: createSourceRepository("durable-source") });
+      const fixture = createFixture("rediscover");
+      const clones = cloneHarness({ source: createSourceRepository("rediscover-source") });
       const first = startServer({ fixture, clone: clones });
       const client = await connect(first.url);
       try {
@@ -983,58 +1054,295 @@ describe("discover remote target", () => {
         client.close();
         first.server.stop(true);
       }
+      const recordBefore = retainedRecord(fixture, "octocat", "hello-world");
+      expect(spawnCount(fixture.logPath)).toBe(1);
 
-      const stored = persistedState(fixture);
-      expect(stored.discoverTarget).toEqual({
-        url: "https://github.com/octocat/Hello-World",
-        owner: "octocat",
-        repo: "Hello-World",
-      });
-      const stateText = readFileSync(stateFile(fixture.stateDir, resolve(fixture.root)), "utf8");
-      expect(stateText).not.toContain(remoteScratchRoot(fixture.stateDir));
-      expect(stateText).not.toContain(fixture.root);
-
-      const clone = cloneDirectory(fixture, "octocat", "hello-world");
-      const cloneOmp = ompBytes(clone);
-      const publishedAt = String(
-        (
-          JSON.parse(readFileSync(join(clone, ".omp", "discover", "manifest.json"), "utf8")) as Record<
-            string,
-            unknown
-          >
-        ).publishedAt,
-      );
-      const spawnsBefore = spawnCount(fixture.logPath);
-
-      const second = startServer({ fixture, clone: cloneHarness() });
-      const restoredClient = await connect(second.url);
+      const next = cloneHarness({ source: createSourceRepository("rediscover-source-two") });
+      const second = startServer({ fixture, clone: next });
+      const restored = await connect(second.url);
       try {
-        const replay = restoredClient.take((message) => message.type === "discoverState");
-        const state = stateOf(await replay);
-        expect(state.target).toMatchObject({ kind: "remote", owner: "octocat" });
-        expect(state.cloning).toBeNull();
+        const replay = stateOf(await restored.take((message) => message.type === "discoverState"));
+        expect(replay.target).toMatchObject({ kind: "remote", checkout: false });
+        const state = await runProject(restored);
+        expect(next.calls.length).toBe(1);
+        expect(spawnCount(fixture.logPath)).toBe(2);
+        expect(state.target).toMatchObject({ kind: "remote", checkout: false });
         expect(state.sheet).not.toBeNull();
-        expect(restoredClient.events.some((message) => message.type === "discoverError")).toBe(false);
-        expect(spawnCount(fixture.logPath)).toBe(spawnsBefore);
-        expect(ompBytes(clone)).toEqual(cloneOmp);
-        expect(
-          (
-            JSON.parse(readFileSync(join(clone, ".omp", "discover", "manifest.json"), "utf8")) as Record<
-              string,
-              unknown
-            >
-          ).publishedAt,
-        ).toBe(publishedAt);
+        const recordAfter = retainedRecord(fixture, "octocat", "hello-world");
+        expect(Date.parse(String(recordAfter.completedAt))).toBeGreaterThanOrEqual(
+          Date.parse(String(recordBefore.completedAt)),
+        );
+        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expectNoCheckout(fixture);
+        expect(ompBytes(fixture.root).size).toBe(0);
       } finally {
-        restoredClient.close();
+        restored.close();
         second.server.stop(true);
       }
     },
-    60_000,
+    90_000,
   );
 
   test(
-    "removes leftover staging and foreign clones at startup",
+    "a failed crawl and a failed clone leave the retained bytes and entry unchanged",
+    async () => {
+      const fixture = createFixture("failed-crawl");
+      const clones = cloneHarness({ source: createSourceRepository("failed-crawl-source") });
+      const first = startServer({ fixture, clone: clones });
+      const client = await connect(first.url);
+      try {
+        await runRemote(client, "https://github.com/octocat/Hello-World");
+      } finally {
+        client.close();
+        first.server.stop(true);
+      }
+      const retained = retainedDirectory(fixture, "octocat", "hello-world");
+      const published = treeBytes(retained);
+      const recordBefore = retainedRecord(fixture, "octocat", "hello-world");
+
+      const invalid = startServer({
+        fixture,
+        clone: cloneHarness({ source: createSourceRepository("failed-crawl-source-two") }),
+        stub: ["--discover", "--discover-invalid-sheet"],
+      });
+      const failedClient = await connect(invalid.url);
+      try {
+        failedClient.take((message) => message.type === "discoverState");
+        const started = failedClient.waitNext((message) => message.type === "discoverStarted");
+        const failed = failedClient.waitNext((message) => message.type === "discoverError");
+        const stopped = failedClient.waitNext((message) => message.type === "discoverStopped");
+        failedClient.send({ type: "discoverProject" });
+        await started;
+        expect(String((await failed).message)).toContain("Discover failed");
+        expect((await stopped).completed).toBe(false);
+        expect(failedClient.events.filter((event) => event.type === "discoverError")).toHaveLength(1);
+        expect(treeBytes(retained)).toEqual(published);
+        expect(retainedRecord(fixture, "octocat", "hello-world")).toEqual(recordBefore);
+        expect((await discoverState(failedClient)).target).toMatchObject({ kind: "remote" });
+        expectNoCheckout(fixture);
+      } finally {
+        failedClient.close();
+        invalid.server.stop(true);
+      }
+
+      const failingClone = cloneHarness({
+        fail: { code: 128, stderr: "fatal: repository not found", timedOut: false },
+      });
+      const unclonable = startServer({ fixture, clone: failingClone });
+      const cloneClient = await connect(unclonable.url);
+      try {
+        cloneClient.take((message) => message.type === "discoverState");
+        const message = await refusal(cloneClient, { type: "discoverProject" });
+        expect(message).toContain("status 128");
+        expect(failingClone.calls.length).toBe(1);
+        expect(treeBytes(retained)).toEqual(published);
+        expect(retainedRecord(fixture, "octocat", "hello-world")).toEqual(recordBefore);
+        expect((await discoverState(cloneClient)).retained).toHaveLength(1);
+        expectNoCheckout(fixture);
+      } finally {
+        cloneClient.close();
+        unclonable.server.stop(true);
+      }
+    },
+    120_000,
+  );
+
+  test(
+    "retains bytes while clearing, and removes exactly one project",
+    async () => {
+      const fixture = createFixture("remove");
+      const clones = cloneHarness({ source: createSourceRepository("remove-source-one") });
+      const first = startServer({ fixture, clone: clones });
+      const client = await connect(first.url);
+      const hostOmp = ompBytes(fixture.root);
+      try {
+        await runRemote(client, "https://github.com/octocat/Hello-World");
+        clones.behavior.source = createSourceRepository("remove-source-two");
+        await runRemote(client, "https://github.com/octocat/Second");
+        const helloBytes = treeBytes(retainedDirectory(fixture, "octocat", "hello-world"));
+        const secondBytes = treeBytes(retainedDirectory(fixture, "octocat", "second"));
+        const callsBefore = clones.calls.length;
+
+        const cleared = await clearRemote(client);
+        expect(cleared.target).toEqual({ kind: "host" });
+        expect(cleared.retained).toHaveLength(2);
+        expect(existsSync(retainedDirectory(fixture, "octocat", "hello-world"))).toBe(true);
+        expect(existsSync(retainedDirectory(fixture, "octocat", "second"))).toBe(true);
+        expect(clones.calls.length).toBe(callsBefore);
+        expect(ompBytes(fixture.root)).toEqual(hostOmp);
+
+        // Clear again with no remote target is refused and changes nothing.
+        const emptyClear = await refusal(client, { type: "clearDiscoverRemote" });
+        expect(emptyClear).toContain("No remote Discover target");
+        expect((await discoverState(client)).retained).toHaveLength(2);
+
+        // Removing the inactive project leaves the active one untouched.
+        const switched = await switchRemote(client, "https://github.com/octocat/Second");
+        expect(switched.target).toMatchObject({ repo: "Second" });
+        const afterRemove = await removeRemote(client, "https://github.com/octocat/Hello-World");
+        expect(afterRemove.target).toMatchObject({ repo: "Second" });
+        expect(afterRemove.retained.map((project) => project.url)).toEqual([
+          "https://github.com/octocat/Second",
+        ]);
+        expect(existsSync(retainedDirectory(fixture, "octocat", "hello-world"))).toBe(false);
+        expect(treeBytes(retainedDirectory(fixture, "octocat", "second"))).toEqual(secondBytes);
+        expect(helloBytes.size).toBeGreaterThan(0);
+
+        // An unknown URL is refused and changes nothing.
+        const unknown = await refusal(client, {
+          type: "removeDiscoverRemote",
+          url: "https://github.com/octocat/Unknown",
+        });
+        expect(unknown).toContain("No retained Discover project");
+        expect(scratchEntries(fixture)).toEqual(["octocat-second"]);
+      } finally {
+        client.close();
+        first.server.stop(true);
+      }
+
+      // The removal persists through a restart.
+      const second = startServer({ fixture, clone: cloneHarness() });
+      const restored = await connect(second.url);
+      try {
+        const state = stateOf(await restored.take((message) => message.type === "discoverState"));
+        expect(state.target).toMatchObject({ kind: "remote", repo: "Second" });
+        expect(state.retained.map((project) => project.url)).toEqual([
+          "https://github.com/octocat/Second",
+        ]);
+        expect(restored.events.some((message) => message.type === "discoverError")).toBe(false);
+        // Removing the active project returns to the host target.
+        const removed = await removeRemote(restored, "https://github.com/octocat/Second");
+        expect(removed.target).toEqual({ kind: "host" });
+        expect(removed.retained).toEqual([]);
+        expect(scratchEntries(fixture)).toEqual([]);
+      } finally {
+        restored.close();
+        second.server.stop(true);
+      }
+    },
+    120_000,
+  );
+
+  test(
+    "refuses switch, remove, and clear during a run without changing anything",
+    async () => {
+      const fixture = createFixture("run-refusal");
+      const clones = cloneHarness({ source: createSourceRepository("run-refusal-source") });
+      const first = startServer({ fixture, clone: clones });
+      const client = await connect(first.url);
+      try {
+        await runRemote(client, "https://github.com/octocat/Hello-World");
+        clones.behavior.source = createSourceRepository("run-refusal-source-two");
+        await runRemote(client, "https://github.com/octocat/Second");
+      } finally {
+        client.close();
+        first.server.stop(true);
+      }
+      const retainedBefore = treeBytes(retainedDirectory(fixture, "octocat", "second"));
+      const helloBefore = treeBytes(retainedDirectory(fixture, "octocat", "hello-world"));
+
+      const running = startServer({
+        fixture,
+        clone: cloneHarness({ source: createSourceRepository("run-refusal-source-three") }),
+        stub: ["--discover", "--discover-no-exit"],
+      });
+      const runningClient = await connect(running.url);
+      try {
+        runningClient.take((message) => message.type === "discoverState");
+        const started = runningClient.waitNext((message) => message.type === "discoverStarted");
+        runningClient.send({ type: "discoverProject" });
+        await started;
+        const during = await discoverState(runningClient);
+        expect(during.active).toBe(true);
+        expect(during.target).toMatchObject({ kind: "remote", checkout: true });
+
+        for (const command of [
+          { type: "switchDiscoverRemote", url: "https://github.com/octocat/Hello-World" },
+          { type: "removeDiscoverRemote", url: "https://github.com/octocat/Hello-World" },
+          { type: "clearDiscoverRemote" },
+        ]) {
+          const message = await refusal(runningClient, command);
+          expect(message).toContain("Discover run is active");
+        }
+        expect((await discoverState(runningClient)).target).toMatchObject({
+          kind: "remote",
+          repo: "Second",
+        });
+        expect(treeBytes(retainedDirectory(fixture, "octocat", "second"))).toEqual(retainedBefore);
+        expect(treeBytes(retainedDirectory(fixture, "octocat", "hello-world"))).toEqual(helloBefore);
+
+        const stopped = runningClient.waitNext((message) => message.type === "discoverStopped");
+        runningClient.send({ type: "stopDiscover" });
+        expect((await stopped).completed).toBe(false);
+        expect((await discoverState(runningClient)).target).toMatchObject({ checkout: false });
+        expectNoCheckout(fixture);
+      } finally {
+        runningClient.close();
+        running.server.stop(true);
+      }
+    },
+    120_000,
+  );
+
+  test(
+    "falls back to the host when the active retained directory is missing and keeps the rest",
+    async () => {
+      const fixture = createFixture("missing");
+      const clones = cloneHarness({ source: createSourceRepository("missing-source-one") });
+      const first = startServer({ fixture, clone: clones });
+      const client = await connect(first.url);
+      try {
+        await runRemote(client, "https://github.com/octocat/Hello-World");
+        clones.behavior.source = createSourceRepository("missing-source-two");
+        await runRemote(client, "https://github.com/octocat/Second");
+      } finally {
+        client.close();
+        first.server.stop(true);
+      }
+      const helloBefore = treeBytes(retainedDirectory(fixture, "octocat", "hello-world"));
+      rmSync(retainedDirectory(fixture, "octocat", "second"), { recursive: true, force: true });
+
+      const guest = cloneHarness();
+      const second = startServer({ fixture, clone: guest });
+      const restored = await connect(second.url);
+      try {
+        const notice = restored.take((message) => message.type === "discoverError");
+        const message = String((await notice).message);
+        expect(message).toContain("missing");
+        expect(message).toContain("https://github.com/octocat/Second");
+        const state = await discoverState(restored);
+        expect(state.target).toEqual({ kind: "host" });
+        expect(state.retained.map((project) => project.url)).toEqual([
+          "https://github.com/octocat/Hello-World",
+        ]);
+        expect(restored.events.filter((event) => event.type === "discoverError")).toHaveLength(1);
+        expect(guest.calls.length).toBe(0);
+        expect(existsSync(retainedDirectory(fixture, "octocat", "second"))).toBe(false);
+        expect(treeBytes(retainedDirectory(fixture, "octocat", "hello-world"))).toEqual(helloBefore);
+      } finally {
+        restored.close();
+        second.server.stop(true);
+      }
+
+      expect(persistedState(fixture).discoverTarget).toBeNull();
+      expect(journalText(fixture)).toContain("discover-remote-missing");
+      const third = startServer({ fixture, clone: cloneHarness() });
+      const again = await connect(third.url);
+      try {
+        const state = await discoverState(again);
+        expect(state.target).toEqual({ kind: "host" });
+        expect(again.events.filter((event) => event.type === "discoverError")).toHaveLength(0);
+        expect(state.retained).toHaveLength(1);
+      } finally {
+        again.close();
+        third.server.stop(true);
+      }
+    },
+    120_000,
+  );
+
+  test(
+    "removes leftover staging and old checkouts at startup, keeping retained projects",
     async () => {
       const fixture = createFixture("hygiene");
       const clones = cloneHarness({ source: createSourceRepository("hygiene-source") });
@@ -1048,15 +1356,23 @@ describe("discover remote target", () => {
       }
 
       const scratch = remoteScratchRoot(fixture.stateDir);
+      const retained = treeBytes(join(scratch, "octocat-hello-world"));
       mkdirSync(join(scratch, ".staging-leftover"), { recursive: true });
-      mkdirSync(join(scratch, "foreign-repo"), { recursive: true });
+      mkdirSync(join(scratch, ".staging-retain-leftover"), { recursive: true });
+      mkdirSync(join(scratch, "octocat-old", ".git"), { recursive: true });
 
       const second = startServer({ fixture, clone: cloneHarness() });
+      const restored = await connect(second.url);
       try {
         expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
         expect(existsSync(join(scratch, ".staging-leftover"))).toBe(false);
-        expect(existsSync(join(scratch, "foreign-repo"))).toBe(false);
+        expect(existsSync(join(scratch, ".staging-retain-leftover"))).toBe(false);
+        expect(existsSync(join(scratch, "octocat-old"))).toBe(false);
+        expect(treeBytes(join(scratch, "octocat-hello-world"))).toEqual(retained);
+        const state = stateOf(await restored.take((message) => message.type === "discoverState"));
+        expect(state.target).toMatchObject({ kind: "remote", repo: "Hello-World" });
       } finally {
+        restored.close();
         second.server.stop(true);
       }
     },
@@ -1064,118 +1380,7 @@ describe("discover remote target", () => {
   );
 
   test(
-    "falls back to the host target, drops the missing target, and reports it once",
-    async () => {
-      const fixture = createFixture("missing");
-      const clones = cloneHarness({ source: createSourceRepository("missing-source") });
-      const first = startServer({ fixture, clone: clones });
-      const client = await connect(first.url);
-      try {
-        await runRemote(client, "https://github.com/octocat/Hello-World");
-      } finally {
-        client.close();
-        first.server.stop(true);
-      }
-      rmSync(join(cloneDirectory(fixture, "octocat", "hello-world"), ".git"), {
-        recursive: true,
-        force: true,
-      });
-
-      const second = startServer({ fixture, clone: cloneHarness() });
-      const restored = await connect(second.url);
-      try {
-        const notice = restored.take((message) => message.type === "discoverError");
-        const message = String((await notice).message);
-        expect(message).toContain("missing");
-        expect(message).toContain("https://github.com/octocat/Hello-World");
-        const state = await discoverState(restored);
-        expect(state.target).toEqual({ kind: "host" });
-        expect(state.sheet).toBeNull();
-        expect(
-          restored.events.filter((event) => event.type === "discoverError"),
-        ).toHaveLength(1);
-      } finally {
-        restored.close();
-        second.server.stop(true);
-      }
-
-      // A target whose clone is gone is not durable: the next start has
-      // nothing to restore and nothing to report.
-      expect(persistedState(fixture).discoverTarget).toBeNull();
-      const records = readFileSync(journalFile(fixture.stateDir, resolve(fixture.root)), "utf8")
-        .split("\n")
-        .filter((line) => line.length > 0)
-        .map((line) => JSON.parse(line) as { kind: string; text: string });
-      expect(
-        records.some(
-          (record) =>
-            record.kind === "lifecycle" && record.text === "discover-remote-missing",
-        ),
-      ).toBe(true);
-      expect(
-        records.some(
-          (record) => record.kind === "server-error" && record.text.includes("missing"),
-        ),
-      ).toBe(false);
-      const third = startServer({ fixture, clone: cloneHarness() });
-      const again = await connect(third.url);
-      try {
-        const state = await discoverState(again);
-        expect(state.target).toEqual({ kind: "host" });
-        expect(again.events.filter((event) => event.type === "discoverError")).toHaveLength(0);
-      } finally {
-        again.close();
-        third.server.stop(true);
-      }
-    },
-    60_000,
-  );
-
-  test(
-    "a failed remote crawl keeps the clone's published artifacts and target",
-    async () => {
-      const fixture = createFixture("failed-crawl");
-      const clones = cloneHarness({ source: createSourceRepository("failed-crawl-source") });
-      const first = startServer({ fixture, clone: clones });
-      const client = await connect(first.url);
-      try {
-        await runRemote(client, "https://github.com/octocat/Hello-World");
-      } finally {
-        client.close();
-        first.server.stop(true);
-      }
-      const clone = cloneDirectory(fixture, "octocat", "hello-world");
-      const published = ompBytes(clone);
-
-      const second = startServer({
-        fixture,
-        clone: cloneHarness(),
-        stub: ["--discover", "--discover-invalid-sheet"],
-      });
-      const restored = await connect(second.url);
-      try {
-        const replay = restored.take((message) => message.type === "discoverState");
-        expect(stateOf(await replay).target).toMatchObject({ kind: "remote" });
-        const started = restored.waitNext((message) => message.type === "discoverStarted");
-        const failed = restored.waitNext((message) => message.type === "discoverError");
-        const stopped = restored.waitNext((message) => message.type === "discoverStopped");
-        restored.send({ type: "discoverProject" });
-        await started;
-        expect(String((await failed).message)).toContain("Discover failed");
-        expect((await stopped).completed).toBe(false);
-        expect(ompBytes(clone)).toEqual(published);
-        expect(existsSync(join(clone, ".omp", "discover", "staging"))).toBe(false);
-        expect((await discoverState(restored)).target).toMatchObject({ kind: "remote" });
-      } finally {
-        restored.close();
-        second.server.stop(true);
-      }
-    },
-    90_000,
-  );
-
-  test(
-    "interrupts a remote crawl on restart and never resumes its staging",
+    "interrupts a remote crawl on restart, removing its checkout and keeping the snapshot",
     async () => {
       const fixture = createFixture("interrupted");
       const clones = cloneHarness({ source: createSourceRepository("interrupted-source") });
@@ -1187,17 +1392,23 @@ describe("discover remote target", () => {
         client.close();
         first.server.stop(true);
       }
-      const clone = cloneDirectory(fixture, "octocat", "hello-world");
-      const published = ompBytes(clone);
+      const retained = retainedDirectory(fixture, "octocat", "hello-world");
+      const published = treeBytes(retained);
 
-      const running = startServer({ fixture, clone: cloneHarness(), stub: ["--discover", "--discover-no-exit"] });
+      const running = startServer({
+        fixture,
+        clone: cloneHarness({ source: createSourceRepository("interrupted-source-two") }),
+        stub: ["--discover", "--discover-no-exit"],
+      });
       const runningClient = await connect(running.url);
       try {
         const started = runningClient.waitNext((message) => message.type === "discoverStarted");
         runningClient.send({ type: "discoverProject" });
         await started;
         expect(persistedState(fixture).discover).not.toBeNull();
-        expect(existsSync(join(clone, ".omp", "discover", "staging"))).toBe(true);
+        expect(
+          scratchEntries(fixture).some((entry) => entry.startsWith(".staging-")),
+        ).toBe(true);
       } finally {
         runningClient.close();
         running.server.stop(true);
@@ -1212,14 +1423,11 @@ describe("discover remote target", () => {
         const state = await discoverState(restored);
         expect(state.interrupted).toBe(true);
         expect(state.active).toBe(false);
-        expect(state.target).toMatchObject({ kind: "remote" });
+        expect(state.target).toMatchObject({ kind: "remote", checkout: false });
         expect(state.sheet).not.toBeNull();
-        expect(ompBytes(clone)).toEqual(published);
-        expect(
-          readdirSync(join(clone, ".omp", "discover"), { withFileTypes: true })
-            .filter((entry) => entry.name === "staging")
-            .map((entry) => entry.name),
-        ).toEqual([]);
+        expect(treeBytes(retained)).toEqual(published);
+        expect(scratchEntries(fixture)).toEqual(["octocat-hello-world"]);
+        expectNoCheckout(fixture);
         expect(spawnCount(fixture.logPath)).toBe(spawnsBefore);
         expect(persistedState(fixture).discover).toBeNull();
       } finally {
@@ -1228,6 +1436,55 @@ describe("discover remote target", () => {
       }
     },
     120_000,
+  );
+
+  test(
+    "saves skills and glossary decisions into the retained copy without a clone",
+    async () => {
+      const fixture = createFixture("retained-edits");
+      const clones = cloneHarness({ source: createSourceRepository("retained-edits-source") });
+      const { server, url } = startServer({ fixture, clone: clones });
+      const client = await connect(url);
+      const hostOmp = ompBytes(fixture.root);
+      try {
+        const state = await runRemote(client, "https://github.com/octocat/Hello-World");
+        const retained = retainedDirectory(fixture, "octocat", "hello-world");
+        const skill = state.skills.find((entry) => entry.name === "discover-testing-strategy");
+        expect(skill).toBeDefined();
+        const live = String(skill?.live ?? skill?.baseline ?? "");
+        const edited = await discoverStateAndMutation(client, {
+          type: "saveDiscoverSkill",
+          name: "discover-testing-strategy",
+          text: `${live}\n- Retained edit.\n`,
+        });
+        expect(
+          readFileSync(join(retained, ".omp", "skills", "discover-testing-strategy", "SKILL.md"), "utf8"),
+        ).toBe(`${live}\n- Retained edit.\n`);
+        expect(edited.skills.find((entry) => entry.name === "discover-testing-strategy")?.state).toBe(
+          "edited",
+        );
+        expectNoCheckout(fixture);
+
+        const glossary = edited.glossaries[0] as Record<string, unknown>;
+        const concept = (glossary.concepts as Array<Record<string, unknown>>)[0] as Record<string, unknown>;
+        await discoverStateAndMutation(client, {
+          type: "rejectGlossaryTerm",
+          context: glossary.boundedContext,
+          id: concept.id,
+          reason: "The retained fixture rejected this term.",
+        });
+        const decisions = JSON.parse(
+          readFileSync(join(retained, ".omp", "discover", "decisions.json"), "utf8"),
+        ) as Array<Record<string, unknown>>;
+        expect(decisions).toHaveLength(1);
+        expect(decisions[0]).toMatchObject({ action: "reject" });
+        expect(ompBytes(fixture.root)).toEqual(hostOmp);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    90_000,
   );
 });
 
