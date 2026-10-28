@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Inbox from "lucide-svelte/icons/inbox";
   import type { ScoutIssueRow } from "../types";
 
   interface Props {
@@ -41,8 +42,15 @@
   <div class="panel__body panel__body--flush" data-testid="scout-issues">
     {#if rows.length === 0}
       <div class="scout-issues__empty" data-testid="scout-issues-empty">
-        <p class="scout-issues__empty-title">No issues filed yet</p>
-        <p class="muted">Auto Scout files scored findings here.</p>
+        <div class="scout-issues__empty-body">
+          <span class="scout-issues__empty-icon" aria-hidden="true">
+            <Inbox size={20} strokeWidth={1.5} />
+          </span>
+          <p class="scout-issues__empty-title">No issues filed yet</p>
+          <p class="scout-issues__empty-copy">
+            Auto Scout files significant findings here after each scan.
+          </p>
+        </div>
       </div>
     {:else}
       <div class="table-wrap">
@@ -100,20 +108,39 @@
 
 <style>
   .scout-issues__empty {
+    align-items: center;
     display: flex;
-    flex-direction: column;
     justify-content: center;
     min-height: 100%;
-    padding: 16px 12px;
+    padding: 24px 16px;
+    text-align: center;
+  }
+
+  .scout-issues__empty-body {
+    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-width: 360px;
+  }
+
+  .scout-issues__empty-icon {
+    color: var(--muted-foreground);
+    display: flex;
+    margin-bottom: 4px;
   }
 
   .scout-issues__empty-title {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
-    margin: 0 0 2px;
+    line-height: 1.3;
+    margin: 0;
   }
 
-  .scout-issues__empty p {
+  .scout-issues__empty-copy {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.45;
     margin: 0;
   }
 

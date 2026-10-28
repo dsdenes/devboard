@@ -441,6 +441,13 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   `warning-surface`; it carries no `running` or `needs answer` pill because the page header counts
   the fleet and the question text names the state. Grid rows stretch and the activity absorbs the
   slack, so cards in one row share a height.
+- **Filed issues empty state** (`.scout-issues__empty`) — the Auto Scout results panel with no
+  rows: one compact stack centered in the available panel area, never a full-width strip. A 20px
+  `muted-foreground` Lucide inbox mark (`aria-hidden`) sits above a 13px/600 `No issues filed yet`
+  and one 12px `muted-foreground` line stating that Auto Scout files significant findings after
+  each scan. The stack is capped at 360px, uses 24px 16px padding and a 4px rhythm, and adds no
+  frame, fill, shadow, or action; the page header keeps the only Start/Stop control and the panel
+  header keeps the count.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
   fill, 1px `border` on its right edge. The four `role="tab"` controls sit in a `role="tablist"`
   group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px

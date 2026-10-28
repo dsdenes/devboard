@@ -350,10 +350,13 @@ export class IssuesBridge {
           `${this.stateDir}`,
       };
     }
-    if (state === undefined || !state.enabled || state.lifecycle === "stopped") {
-      return { ok: false, message: "No issues worker is running for this checkout." };
-    }
+    // The live lock proves a worker exists even when its state file is absent,
+    // unreadable, or left by another harness version; Stop, pause, resume, and
+    // check must still reach it. Only an answer needs the state's agent list.
     if (command.type === "answer") {
+      if (state === undefined || !state.enabled || state.lifecycle === "stopped") {
+        return { ok: false, message: "No issues worker is running for this checkout." };
+      }
       if (typeof command.runId !== "string" || command.runId.length === 0) {
         return { ok: false, message: "An answer needs its run id." };
       }

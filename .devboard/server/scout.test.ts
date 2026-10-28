@@ -6,6 +6,7 @@ import { activityDelta } from "./activity";
 import { ScoutBridge } from "./scout";
 import { parseCommand } from "../issues/scout/control";
 import { acquireLock } from "../issues/lock";
+import { writeActivity } from "../issues/state";
 import {
   closingCommitFromComments,
   closingCommitFromTimeline,
@@ -45,6 +46,7 @@ import {
   writeSettings,
   writeState,
   type ScoutLimits,
+  type ScoutState,
 } from "../issues/scout/state";
 import {
   createdDirectories,
@@ -507,6 +509,82 @@ describe("state and settings", () => {
 });
 
 describe("bridge", () => {
+  test("a poll that extends the last line and adds a line delivers both", async () => {
+    const root = await repository();
+    const stateDir = join(root, ".devboard", ".tmp", "state");
+    const scan = createScanDirectory(root, new Date("2026-01-01T00:00:00Z"));
+    const state: ScoutState = {
+      version: 2,
+      repo: "acme/fixture",
+      root,
+      lifecycle: "idle",
+      enabled: true,
+      worker: null,
+      limits: { ...DEFAULT_LIMITS },
+      issues: [],
+      sync: { state: "stale", at: null, error: null },
+      scan: null,
+      newestScanId: scan.scanId,
+      nextAttemptAt: null,
+      lastError: null,
+      notice: null,
+      updatedAt: "2026-01-01T00:00:00Z",
+    };
+    writeState(statePath(stateDir, root), state);
+    writeActivity(scan.directory, ["a"]);
+    const events: unknown[] = [];
+    const bridge = new ScoutBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: (event) => events.push(event),
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+    });
+    try {
+      bridge.refresh();
+      writeActivity(scan.directory, ["ab", "c"]);
+      bridge.refresh();
+      const activity = events.filter(
+        (event) =>
+          typeof event === "object" &&
+          event !== null &&
+          "type" in event &&
+          event.type === "scoutActivity",
+      );
+      expect(activity).toEqual([
+        {
+          type: "scoutActivity",
+          scanId: scan.scanId,
+          replay: true,
+          entries: [{ text: "a", append: false }],
+        },
+        {
+          type: "scoutActivity",
+          scanId: scan.scanId,
+          entries: [
+            { text: "b", append: true },
+            { text: "c", append: false },
+          ],
+        },
+      ]);
+      bridge.refresh();
+      expect(
+        events.filter(
+          (event) =>
+            typeof event === "object" &&
+            event !== null &&
+            "type" in event &&
+            event.type === "scoutActivity",
+        ),
+      ).toHaveLength(2);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
   test("limits persist without a worker and the snapshot reports them", async () => {
     const root = await repository();
     const stateDir = join(root, ".devboard", ".tmp", "state");
@@ -777,5 +855,23 @@ describe("activity delta", () => {
       entries: [{ text: "b", append: false }],
     });
     expect(activityDelta(["a"], ["a"])).toEqual({ replay: false, entries: [] });
+  });
+
+  test("an extended last line and a new line in one poll are both emitted", () => {
+    expect(activityDelta(["a"], ["ab", "c"])).toEqual({
+      replay: false,
+      entries: [
+        { text: "b", append: true },
+        { text: "c", append: false },
+      ],
+    });
+    expect(activityDelta(["x", "a"], ["x", "abcd", "c", "d"])).toEqual({
+      replay: false,
+      entries: [
+        { text: "bcd", append: true },
+        { text: "c", append: false },
+        { text: "d", append: false },
+      ],
+    });
   });
 });
