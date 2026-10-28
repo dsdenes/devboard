@@ -95,12 +95,6 @@
       >
         <div class="issues-draft-detail__header">
           <div class="issues-draft-detail__identity">
-            <h2
-              class="issues-draft-detail__title"
-              title={issues.draft.heading || issues.draft.name}
-            >
-              {issues.draft.heading || issues.draft.name}
-            </h2>
             <span class="issues-draft-detail__path mono" title={issues.draft.path}>
               {issues.draft.name}
             </span>

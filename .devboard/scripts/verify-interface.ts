@@ -5358,7 +5358,6 @@ try {
     start: string;
     startCommand: string;
     stop: boolean;
-    title: string;
     pathLabel: string;
     proposal: string;
     facts: number;
@@ -5375,7 +5374,6 @@ try {
       start: document.querySelector('[data-testid="issues-draft-start"]') !== null ? "yes" : "",
       startCommand: start?.getAttribute("data-command") ?? "",
       stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
-      title: panel?.querySelector(".issues-draft-detail__title")?.textContent?.trim() ?? "",
       pathLabel: panel?.querySelector(".issues-draft-detail__path")?.textContent?.trim() ?? "",
       proposal: panel?.querySelector(".issues-draft-detail__prose")?.textContent ?? "",
       facts: panel?.querySelectorAll('[data-testid="issues-draft-context"] dt').length ?? 0,
@@ -5402,8 +5400,7 @@ try {
     detail,
   );
   check(
-    detail.title.length > 0 &&
-      detail.pathLabel.endsWith(".md") &&
+    detail.pathLabel.endsWith(".md") &&
       !detail.proposal.includes("## Captured UI context") &&
       !detail.proposal.includes("Unprocessed draft"),
     "the detail does not separate identity and proposal from the evidence",
@@ -5489,23 +5486,23 @@ try {
   const narrowDraft = await page.eval<{
     headerRight: number;
     actionsRight: number;
-    titleWidth: number;
+    pathWidth: number;
     bodyOverflow: number;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const header = panel?.querySelector(".issues-draft-detail__header");
     const actions = panel?.querySelector(".issues-draft-detail__actions");
-    const title = panel?.querySelector(".issues-draft-detail__title");
+    const path = panel?.querySelector(".issues-draft-detail__path");
     const body = panel?.querySelector(".issues-draft-detail__body");
     return {
       headerRight: header?.getBoundingClientRect().right ?? 0,
       actionsRight: actions?.getBoundingClientRect().right ?? 0,
-      titleWidth: title?.getBoundingClientRect().width ?? 0,
+      pathWidth: path?.getBoundingClientRect().width ?? 0,
       bodyOverflow: body === null ? 0 : body.scrollWidth - body.clientWidth,
     };
   })()`);
   check(
-    narrowDraft.titleWidth > 0 &&
+    narrowDraft.pathWidth > 0 &&
       narrowDraft.actionsRight <= narrowDraft.headerRight + 0.5 &&
       narrowDraft.bodyOverflow <= 1,
     "the draft detail header or body overflows at 1024×720",

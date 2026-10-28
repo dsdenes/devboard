@@ -1565,11 +1565,10 @@ directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each 
 `data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
 and its first Markdown heading. An empty directory shows `No drafts exist.`.
 
-Selecting one opens `data-testid="issues-draft-detail"`: a two-line header carries the draft's
-first heading and its file name, the state badge for this draft's run only (absent while the run
-is `idle`), `issues-draft-start` (`issues.draft.start`) and, while this draft runs,
-`issues-draft-stop` (`issues.draft.stop`). The body reads the proposal before the `## Captured
-UI context` marker, then the activity stream in
+Selecting one opens `data-testid="issues-draft-detail"`: the header carries the draft's file name,
+the state badge for this draft's run only (absent while the run is `idle`), `issues-draft-start`
+(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). The
+body reads the proposal before the `## Captured UI context` marker, then the activity stream in
 `issues-draft-activity` once a run exists, then `issues-draft-context`: the captured facts as a
 compact grid and the visible text and DOM excerpt behind a `Captured evidence` disclosure. A
 pending elaboration question (`issues-draft-question`) renders above the proposal, with
