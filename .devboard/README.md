@@ -1055,13 +1055,14 @@ control appears while `stale` is true and restarts the server from the installed
 dashboard serving the canonical source checkout reports `0.1.<commit-count>` on both sides, the
 version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder.
 
-A check that cannot reach the feed at all — an offline host, a missing `gh` executable, a DNS
-or proxy failure, a refused or reset connection, or a timeout — leaves the previous package and
-server intact, writes an `activity` record naming the skipped check, and retries with exponential
-backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for the operator, never an
-`update-error` finding. A check that reaches the feed and fails, a checksum mismatch, an
-authentication failure, or a failed npm install writes `update-error` and is retried the same
-way.
+A check that cannot use the feed — an offline host, a missing `gh` executable, a DNS or proxy
+failure, a refused or reset connection, a timeout, or an answer that is not a readable release
+description (a proxy page, a truncated body, an unexpected payload) — leaves the previous package
+and server intact, writes an `activity` record naming the skipped check, and retries with
+exponential backoff (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it is context for the operator,
+never an `update-error` finding. A check that reaches the feed and fails, a release without a
+tag, a checksum mismatch, an authentication failure, or a failed npm install writes `update-error`
+and is retried the same way.
 
 |Variable|Default|Purpose|
 |---|---|---|

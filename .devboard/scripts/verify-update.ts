@@ -217,6 +217,44 @@ try {
   assertEquals(installedVersion(ghPrefix), OLD, "the failed release check keeps the old package");
   assertTrue(processRunning(ghServer.pid), "the failed release check keeps the server running");
 
+  step("an unreadable release description is context, never an update-error");
+  // Two JSON objects instead of one release: the shape a newest-first listing
+  // or a stray tool wrapper prints. The check skips it and backs off.
+  const unreadable = await toolPath(root, {
+    gh: `printf '%s\\n' '{"tag":"v1.0.0"}' '{"tag":"v1.1.0"}'`,
+  });
+  const unreadableHost = await installFixture("unreadable", oldRelease);
+  const unreadablePrefix = join(unreadableHost, ".devboard");
+  await stopDashboard(unreadableHost);
+  const unreadableServer = await startInstalledDashboard(unreadableHost, {
+    DEVBOARD_UPDATE_INTERVAL_MS: "200",
+    PATH: unreadable,
+  });
+  servers.push(unreadableServer);
+  await waitFor(
+    () =>
+      readJournal(unreadablePrefix, unreadableHost).some(
+        (record) =>
+          record.kind === "activity" &&
+          record.text.startsWith(
+            "release check skipped: gh returned an unreadable release description",
+          ),
+      )
+        ? true
+        : undefined,
+    "the unreadable release description to be journaled as context",
+  );
+  assertTrue(
+    readJournal(unreadablePrefix, unreadableHost).every((record) => record.kind !== "update-error"),
+    "an unreadable release description is never an update-error",
+  );
+  assertEquals(
+    installedVersion(unreadablePrefix),
+    OLD,
+    "the skipped check keeps the old package",
+  );
+  assertTrue(processRunning(unreadableServer.pid), "the skipped check keeps the server running");
+
   console.log("verify:update: all checks passed");
 } finally {
   for (const server of servers) {
