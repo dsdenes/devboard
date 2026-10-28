@@ -22,7 +22,12 @@ import {
 import { analyzeEvidence } from "../watchdog/findings";
 import { acquireLock } from "../watchdog/lock";
 import { emptyLedger, loadLedger } from "../watchdog/ledger";
-import type { GhOutcome, GhRun } from "../watchdog/github";
+import {
+  commentIssue,
+  createIssue,
+  type GhOutcome,
+  type GhRun,
+} from "../watchdog/github";
 import {
   runCycle,
   type CycleOptions,
@@ -160,6 +165,11 @@ function cycleFor(
       discover: () => [instance],
       collect: () => ({ events: options.events, malformed: 0, unattributed: 0 }),
       gh: options.gh,
+      delivery: {
+        repository: "acme/fixture",
+        create: async (input) => createIssue(options.gh, "acme/fixture", input),
+        comment: async (url, input) => commentIssue(options.gh, url, input),
+      },
     },
   };
 }
@@ -664,7 +674,7 @@ describe("filing", () => {
         "issue",
         "create",
         "--repo",
-        "dsdenes/devboard",
+        "acme/fixture",
         "--title",
       ]);
       expect(call.argv.slice(5)).toEqual([expect.any(String), "--body-file", "-"]);

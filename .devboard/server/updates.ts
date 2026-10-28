@@ -79,7 +79,7 @@ export function startUpdater(options: UpdateOptions): Updater {
   const maxBackoffMs =
     options.maxBackoffMs ??
     positiveNumber(env.DEVBOARD_UPDATE_BACKOFF_MAX_MS, DEFAULT_MAX_BACKOFF_MS);
-  const source = options.source ?? releaseSource(env);
+  const source = options.source ?? releaseSource(env, options.stateDir);
   const fetchRelease = options.fetchRelease ?? (() => latestRelease(source));
   const install =
     options.install ??

@@ -7,9 +7,6 @@ import type { LedgerInstance } from "./ledger";
  * value, and nothing closes an issue.
  */
 
-/** The repository that receives every watchdog issue. */
-export const WATCHDOG_REPOSITORY = "dsdenes/devboard";
-
 /** GitHub's title limit for this watchdog; the line is truncated to fit. */
 export const TITLE_MAX = 80;
 /** Longest first stderr line kept as a failure reason. */
@@ -155,9 +152,10 @@ function printedUrl(outcome: GhOutcome): string | undefined {
     .find((line) => /^https?:\/\//.test(line));
 }
 
-/** Files one issue; a body can only fail through `gh`, never through the API. */
+/** Files one issue in `repository`; only `gh` can fail it. */
 export function createIssue(
   gh: GhRun,
+  repository: string,
   input: IssueInput,
 ): { ok: true; url: string } | { ok: false; reason: string } {
   const outcome = gh(
@@ -165,7 +163,7 @@ export function createIssue(
       "issue",
       "create",
       "--repo",
-      WATCHDOG_REPOSITORY,
+      repository,
       "--title",
       watchdogTitle(input.category, input.line),
       "--body-file",

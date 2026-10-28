@@ -809,7 +809,7 @@ describe("preflight", () => {
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.message).toContain("origin does not name a GitHub repository");
+    expect(result.message).toContain("origin does not name a supported repository");
   });
 
   test("a write permission is required, and a granted one passes", async () => {

@@ -16,6 +16,8 @@ import {
   type ScoutRelease,
 } from "./github";
 import { ghCommand } from "./preflight";
+import { originForge } from "../repository";
+import { giteaBaseUrl } from "../../lib/forge";
 import {
   HOUR_MS,
   SCAN_TIMEOUT_MS,
@@ -300,6 +302,7 @@ export class ScoutWorker {
         repoDir: this.repoDir,
         environment: this.environment,
         timeoutMs: this.readTimeoutMs,
+        ...this.forgeOptions(),
       });
     this.nextSyncAt = 0;
     this.publish();
@@ -897,6 +900,21 @@ export class ScoutWorker {
     return await Promise.race([work, aborted.promise]);
   }
 
+  /** The origin forge and Gitea address, so the client never assumes GitHub. */
+  private forgeOptions(): {
+    forge?: "github" | "gitlab" | "gitea";
+    baseUrl?: string;
+  } {
+    const remote = originForge(this.repoDir, this.environment);
+    if (remote === undefined) return {};
+    return {
+      forge: remote.forge,
+      ...(remote.forge === "gitea"
+        ? { baseUrl: giteaBaseUrl(remote, this.environment) }
+        : {}),
+    };
+  }
+
   /**
    * The GitHub client for a settle step. The periodic client is shared with
    * `refresh`, so only the settle path builds a bounded one.
@@ -908,6 +926,7 @@ export class ScoutWorker {
       repository: this.state.repo,
       repoDir: this.repoDir,
       environment: this.environment,
+      ...this.forgeOptions(),
       run: (argv, env) =>
         ghCommand(argv, env, {
           ...(settle === undefined

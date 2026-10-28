@@ -17,7 +17,8 @@ import {
   type ForgePrState,
   type ForgeTarget,
 } from "./forge-pr";
-import type { Exec } from "../lib/forge-auth.ts";
+import type { Exec, Forge } from "../lib/forge-auth.ts";
+import { giteaBaseUrl, parseForgeRemote } from "../lib/forge";
 import { journalKey, type Journal } from "./journal";
 
 /**
@@ -97,7 +98,7 @@ export interface FlowBlocker {
 }
 
 export interface FlowPr {
-  forge: "github" | "gitlab";
+  forge: Forge;
   number: number;
   url: string;
   state: "none" | "draft" | "live" | "merged" | "closed" | "error";
@@ -1832,7 +1833,7 @@ export class FlowController {
       const target = await this.#target();
       if (target === undefined) {
         session.prFailedTip = tip;
-        session.prError = "The origin remote does not name a GitHub or GitLab repository.";
+        session.prError = "The origin remote does not name a supported repository.";
         this.#persist();
         this.#error(session.prError);
         this.#publish();
@@ -1927,7 +1928,7 @@ export class FlowController {
     }
     const target = await this.#target();
     if (target === undefined) {
-      this.#error("The origin remote does not name a GitHub or GitLab repository.");
+      this.#error("The origin remote does not name a supported repository.");
       return;
     }
     try {
@@ -1971,7 +1972,7 @@ export class FlowController {
     }
     const target = await this.#target();
     if (target === undefined) {
-      this.#error("The origin remote does not name a GitHub or GitLab repository.");
+      this.#error("The origin remote does not name a supported repository.");
       return;
     }
 
@@ -2614,28 +2615,20 @@ export function parseStatusZ(
 }
 
 /** The forge named by an origin URL, reusing the tracker's classification. */
-export function classifyOrigin(remote: string): ForgeTarget | undefined {
-  const value = remote.trim();
-  if (value.length === 0) return undefined;
-  let host: string;
-  let path: string;
-  const scp = /^[^/@\s]+@([^:/\s]+):(.+)$/.exec(value);
-  if (scp !== null) {
-    host = scp[1] ?? "";
-    path = scp[2] ?? "";
-  } else {
-    const withoutScheme = value.includes("://") ? value.slice(value.indexOf("://") + 3) : value;
-    const slash = withoutScheme.indexOf("/");
-    if (slash < 0) return undefined;
-    const authority = withoutScheme.slice(0, slash);
-    path = withoutScheme.slice(slash + 1);
-    host = authority.slice(authority.lastIndexOf("@") + 1).replace(/:\d+$/, "");
-  }
-  const project = path.replace(/^\/+/, "").replace(/\.git$/i, "").replace(/\/+$/, "");
-  if (host.length === 0 || project.length === 0) return undefined;
-  if (host === "github.com") return { forge: "github", host, project };
-  if (host.includes("gitlab")) return { forge: "gitlab", host, project };
-  return undefined;
+export function classifyOrigin(
+  remote: string,
+  environment: Record<string, string | undefined> = process.env,
+): ForgeTarget | undefined {
+  const parsed = parseForgeRemote(remote, environment);
+  if (parsed === undefined) return undefined;
+  return {
+    forge: parsed.forge,
+    host: parsed.host,
+    project: parsed.project,
+    ...(parsed.forge === "gitea"
+      ? { baseUrl: giteaBaseUrl(parsed, environment) }
+      : {}),
+  };
 }
 
 export function prTitle(goal: string): string {

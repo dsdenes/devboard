@@ -200,35 +200,45 @@ try {
   assertEquals(installedVersion(brokenPrefix), OLD, "the failed install keeps the old package");
   assertTrue(processRunning(brokenServer.pid), "the failed install keeps the server running");
 
-  step("authenticated release access is required");
-  const unauthenticated = await toolPath(root, { gh: "echo 'not logged in' >&2; exit 1" });
-  const ghHost = await installFixture("gh", oldRelease);
-  const ghPrefix = join(ghHost, ".devboard");
-  await stopDashboard(ghHost);
-  const ghServer = await startInstalledDashboard(ghHost, {
-    DEVBOARD_UPDATE_INTERVAL_MS: "200",
-    PATH: unauthenticated,
+  step("an HTTP error from the release feed is an update-error");
+  const unauthorized = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response(JSON.stringify({ message: "token required" }), { status: 401 });
+    },
   });
-  servers.push(ghServer);
+  const unauthorizedHost = await installFixture("feed-error", oldRelease);
+  const unauthorizedPrefix = join(unauthorizedHost, ".devboard");
+  await stopDashboard(unauthorizedHost);
+  const unauthorizedServer = await startInstalledDashboard(unauthorizedHost, {
+    DEVBOARD_RELEASE_URL: `http://127.0.0.1:${unauthorized.port}`,
+    DEVBOARD_UPDATE_INTERVAL_MS: "200",
+  });
+  servers.push(unauthorizedServer);
   await waitFor(
-    () => readJournal(ghPrefix, ghHost).find((record) => record.kind === "update-error"),
-    "the unauthenticated release check to be journaled",
+    () =>
+      readJournal(unauthorizedPrefix, unauthorizedHost).find(
+        (record) => record.kind === "update-error",
+      ),
+    "the refused feed to be journaled",
   );
-  assertEquals(installedVersion(ghPrefix), OLD, "the failed release check keeps the old package");
-  assertTrue(processRunning(ghServer.pid), "the failed release check keeps the server running");
+  assertEquals(installedVersion(unauthorizedPrefix), OLD, "the refused feed keeps the old package");
+  assertTrue(processRunning(unauthorizedServer.pid), "the refused feed keeps the server running");
+  unauthorized.stop(true);
 
   step("an unreadable release description is context, never an update-error");
-  // Two JSON objects instead of one release: the shape a newest-first listing
-  // or a stray tool wrapper prints. The check skips it and backs off.
-  const unreadable = await toolPath(root, {
-    gh: `printf '%s\\n' '{"tag":"v1.0.0"}' '{"tag":"v1.1.0"}'`,
+  const unreadableFeed = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response('{"tag":"v1.0.0"}\n{"tag":"v1.1.0"}\n');
+    },
   });
   const unreadableHost = await installFixture("unreadable", oldRelease);
   const unreadablePrefix = join(unreadableHost, ".devboard");
   await stopDashboard(unreadableHost);
   const unreadableServer = await startInstalledDashboard(unreadableHost, {
+    DEVBOARD_RELEASE_URL: `http://127.0.0.1:${unreadableFeed.port}`,
     DEVBOARD_UPDATE_INTERVAL_MS: "200",
-    PATH: unreadable,
   });
   servers.push(unreadableServer);
   await waitFor(
@@ -237,7 +247,7 @@ try {
         (record) =>
           record.kind === "activity" &&
           record.text.startsWith(
-            "release check skipped: gh returned an unreadable release description",
+            "release check skipped: the release feed returned an unreadable description",
           ),
       )
         ? true
@@ -254,6 +264,7 @@ try {
     "the skipped check keeps the old package",
   );
   assertTrue(processRunning(unreadableServer.pid), "the skipped check keeps the server running");
+  unreadableFeed.stop(true);
 
   console.log("verify:update: all checks passed");
 } finally {

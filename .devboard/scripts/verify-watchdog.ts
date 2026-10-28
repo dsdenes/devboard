@@ -378,6 +378,7 @@ try {
   );
 
   const host = await makeHost(root, "host");
+  run("git", ["-C", host.directory, "remote", "add", "origin", "https://github.com/acme/fixture.git"]);
   const stateDir = join(root, "state");
   const watchdogDir = join(stateDir, "watchdog");
   await mkdir(watchdogDir, { recursive: true });

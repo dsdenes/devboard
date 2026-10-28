@@ -206,9 +206,11 @@ failed requests, and overflow. It writes screenshots under `.devboard/.tmp/inter
 
 ## Install
 
-The harness ships as the private `@dsdenes/devboard-harness` GitHub Release. The public npmjs
-package `@dsdenes/devboard` is a launcher: it resolves the newest release, installs it through
-npm, copies the wrapper files, and runs diagnostics. It contains no harness code.
+The harness ships as the private `@dsdenes/devboard-harness` release on the canonical Gitea
+instance at `http://localhost:3001`. The public npmjs package `@dsdenes/devboard` is a launcher:
+it resolves the newest release from Gitea's public API, installs it through npm, copies the
+wrapper files, and runs diagnostics. It contains no harness code, needs no token to read the
+public release, and never spawns `gh`. GitHub carries only a push mirror of this repository.
 
 ```bash
 npx @dsdenes/devboard install    # install or refresh this host
@@ -1035,13 +1037,14 @@ from the repository root before and after; the two hashes match.
 
 ## Publish a change
 
-Merging into `main` and pushing triggers `.github/workflows/devboard-release.yml`, which runs on
-the repository's self-hosted runner — never a GitHub-hosted one, and never a fallback — and
-builds the client, runs the harness suite and typecheck, packs `dist/`, `server/`, `templates/`,
-the prompts and omp wrappers into the private harness tarball, publishes the launcher version to
-npmjs, and creates the GitHub Release `v<version>` with the tarball and its `.sha256`. The
-version is `0.1.<commit-count>` over the full history; a rerun on the same commit leaves the
-existing npm version and release assets untouched.
+Merging into `main` and pushing to the canonical Gitea remote triggers
+`.gitea/workflows/devboard-release.yml`, which runs on the repository's registered Gitea
+`act_runner` — never a hosted runner, and never a fallback — and builds the client, runs the
+harness suite and typecheck, packs `dist/`, `server/`, `templates/`, the prompts and omp wrappers
+into the private harness tarball, publishes the launcher version to npmjs, and creates the Gitea
+release `v<version>` with the tarball and its `.sha256`. The version is `0.1.<commit-count>` over
+the full history; a rerun on the same commit leaves the existing npm version and release assets
+untouched.
 
 After the push, verify from the integration checkout:
 
@@ -1053,10 +1056,11 @@ bun run publish
 `bun run publish` refuses a worktree, a branch other than `main`, or a checkout ahead of or
 diverged from its canonical remote; fetches and fast-forwards `main` without discarding
 uncommitted work; installs dependencies and rebuilds `dist/`; waits for the release workflow of
-`HEAD`; verifies the GitHub Release assets and `npm view @dsdenes/devboard@<version> version`;
-and reports every running dashboard's running and installed versions. It never restarts a
-dashboard and never writes into a host. `--wait-timeout N` bounds the workflow and propagation
-wait (default 1800 seconds).
+`HEAD`; verifies the Gitea release assets and `npm view @dsdenes/devboard@<version> version`;
+pushes the `github` mirror remote and proves its `main` names the published commit; and reports
+every running dashboard's running and installed version. It never restarts a dashboard and never
+writes into a host. `--wait-timeout N` bounds the workflow and propagation wait (default 1800
+seconds).
 
 Installed dashboards update themselves: each checks the newest release at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), verifies the `.sha256`, installs the
@@ -1068,7 +1072,7 @@ control appears while `stale` is true and restarts the server from the installed
 dashboard serving the canonical source checkout reports `0.1.<commit-count>` on both sides, the
 version its `main` commit releases as, rather than the checked-in `0.1.0` placeholder.
 
-A check that cannot use the feed — an offline host, a missing `gh` executable, a DNS or proxy
+A check that cannot use the feed — an offline host, an unreachable Gitea API, a DNS or proxy
 failure, a refused or reset connection, a timeout, or an answer that is not a readable release
 description (a proxy page, a truncated body, an unexpected payload) — leaves the previous package
 and server intact, writes an `activity` record naming the skipped check, and retries with
@@ -1089,16 +1093,18 @@ and is retried the same way.
 |`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`.|
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
-|`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads GitHub Releases through `gh`.|
+|`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads the newest Gitea release over the public HTTP API.|
+|`DEVBOARD_GITEA_URL` / `GITEA_URL`|unset|Gitea HTTP origin; an HTTP(S) `origin` remote supplies it when unset.|
+|`GITEA_TOKEN`|unset|Gitea credential for issue, PR, scout, and watchdog writes; public reads need none.|
 
 ## Self-hosted runner
 
-The release workflow's only job runs on a self-hosted runner registered to one machine, selected
-by what that runner advertises: `self-hosted`, `linux`, and `x64` are automatic, and the job also
-requires the extra `devboard` label. A machine that lacks the label never picks up the job, and
-the job never falls back to a GitHub-hosted runner. The registration below is a one-time operator
-procedure; substitute the repository (`<owner>/<repo>`), the dedicated account (`<user>`), its
-home directory (`<home>`), and the runner name (`<runner-name>`) everywhere they appear.
+The release workflow's only job runs on an `act_runner` registered to one machine and selected by
+the `host` label the runner advertises. A machine that lacks the label never picks up the job, and
+the job never falls back to a hosted runner. The registration is a one-time operator procedure
+against the canonical Gitea instance at `http://localhost:3001`; substitute the repository
+(`<owner>/<repo>`), the dedicated account (`<user>`), its home directory (`<home>`), and the
+runner name (`<runner-name>`) everywhere they appear.
 
 The account is separate from every human account and holds no group that grants privilege — not
 `sudo`, `docker`, or `adm` — because the runner executes repository code and every secret the

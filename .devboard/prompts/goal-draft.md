@@ -30,8 +30,9 @@ blocker is reported.
   file in the harness repository (`dsdenes/devboard`) unless that repository is this checkout's
   `origin`.
 - Every tracker command goes through the harness forge-auth wrapper:
-  `bun <REPO_DIR>/.devboard/scripts/forge-auth.ts exec --host <host> --project <owner/repo> --forge github --required write -- <gh args>`.
-  It selects the authenticated account with write access; never call `gh` directly.
+  `bun <REPO_DIR>/.devboard/scripts/forge-auth.ts exec --host <host> --project <owner/repo> --required write -- <gh|glab args>`.
+  It selects the authenticated account with write access; never call `gh` directly. On Gitea,
+  resolve the identity with `check` and use the API with `GITEA_TOKEN`.
 
 ## Phase 1 — Research before questions
 
@@ -105,17 +106,19 @@ Write the file once, complete. Do not write drafts of the spec elsewhere.
 
 ## Phase 4 — File the issue
 
-1. Determine the host `origin` host and `owner/repo`. A non-GitHub origin is a blocker; report it
-   and keep the draft.
-2. Ensure the exact label `goal` exists in that repository. Check with the wrapper:
-   `... -- gh label list --search goal --json name`. When no label named `goal` exists, create it
-   with `... -- gh label create goal --description "Proposed goal from a devboard draft"`.
-   Creating a label that already exists is a failure; re-read the list and continue only when the
-   exact label is present.
+1. Determine the host `origin` and `owner/repo`. A GitLab origin is a blocker; report it and keep
+   the draft. GitHub and Gitea are supported.
+2. Ensure the exact label `goal` exists in that repository. On GitHub or GitLab, check with the
+   wrapper (`... -- gh label list --search goal --json name`) and create it when absent
+   (`... -- gh label create goal --description "Proposed goal from a devboard draft"`). On Gitea,
+   list `GET /api/v1/repos/<owner/repo>/labels` and create with `POST` when absent. Creating a
+   label that already exists is a failure; re-read the list and continue only when the exact
+   label is present.
 3. Compose a one-line title from the objective: concise, at most 200 characters, no Markdown
    heading marker. The title is a summary, never the whole spec.
 4. Create the issue with the spec file as the body, verbatim:
-   `... -- gh issue create --title <title> --body-file <REPO_DIR>/.devboard/goals/<slug>.md --label goal`.
+   `... -- gh issue create --title <title> --body-file <REPO_DIR>/.devboard/goals/<slug>.md --label goal`
+   on GitHub/GitLab, or `POST /api/v1/repos/<owner/repo>/issues` with the file's bytes on Gitea.
    Never retype, summarize, reflow, or reformat the body. The file's bytes are the issue body.
 5. Parse the issue URL and number from the command output.
 
@@ -123,7 +126,8 @@ Write the file once, complete. Do not write drafts of the spec elsewhere.
 
 Read the created issue back through the wrapper:
 
-`... -- gh issue view <number> --json number,url,labels,body`
+`... -- gh issue view <number> --json number,url,labels,body`, or the equivalent Gitea
+`GET /api/v1/repos/<owner/repo>/issues/<number>`.
 
 The run may delete the draft (and only the draft) when both checks pass:
 

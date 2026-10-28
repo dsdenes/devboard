@@ -35,7 +35,18 @@ export type Exec = (
   options: ExecOptions,
 ) => Promise<ExecResult>;
 
-export type Forge = "github" | "gitlab";
+import {
+  configuredGiteaUrl,
+  GITEA_TOKEN_KEYS,
+  type Forge as ForgeName,
+} from "./forge";
+import {
+  giteaRepository,
+  giteaUser,
+  type FetchLike,
+} from "./gitea";
+
+export type Forge = ForgeName;
 export type RequiredAccess = "read" | "write";
 export type Permission = "admin" | "maintain" | "push" | "triage" | "pull" | "none";
 
@@ -51,6 +62,8 @@ export interface ResolvedAuth {
   token?: string;
   /** Where the credential came from, for diagnostics. Never a token value. */
   source: string;
+  /** Gitea HTTP origin, when the forge is Gitea. */
+  baseUrl?: string;
   active: boolean;
   permission: Permission;
   canWrite: boolean;
@@ -76,6 +89,10 @@ export interface ResolveOptions {
   deadline?: number;
   /** Aborting kills the in-flight probe. */
   signal?: AbortSignal;
+  /** Gitea HTTP origin; defaults to the environment or the origin remote. */
+  baseUrl?: string;
+  /** Injectable HTTP transport for the Gitea API. */
+  giteaFetch?: FetchLike;
 }
 
 const GITHUB_TOKEN_KEYS = [
@@ -91,7 +108,11 @@ const GITLAB_TOKEN_KEYS = [
   "OAUTH_TOKEN",
 ] as const;
 
-const TOKEN_KEYS = [...GITHUB_TOKEN_KEYS, ...GITLAB_TOKEN_KEYS] as const;
+const TOKEN_KEYS = [
+  ...GITHUB_TOKEN_KEYS,
+  ...GITLAB_TOKEN_KEYS,
+  ...GITEA_TOKEN_KEYS,
+] as const;
 
 const CLI_ENV = {
   GH_PROMPT_DISABLED: "1",
@@ -141,7 +162,12 @@ function stringEnvironment(
 
 function withoutTokens(base: Record<string, string>, forge: Forge): Record<string, string> {
   const environment = { ...base };
-  const keys = forge === "github" ? GITHUB_TOKEN_KEYS : GITLAB_TOKEN_KEYS;
+  const keys =
+    forge === "github"
+      ? GITHUB_TOKEN_KEYS
+      : forge === "gitlab"
+        ? GITLAB_TOKEN_KEYS
+        : GITEA_TOKEN_KEYS;
   for (const key of keys) delete environment[key];
   return environment;
 }
@@ -734,6 +760,109 @@ async function resolveGitlab(
   );
 }
 
+function giteaPermission(value: unknown): Permission {
+  if (!isObject(value)) return "none";
+  if (value.admin === true) return "admin";
+  if (value.push === true) return "push";
+  if (value.pull === true) return "pull";
+  return "none";
+}
+
+function giteaFailure(message: string): AuthFailure {
+  return { error: message };
+}
+
+/**
+ * Gitea is resolved through its public API: an anonymous read proves a public
+ * repository, and a token proves the account, its repository access, and its
+ * write permission. No CLI is required.
+ */
+async function resolveGitea(
+  options: ResolveOptions,
+  base: Record<string, string>,
+): Promise<AuthOutcome> {
+  const required = options.required ?? "read";
+  const baseUrl = (
+    options.baseUrl ??
+    configuredGiteaUrl(base) ??
+    ""
+  ).replace(/\/+$/, "");
+  if (baseUrl.length === 0) {
+    return giteaFailure(
+      `no Gitea address is configured for ${options.host}; set DEVBOARD_GITEA_URL`,
+    );
+  }
+  const token =
+    (options.env?.GITEA_TOKEN ?? options.env?.DEVBOARD_GITEA_TOKEN ?? "").trim();
+  const target = {
+    baseUrl,
+    project: options.project,
+    ...(token.length === 0 ? {} : { token }),
+  };
+  const fetchImpl = options.giteaFetch ?? fetch;
+
+  try {
+    const repository = await giteaRepository(target, fetchImpl);
+    const permission = giteaPermission(repository.permissions);
+    if (token.length === 0) {
+      if (permission === "none") {
+        return giteaFailure(
+          `no Gitea credential is configured for ${options.project} on ${baseUrl}, ` +
+            "and the repository is not public",
+        );
+      }
+      if (required === "write") {
+        return giteaFailure(
+          `no Gitea credential is configured for ${options.project} on ${baseUrl}; ` +
+            "writing needs GITEA_TOKEN",
+        );
+      }
+      return {
+        forge: "gitea",
+        host: options.host,
+        project: options.project,
+        login: "anonymous",
+        source: "public repository",
+        active: true,
+        permission,
+        canWrite: false,
+        baseUrl,
+      };
+    }
+    const login = await giteaUser(target, fetchImpl);
+    if (login.length === 0) {
+      return giteaFailure(`the Gitea token returned no account for ${baseUrl}`);
+    }
+    if (permission === "none") {
+      return giteaFailure(
+        `the Gitea account ${login} has no access to ${options.project} on ${baseUrl}`,
+      );
+    }
+    if (required === "write" && permission === "pull") {
+      return giteaFailure(
+        `the Gitea account ${login} cannot write to ${options.project} on ${baseUrl}`,
+      );
+    }
+    return {
+      forge: "gitea",
+      host: options.host,
+      project: options.project,
+      login,
+      token,
+      source: "GITEA_TOKEN",
+      active: true,
+      permission,
+      canWrite: permission !== "pull",
+      baseUrl,
+    };
+  } catch (error) {
+    return giteaFailure(
+      `could not resolve Gitea access for ${options.project} on ${baseUrl}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+}
+
 /**
  * Resolve the one credential the lifecycle should use for a project.
  *
@@ -747,9 +876,9 @@ export async function resolveForgeAuth(
   options: ResolveOptions,
 ): Promise<AuthOutcome> {
   const base = stringEnvironment(options.env);
-  return options.forge === "github"
-    ? resolveGithub(exec, options, base)
-    : resolveGitlab(exec, options, base);
+  if (options.forge === "github") return resolveGithub(exec, options, base);
+  if (options.forge === "gitlab") return resolveGitlab(exec, options, base);
+  return resolveGitea(options, base);
 }
 
 export function isAuthFailure(value: AuthOutcome): value is AuthFailure {
@@ -778,12 +907,20 @@ export function authEnvironment(
       environment.GH_TOKEN = auth.token;
     }
     environment.GH_HOST = auth.host;
-  } else {
+  } else if (auth.forge === "gitlab") {
     for (const key of GITLAB_TOKEN_KEYS) delete environment[key];
     if (auth.token !== undefined && auth.token.length > 0) {
       environment.GITLAB_TOKEN = auth.token;
     }
     environment.GITLAB_HOST = auth.host;
+  } else {
+    for (const key of GITEA_TOKEN_KEYS) delete environment[key];
+    if (auth.token !== undefined && auth.token.length > 0) {
+      environment.GITEA_TOKEN = auth.token;
+    }
+    if (auth.baseUrl !== undefined && auth.baseUrl.length > 0) {
+      environment.DEVBOARD_GITEA_URL = auth.baseUrl;
+    }
   }
   return { ...environment, ...CLI_ENV };
 }
@@ -795,13 +932,19 @@ export function authEnvironment(
  */
 export function applyAuthToProcess(auth: ResolvedAuth): void {
   const environment = authEnvironment(auth, process.env);
-  for (const key of [...TOKEN_KEYS, "GH_HOST", "GITLAB_HOST"] as const) {
+  for (const key of [
+    ...TOKEN_KEYS,
+    "GH_HOST",
+    "GITLAB_HOST",
+    "DEVBOARD_GITEA_URL",
+  ] as const) {
     delete process.env[key];
   }
   for (const key of [
     ...TOKEN_KEYS,
     "GH_HOST",
     "GITLAB_HOST",
+    "DEVBOARD_GITEA_URL",
     ...Object.keys(CLI_ENV),
   ] as const) {
     const value = environment[key];

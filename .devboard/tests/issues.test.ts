@@ -955,7 +955,9 @@ describe("repository lock", () => {
 });
 
 describe("preflight", () => {
-  async function checkoutWithTools(): Promise<{
+  async function checkoutWithTools(
+    origin = "https://github.com/acme/fixture.git",
+  ): Promise<{
     root: string;
     bin: string;
     home: string;
@@ -970,7 +972,7 @@ describe("preflight", () => {
     await mkdir(home, { recursive: true });
     Bun.spawnSync({ cmd: ["git", "init", "-q", root] });
     Bun.spawnSync({
-      cmd: ["git", "-C", root, "remote", "add", "origin", "https://github.com/acme/fixture.git"],
+      cmd: ["git", "-C", root, "remote", "add", "origin", origin],
     });
     for (const name of ["gh", "omp"]) {
       writeFileSync(join(bin, name), "#!/bin/sh\nexit 0\n");
@@ -1039,6 +1041,32 @@ describe("preflight", () => {
       stateDir: join(root, "state"),
       environment,
       run: () => ({ code: 0, stdout: "true", stderr: "" }),
+    });
+    expect(result).toEqual({ ok: true, repository: "acme/fixture" });
+  });
+
+  test("accepts a Gitea origin with a write-capable token", async () => {
+    const { root, home, environment } = await checkoutWithTools(
+      "ssh://git@localhost:2223/acme/fixture.git",
+    );
+    await mkdir(join(home, ".omp", "agent", "commands"), { recursive: true });
+    await mkdir(join(home, ".omp", "extensions"), { recursive: true });
+    writeFileSync(join(home, ".omp", "agent", "commands", "implement-issue.md"), "# command\n");
+    writeFileSync(join(home, ".omp", "extensions", "implement-goal-issue.ts"), "export {};\n");
+
+    const result = await preflightIssues({
+      repoDir: root,
+      stateDir: join(root, "state"),
+      environment: {
+        ...environment,
+        DEVBOARD_GITEA_URL: "http://gitea.test",
+        GITEA_TOKEN: "gitea-token",
+      },
+      giteaFetch: async () =>
+        new Response(
+          JSON.stringify({ permissions: { push: true, pull: true } }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
     });
     expect(result).toEqual({ ok: true, repository: "acme/fixture" });
   });

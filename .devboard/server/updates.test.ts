@@ -2,6 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
+import { createServer } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import {
   checksumName,
   installRelease,
@@ -18,7 +20,6 @@ import {
 } from "./updates";
 
 const harnessRoot = resolve(import.meta.dir, "..");
-const HANG_GH = join(import.meta.dir, "fixtures", "hang-download.ts");
 const testRoot = join(harnessRoot, ".tmp");
 const temporaryDirectories: string[] = [];
 
@@ -183,9 +184,13 @@ describe("startUpdater", () => {
   test("journals a stalled download as an update-error and reschedules the check", async () => {
     const prefix = await installedPrefix("0.1.0");
     const stateDir = await temporaryDirectory();
-    const pidFile = join(stateDir, "gh.pid");
-    const previous = process.env.STUB_GH_PID_FILE;
-    process.env.STUB_GH_PID_FILE = pidFile;
+    const sockets = new Set<Socket>();
+    const stall = createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
+    await new Promise<void>((settle) => stall.listen(0, "127.0.0.1", () => settle()));
+    const baseUrl = `http://127.0.0.1:${(stall.address() as AddressInfo).port}`;
     const { journal, records } = journalRecorder();
     const manual = manualSchedule();
     const updater = startUpdater({
@@ -200,18 +205,25 @@ describe("startUpdater", () => {
         version: "0.1.2",
         tag: "v0.1.2",
         assets: [
-          { name: tarballName("0.1.2"), id: 11 },
-          { name: checksumName("0.1.2"), id: 12 },
+          {
+            name: tarballName("0.1.2"),
+            id: 11,
+            browser_download_url: `${baseUrl}/stall/${tarballName("0.1.2")}`,
+          },
+          {
+            name: checksumName("0.1.2"),
+            id: 12,
+            browser_download_url: `${baseUrl}/stall/${checksumName("0.1.2")}`,
+          },
         ],
       }),
       install: (info) =>
         installRelease({
-          source: { kind: "gh", repo: "dsdenes/devboard" },
+          source: { kind: "gitea", baseUrl, repo: "acme/fixture" },
           release: info,
           prefix,
           stateDir,
           downloadTimeoutMs: 500,
-          ghCommand: [process.execPath, HANG_GH],
         }),
     });
     try {
@@ -219,7 +231,7 @@ describe("startUpdater", () => {
       expect(records).toEqual([
         [
           "update-error",
-          "could not install 0.1.2: gh asset download timed out after 500 ms: " +
+          "could not install 0.1.2: release asset download timed out after 500 ms: " +
             "devboard-harness-0.1.2.tgz",
         ],
       ]);
@@ -228,8 +240,8 @@ describe("startUpdater", () => {
       expect(manual.delays).toEqual([0, 2000]);
     } finally {
       updater.stop();
-      if (previous === undefined) delete process.env.STUB_GH_PID_FILE;
-      else process.env.STUB_GH_PID_FILE = previous;
+      for (const socket of sockets) socket.destroy();
+      stall.close();
     }
   }, 20_000);
 

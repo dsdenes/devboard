@@ -133,16 +133,15 @@ pull request, and the remainder goes to Non-goals.
    port; the hostname decides the forge:
    - `github.com` → GitHub, CLI `gh`;
    - a hostname containing `gitlab` → GitLab, CLI `glab`;
-   - any other hostname → a self-hosted instance of one of the two: the wrapper in step 4
-     decides which forge CLI is authenticated for that exact hostname. Neither configured, both
-     configured, or the forge cannot be told apart → halt.
+   - any other hostname → Gitea: the wrapper in step 4 resolves the public API or a
+     `GITEA_TOKEN`, with the HTTP origin in `DEVBOARD_GITEA_URL`. No forge is reachable → halt.
 3. Derive the project path from the remote: strip a trailing `.git` and any leading `/`, keep the
    full namespace — `owner/repo` on GitHub, `group/subgroup/project` on GitLab.
 4. Resolve the identity against that exact project, from the host repository root:
 
    ```sh
    bun <host>/.devboard/scripts/forge-auth.ts check \
-     --host <host> --project <project> --forge <github|gitlab> --required write --cwd <host>
+     --host <host> --project <project> --forge <github|gitlab|gitea> --required write --cwd <host>
    ```
 
    The wrapper inspects every authenticated account for the host, tests each token against this
@@ -153,8 +152,8 @@ pull request, and the remainder goes to Non-goals.
    Exit non-zero → halt, quoting the wrapper's message. Never switch the active account by hand,
    never retry another login, and never proceed with a read-only account: every later write
    would be refused.
-5. Every later `gh` or `glab` call in this run MUST run through the same selection. Write
-   `<auth>` for:
+5. Every later `gh` or `glab` call in this run MUST run through the same selection. On Gitea,
+   use the API with `GITEA_TOKEN`, which the `check` output names. Write `<auth>` for:
 
    ```sh
    bun <host>/.devboard/scripts/forge-auth.ts exec \

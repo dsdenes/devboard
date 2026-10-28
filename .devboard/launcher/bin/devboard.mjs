@@ -33,6 +33,8 @@ import {
 } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -73,7 +75,14 @@ function ownVersion() {
 
 function redact(text) {
   let value = String(text ?? "");
-  for (const name of ["NPM_TOKEN", "NODE_AUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]) {
+  for (const name of [
+    "NPM_TOKEN",
+    "NODE_AUTH_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITEA_TOKEN",
+    "DEVBOARD_GITEA_TOKEN",
+  ]) {
     const secret = process.env[name];
     if (secret !== undefined && secret.length >= 8) value = value.split(secret).join("<redacted>");
   }
@@ -277,11 +286,25 @@ async function waitForHttp(port, timeoutMs = START_TIMEOUT_MS) {
   return false;
 }
 
-function releaseSourceFromEnv() {
+function configuredReleaseUrl() {
+  for (const name of ["DEVBOARD_RELEASE_URL", "DEVBOARD_GITEA_URL", "GITEA_URL"]) {
+    const value = process.env[name];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim().replace(/\/+$/, "");
+    }
+  }
+  return undefined;
+}
+
+function releaseSourceFromEnv(prefix) {
   if (process.env.DEVBOARD_RELEASE_DIR !== undefined && process.env.DEVBOARD_RELEASE_DIR.length > 0) {
     return { kind: "dir", directory: resolve(process.env.DEVBOARD_RELEASE_DIR) };
   }
-  return { kind: "gh", repo: RELEASE_REPO };
+  const persisted = prefix === undefined ? {} : readInstallState(prefix).release ?? {};
+  const baseUrl = configuredReleaseUrl() ?? persisted.url ?? "";
+  const repo = process.env.DEVBOARD_RELEASE_REPO ?? persisted.repo ?? RELEASE_REPO;
+  const token = process.env.GITEA_TOKEN ?? process.env.DEVBOARD_GITEA_TOKEN;
+  return { kind: "gitea", baseUrl, repo, ...(token === undefined ? {} : { token }) };
 }
 
 function tarballName(version) {
@@ -311,7 +334,7 @@ function versionFromTarball(name) {
 
 async function latestRelease(source) {
   if (source.kind === "dir") return directoryRelease(source.directory);
-  return githubRelease(source.repo);
+  return giteaRelease(source);
 }
 
 async function directoryRelease(directory) {
@@ -340,13 +363,40 @@ async function directoryRelease(directory) {
   };
 }
 
-function githubRelease(repo) {
-  const parsed = JSON.parse(mustRun("gh", ["api", `repos/${repo}/releases/latest`], "gh release"));
+function apiPath(project, suffix) {
+  return project.split("/").map(encodeURIComponent).join("/") + suffix;
+}
+
+function apiHeaders(source, accept) {
+  return {
+    Accept: accept,
+    ...(typeof source.token === "string" && source.token.length > 0
+      ? { Authorization: `token ${source.token}` }
+      : {}),
+  };
+}
+
+async function giteaRelease(source) {
+  if (typeof source.baseUrl !== "string" || source.baseUrl.length === 0) {
+    throw new LauncherError("the Gitea release address is not configured; set DEVBOARD_GITEA_URL");
+  }
+  const url = `${source.baseUrl}/api/v1/repos/${apiPath(source.repo, "/releases/latest")}`;
+  const response = await fetch(url, { headers: apiHeaders(source, "application/json") });
+  if (!response.ok) {
+    const detail = firstLine(await response.text().catch(() => ""));
+    throw new LauncherError(`the release feed answered HTTP ${response.status}: ${detail}`);
+  }
+  const parsed = await response.json();
   if (typeof parsed.tag_name !== "string") throw new LauncherError("the latest release has no tag");
   const assets = Array.isArray(parsed.assets)
     ? parsed.assets
         .filter((asset) => asset !== null && typeof asset === "object" && typeof asset.name === "string")
-        .map((asset) => ({ name: asset.name, id: asset.id, size: asset.size }))
+        .map((asset) => ({
+          name: asset.name,
+          id: asset.id,
+          size: asset.size,
+          browser_download_url: asset.browser_download_url,
+        }))
     : [];
   return { version: parsed.tag_name.replace(/^v/, ""), tag: parsed.tag_name, assets };
 }
@@ -365,13 +415,40 @@ async function downloadRelease(source, release, destination) {
     return { tarball, checksum };
   }
   for (const name of [basename(tarball), basename(checksum)]) {
-    mustRun(
-      "gh",
-      ["release", "download", release.tag, "--repo", source.repo, "--pattern", name,
-        "--dir", destination, "--clobber"],
-      `gh release download ${name}`,
-      { timeoutMs: 10 * 60_000 },
-    );
+    const asset = release.assets.find((entry) => entry.name === name);
+    if (asset === undefined) throw new LauncherError(`release ${release.tag} lacks ${name}`);
+    const url =
+      typeof asset.browser_download_url === "string"
+        ? asset.browser_download_url
+        : asset.id === undefined
+          ? undefined
+          : `${source.baseUrl}/api/v1/repos/${apiPath(
+              source.repo,
+              `/releases/assets/${asset.id}`,
+            )}`;
+    if (url === undefined) throw new LauncherError(`release asset ${name} has no address`);
+    const response = await fetch(url, {
+      headers: apiHeaders(
+        source,
+        typeof asset.browser_download_url === "string" ? "*/*" : "application/octet-stream",
+      ),
+      signal: AbortSignal.timeout(10 * 60_000),
+    });
+    if (!response.ok) {
+      const detail = firstLine(await response.text().catch(() => ""));
+      throw new LauncherError(`downloading ${name} failed (HTTP ${response.status}): ${detail}`);
+    }
+    if (response.body === null) throw new LauncherError(`downloading ${name} returned no body`);
+    await mkdir(destination, { recursive: true });
+    try {
+      await pipeline(
+        Readable.fromWeb(response.body),
+        createWriteStream(join(destination, name)),
+      );
+    } catch (error) {
+      await rm(join(destination, name), { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
   return { tarball, checksum };
 }
@@ -706,6 +783,16 @@ async function writeInstallState(prefix, state) {
   await writeFile(installStatePath(prefix), `${JSON.stringify(state, null, 2)}\n`);
 }
 
+/** Persist the release coordinates so the dashboard feed needs no environment. */
+async function persistRelease(prefix, source) {
+  if (source.kind !== "gitea") return;
+  const state = readInstallState(prefix);
+  await writeInstallState(prefix, {
+    ...state,
+    release: { url: source.baseUrl, repo: source.repo },
+  });
+}
+
 function isDashboardFrom(pid, harness) {
   const entry = processInfo(pid);
   if (entry === undefined) return false;
@@ -813,9 +900,9 @@ async function installCommand(options) {
       `${host} is the canonical harness source checkout; install runs in a host project instead`,
     );
   }
-  const source = releaseSourceFromEnv();
-  const release = await latestRelease(source);
   const prefix = join(host, ".devboard");
+  const source = releaseSourceFromEnv(prefix);
+  const release = await latestRelease(source);
   const skip = trackedPaths(host, [".omp/commands", ".omp/extensions", "AGENTS.md"]);
   const trackedHarness = [...trackedPaths(host, [".devboard"])].filter(
     (path) => path === prefix || path.startsWith(`${prefix}${sep}`),
@@ -842,6 +929,7 @@ async function installCommand(options) {
     release.version,
     Number.isInteger(portOption) ? portOption : undefined,
   );
+  await persistRelease(prefix, source);
   console.log(`devboard: installed ${HARNESS_PACKAGE}@${release.version} in ${prefix}`);
   if (agents === "drift") {
     console.log("devboard: AGENTS.md differs from the harness template; left unchanged (drift)");
@@ -867,7 +955,7 @@ async function updateCommand(options) {
   if (before === null) {
     throw new LauncherError(`no harness is installed in ${prefix}; run install`);
   }
-  const source = releaseSourceFromEnv();
+  const source = releaseSourceFromEnv(prefix);
   const release = await latestRelease(source);
   if (!newerVersion(release.version, before) && release.version !== before) {
     // An older latest release is still installed as asked, never downgraded.
@@ -877,6 +965,7 @@ async function updateCommand(options) {
   const harness = await installRelease(source, release, prefix, join(prefix, ".tmp"));
   const skip = trackedPaths(host, [".omp/commands", ".omp/extensions"]);
   await syncWrappers(host, harness, skip);
+  await persistRelease(prefix, source);
   console.log(`devboard: harness ${before} -> ${release.version}`);
   console.log("devboard: the dashboard keeps running; reload it to restart on the new version");
 }
@@ -1002,19 +1091,17 @@ const CHECKS = [
     },
   },
   {
-    name: "gh auth",
-    run: () => {
-      mustRun("gh", ["auth", "status"], "gh auth status", { timeoutMs: 30_000 });
-      mustRun("gh", ["api", `repos/${RELEASE_REPO}`], "gh repository access", {
-        timeoutMs: 30_000,
-      });
-      return `can read ${RELEASE_REPO}`;
+    name: "release access",
+    run: async (_host, prefix) => {
+      const source = releaseSourceFromEnv(prefix);
+      const release = await latestRelease(source);
+      return `the public feed serves ${release.tag}`;
     },
   },
   {
     name: "release",
     run: async (_host, prefix) => {
-      const source = releaseSourceFromEnv();
+      const source = releaseSourceFromEnv(prefix);
       const release = await latestRelease(source);
       await readReleaseDigest(source, release, prefix);
       return `${release.tag} with a matching digest`;
@@ -1035,7 +1122,7 @@ const CHECKS = [
     run: async (_host, prefix) => {
       const version = installedVersion(prefix);
       if (version === null) throw new LauncherError("no installed version");
-      const release = await latestRelease(releaseSourceFromEnv());
+      const release = await latestRelease(releaseSourceFromEnv(prefix));
       if (version !== release.version) {
         throw new LauncherError(`stale install: installed ${version}, latest ${release.version}`);
       }

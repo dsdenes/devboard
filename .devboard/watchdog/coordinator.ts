@@ -5,7 +5,8 @@ import { collectEvidence, WINDOW_MS, type Collection, type Window } from "./coll
 import { coveredStateDirs, runCleanup, type CleanupReport } from "./cleanup";
 import { discoverInstances, type Instance } from "./discovery";
 import { analyzeEvidence } from "./findings";
-import { commentIssue, createIssue, runGh, type GhRun, type IssueInput } from "./github";
+import { runGh, type GhRun, type IssueInput } from "./github";
+import { createWatchdogDelivery, type WatchdogDelivery } from "./delivery";
 import {
   loadLedger,
   markCommented,
@@ -40,6 +41,7 @@ export interface CycleDeps {
   discover: (root: string) => Instance[];
   collect: (root: string, instances: Instance[], window: Window) => Collection;
   gh: GhRun;
+  delivery?: WatchdogDelivery;
 }
 
 export interface ReportInstance {
@@ -251,6 +253,11 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     return { report, exitCode: 0 };
   }
 
+  let delivery = deps.delivery;
+  const deliveryFor = () => {
+    delivery ??= createWatchdogDelivery({ root, gh: deps.gh });
+    return delivery;
+  };
   const queue = [
     ...ledger.pendingFiling.filter((fingerprint) => !isFiled(ledger.findings[fingerprint])),
     ...findings
@@ -284,7 +291,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
       ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
       continue;
     }
-    const filed = createIssue(deps.gh, issueInput(fingerprint, entry));
+    const filed = await deliveryFor().create(issueInput(fingerprint, entry));
     if (filed.ok) {
       markFiled(ledger, fingerprint, filed.url, now);
       report.issues.push({
@@ -308,7 +315,10 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     if (filedThisCycle.has(finding.fingerprint)) continue;
     const baseline = Date.parse(entry.lastCommentAt ?? entry.filedAt ?? "");
     if (!Number.isFinite(baseline) || now.getTime() - baseline < COMMENT_INTERVAL_MS) continue;
-    const comment = commentIssue(deps.gh, entry.url, issueInput(finding.fingerprint, entry));
+    const comment = await deliveryFor().comment(
+      entry.url,
+      issueInput(finding.fingerprint, entry),
+    );
     if (comment.ok) {
       markCommented(ledger, finding.fingerprint, now);
       commented += 1;

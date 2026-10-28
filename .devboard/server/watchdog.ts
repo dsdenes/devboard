@@ -1,4 +1,12 @@
 import { ghCommand } from "../issues/scout/preflight";
+import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
+import {
+  giteaJson,
+  repoPath,
+  type FetchLike,
+  type GiteaTarget,
+} from "../lib/gitea";
+import { git, originForge } from "../issues/repository";
 import {
   createRepositoryGitHub,
   shippedVersion,
@@ -78,13 +86,15 @@ export interface WatchdogActivityOptions {
 /** One issue URL, split into the repository it belongs to and its number. */
 export function issueLocator(url: string): { repository: string; number: number } | null {
   const match =
-    /^https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/([0-9]+)(?:[/?#].*)?$/.exec(
+    /^https?:\/\/([^/?#]+)\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/([0-9]+)(?:[/?#].*)?$/.exec(
       url.trim(),
     );
   if (match === null) return null;
-  const number = Number(match[3]);
+  const host = (match[1] ?? "").toLowerCase();
+  if (host.includes("gitlab")) return null;
+  const number = Number(match[4]);
   if (!Number.isInteger(number) || number <= 0) return null;
-  return { repository: `${match[1]}/${match[2]}`, number };
+  return { repository: `${match[2]}/${match[3]}`, number };
 }
 
 function firstLine(text: string): string {
@@ -102,6 +112,116 @@ export interface WatchdogGitHubReaderOptions {
   environment?: Record<string, string | undefined>;
   /** Injectable forge command; defaults to the operator's `gh`. */
   run?: GitHubCommandRunner;
+  /** Injectable transport for the Gitea API. */
+  fetchImpl?: FetchLike;
+}
+
+function createWatchdogGiteaReader(
+  options: WatchdogGitHubReaderOptions,
+  remote: ForgeRemote,
+): WatchdogReader {
+  const environment = options.environment ?? process.env;
+  const baseUrl = giteaBaseUrl(remote, environment);
+  const token = configuredGiteaToken(environment);
+
+  function releaseList(value: unknown): GitHubRelease[] {
+    if (!Array.isArray(value)) return [];
+    const releases: GitHubRelease[] = [];
+    for (const entry of value) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const record = entry as Record<string, unknown>;
+      if (typeof record.tag_name !== "string" || record.tag_name.length === 0) continue;
+      if (record.draft === true) continue;
+      if (typeof record.published_at !== "string" || record.published_at.length === 0) continue;
+      releases.push({ tag: record.tag_name, publishedAt: record.published_at });
+    }
+    return releases;
+  }
+
+  return {
+    async project(urls: string[]): Promise<WatchdogFacts[]> {
+      if (baseUrl === undefined || baseUrl.length === 0) {
+        throw new Error("the watchdog activity needs DEVBOARD_GITEA_URL for a Gitea origin");
+      }
+      const facts: WatchdogFacts[] = [];
+      for (const url of urls) {
+        const locator = issueLocator(url);
+        if (locator === null) throw new Error(`not a supported issue URL: ${url}`);
+        const target: GiteaTarget = {
+          baseUrl,
+          project: locator.repository,
+          ...(token === undefined ? {} : { token }),
+        };
+        const issue = await giteaJson<unknown>(
+          target,
+          `${repoPath(target)}/issues/${locator.number}`,
+          undefined,
+          options.fetchImpl,
+        );
+        const state =
+          typeof issue === "object" && issue !== null && "state" in issue
+            ? issue.state
+            : undefined;
+        if (state !== "closed") {
+          facts.push({ url, state: "pending", version: null });
+          continue;
+        }
+        const releases = releaseList(
+          await giteaJson<unknown>(
+            target,
+            `${repoPath(target)}/releases?limit=100`,
+            undefined,
+            options.fetchImpl,
+          ),
+        );
+        const client = {
+          async closingCommit(issueNumber: number): Promise<string | null> {
+            const timeline = await giteaJson<unknown>(
+              target,
+              `${repoPath(target)}/issues/${issueNumber}/timeline`,
+              undefined,
+              options.fetchImpl,
+            );
+            if (!Array.isArray(timeline)) return null;
+            for (let index = timeline.length - 1; index >= 0; index -= 1) {
+              const entry = timeline[index];
+              if (typeof entry !== "object" || entry === null) continue;
+              const record = entry as Record<string, unknown>;
+              if (typeof record.commit_id === "string" && /^[0-9a-f]{7,40}$/.test(record.commit_id)) {
+                return record.commit_id;
+              }
+            }
+            return null;
+          },
+          async resolveCommit(short: string): Promise<string | null> {
+            if (!/^[0-9a-fA-F]{7,40}$/.test(short)) return null;
+            const local = git(options.repoDir, "rev-parse", "--verify", "--quiet", `${short}^{commit}`);
+            if (local.code !== 0) return null;
+            const sha = local.stdout.split(/\s+/)[0] ?? "";
+            return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+          },
+          async containingReleaseTags(
+            commit: string,
+            published: GitHubRelease[],
+          ): Promise<string[]> {
+            const local = git(options.repoDir, "tag", "--contains", commit);
+            if (local.code !== 0) return [];
+            const tags = new Set(
+              local.stdout.split("\n").map((line) => line.trim()).filter(Boolean),
+            );
+            return published.filter((release) => tags.has(release.tag)).map((release) => release.tag);
+          },
+        };
+        const version = await shippedVersion(
+          { number: locator.number, state: "closed" },
+          client,
+          releases,
+        );
+        facts.push({ url, state: "implemented", version });
+      }
+      return facts;
+    },
+  };
 }
 
 /**
@@ -111,6 +231,8 @@ export interface WatchdogGitHubReaderOptions {
 export function createWatchdogGitHubReader(
   options: WatchdogGitHubReaderOptions,
 ): WatchdogReader {
+  const remote = originForge(options.repoDir, options.environment);
+  if (remote?.forge === "gitea") return createWatchdogGiteaReader(options, remote);
   const run = options.run ?? ((argv, environment) => ghCommand(argv, environment));
   const clients = new Map<string, RepositoryGitHub>();
 

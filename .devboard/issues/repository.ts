@@ -1,6 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { parseForgeRemote, type ForgeRemote } from "../lib/forge";
 
 /**
  * Checkout facts the issues worker and its dashboard discover at runtime.
@@ -81,6 +82,21 @@ export function isGitHubRemote(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** The forge the checkout's origin names, or undefined outside a supported remote. */
+export function originForge(
+  root: string,
+  environment: Record<string, string | undefined> = process.env,
+): ForgeRemote | undefined {
+  // A directory below a checkout must not inherit that checkout's remote: the
+  // caller's root is the host, and only its own top level names the origin.
+  const top = git(root, "rev-parse", "--show-toplevel");
+  if (top.code !== 0) return undefined;
+  const found = resolve(top.stdout);
+  if (found !== resolve(root)) return undefined;
+  const remote = originRemoteUrl(root);
+  return remote === undefined ? undefined : parseForgeRemote(remote, environment);
 }
 
 /** The `owner/name` the checkout's origin names, or undefined. */

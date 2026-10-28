@@ -1,0 +1,290 @@
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { resolveForgeAuth } from "../lib/forge-auth.ts";
+import { giteaBaseUrl, parseForgeRemote } from "../lib/forge.ts";
+import type { FetchLike } from "../lib/gitea.ts";
+import { pollOpenIssues } from "../issues/tracker";
+import { closeIssue } from "../server/issue-close";
+import { CommandFlowForge } from "../server/forge-pr";
+import { fileScoutIssue } from "../issues/scout/actions";
+import { createWatchdogDelivery } from "../watchdog/delivery";
+
+/**
+ * Gitea is a first-class forge: resolution, issue polling and closing, Flow's
+ * pull requests, scout filing, and watchdog delivery all speak its API. The
+ * transport is injected, so no test reaches an instance or reads a token.
+ */
+
+const testRoot = join(import.meta.dir, "..", ".tmp", "gitea-tests");
+const created: string[] = [];
+afterAll(() => {
+  for (const directory of created) rmSync(directory, { recursive: true, force: true });
+});
+
+interface Recorded {
+  method: string;
+  url: string;
+  body?: string;
+}
+
+function repository(): string {
+  mkdirSync(testRoot, { recursive: true });
+  const directory = join(testRoot, `repo-${crypto.randomUUID()}`);
+  mkdirSync(directory, { recursive: true });
+  created.push(directory);
+  const git = (args: string[]) => {
+    const result = Bun.spawnSync({ cmd: ["git", "-C", directory, ...args], stdout: "pipe", stderr: "pipe" });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  };
+  git(["init", "-q"]);
+  git(["remote", "add", "origin", "ssh://git@localhost:2223/acme/fixture.git"]);
+  return directory;
+}
+
+function fakeGitea(calls: Recorded[] = []): FetchLike {
+  return async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    const body =
+      typeof init?.body === "string"
+        ? init.body
+        : init?.body instanceof FormData
+          ? "form"
+          : undefined;
+    calls.push({ method, url, ...(body === undefined ? {} : { body }) });
+    const json = (value: unknown, status = 200) =>
+      new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+    if (url.endsWith("/api/v1/repos/acme/fixture")) {
+      return json({ full_name: "acme/fixture", private: false, permissions: { push: true, pull: true } });
+    }
+    if (url.endsWith("/api/v1/user")) return json({ login: "acme-bot" });
+    if (url.includes("/issues?state=open")) {
+      return json([
+        {
+          number: 5,
+          title: "Live Gitea issue",
+          html_url: "http://gitea.test/acme/fixture/issues/5",
+          created_at: "2026-10-01T00:00:00Z",
+          state: "open",
+          body: "body",
+          labels: [{ name: "goal" }],
+        },
+      ]);
+    }
+    if (method === "PATCH" && /\/issues\/5$/.test(url)) return json({ state: "closed" });
+    if (method === "GET" && /\/labels\?limit=100$/.test(url)) return json([]);
+    if (method === "POST" && /\/labels$/.test(url)) return json({ id: 9, name: "scout" }, 201);
+    if (method === "POST" && /\/issues$/.test(url)) {
+      return json(
+        {
+          number: 12,
+          title: "filed",
+          html_url: "http://gitea.test/acme/fixture/issues/12",
+          created_at: "2026-10-01T00:00:00Z",
+          state: "open",
+          body: "body",
+          labels: [],
+        },
+        201,
+      );
+    }
+    if (method === "POST" && /\/issues\/12\/comments$/.test(url)) return json({ id: 1 }, 201);
+    if (method === "POST" && /\/pulls$/.test(url)) {
+      return json(
+        {
+          number: 3,
+          html_url: "http://gitea.test/acme/fixture/pulls/3",
+          title: "WIP: Flow change",
+          state: "open",
+          merged: false,
+        },
+        201,
+      );
+    }
+    if (method === "GET" && /\/pulls\/3$/.test(url)) {
+      return json({
+        number: 3,
+        html_url: "http://gitea.test/acme/fixture/pulls/3",
+        title: "WIP: Flow change",
+        state: "open",
+        merged: false,
+      });
+    }
+    if (method === "PATCH" && /\/pulls\/3$/.test(url)) return json({});
+    if (method === "POST" && /\/pulls\/3\/merge$/.test(url)) return new Response("", { status: 200 });
+    return json({ message: `unexpected ${method} ${url}` }, 500);
+  };
+}
+
+describe("Gitea forge resolution", () => {
+  test("classifies an SSH origin and resolves the HTTP address from configuration", () => {
+    const remote = parseForgeRemote("ssh://git@localhost:2223/acme/fixture.git", {
+      DEVBOARD_GITEA_URL: "http://gitea.test/",
+    });
+    expect(remote).toEqual({ forge: "gitea", host: "localhost", project: "acme/fixture" });
+    expect(giteaBaseUrl(remote, { DEVBOARD_GITEA_URL: "http://gitea.test/" })).toBe(
+      "http://gitea.test",
+    );
+  });
+
+  test("selects a write-capable Gitea token against the exact repository", async () => {
+    const auth = await resolveForgeAuth(async () => ({ code: 1, stdout: "", stderr: "" }), {
+      forge: "gitea",
+      host: "localhost",
+      project: "acme/fixture",
+      cwd: "/repo",
+      required: "write",
+      env: { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
+      giteaFetch: fakeGitea(),
+    });
+    expect(auth).toMatchObject({
+      forge: "gitea",
+      login: "acme-bot",
+      permission: "push",
+      canWrite: true,
+      baseUrl: "http://gitea.test",
+    });
+  });
+});
+
+describe("Gitea issues", () => {
+  test("polls open issues without a pull request", async () => {
+    const result = await pollOpenIssues({
+      repository: "acme/fixture",
+      forge: "gitea",
+      baseUrl: "http://gitea.test",
+      environment: { GITEA_TOKEN: "gitea-token" },
+      giteaFetch: fakeGitea(),
+    });
+    expect(result.kind).toBe("issues");
+    if (result.kind !== "issues") return;
+    expect(result.issues).toEqual([
+      {
+        number: 5,
+        title: "Live Gitea issue",
+        url: "http://gitea.test/acme/fixture/issues/5",
+        createdAt: "2026-10-01T00:00:00Z",
+        labels: ["goal"],
+      },
+    ]);
+  });
+
+  test("closes an issue through the Gitea API", async () => {
+    const calls: Recorded[] = [];
+    await closeIssue({
+      repoDir: repository(),
+      repository: "acme/fixture",
+      number: 5,
+      environment: {
+        DEVBOARD_GITEA_URL: "http://gitea.test",
+        GITEA_TOKEN: "gitea-token",
+      },
+      giteaFetch: fakeGitea(calls),
+    });
+    expect(
+      calls.some((call) => call.method === "PATCH" && call.url.endsWith("/issues/5")),
+    ).toBe(true);
+  });
+});
+
+describe("Gitea Flow pull requests", () => {
+  test("creates a draft, marks it ready, views it, and merges it", async () => {
+    const calls: Recorded[] = [];
+    const forge = new CommandFlowForge(
+      async () => ({ code: 1, stdout: "", stderr: "" }),
+      { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
+      undefined,
+      fakeGitea(calls),
+    );
+    const target = {
+      forge: "gitea" as const,
+      host: "localhost",
+      project: "acme/fixture",
+      baseUrl: "http://gitea.test",
+    };
+    const input = {
+      cwd: "/repo",
+      target,
+      head: "flow-branch",
+      base: "main",
+      title: "Flow change",
+      body: "## Goal",
+    };
+    const created = await forge.createDraft(input);
+    expect(created).toMatchObject({ number: 3, draft: true });
+    await forge.markReady(input.cwd, target, 3);
+    const viewed = await forge.view(input.cwd, target, 3);
+    expect(viewed.state).toBe("open");
+    await forge.merge(input.cwd, target, 3);
+    expect(calls.some((call) => call.method === "POST" && call.url.endsWith("/pulls/3/merge")))
+      .toBe(true);
+  });
+});
+
+describe("Gitea scout filing", () => {
+  test("creates the scout label and files the issue through the API", async () => {
+    const calls: Recorded[] = [];
+    const result = await fileScoutIssue({
+      repoDir: repository(),
+      repository: "acme/fixture",
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
+      giteaFetch: fakeGitea(calls),
+      recommendation: {
+        id: "0123456789abcdef",
+        category: "reliability",
+        title: "Keep the poll bounded",
+        summary: "A poll can outlive its interval.",
+        impact: "",
+        evidence: [{ path: "issues/tracker.ts", lines: "1-20" }],
+        proposedChange: "Bound the poll.",
+        files: ["issues/tracker.ts"],
+        acceptanceCriteria: ["The poll settles."],
+        significance: 4,
+        significanceReason: "It blocks every other read.",
+      },
+    });
+    expect(result).toEqual({ url: "http://gitea.test/acme/fixture/issues/12", number: 12 });
+    expect(calls.some((call) => call.method === "POST" && call.url.endsWith("/labels"))).toBe(true);
+  });
+});
+
+describe("Gitea watchdog delivery", () => {
+  test("files and comments through the API instead of a hardcoded repository", async () => {
+    const calls: Recorded[] = [];
+    const delivery = createWatchdogDelivery({
+      root: repository(),
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
+      gh: () => {
+        throw new Error("gh must not run for a Gitea origin");
+      },
+      fetchImpl: fakeGitea(calls),
+    });
+    expect(delivery.repository).toBe("acme/fixture");
+    const filed = await delivery.create({
+      category: "server-error",
+      fingerprint: "fingerprint",
+      line: "Synthetic error",
+      firstSeen: "2026-10-01T00:00:00Z",
+      lastSeen: "2026-10-01T00:00:00Z",
+      count: 1,
+      window: { start: new Date("2026-10-01T00:00:00Z"), end: new Date("2026-10-01T00:01:00Z") },
+      instances: [],
+      reportPath: "/report.json",
+    });
+    expect(filed).toEqual({ ok: true, url: "http://gitea.test/acme/fixture/issues/12" });
+    const commented = await delivery.comment("http://gitea.test/acme/fixture/issues/12", {
+      category: "server-error",
+      fingerprint: "fingerprint",
+      line: "Synthetic error",
+      firstSeen: "2026-10-01T00:00:00Z",
+      lastSeen: "2026-10-01T00:00:00Z",
+      count: 2,
+      window: { start: new Date("2026-10-01T00:00:00Z"), end: new Date("2026-10-01T00:01:00Z") },
+      instances: [],
+      reportPath: "/report.json",
+    });
+    expect(commented).toEqual({ ok: true });
+    expect(calls.some((call) => call.url.endsWith("/issues/12/comments"))).toBe(true);
+  });
+});

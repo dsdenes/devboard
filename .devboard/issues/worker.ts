@@ -14,7 +14,8 @@ import {
 } from "./ledger";
 import { migrateLegacyLedger } from "./legacy";
 import { acquireLock, liveLockOwner } from "./lock";
-import { originRepository } from "./repository";
+import { originForge, originRepository } from "./repository";
+import { giteaBaseUrl } from "../lib/forge";
 import { controlDirectory, lockPath, runsDirectory, statePath } from "./paths";
 import { pollOpenIssues } from "./tracker";
 import {
@@ -296,12 +297,18 @@ export class IssuesWorker {
     this.clock = options.now ?? (() => new Date());
     this.listIssues =
       options.listIssues ??
-      ((request) =>
-        pollOpenIssues({
+      ((request) => {
+        const remote = originForge(this.repoDir, this.environment);
+        return pollOpenIssues({
           repository: this.state.repo,
           etag: request.etag,
           environment: this.environment,
-        }));
+          ...(remote === undefined ? {} : { forge: remote.forge }),
+          ...(remote?.forge === "gitea"
+            ? { baseUrl: giteaBaseUrl(remote, this.environment) }
+            : {}),
+        });
+      });
     this.connect =
       options.connect ?? ((peerOptions) => new AcpConnection(peerOptions) as unknown as AcpPeer);
     this.harnessVersion = options.harnessVersion ?? readHarnessVersion(resolve(import.meta.dir, ".."));

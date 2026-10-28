@@ -20,11 +20,15 @@ you never edit, comment on, close, or reopen another issue.
   the issue, for example `<REPO_DIR>/.worktree/issue-<number>`. Never work in the canonical
   checkout, never use another agent's worktree, and write nothing outside `<REPO_DIR>` — no
   temporary file, log, cache, or build output elsewhere.
-- Read the issue with the tracker: `gh issue view <number> --json
-  number,title,body,state,labels,url,comments`.
-- Every tracker command goes through the harness forge-auth wrapper:
-  `bun <REPO_DIR>/.devboard/scripts/forge-auth.ts exec --host <host> --project <owner/repo> --forge github --required write -- <gh args>`.
-  Never call `gh` for a mutation directly.
+- Resolve the forge and read the issue before changing anything. Run
+  `bun <REPO_DIR>/.devboard/scripts/forge-auth.ts check --host <host> --project <owner/repo> --required write`
+  and use the forge it names: `gh issue view <number> --json
+  number,title,body,state,labels,url,comments` on GitHub, `glab issue view <number>` on GitLab,
+  and the Gitea API (`GET /api/v1/repos/<owner/repo>/issues/<number>`) on Gitea.
+- Every GitHub or GitLab tracker command goes through the harness forge-auth wrapper:
+  `bun <REPO_DIR>/.devboard/scripts/forge-auth.ts exec --host <host> --project <owner/repo> --required write -- <gh|glab args>`.
+  On Gitea, send API writes with `curl -H "Authorization: token $GITEA_TOKEN"`. Never call `gh`
+  for a mutation directly.
 
 ## Prerequisites
 

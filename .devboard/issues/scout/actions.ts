@@ -5,6 +5,13 @@ import {
   resolveForgeAuth,
   type Exec,
 } from "../../lib/forge-auth";
+import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
+import {
+  giteaCreateIssue,
+  giteaEnsureLabel,
+  type FetchLike,
+} from "../../lib/gitea";
+import { originForge } from "../repository";
 import { ghCommand, runCommand } from "./preflight";
 import { issueBodyDirectory } from "./paths";
 import { writeAtomic } from "./state";
@@ -103,6 +110,12 @@ export interface FileIssueOptions {
   deadline?: number;
   /** Aborting cancels an in-flight probe or command. */
   signal?: AbortSignal;
+  /** Overrides origin forge detection; tests use it. */
+  forge?: Forge;
+  /** Gitea HTTP origin. */
+  baseUrl?: string;
+  /** Injectable transport for the Gitea API. */
+  giteaFetch?: FetchLike;
 }
 
 const bunExec: Exec = async (commandName, args, options) => {
@@ -119,6 +132,37 @@ const bunExec: Exec = async (commandName, args, options) => {
   };
 };
 
+async function fileGiteaIssue(
+  options: FileIssueOptions,
+  environment: Record<string, string | undefined>,
+): Promise<{ url: string; number: number }> {
+  const remote = originForge(options.repoDir, environment);
+  const baseUrl = options.baseUrl ?? giteaBaseUrl(remote, environment);
+  if (baseUrl === undefined || baseUrl.length === 0) {
+    throw new Error("filing a Gitea issue needs DEVBOARD_GITEA_URL");
+  }
+  const token = configuredGiteaToken(environment);
+  if (token === undefined) throw new Error("filing a Gitea issue needs GITEA_TOKEN");
+  const target = { baseUrl, project: options.repository, token };
+  const label = await giteaEnsureLabel(
+    target,
+    SCOUT_LABEL,
+    "0e8a16",
+    LABEL_DESCRIPTION,
+    options.giteaFetch,
+  );
+  const issue = await giteaCreateIssue(
+    target,
+    {
+      title: options.recommendation.title,
+      body: issueBody(options.recommendation),
+      labels: [label],
+    },
+    options.giteaFetch,
+  );
+  return { url: issue.url, number: issue.number };
+}
+
 /**
  * Files one issue for one staged recommendation. The label is created when it
  * is absent, the body is passed as a file, and the returned URL is the only
@@ -126,9 +170,14 @@ const bunExec: Exec = async (commandName, args, options) => {
  */
 export async function fileScoutIssue(options: FileIssueOptions): Promise<{ url: string; number: number }> {
   const environment = options.environment ?? process.env;
+  const remote = originForge(options.repoDir, environment);
+  const forge = options.forge ?? remote?.forge ?? "github";
+  if (forge === "gitea") {
+    return await fileGiteaIssue(options, environment);
+  }
   const auth = await resolveForgeAuth(options.exec ?? bunExec, {
-    forge: "github",
-    host: "github.com",
+    forge,
+    host: remote?.host ?? "github.com",
     project: options.repository,
     cwd: options.repoDir,
     required: "write",

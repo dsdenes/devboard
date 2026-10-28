@@ -2,13 +2,17 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   findOnPath,
-  isGitHubRemote,
   ompCommandPaths,
   ompExtensionPaths,
-  originRemoteUrl,
-  originRepository,
+  originForge,
   rootProblem,
 } from "./repository";
+import {
+  configuredGiteaToken,
+  giteaBaseUrl,
+  type ForgeRemote,
+} from "../lib/forge";
+import { giteaRepository, type FetchLike } from "../lib/gitea";
 import { legacyLiveLock, legacyLockRefusal } from "./legacy";
 import type { GhOutcome } from "./tracker";
 
@@ -27,6 +31,8 @@ export interface PreflightOptions {
   environment?: Record<string, string | undefined>;
   /** Injected for tests; defaults to the operator's `gh`. */
   run?: (argv: string[]) => GhOutcome | Promise<GhOutcome>;
+  /** Injected transport for the Gitea API. */
+  giteaFetch?: FetchLike;
 }
 
 async function gh(argv: string[], environment?: Record<string, string | undefined>): Promise<GhOutcome> {
@@ -67,14 +73,17 @@ export async function preflightIssues(options: PreflightOptions): Promise<Prefli
   const root = rootProblem(options.repoDir);
   if (root !== undefined) return { ok: false, message: root };
 
-  const remote = originRemoteUrl(options.repoDir);
-  const repository = originRepository(options.repoDir);
-  if (remote === undefined || repository === undefined) {
-    return { ok: false, message: "the checkout's origin does not name a GitHub repository" };
+  const remote = originForge(options.repoDir, environment);
+  if (remote === undefined) {
+    return { ok: false, message: "the checkout's origin does not name a supported repository" };
   }
-  if (!isGitHubRemote(remote)) {
-    return { ok: false, message: `the checkout's origin is not a GitHub repository: ${remote}` };
+  if (remote.forge === "gitlab") {
+    return {
+      ok: false,
+      message: `the issues console supports a GitHub or Gitea origin, not a GitLab one: ${remote.host}`,
+    };
   }
+  const repository = remote.project;
 
   const legacy = legacyLiveLock(options.stateDir);
   if (legacy !== undefined) {
@@ -84,7 +93,7 @@ export async function preflightIssues(options: PreflightOptions): Promise<Prefli
   if (findOnPath("omp", environment) === undefined) {
     return { ok: false, message: "missing prerequisite: omp is not on PATH" };
   }
-  if (findOnPath("gh", environment) === undefined) {
+  if (remote.forge === "github" && findOnPath("gh", environment) === undefined) {
     return { ok: false, message: "missing prerequisite: gh is not on PATH" };
   }
 
@@ -110,6 +119,50 @@ export async function preflightIssues(options: PreflightOptions): Promise<Prefli
         "missing prerequisite: the /implement-goal-issue extension is not installed for omp " +
         `(looked in ${extensions.join(", ")}); install the harness wrappers with .devboard/install.sh`,
     };
+  }
+
+  if (remote.forge === "gitea") {
+    const baseUrl = giteaBaseUrl(remote, environment);
+    if (baseUrl === undefined) {
+      return {
+        ok: false,
+        message:
+          "missing prerequisite: the Gitea address is not configured " +
+          "(set DEVBOARD_GITEA_URL or use an HTTP(S) origin)",
+      };
+    }
+    const token = configuredGiteaToken(environment);
+    if (token === undefined) {
+      return { ok: false, message: "missing prerequisite: GITEA_TOKEN is not set" };
+    }
+    try {
+      const document = await giteaRepository(
+        { baseUrl, project: repository, token },
+        options.giteaFetch,
+      );
+      const permissions =
+        typeof document.permissions === "object" && document.permissions !== null
+          ? document.permissions
+          : {};
+      const writable =
+        "push" in permissions && permissions.push === true ||
+        "admin" in permissions && permissions.admin === true;
+      if (!writable) {
+        return {
+          ok: false,
+          message:
+            `missing prerequisite: the Gitea token cannot write to ${repository} on ${baseUrl}`,
+        };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        message:
+          `missing prerequisite: the Gitea repository ${repository} could not be read: ` +
+          (error instanceof Error ? error.message : String(error)),
+      };
+    }
+    return { ok: true, repository };
   }
 
   const execute = options.run ?? ((argv: string[]) => gh(argv, environment));

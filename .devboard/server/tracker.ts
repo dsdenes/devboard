@@ -4,8 +4,11 @@ import {
   isAuthFailure,
   resolveForgeAuth,
   type Exec,
+  type Forge,
   type ResolvedAuth,
 } from "../lib/forge-auth.ts";
+import { configuredGiteaToken, giteaBaseUrl, parseForgeRemote } from "../lib/forge";
+import { giteaListIssues } from "../lib/gitea";
 
 export interface OpenEpic {
   number: number;
@@ -29,9 +32,10 @@ export function normalizeEpics(value: OpenEpic[] | OpenEpic | undefined): OpenEp
 }
 
 interface Remote {
-  forge: "github" | "gitlab";
+  forge: Forge;
   host: string;
   project: string;
+  baseUrl?: string;
 }
 
 interface CommandResult {
@@ -147,33 +151,16 @@ async function commandJson<T>(
  * decided by the hostname, and the project path keeps any GitLab subgroup.
  */
 export function classifyRemote(remote: string): Remote | undefined {
-  const value = remote.trim();
-  if (value.length === 0) return undefined;
-
-  let hostname: string;
-  let path: string;
-
-  const scp = /^[^/@\s]+@([^:/\s]+):(.+)$/.exec(value);
-  if (scp !== null) {
-    hostname = scp[1] ?? "";
-    path = scp[2] ?? "";
-  } else {
-    const withoutScheme = value.includes("://")
-      ? value.slice(value.indexOf("://") + 3)
-      : value;
-    const slash = withoutScheme.indexOf("/");
-    if (slash < 0) return undefined;
-    const authority = withoutScheme.slice(0, slash);
-    path = withoutScheme.slice(slash + 1);
-    hostname = authority.slice(authority.lastIndexOf("@") + 1).replace(/:\d+$/, "");
-  }
-
-  const project = path.replace(/^\/+/, "").replace(/\.git$/i, "").replace(/\/+$/, "");
-  if (hostname.length === 0 || project.length === 0) return undefined;
-
-  if (hostname === "github.com") return { forge: "github", host: hostname, project };
-  if (hostname.includes("gitlab")) return { forge: "gitlab", host: hostname, project };
-  return undefined;
+  const parsed = parseForgeRemote(remote);
+  if (parsed === undefined) return undefined;
+  return {
+    forge: parsed.forge,
+    host: parsed.host,
+    project: parsed.project,
+    ...(parsed.forge === "gitea"
+      ? { baseUrl: giteaBaseUrl(parsed) }
+      : {}),
+  };
 }
 
 function toEpic(entry: IssueEntry): OpenEpic | undefined {
@@ -296,6 +283,28 @@ async function gitlabEpics(cwd: string, env: Record<string, string>): Promise<Op
   return allEpics(issues);
 }
 
+async function giteaEpics(remote: Remote): Promise<OpenEpic[]> {
+  if (remote.baseUrl === undefined || remote.baseUrl.length === 0) {
+    throw new Error("The Gitea address is not configured; set DEVBOARD_GITEA_URL.");
+  }
+  const token = configuredGiteaToken(process.env);
+  const issues = await giteaListIssues(
+    {
+      baseUrl: remote.baseUrl,
+      project: remote.project,
+      ...(token === undefined ? {} : { token }),
+    },
+    "open",
+  );
+  return issues
+    .filter(
+      (issue) =>
+        issue.labels.some((label) => label.toLowerCase() === "epic") ||
+        issue.body.includes("devboard-epic"),
+    )
+    .map((issue) => ({ number: issue.number, title: issue.title, url: issue.url }));
+}
+
 const AUTH_CACHE_MS = 60_000;
 const authCache = new Map<string, { auth: ResolvedAuth; expires: number }>();
 
@@ -307,7 +316,7 @@ const authCache = new Map<string, { auth: ResolvedAuth; expires: number }>();
 async function resolveTrackerAuth(
   host: string,
   project: string,
-  forge: "github" | "gitlab",
+  forge: Forge,
   repoDir: string,
 ): Promise<ResolvedAuth> {
   const key = `${forge}:${host}:${project}`;
@@ -341,8 +350,10 @@ export async function findOpenEpics(repoDir: string): Promise<OpenEpic[]> {
 
   const classified = classifyRemote(remote.stdout);
   if (classified === undefined) {
-    throw new Error("The origin remote does not name a GitHub or GitLab repository.");
+    throw new Error("The origin remote does not name a supported repository.");
   }
+
+  if (classified.forge === "gitea") return await giteaEpics(classified);
 
   const auth = await resolveTrackerAuth(
     classified.host,

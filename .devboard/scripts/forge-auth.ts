@@ -26,9 +26,10 @@ const USAGE = `Usage:
 Options:
   --host <host>        forge hostname, e.g. github.com
   --project <path>     repository path, e.g. owner/repo or group/sub/project
-  --forge <name>       github or gitlab; inferred from the host when omitted
+  --forge <name>       github, gitlab, or gitea; inferred from the host when omitted
   --required <access>  read or write; default read
   --cwd <path>         working directory; default the current directory
+  --url <url>          Gitea HTTP origin; defaults to DEVBOARD_GITEA_URL
   --json               machine-readable check output (check only)
   --quiet              suppress the selected-identity line on stderr
   -h, --help           show this help
@@ -44,6 +45,7 @@ interface Parsed {
   forge?: Forge;
   required: RequiredAccess;
   cwd: string;
+  url?: string;
   json: boolean;
   quiet: boolean;
   command: string[];
@@ -69,6 +71,7 @@ function parse(args: string[]): Parsed {
   let forge: Forge | undefined;
   let required: RequiredAccess = "read";
   let cwd = process.cwd();
+  let url: string | undefined;
   let json = false;
   let quiet = false;
   const command: string[] = [];
@@ -93,8 +96,8 @@ function parse(args: string[]): Parsed {
         break;
       case "--forge": {
         const value = rest[++index];
-        if (value !== "github" && value !== "gitlab") {
-          fail(`--forge must be github or gitlab, got: ${value ?? "nothing"}`);
+        if (value !== "github" && value !== "gitlab" && value !== "gitea") {
+          fail(`--forge must be github, gitlab, or gitea, got: ${value ?? "nothing"}`);
         }
         forge = value;
         break;
@@ -109,6 +112,9 @@ function parse(args: string[]): Parsed {
       }
       case "--cwd":
         cwd = rest[++index] ?? cwd;
+        break;
+      case "--url":
+        url = rest[++index];
         break;
       case "--json":
         json = true;
@@ -136,6 +142,7 @@ function parse(args: string[]): Parsed {
     forge,
     required,
     cwd,
+    ...(url === undefined ? {} : { url }),
     json,
     quiet,
     command,
@@ -175,6 +182,7 @@ async function resolve(parsed: Parsed): Promise<AuthOutcome> {
     cwd: parsed.cwd,
     required: parsed.required,
     env: process.env,
+    ...(parsed.url === undefined ? {} : { baseUrl: parsed.url }),
   };
   if (parsed.forge !== undefined) {
     return resolveForgeAuth(bunExec, { ...common, forge: parsed.forge });
@@ -189,20 +197,17 @@ async function resolve(parsed: Parsed): Promise<AuthOutcome> {
 
   const github = await resolveForgeAuth(bunExec, { ...common, forge: "github" });
   const gitlab = await resolveForgeAuth(bunExec, { ...common, forge: "gitlab" });
-  if (!isAuthFailure(github) && !isAuthFailure(gitlab)) {
-    return {
-      error:
-        `both gh and glab are configured for ${parsed.host}; cannot tell which forge serves the remote\n` +
-        "Pass --forge github or --forge gitlab.",
-    };
-  }
   if (!isAuthFailure(github)) return github;
   if (!isAuthFailure(gitlab)) return gitlab;
+  // Every other host is a Gitea instance; its public API or token decides.
+  const gitea = await resolveForgeAuth(bunExec, { ...common, forge: "gitea" });
+  if (!isAuthFailure(gitea)) return gitea;
   return {
     error: [
-      `no authenticated gh or glab account has ${parsed.required} access to ${parsed.project} on ${parsed.host}`,
+      `no authenticated forge account has ${parsed.required} access to ${parsed.project} on ${parsed.host}`,
       `gh: ${github.error}`,
       `glab: ${gitlab.error}`,
+      `gitea: ${gitea.error}`,
     ].join("\n"),
   };
 }
@@ -243,6 +248,12 @@ async function main(): Promise<void> {
   if (parsed.action === "check") return;
 
   const [executable, ...args] = parsed.command;
+  if (auth.forge === "gitea") {
+    process.stderr.write(
+      "forge-auth: Gitea writes use its HTTP API; run 'check' for the selected identity\n",
+    );
+    process.exit(2);
+  }
   const expected = auth.forge === "github" ? "gh" : "glab";
   const name = executable?.split("/").pop();
   if (name !== expected) {

@@ -2,8 +2,20 @@ import type { GhRunner } from "./actions";
 import { ghCommand } from "./preflight";
 import {
   createRepositoryGitHub,
+  isFullSha,
+  isSha,
+  shaTokens,
   type GitHubRelease,
 } from "../../lib/github-release";
+import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
+import {
+  giteaJson,
+  giteaListIssues,
+  repoPath,
+  type FetchLike,
+  type GiteaTarget,
+} from "../../lib/gitea";
+import { git } from "../repository";
 
 /**
  * The GitHub facts Auto Scout reads: every `scout` issue in any state, every
@@ -82,6 +94,12 @@ export interface ScoutGitHubOptions {
   timeoutMs?: number;
   /** Aborts the default runner's in-flight commands; ignored by an injected `run`. */
   signal?: AbortSignal;
+  /** The origin forge; defaults to GitHub for backward compatibility. */
+  forge?: Forge;
+  /** Gitea HTTP origin. */
+  baseUrl?: string;
+  /** Injectable transport for the Gitea API. */
+  giteaFetch?: FetchLike;
   /**
    * Injectable forge command; defaults to the operator's `gh`. An injected
    * runner owns its own deadline: `createScoutGitHub` cannot bound a promise
@@ -90,7 +108,136 @@ export interface ScoutGitHubOptions {
   run?: GhRunner;
 }
 
+function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
+  const environment = options.environment ?? process.env;
+  const remote = { forge: "gitea" as const, host: "", project: options.repository };
+  const baseUrl = options.baseUrl ?? giteaBaseUrl(remote, environment);
+  if (baseUrl === undefined || baseUrl.length === 0) {
+    throw new Error("the scout needs DEVBOARD_GITEA_URL for a Gitea origin");
+  }
+  const token = configuredGiteaToken(environment);
+  const target: GiteaTarget = {
+    baseUrl,
+    project: options.repository,
+    ...(token === undefined ? {} : { token }),
+  };
+
+  async function readJson(path: string): Promise<unknown> {
+    return await giteaJson<unknown>(target, path, undefined, options.giteaFetch);
+  }
+
+  function releaseList(value: unknown): ScoutRelease[] {
+    if (!Array.isArray(value)) return [];
+    const releases: ScoutRelease[] = [];
+    for (const entry of value) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const record = entry as Record<string, unknown>;
+      if (typeof record.tag_name !== "string" || record.tag_name.length === 0) continue;
+      if (record.draft === true) continue;
+      const published = record.published_at;
+      if (typeof published !== "string" || published.length === 0) continue;
+      releases.push({ tag: record.tag_name, publishedAt: published });
+    }
+    return releases;
+  }
+
+  return {
+    async listIssues(): Promise<ScoutGitHubIssue[]> {
+      const issues = await giteaListIssues(target, "all", options.giteaFetch);
+      return issues
+        .filter((issue) => issue.labels.includes("scout"))
+        .map((issue) => ({
+          number: issue.number,
+          title: issue.title,
+          url: issue.url,
+          state: issue.state,
+          createdAt: issue.createdAt,
+          body: issue.body,
+        }));
+    },
+
+    async listOpenIssueTitles(): Promise<string[]> {
+      const issues = await giteaListIssues(target, "open", options.giteaFetch);
+      return issues.map((issue) => issue.title);
+    },
+
+    async listReleases(): Promise<ScoutRelease[]> {
+      return releaseList(await readJson(`${repoPath(target)}/releases?limit=100`));
+    },
+
+    async closingCommit(issueNumber: number): Promise<string | null> {
+      const timeline = await readJson(`${repoPath(target)}/issues/${issueNumber}/timeline`);
+      const bodies: string[] = [];
+      if (Array.isArray(timeline)) {
+        for (const entry of timeline) {
+          if (typeof entry !== "object" || entry === null) continue;
+          const record = entry as Record<string, unknown>;
+          if (typeof record.commit_id === "string" && isSha(record.commit_id)) {
+            return record.commit_id;
+          }
+          if (typeof record.body === "string") bodies.push(record.body);
+        }
+      }
+      const comments = await readJson(`${repoPath(target)}/issues/${issueNumber}/comments`);
+      if (Array.isArray(comments)) {
+        for (const entry of comments) {
+          if (typeof entry !== "object" || entry === null) continue;
+          const body = (entry as Record<string, unknown>).body;
+          if (typeof body === "string") bodies.push(body);
+        }
+      }
+      for (let index = bodies.length - 1; index >= 0; index -= 1) {
+        const tokens = shaTokens(bodies[index] ?? "");
+        if (tokens.length > 0) return tokens[tokens.length - 1] ?? null;
+      }
+      return null;
+    },
+
+    async resolveCommit(short: string): Promise<string | null> {
+      if (!isSha(short)) return null;
+      const local = git(options.repoDir, "rev-parse", "--verify", "--quiet", `${short}^{commit}`);
+      if (local.code === 0) {
+        const sha = local.stdout.split(/\s+/)[0] ?? "";
+        if (isFullSha(sha)) return sha;
+      }
+      const value = await readJson(`${repoPath(target)}/git/commits/${short}`);
+      if (typeof value === "object" && value !== null && "sha" in value) {
+        return typeof value.sha === "string" && isFullSha(value.sha) ? value.sha : null;
+      }
+      return null;
+    },
+
+    async containingReleaseTags(
+      commit: string,
+      releases: ScoutRelease[],
+    ): Promise<string[]> {
+      const local = git(options.repoDir, "tag", "--contains", commit);
+      if (local.code === 0) {
+        const tags = new Set(
+          local.stdout.split("\n").map((line) => line.trim()).filter(Boolean),
+        );
+        const contained = releases
+          .filter((release) => tags.has(release.tag))
+          .map((release) => release.tag);
+        if (contained.length > 0) return contained;
+      }
+      const contained: string[] = [];
+      for (const release of releases) {
+        const value = await readJson(
+          `${repoPath(target)}/compare/${commit}...${encodeURIComponent(release.tag)}`,
+        );
+        if (typeof value !== "object" || value === null || !("status" in value)) continue;
+        if (value.status === "ahead" || value.status === "identical") {
+          contained.push(release.tag);
+        }
+      }
+      return contained;
+    },
+  };
+}
+
 export function createScoutGitHub(options: ScoutGitHubOptions): ScoutGitHubClient {
+  if ((options.forge ?? "github") === "gitea") return createScoutGitea(options);
   const repository = options.repository;
   const environment: Record<string, string> = {};
   for (const [key, value] of Object.entries(options.environment ?? process.env)) {

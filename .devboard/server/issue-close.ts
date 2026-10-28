@@ -4,6 +4,9 @@ import {
   resolveForgeAuth,
   type Exec,
 } from "../lib/forge-auth";
+import { giteaBaseUrl } from "../lib/forge";
+import { giteaCloseIssue, type FetchLike } from "../lib/gitea";
+import { originForge } from "../issues/repository";
 
 /**
  * The one tracker mutation the Issues overview offers: closing an open issue
@@ -32,6 +35,12 @@ export interface CloseIssueRequest {
   exec?: Exec;
   /** Injectable `gh`; defaults to the operator's binary. */
   run?: GhRunner;
+  /** Overrides origin forge detection; tests use it. */
+  forge?: "github" | "gitlab" | "gitea";
+  /** Gitea HTTP origin; defaults to configuration and the origin remote. */
+  baseUrl?: string;
+  /** Injectable transport for the Gitea API. */
+  giteaFetch?: FetchLike;
 }
 
 const bunExec: Exec = async (commandName, args, options) => {
@@ -107,15 +116,46 @@ export async function closeIssue(request: CloseIssueRequest): Promise<void> {
     throw new Error("Closing an issue needs a positive issue number.");
   }
   const environment = request.environment ?? process.env;
+  const remote = originForge(request.repoDir, environment);
+  const forge = request.forge ?? remote?.forge ?? "github";
+  const baseUrl =
+    forge === "gitea"
+      ? request.baseUrl ?? giteaBaseUrl(remote, environment)
+      : undefined;
+  if (forge === "gitea" && (baseUrl === undefined || baseUrl.length === 0)) {
+    throw new Error("Closing a Gitea issue needs DEVBOARD_GITEA_URL.");
+  }
   const auth = await resolveForgeAuth(request.exec ?? bunExec, {
-    forge: "github",
-    host: "github.com",
+    forge,
+    host: remote?.host ?? "github.com",
     project: request.repository,
     cwd: request.repoDir,
     required: "write",
     env: environment,
+    ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(request.giteaFetch === undefined ? {} : { giteaFetch: request.giteaFetch }),
   });
   if (isAuthFailure(auth)) throw new Error(auth.error.split("\n")[0] ?? auth.error);
+
+  if (forge === "gitea") {
+    try {
+      await giteaCloseIssue(
+        {
+          baseUrl: baseUrl ?? "",
+          project: request.repository,
+          ...(auth.token === undefined ? {} : { token: auth.token }),
+        },
+        request.number,
+        request.giteaFetch,
+      );
+    } catch (error) {
+      throw new Error(
+        `Could not close issue #${request.number}: ` +
+          firstLine(error instanceof Error ? error.message : String(error)),
+      );
+    }
+    return;
+  }
 
   const run = request.run ?? ghCommand;
   const result = await run(

@@ -1,4 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { createServer } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -14,6 +16,7 @@ import {
   ReleaseFeedError,
   tarballName,
   type ReleaseInfo,
+  type ReleaseSource,
 } from "./release";
 
 /** Release transport behaviour that needs a real npm install. */
@@ -99,7 +102,7 @@ describe("parseReleaseDescription", () => {
     const error = caught(() => parseReleaseDescription(body));
     expect(error).toBeInstanceOf(ReleaseFeedError);
     expect(error.message).toBe(
-      "gh returned an unreadable release description: " +
+      "the release feed returned an unreadable description: " +
         '{"tag":"v1.0.0","publishedAt":"2026-10-20T00:00:00Z","draft":false}',
     );
   });
@@ -161,38 +164,53 @@ console.log(installed);
   }, 60_000);
 });
 
-const HANG_GH = join(import.meta.dir, "..", "server", "fixtures", "hang-download.ts");
+interface StallServer {
+  port: number;
+  close: () => void;
+}
 
-function stalledRelease(version: string): ReleaseInfo {
+function giteaSource(server: StallServer): ReleaseSource {
+  return { kind: "gitea", baseUrl: `http://127.0.0.1:${server.port}`, repo: "acme/fixture" };
+}
+
+function stalledRelease(version: string, baseUrl: string): ReleaseInfo {
   return {
     version,
     tag: `v${version}`,
     assets: [
-      { name: tarballName(version), id: 11 },
-      { name: checksumName(version), id: 12 },
+      {
+        name: tarballName(version),
+        id: 11,
+        browser_download_url: `${baseUrl}/stall/${tarballName(version)}`,
+      },
+      {
+        name: checksumName(version),
+        id: 12,
+        browser_download_url: `${baseUrl}/stall/${checksumName(version)}`,
+      },
     ],
   };
 }
 
-/** Runs `body` with the fixture pid file path exported to the download child. */
-async function withPidFile(
-  pidFile: string,
-  body: () => Promise<void>,
-): Promise<void> {
-  const previous = process.env.STUB_GH_PID_FILE;
-  process.env.STUB_GH_PID_FILE = pidFile;
-  try {
-    await body();
-  } finally {
-    if (previous === undefined) delete process.env.STUB_GH_PID_FILE;
-    else process.env.STUB_GH_PID_FILE = previous;
-  }
-}
-
-function expectGone(pidFile: string): void {
-  const pid = Number(readFileSync(pidFile, "utf8").trim());
-  expect(Number.isInteger(pid) && pid > 0).toBe(true);
-  expect(() => process.kill(pid, 0)).toThrow();
+/** A TCP server that accepts and never answers; aborting the fetch ends it. */
+async function stallingServer(): Promise<StallServer> {
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const port = (server.address() as AddressInfo).port;
+  return {
+    port,
+    close() {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    },
+  };
 }
 
 describe("release download deadline", () => {
@@ -200,27 +218,27 @@ describe("release download deadline", () => {
     expect(DEFAULT_DOWNLOAD_TIMEOUT_MS).toBe(10 * 60_000);
   });
 
-  test("kills a stalled download at the deadline and removes the partial asset", async () => {
+  test("aborts a stalled download at the deadline and removes the partial asset", async () => {
     const root = workspace("stalled-download");
     const destination = join(root, "download");
-    const pidFile = join(root, "gh.pid");
-    await withPidFile(pidFile, async () => {
+    const server = await stallingServer();
+    try {
       const started = Date.now();
+      const source = giteaSource(server);
       const error = await downloadRelease(
-        { kind: "gh", repo: "dsdenes/devboard" },
-        stalledRelease("1.2.3"),
+        source,
+        stalledRelease("1.2.3", source.kind === "gitea" ? source.baseUrl : ""),
         destination,
-        { timeoutMs: 500, ghCommand: [process.execPath, HANG_GH] },
+        { timeoutMs: 500 },
       ).catch((reason: unknown) => reason);
       const elapsed = Date.now() - started;
       expect(error).toBeInstanceOf(ReleaseError);
-      expect((error as Error).message).toContain(
-        "gh asset download timed out after 500 ms: devboard-harness-1.2.3.tgz",
-      );
+      expect((error as Error).message).toContain("timed out after 500 ms");
       expect(elapsed).toBeLessThan(10_000);
       expect(existsSync(join(destination, tarballName("1.2.3")))).toBe(false);
-      expectGone(pidFile);
-    });
+    } finally {
+      server.close();
+    }
   }, 20_000);
 
   test("installRelease rejects at the deadline and leaves no staged download", async () => {
@@ -228,23 +246,24 @@ describe("release download deadline", () => {
     const prefix = join(root, "prefix");
     mkdirSync(prefix, { recursive: true });
     const stateDir = join(root, "state");
-    const pidFile = join(root, "gh.pid");
-    await withPidFile(pidFile, async () => {
+    const server = await stallingServer();
+    try {
       const started = Date.now();
+      const source = giteaSource(server);
       const error = await installRelease({
-        source: { kind: "gh", repo: "dsdenes/devboard" },
-        release: stalledRelease("1.2.3"),
+        source,
+        release: stalledRelease("1.2.3", source.kind === "gitea" ? source.baseUrl : ""),
         prefix,
         stateDir,
         downloadTimeoutMs: 500,
-        ghCommand: [process.execPath, HANG_GH],
       }).catch((reason: unknown) => reason);
       const elapsed = Date.now() - started;
       expect(error).toBeInstanceOf(ReleaseError);
       expect((error as Error).message).toContain("timed out after 500 ms");
       expect(elapsed).toBeLessThan(10_000);
       expect(readdirSync(join(stateDir, "updates"))).toEqual([]);
-      expectGone(pidFile);
-    });
+    } finally {
+      server.close();
+    }
   }, 20_000);
 });

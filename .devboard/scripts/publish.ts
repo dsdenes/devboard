@@ -1,15 +1,21 @@
 #!/usr/bin/env bun
 /**
  * Verifies a pushed `main` commit's release and reports the running
- * dashboards. The release workflow builds, tests, publishes the launcher to
- * npmjs, and creates the private harness release; this script waits for that
- * run, proves the release and launcher exist, and never restarts a dashboard or
- * writes into a host. A dashboard installs a new harness itself and shows its
- * reload control until an operator restarts it.
+ * dashboards. The Gitea workflow builds, tests, publishes the launcher to
+ * npmjs, and creates the harness release; this script waits for that run,
+ * proves the release and launcher exist, pushes the GitHub mirror, and never
+ * restarts a dashboard or writes into a host. A dashboard installs a new
+ * harness itself and shows its reload control until an operator restarts it.
  */
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { configuredGiteaToken, configuredGiteaUrl, parseForgeRemote } from "../lib/forge";
+import {
+  giteaReleaseByTag,
+  giteaWorkflowRuns,
+  type GiteaTarget,
+} from "../lib/gitea";
 import { dashboardInventory, describeInventory } from "../lib/inventory";
 import { discoverInstances } from "../watchdog/discovery";
 
@@ -39,9 +45,10 @@ const waitTimeoutMs = waitSeconds * 1000;
 function usage(): never {
   console.log(`Usage: bun run publish [options]
 
-Waits for the release workflow of the pushed main commit, verifies the private
-harness release and the public launcher version, and reports every running
-dashboard's installed and running versions without restarting it.
+Waits for the Gitea release workflow of the pushed main commit, verifies the
+private harness release and the public launcher version, pushes the GitHub
+mirror, and reports every running dashboard's installed and running versions
+without restarting it.
 
   --wait-timeout N    Seconds to wait for the workflow and propagation (default 1800).
   -h, --help          Show this text.`);
@@ -59,11 +66,17 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-function run(argv: string[], cwd = harnessRoot): CommandResult {
+function run(argv: string[], cwd = harnessRoot, extraEnv: Record<string, string> = {}): CommandResult {
   const child = Bun.spawnSync({
     cmd: argv,
     cwd,
-    env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0", GIT_TERMINAL_PROMPT: "0" },
+    env: {
+      ...process.env,
+      ...extraEnv,
+      NO_COLOR: "1",
+      FORCE_COLOR: "0",
+      GIT_TERMINAL_PROMPT: "0",
+    },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -105,10 +118,28 @@ function walkNewest(directory: string): number {
   return newest;
 }
 
-
 const top = run(["git", "-C", harnessRoot, "rev-parse", "--show-toplevel"]);
 if (top.code !== 0) fail("the harness is not inside a git checkout");
 const repoRoot = top.stdout;
+
+function giteaTarget(): GiteaTarget {
+  let baseUrl = configuredGiteaUrl(process.env);
+  if (baseUrl === undefined) {
+    const origin = git(["remote", "get-url", "origin"]);
+    if (origin.code === 0) baseUrl = parseForgeRemote(origin.stdout)?.originUrl;
+  }
+  if (baseUrl === undefined) {
+    fail("the Gitea address is not configured; set DEVBOARD_GITEA_URL");
+  }
+  const token = configuredGiteaToken(process.env);
+  return {
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    project: process.env.DEVBOARD_RELEASE_REPO ?? RELEASE_REPO,
+    ...(token === undefined ? {} : { token }),
+  };
+}
+
+const target = giteaTarget();
 
 const gitDir = real(mustGit(["rev-parse", "--absolute-git-dir"], "could not read the git dir"));
 const commonDir = real(
@@ -162,8 +193,6 @@ if (head !== tip) {
   console.log(`publish: main is at ${head.slice(0, 7)}`);
 }
 
-// The fast-forward moved HEAD: every later step must name the revision that
-// this run actually verifies, never the one the checkout had before it.
 const published = mustGit(["rev-parse", "HEAD"], "could not read HEAD after the update");
 
 console.log("publish: installing harness dependencies");
@@ -208,65 +237,37 @@ const tag = `v${version}`;
 console.log(`publish: waiting for the release workflow of ${published.slice(0, 7)} (${tag})`);
 
 const deadline = Date.now() + waitTimeoutMs;
-let workflow: { databaseId: number; status: string; conclusion: string | null } | undefined;
+let workflow: { id: number; status: string; conclusion: string | null } | undefined;
 while (Date.now() < deadline) {
-  const listed = run([
-    "gh",
-    "run",
-    "list",
-    "--workflow",
-    "devboard-release.yml",
-    "--branch",
-    "main",
-    "--limit",
-    "30",
-    "--json",
-    "databaseId,headSha,status,conclusion",
-  ]);
-  if (listed.code === 0) {
-    const runs = JSON.parse(listed.stdout) as Array<{
-      databaseId: number;
-      headSha: string;
-      status: string;
-      conclusion: string | null;
-    }>;
-    const match = runs.find((candidate) => candidate.headSha === published);
-    if (match !== undefined) {
-      workflow = match;
-      if (match.status === "completed") break;
-    }
-  } else {
-    fail(`could not list workflow runs: ${listed.stderr || listed.stdout}`);
+  const runs = await giteaWorkflowRuns(target, published).catch((error: unknown) => {
+    fail(`could not list workflow runs: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  const match = runs.find((candidate) => candidate.headSha === published);
+  if (match !== undefined) {
+    workflow = match;
+    const finished = match.status === "completed" || match.conclusion !== null;
+    if (finished) break;
   }
   await Bun.sleep(5000);
 }
 
 if (workflow === undefined) {
-  fail(`no devboard-release run for ${published.slice(0, 7)} within the wait`);
+  fail(`no release workflow run for ${published.slice(0, 7)} within the wait`);
 }
-if (workflow.status !== "completed") fail("the release workflow did not complete within the wait");
-if (workflow.conclusion !== "success") {
-  fail(`the release workflow concluded ${workflow.conclusion ?? "unknown"}`);
+const concluded =
+  workflow.conclusion ?? (workflow.status === "success" ? "success" : workflow.status);
+if (concluded !== "success") {
+  fail(`the release workflow concluded ${concluded === "" ? "no conclusion" : concluded}`);
 }
-console.log(`publish: release workflow ${workflow.databaseId} succeeded`);
+console.log(`publish: release workflow ${workflow.id} succeeded`);
 
 let releaseOk = false;
 let launcherOk = false;
 while (Date.now() < deadline) {
   if (!releaseOk) {
-    const release = run([
-      "gh",
-      "release",
-      "view",
-      tag,
-      "--repo",
-      RELEASE_REPO,
-      "--json",
-      "tagName,assets",
-    ]);
-    if (release.code === 0) {
-      const assets = (JSON.parse(release.stdout) as { assets?: Array<{ name?: string }> }).assets ?? [];
-      const names = new Set(assets.map((asset) => asset.name));
+    const release = await giteaReleaseByTag(target, tag).catch(() => undefined);
+    if (release !== undefined) {
+      const names = new Set((release.assets ?? []).map((asset) => asset.name));
       releaseOk =
         names.has(`devboard-harness-${version}.tgz`) &&
         names.has(`devboard-harness-${version}.tgz.sha256`);
@@ -279,11 +280,40 @@ while (Date.now() < deadline) {
   if (releaseOk && launcherOk) break;
   await Bun.sleep(5000);
 }
-if (!releaseOk) fail(`GitHub Release ${tag} is missing its harness tarball or checksum`);
+if (!releaseOk) fail(`Gitea release ${tag} is missing its harness tarball or checksum`);
 if (!launcherOk) fail(`${LAUNCHER_PACKAGE}@${version} is not visible on npmjs`);
 
 console.log(`publish: ${tag} carries the harness tarball and checksum`);
 console.log(`publish: ${LAUNCHER_PACKAGE}@${version} is published`);
+
+if (remotes.includes("github")) {
+  console.log("publish: pushing the GitHub mirror");
+  const mirrored = run(
+    [
+      "git",
+      "-C",
+      repoRoot,
+      "-c",
+      "credential.helper=",
+      "-c",
+      "credential.https://github.com.helper=!/usr/bin/gh auth git-credential",
+      "push",
+      "github",
+      "refs/heads/*:refs/heads/*",
+      "refs/tags/*:refs/tags/*",
+    ],
+  );
+  if (mirrored.code !== 0) {
+    fail(`could not push the GitHub mirror: ${mirrored.stderr || mirrored.stdout}`);
+  }
+  const mirrorTip = git(["ls-remote", "github", "refs/heads/main"]);
+  if (mirrorTip.code !== 0 || !mirrorTip.stdout.startsWith(published)) {
+    fail("the GitHub mirror does not name the published commit");
+  }
+  console.log(`publish: github/main names ${published.slice(0, 7)}`);
+} else {
+  console.log("publish: no github mirror remote; skipped");
+}
 
 const inventory = dashboardInventory(discoverInstances());
 for (const entry of inventory) console.log(describeInventory(entry));

@@ -1,4 +1,6 @@
 import type { IssuesIssue } from "./state";
+import { configuredGiteaToken, type Forge } from "../lib/forge";
+import { GiteaError, giteaListIssues, type FetchLike } from "../lib/gitea";
 
 /**
  * The tracker read: the origin's open issues through the operator's `gh`
@@ -19,6 +21,12 @@ export interface TrackerOptions {
   /** Injected for tests; defaults to the operator's `gh`. */
   run?: (argv: string[]) => GhOutcome | Promise<GhOutcome>;
   environment?: Record<string, string | undefined>;
+  /** The origin forge; defaults to GitHub for backward compatibility. */
+  forge?: Forge;
+  /** Gitea HTTP origin. */
+  baseUrl?: string;
+  /** Injected transport for the Gitea API. */
+  giteaFetch?: FetchLike;
 }
 
 export type PollResult =
@@ -166,8 +174,54 @@ function rateLimitUntil(headers: Map<string, string>, now: Date): string {
   return new Date(now.getTime() + 60_000).toISOString();
 }
 
+async function pollGiteaIssues(options: TrackerOptions): Promise<PollResult> {
+  const environment = options.environment ?? process.env;
+  if (options.baseUrl === undefined || options.baseUrl.length === 0) {
+    return {
+      kind: "error",
+      detail: "the Gitea address is not configured; set DEVBOARD_GITEA_URL",
+    };
+  }
+  const token = configuredGiteaToken(environment);
+  try {
+    const issues = await giteaListIssues(
+      {
+        baseUrl: options.baseUrl,
+        project: options.repository,
+        ...(token === undefined ? {} : { token }),
+      },
+      "open",
+      options.giteaFetch,
+    );
+    return {
+      kind: "issues",
+      issues: issues.map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        url: issue.url,
+        createdAt: issue.createdAt,
+        labels: issue.labels,
+      })),
+      etag: options.etag ?? null,
+    };
+  } catch (error) {
+    if (error instanceof GiteaError && (error.status === 403 || error.status === 429)) {
+      return {
+        kind: "rate-limited",
+        until: new Date(Date.now() + 60_000).toISOString(),
+        detail: error.message,
+      };
+    }
+    return {
+      kind: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 /** One conditional poll of the origin's open, non-pull-request issues. */
 export async function pollOpenIssues(options: TrackerOptions): Promise<PollResult> {
+  if ((options.forge ?? "github") === "gitea") return await pollGiteaIssues(options);
   const execute = options.run ?? ((argv: string[]) => gh(argv, options.environment));
   const argv = [
     "api",

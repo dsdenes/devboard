@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { createWriteStream, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -10,14 +10,21 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
+import { configuredGiteaToken, configuredGiteaUrl } from "./forge";
+import {
+  giteaDownloadAsset,
+  giteaRequest,
+  repoPath,
+  type GiteaAsset,
+  type GiteaTarget,
+} from "./gitea";
 
 /**
- * Private release transport shared by the harness server, its release script,
- * and the verification fixtures. The harness package itself is never published
- * to a registry: each release is a tarball plus a `.sha256` asset on GitHub
- * Releases, read through the authenticated `gh` CLI.
+ * Release transport shared by the harness server, its release script, and the
+ * verification fixtures. The harness package is never published to a registry:
+ * each release is a tarball plus a `.sha256` asset on the canonical Gitea
+ * instance, read from the public API with no credential and no `gh`.
  */
 
 export const RELEASE_REPO = "dsdenes/devboard";
@@ -27,7 +34,7 @@ export const CHECKSUM_SUFFIX = ".sha256";
 
 export type ReleaseSource =
   | { kind: "dir"; directory: string }
-  | { kind: "gh"; repo: string };
+  | { kind: "gitea"; baseUrl: string; repo: string; token?: string };
 
 export interface ReleaseAsset {
   name: string;
@@ -65,13 +72,55 @@ export class ReleaseError extends Error {}
  */
 export class ReleaseFeedError extends ReleaseError {}
 
-/** The release backend the environment asks for; CI and tests use a directory. */
-export function releaseSource(env: NodeJS.ProcessEnv = process.env): ReleaseSource {
+interface PersistedRelease {
+  url?: string;
+  repo?: string;
+}
+
+/** The release coordinates a launcher install persisted in `install.json`. */
+function persistedRelease(stateDir: string | undefined): PersistedRelease {
+  if (stateDir === undefined) return {};
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(stateDir, "install.json"), "utf8"));
+    if (typeof parsed !== "object" || parsed === null || !("release" in parsed)) return {};
+    const release = parsed.release;
+    if (typeof release !== "object" || release === null) return {};
+    return {
+      ...("url" in release && typeof release.url === "string" ? { url: release.url } : {}),
+      ...("repo" in release && typeof release.repo === "string" ? { repo: release.repo } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The release backend the environment asks for. A directory overrides the
+ * feed for CI and fixtures; otherwise the public Gitea API is used, with the
+ * address taken from configuration or the install state the launcher wrote.
+ */
+export function releaseSource(
+  env: NodeJS.ProcessEnv = process.env,
+  stateDir?: string,
+): ReleaseSource {
   const directory = env.DEVBOARD_RELEASE_DIR;
   if (directory !== undefined && directory.length > 0) {
     return { kind: "dir", directory: resolve(directory) };
   }
-  return { kind: "gh", repo: env.DEVBOARD_RELEASE_REPO ?? RELEASE_REPO };
+  const persisted = persistedRelease(stateDir);
+  const baseUrl =
+    env.DEVBOARD_RELEASE_URL ??
+    configuredGiteaUrl(env) ??
+    persisted.url ??
+    "";
+  const repo = env.DEVBOARD_RELEASE_REPO ?? persisted.repo ?? RELEASE_REPO;
+  const token = configuredGiteaToken(env);
+  return {
+    kind: "gitea",
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    repo,
+    ...(token === undefined ? {} : { token }),
+  };
 }
 
 /** Runs one command without a shell; stdout is bounded so a hung tool cannot exhaust memory. */
@@ -229,11 +278,6 @@ async function directoryRelease(directory: string): Promise<ReleaseInfo> {
   };
 }
 
-interface GithubRelease {
-  tag_name?: unknown;
-  assets?: unknown;
-}
-
 /**
  * The error for a body that is not one JSON release object: a proxy page, a
  * truncated response, or a payload from a different tool. The first line is
@@ -243,11 +287,29 @@ function unreadableDescription(stdout: string): ReleaseFeedError {
   const first = stdout.trim().split("\n")[0]?.trim() ?? "";
   const snippet =
     first.length === 0 ? "no output" : first.length > 200 ? `${first.slice(0, 200)}…` : first;
-  return new ReleaseFeedError(`gh returned an unreadable release description: ${snippet}`);
+  return new ReleaseFeedError(`the release feed returned an unreadable description: ${snippet}`);
+}
+
+function releaseAssets(value: unknown): ReleaseAsset[] {
+  if (!Array.isArray(value)) return [];
+  const assets: ReleaseAsset[] = [];
+  for (const asset of value) {
+    if (typeof asset !== "object" || asset === null) continue;
+    const name = "name" in asset ? asset.name : undefined;
+    const id = "id" in asset ? asset.id : undefined;
+    const size = "size" in asset ? asset.size : undefined;
+    if (typeof name !== "string") continue;
+    assets.push({
+      name,
+      ...(typeof id === "number" ? { id } : {}),
+      ...(typeof size === "number" ? { size } : {}),
+    });
+  }
+  return assets;
 }
 
 /**
- * Reads the release description `gh api` prints. Anything that is not one JSON
+ * Reads a release document the Gitea API prints. Anything that is not one JSON
  * release object is a feed the harness cannot use, not a harness defect.
  */
 export function parseReleaseDescription(stdout: string): ReleaseInfo {
@@ -260,148 +322,48 @@ export function parseReleaseDescription(stdout: string): ReleaseInfo {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw unreadableDescription(stdout);
   }
-  const description = parsed as GithubRelease;
-  if (typeof description.tag_name !== "string") {
+  if (!("tag_name" in parsed) || typeof parsed.tag_name !== "string") {
     throw new ReleaseError("the latest release has no tag");
   }
-  const assets: ReleaseAsset[] = [];
-  if (Array.isArray(description.assets)) {
-    for (const asset of description.assets) {
-      if (typeof asset !== "object" || asset === null) continue;
-      const name = "name" in asset ? asset.name : undefined;
-      const id = "id" in asset ? asset.id : undefined;
-      const size = "size" in asset ? asset.size : undefined;
-      if (typeof name !== "string") continue;
-      assets.push({
-        name,
-        ...(typeof id === "number" ? { id } : {}),
-        ...(typeof size === "number" ? { size } : {}),
-      });
-    }
-  }
-  return { version: versionFromTag(description.tag_name), tag: description.tag_name, assets };
+  return {
+    version: versionFromTag(parsed.tag_name),
+    tag: parsed.tag_name,
+    assets: releaseAssets("assets" in parsed ? parsed.assets : undefined),
+  };
 }
 
-async function githubRelease(repo: string): Promise<ReleaseInfo> {
-  const result = await exec(
-    "gh",
-    ["api", `repos/${repo}/releases/latest`],
-    { cwd: homedir(), timeoutMs: 60_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
+async function giteaRelease(source: Extract<ReleaseSource, { kind: "gitea" }>): Promise<ReleaseInfo> {
+  if (source.baseUrl.length === 0) {
+    throw new ReleaseError(
+      "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
+    );
+  }
+  const target: GiteaTarget = {
+    baseUrl: source.baseUrl,
+    project: source.repo,
+    ...(source.token === undefined ? {} : { token: source.token }),
+  };
+  const response = await giteaRequest(
+    target,
+    `${repoPath(target)}/releases/latest`,
+    undefined,
+    fetch,
+    "application/json",
   );
-  if (result.code !== 0) throw failure("gh api releases/latest", result);
-  return parseReleaseDescription(result.stdout);
+  return parseReleaseDescription(await response.text());
 }
 
 /** Metadata for the latest release the configured backend exposes. */
 export async function latestRelease(source: ReleaseSource): Promise<ReleaseInfo> {
-  return source.kind === "dir" ? directoryRelease(source.directory) : githubRelease(source.repo);
+  return source.kind === "dir" ? directoryRelease(source.directory) : giteaRelease(source);
 }
 
 /** How long one release asset download may run before it is killed. */
 export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
-/** Grace between SIGTERM and SIGKILL for a download that ignores the first signal. */
-const DOWNLOAD_KILL_GRACE_MS = 1_000;
-
-async function downloadAsset(
-  repo: string,
-  asset: ReleaseAsset,
-  destination: string,
-  timeoutMs: number,
-  command: string[],
-): Promise<void> {
-  if (asset.id === undefined) {
-    throw new ReleaseError(`release asset ${asset.name} has no id`);
-  }
-  await mkdir(dirname(destination), { recursive: true });
-  const download = Promise.withResolvers<void>();
-  try {
-    const child = spawn(
-      command[0] ?? "gh",
-      [
-        ...command.slice(1),
-        "api",
-        "-H",
-        "Accept: application/octet-stream",
-        `repos/${repo}/releases/assets/${asset.id}`,
-      ],
-      {
-        cwd: dirname(destination),
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, GH_PROMPT_DISABLED: "1" },
-      },
-    );
-    const sink = createWriteStream(destination);
-    const err: Buffer[] = [];
-    let settled = false;
-    let timedOut = false;
-    let killTimer: NodeJS.Timeout | undefined;
-    const deadline = setTimeout(() => {
-      // A stalled network leaves gh blocked on the response, so the child owns
-      // its own deadline: SIGTERM, then SIGKILL once the grace expires.
-      timedOut = true;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), DOWNLOAD_KILL_GRACE_MS);
-      killTimer.unref?.();
-    }, timeoutMs);
-    deadline.unref?.();
-    const clearTimers = () => {
-      clearTimeout(deadline);
-      clearTimeout(killTimer);
-    };
-    const fail = (error: unknown) => {
-      if (settled) return;
-      settled = true;
-      clearTimers();
-      sink.destroy();
-      download.reject(error);
-    };
-    child.stdout.pipe(sink);
-    child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
-    child.on("error", fail);
-    sink.on("error", (error) => {
-      child.kill("SIGKILL");
-      fail(error);
-    });
-    // Settling only after `close` proves the child is gone before the caller
-    // is told the download failed, so no downloader outlives it.
-    child.on("close", (code) => {
-      if (settled) return;
-      // The child is gone; only the write-sink flush may still be pending.
-      clearTimers();
-      if (timedOut) {
-        fail(
-          new ReleaseError(
-            `gh asset download timed out after ${timeoutMs} ms: ${asset.name}`,
-          ),
-        );
-        return;
-      }
-      sink.end(() => {
-        if (settled) return;
-        settled = true;
-        clearTimers();
-        if (code === 0) download.resolve();
-        else {
-          const detail = Buffer.concat(err).toString("utf8").trim().split("\n")[0] ?? "";
-          download.reject(
-            new ReleaseError(`gh asset download failed: ${detail || `exit ${code}`}`),
-          );
-        }
-      });
-    });
-    await download.promise;
-  } catch (error) {
-    // A partial asset is never left behind for a later checksum or install.
-    await rm(destination, { force: true }).catch(() => undefined);
-    throw error;
-  }
-}
 
 export interface DownloadReleaseOptions {
   /** Deadline for each asset download; defaults to `DEFAULT_DOWNLOAD_TIMEOUT_MS`. */
   timeoutMs?: number;
-  /** Command that fetches an asset; defaults to `gh`. */
-  ghCommand?: string[];
 }
 
 /** Copies the release tarball and checksum into `destination`. */
@@ -425,15 +387,37 @@ export async function downloadRelease(
     await copyFile(join(source.directory, basename(checksum)), checksum);
     return { tarball, checksum };
   }
-  const tarballAsset = release.assets.find((asset) => asset.name === basename(tarball));
-  const checksumAsset = release.assets.find((asset) => asset.name === basename(checksum));
-  if (tarballAsset === undefined || checksumAsset === undefined) {
-    throw new ReleaseError(`release ${release.tag} lacks a required asset`);
+  if (source.baseUrl.length === 0) {
+    throw new ReleaseError(
+      "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
+    );
   }
+  const target = {
+    baseUrl: source.baseUrl,
+    project: source.repo,
+    ...(source.token === undefined ? {} : { token: source.token }),
+  };
   const timeoutMs = options.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
-  const command = options.ghCommand ?? ["gh"];
-  await downloadAsset(source.repo, tarballAsset, tarball, timeoutMs, command);
-  await downloadAsset(source.repo, checksumAsset, checksum, timeoutMs, command);
+  const byName = new Map(release.assets.map((asset) => [asset.name, asset]));
+  for (const [name, path] of [
+    [basename(tarball), tarball],
+    [basename(checksum), checksum],
+  ] as const) {
+    const asset = byName.get(name);
+    if (asset === undefined) throw new ReleaseError(`release ${release.tag} lacks ${name}`);
+    const giteaAsset: GiteaAsset = {
+      name: asset.name,
+      ...(asset.id === undefined ? {} : { id: asset.id }),
+      ...(asset.size === undefined ? {} : { size: asset.size }),
+    };
+    try {
+      await giteaDownloadAsset(target, giteaAsset, path, { timeoutMs });
+    } catch (error) {
+      throw error instanceof ReleaseError
+        ? error
+        : new ReleaseError(error instanceof Error ? error.message : String(error));
+    }
+  }
   return { tarball, checksum };
 }
 
@@ -594,8 +578,6 @@ export async function installRelease(options: {
   env?: NodeJS.ProcessEnv;
   /** Deadline for each asset download; defaults to `DEFAULT_DOWNLOAD_TIMEOUT_MS`. */
   downloadTimeoutMs?: number;
-  /** Command that fetches an asset; defaults to `gh`. */
-  ghCommand?: string[];
 }): Promise<string> {
   const downloadDir = join(options.stateDir, "updates", `download-${randomUUID()}`);
   await mkdir(downloadDir, { recursive: true });
@@ -604,7 +586,6 @@ export async function installRelease(options: {
       ...(options.downloadTimeoutMs === undefined
         ? {}
         : { timeoutMs: options.downloadTimeoutMs }),
-      ...(options.ghCommand === undefined ? {} : { ghCommand: options.ghCommand }),
     });
     await verifyChecksum(files.tarball, files.checksum);
     await installHarnessTarball({

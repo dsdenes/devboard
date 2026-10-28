@@ -8,6 +8,17 @@ import {
   type ResolveOptions,
   type ResolvedAuth,
 } from "../lib/forge-auth.ts";
+import {
+  DRAFT_PREFIX,
+  draftTitle,
+  giteaCreatePull,
+  giteaEditPull,
+  giteaMergePull,
+  giteaPull,
+  readyTitle,
+  type FetchLike,
+  type GiteaTarget,
+} from "../lib/gitea";
 
 /**
  * The Flow session's pull-request lifecycle against the host's forge.
@@ -23,6 +34,8 @@ export interface ForgeTarget {
   forge: Forge;
   host: string;
   project: string;
+  /** Gitea HTTP origin; resolved from configuration or an HTTP origin. */
+  baseUrl?: string;
 }
 
 export interface CommandResult {
@@ -117,6 +130,7 @@ export class CommandFlowForge implements FlowPrAdapter {
   readonly #env: Record<string, string>;
   readonly #resolver: (exec: Exec, options: ResolveOptions) => Promise<AuthOutcome>;
   readonly #auth = new Map<string, Promise<ResolvedAuth>>();
+  readonly #giteaFetch: FetchLike | undefined;
 
   /**
    * `resolve` is injectable so a test can prove the command shapes without a
@@ -126,10 +140,12 @@ export class CommandFlowForge implements FlowPrAdapter {
     exec: Exec,
     env: Record<string, string> = {},
     resolve: (exec: Exec, options: ResolveOptions) => Promise<AuthOutcome> = resolveForgeAuth,
+    giteaFetch?: FetchLike,
   ) {
     this.#exec = exec;
     this.#env = env;
     this.#resolver = resolve;
+    this.#giteaFetch = giteaFetch;
   }
 
   async #resolve(target: ForgeTarget, cwd: string): Promise<ResolvedAuth> {
@@ -144,6 +160,8 @@ export class CommandFlowForge implements FlowPrAdapter {
         cwd,
         required: "write",
         env: { ...process.env, ...this.#env },
+        ...(target.baseUrl === undefined ? {} : { baseUrl: target.baseUrl }),
+        ...(this.#giteaFetch === undefined ? {} : { giteaFetch: this.#giteaFetch }),
       });
       if (isAuthFailure(outcome)) throw new Error(outcome.error);
       return outcome;
@@ -180,7 +198,27 @@ export class CommandFlowForge implements FlowPrAdapter {
     return result;
   }
 
+  async #gitea(target: ForgeTarget, cwd: string): Promise<GiteaTarget> {
+    const auth = await this.#resolve(target, cwd);
+    if (auth.baseUrl === undefined || auth.baseUrl.length === 0) {
+      throw new Error("Creating a Gitea pull request needs DEVBOARD_GITEA_URL.");
+    }
+    return {
+      baseUrl: auth.baseUrl,
+      project: target.project,
+      ...(auth.token === undefined ? {} : { token: auth.token }),
+    };
+  }
+
   async createDraft(input: ForgePrInput): Promise<ForgePrState> {
+    if (input.target.forge === "gitea") {
+      const pull = await giteaCreatePull(
+        await this.#gitea(input.target, input.cwd),
+        { head: input.head, base: input.base, title: input.title, body: input.body },
+        this.#giteaFetch,
+      );
+      return { number: pull.number, url: pull.url, state: "open", draft: true };
+    }
     const args =
       input.target.forge === "github"
         ? [
@@ -227,6 +265,15 @@ export class CommandFlowForge implements FlowPrAdapter {
   }
 
   async update(input: ForgePrInput & { number: number }): Promise<void> {
+    if (input.target.forge === "gitea") {
+      await giteaEditPull(
+        await this.#gitea(input.target, input.cwd),
+        input.number,
+        { title: draftTitle(input.title), body: input.body },
+        this.#giteaFetch,
+      );
+      return;
+    }
     const args =
       input.target.forge === "github"
         ? ["pr", "edit", String(input.number), "--title", input.title, "--body", input.body]
@@ -249,6 +296,17 @@ export class CommandFlowForge implements FlowPrAdapter {
   }
 
   async markReady(cwd: string, target: ForgeTarget, number: number): Promise<void> {
+    if (target.forge === "gitea") {
+      const gitea = await this.#gitea(target, cwd);
+      const current = await giteaPull(gitea, number, this.#giteaFetch);
+      await giteaEditPull(
+        gitea,
+        number,
+        { title: current.title.startsWith(DRAFT_PREFIX) ? readyTitle(current.title) : current.title },
+        this.#giteaFetch,
+      );
+      return;
+    }
     const args =
       target.forge === "github"
         ? ["pr", "ready", String(number)]
@@ -258,6 +316,10 @@ export class CommandFlowForge implements FlowPrAdapter {
   }
 
   async merge(cwd: string, target: ForgeTarget, number: number): Promise<void> {
+    if (target.forge === "gitea") {
+      await giteaMergePull(await this.#gitea(target, cwd), number, this.#giteaFetch);
+      return;
+    }
     // A merge commit is the only accepted method: never squash, never rebase.
     const args =
       target.forge === "github"
@@ -268,6 +330,10 @@ export class CommandFlowForge implements FlowPrAdapter {
   }
 
   async view(cwd: string, target: ForgeTarget, number: number): Promise<ForgePrState> {
+    if (target.forge === "gitea") {
+      const pull = await giteaPull(await this.#gitea(target, cwd), number, this.#giteaFetch);
+      return { number: pull.number, url: pull.url, state: pull.state, draft: pull.draft };
+    }
     const args =
       target.forge === "github"
         ? ["pr", "view", String(number), "--json", "number,url,state,isDraft"]

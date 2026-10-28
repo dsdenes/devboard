@@ -942,7 +942,7 @@ describe("Flow pull-request lifecycle", () => {
     await createGoal(client);
     await startFlow(client, fixture);
     const error = await client.waitFor((event) => event.type === "flowError");
-    expect(String(error.message)).toContain("does not name a GitHub or GitLab repository");
+    expect(String(error.message)).toContain("does not name a supported repository");
     expect(forgeStub.calls).toHaveLength(0);
     await stopFlow(client);
     client.close();

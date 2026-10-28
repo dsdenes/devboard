@@ -223,8 +223,12 @@ try {
   const noOmp = await toolPath(root, { omit: ["omp"] });
   expectFailure(launcher(["doctor", "--host", host.directory], { ...newEnv, PATH: noOmp }), "omp");
 
-  const badGh = await toolPath(root, { gh: "echo 'not logged in' >&2; exit 1" });
-  expectFailure(launcher(["doctor", "--host", host.directory], { ...newEnv, PATH: badGh }), "gh auth");
+  expectFailure(
+    launcher(["doctor", "--host", host.directory], {
+      DEVBOARD_RELEASE_URL: "http://127.0.0.1:1",
+    }),
+    "release access",
+  );
 
   console.log("verify:install: all checks passed");
 } finally {

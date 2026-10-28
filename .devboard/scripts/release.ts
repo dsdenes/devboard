@@ -4,13 +4,25 @@
  *
  * The version is `0.1.<commit-count>` over the full history, so every commit
  * has its own immutable version. The harness tarball and its `.sha256` go to
- * GitHub Releases; the public launcher tarball goes to npmjs. Re-running the
- * same commit is a no-op: an existing npm version and an existing release are
- * left untouched.
+ * the canonical Gitea release; the public launcher tarball goes to npmjs.
+ * Re-running the same commit is a no-op: an existing npm version and an
+ * existing release with both assets are left untouched.
  */
 
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  configuredGiteaToken,
+  configuredGiteaUrl,
+  parseForgeRemote,
+} from "../lib/forge";
+import {
+  GiteaError,
+  giteaCreateRelease,
+  giteaReleaseByTag,
+  giteaUploadAsset,
+  type GiteaTarget,
+} from "../lib/gitea";
 import { createReleaseDirectory, harnessRoot, repoRoot } from "./harness-package";
 
 const RELEASE_REPO = "dsdenes/devboard";
@@ -45,6 +57,24 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+function releaseTarget(token?: string): GiteaTarget {
+  let baseUrl = configuredGiteaUrl(process.env);
+  if (baseUrl === undefined) {
+    const origin = run("git", ["remote", "get-url", "origin"], repoRoot);
+    if (origin.code === 0) {
+      baseUrl = parseForgeRemote(origin.stdout)?.originUrl;
+    }
+  }
+  if (baseUrl === undefined) {
+    fail("the Gitea address is not configured; set DEVBOARD_GITEA_URL");
+  }
+  return {
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    project: process.env.DEVBOARD_RELEASE_REPO ?? RELEASE_REPO,
+    ...(token === undefined ? {} : { token }),
+  };
+}
+
 const head = run("git", ["rev-parse", "HEAD"], repoRoot);
 if (head.code !== 0) fail("could not read HEAD");
 
@@ -54,20 +84,19 @@ const version = `0.1.${Number(count.stdout)}`;
 if (!/^0\.1\.[0-9]+$/.test(version)) fail(`computed an invalid version: ${version}`);
 const tag = `v${version}`;
 
+const token = configuredGiteaToken(process.env);
+const target = releaseTarget(token);
+
 const publishable = run("npm", ["view", `${LAUNCHER_PACKAGE}@${version}`, "version"]);
 const launcherExists = publishable.code === 0 && publishable.stdout === version;
-const releaseView = run("gh", [
-  "release",
-  "view",
-  tag,
-  "--repo",
-  RELEASE_REPO,
-  "--json",
-  "tagName",
-  "--jq",
-  ".tagName",
-]);
-const releaseExists = releaseView.code === 0;
+
+let existing;
+try {
+  existing = await giteaReleaseByTag(target, tag);
+} catch (error) {
+  fail(error instanceof GiteaError ? error.message : String(error));
+}
+const releaseExists = existing !== undefined;
 
 console.log(`release: ${tag} at ${head.stdout.slice(0, 7)}`);
 
@@ -99,22 +128,27 @@ if (launcherExists) {
 }
 
 if (releaseExists) {
-  console.log(`release: ${tag} already exists; leaving its assets untouched`);
+  const assets = new Set((existing?.assets ?? []).map((asset) => asset.name));
+  const missing = [tarball, checksum].filter((path) => !assets.has(path.split("/").pop() ?? ""));
+  if (missing.length > 0) {
+    if (token === undefined) fail("GITEA_TOKEN is required to add a missing release asset");
+    if (existing?.id === undefined) fail(`release ${tag} has no identifier`);
+    for (const path of missing) {
+      await giteaUploadAsset(target, existing.id, path.split("/").pop() ?? "", await readFile(path));
+      console.log(`release: uploaded missing asset ${path.split("/").pop()}`);
+    }
+  }
+  console.log(`release: ${tag} already exists; its assets are intact`);
 } else {
-  const created = run("gh", [
-    "release",
-    "create",
+  if (token === undefined) fail("GITEA_TOKEN is required to create a release");
+  const created = await giteaCreateRelease(target, {
     tag,
-    "--repo",
-    RELEASE_REPO,
-    "--title",
-    `Devboard harness ${version}`,
-    "--notes",
-    `Harness package ${version}\n\nLauncher: ${LAUNCHER_PACKAGE}@${version}`,
-    tarball,
-    checksum,
-  ]);
-  if (created.code !== 0) fail(`gh release create failed: ${created.stderr}`);
+    title: `Devboard harness ${version}`,
+    notes: `Harness package ${version}\n\nLauncher: ${LAUNCHER_PACKAGE}@${version}`,
+  });
+  if (created.id === undefined) fail("the created release has no identifier");
+  await giteaUploadAsset(target, created.id, tarball.split("/").pop() ?? "", await readFile(tarball));
+  await giteaUploadAsset(target, created.id, checksum.split("/").pop() ?? "", await readFile(checksum));
   console.log(`release: created ${tag} with the harness tarball and checksum`);
 }
 
