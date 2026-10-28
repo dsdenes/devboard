@@ -1972,11 +1972,14 @@ export function createApp(options: AppOptions) {
   issues.begin();
 
   /**
-   * The Drafts view's one elaboration peer. It is a dashboard child, not a
-   * detached worker: it lives only while the server that started it is up.
+   * The Drafts view's one elaboration peer. A detached owner process holds
+   * the agent and persists its run under the state directory, so the reload
+   * control's replacement attaches to the same peer; any other server exit
+   * ends it and leaves the interrupted failure behind.
    */
   const goalDrafts = new GoalDraftManager({
     repoDir,
+    stateDir,
     command: agentCommand,
     environment: peerEnvironment,
     send: (event) => sendAll(event),
@@ -2017,8 +2020,8 @@ export function createApp(options: AppOptions) {
     remember(skillsPreparation?.agent);
     remember(discoverRun?.agent, discoverRun?.cwd);
     for (const lane of liveLanes) remember(lane.agent);
-    const draftPeer = goalDrafts.child();
-    if (draftPeer !== undefined) children.push(draftPeer);
+    // A running elaboration belongs to its detached owner, not to this
+    // process: a replacement must adopt it, never end it as an orphan.
     return children;
   }
 
@@ -3105,6 +3108,8 @@ export function createApp(options: AppOptions) {
       clearInterval(restartWhenIdleTimer);
       restartWhenIdleTimer = undefined;
     }
+    // A running elaboration belongs to the replacement, not to this process.
+    goalDrafts.handoff();
     broadcast({ type: "serverRestarting" });
     try {
       options.restart?.();
@@ -6274,7 +6279,7 @@ export function createApp(options: AppOptions) {
     ask.dispose();
     flow.dispose();
     issues.dispose();
-    goalDrafts.dispose();
+    goalDrafts.dispose(restarting);
     scout.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);

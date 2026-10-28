@@ -14,8 +14,9 @@ import { basename, join, resolve } from "node:path";
 import { configuredGiteaToken, configuredGiteaUrl } from "./forge";
 import {
   giteaDownloadAsset,
-  giteaLatestRelease,
   giteaReleaseByTag,
+  giteaRequest,
+  repoPath,
   type GiteaAsset,
   type GiteaReleaseDocument,
   type GiteaTarget,
@@ -430,7 +431,10 @@ async function giteaRelease(source: GiteaSource): Promise<ReleaseInfo> {
       "the Gitea release address is not configured; set DEVBOARD_GITEA_URL",
     );
   }
-  return releaseFromDocument(await giteaLatestRelease(giteaTarget(source)));
+  const target = giteaTarget(source);
+  const response = await giteaRequest(target, `${repoPath(target)}/releases/latest`);
+  // A body that is not one JSON release object is feed context, not a defect.
+  return parseReleaseDescription(await response.text());
 }
 
 async function giteaReleaseForVersion(

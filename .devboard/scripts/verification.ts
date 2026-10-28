@@ -231,7 +231,7 @@ export async function startInstalledDashboard(
       GOAL_FILE: join(host, "GOAL.md"),
       STATIC_DIR: join(harness, "dist"),
       STATE_DIR: join(prefix, ".tmp"),
-      AGENT_COMMAND: "omp acp",
+      AGENT_COMMAND: env.AGENT_COMMAND ?? "omp acp",
     },
   });
   child.unref();

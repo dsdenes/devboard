@@ -1,8 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { AcpActivity, AcpQuestion } from "../server/acp";
 import {
   GoalDraftError,
   GoalDraftManager,
@@ -10,128 +9,97 @@ import {
   listGoalDrafts,
   readGoalDraft,
   resolveGoalDraft,
-  type GoalDraftPeer,
-  type GoalDraftPeerOptions,
 } from "../server/goal-drafts";
+import { goalDraftStateDirectory, readGoalDraftOwnerState } from "../server/goal-draft-owner";
 
 /**
- * Draft reads and the one elaboration peer. Every fixture lives under
- * `.devboard/.tmp`; the peer is a controllable fake and no agent, GitHub
- * object, or file outside the fixture is touched.
+ * Draft reads and the one detached elaboration owner. Every fixture lives
+ * under `.devboard/.tmp`; the peer is the deterministic stub agent and no
+ * agent, GitHub object, or file outside the fixture is touched.
  */
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const testRoot = join(harnessRoot, ".tmp");
+const stubAgent = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
 const temporaryDirectories: string[] = [];
 const managers: GoalDraftManager[] = [];
 
 afterAll(async () => {
   for (const manager of managers) manager.dispose();
+  // Give each interrupted owner its check interval to end its peer.
+  await Bun.sleep(750);
   await Promise.all(
     temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
 
-async function fixture(): Promise<{ root: string; drafts: string }> {
+async function fixture(): Promise<{ root: string; drafts: string; stateDir: string; log: string }> {
   await mkdir(testRoot, { recursive: true });
   const root = await mkdtemp(join(testRoot, "goal-drafts-"));
   temporaryDirectories.push(root);
   const drafts = join(root, ".devboard", "goal-proposals");
   await mkdir(drafts, { recursive: true });
-  return { root, drafts };
+  const stateDir = join(root, "state");
+  await mkdir(stateDir, { recursive: true });
+  return { root, drafts, stateDir, log: join(root, "agent.log") };
 }
 
 function draftText(heading: string, body: string): string {
   return `# ${heading}\n\n> Unprocessed draft.\n\n${body}\n`;
 }
 
-class FakePeer implements GoalDraftPeer {
-  readonly pid = 4242;
-  readonly argv = ["stub-acp"];
-  readonly prompts: string[] = [];
-  readonly options: GoalDraftPeerOptions;
-  closed = false;
-  closes = 0;
-  private settle: { resolve: (value: unknown) => void; reject: (error: Error) => void } | undefined;
-
-  constructor(options: GoalDraftPeerOptions) {
-    this.options = options;
-  }
-
-  run(prompt: string): Promise<unknown> {
-    this.prompts.push(prompt);
-    const deferred = Promise.withResolvers<unknown>();
-    this.settle = { resolve: deferred.resolve, reject: deferred.reject };
-    return deferred.promise;
-  }
-
-  answer(id: number | string, value: string): boolean {
-    if (this.lastQuestion === undefined || String(this.lastQuestion.id) !== String(id)) return false;
-    this.options.onActivity({ text: `answered ${value}`, append: false });
-    return true;
-  }
-
-  private lastQuestion: AcpQuestion | undefined;
-
-  close(): void {
-    this.closes += 1;
-    this.closed = true;
-    this.settle?.reject(new Error("Agent process exited before answering."));
-  }
-
-  emit(text: string, append = false): void {
-    this.options.onActivity({ text, append } satisfies AcpActivity);
-  }
-
-  ask(question: AcpQuestion): void {
-    this.lastQuestion = question;
-    this.options.onQuestion(question);
-  }
-
-  succeed(): void {
-    this.settle?.resolve({});
-    this.settle = undefined;
-  }
-
-  fail(message: string): void {
-    this.options.onStderr(`${message}\n`);
-    this.settle?.reject(new Error(message));
-    this.settle = undefined;
-  }
-}
-
 function managerFor(
   root: string,
-  peers: FakePeer[],
-  environment: () => Promise<Record<string, string | undefined>> = async () => ({}),
-): { manager: GoalDraftManager; events: unknown[] } {
-  const events: unknown[] = [];
+  stateDir: string,
+  log: string,
+  environment: () => Promise<Record<string, string | undefined>> = async () => ({
+    ...process.env,
+  }),
+): GoalDraftManager {
   const manager = new GoalDraftManager({
     repoDir: root,
-    command: "omp acp",
-    send: (event) => events.push(event),
+    stateDir,
+    command: `bun ${stubAgent} --log=${log} --goal-draft`,
     environment,
-    connect: (options) => {
-      const peer = new FakePeer(options);
-      peers.push(peer);
-      return peer;
-    },
+    send: () => undefined,
   });
   managers.push(manager);
-  return { manager, events };
+  return manager;
 }
 
-function isEventType(event: unknown, type: string): boolean {
-  return typeof event === "object" && event !== null && "type" in event && event.type === type;
+function logLines(log: string): string[] {
+  if (!existsSync(log)) return [];
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line.length > 0);
 }
 
-async function waitFor<T>(read: () => T | undefined, description: string, timeoutMs = 3000): Promise<T> {
+function startPids(log: string): number[] {
+  return logLines(log)
+    .filter((line) => line.startsWith("goal-draft-start "))
+    .map((line) => Number(line.slice("goal-draft-start ".length)));
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitFor<T>(
+  read: () => T | undefined,
+  description: string,
+  timeoutMs = 10_000,
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = read();
     if (value !== undefined && value !== null) return value;
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${description}`);
-    await Bun.sleep(10);
+    await Bun.sleep(20);
   }
 }
 
@@ -190,51 +158,63 @@ describe("draft listing and reading", () => {
 
 describe("elaboration", () => {
   test("sends exactly one /goal-draft prompt and streams activity and questions", async () => {
-    const { root, drafts } = await fixture();
-    writeFileSync(join(drafts, "elaborate-me.md"), draftText("Elaborate me", "body"));
-    const peers: FakePeer[] = [];
-    const { manager, events } = managerFor(root, peers);
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "elaborate-me.md"), draftText("Elaborate me", "STUB-QUESTION body"));
+    const manager = managerFor(root, stateDir, log);
 
     const started = await manager.start(".devboard/goal-proposals/elaborate-me.md");
     expect(started.ok).toBe(true);
-    const peer = await waitFor(() => peers[0], "the peer");
-    expect(peer.prompts).toEqual(["/goal-draft .devboard/goal-proposals/elaborate-me.md"]);
-    expect(peer.options.command).toBe("omp acp");
-    expect(peer.options.cwd).toBe(root);
-    expect(manager.snapshot().status).toBe("running");
-    expect(manager.snapshot().path).toBe(".devboard/goal-proposals/elaborate-me.md");
+    const pid = await waitFor(() => startPids(log)[0], "the stub peer's start line");
+    expect(alive(pid)).toBe(true);
+    expect(logLines(log).filter((line) => line.startsWith("goal-draft "))).toEqual([
+      "goal-draft .devboard/goal-proposals/elaborate-me.md",
+    ]);
 
-    peer.emit("Reading the goal proposals");
-    expect(manager.snapshot().activity).toEqual(["Reading the goal proposals"]);
-    peer.ask({
-      id: 3,
-      message: "Which scope?",
-      options: [{ label: "One", description: "First", recommended: true }],
-      properties: {},
-      required: undefined,
-    });
     const asked = await waitFor(
       () => (manager.snapshot().question === null ? undefined : manager.snapshot()),
       "the question",
     );
-    expect(asked.question?.message).toBe("Which scope?");
+    expect(manager.snapshot().status).toBe("running");
+    expect(manager.snapshot().path).toBe(".devboard/goal-proposals/elaborate-me.md");
+    expect(manager.snapshot().activity.join("\n")).toContain("Reading the draft");
+    expect(asked.question?.message).toBe("Choose an answer");
+    expect(asked.question?.options.map((option) => option.label)).toEqual(["Alpha", "Beta"]);
+    expect(asked.question?.options[0]?.description).toBe("Alpha leads to the first outcome.");
     expect(asked.question?.options[0]?.recommended).toBe(true);
-    expect(manager.answer(3, "One")).toBe(true);
-    expect(manager.snapshot().question).toBeNull();
-    expect(manager.snapshot().activity).toContain("answered One");
 
-    expect(events.some((event) => isEventType(event, "issuesDraftState"))).toBe(true);
+    const questionId = asked.question?.id;
+    expect(questionId).toBeDefined();
+    expect(manager.answer(questionId!, "Alpha")).toBe(true);
+    await waitFor(
+      () => (logLines(log).includes("answer Alpha") ? true : undefined),
+      "the answer reaching the peer",
+    );
+    expect(logLines(log).filter((line) => line === "answer Alpha")).toHaveLength(1);
+    await waitFor(
+      () => (manager.snapshot().status === "succeeded" ? true : undefined),
+      "the successful elaboration",
+    );
+    expect(manager.snapshot().question).toBeNull();
+    expect(existsSync(join(drafts, "elaborate-me.md"))).toBe(false);
+    expect(existsSync(join(root, ".devboard", "goals", "elaborate-me.md"))).toBe(true);
+    expect(startPids(log)).toHaveLength(1);
+    await waitFor(() => (alive(pid) ? undefined : true), "the peer to exit");
+    const stored = await waitFor(
+      () => readGoalDraftOwnerState(stateDir, root),
+      "the terminal owner state",
+    );
+    expect(stored.run.status).toBe("succeeded");
+    expect(stored.peer).toBeNull();
   });
 
   test("runs one elaboration at a time and stop keeps the draft", async () => {
-    const { root, drafts } = await fixture();
-    writeFileSync(join(drafts, "one.md"), draftText("One", "body"));
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "one.md"), draftText("One", "STUB-HANG body"));
     writeFileSync(join(drafts, "two.md"), draftText("Two", "body"));
-    const peers: FakePeer[] = [];
-    const { manager } = managerFor(root, peers);
+    const manager = managerFor(root, stateDir, log);
 
     expect((await manager.start(".devboard/goal-proposals/one.md")).ok).toBe(true);
-    const first = await waitFor(() => peers[0], "the first peer");
+    const firstPid = await waitFor(() => startPids(log)[0], "the first peer");
     const refused = await manager.start(".devboard/goal-proposals/two.md");
     expect(refused.ok).toBe(false);
     if (!refused.ok) {
@@ -243,27 +223,37 @@ describe("elaboration", () => {
     }
 
     expect(manager.stop()).toBe(true);
-    expect(first.closed).toBe(true);
-    expect(first.closes).toBe(1);
-    expect(manager.snapshot().status).toBe("stopped");
+    await waitFor(
+      () => (manager.snapshot().status === "stopped" ? true : undefined),
+      "the stopped elaboration",
+    );
     expect(existsSync(join(drafts, "one.md"))).toBe(true);
+    await waitFor(() => (alive(firstPid) ? undefined : true), "the stopped peer to exit");
 
     expect((await manager.start(".devboard/goal-proposals/two.md")).ok).toBe(true);
-    const second = await waitFor(() => peers[1], "the retried peer");
-    expect(second.prompts).toEqual(["/goal-draft .devboard/goal-proposals/two.md"]);
+    await waitFor(() => (startPids(log).length === 2 ? true : undefined), "the retried peer");
+    await waitFor(
+      () =>
+        logLines(log).includes("goal-draft .devboard/goal-proposals/two.md") ? true : undefined,
+      "the second prompt",
+    );
+    expect(logLines(log).filter((line) => line.startsWith("goal-draft ")).at(-1)).toBe(
+      "goal-draft .devboard/goal-proposals/two.md",
+    );
+    expect(manager.snapshot().status).toBe("running");
   });
 
-  test("a stop while the provider environment resolves closes the late peer without running it", async () => {
-    const { root, drafts } = await fixture();
+  test("a stop while the provider environment resolves spawns no owner", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
     writeFileSync(join(drafts, "late.md"), draftText("Late", "body"));
-    const peers: FakePeer[] = [];
     const environment = Promise.withResolvers<Record<string, string | undefined>>();
-    const { manager } = managerFor(root, peers, () => environment.promise);
+    const manager = managerFor(root, stateDir, log, () => environment.promise);
 
     const starting = manager.start(".devboard/goal-proposals/late.md");
     expect(manager.snapshot().status).toBe("running");
     expect(manager.stop()).toBe(true);
-    environment.resolve({});
+    expect(manager.snapshot().status).toBe("stopped");
+    environment.resolve({ ...process.env });
 
     const result = await starting;
     expect(result.ok).toBe(false);
@@ -271,106 +261,66 @@ describe("elaboration", () => {
     expect(manager.snapshot().status).toBe("stopped");
     expect(manager.snapshot().error).toBeNull();
     expect(existsSync(join(drafts, "late.md"))).toBe(true);
-
-    const peer = peers[0];
-    expect(peer).toBeDefined();
-    expect(peer?.prompts).toEqual([]);
-    expect(peer?.closed).toBe(true);
-    expect(peer?.closes).toBe(1);
+    expect(startPids(log)).toEqual([]);
+    expect(readGoalDraftOwnerState(stateDir, root)?.run.status).toBe("stopped");
   });
 
-  test("a connect failure after stop leaves the status stopped rather than failed", async () => {
-    const { root, drafts } = await fixture();
-    writeFileSync(join(drafts, "late-failure.md"), draftText("Late failure", "body"));
-    let manager!: GoalDraftManager;
-    manager = new GoalDraftManager({
-      repoDir: root,
-      command: "omp acp",
-      send: () => undefined,
-      environment: async () => ({}),
-      connect: () => {
-        // The stop lands while the peer is being constructed; the failure that
-        // follows must not replace the operator's `stopped` state with `failed`.
-        manager.stop();
-        throw new Error("connection refused");
-      },
+  test("an environment failure records failed with no owner and no draft loss", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "unavailable.md"), draftText("Unavailable", "body"));
+    const manager = managerFor(root, stateDir, log, async () => {
+      throw new Error("no subscription can serve this peer");
     });
-    managers.push(manager);
 
-    const result = await manager.start(".devboard/goal-proposals/late-failure.md");
+    const result = await manager.start(".devboard/goal-proposals/unavailable.md");
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.stopped).toBe(true);
-    expect(manager.snapshot().status).toBe("stopped");
-    expect(manager.snapshot().error).toBeNull();
-    expect(manager.child()).toBeUndefined();
-    expect(existsSync(join(drafts, "late-failure.md"))).toBe(true);
+    if (!result.ok) expect(result.message).toContain("no subscription");
+    const failed = await waitFor(
+      () => (manager.snapshot().status === "failed" ? manager.snapshot() : undefined),
+      "the failed elaboration",
+    );
+    expect(failed.error).toContain("no subscription");
+    expect(existsSync(join(drafts, "unavailable.md"))).toBe(true);
+    expect(startPids(log)).toEqual([]);
+    expect(readGoalDraftOwnerState(stateDir, root)?.run.status).toBe("failed");
   });
 
-  test("a failed peer keeps the draft and reports the error; retry starts a new peer", async () => {
-    const { root, drafts } = await fixture();
-    writeFileSync(join(drafts, "fail.md"), draftText("Fail", "body"));
-    const peers: FakePeer[] = [];
-    const { manager } = managerFor(root, peers);
+  test("a failed peer keeps the draft and retry starts exactly one new peer", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "fail.md"), draftText("Fail", "STUB-FAIL body"));
+    const manager = managerFor(root, stateDir, log);
 
-    await manager.start(".devboard/goal-proposals/fail.md");
-    const peer = await waitFor(() => peers[0], "the peer");
-    peer.fail("the model is unavailable");
+    expect((await manager.start(".devboard/goal-proposals/fail.md")).ok).toBe(true);
     const failed = await waitFor(
       () => (manager.snapshot().status === "failed" ? manager.snapshot() : undefined),
       "the failure",
     );
-    expect(failed.error).toBe("the model is unavailable");
+    expect(failed.error).toContain("goal label verification failed");
     expect(existsSync(join(drafts, "fail.md"))).toBe(true);
+    const firstPid = startPids(log)[0]!;
+    await waitFor(() => (alive(firstPid) ? undefined : true), "the failed peer to exit");
 
-    await manager.start(".devboard/goal-proposals/fail.md");
-    const retry = await waitFor(() => peers[1], "the retry peer");
-    expect(retry.prompts).toEqual(["/goal-draft .devboard/goal-proposals/fail.md"]);
+    expect((await manager.start(".devboard/goal-proposals/fail.md")).ok).toBe(true);
+    await waitFor(() => (startPids(log).length === 2 ? true : undefined), "the retry peer");
+    await waitFor(
+      () =>
+        logLines(log).filter((line) => line.startsWith("goal-draft ")).length === 2
+          ? true
+          : undefined,
+      "the retry prompt",
+    );
+    expect(logLines(log).filter((line) => line.startsWith("goal-draft "))).toEqual([
+      "goal-draft .devboard/goal-proposals/fail.md",
+      "goal-draft .devboard/goal-proposals/fail.md",
+    ]);
   });
 
-  test("a successful stub agent removes the draft only after it verifies the issue label", async () => {
-    const { root, drafts } = await fixture();
-    writeFileSync(join(drafts, "verified.md"), draftText("Verified", "body"));
-    writeFileSync(join(drafts, "unverified.md"), draftText("Unverified", "body"));
-    const peers: FakePeer[] = [];
-    const { manager } = managerFor(root, peers);
-
-    await manager.start(".devboard/goal-proposals/verified.md");
-    const verified = await waitFor(() => peers[0], "the verifying peer");
-    // The stub stands in for the agent: file the spec, read the issue back,
-    // and delete only when that read carries the goal label and same bytes.
-    const spec = join(root, ".devboard", "goals", "verified.md");
-    await mkdir(join(root, ".devboard", "goals"), { recursive: true });
-    writeFileSync(spec, draftText("Verified", "finalized"));
-    const verifiedLabel = true;
-    if (verifiedLabel) await unlink(join(drafts, "verified.md"));
-    verified.succeed();
-    await waitFor(
-      () => (manager.snapshot().status === "succeeded" ? true : undefined),
-      "the verified success",
-    );
-    expect(existsSync(join(drafts, "verified.md"))).toBe(false);
-    expect(existsSync(spec)).toBe(true);
-    expect(verified.closed).toBe(true);
-    expect(verified.closes).toBe(1);
-    expect(manager.child()).toBeUndefined();
-    expect(listGoalDrafts(root).map((draft) => draft.name)).toEqual(["unverified.md"]);
-
-    await manager.start(".devboard/goal-proposals/unverified.md");
-    const unverified = await waitFor(() => peers[1], "the failing verification peer");
-    expect(manager.child()).toEqual({ pid: unverified.pid, argv: ["stub-acp"], cwd: root });
-    const verifiedLabelOnCreate = false;
-    if (verifiedLabelOnCreate) await unlink(join(drafts, "unverified.md"));
-    unverified.fail("goal label missing from the created issue");
-    const failed = await waitFor(
-      () => (manager.snapshot().status === "failed" ? manager.snapshot() : undefined),
-      "the failed verification",
-    );
-    expect(existsSync(join(drafts, "unverified.md"))).toBe(true);
-    expect(failed.error).toContain("goal label missing");
-    expect(unverified.closed).toBe(true);
-    expect(unverified.closes).toBe(1);
-    expect(manager.child()).toBeUndefined();
-    expect(peers.filter((peer) => !peer.closed)).toHaveLength(0);
+  test("the owner state names only this repository's directory", async () => {
+    const { root, stateDir } = await fixture();
+    const directory = goalDraftStateDirectory(stateDir, root);
+    expect(directory.startsWith(resolve(stateDir))).toBe(true);
+    expect(directory.includes("goal-drafts")).toBe(true);
+    expect(readGoalDraftOwnerState(stateDir, root)).toBeUndefined();
   });
 });
 

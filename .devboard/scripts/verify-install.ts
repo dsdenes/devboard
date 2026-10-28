@@ -285,7 +285,11 @@ try {
   expectFailure(launcher(["doctor", "--host", host.directory], { ...newEnv, PATH: noOmp }), "omp");
 
   expectFailure(
-    launcher(["doctor", "--host", host.directory], { DEVBOARD_NPM: failingNpm }),
+    launcher(["doctor", "--host", host.directory], {
+      DEVBOARD_NPM: failingNpm,
+      // An ambient harness origin must not stand in for the fixture's feed.
+      DEVBOARD_GITEA_URL: "",
+    }),
     "release access",
   );
 

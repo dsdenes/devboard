@@ -1697,9 +1697,17 @@ free-text answer, and an answer goes only to that peer. While it runs, every oth
 control is disabled with the stated reason; Stop closes the peer, records `stopped`, keeps the
 draft, and re-enables the controls; a successful or failed run closes its peer before recording
 `succeeded` or `failed`, so no elaboration leaves an agent process behind; a failed peer keeps
-the draft, shows the error, and accepts a retry as a new peer. The running peer's pid, argv, and
-`cwd` are recorded in the server state, so a replacement server ends one its predecessor left
-running.
+the draft, shows the error, and accepts a retry as a new peer.
+
+The peer is not held by the server process. A detached owner process carries every running
+elaboration, persists its run under `STATE_DIR`, and consumes answer and Stop commands, so a
+version reload hands the running elaboration to the replacement: the reload control writes a
+handoff before this server exits, and the replacement attaches to the same owner, peer, prompt,
+activity, and pending question before it serves the Draft goals page. An answer after the reload
+reaches that peer and Stop closes it; no second peer and no second question appear. Any other
+dashboard exit, abrupt or not, ends the owner and its peer within ten seconds and records one
+`failed` run whose error names that the server exit interrupted the elaboration; the draft stays
+listed and startable, and nothing resumes automatically.
 
 `.devboard/prompts/goal-draft.md` is the elaboration contract and
 `.devboard/omp/commands/goal-draft.md` its command wrapper, which reads the prompt and passes

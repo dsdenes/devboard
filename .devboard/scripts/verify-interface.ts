@@ -12,8 +12,8 @@
 import { spawn } from "node:child_process";
 import type { Server } from "bun";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { cp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fixtureRecord } from "../server/fixtures/adr-source";
 import { journalKey } from "../server/journal";
@@ -21,13 +21,17 @@ import { saveSubscriptions } from "../server/providers";
 import { REDESIGN_INSTRUCTION as redesignInstruction, REMOVAL_INSTRUCTION as removalInstruction } from "../server/feedback";
 import { stateFile } from "../server/state";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
-import { freePort, run, waitFor } from "./verification";
+import { dashboardsFor, freePort, processRunning, run, waitFor } from "./verification";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const stubAgent = join(harnessRoot, "server", "fixtures", "stub-agent.ts");
 // The source dashboard reports the commit-count version, not the unpacked
 // manifest's placeholder.
 const sourceVersion = readHarnessVersion(runningHarnessDir());
+/** The version the fixture installs, distinct from the source checkout's. */
+const INSTALLED_VERSION = "9.9.9";
+/** A newer install that makes the running replacement stale again. */
+const NEXT_INSTALLED_VERSION = "9.9.10";
 // The deterministic `gh` stub always answers with this issue URL.
 const stubIssueUrl = "https://gitea.example/dsdenes/devboard/issues/42";
 // A tracker title longer than any supported line: it must truncate instead of
@@ -437,7 +441,7 @@ async function writeFixture(root: string): Promise<string> {
   // status bar exercise the stale reload control without invoking a restart.
   await writeFile(
     join(host, ".devboard", "package.json"),
-    `${JSON.stringify({ name: "@dsdenes/devboard", version: "9.9.9" }, null, 2)}\n`,
+    `${JSON.stringify({ name: "@dsdenes/devboard", version: INSTALLED_VERSION }, null, 2)}\n`,
   );
 
   const records = [
@@ -796,6 +800,89 @@ async function seedGoalDrafts(host: string): Promise<string> {
   return directory;
 }
 
+/** The package a host prefix holds, under the public package name. */
+function installedPackageHome(host: string): string {
+  return join(host, ".devboard", "node_modules", "@dsdenes", "devboard");
+}
+
+/** Rewrites the installed manifest, as an automatic update would. */
+async function writeInstalledVersion(host: string, version: string): Promise<void> {
+  await writeFile(
+    join(installedPackageHome(host), "package.json"),
+    `${JSON.stringify({ name: "@dsdenes/devboard", version, type: "module" }, null, 2)}\n`,
+  );
+}
+
+/**
+ * A complete harness copy under the fixture host's `.devboard`, shaped like an
+ * npm prefix package whose version differs from the running source, so the
+ * reload control starts a replacement from it.
+ */
+async function installHarnessCopy(host: string, version = INSTALLED_VERSION): Promise<string> {
+  const prefix = join(host, ".devboard");
+  const home = installedPackageHome(host);
+  await rm(join(prefix, "node_modules"), { recursive: true, force: true });
+  await mkdir(home, { recursive: true });
+  for (const entry of ["server", "issues", "lib", "watchdog", "dist"]) {
+    await cp(join(harnessRoot, entry), join(home, entry), {
+      recursive: true,
+      filter: (source) => !source.endsWith(".test.ts"),
+    });
+  }
+  await writeInstalledVersion(host, version);
+  // The copied server resolves its runtime dependencies through the source
+  // checkout's installed packages; nothing is published or fetched.
+  await symlink(join(harnessRoot, "node_modules"), join(home, "node_modules"));
+  return home;
+}
+
+async function removeHarnessCopy(host: string): Promise<void> {
+  await rm(join(host, ".devboard", "node_modules"), { recursive: true, force: true });
+}
+
+async function agentLogLines(log: string): Promise<string[]> {
+  try {
+    return (await readFile(log, "utf8")).split("\n").filter((line) => line.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** The detached elaboration owners this checkout currently runs. */
+function goalDraftOwnerPids(host: string): number[] {
+  const found: number[] = [];
+  for (const entry of readdirSync("/proc")) {
+    if (!/^[0-9]+$/.test(entry)) continue;
+    const pid = Number(entry);
+    let argv: string[];
+    try {
+      argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
+    } catch {
+      continue;
+    }
+    if (!argv.some((argument) => argument.endsWith("goal-draft-owner.ts"))) continue;
+    if (!argv.includes(host)) continue;
+    found.push(pid);
+  }
+  return found;
+}
+
+/** Stops every dashboard serving this fixture host, including a replacement. */
+async function stopHostDashboards(host: string): Promise<void> {
+  for (const entry of dashboardsFor(host)) {
+    try {
+      process.kill(entry.pid, "SIGTERM");
+    } catch {
+      // Already gone.
+    }
+  }
+  await waitFor(
+    () => (dashboardsFor(host).length === 0 ? true : undefined),
+    "the fixture dashboards to stop",
+    15_000,
+  );
+}
+
 async function waitForHttp(url: string, timeoutMs = 30_000): Promise<void> {
   await waitFor(
     async () => {
@@ -990,6 +1077,7 @@ providerBehaviors.set(PROVIDER_INVALID_KEY, { status: 401 });
 const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
 let serverProcess: ReturnType<typeof spawn> | undefined;
+let fixtureHost: string | undefined;
 let feedbackApi: ReturnType<typeof Bun.serve> | undefined;
 let gateOffProcess: ReturnType<typeof spawn> | undefined;
 let feedbackOffProcess: ReturnType<typeof spawn> | undefined;
@@ -1003,6 +1091,7 @@ try {
   await mkdir(root, { recursive: true });
   await mkdir(join(harnessRoot, ".tmp", "interface"), { recursive: true });
   const host = await writeFixture(root);
+  fixtureHost = host;
   // Discover's remote scratch root must resolve inside REPO_DIR; the harness
   // state stays under the excluded `.devboard/` tree.
   const stateDir = join(host, ".devboard", ".tmp", "state");
@@ -1187,6 +1276,9 @@ try {
 
   const pageProblems: Problem[] = [];
   const networkProblems: Problem[] = [];
+  // The reload control's page retries the root while the replacement binds;
+  // those refusals are the handoff working, not a broken asset.
+  let expectedReloadFailures = false;
   const requestUrls = new Map<string, string>();
   const feedbackRequests: Array<Record<string, unknown>> = [];
   const feedbackPosts: string[] = [];
@@ -1259,6 +1351,9 @@ try {
     const requestId = String(params.requestId ?? "");
     const url = requestUrls.get(requestId) ?? "";
     if (url.includes("favicon")) return;
+    if (expectedReloadFailures && String(params.errorText ?? "").includes("ERR_CONNECTION_REFUSED")) {
+      return;
+    }
     networkProblems.push({
       kind: String(params.type ?? "request"),
       text: `${url}: ${String(params.errorText ?? "failed")}`,
@@ -1578,14 +1673,14 @@ try {
   check(
     sourceVersion !== null &&
       statusBar.reload!.label.includes(sourceVersion) &&
-      statusBar.reload!.label.includes("9.9.9"),
+      statusBar.reload!.label.includes(INSTALLED_VERSION),
     "the reload label does not name both versions",
     { sourceVersion, reload: statusBar.reload },
   );
   check(
     sourceVersion !== null &&
       statusBar.reload!.title.includes(sourceVersion) &&
-      statusBar.reload!.title.includes("9.9.9"),
+      statusBar.reload!.title.includes(INSTALLED_VERSION),
     "the reload title does not name both versions",
     { sourceVersion, reload: statusBar.reload },
   );
@@ -6441,6 +6536,299 @@ try {
     "a missing restored path opened a detail",
   );
 
+  // A version reload hands a running elaboration to the replacement.
+  await installHarnessCopy(host);
+  const questionPath = ".devboard/goal-proposals/010-question.md";
+  const hangPath = ".devboard/goal-proposals/011-hang.md";
+  await mkdir(join(host, ".devboard", "goal-proposals"), { recursive: true });
+  await writeFile(
+    join(host, questionPath),
+    "# Question draft\n\n> Unprocessed draft. STUB-QUESTION\n\nAsk about the scope before finalizing.\n",
+  );
+  await writeFile(
+    join(host, hangPath),
+    "# Hang draft\n\n> Unprocessed draft. STUB-HANG\n\nKeep this elaboration running until it is stopped.\n",
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft"][data-path="${questionPath}"]') !== null`,
+    "the question draft after reseeding",
+    10_000,
+  );
+  await page.click(`[data-testid="issues-draft"][data-path="${questionPath}"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === "${questionPath}"`,
+    "the question draft detail before the version reload",
+  );
+  const startLines = async (): Promise<string[]> =>
+    (await agentLogLines(agentLog)).filter((line) => line.startsWith("goal-draft-start "));
+  const startsBeforeQuestion = (await startLines()).length;
+  await page.click('[data-testid="issues-draft-start"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("Reading the draft") === true`,
+    "the streamed elaboration activity before the version reload",
+    10_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the pending question before the version reload",
+    10_000,
+  );
+  const questionPeerPid = await waitFor(
+    async () => {
+      const pids = (await startLines()).map((line) =>
+        Number(line.slice("goal-draft-start ".length)),
+      );
+      return pids[startsBeforeQuestion];
+    },
+    "the question peer's pid",
+    10_000,
+  );
+  type DraftQuestionSurface = {
+    activity: string;
+    message: string;
+    options: string[];
+    recommended: number;
+  };
+  const readQuestionSurface = (): Promise<DraftQuestionSurface> =>
+    page.eval<DraftQuestionSurface>(`(() => {
+      const question = document.querySelector('[data-testid="issues-draft-question"]');
+      const choices = [...document.querySelectorAll('[data-testid="issues-draft-choice"]')];
+      return {
+        activity: document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "",
+        message: question?.textContent?.trim() ?? "",
+        options: choices.map((choice) => choice.textContent?.trim() ?? ""),
+        recommended: choices.findIndex(
+          (choice) => choice.querySelector('.choice__recommended') !== null,
+        ),
+      };
+    })()`);
+  const questionSurfaceBefore = await readQuestionSurface();
+  check(
+    questionSurfaceBefore.options.length === 2,
+    "the elaboration question has no options",
+    questionSurfaceBefore,
+  );
+
+  expectedReloadFailures = true;
+  await page.click('[data-testid="reload-devboard"]');
+  await page.wait(
+    `(() => {
+      const entries = [...document.querySelectorAll('[data-testid="status-bar"] .status-versions__entry')];
+      const version = (label) => entries
+        .find((entry) => entry.querySelector('.status-metric__label')?.textContent === label)
+        ?.querySelector('.mono')?.textContent ?? "";
+      return version("running") === "${INSTALLED_VERSION}" &&
+        version("installed") === "${INSTALLED_VERSION}" &&
+        document.querySelector('[data-testid="reload-devboard"]') === null;
+    })()`,
+    "the installed replacement without a stale reload control",
+    40_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the replacement connection",
+    30_000,
+  );
+  expectedReloadFailures = false;
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === "${questionPath}"`,
+    "the same draft after the version reload",
+    20_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "running"`,
+    "the running state after the version reload",
+    20_000,
+  );
+  await page.wait(
+    `(document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "")
+      .startsWith(${JSON.stringify(questionSurfaceBefore.activity)})`,
+    "the retained activity after the version reload",
+    20_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-question"]') !== null`,
+    "the retained question after the version reload",
+    20_000,
+  );
+  const questionSurfaceAfter = await readQuestionSurface();
+  check(
+    questionSurfaceAfter.message === questionSurfaceBefore.message &&
+      JSON.stringify(questionSurfaceAfter.options) ===
+        JSON.stringify(questionSurfaceBefore.options) &&
+      questionSurfaceAfter.recommended === questionSurfaceBefore.recommended,
+    "the pending question changed across the version reload",
+    { before: questionSurfaceBefore, after: questionSurfaceAfter },
+  );
+  check(
+    processRunning(questionPeerPid),
+    "the original elaboration peer did not survive the version reload",
+    questionPeerPid,
+  );
+  const startsAfterQuestion = await startLines();
+  check(
+    startsAfterQuestion.length === startsBeforeQuestion + 1,
+    "the version reload started a second elaboration peer",
+    startsAfterQuestion,
+  );
+  const questionPrompts = (await agentLogLines(agentLog)).filter(
+    (line) => line === `goal-draft ${questionPath}`,
+  );
+  check(
+    questionPrompts.length === 1,
+    "the version reload sent the elaboration prompt again",
+    questionPrompts,
+  );
+  const runningControls = await page.eval<{
+    startDisabled: boolean;
+    startTitle: string;
+    stop: boolean;
+  }>(`(() => {
+    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    return {
+      startDisabled: start instanceof HTMLButtonElement ? start.disabled : false,
+      startTitle: start?.getAttribute("title") ?? "",
+      stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+    };
+  })()`);
+  check(
+    runningControls.startDisabled &&
+      runningControls.startTitle === "This draft is being elaborated." &&
+      runningControls.stop,
+    "the running draft's controls changed after the version reload",
+    runningControls,
+  );
+
+  const answersBefore = (await agentLogLines(agentLog)).filter((line) => line === "answer Alpha")
+    .length;
+  await page.click('[data-testid="issues-draft-choice"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft"][data-path="${questionPath}"]') === null`,
+    "the answered draft to leave the list",
+    10_000,
+  );
+  check(
+    existsSync(join(host, ".devboard", "goals", "010-question.md")),
+    "the answered elaboration did not keep its spec",
+  );
+  const answersAfter = (await agentLogLines(agentLog)).filter((line) => line === "answer Alpha")
+    .length;
+  check(
+    answersAfter === answersBefore + 1,
+    "the answer after the version reload did not reach exactly one peer",
+    { answersBefore, answersAfter },
+  );
+
+  // A newer install makes the running replacement stale again, so the same
+  // reload control is available for the second draft.
+  await writeInstalledVersion(host, NEXT_INSTALLED_VERSION);
+  await page.wait(
+    `document.querySelector('[data-testid="reload-devboard"]') !== null`,
+    "the reload control for the newer install",
+    10_000,
+  );
+
+  await page.click(`[data-testid="issues-draft"][data-path="${hangPath}"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === "${hangPath}"`,
+    "the hanging draft detail before its reload",
+  );
+  const startsBeforeHang = (await startLines()).length;
+  await page.click('[data-testid="issues-draft-start"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-stop"]') !== null &&
+      (document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "")
+        .includes("Reading the draft")`,
+    "the hanging elaboration before its reload",
+    10_000,
+  );
+  const hangPeerPid = await waitFor(
+    async () => {
+      const pids = (await startLines()).map((line) =>
+        Number(line.slice("goal-draft-start ".length)),
+      );
+      return pids[startsBeforeHang];
+    },
+    "the hanging peer's pid",
+    10_000,
+  );
+  expectedReloadFailures = true;
+  await page.click('[data-testid="reload-devboard"]');
+  await page.wait(
+    `(() => {
+      const entries = [...document.querySelectorAll('[data-testid="status-bar"] .status-versions__entry')];
+      const version = (label) => entries
+        .find((entry) => entry.querySelector('.status-metric__label')?.textContent === label)
+        ?.querySelector('.mono')?.textContent ?? "";
+      return version("running") === "${NEXT_INSTALLED_VERSION}" &&
+        version("installed") === "${NEXT_INSTALLED_VERSION}" &&
+        document.querySelector('[data-testid="reload-devboard"]') === null;
+    })()`,
+    "the installed replacement for the hanging draft",
+    40_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === "${hangPath}" &&
+      document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "running"`,
+    "the hanging elaboration after its reload",
+    20_000,
+  );
+  expectedReloadFailures = false;
+  await page.wait(
+    `(document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "")
+      .includes("Reading the draft")`,
+    "the retained hanging activity after its reload",
+    20_000,
+  );
+  check(processRunning(hangPeerPid), "the hanging peer did not survive its reload", hangPeerPid);
+  await saveShot("issues-draft-after-reload");
+
+  await page.click('[data-testid="issues-draft-stop"]');
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() === "stopped"`,
+    "the stopped elaboration after its reload",
+    10_000,
+  );
+  const stoppedSurface = await page.eval<{
+    stop: boolean;
+    startDisabled: boolean;
+    listed: boolean;
+  }>(`(() => {
+    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    return {
+      stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
+      startDisabled: start instanceof HTMLButtonElement ? start.disabled : true,
+      listed: document.querySelector('[data-testid="issues-draft"][data-path="${hangPath}"]') !== null,
+    };
+  })()`);
+  check(
+    !stoppedSurface.stop && !stoppedSurface.startDisabled && stoppedSurface.listed,
+    "Stop after a reload did not stop its peer and keep the draft",
+    stoppedSurface,
+  );
+  await waitFor(
+    () => (processRunning(hangPeerPid) ? undefined : true),
+    "the stopped elaboration peer",
+    5_000,
+  );
+  check(
+    goalDraftOwnerPids(host).length === 0,
+    "the stopped elaboration left its owner process",
+    goalDraftOwnerPids(host),
+  );
+
+  // Return to the source dashboard so the remaining checks see its gate.
+  await stopHostDashboards(host);
+  await removeHarnessCopy(host);
+  serverProcess = undefined;
+  startServer();
+  await waitForHttp(baseUrl);
+  await page.wait(
+    `document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`,
+    "the reconnected source dashboard",
+    40_000,
+  );
+
   await page.click('[data-testid="open-issues-overview"]');
   await page.wait(`document.querySelector('[data-testid="issues-overview"]') !== null`, "the overview before the failed state");
   await seedIssuesState(stateDir, host, "failed");
@@ -6819,6 +7207,22 @@ try {
     serverProcess?.kill("SIGTERM");
   } catch {
     // Already gone.
+  }
+  if (fixtureHost !== undefined) {
+    for (const entry of dashboardsFor(fixtureHost)) {
+      try {
+        process.kill(entry.pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
+    for (const pid of goalDraftOwnerPids(fixtureHost)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
   }
   feedbackApi?.stop(true);
   providerUsage?.stop(true);
