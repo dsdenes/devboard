@@ -9,6 +9,7 @@
     actionCount?: number;
     meta?: boolean;
     flat?: boolean;
+    layout?: "stacked" | "bar";
   }
 
   let {
@@ -18,11 +19,12 @@
     actionCount = 3,
     meta = true,
     flat = false,
+    layout = "stacked",
   }: Props = $props();
 </script>
 
 <div style="background: var(--background); padding: 8px;">
-  <PageHeader {eyebrow} {title} {subtitle} {flat}>
+  <PageHeader {eyebrow} {title} {subtitle} {flat} {layout}>
     {#snippet meta()}
       {#if meta}
         <span class="muted">GOAL.md is the source of truth</span>

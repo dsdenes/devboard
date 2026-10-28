@@ -10,20 +10,17 @@
     pyramidTiers,
     pyramidTestCount,
     recordItems,
-    relativeTime,
     scalarText,
     sectionEntries,
     sectionLeaf,
     unknownText,
   } from "../discover-format";
-  import { onMount } from "svelte";
   import { connection } from "../connection.svelte";
   import { dependencyChart, dependencyEdges } from "../dependency-diagram";
   import { discover } from "../discover.svelte";
   import type { Leaf } from "../types";
   import DataTable from "./DataTable.svelte";
   import MermaidDiagram from "./MermaidDiagram.svelte";
-  import Terminal from "./Terminal.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
 
@@ -146,15 +143,6 @@
   );
 
   const runtimeSection = $derived(visibleSection(sheet?.runtime, HIDDEN_LEAVES.runtime ?? []));
-  let now = $state(Date.now());
-  const startedLabel = $derived(
-    discover.startedAt === null ? "" : relativeTime(discover.startedAt, now),
-  );
-
-  onMount(() => {
-    const timer = setInterval(() => (now = Date.now()), 30_000);
-    return () => clearInterval(timer);
-  });
 
   const deploymentSection = $derived(
     visibleSection(sheet?.deployment, HIDDEN_LEAVES.deployment ?? []),
@@ -510,15 +498,8 @@
       <section class="panel discover-remote" data-testid="discover-remote" aria-label="Discover remote target">
         <div class="panel__header">
           <h2 class="panel__title">Manual testing target</h2>
-          <span class="panel__subtitle">Source checkout only</span>
         </div>
         <div class="panel__body stack-sm">
-          {#if discover.remoteTarget !== null}
-            <p class="row-sm" data-testid="discover-remote-target">
-              <span class="badge" data-tone="warning">Manual testing</span>
-              <span>Discover reads <code>{discover.remoteTarget.url}</code>.</span>
-            </p>
-          {/if}
           {#if discover.retained.length > 0}
             <div class="discover-remote__retained">
               <label class="discover-remote__label" for="discover-remote-select">Retained project</label>
@@ -636,39 +617,6 @@
       </p>
     {/if}
   </header>
-
-  {#if discover.active}
-    <section class="panel discover-run" data-testid="discover-active">
-      <div class="panel__header discover-run__header">
-        <div class="discover-run__heading">
-          <span class="discover-run__dot" aria-hidden="true"></span>
-          <h2 class="panel__title">Run in progress</h2>
-        </div>
-        <div class="discover-run__meta">
-          {#if discover.startedAt !== null}
-            <span class="muted discover-run__started" title={discover.startedAt}>
-              Started {startedLabel}
-            </span>
-          {/if}
-          <button
-            type="button"
-            class="discover-run__stop"
-            title="Stop this Discover run"
-            data-command="discover.stop"
-            data-testid="discover-stop"
-            onclick={() => discover.stop()}
-          >
-            Stop
-          </button>
-        </div>
-      </div>
-      <div class="discover-run__body">
-        <div class="discover-run__terminal">
-          <Terminal lines={discover.activity} data-testid="discover-activity" label="Discover activity" />
-        </div>
-      </div>
-    </section>
-  {/if}
 
   {@render questionPanel()}
 

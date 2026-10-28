@@ -3579,8 +3579,8 @@ try {
     "the Discover overview with a retained remote project",
   );
   await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]') !== null`,
-    "the retained remote target banner",
+    `document.querySelector('[data-testid="discover-remote-clear"]') !== null`,
+    "the retained remote target",
   );
   const remoteStrip = await page.eval<{
     select: boolean;
@@ -3589,7 +3589,8 @@ try {
     selectedIndex: number;
     removes: Array<string | null>;
     error: string | null;
-    banner: string;
+    active: string;
+    removed: boolean;
     input: boolean;
     placeholder: string;
     label: string;
@@ -3601,7 +3602,6 @@ try {
     first: boolean;
   }>(`(() => {
     const select = document.querySelector('[data-testid="discover-remote-select"]');
-    const banner = document.querySelector('[data-testid="discover-remote-target"]');
     const input = document.querySelector('[data-testid="discover-remote-url"]');
     const start = document.querySelector('[data-testid="discover-remote-start"]');
     const error = document.querySelector('[data-testid="discover-error"]');
@@ -3614,7 +3614,10 @@ try {
         (button) => button.getAttribute("data-url"),
       ),
       error: error?.textContent ?? null,
-      banner: banner?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      active:
+        document.querySelector('.discover-remote__item--active .discover-remote__url')
+          ?.textContent?.trim() ?? "",
+      removed: document.querySelector('[data-testid="discover-remote-target"]') === null,
       input: input !== null,
       placeholder: input?.getAttribute("placeholder") ?? "",
       label: input?.getAttribute("aria-label") ?? "",
@@ -3649,9 +3652,10 @@ try {
     "a retained project produced a missing-clone error",
     remoteStrip,
   );
+  check(remoteStrip.removed, "the removed remote target banner still renders", remoteStrip);
   check(
-    remoteStrip.banner.includes(helloUrl) && remoteStrip.banner.includes("Manual testing"),
-    "the retained banner does not name the active URL with its marker",
+    remoteStrip.active === helloUrl,
+    "the active retained project is not marked in the retained list",
     remoteStrip,
   );
   check(
@@ -3692,7 +3696,7 @@ try {
     select.dispatchEvent(new Event("change", { bubbles: true }));
   })()`);
   await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]')?.textContent?.includes(${JSON.stringify(secondUrl)}) === true`,
+    `document.querySelector('.discover-remote__item--active .discover-remote__url')?.textContent?.trim() === ${JSON.stringify(secondUrl)}`,
     "the switched retained project",
     20_000,
   );
@@ -3704,13 +3708,13 @@ try {
     "switching a retained option did not render that project",
     switchedTitle,
   );
-  const switchedBanner = await page.eval<string>(
-    `document.querySelector('[data-testid="discover-remote-target"]')?.textContent ?? ""`,
+  const switchedActive = await page.eval<string>(
+    `document.querySelector('.discover-remote__item--active .discover-remote__url')?.textContent?.trim() ?? ""`,
   );
   check(
-    switchedBanner.includes(secondUrl),
-    "switching a retained option did not move the target banner",
-    switchedBanner,
+    switchedActive === secondUrl,
+    "switching a retained option did not mark the new target",
+    switchedActive,
   );
   const switchFrames = await page.eval<{ frames: Array<{ type?: string; url?: string } | null> }>(`(() => ({
     frames: (window.__viFrames ?? []).slice(${framesBeforeRetainedSwitch}).map((frame) => {
@@ -3767,7 +3771,7 @@ try {
   await runPalette("discover.tab.overview");
   await page.eval(`document.querySelector('[data-testid="discover-remote-remove"][data-url="${secondUrl}"]').click()`);
   await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]') === null`,
+    `document.querySelector('[data-testid="discover-remote-clear"]') === null`,
     "the host target after removing the active retained project",
     20_000,
   );
@@ -3815,19 +3819,27 @@ try {
     `document.querySelector('[data-testid="discover-remote-select"]') !== null`,
     "the retained dropdown after the removal restart",
   );
-  const afterRestart = await page.eval<{ options: string[]; target: boolean; error: string | null }>(`(() => ({
-    options: [...document.querySelector('[data-testid="discover-remote-select"]').options].map(
-      (option) => option.value,
-    ),
-    target: document.querySelector('[data-testid="discover-remote-target"]') !== null,
-    error: document.querySelector('[data-testid="discover-error"]')?.textContent ?? null,
-  }))()`);
+  const afterRestart = await page.eval<{
+    options: string[];
+    clear: boolean;
+    selectedIndex: number;
+    error: string | null;
+  }>(`(() => {
+    const select = document.querySelector('[data-testid="discover-remote-select"]');
+    return {
+      options: [...select.options].map((option) => option.value),
+      clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
+      selectedIndex: select.selectedIndex,
+      error: document.querySelector('[data-testid="discover-error"]')?.textContent ?? null,
+    };
+  })()`);
   check(
     JSON.stringify(afterRestart.options) === JSON.stringify([helloUrl]),
     "the removed project returned after a restart",
     afterRestart,
   );
-  check(!afterRestart.target, "a restart reactivated a removed project", afterRestart);
+  check(!afterRestart.clear, "a restart reactivated a removed project", afterRestart);
+  check(afterRestart.selectedIndex === -1, "a restart selected a removed project", afterRestart);
   check(
     afterRestart.error === null || !afterRestart.error.includes("missing"),
     "the removal restart reported a missing checkout",
@@ -3842,14 +3854,14 @@ try {
     select.dispatchEvent(new Event("change", { bubbles: true }));
   })()`);
   await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]')?.textContent?.includes(${JSON.stringify(helloUrl)}) === true`,
+    `document.querySelector('.discover-remote__item--active .discover-remote__url')?.textContent?.trim() === ${JSON.stringify(helloUrl)}`,
     "the selected remaining retained project",
     20_000,
   );
   await page.click('[data-testid="discover-remote-clear"]');
   await page.wait(
-    `document.querySelector('[data-testid="discover-remote-target"]') === null`,
-    "the cleared remote banner",
+    `document.querySelector('[data-testid="discover-remote-clear"]') === null`,
+    "the cleared remote target",
     20_000,
   );
   const cleared = await page.eval<{ input: string; clear: boolean; options: string[] }>(`(() => ({
@@ -3925,7 +3937,7 @@ try {
   const gateOff = await page.eval<Record<string, boolean>>(`({
     url: document.querySelector('[data-testid="discover-remote-url"]') !== null,
     start: document.querySelector('[data-testid="discover-remote-start"]') !== null,
-    banner: document.querySelector('[data-testid="discover-remote-target"]') !== null,
+    remote: document.querySelector('[data-testid="discover-remote"]') !== null,
     clear: document.querySelector('[data-testid="discover-remote-clear"]') !== null,
     select: document.querySelector('[data-testid="discover-remote-select"]') !== null,
     remove: document.querySelector('[data-testid="discover-remote-remove"]') !== null,
@@ -3934,7 +3946,7 @@ try {
   })`);
   check(gateOff.panel, "the gate-off host has no Discover overview", gateOff);
   check(
-    !gateOff.url && !gateOff.start && !gateOff.banner && !gateOff.clear && !gateOff.select && !gateOff.remove,
+    !gateOff.url && !gateOff.start && !gateOff.remote && !gateOff.clear && !gateOff.select && !gateOff.remove,
     "the gate-off host renders a remote control",
     gateOff,
   );
@@ -5808,6 +5820,18 @@ try {
 
   await page.click('[data-testid="open-issues-runs"]');
   await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the runs page");
+  const runsHeader = await page.eval<string[]>(
+    `[...document.querySelectorAll('.issues-runs-page > .issues-overview__header > div > *')].map((node) => \`\${node.tagName}:\${node.className}\`)`,
+  );
+  check(
+    runsHeader[0]?.startsWith("H1:") === true && runsHeader.every((entry) => !entry.includes("muted")),
+    "the runs header still carries a label above its title",
+    runsHeader,
+  );
+  const headerBadges = await page.eval<number>(
+    `document.querySelectorAll('.issues-runs-page > .issues-overview__header > .badge').length`,
+  );
+  check(headerBadges === 0, "the runs header still carries a count badge", headerBadges);
   const runCount = await page.eval<number>(`document.querySelectorAll('[data-testid="issues-run"]').length`);
   check(runCount === 4, "the runs page does not list every concurrent run", runCount);
   const goalRunCount = await page.eval<number>(
