@@ -156,7 +156,12 @@ const UNREACHABLE_PATTERNS = [
 /** True when a release check failed because the feed was unreachable. */
 export function isReleaseUnreachable(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-  return UNREACHABLE_PATTERNS.some((pattern) => message.includes(pattern));
+  if (UNREACHABLE_PATTERNS.some((pattern) => message.includes(pattern))) return true;
+  // A host without the release client cannot reach the feed at all. Node and
+  // Bun report the failed spawn as ENOENT before the tool prints anything.
+  const failure = error as (NodeJS.ErrnoException & { syscall?: unknown }) | undefined;
+  const syscall = typeof failure?.syscall === "string" ? failure.syscall : "";
+  return failure?.code === "ENOENT" && (message.includes("spawn") || syscall.startsWith("spawn"));
 }
 
 export function tarballName(version: string): string {
