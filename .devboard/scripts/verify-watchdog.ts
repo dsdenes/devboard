@@ -332,6 +332,7 @@ case "$args" in
   *"repos/dsdenes/devboard/issues/903/comments"*) printf '%s\\n' '{"body":"fixed by 2222222"}' ;;
   *"repos/dsdenes/devboard/commits/1111111 --jq .sha"*) echo 1111111111111111111111111111111111111111 ;;
   *"repos/dsdenes/devboard/commits/2222222 --jq .sha"*) echo 2222222222222222222222222222222222222222 ;;
+  *"repos/dsdenes/devboard/releases/latest"*) cat "$fixtures/release.json" ;;
   *"repos/dsdenes/devboard/releases"*) cat "$fixtures/releases.jsonl" ;;
   *"compare/1111111111111111111111111111111111111111...v1.0.0"*) echo ahead ;;
   *"compare/2222222222222222222222222222222222222222...v1.2.0"*) echo ahead ;;
@@ -367,6 +368,11 @@ try {
     join(ghFixtures, "releases.jsonl"),
     '{"tag":"v1.0.0","publishedAt":"2026-10-20T00:00:00Z","draft":false}\n' +
       '{"tag":"v1.1.0","publishedAt":"2026-10-21T00:00:00Z","draft":false}\n',
+  );
+  // The update check reads the newest release as one object, not the listing.
+  await writeFile(
+    join(ghFixtures, "release.json"),
+    '{"tag_name":"v1.1.0","assets":[]}\n',
   );
 
   const port = await freePort();
