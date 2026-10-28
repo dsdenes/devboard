@@ -13,13 +13,15 @@ import {
 } from "../watchdog/discovery";
 import { journalFile, journalFiles, openJournal } from "../server/journal";
 import {
+  collectEvidence,
   normalizeEvidenceLine,
   readJournalEvidence,
   readOmpEvidence,
+  WINDOW_MS,
   type EvidenceEvent,
   type Window,
 } from "../watchdog/collect";
-import { analyzeEvidence } from "../watchdog/findings";
+import { analyzeEvidence, STALL_MS } from "../watchdog/findings";
 import { acquireLock } from "../watchdog/lock";
 import { emptyLedger, loadLedger } from "../watchdog/ledger";
 import {
@@ -156,14 +158,25 @@ function cycleFor(
   options: { events: EvidenceEvent[]; gh: GhRun; now?: Date; dryRun?: boolean },
 ): CycleOptions {
   const instance = instanceFor(root, 8080);
+  const now = options.now ?? fixedNow;
+  // Injected evidence belongs to the cycle that collects it, so a delayed
+  // cycle gets the same records shifted into its window.
+  const drift = now.getTime() - fixedNow.getTime();
+  const events =
+    drift === 0
+      ? options.events
+      : options.events.map((event) => ({
+          ...event,
+          ts: new Date(Date.parse(event.ts) + drift).toISOString(),
+        }));
   return {
     root,
-    now: options.now ?? fixedNow,
+    now,
     stateDir: join(root, ".devboard", ".tmp", "watchdog"),
     ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
     deps: {
       discover: () => [instance],
-      collect: () => ({ events: options.events, malformed: 0, unattributed: 0 }),
+      collect: () => ({ events, malformed: 0, unattributed: 0 }),
       gh: options.gh,
       delivery: {
         repository: "acme/fixture",
@@ -597,6 +610,61 @@ describe("evidence mapping", () => {
     expect(analyzeEvidence(events, { window })).toEqual([]);
   });
 
+  test("a start in a window's final five minutes stalls in the next lookback", async () => {
+    const root = await temporaryDirectory("test-watchdog-stall-lookback");
+    const owner = instanceFor(root, 8080);
+    const started = new Date(fixedNow.getTime() - 4 * 60 * 1000);
+    const events = [event(root, 4, "lane-1 implementing", "lane-start", owner)];
+    const nextWindow: Window = {
+      start: fixedNow,
+      end: new Date(fixedNow.getTime() + WINDOW_MS),
+    };
+    const lookbackFor = (target: Window): Window => ({
+      start: new Date(target.start.getTime() - STALL_MS),
+      end: target.end,
+    });
+
+    // The cycle that saw the start skipped it as too young to be stalled.
+    expect(analyzeEvidence(events, { window, stallLookback: lookbackFor(window) })).toEqual([]);
+
+    const findings = analyzeEvidence(events, {
+      window: nextWindow,
+      stallLookback: lookbackFor(nextWindow),
+    });
+    expect(findings.map((finding) => finding.category)).toEqual(["stall"]);
+    expect(findings[0]?.quote).toBe("lane-1 implementing");
+    expect(findings[0]?.ts).toBe(started.toISOString());
+  });
+
+  test("a stop in the stall lookback ends an older start", async () => {
+    const root = await temporaryDirectory("test-watchdog-stall-lookback-stop");
+    const owner = instanceFor(root, 8080);
+    const events = [
+      event(root, 14, "lane-1 implementing", "lane-start", owner),
+      event(root, 13, "lane-1 closed", "lane-stop", owner),
+    ];
+    const stallLookback: Window = {
+      start: new Date(window.start.getTime() - STALL_MS),
+      end: window.end,
+    };
+    expect(analyzeEvidence(events, { window, stallLookback })).toEqual([]);
+  });
+
+  test("the stall lookback never extends a non-stall finding", async () => {
+    const root = await temporaryDirectory("test-watchdog-stall-lookback-signals");
+    const owner = instanceFor(root, 8080);
+    const events = [
+      event(root, 12, SERVER_ERROR, "server-error", owner),
+      event(root, 12, "lane-3 implementation Fix the build failed", "lane-stop", owner),
+      event(root, 11, "Choose an answer", "question", owner),
+    ];
+    const stallLookback: Window = {
+      start: new Date(window.start.getTime() - STALL_MS),
+      end: window.end,
+    };
+    expect(analyzeEvidence(events, { window, stallLookback })).toEqual([]);
+  });
+
   test("a sibling lane's stop never ends another lane's stall", async () => {
     const root = await temporaryDirectory("test-watchdog-stall-sibling");
     const owner = instanceFor(root, 8080);
@@ -743,6 +811,53 @@ describe("filing", () => {
     expect(existsSync(join(result.runDir as string, "report.json"))).toBe(true);
     expect(existsSync(join(result.runDir as string, "report.md"))).toBe(true);
     expect(existsSync(join(result.runDir as string, "coordinator.log"))).toBe(true);
+  });
+
+  test("a start in a cycle's final five minutes stalls in the next cycle", async () => {
+    const { root } = await fixtureRepository();
+    const instance = instanceFor(root, 8080);
+    const tempDir = join(root, ".devboard", ".tmp");
+    const started = new Date(fixedNow.getTime() - 4 * 60 * 1000);
+    const journal = openJournal({
+      stateDir: tempDir,
+      repoDir: root,
+      port: instance.port,
+      now: () => started,
+    });
+    journal.write("lane-start", "lane-1 implementing");
+    const { gh, calls } = ghStub();
+    const deps: NonNullable<CycleOptions["deps"]> = {
+      discover: () => [instance],
+      collect: (target, instances, evidenceWindow) =>
+        collectEvidence({
+          root: target,
+          instances,
+          window: evidenceWindow,
+          selfPids: new Set([process.pid]),
+          logsDir: join(tempDir, "omp-logs"),
+        }),
+      gh,
+      delivery: {
+        repository: "acme/fixture",
+        create: async (input) => createIssue(gh, "acme/fixture", input),
+        comment: async (url, input) => commentIssue(gh, url, input),
+      },
+    };
+    const runAt = (now: Date) =>
+      runCycle({ root, now, stateDir: join(tempDir, "watchdog"), deps });
+
+    const first = await runAt(fixedNow);
+    expect(first.report.findings).toEqual([]);
+    expect(first.report.action).toBe("none");
+    expect(calls).toHaveLength(0);
+
+    const second = await runAt(new Date(fixedNow.getTime() + WINDOW_MS));
+    expect(second.report.findings.map((finding) => finding.category)).toEqual(["stall"]);
+    expect(second.report.findings[0]?.quote).toBe("lane-1 implementing");
+    expect(second.report.findings[0]?.ts).toBe(started.toISOString());
+    expect(second.report.action).toBe("filed");
+    expect(second.report.issues).toHaveLength(1);
+    expect(calls).toHaveLength(1);
   });
 
   test("an unchanged window is a duplicate and makes no gh call", async () => {

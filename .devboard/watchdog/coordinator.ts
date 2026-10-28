@@ -4,7 +4,7 @@ import { pruneJournal } from "../server/journal";
 import { collectEvidence, WINDOW_MS, type Collection, type Window } from "./collect";
 import { coveredStateDirs, runCleanup, type CleanupReport } from "./cleanup";
 import { discoverInstances, type Instance } from "./discovery";
-import { analyzeEvidence } from "./findings";
+import { analyzeEvidence, STALL_MS } from "./findings";
 import { runGh, type GhRun, type IssueInput } from "./github";
 import { createWatchdogDelivery, type WatchdogDelivery } from "./delivery";
 import {
@@ -19,9 +19,10 @@ import {
 
 /**
  * One watchdog cycle: discover live dashboards, collect the previous ten
- * minutes of machine-checkable evidence, and file or comment one GitHub issue
- * per distinct signal. It never spawns an agent, creates a worktree, commits,
- * merges, pushes, or publishes.
+ * minutes of machine-checkable evidence plus one stall lookback for starts and
+ * their stops, and file or comment one GitHub issue per distinct signal. It
+ * never spawns an agent, creates a worktree, commits, merges, pushes, or
+ * publishes.
  */
 
 /** How long an existing issue waits before a recurrence comments on it. */
@@ -39,7 +40,7 @@ export interface CycleContext {
 
 export interface CycleDeps {
   discover: (root: string) => Instance[];
-  collect: (root: string, instances: Instance[], window: Window) => Collection;
+  collect: (root: string, instances: Instance[], evidenceWindow: Window) => Collection;
   gh: GhRun;
   delivery?: WatchdogDelivery;
   /** Environment for delivery construction; defaults to `process.env`. */
@@ -132,6 +133,13 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     start: new Date(now.getTime() - WINDOW_MS),
     end: now,
   };
+  // A start in the window's final five minutes is not a stall yet, and the
+  // next window begins at this one's end, so collection reads one stall
+  // interval further back for starts and their matching stops.
+  const stallLookback: Window = {
+    start: new Date(window.start.getTime() - STALL_MS),
+    end: now,
+  };
   const stateDir = resolve(options.stateDir ?? join(harness, ".tmp", "watchdog"));
   const runDir = join(stateDir, "runs", stamp(now));
   const reportPath = join(runDir, "report.json");
@@ -179,7 +187,9 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     for (const entry of covered) {
       const removed = pruneJournal(entry.stateDir, {
         now,
-        windowStart: window.start,
+        // A rotated file still inside the stall lookback is evidence this
+        // cycle's collection needs.
+        windowStart: stallLookback.start,
       });
       if (removed.length > 0) {
         context.log(`pruned ${removed.length} old journal file(s) in ${entry.stateDir}`);
@@ -205,8 +215,8 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     for (const error of entry.errors) context.log(`cleanup ${entry.stateDir}: ${error}`);
   }
 
-  const collection = deps.collect(root, instances, window);
-  const findings = analyzeEvidence(collection.events, { window });
+  const collection = deps.collect(root, instances, stallLookback);
+  const findings = analyzeEvidence(collection.events, { window, stallLookback });
   context.log(
     `collected ${collection.events.length} event(s), ${findings.length} finding(s), ` +
       `${collection.malformed} malformed, ${collection.unattributed} unattributed`,
