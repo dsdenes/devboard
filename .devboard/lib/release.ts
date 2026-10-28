@@ -57,6 +57,14 @@ export interface ExecOptions {
 
 export class ReleaseError extends Error {}
 
+/**
+ * The feed answered, but not with a release description the harness can read:
+ * a proxy or captive-portal page, a truncated body, or a payload that is not a
+ * release object. The cause is outside the harness, so a check that hits it is
+ * retried as feed context instead of being reported as a defect.
+ */
+export class ReleaseFeedError extends ReleaseError {}
+
 /** The release backend the environment asks for; CI and tests use a directory. */
 export function releaseSource(env: NodeJS.ProcessEnv = process.env): ReleaseSource {
   const directory = env.DEVBOARD_RELEASE_DIR;
@@ -226,25 +234,39 @@ interface GithubRelease {
   assets?: unknown;
 }
 
-async function githubRelease(repo: string): Promise<ReleaseInfo> {
-  const result = await exec(
-    "gh",
-    ["api", `repos/${repo}/releases/latest`],
-    { cwd: homedir(), timeoutMs: 60_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
-  );
-  if (result.code !== 0) throw failure("gh api releases/latest", result);
-  let parsed: GithubRelease;
+/**
+ * The error for a body that is not one JSON release object: a proxy page, a
+ * truncated response, or a payload from a different tool. The first line is
+ * kept, bounded, so the journal names what arrived instead of just failing.
+ */
+function unreadableDescription(stdout: string): ReleaseFeedError {
+  const first = stdout.trim().split("\n")[0]?.trim() ?? "";
+  const snippet =
+    first.length === 0 ? "no output" : first.length > 200 ? `${first.slice(0, 200)}…` : first;
+  return new ReleaseFeedError(`gh returned an unreadable release description: ${snippet}`);
+}
+
+/**
+ * Reads the release description `gh api` prints. Anything that is not one JSON
+ * release object is a feed the harness cannot use, not a harness defect.
+ */
+export function parseReleaseDescription(stdout: string): ReleaseInfo {
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(result.stdout) as GithubRelease;
+    parsed = JSON.parse(stdout) as unknown;
   } catch {
-    throw new ReleaseError("gh returned an unreadable release description");
+    throw unreadableDescription(stdout);
   }
-  if (typeof parsed.tag_name !== "string") {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw unreadableDescription(stdout);
+  }
+  const description = parsed as GithubRelease;
+  if (typeof description.tag_name !== "string") {
     throw new ReleaseError("the latest release has no tag");
   }
   const assets: ReleaseAsset[] = [];
-  if (Array.isArray(parsed.assets)) {
-    for (const asset of parsed.assets) {
+  if (Array.isArray(description.assets)) {
+    for (const asset of description.assets) {
       if (typeof asset !== "object" || asset === null) continue;
       const name = "name" in asset ? asset.name : undefined;
       const id = "id" in asset ? asset.id : undefined;
@@ -257,7 +279,17 @@ async function githubRelease(repo: string): Promise<ReleaseInfo> {
       });
     }
   }
-  return { version: versionFromTag(parsed.tag_name), tag: parsed.tag_name, assets };
+  return { version: versionFromTag(description.tag_name), tag: description.tag_name, assets };
+}
+
+async function githubRelease(repo: string): Promise<ReleaseInfo> {
+  const result = await exec(
+    "gh",
+    ["api", `repos/${repo}/releases/latest`],
+    { cwd: homedir(), timeoutMs: 60_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
+  );
+  if (result.code !== 0) throw failure("gh api releases/latest", result);
+  return parseReleaseDescription(result.stdout);
 }
 
 /** Metadata for the latest release the configured backend exposes. */

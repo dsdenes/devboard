@@ -1,7 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { exec, installHarnessTarball, isReleaseUnreachable } from "./release";
+import {
+  exec,
+  installHarnessTarball,
+  isReleaseUnreachable,
+  parseReleaseDescription,
+  ReleaseError,
+  ReleaseFeedError,
+} from "./release";
 
 /** Release transport behaviour that needs a real npm install. */
 
@@ -45,6 +52,63 @@ describe("isReleaseUnreachable", () => {
     );
     expect(error).toBeInstanceOf(Error);
     expect(isReleaseUnreachable(error)).toBe(true);
+  });
+});
+
+describe("parseReleaseDescription", () => {
+  function caught(run: () => unknown): Error {
+    try {
+      run();
+    } catch (reason) {
+      return reason as Error;
+    }
+    throw new Error("expected the release description to be rejected");
+  }
+
+  test("reads the release object gh prints", () => {
+    const info = parseReleaseDescription(
+      JSON.stringify({
+        tag_name: "v0.1.12",
+        assets: [
+          { name: "devboard-harness-0.1.12.tgz", id: 7, size: 9 },
+          { name: "devboard-harness-0.1.12.tgz.sha256" },
+          { id: 8 },
+        ],
+      }),
+    );
+    expect(info).toEqual({
+      version: "0.1.12",
+      tag: "v0.1.12",
+      assets: [
+        { name: "devboard-harness-0.1.12.tgz", id: 7, size: 9 },
+        { name: "devboard-harness-0.1.12.tgz.sha256" },
+      ],
+    });
+  });
+
+  test("names a non-JSON body as unreadable feed data", () => {
+    const body =
+      '{"tag":"v1.0.0","publishedAt":"2026-10-20T00:00:00Z","draft":false}\n' +
+      '{"tag":"v1.1.0","publishedAt":"2026-10-21T00:00:00Z","draft":false}\n';
+    const error = caught(() => parseReleaseDescription(body));
+    expect(error).toBeInstanceOf(ReleaseFeedError);
+    expect(error.message).toBe(
+      "gh returned an unreadable release description: " +
+        '{"tag":"v1.0.0","publishedAt":"2026-10-20T00:00:00Z","draft":false}',
+    );
+  });
+
+  test("names a JSON body that is not a release object as unreadable feed data", () => {
+    for (const body of ["null", "[]", '"v1.0.0"']) {
+      expect(() => parseReleaseDescription(body)).toThrow(ReleaseFeedError);
+    }
+  });
+
+  test("rejects a release object without a tag as a release error", () => {
+    const error = caught(() => parseReleaseDescription('{"assets":[]}'));
+    expect(error).toBeInstanceOf(ReleaseError);
+    expect(error).not.toBeInstanceOf(ReleaseFeedError);
+    expect(error.message).toBe("the latest release has no tag");
   });
 });
 

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import type { ReleaseInfo } from "../lib/release";
+import { ReleaseFeedError, type ReleaseInfo } from "../lib/release";
 import type { Journal, JournalKind } from "./journal";
 import {
   DEFAULT_UPDATE_INTERVAL_MS,
@@ -223,6 +223,33 @@ describe("startUpdater", () => {
     });
     await manual.fire(0);
     expect(records).toEqual([["activity", `release check skipped: ${missing.message}`]]);
+    // The skipped check still backs off instead of polling at the base interval.
+    expect(manual.delays).toEqual([0, 2000]);
+    updater.stop();
+  });
+
+  test("journals an unreadable release description as context, never an update-error", async () => {
+    const prefix = await installedPrefix("0.1.0");
+    const { journal, records } = journalRecorder();
+    const manual = manualSchedule();
+    const unreadable = new ReleaseFeedError(
+      "gh returned an unreadable release description: unexpected gh arguments: api releases/latest",
+    );
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir: prefix,
+      currentVersion: "0.1.0",
+      journal,
+      intervalMs: 1000,
+      schedule: manual.schedule,
+      fetchRelease: async () => {
+        throw unreadable;
+      },
+      install: async (info) => info.version,
+    });
+    await manual.fire(0);
+    expect(records).toEqual([["activity", `release check skipped: ${unreadable.message}`]]);
     // The skipped check still backs off instead of polling at the base interval.
     expect(manual.delays).toEqual([0, 2000]);
     updater.stop();
