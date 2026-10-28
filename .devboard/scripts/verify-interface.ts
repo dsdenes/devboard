@@ -623,7 +623,7 @@ async function seedIssuesState(
           title: `Fixture issue ${number}`,
           url: `https://github.com/fixture/host/issues/${number}`,
           createdAt: "2026-10-26T00:00:00Z",
-          labels: [] as string[],
+          labels: number === 19 ? ["goal"] : ([] as string[]),
           handled: false,
           runId: null,
           agentRunId: agents.find((agent) => agent.issueNumber === number)?.runId ?? null,
@@ -4959,7 +4959,7 @@ try {
     queue,
   );
   check(
-    queue.every((entry, index) => entry.goal === (index >= 3 ? "true" : "false")),
+    queue.every((entry, index) => entry.goal === (index >= 2 ? "true" : "false")),
     "a goal label is not visible on its issue",
     queue,
   );
@@ -4977,7 +4977,46 @@ try {
   const goalBadges = await page.eval<number>(
     `document.querySelectorAll('[data-testid="issues-goal-badge"]').length`,
   );
-  check(goalBadges === 2, "the goal issues carry no goal badge", goalBadges);
+  check(goalBadges === 3, "the goal issues carry no goal badge", goalBadges);
+  const queueGeometry = await page.eval<{
+    heights: number[];
+    goalTop: number | null;
+    stateTop: number | null;
+    stateRight: number | null;
+    panelRight: number | null;
+  }>(`(() => {
+    const items = [...document.querySelectorAll('[data-testid="issues-queue-item"]')];
+    const goalItem = items.find((item) => item.querySelector('[data-testid="issues-goal-badge"]') && item.querySelector('[data-testid="issues-running-marker"]'));
+    const goal = goalItem?.querySelector('[data-testid="issues-goal-badge"]')?.getBoundingClientRect();
+    const state = goalItem?.querySelector('[data-testid="issues-running-marker"]')?.getBoundingClientRect();
+    const panel = document.querySelector('[data-testid="issues-queue"]')?.getBoundingClientRect();
+    return {
+      heights: items.map((item) => Math.round(item.getBoundingClientRect().height)),
+      goalTop: goal ? Math.round(goal.top) : null,
+      stateTop: state ? Math.round(state.top) : null,
+      stateRight: state ? Math.round(state.right) : null,
+      panelRight: panel ? Math.round(panel.right) : null,
+    };
+  })()`);
+  check(
+    new Set(queueGeometry.heights).size === 1,
+    "the queue rows do not share one height",
+    queueGeometry.heights,
+  );
+  check(
+    queueGeometry.goalTop !== null &&
+      queueGeometry.stateTop !== null &&
+      Math.abs(queueGeometry.goalTop - queueGeometry.stateTop) <= 1,
+    "the goal and state badges do not sit on one line",
+    queueGeometry,
+  );
+  check(
+    queueGeometry.stateRight !== null &&
+      queueGeometry.panelRight !== null &&
+      Math.abs(queueGeometry.stateRight - queueGeometry.panelRight) <= 13,
+    "the state badge is not on the row's trailing edge",
+    queueGeometry,
+  );
   const pendingMeta = await page.eval<string>(
     `document.querySelector('[data-testid="open-issues-queue"] .sidebar-item__meta')?.textContent ?? ""`,
   );

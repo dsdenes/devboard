@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Wireframe — issues queue row</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #fafafa;
+    color: #222;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .sheet { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+  .note { color: #666; font-size: 12px; margin: 4px 0 16px; }
+  header.page { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  h2 { font-size: 14px; margin: 0; }
+  .repo { color: #555; font-size: 12px; margin: 0; }
+  .count { border: 1px solid #999; border-radius: 999px; padding: 2px 8px; font-size: 11px; }
+  .panel { border: 1px solid #bbb; border-radius: 4px; background: #fff; margin-top: 16px; }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; border-bottom: 1px solid #bbb; background: #f2f2f2;
+  }
+  ol { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid #ddd;
+    min-height: 28px;
+  }
+  li:last-child { border-bottom: 0; }
+  li:hover { background: #f0f0f0; }
+  .num { font-family: ui-monospace, Menlo, Consolas, monospace; color: #555; font-size: 12px; }
+  .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  .meta { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .badge { border: 1px solid #777; border-radius: 999px; font-size: 10px; padding: 2px 6px; color: #444; }
+  .empty { color: #666; padding: 10px; font-size: 12px; display: block; grid-column: 1 / -1; }
+  .annotation {
+    border: 1px dashed #aaa; border-radius: 3px; color: #666;
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10px;
+    padding: 1px 4px; margin-right: 4px;
+  }
+  .annotated { display: block; margin-top: 6px; }
+  .row-detail { margin-top: 16px; border: 1px dashed #aaa; padding: 12px; }
+  .tracks { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 8px; }
+  .tracks div { border: 1px dashed #bbb; padding: 6px; font-size: 11px; color: #555; }
+  @media (max-width: 768px) {
+    .sheet { padding: 16px 10px; }
+    li { grid-template-columns: 36px minmax(0, 1fr) auto; gap: 6px; }
+    .tracks { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main class="sheet">
+  <p class="note">Structural wireframe — neutral primitives only. Not a visual design.</p>
+
+  <header class="page" id="region_header">
+    <div>
+      <h1 id="header_heading">Open issues</h1>
+      <p class="repo" id="header_repo">owner/repository</p>
+    </div>
+    <span class="count" id="header_count">8 pending</span>
+  </header>
+  <p class="annotated"><span class="annotation">region_header · P2</span><span class="annotation">header_title · header_count</span></p>
+
+  <section class="panel" id="region_queue_panel" aria-labelledby="panel-heading">
+    <div class="panel-head">
+      <h2 id="panel-heading">Queue</h2>
+    </div>
+    <ol id="region_queue_list">
+      <li id="row_281">
+        <span class="num" id="row_281_number">#281</span>
+        <span class="title" id="row_281_title" title="Persist remote Discover projects across restarts and switch between them from a dropdown">Persist remote Discover projects across restarts and switch between them from a dropdown</span>
+        <span class="meta" id="row_281_meta">
+          <span class="badge" id="row_281_goal">goal</span>
+          <span class="badge" id="row_281_state">running</span>
+        </span>
+      </li>
+      <li id="row_277">
+        <span class="num" id="row_277_number">#277</span>
+        <span class="title" id="row_277_title">always have at least one recommended option</span>
+        <span class="meta" id="row_277_meta"><span class="badge" id="row_277_state">running</span></span>
+      </li>
+      <li id="row_274">
+        <span class="num" id="row_274_number">#274</span>
+        <span class="title" id="row_274_title" title="A very long issue title that has to truncate on one line without moving the state word">A very long issue title that has to truncate on one line without moving the state word</span>
+        <span class="meta" id="row_274_meta">
+          <span class="badge" id="row_274_goal">goal</span>
+          <span class="badge" id="row_274_state">pending</span>
+        </span>
+      </li>
+      <li id="row_273">
+        <span class="num" id="row_273_number">#273</span>
+        <span class="title" id="row_273_title">Hide the Skills group until artifacts are published</span>
+        <span class="meta" id="row_273_meta"><span class="badge" id="row_273_state">handled</span></span>
+      </li>
+      <li id="region_queue_empty" class="empty">No open issues have been polled yet.</li>
+    </ol>
+  </section>
+  <p class="annotated"><span class="annotation">region_queue_panel · region_queue_list · P0</span><span class="annotation">region_queue_empty · P2</span></p>
+
+  <section class="row-detail" aria-labelledby="tracks-heading">
+    <h2 id="tracks-heading" style="font-size:12px; margin-bottom:8px;">One row — three tracks, fixed meaning</h2>
+    <div class="tracks">
+      <div><span class="annotation">row_number · P0</span><br />44px · mono · tracker link</div>
+      <div><span class="annotation">row_title · P0</span><br />flex · one line · ellipsis · tooltip</div>
+      <div><span class="annotation">row_meta · P1</span><br />auto · gap 6px · optional goal + one state</div>
+    </div>
+    <p class="note">Meta children never wrap. The state word keeps the trailing edge whether or not the goal badge is present.</p>
+  </section>
+</main>
+</body>
+</html>

@@ -429,6 +429,15 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   stopping the running agent. The panel header carries one aggregate warning badge,
   `<n> need answers`, only while an agent waits; the fleet size is not repeated there because the
   Automation panel owns it.
+- **Issue queue row** (`.issues-queue__item`) — one row of the Issues mode Queue page: a 29px
+  grid with three fixed tracks — a 44px mono, tabular `#<n>` tracker link in `muted-foreground`
+  that takes `foreground` and an underline on hover or focus; the issue title on one line with
+  ellipsis and the full text as its tooltip; and a trailing non-wrapping meta group with a 6px
+  gap. The meta group holds the optional `goal` accent badge and exactly one lifecycle badge
+  (`pending` pending tone, `running` accent, `handled` success), so a goal issue that is running
+  keeps both badges on the title's line instead of wrapping into a second row. Rows use 6px 10px
+  padding, a `border-subtle` rule, and `row-hover` on hover; the state badge always ends on the
+  row's trailing edge, and the title is the only track that yields at 1024px.
 - **Agent fleet card** (`.issues-agent`) — one card per running agent in the Agents page grid: a
   360px-minimum `surface` card with 1px `border`, 4px radius, 10px padding, and an 8px internal
   rhythm. Its head holds the mono `accent` issue-number link to the tracker and one outline

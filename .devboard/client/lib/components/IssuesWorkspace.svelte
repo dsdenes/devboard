@@ -460,24 +460,34 @@
               data-goal={isGoalIssue(issue)}
               data-run={issue.agentRunId ?? ""}
             >
-              <a class="mono" href={issue.url} target="_blank" rel="noreferrer">#{issue.number}</a>
-              <span class="issues-queue__title">{issue.title}</span>
-              {#if isGoalIssue(issue)}
-                <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
-              {/if}
-              {#if issue.handled}
-                <span class="badge" data-tone={statusTone("handled")}>handled</span>
-              {:else if issue.agentRunId !== null}
-                <span
-                  class="badge"
-                  data-tone={statusTone("running")}
-                  data-testid="issues-running-marker"
-                >
-                  running
-                </span>
-              {:else}
-                <span class="badge" data-tone={statusTone("pending")}>pending</span>
-              {/if}
+              <a
+                class="issues-queue__number mono"
+                href={issue.url}
+                target="_blank"
+                rel="noreferrer"
+                title={`Open issue #${issue.number} on the tracker`}
+              >
+                #{issue.number}
+              </a>
+              <span class="issues-queue__title" title={issue.title}>{issue.title}</span>
+              <span class="issues-queue__meta">
+                {#if isGoalIssue(issue)}
+                  <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
+                {/if}
+                {#if issue.handled}
+                  <span class="badge" data-tone={statusTone("handled")}>handled</span>
+                {:else if issue.agentRunId !== null}
+                  <span
+                    class="badge"
+                    data-tone={statusTone("running")}
+                    data-testid="issues-running-marker"
+                  >
+                    running
+                  </span>
+                {:else}
+                  <span class="badge" data-tone={statusTone("pending")}>pending</span>
+                {/if}
+              </span>
             </li>
           {:else}
             <li class="issues-queue__empty muted">No open issues have been polled yet.</li>
