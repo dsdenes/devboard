@@ -2,7 +2,7 @@
 
 | Need | Decision | OpenUI entry | Storybook story | Data/state requirements | Accessibility | Token needs |
 |---|---|---|---|---|---|---|
-| Page identity and actions | Reuse | `PageHeader` | `stories/page-header.stories.ts` | eyebrow, title, subtitle, meta badges, one action; truncates a long title | native `header`, sole `h1`, action group | existing page-header, spacing, typography |
+| Page identity and actions | Reuse, `bar` layout | `PageHeader` | `stories/page-header.stories.ts` | eyebrow, title, subtitle, meta badges and one action on one band; title and repository truncate | native `header`, sole `h1`, action group | existing page-header, spacing, typography |
 | Start/Stop control | Reuse | `Button` | `stories/design-system.stories.ts` | `default` while stopped, `destructive` while attached; disabled when the socket is closed or the server refuses | native button, focus ring, disabled opacity | button-primary and destructive |
 | Lifecycle badge | Compose | — (`.badge` CSS primitive) | design-system overview specimens | `data-tone` from `statusTone(lifecycle)`; words `stopped`, `idle`, `scanning`, `failed` | word carries meaning, colour is redundant | success, warning, error, border-strong |
 | Last-read timestamp | Compose | — | — | `sync.at` or `never`; formatted local date/time with the raw value in `title`; stable across a failed read; the sync error banner carries the read state | visible text, mono | mono-small |
@@ -18,16 +18,18 @@
 ## Component details
 
 ### PageHeader
-- Decision: reuse unchanged.
-- Why: every other Issues page uses it, and it supplies the one `h1`, meta row, and
-  right-aligned actions this page needs. The bespoke `issues-overview__header` duplicated
-  those rules with a smaller title and no action slot.
+- Decision: reuse with `layout="bar"`.
+- Why: one 56px band reads as an operational status header. The title and repository sit
+  on one line while the lifecycle badge, last read, and Start/Stop share the trailing
+  edge, so the state sits beside the action it qualifies instead of in a second column
+  under the title.
 - Real API: `.devboard/client/lib/components/ui/page-header.svelte`; `eyebrow`, `title`,
-  `subtitle`, `meta`, `actions`, `flat`, `testid`.
+  `subtitle`, `meta`, `actions`, `flat`, `layout`, `testid`.
 - States: only empty and populated states of the meta/actions; the header itself has no
   loading state.
-- Edge cases: a long owner/repo or timestamp stays on the meta row and wraps; the action
-  never wraps below the identity at 1024px.
+- Edge cases: a long owner/repo truncates without moving the trailing cluster; the
+  cluster wraps below the identity only when the workspace is too narrow for both, and
+  the action never detaches from the state.
 - Tokens: existing page-header and badge tokens only.
 
 ### Button

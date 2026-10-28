@@ -510,7 +510,6 @@
       <section class="panel discover-remote" data-testid="discover-remote" aria-label="Discover remote target">
         <div class="panel__header">
           <h2 class="panel__title">Manual testing target</h2>
-          <span class="panel__subtitle">Source checkout only</span>
         </div>
         <div class="panel__body stack-sm">
           {#if discover.remoteTarget !== null}
