@@ -1438,10 +1438,11 @@ planned.
 
 Issues is the fourth mode in the activity rail, below Goal. Each dashboard controls exactly one
 repository: its own `REPO_DIR`. Starting Issues in one checkout's dashboard polls that checkout's
-origin open issues and starts one ACP agent for every open, unhandled issue in that same poll. Each
-issue without the exact `goal` label receives exactly `/implement-issue <number>`; each
-`goal`-labeled issue receives exactly `/implement-goal-issue <number>`. There is no concurrency
-cap: ten ready issues start ten peers, and no peer waits for another to finish. A detached worker
+origin open issues and starts one ACP agent for every open, unhandled issue in that same poll, up to
+thirty at once. Each issue without the exact `goal` label receives exactly
+`/implement-issue <number>`; each `goal`-labeled issue receives exactly
+`/implement-goal-issue <number>`. A thirty-first ready issue waits in the queue and starts as soon
+as a running peer finishes; no peer waits for another to finish. A detached worker
 owns the poll loop, the peers, the ledger, the lock, and the activity for one repository, so it
 survives a dashboard restart and two repositories never share a worker. No systemd unit, timer, or
 machine-level scheduler is involved, and neither starting nor restarting a dashboard starts a
@@ -2471,16 +2472,16 @@ default client's bounded `gh` calls, a failed pre-filing read, migration from a 
 missing score failing the scan atomically, a failed filing, Stop keeping the rows, the live lock,
 a replacement closing an interrupted scan, bridge replay without a spawn, another `STATE_DIR`
 refused, a harness-version notice, the issue body and label creation, and the scan prompt's rubric.
-`tests/issues.test.ts` covers the fleet (four mixed issues, twelve peers with no cap, duplicate
-prevention, an issue opened mid-run, per-issue success and ledger entries, one failure cooling only
-its issue), Check now clearing every cooldown, pause draining every peer, Stop closing every peer
-without a cooldown, per-agent questions and answer routing, two orphan children on a fresh start,
-version 1 state loading, reopened-issue eligibility, history pruning that keeps every running
-directory, preflight for both wrappers, repo-scoped state and lock isolation, atomic and damaged
-state, ledger migration, the activity bounds, and the conditional tracker. `tests/cleanup.test.ts`
-proves the watchdog preserves repo-scoped issues state, the repo-anchored lock, and Flow session
-records that Flow restore still reads, while sweeping legacy orchestrator run files. Every fixture
-stays under `.devboard/.tmp`.
+`tests/issues.test.ts` covers the fleet (four mixed issues, the thirty-peer cap with a queued peer
+starting when one finishes, duplicate prevention, an issue opened mid-run, per-issue success and
+ledger entries, one failure cooling only its issue), Check now clearing every cooldown, pause
+draining every peer, Stop closing every peer without a cooldown, per-agent questions and answer
+routing, two orphan children on a fresh start, version 1 state loading, reopened-issue eligibility,
+history pruning that keeps every running directory, preflight for both wrappers, repo-scoped state
+and lock isolation, atomic and damaged state, ledger migration, the activity bounds, and the
+conditional tracker. `tests/cleanup.test.ts` proves the watchdog preserves repo-scoped issues state,
+the repo-anchored lock, and Flow session records that Flow restore still reads, while sweeping
+legacy orchestrator run files. Every fixture stays under `.devboard/.tmp`.
 `tests/launcher.test.ts` covers the single public package: the manifest, the help output, the
 tarball's required and forbidden paths, the fallback asset name, and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`
 covers installing a release when the process working directory has been deleted.
