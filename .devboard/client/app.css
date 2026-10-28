@@ -266,6 +266,20 @@ kbd {
   position: relative;
 }
 
+/* The armed issue action reads as selected: accent surface, border, icon, and
+   a rail bar matching an active mode tab. */
+.activity-bar__action[aria-pressed="true"]::before {
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+  content: "";
+  height: 16px;
+  left: -5px;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+}
+
 .activity-bar__unread {
   background: var(--error);
   border: 1px solid var(--activity-bar);
@@ -1424,41 +1438,38 @@ kbd {
   padding: 4px;
 }
 
-/* The decision board header pairs its title with a draft-state line and the save action. */
+/* The decision board is the page's lead editor: one title line, a status badge,
+   and the save action on a 44px row, matching the Flow goal header. */
 .flow-decisions__header {
-  align-items: flex-start;
+  align-items: center;
+  flex: 0 0 44px;
   gap: 12px;
+  height: 44px;
+  padding: 0 12px;
 }
 
 .flow-decisions__identity {
+  align-items: center;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  gap: 10px;
   min-width: 0;
 }
 
-/* Two 12px and 11px lines plus the 2px gap fit the panel header's 30px. */
-.flow-decisions__header .panel__title {
+.flow-decisions__title {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0;
   line-height: 1.2;
 }
 
 .flow-decisions__state {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  line-height: 1.2;
-}
-
-.flow-decisions__state[data-state="dirty"] {
-  color: var(--warning);
-}
-
-.flow-decisions__state[data-state="saved"] {
-  color: var(--success);
+  flex: 0 0 auto;
 }
 
 .flow-decisions__actions {
-  align-self: center;
+  align-items: center;
   flex: 0 0 auto;
+  flex-wrap: nowrap;
   justify-content: flex-end;
 }
 
@@ -1676,6 +1687,39 @@ kbd {
   margin: 0;
 }
 
+/* One run tag above every Discover page: the run's state, age, id, and last line. */
+.discover-run-tag {
+  align-items: center;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.discover-run-tag strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.discover-run-tag .muted {
+  font-size: 11px;
+}
+
+.discover-run-tag__activity {
+  color: var(--muted-foreground);
+  flex: 1 1 160px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Active run: one state line names the run, its age, its id, and the quiet Stop. */
 .discover-run__header {
   background: var(--surface-raised);
@@ -1703,13 +1747,6 @@ kbd {
   gap: 10px;
   justify-content: flex-end;
   min-width: 0;
-}
-
-.discover-run__id {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .discover-run__started {
@@ -2285,58 +2322,6 @@ a.code-chip--link:focus-visible {
   fill: var(--foreground);
 }
 
-.discover-empty__body {
-  align-items: start;
-  display: grid;
-  gap: 16px 24px;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  padding: 16px;
-}
-
-@media (max-width: 1100px) {
-  .discover-empty__body {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-.discover-empty__body h2 {
-  font-size: 13px;
-  font-weight: 600;
-  margin: 0 0 6px;
-}
-
-.discover-empty__body p {
-  color: var(--foreground);
-  font-size: 12px;
-  line-height: 1.45;
-  margin: 0 0 8px;
-}
-
-.discover-empty__body p.muted {
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-
-.discover-writes {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.discover-writes li {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.discover-writes span {
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
-
 .discover-search {
   flex: 1 1 200px;
   max-width: 240px;
@@ -2739,13 +2724,19 @@ a.code-chip--link:focus-visible {
 }
 
 .skill {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill__row {
   align-items: flex-start;
   display: flex;
   gap: 4px;
 }
 
 .skill__button {
-  align-items: flex-start;
+  align-items: center;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -2753,11 +2744,29 @@ a.code-chip--link:focus-visible {
   cursor: pointer;
   display: flex;
   flex: 1;
-  flex-direction: column;
-  gap: 2px;
+  gap: 8px;
+  justify-content: space-between;
   min-width: 0;
   padding: 4px 6px;
   text-align: left;
+}
+
+.skill__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skill__chevron {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  transition: transform 120ms ease;
+}
+
+.skill__chevron--open {
+  transform: rotate(90deg);
 }
 
 .skill__delete {
@@ -2800,17 +2809,152 @@ a.code-chip--link:focus-visible {
   font-size: 11px;
 }
 
-.skill__content {
+.skill__detail {
+  border-left: 2px solid var(--border-strong);
+  margin: 0 0 4px 8px;
+  padding: 4px 0 4px 8px;
+}
+
+.skill__path {
+  color: var(--muted-foreground);
+  display: block;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  margin: 0;
+  line-height: 1.4;
+  margin: 0 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill__document {
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 940px;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
 }
 
-.goal-skill-detail {
-  flex: 0 0 auto;
+.skill__document > :first-child {
+  margin-top: 0;
 }
 
+.skill__document > :last-child {
+  margin-bottom: 0;
+}
+
+.skill__document h1 {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.2;
+  margin: 0 0 12px;
+}
+
+.skill__document h2 {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+  margin: 16px 0 6px;
+}
+
+.skill__document h3,
+.skill__document h4,
+.skill__document h5,
+.skill__document h6 {
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+  margin: 12px 0 4px;
+}
+
+.skill__document p {
+  margin: 0 0 8px;
+}
+
+.skill__document ul,
+.skill__document ol {
+  margin: 0 0 8px;
+  padding-left: 16px;
+}
+
+.skill__document li + li {
+  margin-top: 4px;
+}
+
+.skill__document li > p {
+  margin: 0;
+}
+
+.skill__document strong {
+  font-weight: 650;
+}
+
+.skill__document a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.skill__document a:hover,
+.skill__document a:focus-visible {
+  text-decoration: underline;
+}
+
+.skill__document code {
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 2px 6px;
+}
+
+.skill__document pre {
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  margin: 0 0 8px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.skill__document pre code {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-size: 12px;
+  padding: 0;
+}
+
+.skill__document blockquote {
+  border-left: 2px solid var(--border-strong);
+  color: var(--muted-foreground);
+  margin: 0 0 8px;
+  padding-left: 10px;
+}
+
+.skill__document hr {
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  margin: 12px 0;
+}
+
+.skill__document table {
+  border-collapse: collapse;
+  margin: 0 0 8px;
+}
+
+.skill__document th,
+.skill__document td {
+  border: 1px solid var(--border-subtle);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.skill__document th {
+  background: var(--surface-raised);
+  font-weight: 600;
+}
 /* Issues mode */
 .issues-overview,
 .issues-queue-page,

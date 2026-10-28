@@ -19,7 +19,6 @@ judge progress.
 
 ## Secondary goals
 
-- Recognise which run is on screen when several runs were started during the session.
 - See how long it has been running without opening a log.
 
 ## Arrival context
@@ -38,23 +37,18 @@ inside the same panel owns progress detail.
 
 1. **Confirm the run is alive.** Trigger: the panel appears. Steps: read the header state, glance
    at the terminal. Success: one unambiguous state word plus a growing activity log.
-2. **Identify the run.** Trigger: the operator compares the dashboard against server logs or a
-   second tab. Steps: read or hover the run identifier. Success: the full identifier is readable
-   without dominating the header.
-3. **Stop the run.** Trigger: the run is wrong or no longer needed. Steps: find the Stop control,
+2. **Stop the run.** Trigger: the run is wrong or no longer needed. Steps: find the Stop control,
    activate it. Success: the run stops; failure is reported by the page's existing notification
    region, not by a second header message.
-4. **Judge elapsed time.** Trigger: the run feels stalled. Steps: read the start time. Success: a
+3. **Judge elapsed time.** Trigger: the run feels stalled. Steps: read the start time. Success: a
    relative age that updates while the panel is open, with the exact start clock in its tooltip.
 
 ## Failure routes
 
 - **Stop refused or the socket is down** — the existing notification path reports it; the header
   keeps its last known state.
-- **Missing start time or identifier** — the header omits that meta item and keeps the state and
-  Stop; no empty chip or placeholder is rendered.
-- **Long identifier** — the chip truncates with the full value in its tooltip; the state and Stop
-  never shrink.
+- **Missing start time** — the header omits the meta item and keeps the state and Stop; no empty
+  placeholder is rendered.
 
 ## Non-goals
 

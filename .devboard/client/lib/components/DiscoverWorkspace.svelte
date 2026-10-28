@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import {
     conceptTitle,
     contextTitle,
     labelText,
     labelTexts,
+    relativeTime,
     TABS,
   } from "../discover-format";
   import { discover } from "../discover.svelte";
@@ -58,7 +60,48 @@
   function clearGlossaryFilters(): void {
     discover.resetGlossaryFilters();
   }
+
+  let now = $state(Date.now());
+  const startedLabel = $derived(
+    discover.startedAt === null ? "" : relativeTime(discover.startedAt, now),
+  );
+  const lastActivity = $derived(
+    [...discover.activity].reverse().find((line) => line.trim().length > 0)?.trim() ?? "",
+  );
+
+  onMount(() => {
+    const timer = setInterval(() => (now = Date.now()), 15_000);
+    return () => clearInterval(timer);
+  });
 </script>
+
+{#snippet runTag()}
+  {#if discover.active}
+    <div class="discover-run-tag" data-testid="discover-run-tag" role="status" aria-live="polite">
+      <span class="discover-run__dot" aria-hidden="true"></span>
+      <strong>Discover run in progress</strong>
+      {#if discover.startedAt !== null}
+        <span class="muted" title={discover.startedAt}>started {startedLabel}</span>
+      {/if}
+      {#if discover.runId !== null}
+        <code class="code-chip">{discover.runId}</code>
+      {/if}
+      {#if lastActivity.length > 0}
+        <span class="discover-run-tag__activity" title={lastActivity}>{lastActivity}</span>
+      {/if}
+      <button
+        type="button"
+        class="discover-run__stop"
+        title="Stop this Discover run"
+        data-command="discover.stop"
+        data-testid="discover-run-tag-stop"
+        onclick={() => discover.stop()}
+      >
+        Stop
+      </button>
+    </div>
+  {/if}
+{/snippet}
 
 {#snippet glossaryCell(row: Record<string, unknown>, columnId: string)}
   {#if columnId === "kind"}
@@ -377,6 +420,7 @@
 {/snippet}
 
 <div class="mode-body discover-body">
+  {@render runTag()}
   {@render notices()}
 
   {#if tab === null}
