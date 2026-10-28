@@ -33,6 +33,6 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          GITEA_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          DEVBOARD_GITEA_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           DEVBOARD_GITEA_URL: ${{ vars.DEVBOARD_URL }}
         run: bun run release
