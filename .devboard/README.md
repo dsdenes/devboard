@@ -1605,8 +1605,11 @@ renders `data-testid="scout-issue-title"` as an anchor to the issue URL,
 cell's `title`), `data-testid="scout-issue-type"`,
 `data-testid="scout-issue-state"`, and `data-testid="scout-issue-version"`. The type is the
 recommendation's category, or the issue body's `## Category` value for an adopted issue, or `—`.
-With no rows, `data-testid="scout-issues-empty"` renders. The sidebar `data-testid="scout-count"`
-shows the number of rows whose state is `pending`.
+With no rows, `data-testid="scout-issues-empty"` renders a centered stack: a decorative inbox
+mark, `No issues filed yet`, and one line stating that Auto Scout files significant findings after
+each scan. The empty state adds no control of its own; Start/Stop stays in the page header and the
+row count stays in the panel header. The sidebar `data-testid="scout-count"` shows the number of
+rows whose state is `pending`.
 
 An open issue is `pending`. A closed issue is `implemented` regardless of `stateReason`; a
 reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
@@ -2127,7 +2130,9 @@ The server answers with events:
   lifecycle conversation.
 - A `question` event carries one option per choice. Each option has a `label`, an optional
   `description` stating the consequence of choosing it, and `recommended`, true for the answer
-  the agent suggests. `answer` names the selected label as `value`.
+  the agent suggests. When the peer's schema marks none, the server marks the first option as
+  recommended, so a choice list never lacks a suggestion. `answer` names the selected label as
+  `value`.
 - A record's title and status come from its YAML frontmatter `title` and `status` fields.
 - A record is pending exactly when its status is `draft` or `proposed`; every other status is
   resolved.

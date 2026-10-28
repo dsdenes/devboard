@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { JOURNAL_KINDS, type JournalKind } from "../server/journal";
+import { JOURNAL_KINDS, journalFiles, type JournalKind } from "../server/journal";
 import { processSnapshot, type Instance } from "./discovery";
 
 /** The evidence window is the ten minutes before cycle start, both ends inclusive. */
@@ -53,22 +53,31 @@ function normalizedPath(root: string, path: string): string {
   return local.length === 0 || local.startsWith("..") ? resolved : local;
 }
 
+/** In-window events of one journal file, with the identity used to merge copies. */
+interface JournalFileEvidence {
+  events: EvidenceEvent[];
+  /** Record identity parallel to `events`. */
+  identities: string[];
+  malformed: number;
+}
+
 /**
- * Reads one project's JSONL journal. The file is the serving harness's, so a
- * dashboard from another checkout contributes its own records. Records inside
- * the window are returned; malformed records are counted, never guessed.
+ * Reads one JSONL journal file. Records inside the window are returned;
+ * malformed records are counted, never guessed. An unreadable file is empty.
  */
-export function readJournalEvidence(
-  instance: Instance,
+function readJournalFile(
+  path: string,
   options: WindowOptions & { root: string },
-): { events: EvidenceEvent[]; malformed: number } {
+  instance: Instance,
+): JournalFileEvidence {
   let source: string;
   try {
-    source = readFileSync(instance.journal, "utf8");
+    source = readFileSync(path, "utf8");
   } catch {
-    return { events: [], malformed: 0 };
+    return { events: [], identities: [], malformed: 0 };
   }
   const events: EvidenceEvent[] = [];
+  const identities: string[] = [];
   let malformed = 0;
   for (const line of source.split("\n")) {
     if (line.trim().length === 0) continue;
@@ -90,16 +99,51 @@ export function readJournalEvidence(
     const kind = record.kind;
     if (typeof kind !== "string" || !JOURNAL_KINDS.includes(kind as JournalKind)) continue;
     if (typeof record.text !== "string") continue;
+    const scope = typeof record.scope === "string" && record.scope.length > 0 ? record.scope : "";
     events.push({
-      source: normalizedPath(options.root, instance.journal),
+      source: normalizedPath(options.root, path),
       kind,
       ts: new Date(ts).toISOString(),
       text: record.text,
-      ...(typeof record.scope === "string" && record.scope.length > 0
-        ? { scope: record.scope }
-        : {}),
+      ...(scope.length > 0 ? { scope } : {}),
       instance,
     });
+    identities.push(JSON.stringify([ts, kind, scope, record.text]));
+  }
+  return { events, identities, malformed };
+}
+
+/**
+ * Reads one project's JSONL journal, live and rotated. The files are the
+ * serving harness's, so a dashboard from another checkout contributes its own
+ * records. Rotated journals are read oldest first, and a record present in
+ * both a rotated file and the live one is counted once: rotation moves records
+ * rather than copying them, so a copy is the same record. Malformed records
+ * count across every file read.
+ */
+export function readJournalEvidence(
+  instance: Instance,
+  options: WindowOptions & { root: string },
+): { events: EvidenceEvent[]; malformed: number } {
+  const events: EvidenceEvent[] = [];
+  let malformed = 0;
+  /** Most occurrences of one identity any earlier file held. */
+  const seen = new Map<string, number>();
+  for (const path of journalFiles(instance.journal, options.window.start)) {
+    const file = readJournalFile(path, options, instance);
+    malformed += file.malformed;
+    const occurrences = new Map<string, number>();
+    file.events.forEach((event, index) => {
+      const identity = file.identities[index] ?? "";
+      const occurrence = occurrences.get(identity) ?? 0;
+      occurrences.set(identity, occurrence + 1);
+      // Copies beyond what an earlier file already held are the same record.
+      if (occurrence < (seen.get(identity) ?? 0)) return;
+      events.push(event);
+    });
+    for (const [identity, count] of occurrences) {
+      seen.set(identity, Math.max(seen.get(identity) ?? 0, count));
+    }
   }
   return { events, malformed };
 }
