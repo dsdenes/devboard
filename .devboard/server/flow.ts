@@ -2339,9 +2339,11 @@ export class FlowController {
     }
     conversation.messages.push({ role: "developer", text });
     this.#broadcast({ type: "flowConversationMessage", role: "developer", text });
-    if (conversation.busy) {
+    if (conversation.busy || conversation.agent === undefined) {
+      // No peer can take the text yet while `openConversation` awaits the
+      // provider environment; the opening prompt's pump drains this queue.
       conversation.queue.push(text);
-    } else if (conversation.agent !== undefined) {
+    } else {
       void this.#promptConversation(conversation, text);
     }
     this.#publish();
