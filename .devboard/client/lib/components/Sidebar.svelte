@@ -306,6 +306,17 @@
         <button
           type="button"
           class="sidebar-item"
+          aria-current={isActive("watchdog") ? "true" : undefined}
+          aria-label={`Watchdog (${modeLabel})`}
+          data-command="open.issues.watchdog"
+          data-testid="open-issues-watchdog"
+          onclick={() => open("issues", "watchdog", "watchdog", "watchdog", "Watchdog")}
+        >
+          <span class="sidebar-item__label">Watchdog</span>
+        </button>
+        <button
+          type="button"
+          class="sidebar-item"
           aria-current={isActive("issues")}
           data-command="open.issues.issues"
           data-testid="open-issues-queue"
