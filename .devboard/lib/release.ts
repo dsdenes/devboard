@@ -225,6 +225,28 @@ export function isReleaseUnreachable(error: unknown): boolean {
   return failure?.code === "ENOENT" && (message.includes("spawn") || syscall.startsWith("spawn"));
 }
 
+/**
+ * Text the release registry or feed prints when it refuses requests because
+ * the caller exceeded a quota. The feed is reachable; the refusal is temporary
+ * and caused by shared or rapid polling, not by the harness, so the check is
+ * retried without being reported as a defect.
+ */
+const RATE_LIMIT_PATTERNS = [
+  "rate limit exceeded",
+  "secondary rate limit",
+  "rate-limited",
+  "http 429",
+  "429 too many requests",
+  "too many requests",
+  "code e429",
+];
+
+/** True when a release check failed because the registry or feed rate-limited the caller. */
+export function isReleaseRateLimited(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return RATE_LIMIT_PATTERNS.some((pattern) => message.includes(pattern));
+}
+
 export function tarballName(version: string): string {
   return `${RELEASE_PREFIX}${version}.tgz`;
 }
