@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Watchdog page</title>
+<style>
+  :root { --ink:#2b2b2b; --muted:#6b6b6b; --line:#c9c9c9; --fill:#f4f4f4; --paper:#fdfdfd; --ann:#5a6b7a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; font-size:13px; line-height:1.45; }
+  .wf { max-width:1180px; margin:0 auto; padding:16px; }
+  .wf-title { font-size:15px; font-weight:700; margin:0 0 2px; }
+  .wf-note { color:var(--muted); font-size:11px; margin:0 0 16px; }
+  .wf-ann { color:var(--ann); font-size:9px; font-weight:700; letter-spacing:.06em;
+    text-transform:uppercase; display:block; margin:0 0 4px; }
+  .shell { display:grid; grid-template-columns:64px minmax(0,1fr); border:1px solid var(--line); }
+  .rail { border-right:1px solid var(--line); background:var(--fill); padding:8px 6px; display:flex; flex-direction:column; gap:4px; }
+  .rail button { height:44px; border:1px solid var(--line); background:var(--paper); font:inherit; font-size:10px; }
+  .rail button[aria-current="true"] { border-color:var(--ink); font-weight:700; }
+  .workspace { padding:12px; display:flex; flex-direction:column; gap:12px; }
+  .page-head { border:1px solid var(--line); background:var(--fill); padding:8px 10px; }
+  h1 { font-size:18px; margin:0 0 2px; }
+  .purpose { color:var(--muted); font-size:12px; margin:0 0 6px; }
+  .meta { display:flex; align-items:center; gap:12px; }
+  .badge { border:1px solid var(--ink); border-radius:999px; padding:1px 6px; font-size:9px; font-weight:600; white-space:nowrap; }
+  .mono { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; }
+  .muted { color:var(--muted); }
+  .alert { border:1px solid var(--ink); border-left:3px solid var(--ink); padding:6px 8px; font-size:11px; background:var(--fill); }
+  .body { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(340px,.9fr); gap:12px; align-items:start; }
+  .main { display:flex; flex-direction:column; gap:12px; min-width:0; }
+  .panel { border:1px solid var(--line); background:var(--paper); border-radius:3px; overflow:hidden; }
+  .panel-head { display:flex; justify-content:space-between; align-items:center; gap:8px;
+    padding:5px 8px; border-bottom:1px solid var(--line); background:var(--fill); }
+  .panel-head strong { font-size:12px; }
+  .panel-head .trail { display:flex; align-items:center; gap:8px; }
+  .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .stat { padding:8px 10px; border-right:1px solid var(--line); min-width:0; }
+  .stat:last-child { border-right:0; }
+  .stat span { display:block; color:var(--muted); font-size:9px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:2px; }
+  .stat b { font-weight:400; font-size:12px; font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .reason { margin:0; padding:6px 10px 8px; border-top:1px solid var(--line); color:var(--muted); font-size:12px; }
+  table { border-collapse:collapse; width:100%; table-layout:fixed; }
+  th { text-align:left; font-size:9px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+    font-weight:600; padding:5px 8px; border-bottom:1px solid var(--line); background:var(--fill); }
+  td { padding:5px 8px; border-bottom:1px solid var(--line); font-size:12px; vertical-align:middle; }
+  td:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  tr:last-child td { border-bottom:0; }
+  col.c-cat { width:104px; } col.c-filed { width:124px; } col.c-state { width:82px; } col.c-ver { width:72px; }
+  ol.cycles { list-style:none; margin:0; padding:0; }
+  .cycle { display:grid; grid-template-columns:112px 84px minmax(0,1fr); gap:8px; align-items:center;
+    padding:5px 10px; border-bottom:1px solid var(--line); }
+  .cycle:last-child { border-bottom:0; }
+  .cycle .at { color:var(--muted); font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; }
+  .links { display:flex; gap:6px; flex-wrap:wrap; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; }
+  .empty { margin:0; padding:10px 12px; color:var(--muted); font-size:12px; }
+  .status { border-top:1px solid var(--line); background:var(--fill); padding:4px 8px; font-size:10px; color:var(--muted); }
+  .notes { margin-top:16px; display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; }
+  .note { border:1px solid var(--line); padding:8px 10px; font-size:11px; }
+  .note h2 { font-size:11px; margin:0 0 4px; }
+</style>
+</head>
+<body>
+<div class="wf">
+  <h1 class="wf-title">Wireframe — Issues mode · Watchdog page</h1>
+  <p class="wf-note">Grayscale structure only. No production components, tokens, brand colours, or icons.
+    The selected report (#358) is the whole page; the rail and sidebar are context.</p>
+
+  <div class="shell">
+    <nav class="rail" aria-label="Mode rail">
+      <button type="button">Goal</button>
+      <button type="button" aria-current="true">Issues</button>
+      <button type="button">Flow</button>
+      <button type="button">Discover</button>
+    </nav>
+    <div class="workspace">
+      <header class="page-head">
+        <span class="wf-ann">Page identity — no mode eyebrow</span>
+        <h1>Watchdog</h1>
+        <p class="purpose">Files significant repository findings as issues and tracks their resolution.</p>
+        <div class="meta">
+          <span class="badge">GitHub read ok</span>
+          <span class="muted">Last read <span class="mono">Oct 28, 14:44:48</span></span>
+        </div>
+      </header>
+
+      <div class="alert" role="note">Alert above the body only while the GitHub read fails.</div>
+
+      <div class="body">
+        <div class="main">
+          <section class="panel" aria-label="Newest cycle">
+            <div class="panel-head">
+              <strong>Newest cycle</strong>
+              <span class="trail"><span class="badge">filed</span><span class="mono muted">5m ago</span></span>
+            </div>
+            <div class="stats">
+              <div class="stat"><span>Started</span><b>Oct 28, 14:40:00</b></div>
+              <div class="stat"><span>Findings</span><b>2</b></div>
+              <div class="stat"><span>Pending filings</span><b>1</b></div>
+            </div>
+            <p class="reason">filed 2 issue(s)</p>
+          </section>
+
+          <section class="panel" aria-label="Filed issues">
+            <div class="panel-head"><strong>Filed issues</strong><span class="mono muted">13 filed</span></div>
+            <table>
+              <colgroup><col><col class="c-cat"><col class="c-filed"><col class="c-state"><col class="c-ver"></colgroup>
+              <thead>
+                <tr><th scope="col">Issue</th><th scope="col">Category</th><th scope="col">Filed</th><th scope="col">State</th><th scope="col">Version</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>[watchdog] update-error: release check failed</td><td class="mono muted">update-error</td><td class="mono muted">Oct 28, 14:20:00</td><td><span class="badge">pending</span></td><td class="mono">—</td></tr>
+                <tr><td>[watchdog] server-error: synthetic failure with a long finding line that ellipsizes</td><td class="mono muted">server-error</td><td class="mono muted">Oct 28, 12:10:00</td><td><span class="badge">implemented</span></td><td class="mono">v0.1.381</td></tr>
+                <tr><td>[watchdog] omp-warn: slow response</td><td class="mono muted">omp-warn</td><td class="mono muted">Oct 27, 09:00:00</td><td><span class="badge">implemented</span></td><td class="mono">v0.1.352</td></tr>
+              </tbody>
+            </table>
+          </section>
+        </div>
+
+        <section class="panel" aria-label="Cycle history">
+          <div class="panel-head"><strong>Cycle history</strong></div>
+          <ol class="cycles">
+            <li class="cycle"><span class="at">Oct 28, 14:40:00</span><span class="badge">duplicate</span><span class="links"><a href="#">#188</a></span></li>
+            <li class="cycle"><span class="at">Oct 28, 14:20:00</span><span class="badge">filed</span><span class="links"><a href="#">#188</a><a href="#">#324</a></span></li>
+            <li class="cycle"><span class="at">Oct 28, 14:10:00</span><span class="badge">none</span><span class="links"></span></li>
+            <li class="cycle"><span class="at">Oct 28, 14:00:00</span><span class="badge">none</span><span class="links"></span></li>
+            <li class="cycle"><span class="at">Oct 28, 13:50:01</span><span class="badge">duplicate</span><span class="links"><a href="#">#293</a></span></li>
+            <li class="cycle"><span class="at">Oct 28, 13:40:01</span><span class="badge">none</span><span class="links"></span></li>
+            <li class="cycle"><span class="at">Oct 28, 13:30:00</span><span class="badge">none</span><span class="links"></span></li>
+          </ol>
+          <p class="empty">Panel body capped and scrolls; newest first.</p>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="status">Connected · devboard · issues working · watchdog · versions</div>
+
+  <div class="notes">
+    <div class="note">
+      <h2>Hierarchy</h2>
+      Sync and last read answer trust first. The newest cycle answers what happened last. Filed
+      issues are the outcome; history is the bounded chronology.
+    </div>
+    <div class="note">
+      <h2>Widths</h2>
+      ≥1180px: primary column 1.45fr, history 340–520px. Below 1180px: one column — newest cycle,
+      filed issues, history. Supported floor 1024×720.
+    </div>
+    <div class="note">
+      <h2>Density</h2>
+      27px rows; 5px 8px table cells; 5px 10px cycle rows; overline stat labels; mono values and
+      timestamps; no hover fill on history rows (links own their hover).
+    </div>
+    <div class="note">
+      <h2>States</h2>
+      Empty: never / none / no rows. Error: alert + error badge, last known facts kept. Pending > 0:
+      warning stat. Long lines: ellipsis with full text in the tooltip.
+    </div>
+  </div>
+</div>
+</body>
+</html>

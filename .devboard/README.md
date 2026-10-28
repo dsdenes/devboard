@@ -1301,7 +1301,8 @@ first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `da
 `[watchdog] <category>: <line>`), `watchdog-issue-category`, `watchdog-issue-filed` (a `<time>`),
 `watchdog-issue-state`, and `watchdog-issue-version` (the tag, or `—`). A pending-only fingerprint
 is counted in `watchdog-last-pending` and never becomes a row; `watchdog-issues-empty` renders
-when nothing is filed. `watchdog-issues-count` summarizes the rows and pending filings.
+when nothing is filed. `watchdog-issues-count` states the number of filed rows; the pending filing
+count stays in the newest cycle's `watchdog-last-pending`.
 
 The server prints `watchdog-issue-state` as `pending` for an open issue and `implemented` for a
 closed one, whatever its `stateReason`; a reopened issue returns to `pending` within one refresh
