@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runCycle } from "./coordinator";
+import { loadRootEnvironment } from "./env";
 import { acquireLock } from "./lock";
 
 /**
@@ -79,6 +80,11 @@ if (!existsSync(join(root, ".devboard"))) {
   console.error(`watchdog: missing prerequisite: ${join(root, ".devboard")} does not exist`);
   process.exit(2);
 }
+
+// systemd starts this process in the harness directory with only PATH, so the
+// host root's `.env` must be read here rather than relying on the working
+// directory. Explicit values still win.
+loadRootEnvironment(root);
 
 const lock = acquireLock(join(root, ".devboard", ".tmp", "watchdog", "lock"));
 if (!lock.acquired) {
