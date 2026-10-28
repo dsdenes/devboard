@@ -205,6 +205,7 @@ try {
       GOAL_FILE: join(host.directory, "GOAL.md"),
       STATIC_DIR: join(harnessRoot, "dist"),
       STATE_DIR: stateDir,
+      DEVBOARD_WATCHDOG_FIXTURE: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });

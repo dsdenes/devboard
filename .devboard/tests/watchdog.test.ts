@@ -273,32 +273,60 @@ describe("discovery", () => {
     expect(instances[2]?.instrumented).toBe(true);
   });
 
-  test("skips dashboards whose repository is verification scratch", () => {
-    const worktree = "/projects/.worktree/issue-1";
-    const host = "/projects/host";
-    const snapshot = (pid: number, repoDir: string, port: string): ProcessSnapshot => ({
+  test("excludes dashboards rooted in harness scratch", async () => {
+    const base = await temporaryDirectory("test-watchdog-scratch");
+    const harness = join(base, "harness");
+    const installedHarness = join(
+      base,
+      ".devboard",
+      ".tmp",
+      "npm-host",
+      ".devboard",
+      "node_modules",
+      "@dsdenes",
+      "devboard",
+    );
+    await mkdir(join(harness, "dist"), { recursive: true });
+    await mkdir(join(installedHarness, "dist"), { recursive: true });
+    const scratchRepo = join(harness, ".tmp", "verify-update-fixture", "broken");
+    const installedScratchRepo = join(base, ".devboard", ".tmp", "npm-host");
+    const realRepo = "/projects/.devboard/host";
+
+    const snapshot = (
+      pid: number,
+      repoDir: string,
+      port: string,
+      staticDir: string,
+      extra: [string, string][] = [],
+    ): ProcessSnapshot => ({
       pid,
       cmdline: "bun /x/server/index.ts",
       env: new Map([
         ["REPO_DIR", repoDir],
         ["PORT", port],
-        ["HOST", "127.0.0.1"],
+        ["STATIC_DIR", staticDir],
+        ...extra,
       ]),
-      cwd: process.cwd(),
       ancestors: [],
     });
 
     const instances = instancesFromProcesses(
       [
-        snapshot(20, "/projects/.devboard/.tmp/verify-update-1/asset", "8080"),
-        snapshot(21, "../.devboard/.tmp/verify-update-1/checksum", "8081"),
-        snapshot(22, worktree, "8082"),
-        snapshot(23, host, "8083"),
+        snapshot(20, scratchRepo, "8080", join(harness, "dist")),
+        snapshot(21, installedScratchRepo, "8081", join(installedHarness, "dist")),
+        snapshot(22, realRepo, "8082", join(harness, "dist")),
+        snapshot(23, scratchRepo, "8083", join(harness, "dist"), [
+          ["DEVBOARD_WATCHDOG_FIXTURE", "1"],
+        ]),
+        snapshot(24, "../.devboard/.tmp/verify-update-1/checksum", "8084", join(harness, "dist")),
       ],
       { selfPids: new Set() },
     );
 
-    expect(instances.map((instance) => instance.repoDir)).toEqual([worktree, host]);
+    expect(instances.map((instance) => [instance.pid, instance.port, instance.repoDir])).toEqual([
+      [22, 8082, realRepo],
+      [23, 8083, scratchRepo],
+    ]);
   });
 });
 
