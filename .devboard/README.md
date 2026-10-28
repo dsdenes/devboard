@@ -601,9 +601,9 @@ The Glossary row is a plain section link: it has no disclosure control and no ne
 individual terms are never repeated as sidebar menu items. A term opens from its row on the
 Glossary page.
 
-With no published artifacts the Overview page shows an empty state (`data-testid="discover-empty"`)
-and a `Discover project` button (`data-testid="discover-start"`); with artifacts it shows
-`Re-discover`. The button is disabled when the socket is not open, while a Discover run is active,
+With no published artifacts the Overview page shows the header's first-run explanation and a
+`Discover project` button (`data-testid="discover-start"`); with artifacts it shows `Re-discover`.
+The button is disabled when the socket is not open, while a Discover run is active,
 or while Goal or Flow work is active, and its title names the reason. It never starts on page
 load, reconnect, mode switch, or page switch. Selecting it sends `{ "type": "discoverProject" }`;
 the server broadcasts `discoverStarted` and starts exactly one ACP peer whose prompt is exactly
