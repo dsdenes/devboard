@@ -650,9 +650,6 @@
               Started {startedLabel}
             </span>
           {/if}
-          {#if discover.runId !== null}
-            <code class="code-chip discover-run__id" title={discover.runId}>{discover.runId}</code>
-          {/if}
           <button
             type="button"
             class="discover-run__stop"
