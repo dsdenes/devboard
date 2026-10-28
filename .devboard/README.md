@@ -1362,13 +1362,15 @@ it stays the Issues mode's active tab until another Issues page is opened. The p
 `GET /api/watchdog` and sends no command that files, comments, closes, starts, stops, or fixes
 anything.
 
-The page is one framed header, one full-width `watchdog-last-cycle` summary band, and two panels
-under it. The summary leads with the action badge and the reason, then states the exact start, the
-findings, and the pending filings as one compact facts row. The filed-issue table takes the wider
-column on a viewport at least 1501px wide; below that the two panels stack as flexible rows. Below
-1100px the issue `Category` column is hidden before any value is clipped (the category repeats
-inside the generated title); it stays in the DOM. Both panels own their scrolling, so the 100-row
-history never pushes the filed issues below the page.
+The page is one framed header over a body that is two columns while the page container is wider
+than 1300px and one column below that. The primary column stacks the `watchdog-last-cycle` summary
+band over the filed-issue table; the cycle-history panel is the aside. The summary leads with the
+action badge and the reason, then states the exact start, the findings, and the pending filings as
+one compact facts row. Both panels own their scrolling, so the 100-row history never pushes the
+filed issues below the page. In the stacked layout the page scrolls and each list caps its own
+height. When the primary column is narrower than 900px the issue `Category`, `Filed`, and
+`Version` columns are hidden before any value is clipped (the category repeats inside the generated
+title); they stay in the DOM.
 
 `watchdog-last-cycle` is the newest cycle from `latest.json`: `watchdog-last-cycle-at` (a `<time>`,
 or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findings`,
@@ -1376,15 +1378,16 @@ or `never` before the first cycle), `watchdog-last-action`, `watchdog-last-findi
 panel's `watchdog-last-age` shows that cycle's age.
 
 `watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
-first, capped at the newest 100 directories. Its table labels the three columns `Started`, `Action`,
-and `Issues`, and its header sticks while the panel scrolls. Every `watchdog-cycle` row carries
-`data-action` and renders `watchdog-cycle-at`, `watchdog-cycle-action`, and, only when the cycle's
-findings map to a filed issue, a `watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to
-those GitHub issues. Each anchor reads `#<number>` and opens in a new tab; the row repeats no issue
-and keeps the finding order. A cycle row renders no window interval, finding count, or reason. A
-run directory whose `report.json` is missing or unparsable is skipped without hiding the other
-rows. With no run directory at all, the `latest.json` cycle is the single row; with no cycle
-anywhere, `watchdog-cycles-empty` renders `No cycles yet` and the ten-minute cadence.
+first, capped at the newest 100 directories. Its rows are three tracks — the `Started` clock, the
+`Action` badge, and the `Issues` links — with no table header; the order and the badges name the
+columns. Every `watchdog-cycle` row carries `data-action` and renders `watchdog-cycle-at`,
+`watchdog-cycle-action`, and, only when the cycle's findings map to a filed issue, a
+`watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to those GitHub issues. Each
+anchor reads `#<number>` and opens in a new tab; the row repeats no issue and keeps the finding
+order. A cycle row renders no window interval, finding count, or reason. A run directory whose
+`report.json` is missing or unparsable is skipped without hiding the other rows. With no run
+directory at all, the `latest.json` cycle is the single row; with no cycle anywhere,
+`watchdog-cycles-empty` renders `No cycle has run yet.`
 
 `watchdog-issues` lists every ledger entry whose disposition is `filed:<url>`, newest `filedAt`
 first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `data-state`, and
@@ -1392,7 +1395,8 @@ first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `da
 `[watchdog] <category>: <line>`), `watchdog-issue-category`, `watchdog-issue-filed` (a `<time>`),
 `watchdog-issue-state`, and `watchdog-issue-version` (the tag, or `—`). A pending-only fingerprint
 is counted in `watchdog-last-pending` and never becomes a row; `watchdog-issues-empty` renders
-when nothing is filed. `watchdog-issues-count` summarizes the rows and pending filings.
+when nothing is filed. `watchdog-issues-count` summarizes the filed rows only; the pending count
+appears once in `watchdog-last-pending`.
 
 The server prints `watchdog-issue-state` as `pending` for an open issue and `implemented` for a
 closed one, whatever its `stateReason`; a reopened issue returns to `pending` within one refresh
@@ -1760,10 +1764,9 @@ tab, or reloading the dashboard never starts a worker and never files an issue: 
 `data-testid="scout-stop"` while a worker is attached. The page header
 (`data-testid="issues-scout-header"`) carries the repository origin,
 `data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`), the last-read
-time, and the single Start/Stop action. A 360px side rail holds the worker
-facts and the filing limits; the results column holds the filed-issues table and
-`data-testid="scout-activity"` for the current or newest scan. The page also shows
-`data-testid="scout-error"` for the last error.
+time, the filing limits, and the single Start/Stop action. The results column holds the
+filed-issues table and `data-testid="scout-activity"` for the current or newest scan. The page
+also shows `data-testid="scout-error"` for the last error.
 
 There is no review path. While a worker runs, a scan whose items score at least 4 files each
 accepted item directly as a GitHub issue in the host `origin`, in the same scan cycle, with no
@@ -1774,11 +1777,12 @@ filed rows and the limits; the next Start reads GitHub and scans again.
 
 ### Limits
 
-`data-testid="scout-max-per-hour"` (default 10) and `data-testid="scout-max-pending"` (default 5)
-accept integers from 1 through 100. `data-testid="scout-save-limits"` persists both; an invalid
-value renders `data-testid="scout-limits-error"` and sends nothing. A valid save is written
-atomically to `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json`, so it survives a page
-reload and a worker restart, and a running worker receives it as a limits command without
+The limits sit in the page header beside Start/Stop: both fields, Save limits, and the rule
+hint. `data-testid="scout-max-per-hour"` (default 10) and `data-testid="scout-max-pending"`
+(default 5) accept integers from 1 through 100. `data-testid="scout-save-limits"` persists both;
+an invalid value renders `data-testid="scout-limits-error"` and sends nothing. A valid save is
+written atomically to `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json`, so it survives a
+page reload and a worker restart, and a running worker receives it as a limits command without
 restarting. A worker start reads that file first, then the last state's limits, then the defaults.
 
 `maxPerHour` counts every Auto Scout issue whose creation time is inside a rolling 60-minute

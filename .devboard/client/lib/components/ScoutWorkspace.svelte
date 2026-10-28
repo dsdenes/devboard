@@ -12,6 +12,9 @@
   const scanLabel = $derived(
     scout.snapshot?.scan?.scanId ?? scout.snapshot?.newestScanId ?? "No scan yet",
   );
+  const limitsHint =
+    "Files at most the smaller of the hourly room and the open-issue room, and only findings " +
+    "scored 4 or 5.";
 
   let maxPerHourText = $state("10");
   let maxPendingText = $state("5");
@@ -86,6 +89,51 @@
       </span>
     {/snippet}
     {#snippet actions()}
+      <div class="scout-limits" role="group" aria-label="Filing limits" title={limitsHint}>
+        <span class="scout-limits__title">Filing limits</span>
+        <label class="scout-limits__field">
+          <span>Per hour</span>
+          <Input
+            type="number"
+            min="1"
+            max="100"
+            step="1"
+            inputmode="numeric"
+            class="w-14 text-center"
+            data-testid="scout-max-per-hour"
+            value={maxPerHourText}
+            oninput={(event) => (maxPerHourText = event.currentTarget.value)}
+          />
+        </label>
+        <label class="scout-limits__field">
+          <span>Open issues</span>
+          <Input
+            type="number"
+            min="1"
+            max="100"
+            step="1"
+            inputmode="numeric"
+            class="w-14 text-center"
+            data-testid="scout-max-pending"
+            value={maxPendingText}
+            oninput={(event) => (maxPendingText = event.currentTarget.value)}
+          />
+        </label>
+        <Button
+          variant="secondary"
+          data-testid="scout-save-limits"
+          data-command="issues.scout.limits"
+          onclick={saveLimits}
+        >
+          Save limits
+        </Button>
+        <p class="muted scout-limits__hint">{limitsHint}</p>
+        {#if limitsError !== null}
+          <p class="issues-error scout-limits__error" data-testid="scout-limits-error" role="alert">
+            {limitsError}
+          </p>
+        {/if}
+      </div>
       <Button
         variant={scout.canStop ? "destructive" : "default"}
         data-testid={scout.canStop ? "scout-stop" : "scout-start"}
@@ -109,72 +157,15 @@
     </div>
   {/if}
 
-  <div class="issues-scout__body">
-    <div class="issues-scout__side">
-      <section class="panel">
-        <div class="panel__header">
-          <h2 class="panel__title">Filing limits</h2>
-        </div>
-        <div class="panel__body stack-sm">
-          <div class="scout-limits">
-            <label class="scout-limits__field">
-              <span>Issues per rolling hour</span>
-              <Input
-                type="number"
-                min="1"
-                max="100"
-                step="1"
-                inputmode="numeric"
-                data-testid="scout-max-per-hour"
-                value={maxPerHourText}
-                oninput={(event) => (maxPerHourText = event.currentTarget.value)}
-              />
-            </label>
-            <label class="scout-limits__field">
-              <span>Open issues</span>
-              <Input
-                type="number"
-                min="1"
-                max="100"
-                step="1"
-                inputmode="numeric"
-                data-testid="scout-max-pending"
-                value={maxPendingText}
-                oninput={(event) => (maxPendingText = event.currentTarget.value)}
-              />
-            </label>
-          </div>
-          <div class="scout-limits__actions">
-            <Button
-              variant="secondary"
-              data-testid="scout-save-limits"
-              data-command="issues.scout.limits"
-              onclick={saveLimits}
-            >
-              Save limits
-            </Button>
-          </div>
-          <p class="muted scout-limits__hint">
-            Auto Scout files at most the smaller of the hourly room and the open-issue room, and only
-            findings scored 4 or 5.
-          </p>
-          {#if limitsError !== null}
-            <p class="issues-error" data-testid="scout-limits-error" role="alert">{limitsError}</p>
-          {/if}
-        </div>
-      </section>
-    </div>
+  <div class="issues-scout__main">
+    <ScoutIssues issues={scout.issues} />
 
-    <div class="issues-scout__main">
-      <ScoutIssues issues={scout.issues} />
-
-      <section class="panel issues-activity-panel">
-        <div class="panel__header">
-          <h2 class="panel__title">Scan activity</h2>
-          <span class="panel__subtitle" title={scanLabel}>{scanLabel}</span>
-        </div>
-        <IssuesAgentLog lines={scout.activity} testid="scout-activity" />
-      </section>
-    </div>
+    <section class="panel issues-activity-panel">
+      <div class="panel__header">
+        <h2 class="panel__title">Scan activity</h2>
+        <span class="panel__subtitle" title={scanLabel}>{scanLabel}</span>
+      </div>
+      <IssuesAgentLog lines={scout.activity} testid="scout-activity" />
+    </section>
   </div>
 </section>

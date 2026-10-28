@@ -2124,6 +2124,88 @@ try {
     tableTones,
   );
   check(adr.heights.every((height) => height > 0 && height <= 32), "a table row exceeds 32px", adr.heights);
+  const startControls = await page.eval<{
+    buttons: Array<{
+      file: string;
+      text: string;
+      aria: string;
+      next: boolean;
+      height: number;
+      radius: string;
+      fontSize: string;
+      cursor: string;
+      primaryFill: boolean;
+      strongOutline: boolean;
+      topGap: number;
+      bottomGap: number;
+    }>;
+    resolvedActions: string[];
+  }>(`(() => {
+    const root = getComputedStyle(document.documentElement);
+    const primary = root.getPropertyValue("--primary").trim();
+    const borderStrong = root.getPropertyValue("--border-strong").trim();
+    const rgb = (hex) => {
+      const value = Number.parseInt(hex.slice(1), 16);
+      return "rgb(" + (value >> 16 & 255) + ", " + (value >> 8 & 255) + ", " + (value & 255) + ")";
+    };
+    const buttons = [...document.querySelectorAll('[data-testid="start"]')].map((button) => {
+      const box = button.getBoundingClientRect();
+      const row = button.closest("tr").getBoundingClientRect();
+      const style = getComputedStyle(button);
+      return {
+        file: button.getAttribute("data-file") ?? "",
+        text: button.textContent?.trim() ?? "",
+        aria: button.getAttribute("aria-label") ?? "",
+        next: button.closest("tr")?.getAttribute("data-next") === "true",
+        height: Math.round(box.height),
+        radius: style.borderRadius,
+        fontSize: style.fontSize,
+        cursor: style.cursor,
+        primaryFill: style.backgroundColor === rgb(primary),
+        strongOutline: style.borderTopColor === rgb(borderStrong),
+        topGap: box.top - row.top,
+        bottomGap: row.bottom - box.bottom,
+      };
+    });
+    return {
+      buttons,
+      resolvedActions: [...document.querySelectorAll('[data-testid="record"]')]
+        .filter((row) => row.getAttribute("data-pending") === "false")
+        .map((row) => row.querySelector("td:last-child")?.textContent?.trim() ?? ""),
+    };
+  })()`);
+  check(startControls.buttons.length === 4, "the table does not render one Start per pending record", startControls);
+  check(
+    startControls.buttons.every(
+      (button) =>
+        button.text === "Start" &&
+        button.aria.startsWith("Start the implementation of ") &&
+        button.aria.length > "Start the implementation of ".length &&
+        button.file.length > 0 &&
+        button.height === 24 &&
+        button.radius === "4px" &&
+        button.fontSize === "11px" &&
+        button.cursor === "pointer" &&
+        Math.abs(button.topGap - button.bottomGap) <= 1,
+    ),
+    "a Start control is not a centered 24px Button with a record-naming accessible name",
+    startControls,
+  );
+  const filledStarts = startControls.buttons.filter((button) => button.primaryFill);
+  check(
+    filledStarts.length === 1 &&
+      filledStarts[0]?.next === true &&
+      startControls.buttons.filter((button) => button.next).length === 1 &&
+      startControls.buttons.filter((button) => !button.next && button.strongOutline).length === 3,
+    "the Start emphasis is not one filled primary on the Next record",
+    startControls,
+  );
+  check(
+    startControls.resolvedActions.length > 0 &&
+      startControls.resolvedActions.every((text) => text === ""),
+    "a resolved row repeats its state in the action column",
+    startControls,
+  );
   const bodyFont = Number.parseFloat(adr.font);
   const tableFont = Number.parseFloat(adr.tableFont);
   check(bodyFont >= 12 && bodyFont <= 14 && tableFont >= 12 && tableFont <= 14, "table text is not 12–14px", adr);

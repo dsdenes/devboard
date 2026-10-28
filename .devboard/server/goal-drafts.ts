@@ -49,6 +49,15 @@ export interface GoalDraftRun {
   question: GoalDraftQuestion | null;
 }
 
+/**
+ * The outcome of starting an elaboration. `stopped` marks a start whose
+ * environment or peer construction finished after the operator stopped it:
+ * the peer was closed without running the prompt and the run stays `stopped`.
+ */
+export type GoalDraftStartResult =
+  | { ok: true; path: string }
+  | { ok: false; message: string; stopped?: boolean };
+
 /** A refusal the dashboard shows verbatim; nothing is read or started. */
 export class GoalDraftError extends Error {
   readonly status: number;
@@ -229,6 +238,13 @@ const IDLE: GoalDraftRun = {
   question: null,
 };
 
+/** The result of a start the operator stopped before its peer could run. */
+const STOPPED_START: GoalDraftStartResult = {
+  ok: false,
+  stopped: true,
+  message: "The elaboration was stopped before it started.",
+};
+
 /** One elaboration at a time, scoped to one repository. */
 export class GoalDraftManager {
   private readonly repoDir: string;
@@ -315,9 +331,7 @@ export class GoalDraftManager {
     return { pid, argv: peer.argv, cwd: this.repoDir };
   }
 
-  async start(
-    relativePath: unknown,
-  ): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
+  async start(relativePath: unknown): Promise<GoalDraftStartResult> {
     if (this.current !== undefined) {
       const path = this.current.path;
       return {
@@ -355,11 +369,13 @@ export class GoalDraftManager {
     };
     this.current = elaboration;
     let peer: GoalDraftPeer;
+    let env: Record<string, string | undefined>;
     try {
+      env = await this.environment();
       peer = this.connect({
         command: this.command,
         cwd: this.repoDir,
-        env: await this.environment(),
+        env,
         onActivity: (entry) => {
           if (this.current !== elaboration) return;
           appendActivityLine(elaboration.activity, entry.text, entry.append);
@@ -392,8 +408,24 @@ export class GoalDraftManager {
         },
       });
     } catch (error) {
+      // A stop outranks a late start failure: the operator's `stopped` state
+      // must not become `failed` after the environment or connect rejected.
+      if (this.current !== elaboration) return STOPPED_START;
       this.finish("failed", error instanceof Error ? error.message : String(error));
       return { ok: false, message: this.run.error ?? "the elaboration peer could not be started" };
+    }
+
+    // A stop can land while the environment resolves or while `connect`
+    // constructs the peer. `finish` could not see that peer, so it was
+    // neither closed nor prevented from running; close it here and keep the
+    // operator's `stopped` state as the final one.
+    if (this.current !== elaboration) {
+      try {
+        peer.close();
+      } catch {
+        // The peer already exited.
+      }
+      return STOPPED_START;
     }
 
     elaboration.peer = peer;
