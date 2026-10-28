@@ -676,9 +676,7 @@
             </ul>
           {/if}
 
-          {#if goal.contradictions.length === 0}
-            <p class="muted" data-testid="skills-no-contradictions">No contradictions</p>
-          {:else}
+          {#if goal.contradictions.length > 0}
             <ul class="history-list goal-contradictions" data-testid="skills-contradictions">
               {#each goal.contradictions as contradiction (`${contradiction.skills[0]}:${contradiction.skills[1]}`)}
                 <li class="message" data-severity="warning">
