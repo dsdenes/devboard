@@ -525,7 +525,6 @@
         <h1 class="issues-overview__title">Runs</h1>
         <p class="issues-overview__repo mono">{issues.repoLabel}</p>
       </div>
-      <span class="badge" data-tone="accent">{runCount}</span>
     </header>
     <div class="panel">
       <div class="panel__header">

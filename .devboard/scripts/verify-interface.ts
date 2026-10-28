@@ -5816,6 +5816,10 @@ try {
     "the runs header still carries a label above its title",
     runsHeader,
   );
+  const headerBadges = await page.eval<number>(
+    `document.querySelectorAll('.issues-runs-page > .issues-overview__header > .badge').length`,
+  );
+  check(headerBadges === 0, "the runs header still carries a count badge", headerBadges);
   const runCount = await page.eval<number>(`document.querySelectorAll('[data-testid="issues-run"]').length`);
   check(runCount === 4, "the runs page does not list every concurrent run", runCount);
   const goalRunCount = await page.eval<number>(
