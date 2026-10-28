@@ -5874,6 +5874,14 @@ try {
 
   await page.click('[data-testid="open-issues-runs"]');
   await page.wait(`document.querySelector('[data-testid="issues-runs"]') !== null`, "the runs page");
+  const runsHeader = await page.eval<string[]>(
+    `[...document.querySelectorAll('.issues-runs-page > .issues-overview__header > div > *')].map((node) => \`\${node.tagName}:\${node.className}\`)`,
+  );
+  check(
+    runsHeader[0]?.startsWith("H1:") === true && runsHeader.every((entry) => !entry.includes("muted")),
+    "the runs header still carries a label above its title",
+    runsHeader,
+  );
   const runCount = await page.eval<number>(`document.querySelectorAll('[data-testid="issues-run"]').length`);
   check(runCount === 4, "the runs page does not list every concurrent run", runCount);
   const goalRunCount = await page.eval<number>(
