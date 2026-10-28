@@ -1546,7 +1546,7 @@ tab, or reloading the dashboard never starts a worker and never files an issue: 
 badge, the last-read time, and the single Start/Stop action. A 360px side rail holds the worker
 facts and the filing limits; the results column holds the filed-issues table and
 `data-testid="scout-activity"` for the current or newest scan. The page also shows
-`data-testid="scout-error"` for the last error and `data-testid="scout-notice"` for the last notice.
+`data-testid="scout-error"` for the last error.
 
 There is no review path. While a worker runs, a scan whose items score at least 4 files each
 accepted item directly as a GitHub issue in the host `origin`, in the same scan cycle, with no

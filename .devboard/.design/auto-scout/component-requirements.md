@@ -14,7 +14,7 @@
 | Filed issues table | Compose | — (`.panel` + table markup) | — | zero, one, many rows; long titles ellipsize with tooltip; pending/implemented badges; missing category/version render `—`; body scrolls | column headers, link text, badge words | panel, table, badge, mono, row-hover |
 | Empty table | Compose | — | — | one quiet message plus one explanatory line; not focusable | plain paragraph | muted, padding |
 | Activity log | Reuse | — | — | `IssuesAgentLog` with empty state; appends live; follows the newest line unless scrolled up | `pre` text, command rows keep their `$` prompt | activity log styles, accent-surface |
-| Alert banner | Compose | — (`.issues-error`, `.issues-notice`) | — | sync error, worker error (`role="alert"`), filing notice (`role="status"`) | announced; sits before the panels in reading order | error/warning surfaces |
+| Alert banner | Compose | — (`.issues-error`) | — | sync error, worker error (`role="alert"`) | announced; sits before the panels in reading order | error/warning surfaces |
 
 ## Component details
 
