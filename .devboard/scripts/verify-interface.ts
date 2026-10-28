@@ -2888,6 +2888,7 @@ try {
     tableFont: string;
     freshness: boolean;
     freshnessText: string;
+    definitionLead: boolean;
     dirtyBadges: number;
     evidence: number;
     confidence: number;
@@ -2943,6 +2944,7 @@ try {
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
       freshness: document.querySelector('[data-testid="discover-freshness"]') !== null,
       freshnessText: document.querySelector('[data-testid="discover-freshness"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      definitionLead: document.querySelector('#workspace-discover .discover-head__definition') !== null,
       dirtyBadges: [...document.querySelectorAll('#workspace-discover .discover-head .badge')]
         .filter((badge) => badge.textContent.trim() === "dirty").length,
       evidence: document.querySelectorAll('[data-testid="discover-evidence"]').length,
@@ -3038,6 +3040,7 @@ try {
   check(discoverTables.stackLinks > 0, "no library chip links to its repository", discoverTables.stackLinks);
   check(discoverTables.stackHref.startsWith("https://github.com/"), "a library chip links outside its repository", discoverTables.stackHref);
   check(discoverTables.stackedSections === 0, "Discover still renders the duplicated dependency or unknown sections", discoverTables.stackedSections);
+  check(!discoverTables.definitionLead, "the Discover header still renders the definition lead", discoverTables);
   check(discoverTables.staticText === 0, "Discover still renders static lead or note prose", discoverTables.staticText);
   check(discoverTables.commandHeaders === 0, "the command table still renders a header row", discoverTables.commandHeaders);
   check(discoverTables.contextHeader === "", "the bounded-context card still renders a table header", discoverTables.contextHeader);
