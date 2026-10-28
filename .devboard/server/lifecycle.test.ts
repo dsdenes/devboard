@@ -529,7 +529,16 @@ describe("lifecycle runs", () => {
         await Bun.sleep(500);
         const index = client.events.indexOf(finished);
         expect(index).toBeGreaterThanOrEqual(0);
-        expect(client.events.slice(index + 1)).toEqual([]);
+        expect(
+          client.events
+            .slice(index + 1)
+            .filter(
+              (message) =>
+                message.type !== "agentState" &&
+                message.type !== "agentsState" &&
+                message.type !== "agentActivity",
+            ),
+        ).toEqual([]);
         expect(
           client.events.filter(
             (message) => message.type === "lifecycleState" && message.stage === "finished",

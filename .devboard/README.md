@@ -1242,215 +1242,149 @@ sudo -u <user> -- bash -c "cd <home>/actions-runner && ./config.sh remove --toke
 sudo userdel --remove <user>
 ```
 
+## Background agents
+
+Auto Scout and Watchdog are the first two instances of one background-agent contract. A typed
+registry in `server/agents/registry.ts` declares each descriptor's id, label, description, scope,
+lifecycle vocabulary, cadence field and defaults, nullable limits schema, start/stop commands,
+issue projection, sync projection, and detail panel. The shared page, the shared filed-issues
+table, and the Issues sidebar are built from that registry; adding a third continuous agent means
+writing its engine, its adapter, and one registry entry.
+
+Both agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
+`starting` appears before a spawned worker exists, `running` once its state is readable, and
+`stopping` from the moment Stop is accepted until the worker exits. A stopped agent is never
+restarted by a dashboard restart, a page open, or a tab restore. A live worker owned by another
+dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cannot Stop it, and
+Start is a no-op with a notice.
+
+Both pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
+lifecycle badge `agent-lifecycle`, the sync badge `agent-sync`, `agent-sync-at`,
+`agent-last-run`, `agent-next-run`, exactly one of `agent-start`/`agent-stop`, `agent-cadence`,
+`agent-save-cadence`, `agent-limit-hour`, `agent-limit-pending`, `agent-save-limits`,
+`agent-issues-count`, `agent-issues`, and `agent-detail`. Alerts use one position:
+`agent-error`, `agent-sync-error`, `agent-cadence-error`, and `agent-limits-error`, each with
+`role="alert"`. Start/Stop is the only filled primary control. The sidebar has three groups in
+order: `Issues surfaces` (Overview), `Background agents`
+(`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
+`open-issues-scout` then `open-issues-watchdog`, badges `agent-state-<id>`, counts
+`agent-count-<id>`), and `Issues work` (Issues, Draft goals).
+
+### Transport
+
+Browser-to-backend state and controls use the WebSocket from
+`adrs/0003-browser-server-transport-and-api.md`. Commands are `getAgents`, `getAgent`,
+`startAgent`, `stopAgent`, `setAgentLimits`, `setAgentCadence`, and the timer gate's
+`disableAgentTimer`; each carries `id`. The server answers `agentsState` (both agents) and
+`agentState` (one), streams Auto Scout activity as `agentActivity`, and refuses an unknown id with
+an error naming it before spawning anything. `scoutState`, `scoutActivity`, `startScout`,
+`stopScout`, `setScoutLimits`, and `GET /api/watchdog` are gone. The footer indicator still reads
+the same Watchdog snapshot through the agent store.
+
+### Cadence and limits
+
+`agent-cadence` accepts an integer from 1 through 1440 minutes; `agent-save-cadence` persists it
+atomically and a running worker applies it without restart. Auto Scout defaults to 1 minute and
+never starts a scan sooner than the interval after the previous scan start; Watchdog defaults to
+10 minutes, starts its first cycle immediately on Start, and uses the interval as its evidence
+window. `agent-last-run` and `agent-next-run` show both.
+
+`agent-limit-hour` and `agent-limit-pending` are empty (unlimited) or an integer from 1 through
+100; an empty field never renders as `0`. Auto Scout defaults to 10 per rolling hour and 5 open;
+Watchdog defaults to both empty. The persisted values survive reload and restart and apply to a
+running worker. Auto Scout keeps its rolling-hour and open-issue enforcement. Watchdog files at
+most the hourly cap of new issues and at most the pending cap of its own open issues, counts open
+state from the last successful projection (`projection.json`), keeps excess fingerprints in
+`pendingFiling` instead of dropping them, files nothing new while a cap is set and the projection
+is not `ok`, and never caps comments. With both caps empty its cycle behaves exactly as before.
+
+### Filed issues
+
+Both pages render one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
+Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `filedAt`
+descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
+`agent-issue-category`, `agent-issue-filed` (a `<time>`), `agent-issue-state`
+(`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). With no rows,
+`agent-issues-empty` renders the same inbox composition on both pages, naming the agent.
+`agent-issues-count` counts the rows. Auto Scout maps its GitHub title and creation time;
+Watchdog keeps `[watchdog] <category>: <line>`.
+
+### Detail panels
+
+`agent-detail` is declared by the descriptor. Auto Scout renders `scout-activity`, streamed as
+`agentActivity`. Watchdog renders its retained cycle history (`watchdog-cycles`, `watchdog-cycle`,
+`watchdog-cycle-at/-window/-action/-findings/-reason`, `watchdog-cycles-empty`), capped at the
+newest 100 run directories.
+
 ## Harness watchdog
 
-A machine-level systemd user timer runs the watchdog independently of every dashboard: at
-minutes 0, 10, 20, 30, 40, and 50 of every hour (`OnCalendar=*:0/10`, `Persistent=true`), the
-`devboard-watchdog.service` oneshot runs `bun run watchdog -- --once` from the canonical harness.
-It survives logout (`Linger=yes`) and never starts, stops, or restarts a dashboard itself.
-The unit supplies only `PATH`, so the cycle reads the host root's `.env` itself; a value already
-present in the process environment wins over the file.
+Watchdog is a detached worker started and stopped from the dashboard, not a systemd timer. It is
+one machine-level instance per host root; every dashboard on that root reads the same worker state
+and ledger regardless of its `STATE_DIR`:
 
-Each cycle detects and reports; it never fixes. It reads the ten minutes before cycle start, both
-ends inclusive, from:
+- `<root>/.devboard/.tmp/watchdog/worker.json` — lifecycle, pid, last/next run, error, notice.
+- `<root>/.devboard/.tmp/watchdog/settings.json` — cadence and nullable caps.
+- `<root>/.devboard/.tmp/watchdog/control/` — stop, cadence, and limits commands.
+- `<root>/.devboard/.tmp/watchdog/state.json` — the unchanged version 2 ledger.
+- `<root>/.devboard/.tmp/watchdog/lock` — the unchanged machine lock.
+- `<root>/.devboard/.tmp/watchdog/runs/` — unchanged run directories.
+- `<root>/.devboard/.tmp/watchdog/projection.json` — the last successful forge projection.
 
-- every live dashboard's JSONL journal, `<STATE_DIR>/journal/<24-hex>.jsonl`, whose key is the
-  first 24 hex characters of `sha256(REPO_DIR)`. `STATE_DIR` is the dashboard's environment
-  value, `<host>/.devboard/.tmp` for an installed host. Each record carries `ts` (UTC ISO
-  8601), `repo`, `port`, `pid`, `kind`, and `text`; kinds are `activity`, `question`,
-  `run-start`, `run-stop`, `lane-start`, `lane-stop`, `lifecycle`, `acp-stderr`,
-  `server-error`, `update`, and `update-error`. A `question` record also carries `scope`, the
-  run, lane, or peer that asked, so questions from separate work streams never accumulate into
-  one finding. A live journal rotates at 8 MiB instead of truncating.
-- omp's own warnings and errors under `~/.omp/logs/omp.*.log`, attributed to an instance only
-  when that pid descends from the instance's server process. A shared working directory never
-  attributes a line, so an operator's own omp session in the project directory is not dashboard
-  evidence.
+The worker survives a dashboard restart; a replacement dashboard reattaches and can control it
+when it owns the recorded `STATE_DIR`. The machine lock still serializes cycles. Stop persists
+`enabled: false`, releases the lock, and leaves no live child; during a cycle it stays `stopping`
+until that cycle finishes and starts no further cycle.
 
-Retention is bounded at cycle start. The journal keeps its own rule: journal files older than
-seven days are deleted, and the total under `<STATE_DIR>/journal` is capped at 1 GiB by deleting
-the oldest complete files first. A file still holding records inside the live window always wins
-over that bound, so the current cycle never loses evidence. The target is each install's real
-state directory — `<host>/.devboard/.tmp/journal` for an installed host, never the serving package
-directory under `node_modules`.
+The legacy `devboard-watchdog.timer` is no longer the scheduler. While it is active or enabled,
+the Watchdog page shows `agent-blocked` naming it, disables `agent-start`, and offers
+`agent-disable-timer`, which runs `systemctl --user disable --now devboard-watchdog.timer` only
+after the click and then re-reads the gate. No other `systemctl` mutation runs from the dashboard.
+`watchdog/install.ts`, `watchdog/units/`, and the `watchdog:install` script are removed;
+`watchdog:uninstall` and `watchdog/systemd.ts` remain for removing an old unit.
+
+Watchdog's Start preflight requires the canonical root with `.devboard`, the forge write access
+its delivery needs, and no active or enabled legacy timer; a refusal names the missing fact,
+spawns nothing, writes no state, and renders `agent-error`.
+
+The cycle itself is unchanged: it detects and reports, never fixes, reading the previous interval
+of journal and omp evidence, filing one issue per fingerprint, and commenting on recurrences after
+24 hours. A failing `gh` call leaves the fingerprint pending for the next cycle; a fingerprint
+already `filed:<url>` is never filed again. No cycle closes an issue.
 
 ### State-directory cleanup
 
-Every cycle also sweeps the rest of each covered state directory. Covered directories are the
-canonical checkout's `.devboard/.tmp`, every `*/.devboard/.tmp` directly under the canonical
-root's parent, and the `STATE_DIR` of every live dashboard the cycle discovers, de-duplicated by
-real path. A symlinked `.tmp` is never followed, and a missing directory is skipped.
+Every cycle sweeps each covered state directory. Covered directories are the canonical checkout's
+`.devboard/.tmp`, every `*/.devboard/.tmp` directly under the canonical root's parent, and the
+`STATE_DIR` of every live dashboard the cycle discovers, de-duplicated by real path. Entries older
+than seven days are deleted; these are never deleted at any age:
 
-An entry is deleted when its last-modified time is older than seven days: files and symlinks
-individually, and a directory only when it is empty after that deletion and its own mtime, read
-before the sweep, is older than the cutoff. A fresh file inside an old directory survives and
-keeps its ancestors. Old watchdog run directories, legacy orchestrator run files and
-`orchestrator.log`, legacy `devboard-*.{log,state,lock}` files, verification scratch, and stray
-stale files are therefore removed after a week. These entries are never deleted at any age:
+- `.tmp/state/`, `.tmp/journal/`, and `.tmp/providers/`.
+- `.tmp/watchdog/state.json`, `latest.json`, `lock`, `worker.json`, `settings.json`,
+  `projection.json`, and `control/`.
+- `.tmp/orchestrator/state.json`, `ledger.json`, and `lock`.
+- `.tmp/issues/` and `.tmp/flow/` in full.
+- the run directory of the cycle performing the sweep, and a live `devboard-<pid>.lock`.
 
-- `.tmp/state/` and everything below it.
-- `.tmp/journal/`, which the journal rule above governs.
-- `.tmp/providers/` in full: the operator's credential store and every generated per-peer agent
-  directory. A credential is operator input, not scratch, and nothing recreates it.
-- `.tmp/watchdog/state.json`, `.tmp/watchdog/latest.json`, and `.tmp/watchdog/lock`.
-- `.tmp/orchestrator/state.json`, `.tmp/orchestrator/ledger.json`, and `.tmp/orchestrator/lock`,
-  which the first Issues Start still reads to migrate handled issue numbers.
-- `.tmp/issues/` in full: every repo-scoped state, ledger, run, activity journal, control file,
-  and the repo-anchored worker lock, including the run directory a running worker names.
-- `.tmp/flow/` in full: every repository key and session record, including the machine state,
-  reviewable artifacts, and worktree/PR bookkeeping Flow restore and History read.
-- the run directory of the cycle performing the sweep.
-- a `devboard-<pid>.lock` whose pid is still alive.
-
-Run it by hand from `.devboard`:
+Run the sweep by hand from `.devboard`:
 
 ```bash
-bun run cleanup -- --dry-run --root <root>   # list every candidate path and byte size
-bun run cleanup -- --once --root <root>      # delete and print one summary per directory
+bun run cleanup -- --dry-run --root <root>
+bun run cleanup -- --once --root <root>
 ```
 
-`--dry-run` is also the default when neither flag is given, and it writes nothing. The watchdog
-cycle performs the same sweep and appends one `cleanup <state-dir>: removed N file(s), ...` line
-per covered directory to `coordinator.log`, including directories with zero removals. The sweep
-deletes outside the canonical checkout only inside the `.devboard/.tmp` directories it covers;
-it creates nothing outside the checkout.
-
-Discovery scans `/proc` for every process running `server/index.ts` that supplies `REPO_DIR` and
-`PORT`, de-duplicates by `(REPO_DIR, PORT)`, resolves the serving harness from `STATIC_DIR` or
-the process working directory, and reads the journal from the process's `STATE_DIR`. Instances
-from installed hosts and the canonical source checkout are covered alike; an instance whose
-state directory has no journal is reported `uninstrumented`. A process whose `REPO_DIR` lies
-inside a `.devboard/.tmp` directory is verification scratch, not a monitored host: verification
-scripts create those fixtures to assert deliberate failures, so discovery skips them before any
-evidence is read. The live watchdog verification, which seeds a fixture to exercise the whole
-loop, sets `DEVBOARD_WATCHDOG_FIXTURE=1` to stay discoverable.
-
-Findings derive only from machine-checkable evidence: a `server-error`, `update-error`, or
-`acp-stderr` journal record; a `lane-stop` whose status token is `failed`; an omp log record at
-`error`, `warn`, or `fatal`; a `run-start` or `lane-start` at least five minutes before window end
-with no `run-stop` or `lane-stop` at or after it for the same instance (a stall); and three or
-more `question` records for one instance's run, lane, or peer in one window (a question loop,
-quoting the last).
-`activity`, `lifecycle`, `update`, ordinary run and lane text, and questions below the loop
-threshold never produce a finding, whatever words they contain.
-
-A fingerprint is the first 32 hex characters of `sha256(category + "\n" + normalized line)`. The
-normalized line drops a leading ISO timestamp and collapses whitespace, and the source path is
-excluded, so the same error on two dashboards is one fingerprint and one issue.
-
-Each cycle files one issue per new fingerprint through the operator's authenticated `gh`:
-`gh issue create --repo dsdenes/devboard --title "[watchdog] <category>: <line>" --body-file -`.
-The title is one line of at most 80 characters. The body carries the category, fingerprint,
-quote, first and last sighting, count, window, every contributing instance (repository, port,
-pid, journal path), and the cycle report path. There is no per-cycle cap. A failing `gh` call
-reports `failed` with its first stderr line and leaves the fingerprint in `pendingFiling`; the
-next cycle retries pending fingerprints before new ones, so a transient failure never loses
-evidence. A delivery configuration failure (an unsupported origin, or a Gitea origin without
-`DEVBOARD_GITEA_URL` or `GITEA_TOKEN`) is reported the same way: every queued fingerprint stays
-pending, the action is `failed` with that reason, and the ledger, `report.json`, `report.md`, and
-`latest.json` are still written. A fingerprint already `filed:<url>` is never filed again: when
-it recurs at least 24 hours after the last comment (or after the filing when no comment exists),
-the cycle comments once on the existing issue with the new window, sighting, and count. No cycle
-closes an issue.
-
-Each cycle writes one run directory, `<harness>/.tmp/watchdog/runs/<UTC timestamp>/`, containing
-`report.json`, `report.md`, and `coordinator.log`; the newest report is also
-`.tmp/watchdog/latest.json`. A version 2 ledger at `.tmp/watchdog/state.json` records each
-finding's first and last sighting, count, contributing instances, and `filed:<url>`; an unchanged
-window reports `action: "duplicate"` and makes no `gh` call. A version 1 ledger's prose
-`blocked:*` and `published:<sha>` dispositions are discarded on load, never migrated into issues.
-
-A singleton lock at `.tmp/watchdog/lock` serializes every invocation: a second manual run or a
-`systemctl --user start devboard-watchdog.service` while a cycle is live prints `already running`
-and exits without filing. A stale lock whose pid is gone is reclaimed.
-
-The cycle never spawns an agent, creates a worktree, commits, merges, pushes, or publishes; it
-leaves `HEAD`, `origin/main`, the worktree list, and the working tree exactly as it found them.
-
-### The Watchdog page
-
-The Issues sidebar lists `Watchdog` (`open-issues-watchdog`) directly after Auto Scout. Activating
-it opens the full workspace page `watchdog-page`, titled `Watchdog`, in place of the Overview tab;
-it stays the Issues mode's active tab until another Issues page is opened. The page reads only
-`GET /api/watchdog` and sends no command that files, comments, closes, starts, stops, or fixes
-anything.
-
-The page is one framed header over a body that is two columns while the page container is wider
-than 1300px and one column below that. The primary column holds the filed-issue table and the
-cycle-history panel is the aside. Both panels own their scrolling, so the 100-row history never
-pushes the filed issues below the page. In the stacked layout the page scrolls and each list caps
-its own height. When the primary column is narrower than 900px the issue `Category`, `Filed`, and
-`Version` columns are hidden before any value is clipped (the category repeats inside the generated
-title); they stay in the DOM.
-
-`watchdog-cycles` lists the retained run directories under `<STATE_DIR>/watchdog/runs`, newest
-first, capped at the newest 100 directories. Its rows are three tracks — the `Started` clock, the
-`Action` badge, and the `Issues` links — with no table header; the order and the badges name the
-columns. Every `watchdog-cycle` row carries `data-action` and renders `watchdog-cycle-at`,
-`watchdog-cycle-action`, and, only when the cycle's findings map to a filed issue, a
-`watchdog-cycle-issues` group of `watchdog-cycle-issue` anchors to those GitHub issues. Each
-anchor reads `#<number>` and opens in a new tab; the row repeats no issue and keeps the finding
-order. A cycle row renders no window interval, finding count, or reason. A run directory whose
-`report.json` is missing or unparsable is skipped without hiding the other rows. With no run
-directory at all, the `latest.json` cycle is the single row; with no cycle anywhere,
-`watchdog-cycles-empty` renders `No cycle has run yet.`
-
-`watchdog-issues` lists every ledger entry whose disposition is `filed:<url>`, newest `filedAt`
-first and ties ordered by URL. Each `watchdog-issue` row carries `data-url`, `data-state`, and
-`data-version` and renders `watchdog-issue-title` (an anchor to the issue reading
-`[watchdog] <category>: <line>`), `watchdog-issue-category`, `watchdog-issue-filed` (a `<time>`),
-`watchdog-issue-state`, and `watchdog-issue-version` (the tag, or `—`). A pending-only fingerprint
-never becomes a row; `watchdog-issues-empty` renders when nothing is filed.
-`watchdog-issues-count` counts the filed rows only.
-
-The server prints `watchdog-issue-state` as `pending` for an open issue and `implemented` for a
-closed one, whatever its `stateReason`; a reopened issue returns to `pending` within one refresh
-interval. State is read from the repository in each ledger URL. For an implemented issue the
-server resolves the closing commit from the issue timeline, or the last 7–40 character hex SHA in
-the newest comment carrying one, resolved to one full commit. The version is the earliest
-published release of that issue's repository whose history contains the commit, ordered by
-`publishedAt` and breaking a tie by tag, or `—` when no commit or release resolves. A blank
-version is recomputed on every read, so a release published later fills it.
-
-The server refreshes its GitHub projection at most once per 60 seconds. Any `GET /api/watchdog`
-request triggers a due refresh in the background and is answered from the last projection without
-waiting for `gh`; the refresh result appears on a later request. A failed read keeps every last
-known state and version and the whole table, and sets `watchdog-sync` to `data-state="error"` with
-the reason in `watchdog-sync-error`. A success sets `data-state="ok"`, clears the reason, and
-updates `watchdog-sync-at`; a success older than 120 seconds with no later failure reports
-`stale`. `watchdog-sync-at` reads `never` before the first success. The page polls every 15
-seconds, so a newly written run directory or filed ledger entry appears without a reload.
-
-`GET /api/watchdog` is GET-only and leaves `<STATE_DIR>/watchdog/` byte-identical: no run
-directory, ledger write, or lock. Its existing fields keep their meaning: `cycle` (ISO 8601 or
-null), `action`, the optional `reason`, the `findings` count, `issues`
-(`{url, category, line, filedAt, state, version}`) newest first, and the `pending` count; it adds
-`cycles` (each `{at, window, action, findings, issues, reason?}`, where `issues` lists the
-connected GitHub issue URLs) and `sync`. A dashboard-endpoint failure renders `watchdog-error`.
-
-The status bar's watchdog indicator is unchanged: `status-watchdog` shows the last action and its
-age; activating it opens `watchdog-popover` listing up to ten filed issues, each link opening in a
-new tab, and Escape closes it.
-
-Operate it from the canonical `.devboard`:
+The manual watchdog CLI remains:
 
 ```bash
-bun run watchdog:install     # write the two units, enable and start the timer
-bun run watchdog -- --once   # run one cycle now
-bun run watchdog -- --collect --dry-run   # print this cycle's report; change nothing
-bun run watchdog:uninstall   # stop, disable, and remove the units
+bun run watchdog -- --once                  # one cycle now
+bun run watchdog -- --collect --dry-run     # print this cycle's report; change nothing
+bun run watchdog:uninstall                  # stop, disable, and remove a legacy unit
 ```
 
-`watchdog:install` refuses a worktree, verifies `Linger=yes` before writing anything, discovers
-the absolute Bun executable plus the `omp` and `git` directories for the unit's `PATH`, and is
-idempotent. `watchdog:uninstall` changes no repository file. To pause the watchdog without
-uninstalling, `systemctl --user stop devboard-watchdog.timer`; `systemctl --user start
-devboard-watchdog.timer` resumes it. `bun run verify:watchdog` builds the client, seeds run
-directories, a ledger, and a stub `gh`, and proves the Watchdog page's empty states, cycle history,
-state and version columns, sync badge and failure text, 60-second refresh, freshness, and the
-unchanged footer indicator, popover, issue links, and Escape. `bun run verify:watchdog-live`
-starts a seeded dashboard, waits for the installed timer to file a real issue, and closes it as not
-planned.
+`verify:watchdog` proves the dashboard-started lifecycle, shared page ids, retained history, the
+removed GET endpoint, and the footer indicator. `verify:watchdog-live` starts the seeded
+dashboard's watchdog through its Start control (not systemd), waits for a real cycle to file the
+seeded marker, asserts the ledger entry, title, and body, and closes the issue in `finally`.
+`verify:agents` drives both pages through headless Chrome.
 
 ## Issues mode
 
@@ -1760,159 +1694,47 @@ agent leaves the queue on the next poll.
 
 ## Auto Scout
 
-The Issues sidebar lists `Overview`, `Auto Scout`, `Watchdog`, `Issues`, and then `Draft goals`
-in that order; it carries no `Runs` entry, and the command palette opens that tab. Auto Scout
-(`data-command="open.issues.scout"`, `data-testid="open-issues-scout"`,
-palette `Open Auto Scout`) renders `data-testid="issues-scout"`. Opening the page, selecting its
-tab, or reloading the dashboard never starts a worker and never files an issue: only
-`data-testid="scout-start"` starts the worker, and that control becomes
-`data-testid="scout-stop"` while a worker is attached. The page header
-(`data-testid="issues-scout-header"`) carries the repository origin,
-`data-testid="scout-lifecycle"` (`stopped`, `idle`, `scanning`, or `failed`), the last-read
-time, the filing limits, and the single Start/Stop action. The results column holds the
-filed-issues table and `data-testid="scout-activity"` for the current or newest scan. The page
-also shows `data-testid="scout-error"` for the last error.
+Auto Scout is the `scout` descriptor in the shared background-agent contract. The Issues sidebar
+entry `open-issues-scout` opens the shared `agent-page` with `data-agent="scout"`; opening,
+selecting, restoring, or reloading a tab starts nothing. The page shows the shared lifecycle,
+sync, cadence, limits, filed-issues table, and detail panel described above, plus
+`scout-activity` for the current or newest scan. The page also shows `agent-error` for the last
+error and `agent-sync-error` for a failed forge read.
 
 There is no review path. While a worker runs, a scan whose items score at least 4 files each
 accepted item directly as a GitHub issue in the host `origin`, in the same scan cycle, with no
-dashboard command, click, approval, or draft. The page exposes no staged recommendation, no
-`scout-widget`, `scout-approve`, `scout-draft-goal`, `scout-reject`, or `scout-shortfall` element,
-and `approveScout`, `draftScoutGoal`, and `rejectScout` are not accepted commands. Stop keeps the
-filed rows and the limits; the next Start reads GitHub and scans again.
+dashboard command, click, approval, or draft. `approveScout`, `draftScoutGoal`, and `rejectScout`
+are not accepted commands. Stop keeps the filed rows and the limits; the next Start reads the
+forge and scans again.
 
-### Limits
+Auto Scout's persisted settings live at
+`<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json` and carry `maxPerHour`, `maxPending`,
+and `intervalMinutes`. Empty limits remove that constraint. `maxPerHour` counts every Auto Scout
+issue whose creation time is inside a rolling 60-minute window, in any state; `maxPending` counts
+every open `scout` issue. One scan requests at most the smaller room, or 100 when both are
+unlimited. A zero batch starts no scan; the next attempt is the earlier of the next 60-second read
+and the moment the oldest hourly entry expires. A scan that files fewer items than requested is a
+normal shortfall, recorded in scan activity, never a failure. Immediately before filing, the
+worker reads every `scout` issue again; a failed read files nothing, keeps the last known rows,
+and blocks filing until a read succeeds. The 60-second read and its 30-second bound are unchanged.
 
-The limits sit in the page header beside Start/Stop: both fields, Save limits, and the rule
-hint. `data-testid="scout-max-per-hour"` (default 10) and `data-testid="scout-max-pending"`
-(default 5) accept integers from 1 through 100. `data-testid="scout-save-limits"` persists both;
-an invalid value renders `data-testid="scout-limits-error"` and sends nothing. A valid save is
-written atomically to `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json`, so it survives a
-page reload and a worker restart, and a running worker receives it as a limits command without
-restarting. A worker start reads that file first, then the last state's limits, then the defaults.
-
-`maxPerHour` counts every Auto Scout issue whose creation time is inside a rolling 60-minute
-window, in any state, including issues adopted from GitHub and issues filed before a restart.
-`maxPending` counts every open `scout` issue. One scan requests and files at most
-`min(maxPerHour - windowCount, maxPending - openCount)` items. A zero batch starts no scan; the
-next attempt is the earlier of the next 60-second read (a close can free a pending slot) and the
-moment the oldest hourly entry expires, so the worker never retries in a tight loop. When an issue
-closes, the 60-second read frees the slot and the next scan starts without any manual action. A
-scan that files fewer items than requested is a normal shortfall, recorded in scan activity, never
-a failure. Immediately before filing, the worker reads every `scout` issue again; a failed read
-files nothing, keeps the last known rows, and blocks filing until a read succeeds.
-
-### Significance
+### Significance and provenance
 
 Every recommendation carries an integer `significance` from 1 to 5 and a non-empty
-`significanceReason`. The scan prompt defines the rubric: 4 or 5 requires a named, observable
-impact — a reproducible defect, a real failure mode, or a measured structural cost; polishing
-code that is already correct is at most 2. Items scoring below 4 are dropped before filing and
-recorded in scan activity. A missing or out-of-range score, or a missing reason, fails the whole
-scan and files nothing unless the correction turn fixes it. Each filed issue body carries
-`## Significance` with `<n>/5` and the reason.
+`significanceReason`. Items scoring below 4 are dropped before filing and recorded in scan
+activity. Each filed issue carries the exact `scout` label, no title prefix, and a body with
+category, summary, impact, significance, evidence, proposed change, files, and acceptance
+criteria. Detection, validation, dedupe, fingerprinting, titles, bodies, labels, ledger
+dispositions, and existing issue URLs are unchanged by the shared control plane.
 
-A filed issue carries the exact `scout` label (created first when absent), the recommendation's
-title, and a body with category, summary, impact, significance, evidence, proposed change, files,
-and acceptance criteria; the worker resolves forge write access through `lib/forge-auth.ts`. The
-Issues worker picks it up on its next poll exactly like any other open issue, and its pickup and
-implementation behavior is unchanged.
+A scan never files a title whose normalized form matches any existing Auto Scout issue in any
+state, any open issue title, or any draft goal heading. A duplicate is dropped, recorded in
+activity, and consumes no cap slot.
 
-A scan never files a title whose normalized form (lowercased, whitespace-collapsed, trimmed)
-matches any existing Auto Scout issue in any state, any open issue title, or any draft goal
-heading. A duplicate is dropped, recorded in activity, and consumes no cap slot. The scan request
-names the normalized `knownTitles` and the draft headings, so the agent avoids them too.
-
-### Issue table
-
-`data-testid="scout-issues"` renders one `data-testid="scout-issue"` row per Auto Scout issue,
-newest `createdAt` first, carrying `data-number`, `data-state`, and `data-version`. Each row
-renders `data-testid="scout-issue-title"` as an anchor to the issue URL,
-`data-testid="scout-issue-created"` with a local creation time (the raw ISO value stays in the
-cell's `title`), `data-testid="scout-issue-type"`,
-`data-testid="scout-issue-state"`, and `data-testid="scout-issue-version"`. The type is the
-recommendation's category, or the issue body's `## Category` value for an adopted issue, or `—`.
-With no rows, `data-testid="scout-issues-empty"` renders a centered stack: a decorative inbox
-mark, `No issues filed yet`, and one line stating that Auto Scout files significant findings after
-each scan. The empty state adds no control of its own; Start/Stop stays in the page header and the
-row count stays in the panel header. The sidebar `data-testid="scout-count"` shows the number of
-rows whose state is `pending`.
-
-An open issue is `pending`. A closed issue is `implemented` regardless of `stateReason`; a
+An open issue is `pending`; a closed issue is `implemented` regardless of `stateReason`; a
 reopened issue returns to `pending` on the next read. For an implemented issue the worker resolves
-the commit that closed it — the timeline's closing commit when present, otherwise the last 7–40
-character hex SHA in the newest comment that contains one — to one unambiguous full commit through
-the checkout or GitHub. It then selects the earliest published GitHub Release tag whose history
-contains that commit, ordered by `publishedAt` and breaking ties by tag name. The row shows `—`
-when no commit resolves or no published release contains it, and a release published later fills a
-blank version on the next read.
-
-### Periodic check
-
-While started, the worker reads every `scout` issue and every published release every 60 seconds,
-and immediately on Start; the table, states, and versions reflect a change within one interval. One
-periodic read, including every `gh` child it starts, is bounded to 30 seconds; a read that does not
-finish records a sync error and releases the worker, so the next interval reads again. A failed
-read keeps the last known rows, shows the reason in `data-testid="scout-sync-error"`, and keeps the
-last success time in `data-testid="scout-sync-at"`; the reason clears on the next successful read.
-Filing stays blocked until a read succeeds. A GitHub rate limit (the `gh` text naming a primary or
-secondary limit, abuse detection, or HTTP 429) is a failed read like any other: it keeps the rows and
-blocks filing, and its reason stays in the sync banner. Because the operator's credential is shared
-with every other process on the host and the limit clears itself, it never raises the dashboard-wide
-error notification — neither for the periodic read nor for the fresh read before filing. An injected
-GitHub client owns its own command bounds; the worker still races the whole read against the
-deadline, but it cannot cancel work that client never settles.
-
-### Worker lifecycle
-
-Start proves one set of facts before spawning anything: a canonical checkout root that is not a
-linked worktree, a GitHub `origin`, `STATE_DIR` inside `REPO_DIR`, `omp` and `gh` on `PATH` with
-push permission, and the `/scout-recommendations` command installed at
-`<REPO_DIR>/.omp/commands/`, `~/.omp/commands/`, or `~/.omp/agent/commands/`. A refusal names the
-missing fact and writes no scan. The worker is spawned detached from the loaded harness package
-with `REPO_DIR` as its working directory and holds `<REPO_DIR>/.devboard/.tmp/scout/lock`; a live
-owner is never replaced, a different `STATE_DIR` is refused, a dead owner is reclaimed, and a
-second dashboard with the same repository and state directory attaches. Stop ends the peer,
-records `enabled: false` and `lifecycle: "stopped"`, keeps every row and the limits, releases the
-lock, and exits; a worker that outlives the command is signalled only after the process table
-proves it. A worker on another harness version is left running with a notice, and Stop then Start
-is the only upgrade path.
-
-State lives under `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/state.json`, written atomically and
-carrying the worker record, lifecycle, limits, every Auto Scout issue row, the last read, the
-current scan, next attempt, last error, and notice; a damaged state file is renamed aside. A
-state produced by the previous Auto Scout version loads with its worker and scan facts intact,
-discards every unapproved staged recommendation without filing anything, applies the default
-limits, and publishes a notice naming how many recommendations were discarded; no pre-upgrade
-recommendation is ever filed. The dashboard migrates that file in memory too, so an upgraded
-dashboard reads the lifecycle of a worker it did not start, and Stop acts on the live lock owner
-even when no state file is readable.
-
-Scan directories live under `<REPO_DIR>/.devboard/.tmp/scout/scans/<scanId>/` and hold
-`request.json`, `recommendations.json`, `scan.json`, and `activity.json`, which is bounded at the
-first of 1,000 entries or 1 MiB with the trimmed marker. One scan runs at a time and sends exactly
-one ACP prompt from `AGENT_COMMAND` (default `omp acp`) with `cwd = REPO_DIR`:
-`/scout-recommendations <absolute scan directory>`. The prompt is
-`prompts/scout-recommendations.md`, wrapped by `omp/commands/scout-recommendations.md`; the
-version-2 request carries the repository path, the requested batch, categories, excluded roots,
-normalized known titles, draft-goal headings, and the significance threshold, and the agent writes
-only `recommendations.json`. A permission request is auto-approved, a question is answered with
-its recommended option (or its first), and both sides reach the activity. A scan that exceeds 15
-minutes is closed as failed.
-
-Every result is validated before filing: at most the requested count; a known category; a one-line
-title of at most 200 characters; a summary, proposed change, significance from 1 through 5,
-non-empty significance reason, and at least one acceptance criterion; at least one evidence entry
-whose repository-relative path resolves to an existing regular file inside `REPO_DIR` and outside
-`.git/`, `node_modules/`, `dist/`, `.worktree/`, and `.tmp/`, with an in-range `N` or `N-M` span;
-and a non-empty file list whose entries all appear in the evidence. A rejected answer is sent back
-to the same agent session once, with the rejection text and the root-relative path rule, while the
-scan's own deadline still bounds the turn; a repaired file is validated again and filed normally.
-A malformed item, duplicate id, path escape, over-count, missing score, or out-of-range score that
-survives the correction turn fails the whole answer atomically, naming the offending item, so
-nothing is filed. An item's id is the first 16 hex characters of SHA-256 over its category, sorted
-evidence paths, and normalized title, so the same finding keeps its id. Items below significance
-4 and duplicate titles are dropped before filing and recorded in the activity. The worker never
-edits source, tests, configuration, a goal, a draft, a branch, or a pull request.
+the closing commit and the earliest published release whose history contains it; the row shows
+`—` when none resolves, and a later release fills a blank version on the next read.
 
 ## Report, remove, or redesign a UI element
 
@@ -2064,10 +1886,13 @@ The client sends:
 { "type": "stopGoalDraft" }
 { "type": "answerGoalDraft", "id": 4, "value": "The whole goal" }
 
-{ "type": "getScout" }
-{ "type": "startScout" }
-{ "type": "stopScout" }
-{ "type": "setScoutLimits", "maxPerHour": 10, "maxPending": 5 }
+{ "type": "getAgents" }
+{ "type": "getAgent", "id": "scout" }
+{ "type": "startAgent", "id": "scout" }
+{ "type": "stopAgent", "id": "scout" }
+{ "type": "setAgentLimits", "id": "scout", "maxPerHour": 10, "maxPending": 5 }
+{ "type": "setAgentCadence", "id": "scout", "minutes": 1 }
+{ "type": "disableAgentTimer", "id": "watchdog" }
 { "type": "restartServer" }
 { "type": "restartServer", "whenIdle": true }
 { "type": "saveGoal", "text": "# Goal\n\nThe complete goal text." }
@@ -2147,15 +1972,17 @@ The client sends:
   replays the active run's whole activity as one `issuesActivity` with `replay: true`;
   `getIssuesRun` answers `issuesRun` with one run's metadata and activity. The client never
   polls: state and activity arrive as events, so switching modes and reconnecting send no frame.
-- `getScout` answers with `scoutState` and the newest scan's `scoutActivity`, on connect and on
-  demand: the worker record, lifecycle, enabled and attached flags, the persisted limits, every
-  issue row, the last GitHub read, the current scan, next attempt, errors, and notice. A connect
-  replays a present state and the newest scan's whole activity before any reply to the client's
-  own commands. `startScout` runs the preflight and spawns or attaches; `stopScout` writes one
-  stop command; `setScoutLimits` carries `{ maxPerHour, maxPending }`, refuses a value outside
-  1–100, writes `settings.json`, and writes one limits command when a worker is attached. There is
-  no `approveScout`, `draftScoutGoal`, or `rejectScout`. The rows are pushed to every connected
-  dashboard, so a filing or a close in one updates another without a reload.
+- `getAgents` answers `agentsState` with both shared snapshots, and `getAgent` answers
+  `agentState` with one; a connect replays `agentsState` and Auto Scout's newest scan as
+  `agentActivity` before any reply to the client's own commands. Every command carries `id`;
+  an unknown id is refused with an error naming it and spawns nothing. `startAgent` runs the
+  agent's preflight and spawns or attaches; `stopAgent` writes one stop command and persists
+  `enabled: false`; `setAgentLimits` accepts `{ maxPerHour, maxPending }` where each is empty or
+  1–100 and writes `settings.json`; `setAgentCadence` accepts `{ minutes }` from 1 through 1440;
+  `disableAgentTimer` runs the legacy `systemctl --user disable --now` only for the Watchdog
+  descriptor. A changed snapshot is pushed to every connected dashboard within the bridge poll,
+  so a lifecycle, cadence, limit, issue row, or state change appears without a reload. There is no
+  `approveScout`, `draftScoutGoal`, or `rejectScout`.
 - `restartServer` broadcasts `serverRestarting`, then hands the process to its launcher, which
   stops the listener, starts the installed harness package, and exits. It is refused with an
   `error` when no launcher is configured or while a restart is already in progress. A client
@@ -2489,6 +2316,12 @@ reload, an invalid save shows its error and sends nothing, a close flips the row
 a release published later fills its blank version, a failed read shows `error` with its reason
 and the last success time while keeping the rows, no review widget or command remains, and Stop
 leaves the table and a released lock. It writes only under `.devboard/.tmp`.
+`bun run verify:agents` builds the client, seeds both agents, and drives headless Chrome through
+the Background agents sidebar section, the identical core test ids on both pages, Start ->
+starting -> running and Stop -> stopping -> stopped, cadence and limit validation and
+persistence, the Watchdog cap, the shared table columns, freshness without a reload, no mutating
+command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and
+the footer indicator with no console error.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate
@@ -2604,9 +2437,12 @@ legacy logs), the inclusive ten-minute window, omp-log attribution and self-excl
 evidence mapping (prose never produces a finding), host-independent fingerprints, filing and
 commenting against a stub `gh`, pending retries after a failed call, duplicate windows, the
 version 1 ledger migration, and the absence of any commit, merge, push, or publish.
-`tests/watchdog-api.test.ts` covers the read-only endpoint, the newest-cycle projection, the
-cycle history's newest-first order, 100-directory cap, `latest.json` fallback, and malformed-report
-skip, issue row order and fields, open/closed state mapping, timeline and comment shipped-version
-resolution with the earliest-release rule, the `ok`/`error`/`stale` transitions against a stubbed
-GitHub reader and clock, the request-never-waits contract, and byte-identical state. All new
-fixtures live under `.devboard/.tmp`; no test uses the network or a real model.
+`tests/watchdog-api.test.ts` covers the adapter projection, the newest-cycle history, the shared
+issue row order and fields, open/closed state mapping, the `ok`/`error`/`stale` transitions
+against a stubbed GitHub reader and clock, the never-waits contract, the removed GET endpoint,
+and the WebSocket `agentState` reply. `tests/agent-registry.test.ts` covers the registry, the
+synthetic third descriptor, shared issue sorting, and unknown-id refusal.
+`tests/agent-watchdog-runtime.test.ts` covers the detached worker's first cycle and Stop, cadence
+application without restart, the lifecycle transitions, foreign ownership, preflight refusals,
+and the timer gate. All new fixtures live under `.devboard/.tmp`; no test uses the network or a
+real model.

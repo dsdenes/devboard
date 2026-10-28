@@ -106,8 +106,9 @@ function exchange(url: string, command: unknown): Promise<unknown> {
       !answer &&
       (type === "issuesState" ||
         type === "issuesActivity" ||
-        type === "scoutState" ||
-        type === "scoutActivity")
+        type === "agentsState" ||
+        type === "agentState" ||
+        type === "agentActivity")
     ) {
       return;
     }
@@ -638,7 +639,7 @@ describe("issues protocol", () => {
             typeof message === "object" &&
             message !== null &&
             "type" in message &&
-            message.type === "scoutState",
+            message.type === "agentsState",
         ),
       );
       const issues = frames.find(
@@ -648,17 +649,16 @@ describe("issues protocol", () => {
           "type" in frame &&
           frame.type === "issuesState",
       );
-      const scout = frames.find(
-        (frame): frame is { repo?: unknown; present?: unknown } =>
+      const agentsFrame = frames.find(
+        (frame): frame is { agents?: Array<{ id?: string }> } =>
           typeof frame === "object" &&
           frame !== null &&
           "type" in frame &&
-          frame.type === "scoutState",
+          frame.type === "agentsState",
       );
       expect(issues?.repo).toBe("acme/fixture");
       expect(issues?.present).toBe(false);
-      expect(scout?.repo).toBe("acme/fixture");
-      expect(scout?.present).toBe(false);
+      expect(agentsFrame?.agents?.map((agent) => agent.id)).toEqual(["scout", "watchdog"]);
     } finally {
       server.stop(true);
     }

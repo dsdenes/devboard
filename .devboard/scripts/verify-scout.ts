@@ -512,6 +512,7 @@ async function text(devtools: Devtools, testid: string): Promise<string> {
 
 interface RowSnapshot {
   number: string;
+  url: string;
   state: string;
   version: string;
   title: string;
@@ -525,30 +526,36 @@ interface RowSnapshot {
 async function rows(devtools: Devtools): Promise<RowSnapshot[]> {
   const value = await devtools
     .evaluate(
-      `(() => Array.from(document.querySelectorAll('[data-testid="scout-issue"]')).map((row) => ({
-        number: row.dataset.number ?? '',
+      `(() => Array.from(document.querySelectorAll('[data-testid="agent-issue"]')).map((row) => ({
+        number: (row.dataset.url ?? '').split('/').pop() ?? '',
+        url: row.dataset.url ?? '',
         state: row.dataset.state ?? '',
         version: row.dataset.version ?? '',
-        title: row.querySelector('[data-testid="scout-issue-title"]')?.textContent?.trim() ?? '',
-        href: row.querySelector('[data-testid="scout-issue-title"]')?.getAttribute('href') ?? '',
-        created: row.querySelector('[data-testid="scout-issue-created"]')?.textContent?.trim() ?? '',
-        type: row.querySelector('[data-testid="scout-issue-type"]')?.textContent?.trim() ?? '',
-        stateText: row.querySelector('[data-testid="scout-issue-state"]')?.textContent?.trim() ?? '',
-        versionText: row.querySelector('[data-testid="scout-issue-version"]')?.textContent?.trim() ?? '',
+        title: row.querySelector('[data-testid="agent-issue-title"]')?.textContent?.trim() ?? '',
+        href: row.querySelector('[data-testid="agent-issue-title"]')?.getAttribute('href') ?? '',
+        created: row.querySelector('[data-testid="agent-issue-filed"]')?.textContent?.trim() ?? '',
+        type: row.querySelector('[data-testid="agent-issue-category"]')?.textContent?.trim() ?? '',
+        stateText: row.querySelector('[data-testid="agent-issue-state"]')?.textContent?.trim() ?? '',
+        versionText: row.querySelector('[data-testid="agent-issue-version"]')?.textContent?.trim() ?? '',
       })))()`,
     )
     .catch(() => undefined);
   return Array.isArray(value) ? (value as RowSnapshot[]) : [];
 }
 
-async function waitRows(devtools: Devtools, count: number, description: string): Promise<RowSnapshot[]> {
+async function waitRows(
+  devtools: Devtools,
+  count: number,
+  description: string,
+  timeoutMs = 30_000,
+): Promise<RowSnapshot[]> {
   return await waitFor(
     async () => {
       const current = await rows(devtools);
       return current.length === count ? current : undefined;
     },
     description,
-    30_000,
+    timeoutMs,
   );
 }
 
@@ -621,7 +628,7 @@ try {
       if (button === null) return null;
       return {
         command: button.dataset.command ?? '',
-        count: button.querySelector('[data-testid="scout-count"]')?.textContent?.trim() ?? '',
+        count: button.querySelector('[data-testid="agent-count-scout"]')?.textContent?.trim() ?? '',
         label: button.getAttribute('aria-label') ?? '',
       };
     })()`,
@@ -647,7 +654,7 @@ try {
   await waitFor(
     async () =>
       (await devtools!
-        .evaluate(`document.querySelector('[data-testid="issues-scout"]') !== null`)
+        .evaluate(`document.querySelector('[data-testid="agent-page"]') !== null`)
         .catch(() => false)) === true
         ? true
         : undefined,
@@ -658,7 +665,7 @@ try {
   check(!existsSync(lockPath(fixture.repo)), "opening the page took the repository lock");
   check(
     (await devtools.evaluate(
-      `document.querySelector('[data-testid="scout-issues-empty"]') !== null`,
+      `document.querySelector('[data-testid="agent-issues-empty"]') !== null`,
     )) === true,
     "an empty table renders no empty state",
   );
@@ -666,9 +673,9 @@ try {
   /* ---------------------------------------------------------------- */
   /* 2. Save both limits, then Start files significant items           */
   /* ---------------------------------------------------------------- */
-  await setInput(devtools, "scout-max-per-hour", "10");
-  await setInput(devtools, "scout-max-pending", "2");
-  await click(devtools, "scout-save-limits");
+  await setInput(devtools, "agent-limit-hour", "10");
+  await setInput(devtools, "agent-limit-pending", "2");
+  await click(devtools, "agent-save-limits");
   await waitFor(
     () => {
       const saved = readSettings(settingsPath(fixture.stateDir, fixture.repo));
@@ -678,8 +685,13 @@ try {
     10_000,
   );
 
-  await click(devtools, "scout-start");
-  const filedRows = await waitRows(devtools, 2, "the two filed issues");
+  await click(devtools, "agent-start");
+  // The default cadence is one minute: the first scan files nothing, and the
+  // second must not start before the interval. Prove the throttle before the
+  // second scan's rows arrive.
+  await Bun.sleep(3_000);
+  check((await rows(devtools)).length === 0, "a second scan started before the cadence interval");
+  const filedRows = await waitRows(devtools, 2, "the two filed issues", 90_000);
   check(workerPids(fixture.repo).length === 1, "Start did not spawn exactly one worker");
   const numbers = filedRows.map((row) => row.number).sort();
   check(
@@ -694,13 +706,13 @@ try {
     check(row.type === "clarity", "a row has the wrong category", row);
     check(row.state === "pending", "a pending issue has the wrong state", row);
     check(row.stateText === "pending", "a pending issue renders the wrong state", row);
-    check(row.version === "—", "a pending issue has a shipped version", row);
+    check(row.version === "", "a pending issue has a shipped version", row);
     check(row.versionText === "—", "a pending issue renders a shipped version", row);
   }
   check(
-    (await text(devtools, "scout-count")) === "2",
+    (await text(devtools, "agent-count-scout")) === "2",
     "the sidebar count does not match the pending rows",
-    await text(devtools, "scout-count"),
+    await text(devtools, "agent-count-scout"),
   );
   const created = issueCreateCalls(fixture);
   check(created.length === 2, "a non-significant or duplicate item was filed", created);
@@ -738,7 +750,14 @@ try {
     "the filing notification does not name its source and the filed issues",
     filingNotice,
   );
-  const activity = await text(devtools, "scout-activity");
+  const activity = await waitFor(
+    async () => {
+      const value = await text(devtools!, "scout-activity");
+      return value.includes("filed #") ? value : undefined;
+    },
+    "the filings in the activity",
+    15_000,
+  );
   check(activity.includes("filed #"), "the filings are not in the activity", activity);
   const createdBodies = readStore(fixture).issues.map((issue) => issue.body);
   check(
@@ -797,11 +816,11 @@ try {
   /* ---------------------------------------------------------------- */
   /* 4. An invalid save shows the error and sends nothing              */
   /* ---------------------------------------------------------------- */
-  await setInput(devtools, "scout-max-per-hour", "0");
-  await click(devtools, "scout-save-limits");
+  await setInput(devtools, "agent-limit-hour", "0");
+  await click(devtools, "agent-save-limits");
   const limitsError = await waitFor(
     async () => {
-      const value = await text(devtools, "scout-limits-error");
+      const value = await text(devtools, "agent-limits-error");
       return value.length > 0 ? value : undefined;
     },
     "the limits error",
@@ -822,9 +841,9 @@ try {
   /* ---------------------------------------------------------------- */
   /* 5. A valid save survives a reload                                 */
   /* ---------------------------------------------------------------- */
-  await setInput(devtools, "scout-max-per-hour", "3");
-  await setInput(devtools, "scout-max-pending", "1");
-  await click(devtools, "scout-save-limits");
+  await setInput(devtools, "agent-limit-hour", "3");
+  await setInput(devtools, "agent-limit-pending", "1");
+  await click(devtools, "agent-save-limits");
   await waitFor(
     () => {
       const saved = readSettings(settingsPath(fixture.stateDir, fixture.repo));
@@ -844,7 +863,7 @@ try {
     async () =>
       (await devtools!
         .evaluate(
-          `document.readyState === "complete" && document.querySelector('[data-testid="issues-scout"]') !== null`,
+          `document.readyState === "complete" && document.querySelector('[data-testid="agent-page"]') !== null`,
         )
         .catch(() => false)) === true
         ? true
@@ -855,13 +874,13 @@ try {
   await waitRows(devtools, 2, "the table after a reload");
   check(
     (await devtools.evaluate(
-      `document.querySelector('[data-testid="scout-max-per-hour"]')?.value ?? ''`,
+      `document.querySelector('[data-testid="agent-limit-hour"]')?.value ?? ''`,
     )) === "3",
     "the hourly limit did not survive a reload",
   );
   check(
     (await devtools.evaluate(
-      `document.querySelector('[data-testid="scout-max-pending"]')?.value ?? ''`,
+      `document.querySelector('[data-testid="agent-limit-pending"]')?.value ?? ''`,
     )) === "1",
     "the pending limit did not survive a reload",
   );
@@ -884,14 +903,14 @@ try {
     15_000,
   );
   check(
-    implemented.version === "—" && implemented.versionText === "—",
+    implemented.version === "" && implemented.versionText === "—",
     "a closed issue with no release shows a version",
     implemented,
   );
   check(
-    (await text(devtools, "scout-count")) === "1",
+    (await text(devtools, "agent-count-scout")) === "1",
     "the pending count did not fall after a close",
-    await text(devtools, "scout-count"),
+    await text(devtools, "agent-count-scout"),
   );
 
   run("git", ["-C", fixture.repo, "tag", "v0.1.0", fixture.head]);
@@ -916,13 +935,13 @@ try {
   /* ---------------------------------------------------------------- */
   /* 7. A failed read surfaces the reason and keeps the rows           */
   /* ---------------------------------------------------------------- */
-  const syncAt = await text(devtools, "scout-sync-at");
+  const syncAt = await text(devtools, "agent-sync-at");
   const failing = readStore(fixture);
   failing.failReads = true;
   writeStore(fixture, failing);
   const syncError = await waitFor(
     async () => {
-      const value = await text(devtools, "scout-sync-error");
+      const value = await text(devtools, "agent-sync-error");
       return value.length > 0 ? value : undefined;
     },
     "the sync error reason",
@@ -934,9 +953,9 @@ try {
     syncError,
   );
   check(
-    (await text(devtools, "scout-sync-at")) === syncAt,
+    (await text(devtools, "agent-sync-at")) === syncAt,
     "a failed read discarded the last success time",
-    await text(devtools, "scout-sync-at"),
+    await text(devtools, "agent-sync-at"),
   );
   await waitRows(devtools, 2, "the rows after a failed read");
   const recovered = readStore(fixture);
@@ -944,7 +963,7 @@ try {
   writeStore(fixture, recovered);
   await waitFor(
     async () => {
-      const value = await text(devtools, "scout-sync-error");
+      const value = await text(devtools, "agent-sync-error");
       return value.length === 0 ? true : undefined;
     },
     "the recovered sync",
@@ -955,7 +974,7 @@ try {
   /* 8. Stop ends the worker and the table survives                    */
   /* ---------------------------------------------------------------- */
   const stoppingPid = stateOf(fixture)?.worker?.pid ?? 0;
-  await click(devtools, "scout-stop");
+  await click(devtools, "agent-stop");
   const stopped = await waitState(
     fixture,
     "the stopped scout",
@@ -984,7 +1003,7 @@ try {
     async () =>
       (await devtools!
         .evaluate(
-          `document.readyState === "complete" && document.querySelector('[data-testid="issues-scout"]') !== null`,
+          `document.readyState === "complete" && document.querySelector('[data-testid="agent-page"]') !== null`,
         )
         .catch(() => false)) === true
         ? true
@@ -999,10 +1018,33 @@ try {
     workerPids(fixture.repo),
   );
 
+  socket = new Socket(dashboard.port);
+  await socket.open();
+  socket.send({ type: "getAgents" });
+  const agentFrame = await waitFor(
+    () => socket!.messages.find((message) => message.type === "agentsState"),
+    "the shared agentsState replay",
+    10_000,
+  );
+  check(
+    Array.isArray(agentFrame.agents) && agentFrame.agents.length === 2,
+    "agentsState does not carry both background agents",
+    agentFrame,
+  );
+  check(
+    !socket.messages.some(
+      (message) => message.type === "scoutState" || message.type === "scoutActivity",
+    ),
+    "a removed scout transport message is still sent",
+    socket.messages.map((message) => message.type),
+  );
+  socket.close();
+  socket = undefined;
+
   console.log(
-    "verify:scout: Start filed significant items with no click, the table shows title, creation, " +
-      "category, state, and shipped version, both limits saved and survived a reload, a close " +
-      "and a later release updated the row, a failed read surfaced its reason, and no review " +
+    "verify:scout: Start filed significant items with no click, the shared page and table ids " +
+      "held, both limits saved and survived a reload, a close and a later release updated the " +
+      "row, a failed read surfaced its reason, agentsState replaced scoutState, and no review " +
       "widget or command remains",
   );
 } finally {

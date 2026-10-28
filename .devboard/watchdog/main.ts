@@ -3,11 +3,14 @@ import { dirname, join, resolve } from "node:path";
 import { runCycle } from "./coordinator";
 import { loadRootEnvironment } from "./env";
 import { acquireLock } from "./lock";
+import { lockPath, watchdogDirectory } from "./paths";
+import { readWatchdogSettings } from "./settings";
 
 /**
  * `bun run watchdog -- --once` runs one cycle; `--collect --dry-run` prints the
- * cycle's report and changes nothing. The systemd oneshot service runs the
- * former. Both respect the machine-wide lock.
+ * cycle's report and changes nothing. The dashboard-started worker is the
+ * scheduler; this manual path stays for inspection and recovery. Both respect
+ * the machine-wide lock.
  */
 
 const usage = `Usage: bun run watchdog [options]
@@ -86,7 +89,8 @@ if (!existsSync(join(root, ".devboard"))) {
 // directory. Explicit values still win.
 loadRootEnvironment(root);
 
-const lock = acquireLock(join(root, ".devboard", ".tmp", "watchdog", "lock"));
+const stateDir = watchdogDirectory(root);
+const lock = acquireLock(lockPath(stateDir));
 if (!lock.acquired) {
   console.log(
     `watchdog: already running${lock.owner === undefined ? "" : ` (pid ${lock.owner})`}`,
@@ -96,7 +100,14 @@ if (!lock.acquired) {
 
 let exitCode = 0;
 try {
-  const result = await runCycle({ root, dryRun: dryRun || collect });
+  const settings = readWatchdogSettings(stateDir);
+  const result = await runCycle({
+    root,
+    stateDir,
+    dryRun: dryRun || collect,
+    windowMs: settings.intervalMinutes * 60_000,
+    settings,
+  });
   if (dryRun || collect) {
     console.log(JSON.stringify(result.report, null, 2));
   }

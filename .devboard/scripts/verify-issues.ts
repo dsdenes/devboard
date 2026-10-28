@@ -1201,9 +1201,17 @@ try {
   /* ------------------------------------------------------- */
   /* 13. No systemd unit, timer, or call was ever written      */
   /* ------------------------------------------------------- */
-  check(!existsSync(tools.marker), "a systemd command was invoked", {
+  const systemdCalls = existsSync(tools.marker)
+    ? readFileSync(tools.marker, "utf8").split("\n").filter((line) => line.length > 0)
+    : [];
+  const mutations = systemdCalls.filter(
+    (line) =>
+      !line.startsWith("systemctl --user is-active devboard-watchdog.timer") &&
+      !line.startsWith("systemctl --user is-enabled devboard-watchdog.timer"),
+  );
+  check(mutations.length === 0, "a mutating systemd command was invoked", {
     marker: tools.marker,
-    content: existsSync(tools.marker) ? readFileSync(tools.marker, "utf8") : "",
+    calls: systemdCalls,
   });
   const config = join(tools.home, ".config", "systemd", "user");
   check(!existsSync(config), "a systemd unit directory was written");

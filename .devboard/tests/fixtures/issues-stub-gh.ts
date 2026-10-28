@@ -41,6 +41,13 @@ if (!endpoint.includes("/issues")) {
   process.exit(1);
 }
 
+// The worker proves one issue's state after a run; the stub peer has done
+// its work, so the tracker reports the issue closed.
+if (jq === ".state" && /\/issues\/[0-9]+$/.test(endpoint)) {
+  process.stdout.write("closed\n");
+  process.exit(0);
+}
+
 const storePath = process.env.ISSUES_STUB_STORE;
 if (storePath === undefined) {
   process.stderr.write("stub gh: no store\n");

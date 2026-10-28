@@ -8,8 +8,8 @@
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
   import IssuesQuestion from "./IssuesQuestion.svelte";
   import PageHeader from "./ui/page-header.svelte";
-  import ScoutWorkspace from "./ScoutWorkspace.svelte";
-  import WatchdogWorkspace from "./WatchdogWorkspace.svelte";
+  import AgentPage from "./AgentPage.svelte";
+  import { agentRegistry } from "../../../server/agents/registry";
   import { pollStatus } from "../poll-status";
 
   interface Props {
@@ -20,22 +20,23 @@
 
   let { tab, openTab, closeTab }: Props = $props();
 
+  const agentDescriptor = $derived(
+    tab === null ? undefined : agentRegistry.get(tab.kind),
+  );
   const page = $derived(
-    tab?.kind === "drafts"
-      ? "drafts"
-      : tab?.kind === "queue"
-        ? "queue"
-        : tab?.kind === "runs"
-          ? "runs"
-          : tab?.kind === "agents"
-            ? "agents"
-            : tab?.kind === "agent"
-              ? "agent"
-              : tab?.kind === "scout"
-                ? "scout"
-                : tab?.kind === "watchdog"
-                  ? "watchdog"
-                  : "overview",
+    agentDescriptor !== undefined
+      ? "agent-page"
+      : tab?.kind === "drafts"
+        ? "drafts"
+        : tab?.kind === "queue"
+          ? "queue"
+          : tab?.kind === "runs"
+            ? "runs"
+            : tab?.kind === "agents"
+              ? "agents"
+              : tab?.kind === "agent"
+                ? "agent"
+                : "overview",
   );
 
   const runCount = $derived(issues.runs.length);
@@ -121,10 +122,8 @@
   }
 </script>
 
-{#if page === "scout"}
-  <ScoutWorkspace />
-{:else if page === "watchdog"}
-  <WatchdogWorkspace />
+{#if page === "agent-page" && agentDescriptor !== undefined}
+  <AgentPage agentId={agentDescriptor.id} />
 {:else if page === "overview"}
   <section class="issues-overview" data-testid="issues-overview" aria-label="Issues overview">
     <header class="issues-overview__header">

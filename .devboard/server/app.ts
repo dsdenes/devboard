@@ -12,6 +12,8 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { WatchdogActivity, type WatchdogActivityOptions } from "./watchdog";
+import { BackgroundAgentBridge, type AgentCommand } from "./agents/bridge";
+import { agentRegistry } from "./agents/registry";
 import {
   AcpConnection,
   agentPrompt,
@@ -164,8 +166,11 @@ export interface AppOptions {
   issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "closeIssue">;
   /** Auto Scout's test seams; production uses the detached worker itself. */
   scout?: Pick<ScoutBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
-  /** Watchdog page's test seams; production reads `gh` in the background. */
-  watchdog?: Pick<WatchdogActivityOptions, "reader" | "now" | "intervalMs" | "staleAfterMs">;
+  /** Watchdog's test seams; production reads `gh` in the background. */
+  watchdog?: Pick<
+    WatchdogActivityOptions,
+    "reader" | "now" | "intervalMs" | "staleAfterMs" | "preflight" | "spawnWorker" | "systemctl"
+  >;
   /** Names one proposed-goal draft; production asks the configured ACP agent. */
   goalSlug?: (report: string) => Promise<string>;
   /** The credential store and selection; defaults to the state directory's. */
@@ -497,10 +502,13 @@ type ClientMessage =
   | { type: "startGoalDraft"; path?: unknown }
   | { type: "stopGoalDraft" }
   | { type: "answerGoalDraft"; id?: unknown; value?: unknown }
-  | { type: "getScout" }
-  | { type: "startScout" }
-  | { type: "stopScout" }
-  | { type: "setScoutLimits"; maxPerHour?: unknown; maxPending?: unknown }
+  | { type: "getAgents" }
+  | { type: "getAgent"; id?: unknown }
+  | { type: "startAgent"; id?: unknown }
+  | { type: "stopAgent"; id?: unknown }
+  | { type: "setAgentLimits"; id?: unknown; maxPerHour?: unknown; maxPending?: unknown }
+  | { type: "setAgentCadence"; id?: unknown; minutes?: unknown }
+  | { type: "disableAgentTimer"; id?: unknown }
   | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
@@ -552,6 +560,20 @@ type ClientMessage =
   | { type: "setProviderEnabled"; id?: unknown; enabled?: unknown }
   | { type: "refreshProviders" };
 
+function isAgentCommand(
+  command: ClientMessage,
+): command is Extract<ClientMessage, { type: AgentCommand["type"] }> {
+  return (
+    command.type === "getAgents" ||
+    command.type === "getAgent" ||
+    command.type === "startAgent" ||
+    command.type === "stopAgent" ||
+    command.type === "setAgentLimits" ||
+    command.type === "setAgentCadence" ||
+    command.type === "disableAgentTimer"
+  );
+}
+
 function parseClientMessage(value: unknown): ClientMessage | undefined {
   if (typeof value !== "object" || value === null || !("type" in value)) return undefined;
   switch (value.type) {
@@ -600,18 +622,29 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
         id: "id" in value ? value.id : undefined,
         value: "value" in value ? value.value : undefined,
       };
-    case "getScout":
-      return { type: "getScout" };
-    case "startScout":
-      return { type: "startScout" };
-    case "stopScout":
-      return { type: "stopScout" };
-    case "setScoutLimits":
+    case "getAgents":
+      return { type: "getAgents" };
+    case "getAgent":
+      return { type: "getAgent", id: "id" in value ? value.id : undefined };
+    case "startAgent":
+      return { type: "startAgent", id: "id" in value ? value.id : undefined };
+    case "stopAgent":
+      return { type: "stopAgent", id: "id" in value ? value.id : undefined };
+    case "setAgentLimits":
       return {
-        type: "setScoutLimits",
+        type: "setAgentLimits",
+        id: "id" in value ? value.id : undefined,
         maxPerHour: "maxPerHour" in value ? value.maxPerHour : undefined,
         maxPending: "maxPending" in value ? value.maxPending : undefined,
       };
+    case "setAgentCadence":
+      return {
+        type: "setAgentCadence",
+        id: "id" in value ? value.id : undefined,
+        minutes: "minutes" in value ? value.minutes : undefined,
+      };
+    case "disableAgentTimer":
+      return { type: "disableAgentTimer", id: "id" in value ? value.id : undefined };
     case "restartServer":
       return {
         type: "restartServer",
@@ -1690,20 +1723,6 @@ export function createApp(options: AppOptions) {
   async function peerEnvironment(): Promise<Record<string, string | undefined>> {
     return (await providers.select()).env;
   }
-  // The Issues-mode watchdog page: local facts every request, GitHub in the
-  // background at most once per interval. It never writes watchdog state.
-  const watchdog = new WatchdogActivity({
-    watchdogDir: join(stateDir, "watchdog"),
-    repoDir,
-    ...(options.watchdog?.reader === undefined ? {} : { reader: options.watchdog.reader }),
-    ...(options.watchdog?.now === undefined ? {} : { now: options.watchdog.now }),
-    ...(options.watchdog?.intervalMs === undefined
-      ? {}
-      : { intervalMs: options.watchdog.intervalMs }),
-    ...(options.watchdog?.staleAfterMs === undefined
-      ? {}
-      : { staleAfterMs: options.watchdog.staleAfterMs }),
-  });
   // The journal records what happened for the watchdog. It is never part of a
   // run's behavior: a failed write only adds a line to stderr.
   const journal =
@@ -1988,7 +2007,10 @@ export function createApp(options: AppOptions) {
    * checkout. It owns no scan loop: starting one is detached, stopping this
    * server leaves it alive, and a replacement attaches to the same board.
    */
+  const scoutDescriptor = agentRegistry.require("scout");
+  const watchdogDescriptor = agentRegistry.require("watchdog");
   const scout = new ScoutBridge({
+    descriptor: scoutDescriptor,
     repoDir,
     stateDir,
     agentCommand,
@@ -2001,7 +2023,44 @@ export function createApp(options: AppOptions) {
     ...(options.scout?.preflight === undefined ? {} : { preflight: options.scout.preflight }),
     ...(options.scout?.spawnWorker === undefined ? {} : { spawnWorker: options.scout.spawnWorker }),
   });
-  scout.begin();
+
+  /**
+   * Watchdog reads the root-anchored worker, ledger, and run history, overlays
+   * the forge projection, and starts or stops the detached worker. Every
+   * dashboard on the root reads the same machine state.
+   */
+  const watchdog = new WatchdogActivity({
+    descriptor: watchdogDescriptor,
+    repoDir,
+    stateDir,
+    harnessDir: runningHarnessDir(),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.watchdog?.reader === undefined ? {} : { reader: options.watchdog.reader }),
+    ...(options.watchdog?.now === undefined ? {} : { now: options.watchdog.now }),
+    ...(options.watchdog?.intervalMs === undefined
+      ? {}
+      : { intervalMs: options.watchdog.intervalMs }),
+    ...(options.watchdog?.staleAfterMs === undefined
+      ? {}
+      : { staleAfterMs: options.watchdog.staleAfterMs }),
+    ...(options.watchdog?.preflight === undefined ? {} : { preflight: options.watchdog.preflight }),
+    ...(options.watchdog?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.watchdog.spawnWorker }),
+    ...(options.watchdog?.systemctl === undefined
+      ? {}
+      : { systemctl: options.watchdog.systemctl }),
+  });
+
+  /** The shared control plane both background agents answer through. */
+  const agents = new BackgroundAgentBridge({
+    registry: agentRegistry,
+    adapters: [scout, watchdog],
+    broadcast: (event) => sendAll(event),
+    log: (line) => process.stderr.write(`${line}\n`),
+  });
+  agents.begin();
 
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
@@ -5813,13 +5872,6 @@ export function createApp(options: AppOptions) {
         return handleGoalProposalRequest(request, url);
       }
 
-      if (url.pathname === "/api/watchdog") {
-        if (request.method !== "GET") {
-          return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
-        }
-        return Response.json(watchdog.view());
-      }
-
       if (url.pathname === "/ws") {
         if (server.upgrade(request)) return;
         return new Response("Expected a WebSocket upgrade", { status: 426 });
@@ -5936,7 +5988,7 @@ export function createApp(options: AppOptions) {
         // A client needs the checkout's origin and stopped state on connect,
         // whether or not a worker has ever published for it.
         issues.replay(ws);
-        scout.replay(ws);
+        agents.replay(ws);
       },
 
       close(ws) {
@@ -5967,7 +6019,8 @@ export function createApp(options: AppOptions) {
           command.type === "getIssuesRun" ||
           command.type === "getGoalDrafts" ||
           command.type === "getGoalDraft" ||
-          command.type === "getScout" ||
+          command.type === "getAgents" ||
+          command.type === "getAgent" ||
           command.type === "getSkills" ||
           command.type === "getDiscover" ||
           command.type === "getProviders";
@@ -6094,21 +6147,8 @@ export function createApp(options: AppOptions) {
                 message: "That question is no longer waiting for an answer.",
               });
             }
-          } else if (command.type === "getScout") {
-            scout.replay(ws);
-          } else if (command.type === "startScout") {
-            const started = await scout.start();
-            if (!started.ok) {
-              send(ws, { type: "error", message: started.message });
-            } else {
-              scout.replay(ws);
-            }
-          } else if (command.type === "stopScout") {
-            const result = scout.stop();
-            if (!result.ok) send(ws, { type: "error", message: result.message });
-          } else if (command.type === "setScoutLimits") {
-            const result = scout.setLimits(command.maxPerHour, command.maxPending);
-            if (!result.ok) send(ws, { type: "error", message: result.message });
+          } else if (isAgentCommand(command)) {
+            await agents.handle(ws, command);
           } else if (command.type === "restartServer") {
             restartServer(ws, command.whenIdle === true);
           } else if (command.type === "saveGoal") {

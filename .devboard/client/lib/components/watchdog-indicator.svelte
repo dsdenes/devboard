@@ -1,56 +1,23 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { agents } from "../agents.svelte";
 
-  interface WatchdogIssue {
-    url: string;
-    category: string;
-    line: string;
-    filedAt: string;
-  }
-
-  interface WatchdogStatus {
-    cycle: string | null;
-    action: string;
-    reason?: string;
-    findings: number;
-    issues: WatchdogIssue[];
-    pending: number;
-  }
-
-  const POLL_MS = 60_000;
   const MAX_ISSUES = 10;
 
-  let status = $state<WatchdogStatus | null>(null);
-  let unavailable = $state(false);
   let open = $state(false);
 
-  async function refresh(): Promise<void> {
-    try {
-      const response = await fetch("/api/watchdog");
-      if (!response.ok) {
-        unavailable = true;
-        return;
-      }
-      status = (await response.json()) as WatchdogStatus;
-      unavailable = false;
-    } catch {
-      unavailable = true;
-    }
-  }
-
-  onMount(() => {
-    void refresh();
-    const timer = setInterval(() => {
-      void refresh();
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  });
-
-  const action = $derived(status === null ? (unavailable ? "unavailable" : "unknown") : status.action);
+  const snapshot = $derived(agents.snapshot("watchdog"));
+  const cycle = $derived(
+    snapshot?.detail.panel === "cycles" ? (snapshot.detail.cycles[0] ?? null) : null,
+  );
+  const action = $derived(
+    snapshot === null ? "unknown" : (cycle?.action ?? "none"),
+  );
+  const issues = $derived(snapshot?.issues.slice(0, MAX_ISSUES) ?? []);
 
   const age = $derived.by(() => {
-    if (status === null || status.cycle === null) return "never";
-    const elapsed = Date.now() - Date.parse(status.cycle);
+    const at = cycle?.at ?? null;
+    if (at === null) return "never";
+    const elapsed = Date.now() - Date.parse(at);
     if (!Number.isFinite(elapsed)) return "unknown";
     const minutes = Math.floor(Math.max(0, elapsed) / 60_000);
     if (minutes < 1) return "just now";
@@ -61,18 +28,11 @@
   });
 
   const dot = $derived(
-    status?.action === "failed"
-      ? "closed"
-      : status?.action === "none" || status === null
-        ? "connecting"
-        : "open",
+    action === "failed" ? "closed" : action === "none" || snapshot === null ? "connecting" : "open",
   );
-
-  const issues = $derived(status?.issues.slice(0, MAX_ISSUES) ?? []);
 
   function toggle(): void {
     open = !open;
-    if (open) void refresh();
   }
 
   function handleKey(event: KeyboardEvent): void {
@@ -104,15 +64,15 @@
       aria-label="Watchdog report"
     >
       <p class="watchdog-summary">
-        {#if status === null}
+        {#if snapshot === null}
           No cycle reported yet.
         {:else}
-          Cycle {status.cycle ?? "never"} · {status.findings} finding(s) ·
-          {status.pending} pending
+          Cycle {cycle?.at ?? "never"} · {cycle?.findings ?? 0} finding(s) ·
+          {snapshot.pending} pending
         {/if}
       </p>
-      {#if status?.reason !== undefined}
-        <p class="watchdog-reason">{status.reason}</p>
+      {#if cycle?.reason !== undefined}
+        <p class="watchdog-reason">{cycle.reason}</p>
       {/if}
       {#if issues.length === 0}
         <p class="watchdog-empty">No issues filed.</p>
@@ -121,7 +81,7 @@
           {#each issues as issue (issue.url)}
             <li>
               <a href={issue.url} target="_blank" rel="noopener noreferrer">
-                {issue.category}: {issue.line}
+                {issue.title}
               </a>
             </li>
           {/each}

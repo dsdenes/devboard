@@ -285,7 +285,10 @@ try {
   expectFailure(launcher(["doctor", "--host", host.directory], { ...newEnv, PATH: noOmp }), "omp");
 
   expectFailure(
-    launcher(["doctor", "--host", host.directory], { DEVBOARD_NPM: failingNpm }),
+    launcher(["doctor", "--host", host.directory], {
+      DEVBOARD_NPM: failingNpm,
+      DEVBOARD_RELEASE_DIR: emptyRelease,
+    }),
     "release access",
   );
 

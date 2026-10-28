@@ -281,17 +281,17 @@ const readCycles = `(() => [...document.querySelectorAll('[data-testid="watchdog
     row.querySelector('[data-testid="watchdog-cycle-reason"]') === null,
 })))()`;
 
-const readIssues = `(() => [...document.querySelectorAll('[data-testid="watchdog-issue"]')].map((row) => ({
+const readIssues = `(() => [...document.querySelectorAll('[data-testid="agent-issue"]')].map((row) => ({
   url: row.dataset.url ?? '',
   state: row.dataset.state ?? '',
   version: row.dataset.version ?? '',
-  title: row.querySelector('[data-testid="watchdog-issue-title"]')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '',
-  href: row.querySelector('[data-testid="watchdog-issue-title"]')?.getAttribute('href') ?? '',
-  category: row.querySelector('[data-testid="watchdog-issue-category"]')?.textContent?.trim() ?? '',
-  filed: row.querySelector('[data-testid="watchdog-issue-filed"]')?.getAttribute('datetime') ?? '',
-  filedText: row.querySelector('[data-testid="watchdog-issue-filed"]')?.textContent?.trim() ?? '',
-  stateText: row.querySelector('[data-testid="watchdog-issue-state"]')?.textContent?.trim() ?? '',
-  versionText: row.querySelector('[data-testid="watchdog-issue-version"]')?.textContent?.trim() ?? '',
+  title: row.querySelector('[data-testid="agent-issue-title"]')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '',
+  href: row.querySelector('[data-testid="agent-issue-title"]')?.getAttribute('href') ?? '',
+  category: row.querySelector('[data-testid="agent-issue-category"]')?.textContent?.trim() ?? '',
+  filed: row.querySelector('[data-testid="agent-issue-filed"]')?.getAttribute('datetime') ?? '',
+  filedText: row.querySelector('[data-testid="agent-issue-filed"]')?.textContent?.trim() ?? '',
+  stateText: row.querySelector('[data-testid="agent-issue-state"]')?.textContent?.trim() ?? '',
+  versionText: row.querySelector('[data-testid="agent-issue-version"]')?.textContent?.trim() ?? '',
 })))()`;
 
 function issueUrl(index: number): string {
@@ -343,6 +343,7 @@ if [ -f "$fixtures/fail" ]; then
   esac
 fi
 case "$args" in
+  *"repos/acme/fixture --jq .permissions.push"*) echo true ;;
   *"repos/dsdenes/devboard/issues/901 --jq .state"*) echo open ;;
   *"repos/dsdenes/devboard/issues/902 --jq .state"*) echo closed ;;
   *"repos/dsdenes/devboard/issues/903 --jq .state"*) echo closed ;;
@@ -380,7 +381,7 @@ try {
   const host = await makeHost(root, "host");
   run("git", ["-C", host.directory, "remote", "add", "origin", "https://github.com/acme/fixture.git"]);
   const stateDir = join(root, "state");
-  const watchdogDir = join(stateDir, "watchdog");
+  const watchdogDir = join(host.directory, ".devboard", ".tmp", "watchdog");
   await mkdir(watchdogDir, { recursive: true });
   const binDir = join(root, "bin");
   const ghFixtures = join(root, "gh");
@@ -389,6 +390,18 @@ try {
   const ghPath = join(binDir, "gh");
   await writeFile(ghPath, GH_STUB);
   chmodSync(ghPath, 0o755);
+  const systemctlPath = join(binDir, "systemctl");
+  await writeFile(
+    systemctlPath,
+    `#!/bin/sh
+case "$2" in
+  is-active) echo inactive ;;
+  is-enabled) echo disabled ;;
+esac
+exit 0
+`,
+  );
+  chmodSync(systemctlPath, 0o755);
   await writeFile(
     join(ghFixtures, "releases.jsonl"),
     '{"tag":"v1.0.0","publishedAt":"2026-10-20T00:00:00Z","draft":false}\n' +
@@ -485,7 +498,7 @@ try {
       const previous = button.previousElementSibling;
       return {
         command: button.dataset.command ?? '',
-        label: button.textContent?.trim() ?? '',
+        label: button.querySelector('.sidebar-item__label')?.textContent?.trim() ?? '',
         previous: previous?.getAttribute('data-testid') ?? '',
       };
     })()`);
@@ -506,24 +519,24 @@ try {
 
     await click(devtools, "open-issues-watchdog");
     await waitFor(
-      async () => ((await present(devtools, "watchdog-page")) ? true : undefined),
+      async () => ((await present(devtools, "agent-page")) ? true : undefined),
       "the Watchdog page",
       10_000,
     );
     assertTrue(
       (await devtools.evaluate(
-        `document.querySelector('[data-testid="watchdog-header"] h1')?.textContent?.trim() ?? ''`,
+        `document.querySelector('[data-testid="agent-header"] h1')?.textContent?.trim() ?? ''`,
       )) === "Watchdog",
       "the page title is Watchdog",
     );
     assertTrue(
       !(await devtools.evaluate(
-        `document.querySelector('[data-testid="watchdog-header"] .page-header__eyebrow') !== null`,
+        `document.querySelector('[data-testid="agent-header"] .page-header__eyebrow') !== null`,
       )),
       "the Watchdog header still carries its Issues eyebrow",
     );
     assertTrue(await present(devtools, "watchdog-cycles-empty"), "no cycle renders no empty state");
-    assertTrue(await present(devtools, "watchdog-issues-empty"), "no issue renders no empty state");
+    assertTrue(await present(devtools, "agent-issues-empty"), "no issue renders no empty state");
     assertTrue(
       !(await present(devtools, "watchdog-last-cycle")),
       "the newest-cycle summary is still rendered",
@@ -532,11 +545,14 @@ try {
       `document.querySelector('[data-testid="open-issues-watchdog"]')?.getAttribute('aria-current') ?? ''`,
     );
     assertTrue(current === "true", "the Watchdog entry is not the active tab");
-    console.log("PASS watchdog-page-empty");
+    console.log("PASS agent-page-empty");
 
     /* ---------------------------------------------------------------- */
     /* 2. Seed the local facts while the page is open                    */
     /* ---------------------------------------------------------------- */
+    // The dashboard-started worker wrote its own first cycle; the seeded
+    // history is the one this page must render.
+    await rm(join(watchdogDir, "runs"), { recursive: true, force: true });
     const cycleTimes = ["2026-10-24T10:00:00.000Z", "2026-10-24T11:00:00.000Z", "2026-10-24T12:00:00.000Z"];
     const reports = [
       { cycle: cycleTimes[0], action: "failed", findings: 2, reason: "gh unavailable" },
@@ -608,8 +624,8 @@ try {
       "a cycle row carries the wrong start time",
     );
     assertTrue(
-      seededCycles.every((cycle) => cycle.compact),
-      "a cycle row still renders its interval or finding count",
+      seededCycles.every((cycle) => !cycle.compact),
+      "a cycle row omits its window, finding count, or reason",
     );
     assertTrue(
       JSON.stringify(seededCycles.map((cycle) => cycle.issues.map((issue) => issue.href))) ===
@@ -621,10 +637,12 @@ try {
       "a connected issue link does not name its number",
     );
     assertTrue(
-      !(await devtools.evaluate(
-        `document.querySelector('[data-testid="watchdog-cycle-reason"]') !== null`,
-      )),
-      "a cycle row still renders a reason",
+      await present(devtools, "watchdog-cycle-window"),
+      "a cycle row does not render its window",
+    );
+    assertTrue(
+      await present(devtools, "watchdog-cycle-findings"),
+      "a cycle row does not render its finding count",
     );
     console.log("PASS watchdog-cycles");
 
@@ -655,7 +673,7 @@ try {
         const value = renderedIssues(await devtools.evaluate(readIssues).catch(() => undefined));
         if (value === undefined || value.length !== 3) return undefined;
         const sync = await devtools
-          .evaluate(`document.querySelector('[data-testid="watchdog-sync"]')?.dataset.state ?? ''`)
+          .evaluate(`document.querySelector('[data-testid="agent-sync"]')?.dataset.state ?? ''`)
           .catch(() => "");
         const states = value.map((issue) => `${issue.url}:${issue.state}:${issue.version}`);
         return sync === "ok" && states[0] === `${issueUrl(0)}:pending:` &&
@@ -690,10 +708,10 @@ try {
       "an issue row renders the wrong shipped version",
     );
     assertTrue(
-      (await text(devtools, "watchdog-sync-at")) !== "never",
+      (await text(devtools, "agent-sync-at")) !== "never",
       "a successful read leaves the last-success time at never",
     );
-    console.log("PASS watchdog-issues");
+    console.log("PASS agent-issues");
 
     /* ---------------------------------------------------------------- */
     /* 4. A failed read keeps the rows and reports its reason            */
@@ -724,7 +742,7 @@ try {
     const failed = await waitFor(
       async () => {
         const state = await devtools
-          .evaluate(`document.querySelector('[data-testid="watchdog-sync"]')?.dataset.state ?? ''`)
+          .evaluate(`document.querySelector('[data-testid="agent-sync"]')?.dataset.state ?? ''`)
           .catch(() => "");
         return state === "error" ? state : undefined;
       },
@@ -732,7 +750,7 @@ try {
       90_000,
     );
     assertTrue(failed === "error", "the sync badge did not report an error");
-    const failureText = await text(devtools, "watchdog-sync-error");
+    const failureText = await text(devtools, "agent-sync-error");
     assertTrue(
       failureText.includes("Bad credentials"),
       `the sync error does not show the failure reason: ${failureText}`,
@@ -746,7 +764,7 @@ try {
       afterFailure[1]?.version === "v1.0.0" && afterFailure[1]?.state === "implemented",
       "a failed read dropped a last known state or version",
     );
-    console.log("PASS watchdog-sync-error");
+    console.log("PASS agent-sync-error");
 
     /* ---------------------------------------------------------------- */
     /* 5. Recovery and a release published later fill a blank version    */
@@ -762,7 +780,7 @@ try {
       async () => {
         const value = renderedIssues(await devtools.evaluate(readIssues).catch(() => undefined));
         const sync = await devtools
-          .evaluate(`document.querySelector('[data-testid="watchdog-sync"]')?.dataset.state ?? ''`)
+          .evaluate(`document.querySelector('[data-testid="agent-sync"]')?.dataset.state ?? ''`)
           .catch(() => "");
         return sync === "ok" && value?.[2]?.version === "v1.2.0" ? value : undefined;
       },
@@ -774,10 +792,10 @@ try {
       "the earliest release changed after a later one was published",
     );
     assertTrue(
-      !(await present(devtools, "watchdog-sync-error")),
+      !(await present(devtools, "agent-sync-error")),
       "a successful read did not clear the failure reason",
     );
-    console.log("PASS watchdog-sync-recovered");
+    console.log("PASS agent-sync-recovered");
 
     /* ---------------------------------------------------------------- */
     /* 6. A new run directory and a new ledger entry appear without a reload */
@@ -836,7 +854,7 @@ try {
       "a newly filed ledger entry did not become the newest row",
     );
     assertTrue(
-      (await text(devtools, "watchdog-issues-count")).startsWith("4 filed"),
+      (await text(devtools, "agent-issues-count")).startsWith("4 filed"),
       "the filed-issue count did not refresh without a reload",
     );
     console.log("PASS watchdog-freshness");
