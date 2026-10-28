@@ -1864,36 +1864,80 @@ try {
   await page.wait(`document.querySelector('[data-testid="skills-overlay"]') !== null`, "the Skills page from the disclosure");
   const skillsHeaderText = await page.eval<string>(`document.querySelector('[data-testid="skills-header"]')?.textContent ?? ""`);
   check(!skillsHeaderText.includes(".omp/skills/"), "the Skills header still shows the skills path", skillsHeaderText);
-  const goalSkillSurface = await page.eval<{ selected: string; current: string }>(`(() => {
+  const goalSkillSurface = await page.eval<{ selected: string; current: string; expanded: string }>(`(() => {
     const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
     return {
       selected: item?.getAttribute("data-name") ?? "",
       current: item?.getAttribute("aria-current") ?? "",
-    };
-  })()`);
-  check(goalSkillSurface.selected === clickedSkill && goalSkillSurface.current === "true", "clicking a prepared skill does not select it", { clickedSkill, goalSkillSurface });
-  const skillDocument = await page.eval<{
-    name: string;
-    text: string;
-    blocks: number;
-    path: string;
-    frontmatter: boolean;
-    description: boolean;
-  }>(`(() => {
-    const doc = document.querySelector('[data-testid="skill-content-text"]');
-    return {
-      name: document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() ?? "",
-      text: doc?.textContent?.trim() ?? "",
-      blocks: doc?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
-      path: document.querySelector('.skill__path')?.textContent?.trim() ?? "",
-      frontmatter: (doc?.textContent ?? "").includes("devboard-managed"),
-      description: document.querySelector('[data-testid="skill-content"] .panel__header .muted') !== null,
+      expanded: item?.getAttribute("aria-expanded") ?? "",
     };
   })()`);
   check(
-    skillDocument.name === clickedSkill && skillDocument.text.length > 0 && !skillDocument.description,
-    "selecting a prepared skill does not open its document without a description",
+    goalSkillSurface.selected === clickedSkill &&
+      goalSkillSurface.current === "true" &&
+      goalSkillSurface.expanded === "true",
+    "clicking a prepared skill does not expand it",
+    { clickedSkill, goalSkillSurface },
+  );
+  const skillDocument = await page.eval<{
+    name: string;
+    text: string;
+    inline: boolean;
+    description: boolean;
+    blocks: number;
+    path: string;
+    frontmatter: boolean;
+  }>(`(() => {
+    const item = document.querySelector('[data-testid="skill"][data-selected="true"]');
+    const detail = item?.closest("li")?.querySelector('[data-testid="skill-content"]') ?? null;
+    const doc = detail?.querySelector('[data-testid="skill-content-text"]') ?? null;
+    return {
+      name: detail?.getAttribute("data-name") ?? "",
+      text: doc?.textContent?.trim() ?? "",
+      inline: detail !== null,
+      description: detail?.querySelector(".muted") !== null,
+      blocks: doc?.querySelectorAll('h1, h2, h3, p, li, pre').length ?? 0,
+      path: detail?.querySelector('.skill__path')?.textContent?.trim() ?? "",
+      frontmatter: (doc?.textContent ?? "").includes("devboard-managed"),
+    };
+  })()`);
+  check(
+    skillDocument.inline &&
+      skillDocument.name === clickedSkill &&
+      skillDocument.text.length > 0 &&
+      !skillDocument.description,
+    "expanding a prepared skill does not show its document in the list without a description",
     { clickedSkill, skillDocument },
+  );
+  check(
+    skillDocument.blocks > 0 && !skillDocument.frontmatter,
+    "the skill document is not rendered as a document without its frontmatter",
+    skillDocument,
+  );
+  check(
+    skillDocument.path === `.omp/skills/${clickedSkill}/SKILL.md`,
+    "the skill document does not name its file",
+    skillDocument,
+  );
+  const collapsingSkill = await page.eval<string>(`document.querySelector('[data-testid="skill"][data-selected="true"]')?.getAttribute("data-name") ?? ""`);
+  await page.click(`[data-testid="skill"][data-name="${collapsingSkill}"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="skill-content"]') === null`,
+    "the collapsed skill document",
+  );
+  const collapsedSurface = await page.eval<{ selected: number; expanded: string }>(`(() => ({
+    selected: document.querySelectorAll('[data-testid="skill"][data-selected="true"]').length,
+    expanded: document.querySelector('[data-testid="skill"][aria-expanded="true"]')?.getAttribute("data-name") ?? "",
+  }))()`);
+  check(
+    collapsedSurface.selected === 0 && collapsedSurface.expanded === "",
+    "clicking an expanded skill does not collapse it",
+    collapsedSurface,
+  );
+  await page.click(`[data-testid="skill"][data-name="${collapsingSkill}"]`);
+  await page.wait(
+    `document.querySelector('[data-testid="skill-content"]') !== null`,
+    "the reopened skill document",
   );
   check(
     skillDocument.blocks > 0 && !skillDocument.frontmatter,
@@ -1927,8 +1971,8 @@ try {
   );
   await page.click('[data-testid="skill"][data-name="fixture-conventions"]');
   await page.wait(
-    `document.querySelector('[data-testid="skill-content-name"]')?.textContent?.trim() === "fixture-conventions"`,
-    "the prepared skill detail",
+    `document.querySelector('[data-testid="skill"][data-name="fixture-conventions"]')?.getAttribute("aria-expanded") === "true"`,
+    "the prepared skill accordion",
   );
   const skillsBeforeDelete = await page.eval<number>(`document.querySelectorAll('[data-testid="skill"]').length`);
   await page.click('[data-testid="delete-skill"][data-name="fixture-conventions"]');
@@ -2489,7 +2533,6 @@ try {
   const discoverChrome = await page.eval<{
     eyebrow: boolean;
     stale: boolean;
-    commit: boolean;
     railLeft: number;
     railWidth: number;
     columnLeft: number;
@@ -2519,7 +2562,6 @@ try {
     return {
       eyebrow: head?.querySelector('.discover-page__eyebrow') !== null,
       stale: document.querySelector('[data-testid="discover-stale"]') !== null,
-      commit: head?.querySelector('.discover-head__meta code') !== null,
       railLeft: Math.round(rail?.getBoundingClientRect().left ?? -1),
       railWidth: Math.round(rail?.getBoundingClientRect().width ?? -1),
       columnLeft: Math.round(column?.getBoundingClientRect().left ?? -1),
@@ -2537,7 +2579,7 @@ try {
       happyPath: stats.find((stat) => stat.label === "happy path")?.value ?? "",
     };
   })()`);
-  check(!discoverChrome.eyebrow && !discoverChrome.stale && !discoverChrome.commit, "the sheet still renders removed masthead chrome", discoverChrome);
+  check(!discoverChrome.eyebrow && !discoverChrome.stale, "the sheet still renders removed masthead chrome", discoverChrome);
   check(discoverChrome.railLeft < discoverChrome.columnLeft, "the sheet column is not to the right of the facts rail", discoverChrome);
   check(
     discoverChrome.railWidth >= 320,
@@ -4385,7 +4427,9 @@ try {
   check(fitsRestored.inside && fitsRestored.width === 380, "the ask panel leaves the restored viewport", fitsRestored);
 
   const askLog = await readFile(agentLog, "utf8");
-  const askSpawns = askLog.split("\n").filter((line) => line.startsWith("ask-spawn ")).length;
+  // Every peer in this run starts with --ask, so count the peers that answered
+  // a first ask turn rather than the ask-start marker on process startup.
+  const askSpawns = askLog.split("\n").filter((line) => line.startsWith("ask-prompt 1 ")).length;
   const askPrompts = askLog.split("\n").filter((line) => line.startsWith("ask-prompt ")).length;
   check(askSpawns === 1, `the ask stub started ${askSpawns} peers`, askLog);
   check(askPrompts === 2, `the ask stub answered ${askPrompts} prompts`, askLog);

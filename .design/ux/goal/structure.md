@@ -100,12 +100,10 @@ and report control.
 | Order | A2UI ID | Region | Journey | Items | Priority |
 |---|---|---|---|---|---|
 | 1 | region_skills_header | Title, readiness (prepared count or none), Prepare again, Close | 2 | C5, C8 | P0 |
-| 2 | region_skills_list | One row per skill: name and description; selected row marked; capped at 40% while a document is open | 2 | C5, C6 | P0 |
+| 2 | region_skills_list | One accordion row per skill: name and description; expanded row opens its document inline; the panel body owns the scroll | 2 | C5, C6 | P0 |
 | 3 | region_skills_contradictions | Contradiction warnings, or a "no contradictions" line | 2 | C7 | P1 |
-| 4 | region_skill_document | Selected skill: name and file path header, rendered Markdown document, own scroll | 2 | C5, C6 | P0 conditional |
-
-The document region is specified in `.design/ux/goal-skill-detail/`: frontmatter is not shown,
-the description is not repeated, and the list yields height to the document.
+The expanded row is specified in `.design/ux/goal-skill-detail/`: its file path sits above a
+rendered Markdown document, the frontmatter is not shown, and no separate detail panel exists.
 
 Primary action: `Prepare skills` / `Prepare skills again` (secondary when skills exist). The
 sidebar disclosure is the fast path to one skill; the page is the audit surface.

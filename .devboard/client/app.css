@@ -1596,10 +1596,6 @@ kbd {
   gap: 4px 8px;
 }
 
-.discover-head__meta code {
-  font-size: 11px;
-}
-
 .discover-sheet {
   align-items: start;
   display: grid;
@@ -2743,13 +2739,19 @@ a.code-chip--link:focus-visible {
 }
 
 .skill {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill__row {
   align-items: flex-start;
   display: flex;
   gap: 4px;
 }
 
 .skill__button {
-  align-items: flex-start;
+  align-items: center;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -2757,11 +2759,29 @@ a.code-chip--link:focus-visible {
   cursor: pointer;
   display: flex;
   flex: 1;
-  flex-direction: column;
-  gap: 2px;
+  gap: 8px;
+  justify-content: space-between;
   min-width: 0;
   padding: 4px 6px;
   text-align: left;
+}
+
+.skill__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skill__chevron {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  transition: transform 120ms ease;
+}
+
+.skill__chevron--open {
+  transform: rotate(90deg);
 }
 
 .skill__delete {
@@ -2804,26 +2824,22 @@ a.code-chip--link:focus-visible {
   font-size: 11px;
 }
 
-.goal-skills--with-detail {
-  flex: 0 1 auto;
-  max-height: 40%;
+.skill__detail {
+  border-left: 2px solid var(--border-strong);
+  margin: 0 0 4px 8px;
+  padding: 4px 0 4px 8px;
 }
 
 .skill__path {
-  flex: 0 1 auto;
-  min-width: 0;
+  color: var(--muted-foreground);
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.4;
+  margin: 0 0 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.goal-skill-detail {
-  flex: 1 1 0;
-  min-height: 240px;
-}
-
-.goal-skill-detail .panel__body {
-  padding: 12px 16px;
 }
 
 .skill__document {
@@ -2954,7 +2970,6 @@ a.code-chip--link:focus-visible {
   background: var(--surface-raised);
   font-weight: 600;
 }
-
 /* Issues mode */
 .issues-overview,
 .issues-queue-page,

@@ -87,7 +87,10 @@ export interface ScoutWorkerOptions {
    * client applies the same deadline to each `gh` child.
    */
   readTimeoutMs?: number;
-  /** A scan that exceeds this is closed as failed. */
+  /**
+   * A scan whose agent produces no activity for this many milliseconds is
+   * closed as failed; the settle-and-file phase is bounded by the same value.
+   */
   timeoutMs?: number;
   now?: () => Date;
   /** Injected for tests; defaults to the real ACP client. */
@@ -666,10 +669,7 @@ export class ScoutWorker {
       this.publish();
       this.writeScan(active, "running", { requested: capacity.batch, filed: 0 });
 
-      active.timer = setTimeout(() => {
-        this.abandonScan(active, "the scan timed out");
-      }, this.timeoutMs);
-      active.timer.unref?.();
+      this.armScanTimer(active);
 
       void peer
         .run(prompt)
@@ -699,11 +699,27 @@ export class ScoutWorker {
     const active = this.active;
     if (active === undefined || active.finished) return;
     appendActivityLine(active.activity, entry.text, entry.append);
+    this.armScanTimer(active);
     try {
       writeActivity(active.directory, active.activity);
     } catch {
       // A write failure must not end the scan; the next update retries.
     }
+  }
+
+  /**
+   * Arms the agent-phase deadline. Every activity entry restarts it, so only
+   * an agent that has gone silent is abandoned; the settle-and-file phase
+   * keeps its own fixed timer.
+   */
+  private armScanTimer(active: ActiveScan): void {
+    clearTimeout(active.timer);
+    active.timer = undefined;
+    if (active.finished || this.active !== active) return;
+    active.timer = setTimeout(() => {
+      this.abandonScan(active, "the scan timed out");
+    }, this.timeoutMs);
+    active.timer.unref?.();
   }
 
   private recordScanLine(active: ActiveScan, text: string): void {

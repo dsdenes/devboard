@@ -21,17 +21,16 @@
       .rule { border-top: 1px solid #bbb; }
       .skill-row { display: flex; justify-content: space-between; padding: 6px; border: 1px solid #ccc; }
       .skill-row.selected { border: 2px solid #333; }
-      .list { max-height: 190px; overflow: auto; }
-      .document { min-height: 250px; overflow: auto; }
+      .list { max-height: 560px; overflow: auto; }
+      .detail { border-left: 2px solid #666; margin: 0 0 4px 8px; padding: 4px 0 4px 8px; }
+      .path { font: 11px ui-monospace, monospace; color: #666; margin-bottom: 8px; }
       .document h1 { font-size: 18px; margin: 0 0 12px; }
       .document h2 { font-size: 13px; margin: 14px 0 6px; }
       .document p { margin: 0 0 8px; max-width: 520px; }
       .document ul { margin: 0 0 8px; padding-left: 16px; }
       .document li + li { margin-top: 4px; }
       .document code { border: 1px solid #bbb; padding: 1px 4px; font-family: ui-monospace, monospace; font-size: 12px; }
-      .path { font-family: ui-monospace, monospace; font-size: 11px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .heading { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #666; }
-      .label { font-size: 11px; color: #666; }
+      .chevron { color: #666; }
       .anatomy { width: 240px; }
       .anatomy li { margin-bottom: 6px; }
     </style>
@@ -59,30 +58,29 @@
             <span class="muted">Read by implementing agents</span>
           </div>
           <div class="rule"></div>
-          <div class="skill-row"><span>benchmark-methodology</span><span>Measure one operation…</span></div>
-          <div class="skill-row"><span>dependency-boundaries</span><span>Keep core free of adapters…</span></div>
-          <div class="skill-row selected"><span>differential-conformance-testing</span><span>Prove equivalence…</span></div>
-          <div class="skill-row"><span>drop-in-compatibility</span><span>Replace a library…</span></div>
-          <div class="skill-row"><span>wire-format-conformance</span><span>Hold bytes to the spec…</span></div>
-          <div class="muted">No contradictions</div>
-        </div>
-
-        <div class="box document">
-          <div class="row">
-            <strong>differential-conformance-testing</strong>
-            <span class="path">.omp/skills/differential-conformance-testing/SKILL.md</span>
+          <div class="skill-row"><span>benchmark-methodology</span><span class="chevron">›</span></div>
+          <div class="skill-row"><span>dependency-boundaries</span><span class="chevron">›</span></div>
+          <div>
+            <div class="skill-row selected">
+              <span>differential-conformance-testing</span><span class="chevron">⌄</span>
+            </div>
+            <div class="detail document">
+              <div class="path">.omp/skills/differential-conformance-testing/SKILL.md</div>
+              <h1>Differential Conformance Testing</h1>
+              <p>
+                Use the specification as the authority for format correctness and the reference
+                implementation as the oracle for the compatibility contract.
+              </p>
+              <ul>
+                <li>Feed the same input, options, and operation sequence to both implementations.</li>
+                <li>Compare exactly: bytes, structure and value types, error category and failure point.</li>
+                <li>Retain every divergence as a regression case. Run with <code>bun test</code>.</li>
+              </ul>
+            </div>
           </div>
-          <div class="rule"></div>
-          <h1>Differential Conformance Testing</h1>
-          <p>
-            Use the specification as the authority for format correctness and the reference
-            implementation as the oracle for the compatibility contract.
-          </p>
-          <ul>
-            <li>Feed the same input, options, and operation sequence to both implementations.</li>
-            <li>Compare exactly: bytes, structure and value types, error category and failure point.</li>
-            <li>Retain every divergence as a regression case. Run with <code>bun test</code>.</li>
-          </ul>
+          <div class="skill-row"><span>drop-in-compatibility</span><span class="chevron">›</span></div>
+          <div class="skill-row"><span>wire-format-conformance</span><span class="chevron">›</span></div>
+          <div class="muted">No contradictions</div>
         </div>
       </div>
 
@@ -90,10 +88,11 @@
         <div class="heading">Anatomy</div>
         <ol>
           <li><strong>Page header</strong> — title, contradiction badge, and the only page actions.</li>
-          <li><strong>List</strong> — capped at 40% height while a document is open; selected row marked.</li>
-          <li><strong>Document header</strong> — name left, file path right; no description repeat.</li>
-          <li><strong>Document body</strong> — Markdown rendered as headings, prose, lists, code; owns scroll.</li>
-          <li>Frontmatter is not shown.</li>
+          <li><strong>List</strong> — one accordion row per skill; chevron and expanded state.</li>
+          <li><strong>Expanded detail</strong> — inline under its row; one left edge, no second panel.</li>
+          <li><strong>Path line</strong> — file identity above the document.</li>
+          <li><strong>Document</strong> — headings, prose, lists, code; frontmatter not shown.</li>
+          <li>The prepared-skills panel body owns the scroll.</li>
         </ol>
       </div>
     </div>
