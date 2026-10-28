@@ -17,7 +17,7 @@ import { acquireLock, liveLockOwner } from "./lock";
 import { originForge, originRepository } from "./repository";
 import { giteaBaseUrl } from "../lib/forge";
 import { controlDirectory, lockPath, runsDirectory, statePath } from "./paths";
-import { pollOpenIssues } from "./tracker";
+import { fetchIssueState, pollOpenIssues, type IssueStateResult } from "./tracker";
 import {
   appendActivityLine,
   emptyState,
@@ -76,6 +76,8 @@ export interface WorkerOptions {
   >;
   /** Injected for tests; defaults to the real ACP client. */
   connect?: (options: IssuesPeerOptions) => AcpPeer;
+  /** Injected for tests; defaults to the origin tracker's state for one issue. */
+  issueState?: (number: number) => Promise<IssueStateResult>;
   harnessVersion?: string | null;
   log?: (line: string) => void;
   /** Runs after Stop has written its state and released the lock. */
@@ -140,6 +142,8 @@ interface ActiveRun {
   activity: string[];
   peer: AcpPeer;
   firstLine: FirstLine;
+  /** True once the peer settled and the issue state is being verified. */
+  settling: boolean;
   finished: boolean;
 }
 
@@ -271,6 +275,7 @@ export class IssuesWorker {
   private readonly clock: () => Date;
   private readonly listIssues: NonNullable<WorkerOptions["listIssues"]>;
   private readonly connect: NonNullable<WorkerOptions["connect"]>;
+  private readonly issueState: NonNullable<WorkerOptions["issueState"]>;
   private readonly harnessVersion: string | null;
   private readonly log: (line: string) => void;
 
@@ -313,6 +318,22 @@ export class IssuesWorker {
       });
     this.connect =
       options.connect ?? ((peerOptions) => new AcpConnection(peerOptions) as unknown as AcpPeer);
+    this.issueState =
+      options.issueState ??
+      ((number) => {
+        const remote = originForge(this.repoDir, this.environment);
+        return fetchIssueState(
+          {
+            repository: this.state.repo,
+            environment: this.environment,
+            ...(remote === undefined ? {} : { forge: remote.forge }),
+            ...(remote?.forge === "gitea"
+              ? { baseUrl: giteaBaseUrl(remote, this.environment) }
+              : {}),
+          },
+          number,
+        );
+      });
     this.harnessVersion = options.harnessVersion ?? readHarnessVersion(resolve(import.meta.dir, ".."));
     this.log = options.log ?? (() => undefined);
     this.onStopped = options.onStopped;
@@ -751,6 +772,7 @@ export class IssuesWorker {
       activity,
       peer: undefined as unknown as AcpPeer,
       firstLine,
+      settling: false,
       finished: false,
     };
     let peer: AcpPeer;
@@ -898,9 +920,46 @@ export class IssuesWorker {
   }
 
   private finishSucceeded(active: ActiveRun): void {
+    if (active.finished || active.settling || this.stopping) return;
+    active.settling = true;
+    this.closePeer(active);
+    void this.verifyAndSettle(active);
+  }
+
+  /**
+   * A clean ACP turn is not proof of work: a refused slash command still ends
+   * the turn normally. Only an issue the tracker now reports closed is
+   * handled; an open one fails and cools down, so it can be retried.
+   */
+  private async verifyAndSettle(active: ActiveRun): Promise<void> {
+    let result: IssueStateResult;
+    try {
+      result = await this.issueState(active.issue.number);
+    } catch (error) {
+      result = {
+        kind: "error",
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (this.stopping) return;
+    active.firstLine.finish();
+    if (result.kind === "state" && result.state === "closed") {
+      this.recordSucceeded(active);
+      return;
+    }
+    const detail =
+      result.kind === "error"
+        ? `could not verify issue #${active.issue.number}: ${result.detail}`
+        : `the agent finished but issue #${active.issue.number} is still open`;
+    this.recordFailed(
+      active,
+      active.firstLine.value === null ? detail : `${detail}; agent stderr: ${active.firstLine.value}`,
+    );
+  }
+
+  private recordSucceeded(active: ActiveRun): void {
     if (active.finished || this.stopping) return;
     active.finished = true;
-    this.closePeer(active);
     const finishedAt = this.clock().toISOString();
     this.updateRun(active.runId, active.directory, "succeeded", finishedAt, 0, null);
     this.ledger = recordHandled(this.ledger, active.captured, active.runId, this.clock());
@@ -915,20 +974,25 @@ export class IssuesWorker {
     }
   }
 
-  private finishFailed(active: ActiveRun, detail: string): void {
+  private recordFailed(active: ActiveRun, detail: string): void {
     if (active.finished || this.stopping) return;
     active.finished = true;
-    this.closePeer(active);
-    active.firstLine.finish();
-    const error = active.firstLine.value ?? detail;
     const finishedAt = this.clock().toISOString();
-    this.updateRun(active.runId, active.directory, "failed", finishedAt, 1, error);
+    this.updateRun(active.runId, active.directory, "failed", finishedAt, 1, detail);
     this.state.cooldowns[String(active.issue.number)] = new Date(
       this.clock().getTime() + COOLDOWN_MS,
     ).toISOString();
     this.forget(active);
     this.refreshQueue();
-    this.settle(1, error, finishedAt);
+    this.settle(1, detail, finishedAt);
+  }
+
+  private finishFailed(active: ActiveRun, detail: string): void {
+    if (active.finished || active.settling || this.stopping) return;
+    active.settling = true;
+    this.closePeer(active);
+    active.firstLine.finish();
+    this.recordFailed(active, active.firstLine.value ?? detail);
   }
 
   private closePeer(active: ActiveRun): void {

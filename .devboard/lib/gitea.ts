@@ -407,6 +407,23 @@ function issueFromDocument(value: unknown): GiteaIssueDocument | undefined {
 const GITEA_PAGE_SIZE = 50;
 const GITEA_MAX_PAGES = 100;
 
+/** One issue by number, with its labels and body. */
+export async function giteaIssue(
+  target: GiteaTarget,
+  number: number,
+  fetchImpl: FetchLike = fetch,
+): Promise<GiteaIssueDocument> {
+  const document = await giteaJson<unknown>(
+    target,
+    `${repoPath(target)}/issues/${number}`,
+    undefined,
+    fetchImpl,
+  );
+  const issue = issueFromDocument(document);
+  if (issue === undefined) throw new GiteaError("the issue has no number, title, or URL");
+  return issue;
+}
+
 /** Every issue in the requested state, pull requests excluded. */
 export async function giteaListIssues(
   target: GiteaTarget,
