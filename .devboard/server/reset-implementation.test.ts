@@ -176,6 +176,7 @@ async function startServer(
     agentCommand?: string;
     tracker?: EpicLookup;
     trackerSettle?: { attempts: number; delayMs: number };
+    gitTimeoutMs?: number;
   } = {},
 ): Promise<ServerHandle> {
   const staticDir = join(host.root, "static");
@@ -194,6 +195,7 @@ async function startServer(
     agentCommand: options.agentCommand,
     ...(options.tracker === undefined ? {} : { tracker: options.tracker }),
     ...(options.trackerSettle === undefined ? {} : { trackerSettle: options.trackerSettle }),
+    ...(options.gitTimeoutMs === undefined ? {} : { gitTimeoutMs: options.gitTimeoutMs }),
   });
   return { server, url: `127.0.0.1:${server.port}` };
 }
@@ -817,6 +819,77 @@ describe("resetImplementation", () => {
       server.stop(true);
     }
   });
+
+  test(
+    "fails a reset whose push exceeds the git bound and accepts the next start",
+    async () => {
+      const host = await createHost();
+      await pushBase(host);
+      const baseSha = git(host.remote, ["rev-parse", "main"]).stdout;
+      const realGit = Bun.which("git");
+      if (realGit === null) throw new Error("git is not on PATH");
+      // A `git` shim that stalls every push while delegating everything else.
+      const shimDir = join(host.root, "bin");
+      await mkdir(shimDir, { recursive: true });
+      const shim = join(shimDir, "git");
+      await writeFile(
+        shim,
+        [
+          "#!/bin/sh",
+          'for arg in "$@"; do',
+          '  if [ "$arg" = "push" ]; then',
+          "    exec sleep 30",
+          "  fi",
+          "done",
+          `exec '${realGit}' "$@"`,
+          "",
+        ].join("\n"),
+      );
+      await chmod(shim, 0o755);
+      const pathBefore = process.env.PATH;
+      const { server, url } = await startServer(host, {
+        agentCommand: `bun ${STUB_AGENT}`,
+        gitTimeoutMs: 2000,
+      });
+
+      try {
+        process.env.PATH = `${shimDir}:${pathBefore ?? ""}`;
+        const client = await connect(url);
+        const startedAt = Date.now();
+        client.send({ type: "resetImplementation" });
+        await client.waitFor("implementationResetStarted");
+        const error = await client.waitFor("error");
+        expect(String(error.message)).toContain("timed out");
+        const stopped = await client.waitFor("implementationResetStopped");
+        expect(stopped).toMatchObject({
+          type: "implementationResetStopped",
+          completed: false,
+        });
+        expect(stopped.commit).toMatch(FULL_SHA);
+        expect(Date.now() - startedAt).toBeLessThan(15000);
+        expect(client.events.filter((event) => event.type === "error")).toHaveLength(1);
+        process.env.PATH = pathBefore;
+
+        // The stalled push never reached the remote.
+        expect(git(host.remote, ["rev-parse", "main"]).stdout).toBe(baseSha);
+
+        // The stuck reset cleared its guard, so a start is accepted again.
+        await mkdir(join(host.host, "adrs"), { recursive: true });
+        await writeFile(
+          join(host.host, "adrs", "0002-pending.md"),
+          fixtureRecord("0002-pending.md", "Pending", "proposed"),
+        );
+        client.send({ type: "startRun" });
+        const runStarted = await client.waitFor("runStarted");
+        expect(runStarted.file).toBe("0002-pending.md");
+        client.close();
+      } finally {
+        process.env.PATH = pathBefore;
+        server.stop(true);
+      }
+    },
+    30000,
+  );
 
   test("reports a commit failure with the staged deletion left in place", async () => {
     const host = await createHost();

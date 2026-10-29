@@ -95,6 +95,9 @@ import {
 import {
   findOpenEpics,
   normalizeEpics,
+  TrackerAbortedError,
+  TrackerTimeoutError,
+  TRACKER_READ_TIMEOUT_MS,
   type EpicLookup,
   type OpenEpic,
 } from "./tracker";
@@ -134,6 +137,10 @@ export interface AppOptions {
   agentCommand?: string;
   tracker?: EpicLookup;
   trackerSettle?: Partial<TrackerSettle>;
+  /** Wall-clock bound for one tracker read; defaults to 30 seconds. */
+  trackerTimeoutMs?: number;
+  /** Wall-clock bound for one git invocation of the reset; defaults to 60 seconds. */
+  gitTimeoutMs?: number;
   /** Delay before an implementation lane whose epic stayed open runs again. */
   laneBackoffMs?: number;
   /** How long a finished lane keeps its tab before leaving the active list. */
@@ -456,6 +463,8 @@ const RESET_PUSH_ENV = {
   GIT_ASKPASS: "true",
   NO_COLOR: "1",
 };
+/** Wall-clock bound for one git invocation the dashboard spawns. */
+const GIT_TIMEOUT_MS = 60_000;
 /** Largest accepted feedback body, before JSON parsing. */
 const MAX_FEEDBACK_BYTES = 64_000;
 /** Default wall-clock bound for one issue creation. */
@@ -1208,29 +1217,65 @@ interface GitResult {
   stderr: string;
 }
 
+/**
+ * One bounded `git` invocation. The child never reads stdin and is killed when
+ * it outlives its bound, so a stalled `git push` fails the caller with a
+ * timeout result instead of pinning it for the life of the process. The bound
+ * covers the output reads too: a grandchild inheriting the pipes can otherwise
+ * keep them open after the child itself is gone.
+ */
 async function runGit(
   repoDir: string,
   args: string[],
   env: Record<string, string> = {},
+  timeoutMs: number = GIT_TIMEOUT_MS,
 ): Promise<GitResult> {
-  try {
-    const child = Bun.spawn({
+  const controller = new AbortController();
+  let killChild: (() => void) | undefined;
+
+  const invocation = (async (): Promise<GitResult> => {
+    const spawned = Bun.spawn({
       cmd: ["git", "-C", repoDir, ...args],
       env: { ...process.env, ...env },
+      stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      signal: controller.signal,
     });
+    killChild = () => {
+      try {
+        spawned.kill("SIGKILL");
+      } catch {
+        // The child is already gone; the timeout result still stands.
+      }
+    };
     const [stdout, stderr] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
+      new Response(spawned.stdout).text(),
+      new Response(spawned.stderr).text(),
     ]);
-    return { code: await child.exited, stdout, stderr };
-  } catch (error) {
-    return {
+    return { code: await spawned.exited, stdout, stderr };
+  })().catch((error: unknown): GitResult => ({
+    code: -1,
+    stdout: "",
+    stderr: error instanceof Error ? error.message : String(error),
+  }));
+
+  const timeout = Promise.withResolvers<GitResult>();
+  const timer = setTimeout(() => {
+    // The abort kills the child; SIGKILL covers one that ignores it.
+    controller.abort();
+    killChild?.();
+    timeout.resolve({
       code: -1,
       stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-    };
+      stderr: `git ${args[0] ?? ""} timed out after ${timeoutMs}ms`,
+    });
+  }, timeoutMs);
+
+  try {
+    return await Promise.race([invocation, timeout.promise]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1729,6 +1774,14 @@ export function createApp(options: AppOptions) {
     attempts: Math.max(1, options.trackerSettle?.attempts ?? TRACKER_SETTLE_ATTEMPTS),
     delayMs: Math.max(0, options.trackerSettle?.delayMs ?? TRACKER_SETTLE_DELAY_MS),
   };
+  const trackerTimeoutMs = Math.max(
+    1,
+    options.trackerTimeoutMs ?? TRACKER_READ_TIMEOUT_MS,
+  );
+  const gitTimeoutMs = Math.max(1, options.gitTimeoutMs ?? GIT_TIMEOUT_MS);
+  /** Every git call this dashboard makes shares the one configured bound. */
+  const runRepoGit = (args: string[], env: Record<string, string> = {}) =>
+    runGit(repoDir, args, env, gitTimeoutMs);
   const laneBackoffMs = Math.max(0, options.laneBackoffMs ?? LANE_BACKOFF_MS);
   const laneRetentionMs = Math.max(0, options.laneRetentionMs ?? LANE_RETENTION_MS);
   const mainPollMs = Math.max(10, options.mainPollMs ?? MAIN_POLL_MS);
@@ -1886,6 +1939,8 @@ export function createApp(options: AppOptions) {
   /** Resolves when a stopped lifecycle loop has finished unwinding. */
   let lifecycleUnwinding: Promise<void> | undefined;
   let settleLifecycleUnwinding: (() => void) | undefined;
+  /** Tracker reads the lifecycle owns; a stop or reset aborts every one. */
+  const trackerReads = new Set<AbortController>();
   let restarting = false;
   /** A refresh waits for active work before it replaces this process. */
   let restartWhenIdle = false;
@@ -4535,8 +4590,46 @@ export function createApp(options: AppOptions) {
     publishLanes();
   }
 
+  /** Rejects with the controller's reason as soon as a tracker read is aborted. */
+  function whenTrackerAborted(signal: AbortSignal): Promise<never> {
+    const aborted = Promise.withResolvers<never>();
+    const reject = () =>
+      aborted.reject(
+        signal.reason instanceof Error ? signal.reason : new TrackerAbortedError(),
+      );
+    if (signal.aborted) reject();
+    else signal.addEventListener("abort", reject, { once: true });
+    return aborted.promise;
+  }
+
+  /** Aborts every in-flight tracker read; the lifecycle then unwinds at once. */
+  function abortTrackerReads() {
+    for (const controller of trackerReads) controller.abort(new TrackerAbortedError());
+    trackerReads.clear();
+  }
+
+  /**
+   * Reads the tracker under a deadline the lifecycle owns. Stop and reset abort
+   * the read, so a stalled child cannot keep the run from unwinding.
+   */
   async function readEpicList(): Promise<OpenEpic[]> {
-    return normalizeEpics(await tracker(repoDir));
+    const controller = new AbortController();
+    trackerReads.add(controller);
+    const timer = setTimeout(
+      () => controller.abort(new TrackerTimeoutError(trackerTimeoutMs)),
+      trackerTimeoutMs,
+    );
+    try {
+      return normalizeEpics(
+        await Promise.race([
+          tracker(repoDir, { signal: controller.signal, timeoutMs: trackerTimeoutMs }),
+          whenTrackerAborted(controller.signal),
+        ]),
+      );
+    } finally {
+      clearTimeout(timer);
+      trackerReads.delete(controller);
+    }
   }
 
   /**
@@ -4879,8 +4972,10 @@ export function createApp(options: AppOptions) {
       const list = await settleEpicList(
         (candidate) => !candidate.some((entry) => !before.has(String(entry.number))),
       );
+      if (!lifecycleRunning) return;
       applyEpicList(list);
     } catch (error) {
+      if (!lifecycleRunning) return;
       broadcast({
         type: "error",
         lane: lane.id,
@@ -4976,7 +5071,7 @@ export function createApp(options: AppOptions) {
    * or retrying epic responsive without a fixed attempt cap.
    */
   async function readMainRevision(): Promise<string | undefined> {
-    const result = await runGit(repoDir, ["rev-parse", "--verify", "main"]);
+    const result = await runRepoGit(["rev-parse", "--verify", "main"]);
     return result.code === 0 ? result.stdout.trim() : undefined;
   }
 
@@ -5142,6 +5237,9 @@ export function createApp(options: AppOptions) {
 
     lifecyclePausedForManualRun = false;
     lifecycleRunning = false;
+    // The start may still be waiting on a stalled tracker; aborting the read
+    // lets it unwind now instead of blocking the next Start forever.
+    abortTrackerReads();
     journal.write("lifecycle", "stop");
     if (stopAllLanes()) publishLanes();
     lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
@@ -5332,16 +5430,21 @@ export function createApp(options: AppOptions) {
     publishLifecycle(true);
     let finished = false;
     try {
-      applyEpicList(await readEpicList());
+      const list = await readEpicList();
+      // A stopped or reset run owns no lanes: its late tracker answer is stale.
+      if (!lifecycleRunning || request !== lifecycleStartRequest) return;
+      applyEpicList(list);
       await holdWhilePaused();
       if (!lifecycleRunning) return;
       reconcileLanes();
       finished = await runLifecycle();
     } catch (error) {
-      broadcast({
-        type: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
+      if (lifecycleRunning && request === lifecycleStartRequest) {
+        broadcast({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
       finalizeLifecycleRun(finished, lifecycle.paused);
     }
@@ -5383,15 +5486,19 @@ export function createApp(options: AppOptions) {
     let finished = false;
     try {
       spawnRestoredLanes();
-      applyEpicList(await readEpicList());
+      const list = await readEpicList();
+      if (!lifecycleRunning) return;
+      applyEpicList(list);
       reconcileLanes();
       if (generationQueued) void drainGenerations();
       finished = await runLifecycle();
     } catch (error) {
-      broadcast({
-        type: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
+      if (lifecycleRunning) {
+        broadcast({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
       finalizeLifecycleRun(finished, false);
     }
@@ -5623,6 +5730,7 @@ export function createApp(options: AppOptions) {
 
     lifecycleStartRequest += 1;
     lifecyclePausedForManualRun = false;
+    abortTrackerReads();
     if (lifecycleRunning) {
       lifecycleRunning = false;
       lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
@@ -5682,7 +5790,7 @@ export function createApp(options: AppOptions) {
    */
   async function performImplementationReset() {
     try {
-      const top = await runGit(repoDir, ["rev-parse", "--show-toplevel"]);
+      const top = await runRepoGit(["rev-parse", "--show-toplevel"]);
       if (top.code !== 0 || resolve(top.stdout.trim()) !== resolve(repoDir)) {
         failImplementationReset(
           `Reset refused: REPO_DIR is not the repository top level. ${gitDetail(top)}`,
@@ -5690,13 +5798,13 @@ export function createApp(options: AppOptions) {
         return;
       }
 
-      const head = await runGit(repoDir, ["rev-parse", "--verify", "HEAD"]);
+      const head = await runRepoGit(["rev-parse", "--verify", "HEAD"]);
       if (head.code !== 0) {
         failImplementationReset(`Reset refused: HEAD does not name a commit. ${gitDetail(head)}`);
         return;
       }
 
-      const branch = await runGit(repoDir, ["symbolic-ref", "--short", "HEAD"]);
+      const branch = await runRepoGit(["symbolic-ref", "--short", "HEAD"]);
       if (branch.code !== 0 || branch.stdout.trim() !== "main") {
         failImplementationReset(
           `Reset refused: the repository is not on main. ${gitDetail(branch)}`,
@@ -5704,7 +5812,7 @@ export function createApp(options: AppOptions) {
         return;
       }
 
-      const origin = await runGit(repoDir, ["remote", "get-url", "origin"]);
+      const origin = await runRepoGit(["remote", "get-url", "origin"]);
       if (origin.code !== 0) {
         failImplementationReset(
           `Reset refused: the repository has no origin remote. ${gitDetail(origin)}`,
@@ -5728,7 +5836,7 @@ export function createApp(options: AppOptions) {
         else await rm(target, { recursive: true, force: true });
       }
 
-      const staged = await runGit(repoDir, ["add", "-A"]);
+      const staged = await runRepoGit(["add", "-A"]);
       if (staged.code !== 0) {
         failImplementationReset(`Could not stage the reset: ${gitDetail(staged)}`);
         return;
@@ -5736,7 +5844,7 @@ export function createApp(options: AppOptions) {
       // git add -A honours .gitignore, but an absent .gitignore would stage the
       // internal trees, and an earlier commit may already track them. Remove
       // them from the index; the working tree is untouched.
-      const excluded = await runGit(repoDir, [
+      const excluded = await runRepoGit([
         "rm",
         "-r",
         "--cached",
@@ -5752,9 +5860,9 @@ export function createApp(options: AppOptions) {
 
       // With no staged change the current HEAD already describes the reset,
       // so the operation stays idempotent.
-      const changed = await runGit(repoDir, ["diff", "--cached", "--quiet"]);
+      const changed = await runRepoGit(["diff", "--cached", "--quiet"]);
       if (changed.code !== 0) {
-        const committed = await runGit(repoDir, [
+        const committed = await runRepoGit([
           "commit",
           "--no-verify",
           "-m",
@@ -5766,7 +5874,7 @@ export function createApp(options: AppOptions) {
         }
       }
 
-      const committedHead = await runGit(repoDir, ["rev-parse", "HEAD"]);
+      const committedHead = await runRepoGit(["rev-parse", "HEAD"]);
       if (committedHead.code !== 0) {
         failImplementationReset(
           `Could not read the reset commit: ${gitDetail(committedHead)}`,
@@ -5775,7 +5883,7 @@ export function createApp(options: AppOptions) {
       }
       const commit = committedHead.stdout.trim();
 
-      const pushed = await runGit(repoDir, ["push", "origin", "main"], RESET_PUSH_ENV);
+      const pushed = await runRepoGit(["push", "origin", "main"], RESET_PUSH_ENV);
       if (pushed.code !== 0) {
         failImplementationReset(
           `Could not push the reset commit: ${gitDetail(pushed)}`,
