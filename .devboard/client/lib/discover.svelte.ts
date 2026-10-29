@@ -15,6 +15,8 @@ import {
 import type {
   ConceptSignificance,
   ConceptUsage,
+  DiscoverAgentPrompt,
+  DiscoverAgentState,
   DiscoverSkill,
   DiscoverStatePayload,
   DiscoverTarget,
@@ -31,6 +33,19 @@ type Message = Record<string, unknown>;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** One visible prompt-chat turn; assistant chunks append to the same entry. */
+export interface DiscoverPromptChatEntry {
+  turnId: string;
+  role: "user" | "assistant";
+  text: string;
+}
+
+/** A chat turn's proposed complete prompt, waiting for an explicit Save. */
+export interface DiscoverPromptProposal {
+  turnId: string;
+  text: string;
 }
 
 function appendLine(lines: string[], text: string, append: boolean): string[] {
@@ -87,6 +102,8 @@ export class DiscoverStore {
    */
   resetActiveOperations(): void {
     this.active = false;
+    this.activeAgent = null;
+    this.runningAll = false;
     this.runId = null;
     this.startedAt = null;
     this.question = null;
@@ -97,10 +114,27 @@ export class DiscoverStore {
 
   state = $state<DiscoverStatePayload | null>(null);
   active = $state(false);
+  /** The agent the active run belongs to. */
+  activeAgent = $state<string | null>(null);
+  runningAll = $state(false);
   runId = $state<string | null>(null);
   startedAt = $state<string | null>(null);
+  /** The active agent's lines, shown by the shared run tag. */
   activity = $state<string[]>([]);
+  /** Every agent's own lines; a card never shows another agent's. */
+  agentActivity = $state<Record<string, string[]>>({});
   question = $state<RunQuestion | null>(null);
+  /** Every agent's own pending question. */
+  agentQuestions = $state<Record<string, RunQuestion | null>>({});
+  /** Every card's prompt, from the connect replay and each later read. */
+  promptStates = $state<Record<string, DiscoverAgentPrompt>>({});
+  promptChat = $state<Record<string, DiscoverPromptChatEntry[]>>({});
+  promptProposal = $state<Record<string, DiscoverPromptProposal | null>>({});
+  promptError = $state<Record<string, string | null>>({});
+  promptChatError = $state<Record<string, string | null>>({});
+  promptNotice = $state<Record<string, string | null>>({});
+  /** A Reset click asks for a fresh read of the file into the editor. */
+  resetTokens = $state<Record<string, number>>({});
   error = $state<string | null>(null);
   warnings = $state<string[]>([]);
   interrupted = $state(false);
@@ -126,6 +160,12 @@ export class DiscoverStore {
 
   get dirty(): Record<string, boolean> {
     return this.draftScopeOf(draftTargetKey(this.state?.target)).dirty;
+  }
+
+  private agentPromptErrorClear(id: string): void {
+    this.promptError[id] = null;
+    this.promptNotice[id] = null;
+    this.promptChatError[id] = null;
   }
 
   private draftScopeOf(key: string): SkillDraftScope {
@@ -193,6 +233,60 @@ export class DiscoverStore {
     return undefined;
   }
 
+  /** The six discovery cards, in sidebar order. */
+  get agents(): DiscoverAgentState[] {
+    return Array.isArray(this.state?.agents) ? this.state.agents : [];
+  }
+
+  agent(id: string): DiscoverAgentState | null {
+    return this.agents.find((entry) => entry?.id === id) ?? null;
+  }
+
+  agentPrompt(id: string): DiscoverAgentPrompt | null {
+    return this.promptStates[id] ?? this.agent(id)?.prompt ?? null;
+  }
+
+  agentActivityOf(id: string): string[] {
+    return this.agentActivity[id] ?? [];
+  }
+
+  agentQuestionOf(id: string): RunQuestion | null {
+    return this.agentQuestions[id] ?? null;
+  }
+
+  resetToken(id: string): number {
+    return this.resetTokens[id] ?? 0;
+  }
+
+  /** The first reason this card cannot start, or undefined when it can. */
+  agentStartTitle(id: string): string | undefined {
+    if (!this.socket.open) return "Not connected";
+    if (this.runningAll) return "Run all is running";
+    if (this.active) {
+      if (this.activeAgent === id) return `${this.agent(id)?.label ?? id} is running`;
+      return `${this.agent(this.activeAgent ?? "")?.label ?? "Another discovery agent"} is running`;
+    }
+    return this.busy ?? undefined;
+  }
+
+  agentStartDisabled(id: string): boolean {
+    return this.agentStartTitle(id) !== undefined;
+  }
+
+  /** The Run all control's disabled reason; a single run disables it too. */
+  get runAllTitle(): string | undefined {
+    if (!this.socket.open) return "Not connected";
+    if (this.runningAll) return "Run all is running";
+    if (this.active) {
+      return `${this.agent(this.activeAgent ?? "")?.label ?? "A discovery agent"} is running`;
+    }
+    return this.busy ?? undefined;
+  }
+
+  get runAllDisabled(): boolean {
+    return this.runAllTitle !== undefined;
+  }
+
   get busy(): string | null {
     return this.state?.busy ?? null;
   }
@@ -222,7 +316,7 @@ export class DiscoverStore {
   }
 
   get hasArtifacts(): boolean {
-    return this.sheet !== null;
+    return this.sheet !== null || this.contexts.length > 0 || this.skills.length > 0;
   }
 
   get displayError(): string | null {
@@ -282,13 +376,11 @@ export class DiscoverStore {
   }
 
   get startDisabled(): boolean {
-    return !this.socket.open || this.active || this.busy !== null;
+    return this.runAllDisabled;
   }
 
   get startTitle(): string | undefined {
-    if (!this.socket.open) return "Not connected";
-    if (this.active) return "A Discover run is active";
-    return this.busy ?? undefined;
+    return this.runAllTitle;
   }
 
   get skills(): DiscoverSkill[] {
@@ -310,8 +402,50 @@ export class DiscoverStore {
     return this.dirty[name] === true;
   }
 
-  start(): void {
+  /** Runs the six agents in their fixed order. */
+  runAll(): void {
+    if (this.runAllTitle !== undefined) return;
     this.socket.send({ type: "discoverProject" });
+  }
+
+  start(): void {
+    this.runAll();
+  }
+
+  /** Starts exactly one agent; another live run refuses it at the server too. */
+  startAgent(id: string): void {
+    if (this.agentStartTitle(id) !== undefined) return;
+    this.socket.send({ type: "discoverAgent", agent: id });
+  }
+
+  /** Sends the editor's exact bytes for this one agent's prompt. */
+  savePrompt(id: string, text: string): void {
+    this.promptError[id] = null;
+    this.promptNotice[id] = null;
+    this.socket.send({ type: "saveDiscoverPrompt", agent: id, text });
+  }
+
+  sendPromptChat(id: string, message: string, text: string): void {
+    this.promptChatError[id] = null;
+    this.promptNotice[id] = null;
+    const entries = [...(this.promptChat[id] ?? []), {
+      turnId: "pending",
+      role: "user" as const,
+      text: message,
+    }];
+    this.promptChat[id] = entries;
+    this.socket.send({ type: "chatDiscoverPrompt", agent: id, message, text });
+  }
+
+  /** A chat proposal is applied once, then dropped so a remount never replays it. */
+  consumeProposal(id: string): void {
+    this.promptProposal[id] = null;
+  }
+
+  /** Restores the editor to the file's current bytes without writing. */
+  resetPrompt(id: string): void {
+    this.resetTokens[id] = (this.resetTokens[id] ?? 0) + 1;
+    this.socket.send({ type: "getDiscover" });
   }
 
   /** Sends exactly one `discoverRemote` for the trimmed URL. */
@@ -452,6 +586,18 @@ export class DiscoverStore {
     this.state = payload;
     this.glossaryThreshold = Math.min(100, Math.max(0, Math.round(this.glossaryThreshold)));
     this.active = payload.active === true;
+    this.activeAgent =
+      typeof payload.activeAgent === "string" ? payload.activeAgent : null;
+    this.runningAll = payload.runningAll === true;
+    if (Array.isArray(payload.agents)) {
+      const prompts = { ...this.promptStates };
+      for (const entry of payload.agents) {
+        if (entry?.prompt !== null && entry?.prompt !== undefined) {
+          prompts[entry.id] = entry.prompt;
+        }
+      }
+      this.promptStates = prompts;
+    }
     this.runId = typeof payload.runId === "string" ? payload.runId : null;
     this.startedAt = typeof payload.startedAt === "string" ? payload.startedAt : null;
     this.warnings = Array.isArray(payload.warnings)
@@ -483,8 +629,15 @@ export class DiscoverStore {
     }
     if (type === "discoverStarted") {
       this.active = true;
+      const agent = typeof message.agent === "string" ? message.agent : null;
+      this.activeAgent = agent;
       if (typeof message.runId === "string") this.runId = message.runId;
       this.startedAt = typeof message.startedAt === "string" ? message.startedAt : null;
+      if (agent !== null) {
+        this.agentActivity[agent] = [];
+        this.agentQuestions[agent] = null;
+        this.agentPromptErrorClear(agent);
+      }
       this.activity = [];
       this.question = null;
       this.answerDraft = "";
@@ -493,7 +646,18 @@ export class DiscoverStore {
       return;
     }
     if (type === "discoverActivity" && typeof message.text === "string") {
-      this.activity = appendLine(this.activity, message.text, message.append === true);
+      const agent = typeof message.agent === "string" ? message.agent : null;
+      if (agent !== null) {
+        const lines = appendLine(
+          this.agentActivity[agent] ?? [],
+          message.text,
+          message.append === true,
+        );
+        this.agentActivity[agent] = lines;
+        if (agent === this.activeAgent) this.activity = lines;
+      } else {
+        this.activity = appendLine(this.activity, message.text, message.append === true);
+      }
       return;
     }
     if (
@@ -502,16 +666,22 @@ export class DiscoverStore {
       typeof message.message === "string" &&
       Array.isArray(message.options)
     ) {
-      this.question = {
+      const question: RunQuestion = {
         id: message.id,
         message: message.message,
         options: message.options as RunQuestionOption[],
       };
-      this.answerDraft = "";
+      const agent = typeof message.agent === "string" ? message.agent : null;
+      if (agent !== null) this.agentQuestions[agent] = question;
+      if (agent === null || agent === this.activeAgent) {
+        this.question = question;
+        this.answerDraft = "";
+      }
       return;
     }
     if (type === "discoverStopped") {
       this.active = false;
+      this.activeAgent = null;
       this.question = null;
       this.answerDraft = "";
       if (message.completed === true) {
@@ -520,6 +690,59 @@ export class DiscoverStore {
         this.transition = `Discover run stopped: ${message.reason}`;
       } else {
         this.transition = "Discover run stopped.";
+      }
+      return;
+    }
+    if (type === "discoverPromptState" && typeof message.agent === "string") {
+      const prompt = message.prompt as DiscoverAgentPrompt | null;
+      if (prompt !== null && typeof prompt === "object") {
+        this.promptStates[message.agent] = prompt;
+      }
+      return;
+    }
+    if (type === "discoverPromptSaved" && typeof message.agent === "string") {
+      this.promptNotice[message.agent] =
+        typeof message.notice === "string" ? message.notice : "Prompt saved.";
+      this.promptError[message.agent] = null;
+      saveFeedback.saved("Prompt saved.");
+      return;
+    }
+    if (type === "discoverPromptError" && typeof message.agent === "string") {
+      this.promptError[message.agent] =
+        typeof message.message === "string" ? message.message : "The prompt command failed.";
+      this.promptNotice[message.agent] = null;
+      return;
+    }
+    if (type === "discoverPromptChatError" && typeof message.agent === "string") {
+      this.promptChatError[message.agent] =
+        typeof message.message === "string" ? message.message : "The prompt chat failed.";
+      return;
+    }
+    if (
+      type === "discoverPromptChat" &&
+      typeof message.agent === "string" &&
+      typeof message.turnId === "string" &&
+      typeof message.text === "string"
+    ) {
+      const agent = message.agent;
+      const entries = [...(this.promptChat[agent] ?? [])];
+      const last = entries[entries.length - 1];
+      if (last !== undefined && last.role === "assistant" && last.turnId === message.turnId) {
+        entries[entries.length - 1] = { ...last, text: last.text + message.text };
+      } else {
+        entries.push({ turnId: message.turnId, role: "assistant", text: message.text });
+      }
+      this.promptChat[agent] = entries;
+      return;
+    }
+    if (
+      type === "discoverPromptChatDone" &&
+      typeof message.agent === "string" &&
+      typeof message.turnId === "string"
+    ) {
+      const proposal = message.proposal;
+      if (typeof proposal === "string" && proposal.length > 0) {
+        this.promptProposal[message.agent] = { turnId: message.turnId, text: proposal };
       }
       return;
     }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import ChevronRight from "lucide-svelte/icons/chevron-right";
+  import { DISCOVER_AGENTS } from "../../../server/agents/registry";
   import { SECTION_TABS, SKILL_TABS } from "../discover-format";
   import { DEVBOARD_SIDEBAR, DEVBOARD_TAB } from "../devboard.svelte";
   import { discover } from "../discover.svelte";
@@ -604,6 +605,52 @@
         {/each}
       </section>
     {:else if layout.mode === "discover"}
+      <section
+        class="sidebar-group"
+        aria-label="Discovery"
+        data-testid="discover-agents"
+      >
+        <div class="sidebar-group__title">
+          <span>Discovery</span>
+        </div>
+        {#each DISCOVER_AGENTS as agent (agent.id)}
+          {@const status = discover.agent(agent.id)?.state ?? "idle"}
+          <button
+            type="button"
+            class="sidebar-item"
+            aria-current={isActive(agent.id)}
+            role="tab"
+            aria-selected={isActive(agent.id)}
+            data-testid="discover-agent-tab"
+            data-agent={agent.id}
+            data-state={status}
+            data-command={`discover.agent.${agent.id}`}
+            title={`${agent.command} — ${status}`}
+            onclick={() => open("discover", agent.id, "agent", agent.id, agent.label)}
+          >
+            <span class="sidebar-item__label">{agent.label}</span>
+            {#if status === "running"}
+              <span class="badge" data-tone={statusTone("running")} data-testid="discover-agent-running">
+                running
+              </span>
+            {:else if status === "failed"}
+              <span class="badge" data-tone={statusTone("error")}>failed</span>
+            {/if}
+          </button>
+        {/each}
+        <button
+          type="button"
+          class="sidebar-item"
+          data-command="discover.runAll"
+          data-testid="discover-run-all"
+          disabled={discover.runAllDisabled}
+          title={discover.runAllTitle}
+          onclick={() => discover.runAll()}
+        >
+          <span class="sidebar-item__label">Run all</span>
+        </button>
+      </section>
+
       <section class="sidebar-group" aria-label="Discover sections">
         {#each SECTION_TABS as tab (tab.id)}
           <button

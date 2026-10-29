@@ -32,7 +32,7 @@
     class={cn(
       buttonVariants({ variant: "ghost", size: "icon" }),
       active &&
-        "border-[var(--accent)] bg-[var(--accent-surface)] text-[var(--accent)] hover:bg-[var(--accent-surface)] hover:text-[var(--accent)]",
+        "border-[var(--border-strong)] bg-[var(--secondary-hover)] text-[var(--foreground)] hover:bg-[var(--secondary-hover)] hover:text-[var(--foreground)]",
       className,
     )}
     aria-label={label}

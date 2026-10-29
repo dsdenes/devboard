@@ -24,11 +24,18 @@ export interface LedgerEntry {
   firstSeen: string;
   lastSeen: string;
   count: number;
-  /** `filed:<url>` once the issue exists, `none` before the first filing. */
+  /**
+   * `filed:<url>` once the issue exists, `duplicate:<url>` while the
+   * deduplication agent reports an open issue covering the finding, `none`
+   * before the first decision.
+   */
   disposition: string;
   url?: string;
   filedAt?: string;
   lastCommentAt?: string;
+  /** The open issue the deduplication agent matched; never a filed issue. */
+  duplicateOf?: string;
+  matchedAt?: string;
   /** Every dashboard that has produced this signal. */
   instances: LedgerInstance[];
 }
@@ -69,7 +76,13 @@ function parseEntry(fingerprint: string, value: unknown): LedgerEntry | undefine
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;
   const disposition = text(record.disposition, "");
-  if (disposition !== "none" && !disposition.startsWith("filed:")) return undefined;
+  if (
+    disposition !== "none" &&
+    !disposition.startsWith("filed:") &&
+    !disposition.startsWith("duplicate:")
+  ) {
+    return undefined;
+  }
   const url =
     typeof record.url === "string"
       ? record.url
@@ -77,6 +90,14 @@ function parseEntry(fingerprint: string, value: unknown): LedgerEntry | undefine
         ? disposition.slice("filed:".length)
         : undefined;
   if (disposition.startsWith("filed:") && (url === undefined || url.length === 0)) return undefined;
+  const duplicateOf = disposition.startsWith("duplicate:")
+    ? disposition.slice("duplicate:".length)
+    : typeof record.duplicateOf === "string"
+      ? record.duplicateOf
+      : undefined;
+  if (disposition.startsWith("duplicate:") && (duplicateOf === undefined || duplicateOf.length === 0)) {
+    return undefined;
+  }
   if (typeof record.category !== "string" || typeof record.line !== "string") return undefined;
   if (typeof record.firstSeen !== "string" || typeof record.lastSeen !== "string") return undefined;
   const count = Number(record.count);
@@ -88,8 +109,10 @@ function parseEntry(fingerprint: string, value: unknown): LedgerEntry | undefine
     count: Number.isFinite(count) && count > 0 ? count : 1,
     disposition,
     ...(url === undefined ? {} : { url }),
+    ...(duplicateOf === undefined ? {} : { duplicateOf }),
     ...(typeof record.filedAt === "string" ? { filedAt: record.filedAt } : {}),
     ...(typeof record.lastCommentAt === "string" ? { lastCommentAt: record.lastCommentAt } : {}),
+    ...(typeof record.matchedAt === "string" ? { matchedAt: record.matchedAt } : {}),
     instances: instances(record.instances),
   };
 }
@@ -173,6 +196,25 @@ export function markFiled(ledger: Ledger, fingerprint: string, url: string, now:
   entry.disposition = `filed:${url}`;
   entry.url = url;
   entry.filedAt = now.toISOString();
+  ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
+}
+
+/**
+ * Records that the deduplication agent found an open issue covering this
+ * finding. The entry is not filed: it keeps no issue URL, takes no recurrence
+ * comment, and becomes a candidate again once that issue is closed.
+ */
+export function markDuplicate(
+  ledger: Ledger,
+  fingerprint: string,
+  url: string,
+  now: Date,
+): void {
+  const entry = ledger.findings[fingerprint];
+  if (entry === undefined) return;
+  entry.disposition = `duplicate:${url}`;
+  entry.duplicateOf = url;
+  entry.matchedAt = now.toISOString();
   ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
 }
 

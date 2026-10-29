@@ -179,6 +179,7 @@ async function main(): Promise<void> {
           const result = await runCycle({
             root,
             stateDir,
+            providerStateDir: ownerStateDir,
             windowMs: cadenceMs(),
             settings,
           });

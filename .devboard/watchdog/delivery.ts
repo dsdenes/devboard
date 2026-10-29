@@ -5,6 +5,7 @@ import {
 import {
   giteaCommentIssue,
   giteaCreateIssue,
+  giteaIssue,
   giteaIssueNumber,
 } from "../lib/gitea";
 import { originForge } from "../issues/repository";
@@ -33,6 +34,12 @@ export interface WatchdogDelivery {
   repository: string;
   create(input: IssueInput): Promise<DeliveryResult>;
   comment(url: string, input: IssueInput): Promise<CommentResult>;
+  /**
+   * The issue's state, for open-only duplicate suppression. Undefined when the
+   * read fails; the cycle then re-asks the deduplication agent instead of
+   * assuming the match is still open.
+   */
+  state(url: string): Promise<"open" | "closed" | undefined>;
 }
 
 export interface DeliveryOptions {
@@ -98,6 +105,16 @@ export function createWatchdogDelivery(options: DeliveryOptions): WatchdogDelive
           return { ok: false, reason: firstLine(error) };
         }
       },
+      async state(url) {
+        const number = giteaIssueNumber(target, url);
+        if (number === undefined) return undefined;
+        try {
+          const issue = await giteaIssue(target, number, options.fetchImpl);
+          return issue.state;
+        } catch {
+          return undefined;
+        }
+      },
     };
   }
   return {
@@ -107,6 +124,20 @@ export function createWatchdogDelivery(options: DeliveryOptions): WatchdogDelive
     },
     async comment(url, input) {
       return commentGithubIssue(options.gh, url, input);
+    },
+    async state(url) {
+      const outcome = options.gh(["issue", "view", url, "--json", "state"], "");
+      if (outcome.code !== 0) return undefined;
+      try {
+        const parsed: unknown = JSON.parse(outcome.stdout);
+        if (typeof parsed !== "object" || parsed === null) return undefined;
+        const state = (parsed as Record<string, unknown>).state;
+        if (typeof state !== "string") return undefined;
+        const normalized = state.toLowerCase();
+        return normalized === "open" || normalized === "closed" ? normalized : undefined;
+      } catch {
+        return undefined;
+      }
     },
   };
 }

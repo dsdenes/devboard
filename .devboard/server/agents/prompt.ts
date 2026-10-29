@@ -6,7 +6,13 @@ import {
   type AcpActivity,
   type AcpQuestion,
 } from "../acp";
-import type { AgentDescriptor, AgentRegistry } from "./registry";
+import {
+  DISCOVER_AGENTS,
+  discoverAgent,
+  type AgentDescriptor,
+  type AgentRegistry,
+  type DiscoverAgentDescriptor,
+} from "./registry";
 
 /**
  * The prompt half of a background agent's page. A descriptor with a prompt
@@ -372,6 +378,294 @@ export class AgentPromptController {
   }
 
   /** A chat peer never waits on the operator; it takes the recommendation. */
+  private answer(question: AcpQuestion): void {
+    const choice = question.options.find((option) => option.recommended) ?? question.options[0];
+    this.peer?.answer(question.id, choice?.label ?? "yes");
+  }
+
+  private sendTo(target: AgentPromptSocket, event: unknown): void {
+    try {
+      target.send(JSON.stringify(event));
+    } catch {
+      // The socket closed.
+    }
+  }
+}
+
+// ------------------------------------------------------- discover prompts
+
+/**
+ * The prompt half of the six Discover agent cards. Each card reads, saves, and
+ * chats about exactly its own prompt file; an installed host shows the bytes
+ * read-only, and every prompt write and chat is refused there.
+ */
+
+export const DISCOVER_PROMPT_CHAT_FILE = "discover-prompt-chat.md";
+
+export interface DiscoverPromptState {
+  /** The Discover agent this prompt belongs to. */
+  agent: string;
+  editable: boolean;
+  text: string | null;
+  error: string | null;
+}
+
+export interface DiscoverPromptControllerOptions {
+  repoDir: string;
+  agentCommand: string;
+  agentEnvironment: () => Promise<Record<string, string | undefined>>;
+  harnessDir: string;
+  send: (event: unknown, except?: AgentPromptSocket) => void;
+  log?: (line: string) => void;
+}
+
+export class DiscoverPromptController {
+  private readonly repoDir: string;
+  private readonly agentCommand: string;
+  private readonly agentEnvironment: () => Promise<Record<string, string | undefined>>;
+  private readonly harnessDir: string;
+  private readonly send: (event: unknown, except?: AgentPromptSocket) => void;
+  private readonly log: (line: string) => void;
+  private peer: AcpConnection | undefined;
+  private peerOpen = false;
+  private emitChunk: ((chunk: string) => void) | undefined;
+  private chatQueue: Promise<void> = Promise.resolve();
+  private turn = 0;
+
+  constructor(options: DiscoverPromptControllerOptions) {
+    this.repoDir = resolve(options.repoDir);
+    this.agentCommand = options.agentCommand;
+    this.agentEnvironment = options.agentEnvironment;
+    this.harnessDir = options.harnessDir;
+    this.send = options.send;
+    this.log = options.log ?? (() => undefined);
+  }
+
+  dispose(): void {
+    this.peer?.close();
+    this.peer = undefined;
+    this.peerOpen = false;
+  }
+
+  private descriptor(id: string): DiscoverAgentDescriptor | undefined {
+    return discoverAgent(id);
+  }
+
+  private promptPath(descriptor: DiscoverAgentDescriptor): string {
+    return join(this.repoDir, ".devboard", "prompts", descriptor.promptFile);
+  }
+
+  snapshot(id: string): DiscoverPromptState | null {
+    const descriptor = this.descriptor(id);
+    if (descriptor === undefined) return null;
+    let text: string | null = null;
+    let error: string | null = null;
+    try {
+      text = readFileSync(this.promptPath(descriptor), "utf8");
+    } catch (cause) {
+      error =
+        `Could not read the ${descriptor.label} prompt: ` +
+        `${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+    return {
+      agent: id,
+      editable: isHarnessSourceCheckout(this.repoDir),
+      text,
+      error,
+    };
+  }
+
+  /** Every card's prompt state, sent before a client's own command replies. */
+  replay(target: AgentPromptSocket): void {
+    for (const descriptor of DISCOVER_AGENTS) {
+      this.sendTo(target, {
+        type: "discoverPromptState",
+        agent: descriptor.id,
+        prompt: this.snapshot(descriptor.id),
+      });
+    }
+  }
+
+  /** The one target a prompt command writes or chats about. */
+  private target(id: string):
+    | { ok: true; descriptor: DiscoverAgentDescriptor }
+    | { ok: false; message: string } {
+    const descriptor = this.descriptor(id);
+    if (descriptor === undefined) {
+      return { ok: false, message: `Unknown Discover agent: ${id}.` };
+    }
+    if (!isHarnessSourceCheckout(this.repoDir)) {
+      return {
+        ok: false,
+        message: `Editing the ${descriptor.label} prompt requires a harness source checkout.`,
+      };
+    }
+    return { ok: true, descriptor };
+  }
+
+  /** Writes the editor's exact bytes to this agent's one prompt file. */
+  save(target: AgentPromptSocket, id: string, text: unknown): void {
+    const resolved = this.target(id);
+    if (!resolved.ok) {
+      this.sendTo(target, { type: "discoverPromptError", agent: id, message: resolved.message });
+      return;
+    }
+    if (typeof text !== "string") {
+      this.sendTo(target, {
+        type: "discoverPromptError",
+        agent: id,
+        message: "A prompt save needs the editor's text.",
+      });
+      return;
+    }
+    try {
+      writeFileSync(this.promptPath(resolved.descriptor), text, "utf8");
+    } catch (cause) {
+      this.sendTo(target, {
+        type: "discoverPromptError",
+        agent: id,
+        message:
+          `Could not write the ${resolved.descriptor.label} prompt: ` +
+          `${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+      return;
+    }
+    this.sendTo(target, {
+      type: "discoverPromptSaved",
+      agent: id,
+      text,
+      notice: `Prompt saved. The next ${resolved.descriptor.command} run reads this file.`,
+    });
+    this.send({ type: "discoverPromptState", agent: id, prompt: this.snapshot(id) });
+  }
+
+  /** One chat turn at a time; the reply streams and writes no file. */
+  chat(
+    target: AgentPromptSocket,
+    id: string,
+    message: unknown,
+    text: unknown,
+  ): Promise<void> {
+    const turn = this.chatQueue.then(() => this.chatOnce(target, id, message, text));
+    this.chatQueue = turn.catch(() => undefined);
+    return turn;
+  }
+
+  private async chatOnce(
+    target: AgentPromptSocket,
+    id: string,
+    message: unknown,
+    text: unknown,
+  ): Promise<void> {
+    const resolved = this.target(id);
+    if (!resolved.ok) {
+      this.sendTo(target, { type: "discoverPromptChatError", agent: id, message: resolved.message });
+      return;
+    }
+    if (typeof message !== "string" || message.trim().length === 0) {
+      this.sendTo(target, {
+        type: "discoverPromptChatError",
+        agent: id,
+        message: "A chat turn needs a message.",
+      });
+      return;
+    }
+    let instructions: string;
+    let base: string;
+    try {
+      instructions = readFileSync(join(this.harnessDir, "prompts", DISCOVER_PROMPT_CHAT_FILE), "utf8");
+      base =
+        typeof text === "string" ? text : readFileSync(this.promptPath(resolved.descriptor), "utf8");
+    } catch (cause) {
+      this.sendTo(target, {
+        type: "discoverPromptChatError",
+        agent: id,
+        message:
+          `Could not read the prompt chat instructions: ` +
+          `${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+      return;
+    }
+
+    const peer = await this.connection(target, id);
+    if (peer === undefined) return;
+    const turnId = `${Date.now()}-${this.turn++}`;
+    let reply = "";
+    this.emitChunk = (chunk) => {
+      if (chunk.length === 0) return;
+      reply += chunk;
+      this.sendTo(target, {
+        type: "discoverPromptChat",
+        agent: id,
+        turnId,
+        role: "assistant",
+        text: chunk,
+        append: true,
+      });
+    };
+    const prompt = buildChatPrompt(instructions, base, message);
+    const bounded = Promise.withResolvers<never>();
+    const timer = setTimeout(
+      () => bounded.reject(new Error("the prompt chat agent did not answer in time")),
+      CHAT_TIMEOUT_MS,
+    );
+    timer.unref?.();
+    try {
+      await Promise.race([this.peerOpen ? peer.prompt(prompt) : peer.run(prompt), bounded.promise]);
+      this.peerOpen = true;
+      this.sendTo(target, {
+        type: "discoverPromptChatDone",
+        agent: id,
+        turnId,
+        proposal: parsePromptProposal(reply),
+      });
+    } catch (cause) {
+      this.peer?.close();
+      this.peer = undefined;
+      this.peerOpen = false;
+      this.sendTo(target, {
+        type: "discoverPromptChatError",
+        agent: id,
+        message: `The prompt chat failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+    } finally {
+      clearTimeout(timer);
+      this.emitChunk = undefined;
+    }
+  }
+
+  private async connection(
+    target: AgentPromptSocket,
+    id: string,
+  ): Promise<AcpConnection | undefined> {
+    if (this.peer !== undefined && !this.peer.closed) return this.peer;
+    this.peer?.close();
+    this.peer = undefined;
+    this.peerOpen = false;
+    try {
+      const environment = await this.agentEnvironment();
+      this.peer = new AcpConnection({
+        command: this.agentCommand,
+        cwd: this.repoDir,
+        env: environment,
+        onActivity: (_activity: AcpActivity) => undefined,
+        onText: (chunk) => this.emitChunk?.(chunk),
+        onQuestion: (question) => this.answer(question),
+        onStderr: (line) => this.log(`discover prompt chat: ${line.trim()}`),
+      });
+      return this.peer;
+    } catch (cause) {
+      this.sendTo(target, {
+        type: "discoverPromptChatError",
+        agent: id,
+        message:
+          `Could not start the prompt chat agent: ` +
+          `${cause instanceof Error ? cause.message : String(cause)}`,
+      });
+      return undefined;
+    }
+  }
+
   private answer(question: AcpQuestion): void {
     const choice = question.options.find((option) => option.recommended) ?? question.options[0];
     this.peer?.answer(question.id, choice?.label ?? "yes");
