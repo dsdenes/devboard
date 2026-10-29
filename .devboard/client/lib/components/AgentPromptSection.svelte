@@ -74,9 +74,6 @@
   {:else}
     <div class="agent-prompt__head">
       <h2 class="agent-prompt__title">Prompt</h2>
-      <span class="agent-prompt__mode">
-        {prompt.editable ? "editable from the harness source checkout" : "read-only"}
-      </span>
     </div>
     <p class="agent-prompt__command mono" data-testid="agent-prompt-command">
       {prompt.command}
@@ -187,7 +184,6 @@
     text-transform: uppercase;
   }
 
-  .agent-prompt__mode,
   .agent-prompt__hint {
     color: var(--muted-foreground);
     font-size: 11px;
