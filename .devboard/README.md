@@ -1339,9 +1339,6 @@ installed host and never writes on a page open, tab restore, reconnect, or reloa
 
 The Auto Scout section contains:
 
-- `agent-prompt-text`, the complete bytes of the effective prompt file
-  `<REPO_DIR>/.devboard/prompts/scout-recommendations.md`, character for character, in a
-  scrollable monospace region with no truncation, ellipsis, or reformatting.
 - `agent-prompt-request`, the request the next scan would write, as formatted JSON with the
   `buildRequest` keys `version`, `scanId`, `repository`, `repositoryPath`, `requested`,
   `categories`, `excludedRoots`, `knownTitles`, `draftGoalHeadings`, `significanceThreshold`, and
@@ -1364,8 +1361,8 @@ a harness source checkout; no file changes.
 
 `agent-prompt-save` writes the editor's exact UTF-8 text to
 `.devboard/prompts/scout-recommendations.md` under the served checkout, adds nothing, strips
-nothing, and writes no other file; success shows `agent-prompt-notice` and a refreshed
-`agent-prompt-text`, and failure shows `agent-prompt-error` with the file unchanged. Only that
+nothing, and writes no other file; success shows `agent-prompt-notice` and leaves the editor on
+the saved bytes, and failure shows `agent-prompt-error` with the file unchanged. Only that
 click writes the file. A chat turn posts over the WebSocket, streams the reply into
 `agent-prompt-chat-log`, and puts a proposed complete prompt in the editor without any copy; it
 writes no file, creates no scan, files no issue, and changes no Auto Scout state. A failed turn
@@ -2781,14 +2778,13 @@ starting -> running and Stop -> stopping -> stopped, cadence and limit validatio
 persistence, the Watchdog cap, the shared table columns, freshness without a reload, no mutating
 command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and
 the footer indicator with no console error. It also proves Coach's shared cycle detail and
-persisted settings, and the prompt section: every page renders
-`agent-prompt` directly after `agent-header`; Auto Scout shows the complete instruction text and
-the next-request JSON; Watchdog shows `agent-prompt-absent`; an installed host is read-only and
-refuses a save with an error while its prompt file stays byte-identical; a source-checkout fixture
-renders the editor, chat, and save, one chat turn streams a reply and changes the editor
-with the file untouched, Save makes the file byte-equal to the editor and a reload renders those
-bytes, and a seeded scan's `request.json` matches the preview
-except `scanId` and `createdAt`.
+persisted settings, and the prompt section: every page renders `agent-prompt` directly after
+`agent-header`; Auto Scout shows the next-request JSON; Watchdog shows `agent-prompt-absent`;
+an installed host is read-only and refuses a save with an error while its prompt file stays
+byte-identical; a source-checkout fixture renders the editor, chat, and save, one chat turn
+streams a reply and changes the editor with the file untouched, Save makes the file byte-equal
+to the editor and a reload puts those bytes back in the editor, and a seeded scan's
+`request.json` matches the preview except `scanId` and `createdAt`.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

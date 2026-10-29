@@ -76,8 +76,6 @@
         {notice}
       </p>
     {/if}
-    <pre class="agent-prompt__text mono" data-testid="agent-prompt-text">{prompt.text ?? ""}</pre>
-
     <div class="agent-prompt__request">
       <h3 class="agent-prompt__subtitle">Next request</h3>
       <pre class="agent-prompt__text mono" data-testid="agent-prompt-request">{requestJson}</pre>

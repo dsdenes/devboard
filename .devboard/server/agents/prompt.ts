@@ -25,11 +25,10 @@ import type { AgentRegistry } from "./registry";
 
 /**
  * The prompt half of a background agent's page. Auto Scout runs one agent per
- * scan, so its page shows the effective prompt file and the request the next
- * scan would write. Watchdog runs no agent at all and says so. Editing exists
- * only where the dashboard serves the harness source checkout: an installed
- * prefix is read-only, and every prompt command from it is refused without
- * touching a file.
+ * scan, so its page shows the request the next scan would write. Watchdog runs
+ * no agent at all and says so. Editing exists only where the dashboard serves
+ * the harness source checkout: an installed prefix is read-only, and every
+ * prompt command from it is refused without touching a file.
  */
 
 export const SCOUT_PROMPT_FILE = "scout-recommendations.md";
