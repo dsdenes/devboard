@@ -54,6 +54,20 @@ export interface GiteaReleaseDocument {
   assets?: GiteaAsset[];
 }
 
+/** One published, non-draft release with the time it was published. */
+export interface GiteaRelease {
+  tag: string;
+  publishedAt: string;
+}
+
+/**
+ * Gitea caps one response at its `MAX_RESPONSE_ITEMS` setting (50 by default),
+ * whatever larger `limit` a caller asks for. Requesting that cap and paging
+ * until a response adds nothing is the only way to see every entry.
+ */
+const GITEA_PAGE_SIZE = 50;
+const GITEA_MAX_PAGES = 100;
+
 export interface GiteaIssueDocument {
   number: number;
   title: string;
@@ -257,23 +271,49 @@ export async function giteaReleaseByTag(
   }
 }
 
+function publishedRelease(value: unknown): GiteaRelease | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.tag_name !== "string" || record.tag_name.length === 0) return undefined;
+  if (record.draft === true) return undefined;
+  if (typeof record.published_at !== "string" || record.published_at.length === 0) {
+    return undefined;
+  }
+  return { tag: record.tag_name, publishedAt: record.published_at };
+}
+
 /**
- * One page of releases, newest first. The release script reads every page so
- * the highest published tag is known even when older releases are numerous.
+ * Every published release, newest first, drafts excluded. The server caps one
+ * response, so this pages until a page adds no new tag; watchdog and scout
+ * read releases only through here so neither can see a truncated list.
  */
 export async function giteaListReleases(
   target: GiteaTarget,
-  options: { limit?: number; page?: number } = {},
   fetchImpl: FetchLike = fetch,
-): Promise<GiteaReleaseDocument[]> {
-  const limit = options.limit ?? 50;
-  const page = options.page ?? 1;
-  return await giteaJson<GiteaReleaseDocument[]>(
-    target,
-    `${repoPath(target)}/releases?limit=${limit}&page=${page}`,
-    undefined,
-    fetchImpl,
-  );
+): Promise<GiteaRelease[]> {
+  const releases: GiteaRelease[] = [];
+  const seen = new Set<string>();
+  for (let page = 1; page <= GITEA_MAX_PAGES; page += 1) {
+    const document = await giteaJson<unknown>(
+      target,
+      `${repoPath(target)}/releases?limit=${GITEA_PAGE_SIZE}&page=${page}`,
+      undefined,
+      fetchImpl,
+    );
+    if (!Array.isArray(document) || document.length === 0) break;
+    let added = 0;
+    for (const entry of document) {
+      const release = publishedRelease(entry);
+      if (release === undefined || seen.has(release.tag)) continue;
+      seen.add(release.tag);
+      releases.push(release);
+      added += 1;
+    }
+    // A server that ignores the page parameter repeats the first response;
+    // treating a page without new tags as the end keeps this loop finite.
+    if (added === 0) break;
+  }
+  return releases;
 }
 
 export interface CreateReleaseInput {
@@ -419,14 +459,6 @@ function issueFromDocument(value: unknown): GiteaIssueDocument | undefined {
     labels: labelNames(record.labels),
   };
 }
-
-/**
- * Gitea caps one response at its `MAX_RESPONSE_ITEMS` setting (50 by default),
- * whatever larger `limit` a caller asks for. Requesting that cap and paging
- * until a response adds nothing is the only way to see every issue.
- */
-const GITEA_PAGE_SIZE = 50;
-const GITEA_MAX_PAGES = 100;
 
 /** One issue by number, with its labels and body. */
 export async function giteaIssue(
