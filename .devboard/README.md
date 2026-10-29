@@ -233,7 +233,9 @@ package's files. It keeps `.devboard/.tmp`, copies `templates/host-AGENTS.md` to
 `<host>/AGENTS.md` when that file is a symlink or absent (an existing regular file is untouched
 and reported as drift), adds the three ignored paths to `.gitignore`, and leaves exactly one
 dashboard running from the installed package. A reinstall keeps the version and `.tmp`; `update`
-never starts, stops, or restarts the dashboard.
+never starts, stops, or restarts the dashboard. When the freshly started dashboard does not answer
+within 30 seconds, `install` stops that child before it exits nonzero, so a failed install leaves
+no dashboard behind.
 
 `doctor` checks Node 20+, Bun, npm, the git root, npm's version and artifact metadata (or the
 configured Gitea fallback and its digest), the installed package, the installed version against
@@ -1437,8 +1439,9 @@ Filing uses the shared `agent-limit-hour` and `agent-limit-pending`: the hourly 
 `design` issue created in the last rolling 60 minutes in any state, the pending cap counts every
 open `design` issue, and one cycle files no more than the smaller room or 100. Zero room files
 nothing and records each skip in activity; clearing a cap resumes filing on the next cycle. A
-failed forge read files nothing and keeps the last known rows. Caps never block an audit, a
-documentation change, or its release.
+failed forge read files nothing and keeps the last known rows. Age alone never blocks filing: a
+read that succeeded before the cycle keeps filing even when the audit outlasts the sync interval.
+Caps never block an audit, a documentation change, or its release.
 
 A documentation edit is admitted only when it establishes or corrects a standard evidenced by two
 distinct interface surfaces or by an internal contradiction inside the documents. It may change

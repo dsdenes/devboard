@@ -432,6 +432,114 @@ describe("design worker", () => {
     await worker.stop();
   });
 
+  test("a slow audit keeps a successful forge read fresh and still files its findings", async () => {
+    const { repo, stateDir } = await fixture("slow-audit");
+    const filed: string[] = [];
+    let now = new Date("2026-03-01T12:00:00.000Z");
+    const audit = Promise.withResolvers<void>();
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      cadenceMs: 60 * 60_000,
+      syncMs: 10_000,
+      manualCycles: true,
+      now: () => now,
+      github: {
+        listIssues: async () => [],
+        listReleases: async () => [],
+        listOpenIssueTitles: async () => [],
+        closingCommit: async () => null,
+        resolveCommit: async () => null,
+        containingReleaseTags: async () => [],
+      },
+      fileIssue: async (options) => {
+        filed.push(options.finding.title);
+        return { number: 7, url: "https://forge.test/acme/fixture/issues/7" };
+      },
+      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" }),
+      connect: () => ({
+        pid: undefined,
+        argv: [],
+        async run(prompt: string) {
+          await audit.promise;
+          writeFileSync(
+            join(prompt.slice("/design-system-audit ".length), "audit.json"),
+            JSON.stringify({ findings: [finding()], documentation: { decision: "none" } }),
+          );
+          return {};
+        },
+        async prompt() {
+          return {};
+        },
+        answer: () => true,
+        close: () => undefined,
+      }) as never,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.refresh();
+    await worker.beginCycle();
+    now = new Date(now.getTime() + 25_000);
+    await worker.tickNow();
+    expect(worker.currentState.sync.state).toBe("ok");
+    audit.resolve();
+    await worker.waitForCycle();
+    expect(filed).toEqual([finding().title]);
+    const cycleId = worker.currentState.newestCycleId!;
+    const activity = readFileSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
+      "utf8",
+    );
+    expect(activity).not.toContain("skipped filing");
+    await worker.stop();
+  });
+
+  test("a failed forge read still skips filing and records why", async () => {
+    const { repo, stateDir } = await fixture("read-failure");
+    const filed: string[] = [];
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      cadenceMs: 60 * 60_000,
+      syncMs: 10_000,
+      manualCycles: true,
+      github: {
+        listIssues: async () => {
+          throw new Error("the forge read was refused");
+        },
+        listReleases: async () => [],
+        listOpenIssueTitles: async () => [],
+        closingCommit: async () => null,
+        resolveCommit: async () => null,
+        containingReleaseTags: async () => [],
+      },
+      fileIssue: async (options) => {
+        filed.push(options.finding.title);
+        return { number: 1, url: "https://forge.test/issues/1" };
+      },
+      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" }),
+      connect: () =>
+        fakePeer((directory) => {
+          writeFileSync(
+            join(directory, "audit.json"),
+            JSON.stringify({ findings: [finding()], documentation: { decision: "none" } }),
+          );
+        }, { connects: 0 }).peer as never,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.refresh();
+    expect(worker.currentState.sync.error).not.toBeNull();
+    await worker.beginCycle();
+    await worker.waitForCycle();
+    expect(filed).toEqual([]);
+    const cycleId = worker.currentState.newestCycleId!;
+    const activity = readFileSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
+      "utf8",
+    );
+    expect(activity).toContain("skipped filing");
+    await worker.stop();
+  });
+
   test("a malformed audit files nothing and records the reason", async () => {
     const { repo, stateDir } = await fixture("bad-audit");
     const filed: string[] = [];

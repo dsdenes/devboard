@@ -332,6 +332,9 @@ export class DesignWorker {
   }
 
   private markStale(): void {
+    // Age while an audit is running says nothing about the read: the cycle
+    // already holds the rows a successful read produced, and it must file them.
+    if (this.cycling) return;
     if (this.state.sync.state !== "ok") return;
     const at = this.state.sync.at;
     if (at === null) return;
@@ -559,6 +562,11 @@ export class DesignWorker {
   /** Resolves when the cycle that is running now reaches a terminal state. */
   waitForCycle(): Promise<void> {
     return this.cycleDone;
+  }
+
+  /** Test seam: one tick against the injected clock, without the ticker. */
+  async tickNow(): Promise<void> {
+    await this.tick();
   }
 
   async beginCycle(): Promise<void> {
@@ -939,7 +947,7 @@ export class DesignWorker {
     findings: DesignFinding[],
     record: (line: string) => void,
   ): Promise<string | null> {
-    if (this.state.sync.state !== "ok") {
+    if (this.state.sync.error !== null) {
       record("skipped filing: the last forge read failed; keeping the last known rows");
       return null;
     }
