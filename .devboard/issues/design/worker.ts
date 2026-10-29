@@ -43,6 +43,7 @@ import {
   isValidLimit,
   loadState,
   readSettings,
+  recordDocumentationEntry,
   writeSettings,
   writeState,
   type DesignIssueRow,
@@ -288,6 +289,7 @@ export class DesignWorker {
       sync: previous?.sync ?? { state: "stale", at: null, error: null },
       newestCycleId: previous?.newestCycleId ?? null,
       release: previous?.release ?? null,
+      documentation: previous?.documentation ?? [],
       lastError: null,
       notice: previous?.notice ?? null,
       updatedAt: now.toISOString(),
@@ -936,11 +938,20 @@ export class DesignWorker {
             });
             if (!released.ok) releaseError = released.detail;
             else {
+              const at = this.clock().toISOString();
               this.state.release = {
                 version: released.version,
                 url: released.url,
-                at: this.clock().toISOString(),
+                at,
               };
+              this.state.documentation = recordDocumentationEntry(this.state.documentation, {
+                at,
+                version: released.version,
+                url: released.url,
+                summary: audit.documentation.summary,
+                files: released.files,
+                diff: released.diff,
+              });
               record(`released ${released.version}: ${released.url}`);
             }
           }
