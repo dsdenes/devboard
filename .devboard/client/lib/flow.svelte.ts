@@ -1,5 +1,6 @@
 import { connection } from "./connection.svelte";
 import { notifications } from "./notifications.svelte";
+import { saveFeedback } from "./save-feedback.svelte";
 import type {
   AnswerTarget,
   FlowBlocker,
@@ -65,6 +66,7 @@ export class FlowStore {
   private pendingGoalSave: string | null = null;
   decisionsDraft = $state("");
   decisionsDirty = $state(false);
+  private pendingDecisionsSave: string | null = null;
   steeringDraft = $state("");
   conversationDraft = $state("");
   conclusionDraft = $state("");
@@ -149,11 +151,21 @@ export class FlowStore {
         this.goalDirty = false;
         this.goalDraft = message.goal;
         this.pendingGoalSave = null;
+        saveFeedback.saved("Flow goal saved.");
       }
     } else if (!this.goalDirty) {
       this.goalDraft = message.goal;
     }
-    if (!this.decisionsDirty) this.decisionsDraft = message.decisions;
+    if (this.pendingDecisionsSave !== null) {
+      if (message.decisions === this.pendingDecisionsSave) {
+        this.decisionsDirty = false;
+        this.decisionsDraft = message.decisions;
+        this.pendingDecisionsSave = null;
+        saveFeedback.saved("Decision board saved.");
+      }
+    } else if (!this.decisionsDirty) {
+      this.decisionsDraft = message.decisions;
+    }
   }
 
   setGoalDraft(text: string): void {
@@ -169,6 +181,9 @@ export class FlowStore {
   setDecisionsDraft(text: string): void {
     this.decisionsDraft = text;
     this.decisionsDirty = text !== this.decisions;
+    if (this.pendingDecisionsSave !== null && text !== this.pendingDecisionsSave) {
+      this.pendingDecisionsSave = null;
+    }
   }
 
   /**
@@ -184,11 +199,13 @@ export class FlowStore {
   discardDecisionsDraft(): void {
     this.decisionsDraft = this.decisions;
     this.decisionsDirty = false;
+    this.pendingDecisionsSave = null;
   }
 
+  /** Sends the board and leaves it dirty until the server's echo confirms it. */
   saveDecisions(): void {
     if (!connection.send({ type: "saveFlowDecisions", text: this.decisionsDraft })) return;
-    this.decisionsDirty = false;
+    this.pendingDecisionsSave = this.decisionsDraft;
   }
 
   createGoal(): void {
@@ -385,7 +402,17 @@ export class FlowStore {
     }
     if (type === "flowDecisions" && typeof message.text === "string") {
       this.decisions = message.text;
-      if (!this.decisionsDirty) this.decisionsDraft = message.text;
+      if (
+        this.pendingDecisionsSave !== null &&
+        message.text === this.pendingDecisionsSave
+      ) {
+        this.decisionsDirty = false;
+        this.decisionsDraft = message.text;
+        this.pendingDecisionsSave = null;
+        saveFeedback.saved("Decision board saved.");
+      } else if (!this.decisionsDirty) {
+        this.decisionsDraft = message.text;
+      }
       return;
     }
     if (type === "flowCheckpoints" && Array.isArray(message.checkpoints)) {

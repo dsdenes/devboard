@@ -146,6 +146,13 @@ workspace: the editor takes every remaining pixel and the Revision guidance fiel
 multiline text area pinned to the page bottom. Flow diffs remain rendered by
 `diff2html`; the client never parses unified diff hunks.
 
+Every Save control in the shell reports a confirmed write with the same transient
+`data-testid="save-feedback"` status toast: the Goal document, both Flow editors, the Discover
+skill file, an agent prompt, an agent's cadence and limits, and a provider subscription. The
+toast replaces the previous confirmation, clears itself after three seconds, and appears only
+after the server confirms the exact value it persisted; a refused or invalid save keeps its
+existing inline error or alert and shows no confirmation.
+
 xterm.js renders read-only agent output for Goal current activity and history, lane current
 activity and history, Flow goal creation, implementation activity, conversation activity, and
 Discover activity. Terminals preserve ANSI output, are selectable and copyable, auto-scroll

@@ -13,6 +13,7 @@
   import NotificationRegion from "./lib/components/NotificationRegion.svelte";
   import PaneHandle from "./lib/components/PaneHandle.svelte";
   import ProvidersDialog from "./lib/components/ProvidersDialog.svelte";
+  import SaveFeedback from "./lib/components/SaveFeedback.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
   import Button from "./lib/components/ui/button.svelte";
@@ -521,6 +522,8 @@
 />
 
 <NotificationRegion feedbackenabled={connection.feedbackEnabled} />
+
+<SaveFeedback />
 
 <ProvidersDialog />
 

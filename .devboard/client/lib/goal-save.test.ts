@@ -7,6 +7,7 @@ import { testProviderService } from "../../server/fixtures/test-providers";
 import { ConnectionStore, connection } from "./connection.svelte";
 import { discover } from "./discover.svelte";
 import { GoalStore } from "./goal.svelte";
+import { saveFeedback } from "./save-feedback.svelte";
 
 interface FakeEnvelope {
   data: string;
@@ -88,6 +89,7 @@ function fakeWindow(): Record<string, unknown> {
 
 afterEach(() => {
   FakeSocket.instances = [];
+  saveFeedback.dismiss();
   restoreGlobals();
 });
 
@@ -234,6 +236,7 @@ test("a refused goal save stays dirty until the server echoes the saved text", (
     store.saveGoal();
     expect(socket.sent).toContain(JSON.stringify({ type: "saveGoal", text: "# Edited goal" }));
     expect(store.goalDirty).toBe(true);
+    expect(saveFeedback.text).toBeNull();
 
     // The server refuses while a Discover run is active and answers with an
     // error frame instead of the confirming goal frame.
@@ -243,17 +246,20 @@ test("a refused goal save stays dirty until the server echoes the saved text", (
     });
     expect(store.goalDirty).toBe(true);
     expect(store.goalDraft).toBe("# Edited goal");
+    expect(saveFeedback.text).toBeNull();
 
     // A snapshot of the old text (a reconnect or another tab) must not replace
     // the unsaved draft.
     socket.deliver({ type: "goal", text: "# Existing goal" });
     expect(store.goalDirty).toBe(true);
     expect(store.goalDraft).toBe("# Edited goal");
+    expect(saveFeedback.text).toBeNull();
 
     // Only the echo of the sent text confirms the save.
     socket.deliver({ type: "goal", text: "# Edited goal" });
     expect(store.goalDirty).toBe(false);
     expect(store.goalDraft).toBe("# Edited goal");
+    expect(saveFeedback.text).toBe("Goal saved.");
   } finally {
     connection.dispose();
   }

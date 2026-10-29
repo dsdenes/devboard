@@ -1,5 +1,6 @@
 import { connection } from "./connection.svelte";
 import { notifications } from "./notifications.svelte";
+import { saveFeedback } from "./save-feedback.svelte";
 import type {
   ProviderId,
   ProviderKeyStatus,
@@ -141,6 +142,8 @@ export class ProviderStore {
   error = $state<string | null>(null);
   busy = $state(false);
   loaded = $state(false);
+  /** A save awaiting the state frame that confirms it. */
+  private pendingSave = false;
 
   get indicatorLabel(): string {
     const selection = this.selection;
@@ -175,7 +178,7 @@ export class ProviderStore {
   }): void {
     this.error = null;
     this.busy = true;
-    connection.send({ type: "saveProvider", ...input });
+    if (connection.send({ type: "saveProvider", ...input })) this.pendingSave = true;
   }
 
   remove(id: string): void {
@@ -214,12 +217,17 @@ export class ProviderStore {
       this.loaded = true;
       this.busy = false;
       this.error = null;
+      if (this.pendingSave) {
+        this.pendingSave = false;
+        saveFeedback.saved("Provider saved.");
+      }
       return true;
     }
     if (message.type === "providerError") {
       const text = string(message.message) ?? "The provider change failed.";
       this.error = text;
       this.busy = false;
+      this.pendingSave = false;
       notifications.push("Providers", "error", text);
       return true;
     }
