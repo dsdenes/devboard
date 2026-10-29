@@ -1305,11 +1305,58 @@ order: `Issues surfaces` (Overview), `Background agents`
 Browser-to-backend state and controls use the WebSocket from
 `adrs/0003-browser-server-transport-and-api.md`. Commands are `getAgents`, `getAgent`,
 `startAgent`, `stopAgent`, `setAgentLimits`, `setAgentCadence`, and the timer gate's
-`disableAgentTimer`; each carries `id`. The server answers `agentsState` (both agents) and
-`agentState` (one), streams Auto Scout activity as `agentActivity`, and refuses an unknown id with
-an error naming it before spawning anything. `scoutState`, `scoutActivity`, `startScout`,
+`disableAgentTimer`; each carries `id`. The prompt surface adds `getAgentPrompt`,
+`saveAgentPrompt`, and `sendAgentPromptChat`, each carrying `id`. The server answers `agentsState`
+(both agents), `agentState` (one), `agentPromptState` (one agent's prompt section), streams Auto
+Scout activity as `agentActivity`, streams one prompt chat as `agentPromptChat`, and refuses an
+unknown id with an error naming it before spawning anything. `scoutState`, `scoutActivity`, `startScout`,
 `stopScout`, `setScoutLimits`, and `GET /api/watchdog` are gone. The footer indicator still reads
 the same Watchdog snapshot through the agent store.
+
+### Prompt
+
+Directly below `agent-header`, before the alert region and `agent-main`, every background-agent
+page renders one prompt section `data-testid="agent-prompt"`. It is a read-only view in an
+installed host and never writes on a page open, tab restore, reconnect, or reload.
+
+The Auto Scout section contains:
+
+- `agent-prompt-command`, the invocation the worker passes:
+  `/scout-recommendations <REPO_DIR>/.devboard/.tmp/scout/scans/<scan-id>`.
+- `agent-prompt-text`, the complete bytes of the effective prompt file
+  `<REPO_DIR>/.devboard/prompts/scout-recommendations.md`, character for character, in a
+  scrollable monospace region with no truncation, ellipsis, or reformatting.
+- `agent-prompt-request`, the request the next scan would write, as formatted JSON with the
+  `buildRequest` keys `version`, `scanId`, `repository`, `repositoryPath`, `requested`,
+  `categories`, `excludedRoots`, `knownTitles`, `draftGoalHeadings`, `significanceThreshold`, and
+  `createdAt`. `requested` comes from the persisted limits and the current board's capacity;
+  `knownTitles` merges the Auto Scout rows, every open issue title, and the draft goal headings;
+  `draftGoalHeadings` comes from `.devboard/goal-proposals/`; `repositoryPath` is the running
+  `REPO_DIR`. `scanId` and `createdAt` are `null` because the worker assigns them when the scan
+  starts; every other value equals the `request.json` that scan writes.
+
+The Watchdog section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no
+prompt, and no other prompt test id. A prompt command for `watchdog` is refused with that same
+statement and has no effect.
+
+When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout section also renders
+`agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
+`agent-prompt-chat-log`, `agent-prompt-message`, and `agent-prompt-send`, and
+`agent-prompt-save`/`agent-prompt-reset`. In every other host those four controls are absent and
+`saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action requires
+a harness source checkout; no file changes.
+
+`agent-prompt-save` writes the editor's exact UTF-8 text to
+`.devboard/prompts/scout-recommendations.md` under the served checkout, adds nothing, strips
+nothing, and writes no other file; success shows `agent-prompt-notice` and a refreshed
+`agent-prompt-text`, and failure shows `agent-prompt-error` with the file unchanged. Only that
+click writes the file. `agent-prompt-reset` discards unsaved editor text and restores the current
+file bytes without writing. A chat turn posts over the WebSocket, streams the reply into
+`agent-prompt-chat-log`, and puts a proposed complete prompt in the editor without any copy; it
+writes no file, creates no scan, files no issue, and changes no Auto Scout state. A failed turn
+shows `agent-prompt-chat-error` and leaves the editor and file untouched. The chat agent reads
+`prompts/agent-prompt-chat.md` and returns the replacement between the line-anchored `<prompt-file>` and `</prompt-file>` markers,
+so Markdown fences inside the prompt survive intact.
 
 ### Cadence and limits
 
@@ -2448,7 +2495,14 @@ the Background agents sidebar section, the identical core test ids on both pages
 starting -> running and Stop -> stopping -> stopped, cadence and limit validation and
 persistence, the Watchdog cap, the shared table columns, freshness without a reload, no mutating
 command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and
-the footer indicator with no console error.
+the footer indicator with no console error. It also proves the prompt section: both pages render
+`agent-prompt` directly after `agent-header`; Auto Scout shows the complete instruction text and
+the next-request JSON; Watchdog shows `agent-prompt-absent`; an installed host is read-only and
+refuses a save with an error while its prompt file stays byte-identical; a source-checkout fixture
+renders the editor, chat, save, and reset, one chat turn streams a reply and changes the editor
+with the file untouched, Save makes the file byte-equal to the editor and a reload renders those
+bytes, Reset restores the file bytes, and a seeded scan's `request.json` matches the preview
+except `scanId` and `createdAt`.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

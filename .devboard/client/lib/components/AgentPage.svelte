@@ -7,6 +7,7 @@
   import AgentActivityPanel from "./AgentActivityPanel.svelte";
   import AgentCyclesPanel from "./AgentCyclesPanel.svelte";
   import AgentIssuesTable from "./AgentIssuesTable.svelte";
+  import AgentPromptSection from "./AgentPromptSection.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
   import PageHeader from "./ui/page-header.svelte";
@@ -250,6 +251,8 @@
         </div>
       {/snippet}
     </PageHeader>
+
+    <AgentPromptSection {agentId} />
 
     {#if blocked && snapshot?.timer !== null && snapshot?.timer !== undefined}
       <div class="agent-blocked" data-testid="agent-blocked" role="status">

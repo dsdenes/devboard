@@ -20,7 +20,6 @@ import { ghCommand } from "./preflight";
 import { originForge } from "../repository";
 import { giteaBaseUrl } from "../../lib/forge";
 import {
-  HOUR_MS,
   SCAN_TIMEOUT_MS,
   SIGNIFICANCE_THRESHOLD,
   SYNC_INTERVAL_MS,
@@ -42,10 +41,13 @@ import {
 import {
   buildRequest,
   createScanDirectory,
+  knownTitlesFor,
   promptFor,
   readDraftGoalHeadings,
   repairPrompt,
+  scanCapacity,
   writeRequest,
+  type ScanCapacity,
 } from "./scan";
 import {
   DEFAULT_LIMITS,
@@ -157,17 +159,6 @@ interface GitHubRead {
   issues: ScoutGitHubIssue[];
   releases: ScoutRelease[];
   openTitles: string[];
-}
-
-interface Capacity {
-  /** How many issues this cycle may create. */
-  batch: number;
-  windowCount: number;
-  openCount: number;
-  hourlyRoom: number;
-  pendingRoom: number;
-  /** When zero capacity may become positive again. */
-  blockedUntil: string | null;
 }
 
 /** Bounded one-line diagnostic from the peer's stderr. */
@@ -326,6 +317,7 @@ export class ScoutWorker {
       intervalMinutes: settings.intervalMinutes,
       lastScanStartedAt: previous?.lastScanStartedAt ?? null,
       issues: previous?.issues ?? [],
+      openTitles: previous?.openTitles ?? [],
       sync: previous?.sync ?? { state: "stale", at: null, error: null },
       newestScanId: previous?.newestScanId ?? null,
       lastError,
@@ -542,37 +534,13 @@ export class ScoutWorker {
    * window counts every Auto Scout issue created inside it, in any state, so a
    * restart never forgets a filing.
    */
-  private capacity(now: Date = this.clock()): Capacity {
-    const windowStart = now.getTime() - HOUR_MS;
-    let windowCount = 0;
-    let oldest = Number.POSITIVE_INFINITY;
-    let openCount = 0;
-    for (const issue of this.state.issues) {
-      const createdAt = Date.parse(issue.createdAt);
-      if (Number.isFinite(createdAt) && createdAt > windowStart) {
-        windowCount += 1;
-        if (createdAt < oldest) oldest = createdAt;
-      }
-      if (issue.state === "pending") openCount += 1;
-    }
-    const hourlyRoom =
-      this.state.limits.maxPerHour === null
-        ? Number.POSITIVE_INFINITY
-        : Math.max(0, this.state.limits.maxPerHour - windowCount);
-    const pendingRoom =
-      this.state.limits.maxPending === null
-        ? Number.POSITIVE_INFINITY
-        : Math.max(0, this.state.limits.maxPending - openCount);
-    const batch = Math.min(hourlyRoom, pendingRoom);
-    let blockedUntil: string | null = null;
-    if (batch === 0) {
-      const candidates: number[] = [];
-      if (pendingRoom === 0) candidates.push(now.getTime() + this.syncMs);
-      if (hourlyRoom === 0 && Number.isFinite(oldest)) candidates.push(oldest + HOUR_MS);
-      if (candidates.length === 0) candidates.push(now.getTime() + this.syncMs);
-      blockedUntil = new Date(Math.min(...candidates)).toISOString();
-    }
-    return { batch, windowCount, openCount, hourlyRoom, pendingRoom, blockedUntil };
+  private capacity(now: Date = this.clock()): ScanCapacity {
+    return scanCapacity({
+      issues: this.state.issues,
+      limits: this.state.limits,
+      now,
+      syncMs: this.syncMs,
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -678,6 +646,7 @@ export class ScoutWorker {
     }
     this.state.issues = newestFirst(rows);
     this.openTitles = read.openTitles;
+    this.state.openTitles = [...read.openTitles];
     this.state.sync = { state: "ok", at: this.clock().toISOString(), error: null };
     this.state.lastError = null;
   }
@@ -710,7 +679,7 @@ export class ScoutWorker {
         repository: this.state.repo,
         repoDir: this.repoDir,
         requested,
-        knownTitles: this.knownTitles(draftGoalHeadings),
+        knownTitles: knownTitlesFor(this.state.issues, this.openTitles, draftGoalHeadings),
         draftGoalHeadings,
       });
       writeRequest(scan.directory, request);
@@ -786,15 +755,6 @@ export class ScoutWorker {
     } finally {
       this.starting = false;
     }
-  }
-
-  /** Normalized titles the scan must not restate: issues in any state, open ones, drafts. */
-  private knownTitles(draftGoalHeadings: string[]): string[] {
-    const titles = new Set<string>();
-    for (const issue of this.state.issues) titles.add(normalizeTitle(issue.title));
-    for (const title of this.openTitles) titles.add(normalizeTitle(title));
-    for (const heading of draftGoalHeadings) titles.add(normalizeTitle(heading));
-    return [...titles].sort();
   }
 
   private recordActivity(entry: AcpActivity): void {
@@ -1187,7 +1147,9 @@ export class ScoutWorker {
       if (this.settled(active)) return;
       this.publish();
 
-      const known = new Set(this.knownTitles(active.draftGoalHeadings));
+      const known = new Set(
+        knownTitlesFor(this.state.issues, this.openTitles, active.draftGoalHeadings),
+      );
       const capacity = this.capacity();
       const limit = Math.min(active.requested, capacity.batch);
       let filingError: string | null = null;

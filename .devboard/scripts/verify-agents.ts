@@ -9,12 +9,12 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
-import { statePath } from "../issues/scout/paths";
-import { emptyState, writeState } from "../issues/scout/state";
+import { settingsPath, statePath } from "../issues/scout/paths";
+import { emptyState, writeSettings, writeState } from "../issues/scout/state";
 import { writeProjection } from "../watchdog/projection";
 import { watchdogDirectory } from "../watchdog/paths";
 import { assertTrue, freePort, harnessRoot, makeHost, makeRoot, run, waitFor } from "./verification";
@@ -160,6 +160,80 @@ async function stateOf(devtools: Devtools, testid: string): Promise<string> {
   return typeof value === "string" ? value : "";
 }
 
+async function valueOf(devtools: Devtools, testid: string): Promise<string> {
+  const value = await devtools.evaluate(
+    `document.querySelector('[data-testid="${testid}"]')?.value ?? null`,
+  );
+  return typeof value === "string" ? value : "";
+}
+
+async function countOf(devtools: Devtools, testid: string): Promise<number> {
+  const value = await devtools.evaluate(
+    `document.querySelectorAll('[data-testid="${testid}"]').length`,
+  );
+  return typeof value === "number" ? value : 0;
+}
+
+/** The prompt section is one node directly after the header, before alerts and main. */
+async function promptLayout(
+  devtools: Devtools,
+): Promise<{ one: boolean; afterHeader: boolean; beforeAlerts: boolean; beforeMain: boolean }> {
+  const value = await devtools.evaluate(`(() => {
+    const prompt = document.querySelector('[data-testid="agent-prompt"]');
+    const header = document.querySelector('[data-testid="agent-header"]');
+    const alerts = document.querySelector('.agent-page__alerts');
+    const main = document.querySelector('.agent-page__main');
+    if (prompt === null || header === null) return null;
+    const before = (other) =>
+      other === null ? true : (prompt.compareDocumentPosition(other) & 4) === 4;
+    return {
+      one: document.querySelectorAll('[data-testid="agent-prompt"]').length === 1,
+      afterHeader: header.nextElementSibling === prompt,
+      beforeAlerts: before(alerts),
+      beforeMain: before(main),
+    };
+  })()`);
+  return (value ?? { one: false, afterHeader: false, beforeAlerts: false, beforeMain: false }) as {
+    one: boolean;
+    afterHeader: boolean;
+    beforeAlerts: boolean;
+    beforeMain: boolean;
+  };
+}
+
+async function requestPreview(devtools: Devtools): Promise<Record<string, unknown>> {
+  const value = await devtools.evaluate(`(() => {
+    const element = document.querySelector('[data-testid="agent-prompt-request"]');
+    if (element === null) return null;
+    try { return JSON.parse(element.textContent ?? ''); } catch { return null; }
+  })()`);
+  return (value ?? {}) as Record<string, unknown>;
+}
+
+/** Sends one prompt command over a fresh socket and returns the named frame. */
+async function promptCommand(
+  devtools: Devtools,
+  port: number,
+  command: Record<string, unknown>,
+  frame: string,
+): Promise<Record<string, unknown>> {
+  const value = await devtools.evaluate(`new Promise((resolve) => {
+    const socket = new WebSocket('ws://127.0.0.1:${port}/ws');
+    const guard = setTimeout(() => { socket.close(); resolve(null); }, 10000);
+    socket.onopen = () => socket.send(${JSON.stringify(JSON.stringify(command))});
+    socket.onmessage = (event) => {
+      let message;
+      try { message = JSON.parse(String(event.data)); } catch { return; }
+      if (message.type !== ${JSON.stringify(frame)}) return;
+      clearTimeout(guard);
+      socket.close();
+      resolve(message);
+    };
+    socket.onerror = () => { clearTimeout(guard); resolve(null); };
+  })`);
+  return (value ?? {}) as Record<string, unknown>;
+}
+
 async function click(devtools: Devtools, testid: string): Promise<void> {
   await waitFor(
     async () =>
@@ -242,6 +316,15 @@ async function rows(devtools: Devtools): Promise<
     : [];
 }
 
+const INSTALLED_PROMPT =
+  "---\ndescription: installed fixture\n---\n\n# Installed Auto Scout prompt\n\nRead-only here.\n";
+const SOURCE_PROMPT =
+  "---\ndescription: source fixture\n---\n\n# Source Auto Scout prompt\n\nKeep every byte.\n";
+const CHAT_PROPOSAL =
+  "---\ndescription: revised\n---\n\n# Revised Auto Scout prompt\n\nSaved by the gate.\n";
+const SOURCE_ACP = join(import.meta.dir, "..", "tests", "fixtures", "verify-source-acp.ts");
+const SCOUT_STUB_GH = join(import.meta.dir, "..", "tests", "fixtures", "scout-stub-gh.ts");
+
 const ISSUE_URLS = [
   "https://github.com/acme/fixture/issues/101",
   "https://github.com/acme/fixture/issues/102",
@@ -297,6 +380,7 @@ exit 0
 
 const root = await makeRoot("verify-agents");
 let dashboardPid = 0;
+let sourceDashboardPid = 0;
 let chromePid = 0;
 let devtools: Devtools | undefined;
 
@@ -309,7 +393,11 @@ try {
   );
 
   const host = await makeHost(root, "host");
-  await mkdir(join(host.directory, ".devboard"), { recursive: true });
+  await mkdir(join(host.directory, ".devboard", "prompts"), { recursive: true });
+  await writeFile(
+    join(host.directory, ".devboard", "prompts", "scout-recommendations.md"),
+    INSTALLED_PROMPT,
+  );
   await mkdir(join(host.directory, ".omp", "commands"), { recursive: true });
   await writeFile(
     join(host.directory, ".omp", "commands", "scout-recommendations.md"),
@@ -372,6 +460,140 @@ try {
       }
     },
     "the seeded dashboard",
+    30_000,
+  );
+
+  /* A second host is a harness source checkout: its prompt is editable. */
+  const sourceHost = await makeHost(root, "source");
+  await mkdir(join(sourceHost.directory, ".devboard", "prompts"), { recursive: true });
+  await writeFile(
+    join(sourceHost.directory, ".devboard", "package.json"),
+    `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.1.0" }, null, 2)}\n`,
+  );
+  await writeFile(
+    join(sourceHost.directory, ".devboard", "prompts", "scout-recommendations.md"),
+    SOURCE_PROMPT,
+  );
+  await mkdir(join(sourceHost.directory, ".devboard", "goal-proposals"), { recursive: true });
+  await writeFile(
+    join(sourceHost.directory, ".devboard", "goal-proposals", "draft.md"),
+    "# A Draft Heading\n\nbody\n",
+  );
+  await mkdir(join(sourceHost.directory, ".omp", "commands"), { recursive: true });
+  await writeFile(
+    join(sourceHost.directory, ".omp", "commands", "scout-recommendations.md"),
+    "# scout\n",
+  );
+  run("git", [
+    "-C",
+    sourceHost.directory,
+    "remote",
+    "add",
+    "origin",
+    "https://github.com/acme/fixture.git",
+  ]);
+  const sourceStateDir = join(sourceHost.directory, ".devboard", ".tmp", "state");
+  await mkdir(sourceStateDir, { recursive: true });
+  seedVerificationProvider(sourceStateDir);
+  const sourceState = emptyState({ repo: "acme/fixture", root: sourceHost.directory });
+  sourceState.issues = [
+    {
+      number: 101,
+      title: "Open  Scout Issue",
+      url: ISSUE_URLS[0]!,
+      createdAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+      state: "pending",
+      category: "clarity",
+      version: null,
+    },
+    {
+      number: 102,
+      title: "Shipped Scout Issue",
+      url: ISSUE_URLS[1]!,
+      createdAt: new Date(Date.now() - 45 * 60_000).toISOString(),
+      state: "implemented",
+      category: "tests",
+      version: "v1.0.0",
+    },
+  ];
+  sourceState.openTitles = ["Existing open issue"];
+  writeState(statePath(sourceStateDir, sourceHost.directory), sourceState);
+  writeSettings(settingsPath(sourceStateDir, sourceHost.directory), {
+    maxPerHour: 10,
+    maxPending: 5,
+    intervalMinutes: 1,
+  });
+  const sourceBin = join(root, "source-bin");
+  await mkdir(sourceBin, { recursive: true });
+  const sourceGh = join(sourceBin, "gh");
+  await writeFile(sourceGh, `#!/bin/sh\nexec bun ${SCOUT_STUB_GH} "$@"\n`);
+  chmodSync(sourceGh, 0o755);
+  const sourceOmp = join(sourceBin, "omp");
+  await writeFile(sourceOmp, "#!/bin/sh\nexit 0\n");
+  chmodSync(sourceOmp, 0o755);
+  const ghStore = join(root, "source-gh-store.json");
+  await writeFile(
+    ghStore,
+    JSON.stringify({
+      nextNumber: 200,
+      issues: [
+        {
+          number: 101,
+          title: "Open  Scout Issue",
+          url: ISSUE_URLS[0]!,
+          state: "open",
+          createdAt: sourceState.issues[0]!.createdAt,
+          body: "",
+          labels: ["scout"],
+        },
+        {
+          number: 102,
+          title: "Shipped Scout Issue",
+          url: ISSUE_URLS[1]!,
+          state: "closed",
+          createdAt: sourceState.issues[1]!.createdAt,
+          body: "",
+          labels: ["scout"],
+        },
+      ],
+      openTitles: ["Existing open issue"],
+      releases: [{ tag: "v1.0.0", publishedAt: new Date().toISOString() }],
+      closing: {},
+      comments: {},
+    }),
+  );
+  const sourcePort = await freePort();
+  const sourceDashboard = spawn(process.execPath, [join(harnessRoot, "server", "index.ts")], {
+    env: {
+      ...process.env,
+      ...verificationProviderUsageEnv(),
+      PATH: `${sourceBin}:${process.env.PATH ?? ""}`,
+      HOST: "127.0.0.1",
+      PORT: String(sourcePort),
+      REPO_DIR: sourceHost.directory,
+      ADRS_DIR: join(sourceHost.directory, "adrs"),
+      GOAL_FILE: join(sourceHost.directory, "GOAL.md"),
+      STATIC_DIR: join(harnessRoot, "dist"),
+      STATE_DIR: sourceStateDir,
+      AGENT_COMMAND: `bun ${SOURCE_ACP}`,
+      SCOUT_STUB_STATE: ghStore,
+      PROMPT_STUB_PROPOSAL: CHAT_PROPOSAL,
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  sourceDashboardPid = sourceDashboard.pid ?? 0;
+  await waitFor(
+    async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${sourcePort}/`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        return response.ok ? true : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    "the source dashboard",
     30_000,
   );
 
@@ -500,6 +722,109 @@ try {
   );
   console.log("PASS shared-page-shape");
 
+  /* 2b. The prompt section: full text and next request, read-only here. */
+  await click(devtools, "open-issues-scout");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
+    "the Auto Scout prompt section",
+    10_000,
+  );
+  const installedLayout = await promptLayout(devtools);
+  assertTrue(
+    installedLayout.one &&
+      installedLayout.afterHeader &&
+      installedLayout.beforeAlerts &&
+      installedLayout.beforeMain,
+    `the installed prompt section is misplaced: ${JSON.stringify(installedLayout)}`,
+  );
+  const installedText = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-prompt-text"]')?.textContent ?? null`,
+  );
+  assertTrue(
+    installedText === INSTALLED_PROMPT,
+    "the installed prompt text is not the file's bytes",
+  );
+  const installedCommand = await text(devtools, "agent-prompt-command");
+  assertTrue(
+    installedCommand.includes("/scout-recommendations") &&
+      installedCommand.includes(join(".devboard", ".tmp", "scout", "scans")),
+    `the prompt command is wrong: ${installedCommand}`,
+  );
+  const installedRequest = await requestPreview(devtools);
+  assertTrue(
+    JSON.stringify(Object.keys(installedRequest)) ===
+      JSON.stringify([
+        "version",
+        "scanId",
+        "repository",
+        "repositoryPath",
+        "requested",
+        "categories",
+        "excludedRoots",
+        "knownTitles",
+        "draftGoalHeadings",
+        "significanceThreshold",
+        "createdAt",
+      ]),
+    `the request preview keys are wrong: ${JSON.stringify(installedRequest)}`,
+  );
+  assertTrue(
+    installedRequest.repositoryPath === host.directory,
+    `the request repositoryPath is ${String(installedRequest.repositoryPath)}`,
+  );
+  for (const testid of [
+    "agent-prompt-editor",
+    "agent-prompt-chat",
+    "agent-prompt-save",
+    "agent-prompt-reset",
+  ]) {
+    assertTrue(
+      (await countOf(devtools, testid)) === 0,
+      `${testid} is rendered in an installed host`,
+    );
+  }
+  const refusedSave = await promptCommand(
+    devtools,
+    port,
+    { type: "saveAgentPrompt", id: "scout", text: "changed\n" },
+    "agentPromptError",
+  );
+  assertTrue(
+    typeof refusedSave.message === "string" &&
+      refusedSave.message.includes("harness source checkout"),
+    `the installed save was not refused: ${JSON.stringify(refusedSave)}`,
+  );
+  assertTrue(
+    readFileSync(join(host.directory, ".devboard", "prompts", "scout-recommendations.md"), "utf8") ===
+      INSTALLED_PROMPT,
+    "the installed prompt file changed",
+  );
+
+  await click(devtools, "open-issues-watchdog");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt-absent")) ? true : undefined),
+    "the Watchdog prompt absence",
+    10_000,
+  );
+  assertTrue(
+    (await text(devtools, "agent-prompt-absent")).includes("runs no agent"),
+    "the Watchdog absence does not name its promptless behavior",
+  );
+  for (const testid of [
+    "agent-prompt-text",
+    "agent-prompt-request",
+    "agent-prompt-editor",
+    "agent-prompt-chat",
+    "agent-prompt-save",
+    "agent-prompt-reset",
+  ]) {
+    assertTrue(
+      (await countOf(devtools, testid)) === 0,
+      `${testid} is rendered on the Watchdog page`,
+    );
+  }
+  console.log("PASS prompt-read-only");
+
   /* 3. Cadence and limits: invalid sends nothing, valid persists. */
   await setInput(devtools, "agent-cadence", "0");
   await click(devtools, "agent-save-cadence");
@@ -600,9 +925,15 @@ try {
   assertTrue(
     Array.isArray(sent) &&
       !(sent as string[]).some((type) =>
-        ["startAgent", "stopAgent", "setAgentLimits", "setAgentCadence", "disableAgentTimer"].includes(
-          type,
-        ),
+        [
+          "startAgent",
+          "stopAgent",
+          "setAgentLimits",
+          "setAgentCadence",
+          "disableAgentTimer",
+          "saveAgentPrompt",
+          "sendAgentPromptChat",
+        ].includes(type),
       ),
     `a mutating command ran on reload: ${JSON.stringify(sent)}`,
   );
@@ -887,13 +1218,229 @@ try {
   );
   console.log("PASS footer-indicator");
 
+  /* 10. The source checkout's editable prompt: chat, save, reset, preview. */
+  await devtools.send("Page.navigate", { url: `http://127.0.0.1:${sourcePort}/` });
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.readyState === 'complete' && document.querySelector('[data-testid="mode-issues"]') !== null`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the source dashboard",
+    30_000,
+  );
+  await click(devtools, "mode-issues");
+  await click(devtools, "open-issues-scout");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt-editor")) ? true : undefined),
+    "the source prompt editor",
+    15_000,
+  );
+  const sourceLayout = await promptLayout(devtools);
+  assertTrue(
+    sourceLayout.one &&
+      sourceLayout.afterHeader &&
+      sourceLayout.beforeAlerts &&
+      sourceLayout.beforeMain,
+    `the source prompt section is misplaced: ${JSON.stringify(sourceLayout)}`,
+  );
+  const sourceText = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-prompt-text"]')?.textContent ?? null`,
+  );
+  assertTrue(sourceText === SOURCE_PROMPT, "the source prompt text is not the file's bytes");
+  assertTrue(
+    readFileSync(
+      join(sourceHost.directory, ".devboard", "prompts", "scout-recommendations.md"),
+      "utf8",
+    ) === SOURCE_PROMPT,
+    "opening the page wrote the prompt file",
+  );
+  assertTrue(
+    (await valueOf(devtools, "agent-prompt-editor")) === SOURCE_PROMPT,
+    "the editor does not start at the file's bytes",
+  );
+  for (const testid of [
+    "agent-prompt-chat",
+    "agent-prompt-chat-log",
+    "agent-prompt-message",
+    "agent-prompt-send",
+    "agent-prompt-save",
+    "agent-prompt-reset",
+  ]) {
+    assertTrue((await countOf(devtools, testid)) === 1, `${testid} is missing on the source page`);
+  }
+
+  const seededPreview = await requestPreview(devtools);
+  assertTrue(
+    seededPreview.repositoryPath === sourceHost.directory &&
+      seededPreview.repository === "acme/fixture" &&
+      seededPreview.requested === 4 &&
+      seededPreview.scanId === null &&
+      seededPreview.createdAt === null,
+    `the seeded preview is wrong: ${JSON.stringify(seededPreview)}`,
+  );
+  assertTrue(
+    JSON.stringify(seededPreview.knownTitles) ===
+      JSON.stringify([
+        "a draft heading",
+        "existing open issue",
+        "open scout issue",
+        "shipped scout issue",
+      ]) &&
+      JSON.stringify(seededPreview.draftGoalHeadings) === JSON.stringify(["A Draft Heading"]),
+    `the seeded preview titles are wrong: ${JSON.stringify(seededPreview)}`,
+  );
+
+  const sourcePromptFile = join(
+    sourceHost.directory,
+    ".devboard",
+    "prompts",
+    "scout-recommendations.md",
+  );
+  const scans = join(sourceHost.directory, ".devboard", ".tmp", "scout", "scans");
+  const worker = spawn(
+    process.execPath,
+    [
+      join(harnessRoot, "issues", "scout", "worker.ts"),
+      "--repo",
+      sourceHost.directory,
+      "--state-dir",
+      sourceStateDir,
+    ],
+    {
+      cwd: sourceHost.directory,
+      env: {
+        ...process.env,
+        PATH: `${sourceBin}:${process.env.PATH ?? ""}`,
+        AGENT_COMMAND: `bun ${SOURCE_ACP}`,
+        SCOUT_STUB_STATE: ghStore,
+        PROMPT_STUB_PROPOSAL: CHAT_PROPOSAL,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  let workerPid = worker.pid ?? 0;
+  try {
+    const requestFile = await waitFor(
+      () => {
+        try {
+          const directory = readdirSync(scans).sort()[0];
+          if (directory === undefined) return undefined;
+          const path = join(scans, directory, "request.json");
+          return existsSync(path) ? path : undefined;
+        } catch {
+          return undefined;
+        }
+      },
+      "the seeded scan request",
+      60_000,
+    );
+    const written = JSON.parse(readFileSync(requestFile, "utf8")) as Record<string, unknown>;
+    const preview = { ...seededPreview };
+    delete written.scanId;
+    delete written.createdAt;
+    delete preview.scanId;
+    delete preview.createdAt;
+    assertTrue(
+      JSON.stringify(written) === JSON.stringify(preview),
+      `the preview contradicts the written request:\n${JSON.stringify(preview)}\n${JSON.stringify(written)}`,
+    );
+  } finally {
+    if (workerPid > 0) {
+      try {
+        process.kill(workerPid, "SIGTERM");
+      } catch {
+        // It exited already.
+      }
+    }
+    workerPid = 0;
+  }
+  console.log("PASS prompt-preview");
+
+  await setInput(devtools, "agent-prompt-message", "Tighten the evidence rule.");
+  await click(devtools, "agent-prompt-send");
+  await waitFor(
+    async () =>
+      (await text(devtools, "agent-prompt-chat-log")).includes("Here is the revision.")
+        ? true
+        : undefined,
+    "the prompt chat reply",
+    30_000,
+  );
+  await waitFor(
+    async () => ((await valueOf(devtools, "agent-prompt-editor")) === CHAT_PROPOSAL ? true : undefined),
+    "the proposed prompt in the editor",
+    15_000,
+  );
+  assertTrue(
+    readFileSync(sourcePromptFile, "utf8") === SOURCE_PROMPT,
+    "the chat wrote the prompt file before Save",
+  );
+  const assistantEntries = await devtools.evaluate(
+    `document.querySelectorAll('[data-testid="agent-prompt-chat-log"] [data-role="assistant"]').length`,
+  );
+  assertTrue(
+    assistantEntries === 1,
+    `the chat log shows ${String(assistantEntries)} assistant entries for one turn`,
+  );
+  console.log("PASS prompt-chat");
+
+  await click(devtools, "agent-prompt-save");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt-notice")) ? true : undefined),
+    "the prompt save notice",
+    15_000,
+  );
+  assertTrue(
+    readFileSync(sourcePromptFile, "utf8") === CHAT_PROPOSAL,
+    "Save did not write the editor's bytes",
+  );
+  await waitFor(
+    async () =>
+      (await devtools!.evaluate(
+        `document.querySelector('[data-testid="agent-prompt-text"]')?.textContent ?? null`,
+      )) === CHAT_PROPOSAL
+        ? true
+        : undefined,
+    "the saved prompt text",
+    15_000,
+  );
+  await devtools.send("Page.reload");
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-prompt-text"]')?.textContent ?? null`,
+        )
+        .catch(() => null)) === CHAT_PROPOSAL
+        ? true
+        : undefined,
+    "the saved prompt after a reload",
+    30_000,
+  );
+  await setInput(devtools, "agent-prompt-editor", "unsaved scratch text");
+  await click(devtools, "agent-prompt-reset");
+  await waitFor(
+    async () => ((await valueOf(devtools, "agent-prompt-editor")) === CHAT_PROPOSAL ? true : undefined),
+    "the reset editor",
+    15_000,
+  );
+  assertTrue(
+    readFileSync(sourcePromptFile, "utf8") === CHAT_PROPOSAL,
+    "Reset wrote the prompt file",
+  );
+  console.log("PASS prompt-save-reset");
+
   console.log(
     "verify:agents: the Background agents section, both shared pages, lifecycle, cadence, " +
       "nullable limits, the Watchdog cap, the shared table, freshness, no mutation on reload, " +
       "the timer gate, and the footer indicator all hold",
   );
 } finally {
-  for (const pid of [chromePid, dashboardPid]) {
+  for (const pid of [chromePid, dashboardPid, sourceDashboardPid]) {
     if (pid <= 0) continue;
     try {
       process.kill(pid, "SIGKILL");
