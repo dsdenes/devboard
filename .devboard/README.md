@@ -169,19 +169,16 @@ context as a UI issue through `/api/feedback` at once, then replaces itself with
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context.
 
-The 26px status bar is two groups. The left group states the WebSocket connection, the
-project's own name (the last path segment, with a folder mark and the full path in its tooltip),
-and the Providers control: the selected provider with the lowest remaining percentage, or
-`No provider`, which opens the Providers dialog. The right group states the running lane count,
-the issues worker
-state with a state dot, the watchdog's last action and age, and the running and installed
-versions; each metric carries a 10px uppercase label so its meaning never rests on color. When
-`versionState.stale` is true it shows the existing reload control (`reload-devboard`), whose
-accessible name and title name both versions; reload behavior is unchanged. A mode states its
-status in its sidebar and workspace, never a second time in the status bar, except the issues
-worker, which is detached from every dashboard and reports through `issues-indicator`. The theme
-toggle and the notification indicator live in the activity bar's action group, not the status
-bar.
+The 26px status bar is two groups. The left group states the WebSocket connection and the
+project's own name (the last path segment, with a folder mark and the full path in its tooltip).
+The right group states the running lane count, the issues worker state with a state dot, the
+watchdog's last action and age, and the running and installed versions; each metric carries a
+10px uppercase label so its meaning never rests on color. When `versionState.stale` is true it
+shows the existing reload control (`reload-devboard`), whose accessible name and title name both
+versions; reload behavior is unchanged. A mode states its status in its sidebar and workspace,
+never a second time in the status bar, except the issues worker, which is detached from every
+dashboard and reports through `issues-indicator`. The theme toggle and the notification indicator
+live in the activity bar's action group, not the status bar.
 
 ### Verifying the interface
 
@@ -286,11 +283,10 @@ Provider authentication is a harness capability, not host settings. Exactly two 
 |OpenCode Go|`OPENCODE_API_KEY`|`opencode-go/deepseek-v4.1-flash`|
 |OpenRouter|`OPENROUTER_API_KEY`|`openrouter/deepseek/deepseek-v4.1-flash-1017`|
 
-The operator registers keys in the **Providers** dialog, reachable from the status-bar control
-(`data-testid="providers-indicator"`) and the `settings.providers` palette command. The dialog
-supports add, edit, enable/disable, delete with confirmation, refresh, and save. It shows each
-key's masked value, status (`ok`, `near limit`, `exhausted`, `invalid`, `unknown`), every quota
-window's remaining fraction, and the last check time.
+The operator registers keys in the **Providers** dialog, reachable from the `settings.providers`
+palette command. The dialog supports add, edit, enable/disable, delete with confirmation, refresh,
+and save. It shows each key's masked value, status (`ok`, `near limit`, `exhausted`, `invalid`,
+`unknown`), every quota window's remaining fraction, and the last check time.
 
 Credentials live in `<stateDir>/providers/credentials.json` (directory `0700`, file `0600`,
 atomic replacement). The file survives a dashboard restart and is never removed by
