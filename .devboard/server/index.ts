@@ -7,6 +7,7 @@ import { StubForge } from "./fixtures/stub-forge";
 import { openJournal } from "./journal";
 import { sourceCheckoutGiteaUrl } from "./local-gitea";
 import { relaunch } from "./relaunch";
+import { snapshotStaticDir } from "./static-snapshot";
 import { startUpdater, type Updater } from "./updates";
 import { readHarnessVersion, runningHarnessDir } from "./version";
 
@@ -95,6 +96,11 @@ const injectedFlow = flowOptions();
 const injectedFeedback = feedbackOptions();
 const journal = openJournal({ stateDir, repoDir, port });
 const runningVersion = readHarnessVersion(runningHarnessDir());
+// The updater replaces the installed package while this process serves. The
+// bundle is copied out of it first, so an update changes what a restart loads
+// and never what a running dashboard answers with.
+const staticSnapshot = await snapshotStaticDir({ staticDir, stateDir, version: runningVersion });
+process.once("exit", staticSnapshot.removeSync);
 let updater: Updater | undefined;
 let server: Server<unknown> | undefined;
 for (let attempt = 0; ; attempt += 1) {
@@ -104,7 +110,7 @@ for (let attempt = 0; ; attempt += 1) {
       repoDir,
       goalFile,
       agentCommand,
-      staticDir,
+      staticDir: staticSnapshot.dir,
       stateDir,
       hostname,
       allowedHosts,

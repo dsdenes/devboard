@@ -286,7 +286,8 @@ Provider authentication is a harness capability, not host settings. Exactly two 
 The operator registers keys in the **Providers** dialog, reachable from the `settings.providers`
 palette command. The dialog supports add, edit, enable/disable, delete with confirmation, refresh,
 and save. It shows each key's masked value, status (`ok`, `near limit`, `exhausted`, `invalid`,
-`unknown`), every quota window's remaining fraction, and the last check time.
+`unknown`), every quota window's remaining fraction, and the last check time. A running peer keeps
+the key it started with; the next peer resolves the selection again.
 
 Credentials live in `<stateDir>/providers/credentials.json` (directory `0700`, file `0600`,
 atomic replacement). The file survives a dashboard restart and is never removed by
@@ -301,9 +302,18 @@ percent used) and `https://openrouter.ai/api/v1/key` (`limit_remaining` and `lim
 `DEVBOARD_OPENCODE_GO_USAGE_BASE_URL` and `DEVBOARD_OPENROUTER_USAGE_BASE_URL` override the base
 URLs for tests and offline verification. On-demand reads fetch a key's usage at most once per
 60 seconds unless the operator forces a refresh; while at least one dashboard is connected, the
-server forces one refresh and pushes a fresh `providersState` every 60 seconds, so the
-status-bar indicator never stays stale. With no client connected the periodic refresh makes no
-provider call, and the next client's `getProviders` refreshes first.
+server forces one refresh and pushes a fresh `providersState` every 60 seconds, so the dialog's
+usage never stays stale. With no client connected the periodic refresh makes no provider call, and
+the next client's `getProviders` refreshes first.
+
+A detached worker outlives the credential list it was started with, so every agent it starts
+resolves the provider again instead of inheriting the worker's original key. The issue worker
+resolves once per issue run, Auto Scout once per scan, and Design once per cycle; a run that
+started before a key was added keeps its key, and the next run uses the current selection. Every
+refresh also writes `<stateDir>/providers/selection.json` with the selected provider, subscription
+id, label, model, and headroom; the file carries no key material. The Coach finalizer cannot probe
+usage, so it reads that snapshot and leads with the dashboard's selected subscription, then falls
+back to the operator's list order when no snapshot exists.
 
 Remaining is `1 - percent/100` for each Go window and `limit_remaining / limit` for OpenRouter,
 or unlimited when the account has no limit. A subscription is eligible only when every gating
@@ -316,14 +326,14 @@ starts and the UI and event stream report the reason. With no subscription confi
 every peer start is refused with an error pointing at the Providers dialog, so a peer never
 silently inherits the operator's OMP login.
 
-Every agent process — goal work, lifecycle lanes, Flow, issues, Auto Scout, Ask, Discover, goal
-drafts, and skills preparation — starts with `PI_CODING_AGENT_DIR` pointing at a generated
-directory under `<stateDir>/providers/agents/`. Its `config.yml` pins `default`, `plan`, `smol`,
-`slow`, and `task` to the selected model. A Go selection also sets `retry.modelFallback: true`,
-`retry.fallbackOn: any`, and a chain from `opencode-go/*` to the OpenRouter fallback; an
-OpenRouter selection sets no chain. Every selection also names `ollama`, `lm-studio`,
-`llama.cpp`, and `apple` in `disabledProviders`: OMP discovers those implicit local model
-servers on every start, a peer can only run the two catalog providers, and the failed probes
+Every agent process — goal work, lifecycle lanes, Flow, issues, Auto Scout, Design, Ask, Discover,
+goal drafts, skills preparation, and the Coach finalizer — starts with `PI_CODING_AGENT_DIR`
+pointing at a generated directory under `<stateDir>/providers/agents/`. Its `config.yml` pins
+`default`, `plan`, `smol`, `slow`, and `task` to the selected model. A Go selection also sets
+`retry.modelFallback: true`, `retry.fallbackOn: any`, and a chain from `opencode-go/*` to the
+OpenRouter fallback; an OpenRouter selection sets no chain. Every selection also names `ollama`,
+`lm-studio`, `llama.cpp`, and `apple` in `disabledProviders`: OMP discovers those implicit local
+model servers on every start, a peer can only run the two catalog providers, and the failed probes
 would otherwise log warnings the watchdog files as evidence. The peer environment removes the
 operator's inherited `OPENCODE_API_KEY` and `OPENROUTER_API_KEY` first, then adds only the
 selected keys (a Go peer also receives an OpenRouter key when one exists, for its fallback
@@ -1194,7 +1204,10 @@ propagation wait (default 1800 seconds).
 
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
-staging prefix, and keeps serving its loaded code. If npm cannot serve the artifact and
+staging prefix, and keeps serving its loaded code. The server copies its client bundle from the
+installed package into `<stateDir>/serving/<pid>-<version>` at startup and serves that copy, so
+replacing the package changes only what a restart loads; an open page keeps requesting the bytes
+it started with. If npm cannot serve the artifact and
 `DEVBOARD_GITEA_URL` is configured, the same version's Gitea tarball is verified against its
 `.sha256` and installed instead. The npm child always runs in
 that staging directory, and the dashboard starts from the host root rather than the replaceable
@@ -1229,9 +1242,7 @@ and is retried the same way.
 |`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
 |`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
 |`DEVBOARD_OPENROUTER_USAGE_BASE_URL`|`https://openrouter.ai/api`|OpenRouter usage base; overridden by tests and offline verification.|
-|`DEVBOARD_OPENROUTER_DECISIONS_URL`|`https://openrouter.ai/api/alpha/decisions`|Coach's Decisions endpoint; overridden by tests and offline verification.|
-|`DEVBOARD_COACH_DECISIONS_STUB`|unset|JSON file answering every Coach Decisions request; verification only, never network.|
-|`DEVBOARD_COACH_FINALIZER_STUB`|unset|JSON file replacing the Coach finalizer peer; verification only, never a peer.|
+|`DEVBOARD_COACH_SYNTHESIS_STUB`|unset|JSON file answering every Coach synthesis call; verification only, never a peer.|
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
 |`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`|`30000`|How often a connected dashboard re-reads the origin's open issues for the Open issues list; at least 1000. Independent of the Issues worker.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
@@ -1582,17 +1593,17 @@ System route through the same shared interface.
 ## Coach
 
 Coach is the `coach` descriptor in the shared background-agent contract: label `Coach`, scope
-`repository`, cadence default 60 minutes, and caps that default to 10 new issues per rolling hour
-and 20 own open issues. Its page is the shared `agent-page` with `data-agent="coach"` and every
+`repository`, cadence default 60 minutes, at most 2 issues per cycle, 10 filings per rolling hour,
+and a 20-entry pending queue. Its page is the shared `agent-page` with `data-agent="coach"` and every
 shared core id; `agent-detail` renders the shared cycle history. Opening, selecting, restoring, or
 reloading the page starts nothing. Start and Stop command one detached worker per repository state
 directory.
 
 Coach's files live under `<STATE_DIR>/coach/`: `worker.json` (published lifecycle), `settings.json`,
 `control/`, `state.json` (the ledger), `lock`, `runs/<cycle>/report.json|report.md`, `latest.json`,
-and `projection.json` (the last successful forge projection the caps count). The finalizer also
-needs the generated per-peer directory under `<STATE_DIR>/providers/agents/`, written with the same
-shared helpers every peer uses. Start reaches
+and `projection.json` (the dashboard's last forge projection, rendered by the page). The
+synthesizer also needs the generated per-peer directory under `<STATE_DIR>/providers/agents/`,
+written with the same shared helpers every peer uses. Start reaches
 `starting` before the worker exists and `running` once its state is readable; Stop reaches
 `stopping` and then `stopped` after the running cycle ends and before any further cycle starts. A
 stopped worker is not restarted by a dashboard restart, a page open, or a tab restore; a live
@@ -1618,107 +1629,109 @@ skipped; they never abort the cycle. The report carries the window, session coun
 count, malformed count, and skipped-session count. Nothing under `$HOME`, `/tmp`, another checkout,
 or outside `REPO_DIR` and `STATE_DIR` is read.
 
-### Detection
+### Families
 
-A finding exists only for these categories and thresholds:
+A cycle turns the window into families. One bash command yields one normalized key: the command is
+trimmed, a wrapping `( cd <path> && ... )` is unwrapped, a leading `cd <path> &&` segment is
+dropped, and the first remaining segment whose command is not an inspection prefix is kept. Pipes
+(`| tail -N`, `| head -N`, any `| <command>`) and redirections (`2>&1`, `> <path>`, `2> <path>`,
+`< <path>`) are stripped. The existing replacements then apply: a leading environment assignment
+becomes `<env>`, the repository root becomes `<repo>`, `.worktree/<name>`, UUIDs, ISO timestamps,
+and seven-or-more hex runs are replaced, and a `git -C <dir>` prefix becomes `git`. The family key
+is the remaining tokens up to the first `--flag`, so `bun run publish 2>&1 | tail -40`,
+`bun run publish | tail -60`, and `( cd /checkout && bun run publish )` are all `bun run publish`,
+while `git push origin HEAD:main` and `git push origin other` stay separate. Two families never
+merge when their tokens before the first flag differ.
 
-|Category|Evidence and threshold|Fingerprint signature|
-|---|---|---|
-|`tool-failure`|a `toolResult` with `isError: true`, in at least two distinct sessions|tool name + normalized first text line|
-|`retry-loop`|one tool-call identity repeated at least three times in one session, at least two of its calls after an error for that tool|session id + tool name + normalized arguments|
-|`repeat-question`|the same normalized journal `question` text in at least two distinct run/lane scopes|the normalized question|
-|`run-failure`|the same normalized first `acp-stderr` line in at least two distinct run/lane scopes|the normalized line|
-|`tool-gap`|one normalized `bash` signature called at least three times across at least two sessions, at least 12 characters, not trivial, not covered by an MCP `covers` entry|the normalized command|
+A nonzero exit whose command matches an inspection prefix is normal and produces no evidence. Every
+other bash call attaches to its family as an occurrence; an errored mutating tool call (`edit`,
+`write`, `multiedit`, `apply_patch`, `patch`, `ast_edit`) attaches to a family named for the tool;
+a read-only tool error is ignored. A retry loop (one call identity at least three times, at least
+two after an error) adds weight to the repeated command's family and never forms its own family. A
+journal `question` repeated in at least two scopes becomes `question: <normalized text>`; an
+`acp-stderr` line repeated in at least two scopes becomes `run-failure: <normalized line>`. Sessions
+and commands owned by Coach (`.devboard/coach`, `verify:coach`, a Coach run cwd), fixture-only
+commands (`true`, a no-op `echo`, `i: noop`), and anything under `.worktree/` or `.devboard/.tmp/`
+are excluded from families and excerpts.
 
-A fingerprint is the first 16 hex characters of SHA-256 over the category and its normalized
-signature. Exactly one finding exists per fingerprint per cycle; findings are ordered by category,
-then line, then fingerprint. Each carries its category, fingerprint, a one-line summary of at most
-80 characters, first and last occurrence times, total count, and the contributing session ids or
-journal scopes. Two cycles over identical evidence with the same clock produce identical findings
-in identical order.
+Each family carries `key`, `kind` (`command`, `question`, `run-failure`), `calls`, `sessions`,
+`days`, `firstAt`, `lastAt`, `fragments` with counts, and at most five excerpts. An excerpt holds
+the command bounded to 300 characters, its exit status, at most 10 output lines and 2,000
+characters, and the session title. The score is `sessions * days * calls` after normalization. The
+selection sorts by score descending with ties by key ascending and takes at most 20; the report
+carries the selected keys in order and the omitted count. Identical evidence and clock produce
+identical families and prompt bytes.
 
-Command normalization first collapses a leading `cd <path> &&` chain to the command it guards,
-then replaces leading `NAME=value` assignments with `<env>`, the repository root,
-`.worktree/<name>`, UUIDs, ISO timestamps, 7-or-more-character hex tokens, and whitespace; a
-`git -C .` or `git -C <repo>` prefix becomes plain `git`. A signature is trivial when it equals an
-inspection prefix or continues it with a space, so `git status --short --branch` is suppressed like
-`git status`. The prefixes are `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `echo`, `printf`, `grep`,
-`rg`, `find`, `sed -n`, `git status`, `git diff`, `git log`, `git show`, `git branch`,
-`git rev-parse`, `git worktree list`, `git ls-remote`, `git remote -v`, `bun test`, `bun run check`,
-`bun run build`, and `bunx tsc --noEmit`. The MCP catalog's `covers` lists are the other command
-signatures that suppress a `tool-gap` finding.
+### Synthesis and validation
 
-### Decision gate
+Each selected family gets exactly one ACP synthesis call, at most four at a time, with a
+120-second timeout. The peer is `AGENT_COMMAND` (default `omp acp`) built from every enabled
+OpenCode Go subscription, led by the dashboard's published selection when it still names an enabled
+key and otherwise by the operator's list order, pinned to
+`opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled. The coach
+does not probe the usage endpoint: a quota read cannot decide whether a cycle finishes, so it
+follows `selection.json` instead. A rejected
+credential rotates to the next enabled Go subscription and, when none is left, fails closed. The
+prompt carries the family summary, every fragment with its count, at most five excerpts, the MCP
+catalog as name/title pairs plus every `covers` entry, every open Coach issue as number/title/URL,
+and the configured allowlist; it stays under 24 KiB. A cycle whose synthesis calls fail records the
+failure and files nothing; successful calls are still reported.
 
-Every finding without an issue and without an active rejection passes one Decisions request before
-anything is filed. The request carries a bounded state — category, normalized signature, line,
-count, session count, scope count, timestamps, the MCP tool names, the `covers` list, and the
-inspection prefixes — and three typed `noul` propositions:
+The peer answers with one JSON object and nothing else:
+`{family, action, tool?, prompt?, rationale, acceptance}`. `action` is `tool`, `prompt`, or `none`;
+`family` equals the requested key; `tool` appears only for `tool` and carries `name`
+(`^[a-z][a-z0-9_]{2,40}$`), `title`, `description`, a closed `inputSchema`, and 1 to 12 `covers`
+entries; `prompt` appears only for `prompt` and carries a bounded `instruction` and a `target`
+under `.devboard/prompts/` or an agent id; `rationale` is 1 to 1,000 characters; `acceptance` is 1
+to 5 lines, each starting `- [ ] `. A missing field, an extra field, or a wrong type makes the
+proposal invalid.
 
-|Question|Proposition|High probability|
-|---|---|---|
-|`existing_capability`|an existing tool, `covers` entry, or inspection prefix already provides it|rejects|
-|`recurring_behavior`|a recurring behavior, not one incidental or environment failure|files|
-|`worth_filing`|one issue would change what an implementer does next|files|
+A deterministic validator, not a model, then rejects a proposal when its family differs from the
+request; the tool name exists in `MCP_TOOLS` or in an open Coach issue title; a `covers` entry is
+neither the family key nor a prefix of it or of a fragment (a trailing `*` is allowed); no `covers`
+entry matches the family key; the schema lacks `type: "object"`, `additionalProperties: false`, or
+`properties`; an acceptance line is malformed; the rendered body reaches 64 KiB; or a `tool`
+proposal has no allowlist entry covering the family. Every rejection records its rule and files
+nothing. `action: none` is recorded with its rationale and files nothing.
 
-The model is `decisionModel` in `settings.json`, `typesafe/jev-1.14` by default. The gate files only
-when every positive question is at or above `approveAt` (0.9) and the negative one at or below
-`rejectAt` (0.1). Any positive answer at or below `rejectAt`, or a negative answer at or above
-`approveAt`, rejects. Anything between is `review`: it is recorded, flagged in the report and the
-dashboard count, and treated exactly like a rejection. A rejected fingerprint waits
-`rejectCooldownHours` (168) before it is asked again and re-opens early when its window count at
-least doubles. Probabilities, the request id, cost, model, and the count at decision time are
-stored in the ledger.
+### Filing, caps, and the ledger
 
-The gate sends its request to `DEVBOARD_OPENROUTER_DECISIONS_URL` with the first enabled OpenRouter
-key from the Providers store. No such key, a non-2xx answer, a missing or out-of-range probability,
-or a timeout fails the whole gate closed: nothing is filed that cycle, every undecided fingerprint
-stays pending with the reason, and the report names it.
+A tool proposal files `[coach] <family key>`; a prompt proposal files
+`[coach] prompt: <family key>`. The body carries exactly one `## Family`, `## Evidence`,
+`## Proposed tool` or `## Proposed prompt`, `## Acceptance`, and `## Rationale` section in that
+order. The tool section holds a fenced JSON block byte-identical to the validated tool object, its
+covers list, and the exact allowlist entry the implementer must add. The body carries
+`family:<first 12 hex of SHA-256 over the key>`. Every title, body, and failure reason is redacted
+before the bytes leave the process: against the worker environment, against every API key
+registered in the Providers store, and against the GitHub, Gitea, GitLab, npm, OpenCode Go, and
+OpenRouter token shapes.
 
-### Finalizer
+Before filing, the cycle reads the repository's open issues. A family is skipped when an open issue
+has the exact computed title or its body contains `family:<tag>`; the skip is recorded as
+`duplicate` with the existing URL. There is no suppression, no cooldown, and no recurrence comment.
 
-Only findings the gate accepted reach one ACP peer call per cycle. The peer is `AGENT_COMMAND`
-(default `omp acp`) built from every enabled OpenCode Go subscription in the operator's list order,
-pinned to `opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled. The
-coach does not probe the usage endpoint: a quota read cannot decide whether a cycle finishes. A
-peer that answers with a rejected credential rotates to the next enabled Go subscription and, when
-none is left, fails closed. It receives the survivors and the catalog and must answer one JSON
-object: for every survivor, `file` with a proposal and 1 to 5 acceptance criteria, or `drop` with
-`duplicate_of` naming another survivor that is itself filed. A missing decision, an unknown
-fingerprint, an absent proposal, invalid JSON, a refused permission, or a timeout files nothing.
+`maxIssuesPerCycle` (1 to 20, default 2) caps filings per cycle, highest score first, and
+`maxPerHour` caps filings per rolling hour. A validated proposal that exceeds a cap is stored in
+the ledger's `pendingFiling` queue, bounded by `maxPending` and ordered by score. Pending proposals
+file before new synthesis in a later cycle and carry their original bytes. A pending entry older
+than seven days or whose family no longer appears in the window is dropped and reported. The
+allowlist is an array of at most 50 command prefixes, each at most 200 characters; a tool proposal
+is filed only when one entry covers its family.
 
-### Filed issues and the ledger
+`<STATE_DIR>/coach/state.json` is version 3:
+`{version: 3, families: {<key>: {firstSeen, lastSeen, calls, sessions, kind, lastAction,
+lastIssueUrl?, lastTitle?, lastFiledAt?}}, pendingFiling: [...]}`. It is written atomically after
+every filing or queue change. A version-2 ledger is discarded on load, the report states
+`ledgerReset: true`, and deduplication relies on the forge. `report.json` and `report.md` carry the
+window, session and journal counts, total family count, selected keys with scores, omitted count,
+each synthesis call's model and duration, each validator outcome with its rule, filed URLs,
+duplicate skips, dropped and pending depth. The dashboard's `CoachStatus` exposes `cycle`, `action`
+(`filed`, `none`, `capped`, `failed`), `reason`, `families`, `selected`, `filed`, `dropped`,
+`pending`, `issues`, and `cycles`.
 
-The title is `[coach] <category>: <line>`, one line, at most 80 characters; no `goal` label is
-applied. The body is at most 64 KiB and carries exactly one `## Finding`, `## Evidence`,
-`## Proposed change`, and `## Acceptance criteria` section. Evidence lists each contributing
-session's id, start time, relative cwd, input/output/cache tokens, total cost, and at most 2,000
-characters of normalized excerpts; journal findings list their scopes. The proposed change and the
-acceptance criteria are the finalizer's answer; they name a stable capability or an existing
-catalog tool, never a tool named after a fingerprint or a single command string.
-
-Every title, body, comment, and failure reason is redacted before the bytes leave the process:
-against the worker environment, against every API key registered in the Providers store, and
-against the GitHub, Gitea, GitLab, npm, OpenCode Go, and OpenRouter token shapes. Peers receive
-their keys from that store, so a transcript can echo a secret the worker never held; the registered
-values close that path.
-
-`<STATE_DIR>/coach/state.json` (version 2) records every fingerprint with `pending`,
-`filed:<url>`, or `rejected`, plus the last gate decision (probabilities, model, request id, cost,
-count, cool-down). It is written atomically after every filing, rejection, or comment, so a hard
-kill never loses an outcome. A `filed:<url>` fingerprint is never filed again. A recurrence at
-least 24 hours after the previous filing or comment comments on the existing issue once per
-interval. With a cap set, a cycle files at most that many new issues per rolling hour and at most
-that many of its own open issues, counts open state from the last successful projection, keeps
-excess fingerprints pending instead of dropping them, files nothing new while the project is not
-`ok`, and never caps comments. A failed filing or comment keeps the fingerprint pending and records
-the reason.
-
-A cycle makes one Decisions request per gated finding and at most one ACP peer call (the finalizer,
-and only when the gate accepted something). It edits no prompt, wrapper, source, session file, or
-journal record, and writes only `<STATE_DIR>/coach/` plus the generated provider agent directory the
-finalizer peer needs. The page and worker send no command that starts, stops, or repairs another
-agent.
+A cycle edits no prompt, wrapper, source, session file, or journal record, and writes only
+`<STATE_DIR>/coach/` plus the generated provider agent directory the synthesizer peer needs. The
+page and worker send no command that starts, stops, or repairs another agent.
 
 Run it by hand from `.devboard`:
 
@@ -1727,11 +1740,10 @@ bun run coach -- --collect --dry-run --root <checkout> --state-dir <state> --jso
 bun run coach -- --once --root <checkout> --state-dir <state> [--now <ISO>] --json
 ```
 
-`verify:coach` seeds sessions and journal records under `.devboard/.tmp`, injects a stub forge, a
-stub Decisions answer, and a stub finalizer answer, and proves every category and threshold, the dry
-run, one issue per fingerprint, deterministic issue bytes, no second filing, the 24-hour recurrence
-comment, both caps keeping fingerprints pending, a failed gate filing nothing and exiting nonzero,
-byte-identical evidence, and that no ACP peer starts.
+`verify:coach` seeds exactly three command families under `.devboard/.tmp`, injects a deterministic
+synthesizer and a stub forge, and proves one synthesis call per family, the filed title and body
+sections, the fenced tool definition and allowlist entry, no second filing, a cap holding a
+proposal pending, and byte-identical session and journal directories.
 
 ## Devboard MCP server
 

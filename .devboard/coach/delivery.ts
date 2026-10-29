@@ -3,25 +3,28 @@ import { join, resolve } from "node:path";
 import { createForgeIssues } from "../lib/forge-issues";
 import { redactSecrets } from "../lib/secret-redaction";
 import { originForge } from "../issues/repository";
+import type { CoachOpenIssue } from "./issue";
 import { registeredProviderSecrets } from "./providers";
 
 /**
  * Coach issue delivery. It uses the harness forge-auth path through the shared
  * forge client, redacts every unseen secret before the bytes leave the
- * process, and never closes, reopens, or renames an issue.
+ * process, and never closes, reopens, renames, or comments on an issue. The
+ * deduplication read is the same client: the open issues, with their bodies.
  *
  * A verification run injects `DEVBOARD_COACH_FORGE_STUB=<directory>`: the
- * delivery then records each call in `calls.jsonl` and answers a deterministic
- * issue URL, so no test contacts a real forge.
+ * delivery then records each call in `calls.jsonl`, answers a deterministic
+ * issue URL, and lists the issues it created, so no test contacts a real
+ * forge.
  */
 
 export type DeliveryResult = { ok: true; url: string } | { ok: false; reason: string };
-export type CommentResult = { ok: true } | { ok: false; reason: string };
 
 export interface CoachDelivery {
   repository: string;
+  /** Every open issue, with the body deduplication reads. */
+  list(): Promise<CoachOpenIssue[]>;
   create(title: string, body: string): Promise<DeliveryResult>;
-  comment(url: string, body: string): Promise<CommentResult>;
 }
 
 export interface CoachDeliveryOptions {
@@ -44,7 +47,7 @@ function firstLine(error: unknown): string {
 }
 
 interface StubCall {
-  op: "create" | "comment";
+  op: "create";
   title?: string;
   body: string;
   url?: string;
@@ -60,10 +63,10 @@ function readCalls(directory: string): StubCall[] {
           const parsed: unknown = JSON.parse(line);
           if (typeof parsed !== "object" || parsed === null) return [];
           const record = parsed as Record<string, unknown>;
-          if (record.op !== "create" && record.op !== "comment") return [];
+          if (record.op !== "create") return [];
           return [
             {
-              op: record.op,
+              op: "create",
               body: typeof record.body === "string" ? record.body : "",
               ...(typeof record.title === "string" ? { title: record.title } : {}),
               ...(typeof record.url === "string" ? { url: record.url } : {}),
@@ -88,12 +91,17 @@ function stubDelivery(
     mkdirSync(target, { recursive: true });
     appendFileSync(join(target, "calls.jsonl"), `${JSON.stringify(call)}\n`);
   };
-  const nextNumber = (): number => {
-    const current = readCalls(target).filter((call) => call.op === "create").length;
-    return current + 1;
-  };
+  const nextNumber = (): number => readCalls(target).length + 1;
   return {
     repository,
+    async list() {
+      return readCalls(target).map((call, index) => ({
+        number: index + 1,
+        title: call.title ?? "",
+        body: call.body,
+        url: call.url ?? `https://forge.test/${repository}/issues/${index + 1}`,
+      }));
+    },
     async create(title, body) {
       const redactedTitle = redact(title);
       const redactedBody = redact(body);
@@ -101,10 +109,6 @@ function stubDelivery(
       const url = `https://forge.test/${repository}/issues/${number}`;
       record({ op: "create", title: redactedTitle, body: redactedBody, url });
       return { ok: true, url };
-    },
-    async comment(url, body) {
-      record({ op: "comment", url, body: redact(body) });
-      return { ok: true };
     },
   };
 }
@@ -128,6 +132,20 @@ export function createCoachDelivery(options: CoachDeliveryOptions): CoachDeliver
   });
   return {
     repository: forge.repository,
+    async list() {
+      const summaries = await forge.list("open", 100);
+      const issues: CoachOpenIssue[] = [];
+      for (const summary of summaries) {
+        const document = await forge.get(summary.number);
+        issues.push({
+          number: document.number,
+          title: document.title,
+          body: document.body,
+          url: document.url,
+        });
+      }
+      return issues;
+    },
     async create(title, body) {
       try {
         const issue = await forge.create({
@@ -135,14 +153,6 @@ export function createCoachDelivery(options: CoachDeliveryOptions): CoachDeliver
           body: redact(body),
         });
         return { ok: true, url: issue.url };
-      } catch (error) {
-        return { ok: false, reason: redact(firstLine(error)) };
-      }
-    },
-    async comment(url, body) {
-      try {
-        await forge.comment(url, redact(body));
-        return { ok: true };
       } catch (error) {
         return { ok: false, reason: redact(firstLine(error)) };
       }

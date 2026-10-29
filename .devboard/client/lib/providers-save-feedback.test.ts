@@ -101,3 +101,4 @@ test("a provider save confirms only on the state frame that follows it", () => {
   store.handleEvent({ type: "providersState", subscriptions: [], selection: null });
   expect(saveFeedback.text).toBe("Provider saved.");
 });
+
