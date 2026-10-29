@@ -438,9 +438,10 @@ continues from its persisted record, re-spawning that record only while it is st
 and otherwise advancing to the next pending record; goal creation re-spawns `/goal-outcome`; a
 revision re-spawns the same prompt including its original guidance; skills preparation re-spawns
 `/prepare-skills` after restoring the same pre-run snapshot, so a resumed preparation that ends in
-failure restores the exact bytes captured before the original run. A Discover crawl re-spawns
-`/discover` against the same host, or re-clones the stored remote project first, with its recorded
-activity kept as a prefix. Restored activity is kept and new lines append. A pending lane or foreground question is replayed to every connecting client
+failure restores the exact bytes captured before the original run. An interrupted discovery agent
+re-spawns its own command against the same host, or re-clones the stored remote project first, with
+its recorded activity kept as a prefix; the remaining agents of an interrupted Run all stay idle
+until the operator starts that command again. Restored activity is kept and new lines append. A pending lane or foreground question is replayed to every connecting client
 after the restored activity; answering a restored question that the replacement peer has not
 re-issued is refused with `The question is no longer pending.` and the page updates without a
 reload. Before re-spawning a unit, the replacement ends any recorded ACP child of the killed
@@ -664,36 +665,85 @@ directory, and the decision board is never an ADR record.
 
 ## Discover Mode
 
-The Discover mode is the fourth client-only view, opened from the activity bar. It exists for an existing host project: one
-read-only crawl produces an evidence-backed project sheet, a UbiLang glossary for each detected
-bounded context, and five project-specific Agent Skills that every devboard implementation agent in
-that host discovers. Switching to Discover, and switching its pages, sends no WebSocket frame
-and starts, stops, resets, or clears nothing; all three views stay mounted, so native details,
-scroll state, and focus survive. Discover events render only in this view and never touch Goal
-Mode's activity, question, or error state.
+The Discover mode is the fourth client-only view, opened from the activity bar. It exists for an
+existing host project and is produced by six independently triggerable discovery agents: **Data
+Sheet**, **Testing Strategy**, **Naming Conventions**, **Coding Conventions**, **Architecture &
+Boundaries**, and **Glossary Agent**. Each agent is one ACP turn with its own prompt file, its own
+slash command, its own staging directory, and its own slice of the published artifacts. Switching
+to Discover, opening a card, and switching its pages send no WebSocket frame and start, stop,
+reset, or clear nothing; all four views stay mounted, so native details, scroll state, and focus
+survive. Discover events render only in this view and never touch Goal Mode's activity, question,
+or error state.
 
-The Discover sidebar opens pages for `Overview` and `Glossary` without a group heading. Once
-Discover artifacts are published it also lists the five skills `Testing Strategy`,
+The Discover sidebar opens a **Discovery** group with exactly six entries
+(`data-testid="discover-agent-tab"` with `data-agent` values `sheet`,
+`discover-testing-strategy`, `discover-naming-conventions`, `discover-coding-conventions`,
+`discover-architecture-boundaries`, and `discover-glossary`), labelled `Data Sheet`,
+`Testing Strategy`, `Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and
+`Glossary Agent`. Selecting one opens its card (`data-testid="discover-agent"` with the same
+`data-agent`). The group header carries the Run all control
+(`data-testid="discover-run-all"`), and each entry shows its own `running` badge or `failed` badge.
+The same sidebar opens the established pages for `Overview` and `Glossary` without a group
+heading. Once Discover artifacts are published it also lists the five skills `Testing Strategy`,
 `Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and `Glossary` under
 **Skills** (`data-testid="discover-tab"` with `data-tab` values `overview`, `glossary`,
 `testing-strategy`, `naming-conventions`, `coding-conventions`, `architecture-boundaries`, and
-`glossary-skill`); with no published artifacts the **Skills** group and its header do not render.
+`glossary-skill`); with no published artifact the **Skills** group and its header do not render.
 The sidebar has no header, so its first entry is its mode's navigation. The active panel carries
-`data-testid="discover-panel"` and the same `data-tab`. While a crawl is active, the `Overview`
-entry carries a `running` badge (`data-testid="discover-running"`), matching the Issues overview;
-the badge disappears when the run stops.
+`data-testid="discover-panel"` and the same `data-tab`. While a discovery agent runs, the
+`Overview` entry carries a `running` badge (`data-testid="discover-running"`), matching the Issues
+overview; the badge disappears when the run stops.
 Warnings appears as its own group with a count only while at least one warning exists; the sidebar
 keeps no freshness group and no recent-notice list.
+
+## Discovery agent cards
+
+One card per agent carries the agent's complete prompt
+(`data-testid="discover-agent-prompt-text"`, the file's bytes with no truncation or reformatting),
+its command and staging argument (`data-testid="discover-agent-prompt-command"`, for example
+`/discover-sheet <staging-dir>`), its run state (`data-testid="discover-agent-status"` with
+`data-state` `idle`, `running`, `succeeded`, or `failed`), its run tag
+(`data-testid="discover-agent-run-tag"`) and Stop control (`data-testid="discover-agent-stop"`)
+while it runs, a Start control (`data-testid="discover-agent-start"`), its own activity log
+(`data-testid="discover-agent-activity"`), and its own pending question. An error the agent
+reported stays on its card (`data-testid="discover-agent-error"`). `discoverActivity`,
+`discoverQuestion`, `discoverStarted`, and `discoverStopped` carry `agent`, so no card shows
+another agent's line or question.
+
+| Agent | `data-agent` | Command | Prompt file |
+|---|---|---|---|
+| Data Sheet | `sheet` | `/discover-sheet` | `.devboard/prompts/discover-sheet.md` |
+| Testing Strategy | `discover-testing-strategy` | `/discover-testing-strategy` | `.devboard/prompts/discover-testing-strategy.md` |
+| Naming Conventions | `discover-naming-conventions` | `/discover-naming-conventions` | `.devboard/prompts/discover-naming-conventions.md` |
+| Coding Conventions | `discover-coding-conventions` | `/discover-coding-conventions` | `.devboard/prompts/discover-coding-conventions.md` |
+| Architecture & Boundaries | `discover-architecture-boundaries` | `/discover-architecture-boundaries` | `.devboard/prompts/discover-architecture-boundaries.md` |
+| Glossary Agent | `discover-glossary` | `/discover-glossary` | `.devboard/prompts/discover-glossary.md` |
+
+Six command wrappers under `.devboard/omp/commands/` carry the same six names. No two agents share a
+prompt file, and each staged turn writes only its own slice; a prompt may name
+`.omp/discover/sheet.json` and `.omp/discover/glossary/` as optional reference, but no agent needs
+another agent's artifact to succeed.
+
+When the dashboard serves a harness source checkout, every card also renders an editor initialized
+to the prompt file's bytes (`data-testid="discover-agent-prompt-editor"`), a prompt chat
+(`data-testid="discover-agent-prompt-chat-log"`, `discover-agent-prompt-message`,
+`discover-agent-prompt-send`, with `discover-agent-prompt-chat-error` on failure), and
+`discover-agent-prompt-save` and `discover-agent-prompt-reset`. One chat turn streams one visible
+reply; a turn that revises the prompt replaces the editor text with a complete replacement. Chat
+never writes a file and never starts an agent. Save writes exactly the editor's UTF-8 bytes to that
+one agent's prompt file and no other file, and the next trigger of that agent reads those bytes;
+Reset restores the editor to the current file bytes without writing. An installed host shows each
+prompt read-only and renders no editor, chat, save, or reset; `saveDiscoverPrompt` and
+`chatDiscoverPrompt` are refused there with an error naming the harness source checkout.
 
 Every Discover page shares one frame: an optional uppercase eyebrow, one `h1`, a subtitle, an
 optional meta row, and a right-aligned action group. The Overview frame holds the repository as
 `owner/name` from its GitHub remote (falling back to the directory name when no remote names one;
 the full path stays in the tooltip), the discovery date, and the single
-filled run action. Staleness is not repeated on the sheet: the activity bar and the status bar
-report it. While a run exists, every Discover page carries a run tag above its notice stack: a
-status dot, `Discover run in progress`, the age, the run identifier as a code chip, the latest
-activity line, and Stop. The tag is the only run surface: the Overview frame adds no second run
-panel and no separate activity terminal. A queued question region follows while a question waits.
+filled run action, which runs all six agents. Staleness is not repeated on the sheet: the activity
+bar and the status bar report it. While a run exists, the active agent's card carries a run tag
+above its activity: a status dot, the agent label and `run in progress`, the age, the latest
+activity line, and Stop. A queued question region follows on that card while a question waits.
 The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and
 Testing in the main column on the right, and Bounded contexts below them. The manual-testing strip
 is the last region of the page, so a source checkout never pushes it above the project identity. An
@@ -705,64 +755,95 @@ Glossary page.
 
 With no published artifacts the Overview page shows the header's first-run explanation and a
 `Discover project` button (`data-testid="discover-start"`); with artifacts it shows `Re-discover`.
-The button is disabled when the socket is not open, while a Discover run is active,
-or while Goal or Flow work is active, and its title names the reason. It never starts on page
-load, reconnect, mode switch, or page switch. Selecting it sends `{ "type": "discoverProject" }`;
-the server broadcasts `discoverStarted` and starts exactly one ACP peer whose prompt is exactly
-`/discover <staging-dir>`, whose working directory is the active target root, and whose staging
-directory is `<target>/.omp/discover/staging/<run-id>/`. A second start while one runs is refused
-with one `discoverError` and spawns no peer. A start requires no `GOAL.md`, no prepared skill, a
-clean tree, or a forge account; it is accepted on a host with a dirty tree and no goal document.
+The button runs all six agents, exactly like `discover-run-all`. Both are disabled when the socket
+is not open, while any discovery agent or Run all is active, or while Goal or Flow work is active,
+and the title names the reason. A start never happens on page load, reconnect, mode switch, or page
+switch. A start requires no `GOAL.md`, no prepared skill, a clean tree, or a forge account; it is
+accepted on a host with a dirty tree and no goal document.
 
-The run is server-owned: closing the browser or switching views does not stop it. The view shows
-the run tag (`data-testid="discover-run-tag"`) while a run is active, and a reconnect receives
-`discoverState`, `discoverStarted`, every recorded activity line, and any pending question before
-its own command replies. The crawl is not an interview: an ambiguity is recorded as `unknown` with
-a reason, never a blocking question. `answerDiscover` with the pending id and a non-empty value
-answers it once; a second answer, a stale id, or an empty value is refused with one
-`discoverError`. `stopDiscover` closes the peer, clears the pending question, removes staging,
-broadcasts `discoverStopped { completed: false }`, and leaves the last published artifacts
+**One at a time.** A card's Start sends `discoverAgent { agent }`. The server starts exactly one ACP
+peer whose working directory is the active target root, whose prompt is exactly
+`<that agent's command> <staging-dir>`, and whose staging directory is
+`<target>/.omp/discover/staging/<run-id>/`. No other agent starts. While any discovery agent or Run
+all is active, every other Start control is disabled with a title naming the reason, and a
+programmatic `discoverAgent` for another agent is refused with one `discoverError` and spawns no
+peer. **Run all** runs the six in this fixed order: `sheet`, `discover-glossary`,
+`discover-testing-strategy`, `discover-naming-conventions`, `discover-coding-conventions`,
+`discover-architecture-boundaries`. The agents run one at a time, and each successful agent
+publishes its slice before the next starts. The first failure or stop halts the sequence: the
+failing agent reports one error, every slice already published stays published, no later agent
+starts, and later cards stay idle. Run all is disabled while an individual agent runs, and
+individual starts are refused while Run all runs.
+
+The run is server-owned: closing the browser or switching views does not stop it. A reconnect
+receives `discoverState`, the active agent's `discoverStarted`, every recorded activity line, and
+any pending question before its own command replies, plus each card's prompt state. The agents are
+not an interview: an ambiguity is recorded as `unknown` with a reason, never a blocking question.
+`answerDiscover` with the pending id and a non-empty value answers it once; a second answer, a stale
+id, or an empty value is refused with one `discoverError`. `stopDiscover` closes the active peer,
+clears the pending question, removes its staging, marks that agent failed, broadcasts
+`discoverStopped { completed: false, agent, mode }`, and leaves every published artifact
 byte-identical; it spawns no replacement peer.
 
-Discover uses the same WebSocket at `/ws`. The client sends `discoverProject`, `stopDiscover`,
-`answerDiscover` (with `id` and `value`), `getDiscover`, `saveDiscoverSkill` (with `name` and
-`text`), and `restoreDiscoverSkill` (with `name`). The protocol also accepts
-`confirmGlossaryTerm` (with `context` and `id`) and `rejectGlossaryTerm` (with `context`, `id`, and
-a non-empty `reason`) for tooling, but the Glossary page does not use them. `getDiscover` asks for
-the current snapshot and is answered with `discoverState`. The server
-broadcasts `discoverState`, `discoverStarted`, `discoverActivity`, `discoverQuestion`,
-`discoverStopped`, and `discoverError`; it never sends `activity`, `question`, `error`,
-`runStarted`, or `runStopped` for Discover. `discoverState` carries the active and interrupt flags,
-staleness, warnings, the busy reason, the last read error, the manifest, freshness, sheet,
+Discover uses the same WebSocket at `/ws`. The client sends `discoverAgent` (with `agent`),
+`discoverProject` (Run all), `stopDiscover`, `answerDiscover` (with `id` and `value`),
+`getDiscover`, `saveDiscoverPrompt` (with `agent` and `text`), `chatDiscoverPrompt` (with `agent`,
+`message`, and the editor's `text`), `saveDiscoverSkill` (with `name` and `text`), and
+`restoreDiscoverSkill` (with `name`). The protocol also accepts `confirmGlossaryTerm` (with
+`context` and `id`) and `rejectGlossaryTerm` (with `context`, `id`, and a non-empty `reason`) for
+tooling, but the Glossary page does not use them. An unknown agent value, a non-string agent, or a
+start while another discovery run is active is refused with one `discoverError`, changes no
+artifact, and spawns no peer. `getDiscover` asks for the current snapshot and is answered with
+`discoverState`. The server broadcasts `discoverState`, `discoverStarted`, `discoverActivity`,
+`discoverQuestion`, `discoverStopped`, `discoverError`, and the prompt frames
+`discoverPromptState`, `discoverPromptSaved`, `discoverPromptError`, `discoverPromptChat`,
+`discoverPromptChatDone`, and `discoverPromptChatError`; it never sends `activity`, `question`,
+`error`, `runStarted`, or `runStopped` for Discover. `discoverState` keeps the active and interrupt
+flags, staleness, warnings, the busy reason, the last read error, the manifest, freshness, sheet,
 repository links for installed packages, glossaries, per-concept usage and examples measured from
 the host's documentation and source, `glossarySignificance` keyed by bounded context and then
-concept id with `{ score, reason }` values, decisions, and the five skills with baseline text, live
-text, hashes, and state.
-`discoverQuestion` carries `id`, `message`, and `options` of `{ label, description?, recommended }`.
+concept id with `{ score, reason }` values, decisions, and every published skill with baseline
+text, live text, hashes, and state. It adds `activeAgent`, `runningAll`, and `agents`: the six cards
+in sidebar order with `id`, `label`, `command`, `state`, `startedAt`, `endedAt`, `error`, and
+`prompt` (`{ agent, editable, text, error }`).
+`discoverQuestion`, `discoverActivity`, and `discoverStopped` carry `agent`; a question also
+carries `id`, `message`, and `options` of `{ label, description?, recommended }`.
 
-When the peer exits, the server validates every staged artifact and the whole staged set before
-publishing. Success publishes atomically, removes staging, broadcasts `discoverState` with the new
-artifacts, and broadcasts `discoverStopped { completed: true }`. Any invalid, missing, unreadable,
-or incomplete artifact, schema violation, write outside staging, or collision with a non-Discover
-skill fails the run: staging is removed, one `discoverError` names the reason,
-`discoverStopped { completed: false }` follows, and the previous sheet, glossary, manifest,
-baselines, and live skills stay byte-identical.
+When the peer exits, the server validates only the triggered agent's staged slice and publishes
+only the artifacts that agent owns. A failure, stop, invalid, unreadable, or incomplete slice
+publishes nothing: its staging is removed, one `discoverError` names the reason, and the agent's
+previous artifacts and every other artifact stay byte-identical. Validation reads only the staged
+slice, the human decisions the glossary merge requires, and the live-skill state that agent owns;
+it never requires another agent's sheet, glossary, or skill to exist, so a host with no published
+artifacts can publish any one slice and the Overview, Glossary, and skill pages render their absent
+or empty states without a `discoverError`.
 Published artifacts are read from disk when a client connects, so no prior run in the process is
 required; an unreadable or invalid published artifact is reported with one `discoverError` and the
 files are never overwritten.
+
+| Agent | Owned artifacts |
+|---|---|
+| `sheet` | `.omp/discover/sheet.json` |
+| `discover-testing-strategy` | `.omp/discover/skills/discover-testing-strategy/SKILL.md`, `.omp/skills/discover-testing-strategy/SKILL.md` |
+| `discover-naming-conventions` | `.omp/discover/skills/discover-naming-conventions/SKILL.md`, `.omp/skills/discover-naming-conventions/SKILL.md` |
+| `discover-coding-conventions` | `.omp/discover/skills/discover-coding-conventions/SKILL.md`, `.omp/skills/discover-coding-conventions/SKILL.md` |
+| `discover-architecture-boundaries` | `.omp/discover/skills/discover-architecture-boundaries/SKILL.md`, `.omp/skills/discover-architecture-boundaries/SKILL.md` |
+| `discover-glossary` | `.omp/discover/glossary/<context>.glossary.yaml`, `.omp/discover/significance.json`, `.omp/discover/skills/discover-glossary/SKILL.md`, `.omp/skills/discover-glossary/SKILL.md` |
 
 Artifacts live only under the host: `.omp/discover/manifest.json`, `.omp/discover/sheet.json`,
 `.omp/discover/decisions.json`, `.omp/discover/significance.json`,
 `.omp/discover/glossary/<bounded-context>.glossary.yaml`,
 `.omp/discover/skills/<skill>/SKILL.md` for the generated baselines, and the live, editable
-`.omp/skills/<skill>/SKILL.md`. Staging mirrors the crawl's relative layout without `manifest.json`
-or `decisions.json`, and the staged sheet omits freshness. The manifest carries a schema version,
-the discovery fingerprint, the publication time, the run id, the sheet's structural digest, one
-structural digest per glossary, the five skill names, each live skill's baseline and current hash,
-each skill's edited or missing state, and artifact paths relative to the host; it contains no
-secrets and no absolute path. A manifest written by this code carries
-`paths.significance: ".omp/discover/significance.json"`; a manifest without that path predates the
-significance sidecar and is read as legacy, with no error.
+`.omp/skills/<skill>/SKILL.md`. Staging mirrors only the triggered agent's relative layout without
+`manifest.json` or `decisions.json`, and the staged sheet omits freshness. The manifest carries a
+schema version, the discovery fingerprint, the publication time, the run id, the sheet's structural
+digest or `null` before the sheet agent has published, one structural digest per published
+glossary, the published skill names, each live skill's baseline and current hash, each skill's
+edited or missing state, and artifact paths relative to the host; it contains no secrets and no
+absolute path. `.omp/discover/manifest.json` and `.omp/discover/decisions.json` are rewritten as
+bookkeeping and always name every artifact that is present. A manifest written by this code carries
+`paths.significance: ".omp/discover/significance.json"` once the glossary agent has published; a
+manifest without that path predates the significance sidecar and is read as legacy, with no error.
 
 `sheet.json` is the canonical data sheet, with top-level keys in the fixed order `schemaVersion`,
 `definition`, `stack`, `deployment`, `environments`, `commands`, `branching`, `testing`,
@@ -1004,15 +1085,16 @@ files that remain. It never modifies `GOAL.md`, `adrs/`, or host source and neve
 and configuration names may be recorded, but their values, tokens, credentials, private URLs, and
 URLs with user info are never copied into an artifact.
 
-A Discover run is active work. While it runs, `startRun`, `startLifecycle`, `resumeLifecycle`,
-`saveGoal`, `reviseGoal`, `createGoal`, `prepareSkills`, every Flow start, and a second
-`discoverProject` are refused with one error naming the active run and spawn no peer; view and
-tab switching, read-only commands, and `resetImplementation` stay available. While any Goal or
-Flow work is active, `discoverProject` is refused with one `discoverError` naming the active work.
-`restartServer` with `whenIdle: true` treats a Discover run as active and answers `upgradePending`,
-and an immediate restart ends the recorded child before it can publish. The replacement re-spawns
-the crawl against the same target with a fresh staging directory, so nothing from the killed crawl
-is published but the run itself survives the restart.
+A discovery run is active work. While one agent or Run all runs, `startRun`, `startLifecycle`,
+`resumeLifecycle`, `saveGoal`, `reviseGoal`, `createGoal`, `prepareSkills`, every Flow start, and a
+second `discoverAgent` or `discoverProject` are refused with one error naming the active run and
+spawn no peer; view and tab switching, read-only commands, and `resetImplementation` stay
+available. While any Goal or Flow work is active, a discovery start is refused with one
+`discoverError` naming the active work.
+`restartServer` with `whenIdle: true` treats a discovery run as active and answers
+`upgradePending`, and an immediate restart ends the recorded child before it can publish. The
+replacement re-spawns that agent against the same target with a fresh staging directory, so nothing
+from the killed turn is published but the run itself survives the restart.
 `resetImplementation` cancels a run the same way and leaves `.omp/discover` and the Discover skills
 untouched because reset preserves `.omp`. Only one run exists at a time; a stopped or interrupted
 run leaves the previous artifacts readable, and a later start uses a fresh staging directory.
@@ -1037,8 +1119,9 @@ public repositories may be retained.
 The retained root is `<STATE_DIR>/discover-remote/` and must resolve inside `<REPO_DIR>`. It holds
 one directory per discovered repository, named `<owner>~<repo>` in lowercase, and nothing else once
 a run ends. The `~` cannot occur in either URL segment, so distinct `owner/repo` pairs — including
-`a/b-c` and `a-b/c` — always get different directories. Each directory keeps the bytes the crawl
-published — `.omp/discover/` and `.omp/skills/` — beside `project.json`, which records `url`,
+`a/b-c` and `a-b/c` — always get different directories. Each directory keeps the bytes the agents
+published — `.omp/discover/` and, once a skill agent published, `.omp/skills/` — beside
+`project.json`, which records `url`,
 `owner`, `repo`, and the ISO `completedAt` time. A run's checkout is a transient
 `.staging-<run-id>` directory beside those projects; it never survives the run. While a run is live
 it owns a claim at `.runs/<checkout-name>.json` naming its process, and the claim and the `.runs/`
@@ -1047,25 +1130,26 @@ directory leave with the checkout.
 A submit broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs
 exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
 the retained root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`,
-`NO_COLOR=1`, and a 300-second timeout. On success the checkout becomes the crawl root and exactly
-one crawl runs against it. The crawl peer starts with `--no-skills`, so neither a clone's nor a
-host's `.omp/skills` are discovered or loaded; the crawl contract excludes every `.omp` path, and
-OMP's background description compression of a foreign skill would otherwise log a warning the
-watchdog files. Publication writes into the checkout's `.omp`; when the crawl succeeds,
-the two published trees are copied into `<owner>~<repo>/`, `project.json` is rewritten with the
+`NO_COLOR=1`, and a 300-second timeout. On success the checkout becomes the run root and the six
+agents run against it in the fixed order. Every peer starts with `--no-skills`, so neither a
+clone's nor a host's `.omp/skills` are discovered or loaded; each agent contract excludes every
+`.omp` path, and OMP's background description compression of a foreign skill would otherwise log a
+warning the watchdog files. Publication writes into the checkout's `.omp`; when the sequence
+succeeds, the published tree is copied into `<owner>~<repo>/`, `project.json` is rewritten with the
 submitted URL and the completion time, and the checkout is removed. The active target moves to the
-new project only after its bytes are retained, so a failed clone or a failed crawl leaves the
+new project only after its bytes are retained, so a failed clone or a failed agent leaves the
 previous target, its bytes, its entry, and its completion time untouched and reports exactly one
-`discoverError`. A second `discoverRemote`, `discoverProject`, `switchDiscoverRemote`,
-`removeDiscoverRemote`, or `clearDiscoverRemote` while `cloning` is non-null is refused with one
-`discoverError`, as it is while a Discover run or other Goal/Flow work is active. A clone is never
-resumed.
+`discoverError`. A second `discoverAgent`, `discoverRemote`, `discoverProject`,
+`switchDiscoverRemote`, `removeDiscoverRemote`, or `clearDiscoverRemote` while `cloning` is non-null
+is refused with one `discoverError`, as it is while a discovery run or other Goal/Flow work is
+active. A clone is never resumed.
 
 With a remote target every Discover read and write uses the retained directory: the Overview,
 staleness, warnings, skill saves and restores, glossary decisions, and the manifest all come from
-`<owner>~<repo>/.omp`. A crawl is the only path that needs a checkout; starting Discover on a
-retained target — `discoverProject`, or `discoverRemote` with its URL — first clones the project
-again, runs exactly one crawl, replaces the snapshot on success, and removes the checkout. Remote
+`<owner>~<repo>/.omp`. A run is the only path that needs a checkout; starting a discovery agent on
+a retained target — `discoverAgent`, `discoverProject`, or `discoverRemote` with its URL — first
+clones the project again, runs its slice or the sequence, replaces the snapshot on success, and
+removes the checkout. Remote
 grounding evidence is stored in the glossary, so the retained snapshot renders without the source
 tree. This checkout's `.omp/discover` and `.omp/skills` stay byte-identical, and a remote operation
 writes nothing outside `<STATE_DIR>/discover-remote/` apart from the dashboard's own state file.
@@ -1078,16 +1162,17 @@ listed newest completed discovery first. `discoverState` carries this list as `r
 project's transient clone exists.
 
 Durable state stores the active target as URL, owner, and repository only. A replacement restores
-it only while `<owner>~<repo>` holds a readable `project.json` and both `.omp` trees, without a
-clone or a re-crawl; otherwise it starts on the host target, drops that one stored target, keeps
+it only while `<owner>~<repo>` holds a readable `project.json` and a readable
+`.omp/discover/manifest.json`, without a clone or a new run; otherwise it starts on the host target,
+drops that one stored target, keeps
 every other retained entry, and sends one `discoverError` naming the missing project to the next
 client. Startup removes every `.staging-*` directory and any leftover directory containing `.git`
 before a recorded run resumes, so the resumed crawl starts from a fresh checkout. The one exception
 is a transient another live dashboard still claims: two dashboards may serve the same repository
 with one `STATE_DIR`, and a starting dashboard never deletes a checkout a running one owns. A
-restart during a remote crawl ends the recorded child and keeps its retained snapshot; the
+restart during a remote run ends the recorded child and keeps its retained snapshot; the
 replacement re-clones the project the stored run named — not whichever target is displayed — runs
-one crawl, and replaces the snapshot only on success. A stopped dashboard removes its own checkout
+the interrupted agent, and replaces the snapshot only on success. A stopped dashboard removes its own checkout
 and claim.
 
 The protocol adds `{ "type": "discoverRemote", "url": string }`,
@@ -1132,10 +1217,24 @@ one `clearDiscoverRemote`. Rendering the panel on load, reconnect, mode switch, 
 no frame. While cloning, the panel shows the cloning URL and the activity area shows no run; errors
 reach the Discover error and notification surfaces only.
 
-`server/discover-remote.test.ts` proves retention after a successful crawl with the checkout
+`server/discover.test.ts` proves with the stub ACP peer and a fixture host under `.devboard/.tmp`
+that each of the six triggers sends exactly its own command and staging path, that a successful
+single trigger publishes only its owned files and leaves every other byte identical, that a failed
+or stopped trigger publishes nothing, that a host with no prior artifacts can publish any one
+slice, that Run all starts the six in the stated order and halts at the first failure without
+starting later agents, that a second start while one runs is refused, and that neither stop nor a
+failure rewrites a published artifact. `server/agents/prompt.test.ts` proves the six prompt
+snapshots, the chat proposal that changes the editor without writing, a save that writes exactly
+one prompt file, the reset read, and the installed-host refusal. `verify:discover` builds the
+client, seeds source and installed fixture hosts, and drives headless Chrome through the Discovery
+group, each card's complete prompt and command, all six independent triggers with a byte-level
+check of the fixture `.omp` tree, the one-at-a-time refusal, Run all order and stop at the first
+seeded failure, prompt chat/save/reset, and the installed read-only prompt.
+
+`server/discover-remote.test.ts` proves retention after a successful sequence with the checkout
 removed, restore and rendering without a clone, newest-first ordering and one entry per lowercased
-`owner/repo`, switching with zero clone invocations across a restart, one clone and one crawl on
-re-discovery, unchanged bytes after a failed clone or crawl, clear keeping every project, removal
+`owner/repo`, switching with zero clone invocations across a restart, one clone and the six agents on
+re-discovery, unchanged bytes after a failed clone or agent, clear keeping every project, removal
 of exactly one directory with a restart, busy refusals, the missing-retained-directory fallback, the
 gate refusing every remote command without touching the retained root, a byte-identical host
 `.omp`, and startup hygiene that keeps a live run's checkout when a second dashboard starts on the

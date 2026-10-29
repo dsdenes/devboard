@@ -299,6 +299,9 @@ async function waitUntil(predicate: () => boolean, label: string, timeout = 8000
 interface DiscoverState {
   active: boolean;
   runId: string | null;
+  activeAgent: string | null;
+  runningAll: boolean;
+  agents: DiscoverAgentRow[];
   interrupted: boolean;
   stale: boolean;
   warnings: string[];
@@ -446,7 +449,7 @@ describe("discover mode", () => {
   );
 
   test(
-    "publishes one peer's staged sheet, glossaries, and five skills atomically",
+    "runs the six agents in Run all order and publishes each one's slice",
     async () => {
       const { server, fixture, url } = startServer();
       const client = await connect(url);
@@ -455,13 +458,22 @@ describe("discover mode", () => {
       try {
         const state = await runDiscover(client);
 
-        expect(spawnCount(fixture.logPath)).toBe(1);
-        const prompt = prompts(fixture.logPath)[0] ?? "";
-        expect(prompt).toMatch(/^\/discover .*\.omp\/discover\/staging\/run-/);
-        expect(prompt).not.toContain(".omp/discover/staging/run- \n");
-        expect(
-          logLines(fixture.logPath).find((line) => line.startsWith("argv ")) ?? "",
-        ).toContain("--no-skills");
+        // One peer per agent, in the fixed Run all order, each with its own
+        // command and its own staging directory.
+        expect(spawnCount(fixture.logPath)).toBe(6);
+        const sent = prompts(fixture.logPath);
+        const commands = ["/discover-sheet", "/discover-glossary",
+          "/discover-testing-strategy", "/discover-naming-conventions",
+          "/discover-coding-conventions", "/discover-architecture-boundaries"];
+        expect(sent.map((prompt) => prompt.split(" ")[0])).toEqual(commands);
+        const stagingPaths = sent.map((prompt) => prompt.slice(prompt.indexOf(" ") + 1));
+        expect(new Set(stagingPaths).size).toBe(6);
+        for (const path of stagingPaths) {
+          expect(path).toMatch(/\.omp\/discover\/staging\/run-/);
+        }
+        for (const line of logLines(fixture.logPath)) {
+          if (line.startsWith("argv ")) expect(line).toContain("--no-skills");
+        }
 
         const manifest = state.manifest as Record<string, unknown>;
         expect(manifest).not.toBeNull();
@@ -757,21 +769,17 @@ describe("discover mode", () => {
       const { server, fixture, url } = startServer({ stub: ["--discover", "--discover-no-exit", "--delay-ms=60000"] });
       const client = await connect(url);
       try {
-        client.send({ type: "discoverProject" });
+        client.send({ type: "discoverAgent", agent: "sheet" });
         const started = await client.waitFor((message) => message.type === "discoverStarted");
         expect(started.runId).toMatch(/^run-/);
-        await waitUntil(
-          () => existsSync(join(fixture.root, ".omp", "discover", "staging", String(started.runId))),
-          "staging directory exists",
-        );
+        expect(started.agent).toBe("sheet");
+        const staging = join(fixture.root, ".omp", "discover", "staging", String(started.runId));
+        await waitUntil(() => existsSync(staging), "staging directory exists");
         await waitUntil(() => spawnCount(fixture.logPath) === 1, "peer announced");
-        const prompt = prompts(fixture.logPath)[0] ?? "";
-        expect(prompt).toBe(
-          `/discover ${join(fixture.root, ".omp", "discover", "staging", String(started.runId))}`,
-        );
+        expect(prompts(fixture.logPath)[0] ?? "").toBe(`/discover-sheet ${staging}`);
 
         // A second start is refused with one error and spawns nothing.
-        client.send({ type: "discoverProject" });
+        client.send({ type: "discoverAgent", agent: "sheet" });
         const refusal = await client.waitFor((message) => message.type === "discoverError");
         expect(String(refusal.message)).toContain("already active");
         expect(spawnCount(fixture.logPath)).toBe(1);
@@ -859,8 +867,10 @@ describe("discover mode", () => {
       const second = await connect(url);
       try {
         first.send({ type: "discoverProject" });
-        await first.waitFor((message) => message.type === "discoverStarted");
-        await first.waitFor((message) => message.type === "discoverQuestion");
+        const started = await first.waitFor((message) => message.type === "discoverStarted");
+        expect(started.agent).toBe("sheet");
+        const firstQuestion = await first.waitFor((message) => message.type === "discoverQuestion");
+        expect(firstQuestion.agent).toBe("sheet");
 
         const replay = await connect(url);
         try {
@@ -872,6 +882,14 @@ describe("discover mode", () => {
           expect(types).toContain("discoverQuestion");
 
           const question = await replay.waitFor((message) => message.type === "discoverQuestion");
+          expect(question.agent).toBe("sheet");
+          const replayedStart = replay.events.find(
+            (message) => message.type === "discoverStarted",
+          ) as Record<string, unknown> | undefined;
+          expect(replayedStart?.agent).toBe("sheet");
+          for (const message of replay.events) {
+            if (message.type === "discoverActivity") expect(message.agent).toBe("sheet");
+          }
           replay.send({ type: "answerDiscover", id: question.id, value: "Alpha" });
           await first.waitFor(
             (message) =>
@@ -908,24 +926,24 @@ describe("discover mode", () => {
   test(
     "fails atomically for every invalid staged set and leaves the published artifacts byte-identical",
     async () => {
-      const variants = [
-        "--discover-invalid-sheet",
-        "--discover-sheet-absolute",
-        "--discover-sheet-stripped-home",
-        "--discover-sheet-no-evidence",
-        "--discover-sheet-secret",
-        "--discover-sheet-two-sentences",
-        "--discover-sheet-happy-overflow",
-        "--discover-glossary-invalid",
-        "--discover-glossary-grounding",
-        "--discover-missing-artifact",
-        "--discover-extra-artifact",
-        "--discover-write-outside",
-        "--discover-error",
+      const variants: Array<{ flag: string; agent: string }> = [
+        { flag: "--discover-invalid-sheet", agent: "sheet" },
+        { flag: "--discover-sheet-absolute", agent: "sheet" },
+        { flag: "--discover-sheet-stripped-home", agent: "sheet" },
+        { flag: "--discover-sheet-no-evidence", agent: "sheet" },
+        { flag: "--discover-sheet-secret", agent: "sheet" },
+        { flag: "--discover-sheet-two-sentences", agent: "sheet" },
+        { flag: "--discover-sheet-happy-overflow", agent: "sheet" },
+        { flag: "--discover-glossary-invalid", agent: "discover-glossary" },
+        { flag: "--discover-glossary-grounding", agent: "discover-glossary" },
+        { flag: "--discover-missing-artifact", agent: "discover-testing-strategy" },
+        { flag: "--discover-extra-artifact", agent: "sheet" },
+        { flag: "--discover-write-outside", agent: "sheet" },
+        { flag: "--discover-error", agent: "sheet" },
       ];
 
       for (const variant of variants) {
-        const fixture = createFixture(`failure-${variant.replace(/^--/, "")}`);
+        const fixture = createFixture(`failure-${variant.flag.replace(/^--/, "")}`);
         const healthy = startServer({ fixture });
         const client = await connect(healthy.url);
         let before: Map<string, string>;
@@ -938,10 +956,10 @@ describe("discover mode", () => {
           healthy.server.stop(true);
         }
 
-        const failing = startServer({ fixture, stub: ["--discover", variant] });
+        const failing = startServer({ fixture, stub: ["--discover", variant.flag] });
         const failingClient = await connect(failing.url);
         try {
-          failingClient.send({ type: "discoverProject" });
+          failingClient.send({ type: "discoverAgent", agent: variant.agent });
           await failingClient.waitFor((message) => message.type === "discoverStarted");
           const errored = await failingClient.waitFor((message) => message.type === "discoverError");
           expect(String(errored.message).trim().length).toBeGreaterThan(0);
@@ -984,7 +1002,7 @@ describe("discover mode", () => {
       const { server, url } = startServer({ fixture });
       const client = await connect(url);
       try {
-        client.send({ type: "discoverProject" });
+        client.send({ type: "discoverAgent", agent: "discover-testing-strategy" });
         await client.waitFor((message) => message.type === "discoverStarted");
         const errored = await client.waitFor((message) => message.type === "discoverError");
         expect(String(errored.message)).toContain("discover-testing-strategy");
@@ -1456,7 +1474,7 @@ describe("discover mode", () => {
         expect(spawnCount(fixture.logPath)).toBe(spawns);
         active.send({ type: "discoverProject" });
         const second = await active.waitFor((message) => message.type === "discoverError");
-        expect(String(second.message)).toContain("already active");
+        expect(String(second.message)).toMatch(/Run all is active|already active/);
         expect(spawnCount(fixture.logPath)).toBe(spawns);
       } finally {
         active.close();
@@ -1632,7 +1650,7 @@ describe("discover mode", () => {
         });
         const failingClient = await connect(failing.url);
         try {
-          failingClient.send({ type: "discoverProject" });
+          failingClient.send({ type: "discoverAgent", agent: "discover-glossary" });
           await failingClient.waitFor((message) => message.type === "discoverStarted");
           const errored = await failingClient.waitFor((message) => message.type === "discoverError");
           expect(String(errored.message)).toContain("significance.json");
@@ -1780,6 +1798,423 @@ describe("discover mode", () => {
         expect(publishedLevels).toHaveLength(1);
         expect(publishedLevels[0]?.happyPath).toBeUndefined();
         expect(publishedLevels[0]?.tests).toBe("1");
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+});
+
+interface DiscoverAgentRow {
+  id: string;
+  label: string;
+  command: string;
+  state: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  error: string | null;
+  prompt: { agent: string; editable: boolean; text: string | null; error: string | null } | null;
+}
+
+function agentsOf(state: DiscoverState): DiscoverAgentRow[] {
+  return ((state as unknown as { agents?: DiscoverAgentRow[] }).agents ?? []).slice();
+}
+
+function agentRow(state: DiscoverState, id: string): DiscoverAgentRow | undefined {
+  return agentsOf(state).find((row) => row.id === id);
+}
+
+/** Every path one agent owns, relative to the target root. */
+function ownedPaths(agent: string): Set<string> {
+  if (agent === "sheet") return new Set([".omp/discover/sheet.json"]);
+  if (agent === "discover-glossary") {
+    return new Set([
+      ".omp/discover/glossary/orders.glossary.yaml",
+      ".omp/discover/significance.json",
+      ".omp/discover/skills/discover-glossary/SKILL.md",
+      ".omp/skills/discover-glossary/SKILL.md",
+    ]);
+  }
+  return new Set([
+    `.omp/discover/skills/${agent}/SKILL.md`,
+    `.omp/skills/${agent}/SKILL.md`,
+  ]);
+}
+
+const BOOKKEEPING = new Set([".omp/discover/manifest.json", ".omp/discover/decisions.json"]);
+
+/** Byte equality outside the triggered agent's slice and the bookkeeping pair. */
+function expectOthersUnchanged(
+  before: Map<string, string>,
+  after: Map<string, string>,
+  agent: string,
+): void {
+  const owned = ownedPaths(agent);
+  const paths = new Set([...before.keys(), ...after.keys()]);
+  for (const path of paths) {
+    if (owned.has(path) || BOOKKEEPING.has(path)) continue;
+    expect(after.get(path)).toBe(before.get(path));
+  }
+}
+
+async function runAgent(client: TestClient, agent: string): Promise<DiscoverState> {
+  client.send({ type: "discoverAgent", agent });
+  const started = await client.waitFor(
+    (message) => message.type === "discoverStarted" && message.agent === agent,
+  );
+  expect(String(started.runId)).toMatch(/^run-/);
+  const stopped = await client.waitFor(
+    (message) => message.type === "discoverStopped" && message.agent === agent,
+  );
+  expect(stopped.completed).toBe(true);
+  return discoverState(client);
+}
+
+describe("discovery agents", () => {
+  test(
+    "each of the six triggers sends exactly its own prompt and staging directory",
+    async () => {
+      const agents: Array<{ id: string; command: string }> = [
+        { id: "sheet", command: "/discover-sheet" },
+        { id: "discover-testing-strategy", command: "/discover-testing-strategy" },
+        { id: "discover-naming-conventions", command: "/discover-naming-conventions" },
+        { id: "discover-coding-conventions", command: "/discover-coding-conventions" },
+        { id: "discover-architecture-boundaries", command: "/discover-architecture-boundaries" },
+        { id: "discover-glossary", command: "/discover-glossary" },
+      ];
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      try {
+        for (const agent of agents) {
+          const spawns = spawnCount(fixture.logPath);
+          client.send({ type: "discoverAgent", agent: agent.id });
+          const started = await client.waitFor(
+            (message) => message.type === "discoverStarted" && message.agent === agent.id,
+          );
+          expect(started.agent).toBe(agent.id);
+          const staging = join(
+            fixture.root,
+            ".omp",
+            "discover",
+            "staging",
+            String(started.runId),
+          );
+          await waitUntil(() => spawnCount(fixture.logPath) === spawns + 1, "one new peer");
+          expect(prompts(fixture.logPath)[spawns]).toBe(`${agent.command} ${staging}`);
+          const stopped = await client.waitFor(
+            (message) => message.type === "discoverStopped" && message.agent === agent.id,
+          );
+          expect(stopped.completed).toBe(true);
+          expect(existsSync(staging)).toBe(false);
+          const state = await discoverState(client);
+          expect(agentRow(state, agent.id)?.state).toBe("succeeded");
+          expect(state.activeAgent).toBeNull();
+          expect(spawnCount(fixture.logPath)).toBe(spawns + 1);
+        }
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    90000,
+  );
+
+  test(
+    "one agent's success publishes only its own slice and leaves the others byte-identical",
+    async () => {
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      try {
+        await runDiscover(client);
+        for (const agent of [
+          "sheet",
+          "discover-glossary",
+          "discover-testing-strategy",
+          "discover-naming-conventions",
+          "discover-coding-conventions",
+          "discover-architecture-boundaries",
+        ]) {
+          const before = ompBytes(fixture.root);
+          const spawns = spawnCount(fixture.logPath);
+          const state = await runAgent(client, agent);
+          expect(agentRow(state, agent)?.state).toBe("succeeded");
+          expect(spawnCount(fixture.logPath)).toBe(spawns + 1);
+          expectOthersUnchanged(before, ompBytes(fixture.root), agent);
+        }
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    120000,
+  );
+
+  test(
+    "a host with no published artifacts can publish any one agent's slice",
+    async () => {
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      try {
+        const state = await runAgent(client, "discover-testing-strategy");
+        expect(state.error).toBeNull();
+        expect(state.sheet).toBeNull();
+        expect(state.glossaries).toEqual([]);
+        expect(state.skills.map((skill) => skill.name)).toEqual([
+          "discover-testing-strategy",
+        ]);
+        expect(existsSync(join(fixture.root, ".omp", "discover", "sheet.json"))).toBe(false);
+        const manifest = state.manifest as Record<string, unknown>;
+        expect(manifest.sheetDigest).toBeNull();
+        expect(
+          existsSync(
+            join(fixture.root, ".omp", "discover", "skills", "discover-testing-strategy", "SKILL.md"),
+          ),
+        ).toBe(true);
+        expect(
+          existsSync(join(fixture.root, ".omp", "skills", "discover-testing-strategy", "SKILL.md")),
+        ).toBe(true);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "a failed single trigger publishes nothing and reports one error",
+    async () => {
+      const fixture = createFixture("agent-failure");
+      const healthy = startServer({ fixture });
+      const seed = await connect(healthy.url);
+      try {
+        await runDiscover(seed);
+      } finally {
+        seed.close();
+        healthy.server.stop(true);
+      }
+      const { server, url } = startServer({
+        fixture,
+        stub: ["--discover", "--discover-invalid-sheet"],
+      });
+      const client = await connect(url);
+      try {
+        const before = ompBytes(fixture.root);
+        client.send({ type: "discoverAgent", agent: "sheet" });
+        await client.waitFor((message) => message.type === "discoverStarted");
+        const errored = await client.waitFor((message) => message.type === "discoverError");
+        expect(errored.agent).toBe("sheet");
+        const stopped = await client.waitFor((message) => message.type === "discoverStopped");
+        expect(stopped.completed).toBe(false);
+        expect(ompBytes(fixture.root)).toEqual(before);
+        expect(
+          client.events.filter((message) => message.type === "discoverError").length,
+        ).toBe(1);
+        const state = await discoverState(client);
+        expect(agentRow(state, "sheet")?.state).toBe("failed");
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    60000,
+  );
+
+  test(
+    "stopping one agent leaves every published artifact byte-identical",
+    async () => {
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      try {
+        await runDiscover(client);
+        const before = ompBytes(fixture.root);
+        client.send({ type: "discoverAgent", agent: "discover-naming-conventions" });
+        await client.waitFor(
+          (message) => message.type === "discoverStarted" && message.agent === "discover-naming-conventions",
+        );
+        client.send({ type: "stopDiscover" });
+        const stopped = await client.waitFor((message) => message.type === "discoverStopped");
+        expect(stopped.completed).toBe(false);
+        expect(stopped.agent).toBe("discover-naming-conventions");
+        expect(ompBytes(fixture.root)).toEqual(before);
+        const state = await discoverState(client);
+        expect(state.active).toBe(false);
+        expect(agentRow(state, "discover-naming-conventions")?.state).toBe("failed");
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "a second agent is refused while one runs, and Run all is refused behind it",
+    async () => {
+      const { server, fixture, url } = startServer({
+        stub: ["--discover", "--discover-no-exit", "--delay-ms=60000"],
+      });
+      const client = await connect(url);
+      try {
+        client.send({ type: "discoverAgent", agent: "sheet" });
+        await client.waitFor((message) => message.type === "discoverStarted");
+        const spawns = spawnCount(fixture.logPath);
+        client.send({ type: "discoverAgent", agent: "discover-glossary" });
+        const refusal = await client.waitFor((message) => message.type === "discoverError");
+        expect(String(refusal.message)).toContain("already active");
+        expect(spawnCount(fixture.logPath)).toBe(spawns);
+        client.send({ type: "discoverProject" });
+        const runAllRefusal = await client.waitFor((message) => message.type === "discoverError");
+        expect(String(runAllRefusal.message)).toMatch(/active/i);
+        expect(spawnCount(fixture.logPath)).toBe(spawns);
+        client.send({ type: "stopDiscover" });
+        await client.waitFor((message) => message.type === "discoverStopped");
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
+    "an unknown or non-string agent is refused once, changes nothing, and spawns nothing",
+    async () => {
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      try {
+        for (const agent of ["ghost", 42, null]) {
+          client.send({ type: "discoverAgent", agent });
+          const refusal = await client.waitFor((message) => message.type === "discoverError");
+          expect(String(refusal.message)).toMatch(/agent/i);
+        }
+        expect(spawnCount(fixture.logPath)).toBe(0);
+        expect(ompBytes(fixture.root)).toEqual(new Map());
+        expect(client.events.filter((message) => message.type === "discoverStarted")).toHaveLength(0);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "Run all publishes each success and halts at the first failure without starting later agents",
+    async () => {
+      const { server, fixture, url } = startServer({
+        stub: ["--discover", "--discover-fail-agent=discover-naming-conventions"],
+      });
+      const client = await connect(url);
+      try {
+        client.send({ type: "discoverProject" });
+        await client.waitFor((message) => message.type === "discoverStarted");
+        const errored = await client.waitFor((message) => message.type === "discoverError");
+        expect(errored.agent).toBe("discover-naming-conventions");
+        const stopped = await client.waitFor((message) => message.type === "discoverStopped");
+        expect(stopped.completed).toBe(false);
+        expect(stopped.agent).toBe("discover-naming-conventions");
+        expect(
+          client.events.filter((message) => message.type === "discoverError").length,
+        ).toBe(1);
+        const started = client.events
+          .filter((message) => message.type === "discoverStarted")
+          .map((message) => message.agent);
+        expect(started).toEqual([
+          "sheet",
+          "discover-glossary",
+          "discover-testing-strategy",
+          "discover-naming-conventions",
+        ]);
+        expect(prompts(fixture.logPath).map((prompt) => prompt.split(" ")[0])).toEqual([
+          "/discover-sheet",
+          "/discover-glossary",
+          "/discover-testing-strategy",
+          "/discover-naming-conventions",
+        ]);
+
+        const state = await discoverState(client);
+        expect(state.runningAll).toBe(false);
+        expect(agentRow(state, "sheet")?.state).toBe("succeeded");
+        expect(agentRow(state, "discover-glossary")?.state).toBe("succeeded");
+        expect(agentRow(state, "discover-testing-strategy")?.state).toBe("succeeded");
+        expect(agentRow(state, "discover-naming-conventions")?.state).toBe("failed");
+        expect(agentRow(state, "discover-coding-conventions")?.state).toBe("idle");
+        expect(agentRow(state, "discover-architecture-boundaries")?.state).toBe("idle");
+
+        // The successful slices stay published and the failed one publishes nothing.
+        expect(existsSync(join(fixture.root, ".omp", "discover", "sheet.json"))).toBe(true);
+        expect(
+          existsSync(join(fixture.root, ".omp", "discover", "glossary", "orders.glossary.yaml")),
+        ).toBe(true);
+        expect(
+          existsSync(
+            join(fixture.root, ".omp", "skills", "discover-testing-strategy", "SKILL.md"),
+          ),
+        ).toBe(true);
+        expect(
+          existsSync(join(fixture.root, ".omp", "discover", "skills", "discover-naming-conventions")),
+        ).toBe(false);
+        expect(
+          existsSync(
+            join(fixture.root, ".omp", "skills", "discover-architecture-boundaries", "SKILL.md"),
+          ),
+        ).toBe(false);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    60000,
+  );
+
+  test(
+    "each card carries its own prompt bytes, command, and editable prompt state",
+    async () => {
+      const fixture = createFixture("agent-prompts");
+      mkdirSync(join(fixture.root, ".devboard", "prompts"), { recursive: true });
+      writeFileSync(
+        join(fixture.root, ".devboard", "package.json"),
+        `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.1.0" }, null, 2)}\n`,
+      );
+      const promptsDir = join(import.meta.dir, "..", "prompts");
+      const expected = new Map<string, string>();
+      for (const file of [
+        "discover-sheet.md",
+        "discover-testing-strategy.md",
+        "discover-naming-conventions.md",
+        "discover-coding-conventions.md",
+        "discover-architecture-boundaries.md",
+        "discover-glossary.md",
+      ]) {
+        const text = readFileSync(join(promptsDir, file), "utf8");
+        expected.set(`/discover-${file.slice("discover-".length, -".md".length)}`, text);
+        writeFileSync(join(fixture.root, ".devboard", "prompts", file), text);
+      }
+      const { server, url } = startServer({ fixture });
+      const client = await connect(url);
+      try {
+        const state = await discoverState(client);
+        const agents = agentsOf(state);
+        expect(agents.map((agent) => agent.id)).toEqual([
+          "sheet",
+          "discover-testing-strategy",
+          "discover-naming-conventions",
+          "discover-coding-conventions",
+          "discover-architecture-boundaries",
+          "discover-glossary",
+        ]);
+        const texts = new Set<string>();
+        for (const agent of agents) {
+          expect(agent.prompt?.editable).toBe(true);
+          expect(agent.prompt?.error).toBeNull();
+          const command = agent.id === "sheet" ? "/discover-sheet" : `/${agent.id}`;
+          expect(agent.prompt?.text).toBe(expected.get(command));
+          texts.add(agent.prompt?.text ?? "");
+        }
+        expect(texts.size).toBe(6);
       } finally {
         client.close();
         server.stop(true);

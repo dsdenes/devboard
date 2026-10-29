@@ -637,3 +637,112 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
 ]);
 
 export const agentRegistry: AgentRegistry = defineAgentRegistry(DEFAULT_AGENT_DESCRIPTORS);
+
+// ------------------------------------------------------------ discover agents
+
+/**
+ * The six independently triggerable Discover agents. Unlike a background
+ * agent, each one is a one-shot ACP turn: it owns exactly one prompt file, one
+ * slash command, and one slice of the published Discover artifacts. The client
+ * imports this table for labels and order; the server imports it for validation
+ * and ownership.
+ */
+
+export const DISCOVER_AGENT_IDS = [
+  "sheet",
+  "discover-testing-strategy",
+  "discover-naming-conventions",
+  "discover-coding-conventions",
+  "discover-architecture-boundaries",
+  "discover-glossary",
+] as const;
+
+export type DiscoverAgentId = (typeof DISCOVER_AGENT_IDS)[number];
+
+export interface DiscoverAgentDescriptor {
+  id: DiscoverAgentId;
+  label: string;
+  /** The slash command the peer receives, followed by its staging directory. */
+  command: string;
+  /** The one file under `.devboard/prompts` this agent reads and edits. */
+  promptFile: string;
+  /** The one Discover skill this agent owns; null for the project sheet. */
+  skill: string | null;
+  /** True when the agent also owns the glossary artifacts and sidecars. */
+  glossary: boolean;
+}
+
+/** Sidebar order, matching the acceptance list. */
+export const DISCOVER_AGENTS: readonly DiscoverAgentDescriptor[] = Object.freeze([
+  {
+    id: "sheet",
+    label: "Data Sheet",
+    command: "/discover-sheet",
+    promptFile: "discover-sheet.md",
+    skill: null,
+    glossary: false,
+  },
+  {
+    id: "discover-testing-strategy",
+    label: "Testing Strategy",
+    command: "/discover-testing-strategy",
+    promptFile: "discover-testing-strategy.md",
+    skill: "discover-testing-strategy",
+    glossary: false,
+  },
+  {
+    id: "discover-naming-conventions",
+    label: "Naming Conventions",
+    command: "/discover-naming-conventions",
+    promptFile: "discover-naming-conventions.md",
+    skill: "discover-naming-conventions",
+    glossary: false,
+  },
+  {
+    id: "discover-coding-conventions",
+    label: "Coding Conventions",
+    command: "/discover-coding-conventions",
+    promptFile: "discover-coding-conventions.md",
+    skill: "discover-coding-conventions",
+    glossary: false,
+  },
+  {
+    id: "discover-architecture-boundaries",
+    label: "Architecture & Boundaries",
+    command: "/discover-architecture-boundaries",
+    promptFile: "discover-architecture-boundaries.md",
+    skill: "discover-architecture-boundaries",
+    glossary: false,
+  },
+  {
+    id: "discover-glossary",
+    label: "Glossary Agent",
+    command: "/discover-glossary",
+    promptFile: "discover-glossary.md",
+    skill: "discover-glossary",
+    glossary: true,
+  },
+]);
+
+/** The fixed Run all order: the sheet and glossary ground the four skills. */
+export const DISCOVER_RUN_ORDER: readonly DiscoverAgentId[] = Object.freeze([
+  "sheet",
+  "discover-glossary",
+  "discover-testing-strategy",
+  "discover-naming-conventions",
+  "discover-coding-conventions",
+  "discover-architecture-boundaries",
+]);
+
+const DISCOVER_AGENTS_BY_ID = new Map<string, DiscoverAgentDescriptor>(
+  DISCOVER_AGENTS.map((descriptor) => [descriptor.id, descriptor] as const),
+);
+
+/** True for one of the six ids; never for another string. */
+export function isDiscoverAgentId(value: unknown): value is DiscoverAgentId {
+  return typeof value === "string" && DISCOVER_AGENTS_BY_ID.has(value);
+}
+
+export function discoverAgent(id: string): DiscoverAgentDescriptor | undefined {
+  return DISCOVER_AGENTS_BY_ID.get(id);
+}

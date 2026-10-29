@@ -436,10 +436,36 @@ export type DiscoverTarget =
       checkout: boolean;
     };
 
+/** One discovery card's prompt, as the server read it. */
+export interface DiscoverAgentPrompt {
+  agent: string;
+  editable: boolean;
+  text: string | null;
+  error: string | null;
+}
+
+/** One discovery card's run state and its own prompt file. */
+export interface DiscoverAgentState {
+  id: string;
+  label: string;
+  command: string;
+  state: "idle" | "running" | "succeeded" | "failed";
+  startedAt: string | null;
+  endedAt: string | null;
+  error: string | null;
+  prompt: DiscoverAgentPrompt | null;
+}
+
 export interface DiscoverStatePayload {
   active: boolean;
   runId: string | null;
   startedAt: string | null;
+  /** The agent the active run belongs to, or null when nothing runs. */
+  activeAgent: string | null;
+  /** True while the six agents run as one Run all sequence. */
+  runningAll: boolean;
+  /** The six discovery cards in sidebar order. */
+  agents: DiscoverAgentState[];
   interrupted: boolean;
   stale: boolean;
   warnings: string[];

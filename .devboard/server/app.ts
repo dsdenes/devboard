@@ -13,8 +13,15 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { ServerWebSocket } from "bun";
 import { WatchdogActivity, type WatchdogActivityOptions } from "./watchdog";
 import { BackgroundAgentBridge, type AgentCommand } from "./agents/bridge";
-import { AgentPromptController } from "./agents/prompt";
-import { agentRegistry } from "./agents/registry";
+import { AgentPromptController, DiscoverPromptController } from "./agents/prompt";
+import {
+  agentRegistry,
+  DISCOVER_AGENTS,
+  DISCOVER_RUN_ORDER,
+  discoverAgent,
+  isDiscoverAgentId,
+  type DiscoverAgentId,
+} from "./agents/registry";
 import {
   AcpConnection,
   agentPrompt,
@@ -59,7 +66,7 @@ import {
   claimScratchEntry,
   cleanupRemoteScratch,
   listRetainedProjects,
-  publishStaged,
+  publishAgentStaged,
   readArtifacts,
   readRetainedProject,
   rejectGlossaryTerm,
@@ -75,7 +82,8 @@ import {
   retainedProjectReady,
   saveLiveSkill,
   stagingDirectory,
-  validateStaged,
+  validateAgentStaged,
+  type AgentStaged,
   type DiscoverArtifacts,
   type RemoteCloneRequest,
   type RemoteCloneResult,
@@ -397,6 +405,8 @@ interface StoredDiscover {
   runId: string;
   stagingDir: string;
   startedAt: string;
+  /** The one agent the replacement re-spawns. */
+  agent: string;
   activity: string[];
   question: StoredQuestion | null;
   /** The remote project the run crawls; `null` for this checkout's host. */
@@ -633,6 +643,9 @@ type ClientMessage =
   | { type: "flowAnswer"; id?: unknown; value?: unknown; target?: unknown }
   | { type: "answer"; id?: unknown; value?: unknown; lane?: unknown }
   | { type: "discoverProject" }
+  | { type: "discoverAgent"; agent?: unknown }
+  | { type: "saveDiscoverPrompt"; agent?: unknown; text?: unknown }
+  | { type: "chatDiscoverPrompt"; agent?: unknown; message?: unknown; text?: unknown }
   | { type: "discoverRemote"; url?: unknown }
   | { type: "switchDiscoverRemote"; url?: unknown }
   | { type: "removeDiscoverRemote"; url?: unknown }
@@ -832,6 +845,21 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       };
     case "discoverProject":
       return { type: "discoverProject" };
+    case "discoverAgent":
+      return { type: "discoverAgent", agent: "agent" in value ? value.agent : undefined };
+    case "saveDiscoverPrompt":
+      return {
+        type: "saveDiscoverPrompt",
+        agent: "agent" in value ? value.agent : undefined,
+        text: "text" in value ? value.text : undefined,
+      };
+    case "chatDiscoverPrompt":
+      return {
+        type: "chatDiscoverPrompt",
+        agent: "agent" in value ? value.agent : undefined,
+        message: "message" in value ? value.message : undefined,
+        text: "text" in value ? value.text : undefined,
+      };
     case "discoverRemote":
       // A missing or non-string URL is a malformed payload, never a command.
       return "url" in value && typeof value.url === "string"
@@ -1606,8 +1634,12 @@ function parseStoredDiscover(value: unknown): StoredDiscover | null {
   const stagingDir = record.stagingDir;
   const startedAt = record.startedAt;
   const activity = parseStoredActivity(record.activity);
+  const agent = record.agent;
   if (typeof runId !== "string" || typeof stagingDir !== "string") return null;
   if (typeof startedAt !== "string" || activity === undefined) return null;
+  // A run recorded before the split has no agent to re-spawn; the interruption
+  // stays recorded and nothing is published.
+  if (!isDiscoverAgentId(agent)) return null;
   // An absent field is an older host run, except that a run staged under the
   // remote scratch root is a remote run this version cannot name. Never resume
   // that one as a host crawl.
@@ -1622,6 +1654,7 @@ function parseStoredDiscover(value: unknown): StoredDiscover | null {
     runId,
     stagingDir,
     startedAt,
+    agent,
     activity,
     question: parseStoredQuestion(record.question),
     remote,
@@ -2024,14 +2057,25 @@ export function createApp(options: AppOptions) {
   interface DiscoverRun {
     runId: string;
     stagingDir: string;
-    /** The target root the crawl was started against: host, or a run's checkout. */
+    /** The target root the agent was started against: host, or a run's checkout. */
     cwd: string;
     startedAt: string;
-    agent: AcpConnection | undefined;
+    /** The one Discover agent this peer runs. */
+    id: DiscoverAgentId;
+    /** `all` while the run belongs to a Run all sequence. */
+    mode: "single" | "all";
+    peer: AcpConnection | undefined;
     activity: string[];
     question: RunQuestion | null;
     /** The remote project this run re-discovers, when the target is remote. */
     remote?: RemoteRepository;
+  }
+  /** One card's last reported run state. */
+  interface DiscoverAgentStatus {
+    state: "idle" | "running" | "succeeded" | "failed";
+    startedAt: string | null;
+    endedAt: string | null;
+    error: string | null;
   }
   let discoverRun: DiscoverRun | undefined;
   let discoverInterrupted = false;
@@ -2045,7 +2089,44 @@ export function createApp(options: AppOptions) {
   /** A reset owned the checkout at death; its work is never resumed. */
   let restoredResetActive = false;
   let lastDiscoverBusy: string | null = null;
-  const DISCOVER_PROMPT = "/discover";
+  /** One status per card; a new single trigger leaves the others as they were. */
+  const discoverAgentStates = new Map<string, DiscoverAgentStatus>();
+  for (const descriptor of DISCOVER_AGENTS) {
+    discoverAgentStates.set(descriptor.id, {
+      state: "idle",
+      startedAt: null,
+      endedAt: null,
+      error: null,
+    });
+  }
+  /** True while a Run all sequence owns the checkout. */
+  let discoverAllActive = false;
+
+  function discoverStatus(id: string): DiscoverAgentStatus {
+    return (
+      discoverAgentStates.get(id) ?? {
+        state: "idle",
+        startedAt: null,
+        endedAt: null,
+        error: null,
+      }
+    );
+  }
+
+  function setDiscoverStatus(id: string, status: DiscoverAgentStatus): void {
+    discoverAgentStates.set(id, status);
+  }
+
+  function resetDiscoverStatuses(): void {
+    for (const descriptor of DISCOVER_AGENTS) {
+      setDiscoverStatus(descriptor.id, {
+        state: "idle",
+        startedAt: null,
+        endedAt: null,
+        error: null,
+      });
+    }
+  }
 
   /**
    * The remote target is a source-checkout-only manual-testing aid: the
@@ -2439,6 +2520,20 @@ export function createApp(options: AppOptions) {
     log: (line) => process.stderr.write(`${line}\n`),
   });
 
+  /**
+   * The prompt half of each Discover card. Each of the six reads, saves, and
+   * chats about its own prompt file; an installed host shows the bytes
+   * read-only, and every prompt write and chat is refused there.
+   */
+  const discoverPrompts = new DiscoverPromptController({
+    repoDir,
+    agentCommand,
+    agentEnvironment: peerEnvironment,
+    harnessDir: runningHarnessDir(),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+  });
+
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
     const children: RecordedChild[] = [];
@@ -2451,7 +2546,7 @@ export function createApp(options: AppOptions) {
     remember(goalCreation?.agent);
     remember(goalRevision?.agent);
     remember(skillsPreparation?.agent);
-    remember(discoverRun?.agent, discoverRun?.cwd);
+    remember(discoverRun?.peer, discoverRun?.cwd);
     for (const lane of liveLanes) remember(lane.agent);
     // Flow's own peers — implementation, goal interview, analyst, and widget
     // conversation — are recorded by their controller with their real cwds.
@@ -2545,6 +2640,7 @@ export function createApp(options: AppOptions) {
               runId: discoverRun.runId,
               stagingDir: discoverRun.stagingDir,
               startedAt: discoverRun.startedAt,
+              agent: discoverRun.id,
               activity: [...discoverRun.activity],
               question: captureQuestion(discoverRun.question),
               remote:
@@ -2909,6 +3005,21 @@ export function createApp(options: AppOptions) {
       active: discoverRun !== undefined,
       runId: discoverRun?.runId ?? null,
       startedAt: discoverRun?.startedAt ?? null,
+      activeAgent: discoverRun?.id ?? null,
+      runningAll: discoverAllActive,
+      agents: DISCOVER_AGENTS.map((descriptor) => {
+        const status = discoverStatus(descriptor.id);
+        return {
+          id: descriptor.id,
+          label: descriptor.label,
+          command: descriptor.command,
+          state: status.state,
+          startedAt: status.startedAt,
+          endedAt: status.endedAt,
+          error: status.error,
+          prompt: discoverPrompts.snapshot(descriptor.id),
+        };
+      }),
       interrupted: discoverInterrupted,
       stale: showingInFlight ? false : discoverStale,
       warnings: showingInFlight ? [] : discoverWarnings,
@@ -2931,13 +3042,15 @@ export function createApp(options: AppOptions) {
             },
       cloning: discoverCloning === null ? null : { url: discoverCloning.url },
       manifest: artifacts?.manifest ?? null,
-      freshness: artifacts?.sheet.freshness ?? null,
+      freshness: artifacts?.sheet?.freshness ?? null,
       sheet: artifacts?.sheet ?? null,
       // The manifest's own invocations for the commands the sheet recorded, so
       // the interface shows `npm test` rather than the program it expands to.
       commandAliases: artifacts === null ? [] : declaredCommandAliases(root),
       dependencyRepositories:
-        artifacts === null ? {} : dependencyRepositories(root, artifacts.sheet),
+        artifacts === null || artifacts.sheet === null
+          ? {}
+          : dependencyRepositories(root, artifacts.sheet),
       glossaries: artifacts?.glossaries ?? [],
       glossaryUsage: artifacts?.usage ?? {},
       glossarySignificance: artifacts?.significance ?? {},
@@ -2976,20 +3089,27 @@ export function createApp(options: AppOptions) {
   function failDiscover(run: DiscoverRun, message: string) {
     if (discoverRun !== run) return;
     discoverRun = undefined;
+    discoverAllActive = false;
     run.question = null;
-    run.agent?.close();
+    run.peer?.close();
     try {
       removeStaging(run.cwd, run.runId);
     } catch {
       // A staging directory that cannot be removed is reported by the next run.
     }
+    setDiscoverStatus(run.id, {
+      state: "failed",
+      startedAt: discoverStatus(run.id).startedAt ?? run.startedAt,
+      endedAt: new Date().toISOString(),
+      error: message,
+    });
     // A failed remote run leaves no checkout and no partial snapshot: the
     // retained project and the active target are exactly what they were.
     clearRemoteCheckout();
     refreshDiscoverSnapshot();
-    broadcast({ type: "discoverError", message });
+    broadcast({ type: "discoverError", message, agent: run.id });
     broadcastDiscoverState();
-    broadcast({ type: "discoverStopped", completed: false });
+    broadcast({ type: "discoverStopped", completed: false, agent: run.id, mode: run.mode });
   }
 
   /** True while a Discover run or clone is the active work; used by the refusal text. */
@@ -3089,33 +3209,73 @@ export function createApp(options: AppOptions) {
     return true;
   }
 
-  async function startDiscoverProject(
+  /** True while one agent or a Run all sequence holds the Discover gate. */
+  function discoverActive(): boolean {
+    return discoverRun !== undefined || discoverAllActive;
+  }
+
+  /** The root and project name one command runs against, cloning first if needed. */
+  async function discoverRoot(ws: { send(data: string): unknown }): Promise<{
+    root: string;
+    remote: RemoteRepository | undefined;
+    project: string;
+  } | null> {
+    // A retained remote project has no checkout: the command recreates one.
+    if (remoteTarget !== undefined && remoteCheckout === null) {
+      if (!(await cloneRemoteProject(ws, remoteTarget))) return null;
+    }
+    const checkout = remoteCheckout;
+    const remote = checkout?.target;
+    const root = checkout === null ? repoDir : checkout.dir;
+    return {
+      root,
+      remote,
+      project: remote === undefined ? project : `${remote.owner}/${remote.repo}`,
+    };
+  }
+
+  /** Refuses a start that would run beside a live agent or Run all. */
+  function discoverStartRefusal(
     ws: { send(data: string): unknown },
-    resumed?: StoredDiscover,
-  ) {
+  ): boolean {
     if (discoverCloning !== null) {
       discoverFailure(ws, "A repository clone is active. Wait for it to finish.");
-      return;
+      return true;
+    }
+    if (discoverAllActive) {
+      discoverFailure(ws, "Run all is active. Wait for it to finish or stop it.");
+      return true;
     }
     if (discoverRun !== undefined) {
       discoverFailure(ws, "A Discover run is already active.");
-      return;
+      return true;
     }
     const busy = discoverBusyReason();
     if (busy !== null) {
       discoverFailure(ws, `A Discover run cannot start: ${busy}`);
-      return;
+      return true;
     }
+    return false;
+  }
 
-    // A retained remote project has no checkout: the run recreates one first.
-    if (remoteTarget !== undefined && remoteCheckout === null) {
-      if (!(await cloneRemoteProject(ws, remoteTarget))) return;
+  /**
+   * Runs exactly one agent against one root: one peer, one staging directory,
+   * one validated slice, one publication. Resolves true only when the slice
+   * was published; a failure or a stop reports itself and resolves false.
+   */
+  async function runDiscoverAgent(
+    ws: { send(data: string): unknown },
+    id: DiscoverAgentId,
+    mode: "single" | "all",
+    target: { root: string; remote: RemoteRepository | undefined; project: string },
+    resumed?: StoredDiscover,
+  ): Promise<boolean> {
+    const descriptor = discoverAgent(id);
+    if (descriptor === undefined) {
+      discoverFailure(ws, `Unknown Discover agent: ${id}.`);
+      return false;
     }
-
-    const checkout = remoteCheckout;
-    const remote = checkout?.target;
-    const root = checkout === null ? repoDir : checkout.dir;
-    const projectName = remote === undefined ? project : `${remote.owner}/${remote.repo}`;
+    const { root, remote, project: projectName } = target;
     let factsBefore;
     const runId = `run-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
     const stagingDir = stagingDirectory(root, runId);
@@ -3125,43 +3285,52 @@ export function createApp(options: AppOptions) {
     } catch (error) {
       discoverFailure(
         ws,
-        `Could not prepare the Discover staging directory: ${
+        `Could not prepare the ${descriptor.label} staging directory: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      return;
+      return false;
     }
 
     const request = ++discoverRequest;
+    const startedAt = resumed?.startedAt ?? new Date().toISOString();
     const run: DiscoverRun = {
       runId,
       stagingDir,
       cwd: root,
-      // A resumed run keeps its logical start and the activity its successor
-      // already saw; only the peer and its staging are new.
-      startedAt: resumed?.startedAt ?? new Date().toISOString(),
-      agent: undefined,
+      startedAt,
+      id,
+      mode,
+      peer: undefined,
+      // A resumed run keeps the activity its successor already saw; only the
+      // peer and its staging are new.
       activity: resumed === undefined ? [] : [...resumed.activity],
       question: null,
       ...(remote === undefined ? {} : { remote }),
     };
+    setDiscoverStatus(id, {
+      state: "running",
+      startedAt,
+      endedAt: null,
+      error: null,
+    });
     discoverRun = run;
     discoverInterrupted = false;
     journal.write("lifecycle", "discover-start");
-    broadcast({ type: "discoverStarted", runId, startedAt: run.startedAt });
+    broadcast({ type: "discoverStarted", runId, startedAt, agent: id, mode });
     broadcastDiscoverState();
 
-    let agent: AcpConnection;
+    let peer: AcpConnection;
     try {
       const env = await peerEnvironment();
-      // A stop or disposal during provider selection clears the run. The
-      // crawl must not start after the operator ended it.
-      if (discoverRun !== run || request !== discoverRequest) return;
+      // A stop or disposal during provider selection clears the run. The turn
+      // must not start after the operator ended it.
+      if (discoverRun !== run || request !== discoverRequest) return false;
       // The crawl root may be a remote clone. OMP would load its `.omp/skills`
       // and compress the descriptions in the background; a foreign skill logs
-      // a warning the watchdog files. The crawl contract already excludes
-      // every `.omp` path, so the peer runs without skill discovery or loading.
-      agent = new AcpConnection({
+      // a warning the watchdog files. The agent contract already excludes every
+      // `.omp` path, so the peer runs without skill discovery or loading.
+      peer = new AcpConnection({
         command: `${agentCommand} --no-skills`,
         cwd: root,
         env,
@@ -3172,8 +3341,8 @@ export function createApp(options: AppOptions) {
           appendActivity(run.activity, activity.text, append);
           broadcast(
             append
-              ? { type: "discoverActivity", text: activity.text, append: true }
-              : { type: "discoverActivity", text: activity.text },
+              ? { type: "discoverActivity", agent: id, text: activity.text, append: true }
+              : { type: "discoverActivity", agent: id, text: activity.text },
           );
         },
         onQuestion(question: AcpQuestion) {
@@ -3186,6 +3355,7 @@ export function createApp(options: AppOptions) {
           };
           broadcast({
             type: "discoverQuestion",
+            agent: id,
             id: question.id,
             message: question.message,
             options: question.options,
@@ -3199,26 +3369,30 @@ export function createApp(options: AppOptions) {
     } catch (error) {
       failDiscover(
         run,
-        `Could not start the Discover agent: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not start the ${descriptor.label} agent: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
-      return;
+      return false;
     }
     if (discoverRun !== run || request !== discoverRequest) {
-      agent.close();
-      return;
+      peer.close();
+      return false;
     }
-    run.agent = agent;
+    run.peer = peer;
 
     try {
-      await agent.run(`${DISCOVER_PROMPT} ${stagingDir}`);
+      await peer.run(`${descriptor.command} ${stagingDir}`);
     } catch (error) {
       failDiscover(
         run,
-        `The Discover crawl failed: ${error instanceof Error ? error.message : String(error)}`,
+        `The ${descriptor.label} run failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
-      return;
+      return false;
     }
-    if (discoverRun !== run || request !== discoverRequest) return;
+    if (discoverRun !== run || request !== discoverRequest) return false;
 
     try {
       let present = true;
@@ -3230,38 +3404,62 @@ export function createApp(options: AppOptions) {
       if (!present) {
         throw new Error(
           remote === undefined
-            ? "the host directory disappeared during the crawl"
-            : "the run's checkout was removed during the crawl",
+            ? "the host directory disappeared during the run"
+            : "the run's checkout was removed during the run",
         );
       }
       const facts = hostFacts(root);
       if (facts.fingerprint !== factsBefore.fingerprint) {
-        throw new Error("the crawl changed host files outside its staging directory");
+        throw new Error("the agent changed host files outside its staging directory");
       }
-      const staged = validateStaged(root, stagingDir, {
+      const staged: AgentStaged = validateAgentStaged(root, stagingDir, {
         project: projectName,
         commit: facts.commit,
         dirty: facts.dirty,
         discoveredAt: new Date().toISOString(),
         fingerprint: facts.fingerprint,
-      });
-      publishStaged({ repoDir: root, runId, facts, staged, project: projectName });
+      }, id);
+      publishAgentStaged({ repoDir: root, runId, facts, staged, project: projectName, agent: id });
     } catch (error) {
       failDiscover(
         run,
-        `Discover failed: ${error instanceof Error ? error.message : String(error)}`,
+        `${descriptor.label} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
-      return;
+      return false;
     }
 
     try {
       removeStaging(root, runId);
     } catch {
-      // The run's staging is best-effort; the published set is already valid.
+      // The run's staging is best-effort; the published slice is already valid.
     }
+    discoverRun = undefined;
+    run.question = null;
+    run.peer?.close();
+    setDiscoverStatus(id, {
+      state: "succeeded",
+      startedAt,
+      endedAt: new Date().toISOString(),
+      error: null,
+    });
+    refreshDiscoverSnapshot();
+    broadcastDiscoverState();
+    return true;
+  }
+
+  /**
+   * Ends a successful command: retains a remote snapshot, releases the
+   * checkout, and reports the one completion frame its trigger answers.
+   */
+  function finishDiscoverCommand(
+    target: { root: string; remote: RemoteRepository | undefined },
+    mode: "single" | "all",
+    agent: DiscoverAgentId,
+  ): void {
+    const { root, remote } = target;
     if (remote !== undefined) {
-      // Only a successful crawl replaces the snapshot, and it does so before
-      // the run is torn down so a failed retention reports like a failed crawl.
       const retained = retainRemoteProject(
         remoteRoot,
         root,
@@ -3271,23 +3469,107 @@ export function createApp(options: AppOptions) {
           repo: remote.repo,
           completedAt: new Date().toISOString(),
         },
-        run.runId,
+        remoteCheckout?.runId ?? `${Date.now()}`,
       );
       if (retained !== null) {
-        failDiscover(run, `Discover failed: ${retained}`);
+        discoverAllActive = false;
+        setDiscoverStatus(agent, {
+          state: "failed",
+          startedAt: discoverStatus(agent).startedAt,
+          endedAt: new Date().toISOString(),
+          error: `Discover failed: ${retained}`,
+        });
+        clearRemoteCheckout();
+        refreshDiscoverSnapshot();
+        broadcast({ type: "discoverError", message: `Discover failed: ${retained}`, agent });
+        broadcastDiscoverState();
+        broadcast({ type: "discoverStopped", completed: false, agent, mode });
         return;
       }
+      remoteTarget = remote;
     }
-
-    discoverRun = undefined;
-    run.question = null;
-    run.agent?.close();
-    if (remote !== undefined) remoteTarget = remote;
     clearRemoteCheckout();
     discoverInterrupted = false;
+    discoverAllActive = false;
     refreshDiscoverSnapshot();
-    broadcast({ type: "discoverState", state: discoverStatePayload() });
-    broadcast({ type: "discoverStopped", completed: true });
+    broadcastDiscoverState();
+    broadcast({ type: "discoverStopped", completed: true, agent, mode });
+  }
+
+  /** Starts one agent from its card. */
+  async function startDiscoverAgentCommand(
+    ws: { send(data: string): unknown },
+    agent: unknown,
+  ): Promise<void> {
+    if (!isDiscoverAgentId(agent)) {
+      discoverFailure(
+        ws,
+        typeof agent === "string"
+          ? `Unknown Discover agent: ${agent}.`
+          : "A Discover start needs an agent id.",
+      );
+      return;
+    }
+    if (discoverStartRefusal(ws)) return;
+    const target = await discoverRoot(ws);
+    if (target === null) return;
+    const published = await runDiscoverAgent(ws, agent, "single", target);
+    if (!published) return;
+    finishDiscoverCommand(target, "single", agent);
+  }
+
+  /** Runs the six agents in the fixed order, publishing each slice as it lands. */
+  async function startDiscoverAll(ws: { send(data: string): unknown }): Promise<void> {
+    if (discoverStartRefusal(ws)) return;
+    const target = await discoverRoot(ws);
+    if (target === null) return;
+    resetDiscoverStatuses();
+    discoverAllActive = true;
+    broadcastDiscoverState();
+    let last: DiscoverAgentId = DISCOVER_RUN_ORDER[0] as DiscoverAgentId;
+    for (const id of DISCOVER_RUN_ORDER) {
+      last = id;
+      const published = await runDiscoverAgent(ws, id, "all", target);
+      if (!published) return;
+    }
+    finishDiscoverCommand(target, "all", last);
+  }
+
+  /** Re-spawns the one agent whose process died, against its stored target. */
+  async function resumeDiscoverRun(stored: StoredDiscover): Promise<void> {
+    if (!isDiscoverAgentId(stored.agent)) return;
+    try {
+      if (stored.remote === null) {
+        if (discoverStartRefusal(restoreTarget)) return;
+        const target = await discoverRoot(restoreTarget);
+        if (target === null) return;
+        const published = await runDiscoverAgent(
+          restoreTarget,
+          stored.agent,
+          "single",
+          target,
+          stored,
+        );
+        if (published) finishDiscoverCommand(target, "single", stored.agent);
+        return;
+      }
+      if (!remoteAvailable) {
+        // An installed host cannot re-clone. The interruption remains recorded.
+        discoverFailure(
+          restoreTarget,
+          `The Discover run started at ${stored.startedAt} was interrupted when the server restarted, and a remote run cannot be resumed in this installation.`,
+        );
+        refreshDiscoverSnapshot();
+        broadcastDiscoverState();
+        return;
+      }
+      await startDiscoverRemote(restoreTarget, stored.remote.url, stored);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      discoverFailure(restoreTarget, `The Discover run could not be resumed: ${detail}`);
+      refreshDiscoverSnapshot();
+      broadcastDiscoverState();
+    }
   }
 
   /** Refuses a remote command in an installed host; the control never renders there. */
@@ -3315,7 +3597,7 @@ export function createApp(options: AppOptions) {
       discoverFailure(ws, "A repository clone is already active.");
       return;
     }
-    if (discoverRun !== undefined) {
+    if (discoverActive()) {
       discoverFailure(ws, "A Discover run is already active.");
       return;
     }
@@ -3337,39 +3619,22 @@ export function createApp(options: AppOptions) {
       return;
     }
     if (!(await cloneRemoteProject(ws, parsed.repository))) return;
-    await startDiscoverProject(ws, resumed);
-  }
-
-  /**
-   * Re-spawns a crawl whose process died. The target is the one the stored run
-   * was started against, never the currently displayed project: a remote run
-   * re-clones its own project so the retained snapshot is replaced only by a
-   * successful crawl. Activity the killed process already reported stays as
-   * the prefix of the resumed run.
-   */
-  async function resumeDiscoverRun(stored: StoredDiscover): Promise<void> {
-    try {
-      if (stored.remote === null) {
-        await startDiscoverProject(restoreTarget, stored);
-        return;
-      }
-      if (!remoteAvailable) {
-        // An installed host cannot re-clone. The interruption remains recorded.
-        discoverFailure(
-          restoreTarget,
-          `The Discover run started at ${stored.startedAt} was interrupted when the server restarted, and a remote run cannot be resumed in this installation.`,
-        );
-        refreshDiscoverSnapshot();
-        broadcastDiscoverState();
-        return;
-      }
-      await startDiscoverRemote(restoreTarget, stored.remote.url, stored);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      discoverFailure(restoreTarget, `The Discover run could not be resumed: ${detail}`);
-      refreshDiscoverSnapshot();
-      broadcastDiscoverState();
+    if (resumed !== undefined) {
+      if (!isDiscoverAgentId(resumed.agent)) return;
+      const target = await discoverRoot(ws);
+      if (target === null) return;
+      const published = await runDiscoverAgent(
+        ws,
+        resumed.agent,
+        "single",
+        target,
+        resumed,
+      );
+      if (published) finishDiscoverCommand(target, "single", resumed.agent);
+      return;
     }
+    // A repository URL discovers the whole project: Run all, once.
+    await startDiscoverAll(ws);
   }
 
   /** The retained project a submitted URL names, by lowercased owner/repo. */
@@ -3393,7 +3658,7 @@ export function createApp(options: AppOptions) {
       discoverFailure(ws, "A repository clone is active. Wait for it to finish.");
       return true;
     }
-    if (discoverRun !== undefined) {
+    if (discoverActive()) {
       discoverFailure(ws, `A Discover run is active. Stop it before ${action}.`);
       return true;
     }
@@ -3453,7 +3718,7 @@ export function createApp(options: AppOptions) {
       discoverFailure(ws, "A repository clone is active. Wait for it to finish.");
       return;
     }
-    if (discoverRun !== undefined) {
+    if (discoverActive()) {
       discoverFailure(ws, "A Discover run is active. Stop it before clearing the remote target.");
       return;
     }
@@ -3475,22 +3740,36 @@ export function createApp(options: AppOptions) {
 
   function stopDiscover(ws: { send(data: string): unknown }) {
     const run = discoverRun;
-    if (run === undefined) {
+    if (run === undefined && !discoverAllActive) {
       discoverFailure(ws, "No Discover run is active.");
       return;
     }
     discoverRequest += 1;
     discoverRun = undefined;
-    run.question = null;
-    run.agent?.close();
-    try {
-      removeStaging(run.cwd, run.runId);
-    } catch {
-      // The staging directory may already be gone.
+    discoverAllActive = false;
+    if (run !== undefined) {
+      run.question = null;
+      run.peer?.close();
+      try {
+        removeStaging(run.cwd, run.runId);
+      } catch {
+        // The staging directory may already be gone.
+      }
+      setDiscoverStatus(run.id, {
+        state: "failed",
+        startedAt: discoverStatus(run.id).startedAt ?? run.startedAt,
+        endedAt: new Date().toISOString(),
+        error: "Stopped by the operator.",
+      });
     }
     clearRemoteCheckout();
     refreshDiscoverSnapshot();
-    broadcast({ type: "discoverStopped", completed: false });
+    broadcast({
+      type: "discoverStopped",
+      completed: false,
+      agent: run?.id ?? null,
+      mode: run?.mode ?? "all",
+    });
     broadcastDiscoverState();
   }
 
@@ -3517,7 +3796,7 @@ export function createApp(options: AppOptions) {
       discoverFailure(ws, "No pending Discover question with that id.");
       return;
     }
-    if (run.agent === undefined || !run.agent.answer(run.question.id, value)) {
+    if (run.peer === undefined || !run.peer.answer(run.question.id, value)) {
       discoverFailure(ws, "The Discover question is no longer pending.");
       return;
     }
@@ -3607,11 +3886,20 @@ export function createApp(options: AppOptions) {
     }
     const run = discoverRun;
     if (run === undefined) return;
-    send(ws, { type: "discoverStarted", runId: run.runId, startedAt: run.startedAt });
-    for (const text of run.activity) send(ws, { type: "discoverActivity", text });
+    send(ws, {
+      type: "discoverStarted",
+      runId: run.runId,
+      startedAt: run.startedAt,
+      agent: run.id,
+      mode: run.mode,
+    });
+    for (const text of run.activity) {
+      send(ws, { type: "discoverActivity", agent: run.id, text });
+    }
     if (run.question !== null) {
       send(ws, {
         type: "discoverQuestion",
+        agent: run.id,
         id: run.question.id,
         message: run.question.message,
         options: run.question.options,
@@ -6135,17 +6423,29 @@ export function createApp(options: AppOptions) {
   function stopActiveWorkForReset() {
     discoverRequest += 1;
     const discovering = discoverRun;
+    discoverAllActive = false;
     if (discovering !== undefined) {
       discoverRun = undefined;
       discovering.question = null;
-      discovering.agent?.close();
+      discovering.peer?.close();
       try {
         removeStaging(discovering.cwd, discovering.runId);
       } catch {
         // Reset preserves `.omp`, so a leftover staging directory is harmless.
       }
+      setDiscoverStatus(discovering.id, {
+        state: "failed",
+        startedAt: discoverStatus(discovering.id).startedAt ?? discovering.startedAt,
+        endedAt: new Date().toISOString(),
+        error: "Stopped by the implementation reset.",
+      });
       clearRemoteCheckout();
-      broadcast({ type: "discoverStopped", completed: false });
+      broadcast({
+        type: "discoverStopped",
+        completed: false,
+        agent: discovering.id,
+        mode: discovering.mode,
+      });
     }
 
     goalCreationRequest += 1;
@@ -6617,8 +6917,11 @@ export function createApp(options: AppOptions) {
         flow.replay(ws);
 
         // Discover replays its published artifacts, then the run a reconnect
-        // landed in, before any reply to this client's own commands.
+        // landed in, before any reply to this client's own commands. Each
+        // card's prompt follows even when nothing is published, so an installed
+        // host shows its read-only prompts on first load.
         replayDiscover(ws);
+        discoverPrompts.replay(ws);
         // A client needs the checkout's origin and stopped state on connect,
         // whether or not a worker has ever published for it.
         issues.replay(ws);
@@ -6891,7 +7194,26 @@ export function createApp(options: AppOptions) {
             refreshDiscoverSnapshot();
             sendDiscoverState(ws);
           } else if (command.type === "discoverProject") {
-            await startDiscoverProject(ws);
+            await startDiscoverAll(ws);
+          } else if (command.type === "discoverAgent") {
+            await startDiscoverAgentCommand(ws, command.agent);
+          } else if (command.type === "saveDiscoverPrompt") {
+            if (!isDiscoverAgentId(command.agent)) {
+              send(ws, {
+                type: "discoverPromptError",
+                agent: typeof command.agent === "string" ? command.agent : "",
+                message: "Unknown Discover agent.",
+              });
+            } else {
+              discoverPrompts.save(ws, command.agent, command.text);
+            }
+          } else if (command.type === "chatDiscoverPrompt") {
+            await discoverPrompts.chat(
+              ws,
+              typeof command.agent === "string" ? command.agent : "",
+              command.message,
+              command.text,
+            );
           } else if (command.type === "discoverRemote") {
             if (typeof command.url === "string") await startDiscoverRemote(ws, command.url);
           } else if (command.type === "switchDiscoverRemote") {
@@ -7000,6 +7322,7 @@ export function createApp(options: AppOptions) {
     goalDrafts.dispose(restarting);
     agents.dispose();
     prompts.dispose();
+    discoverPrompts.dispose();
     scout.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);
@@ -7033,7 +7356,8 @@ export function createApp(options: AppOptions) {
     }
     const discovering = discoverRun;
     discoverRun = undefined;
-    discovering?.agent?.close();
+    discoverAllActive = false;
+    discovering?.peer?.close();
     if (discovering !== undefined) {
       try {
         rmSync(discovering.stagingDir, { recursive: true, force: true });

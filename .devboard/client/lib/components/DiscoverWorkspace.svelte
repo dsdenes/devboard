@@ -11,6 +11,7 @@
   import { discover } from "../discover.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import ConceptKind from "./ConceptKind.svelte";
+  import DiscoverAgentCard from "./DiscoverAgentCard.svelte";
   import DataTable from "./DataTable.svelte";
   import DiscoverOverview from "./DiscoverOverview.svelte";
   import MonacoEditor from "./MonacoEditor.svelte";
@@ -433,5 +434,7 @@
     {@render skillPanel()}
   {:else if tab.kind === "warnings"}
     {@render warningsPanel()}
+  {:else if tab.kind === "agent"}
+    <DiscoverAgentCard agent={tab.resourceId} />
   {/if}
 </div>
