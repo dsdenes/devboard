@@ -474,6 +474,14 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   only on hover, names its draft in its accessible name, names a blocker as its tooltip, and is
   disabled at 45% opacity while that draft runs. The `New goal` form is a `surface-raised` band
   under the panel header with `label` type, an 8px rhythm, and a right-aligned 6px action gap.
+- **Draft goals header** (`.issues-drafts-page .panel__header`) — the Draft goals page states
+  repository identity, workspace status, and draft count once, in the page header's `mono-small`
+  identity line (`<owner>/<repo> · idle · 0 draft(s)`); the Proposed goals panel header carries
+  only its `panel-title` word and the creation action, with no second copy of the repository.
+  `New goal` is that panel's single filled primary at `sm` size; while the creation band is open
+  it drops to `secondary` so the band's `Create draft` owns the primary. The trigger keeps
+  `aria-expanded` and names the open band through `aria-controls`; the band is a
+  `surface-raised` row under the header with `label` type and a right-aligned 6px action gap.
 - **Agent fleet card** (`.issues-agent`) — one card per running agent in the Agents page grid: a
   360px-minimum `surface` card with 1px `border`, 4px radius, 10px padding, and an 8px internal
   rhythm. Its head holds the mono `accent` issue-number link to the tracker and one outline
