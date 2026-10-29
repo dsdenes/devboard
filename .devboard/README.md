@@ -626,7 +626,10 @@ After a successful merge the server fast-forwards the host's `main` checkout whe
 and clean, removes the worktree, and deletes the local and remote branch once the branch tip is an
 ancestor of `origin/main`. Whatever it could not remove is reported as a leftover and as one
 `error`; the session still records the merge, and the leftover names each path or ref so nothing is
-silently abandoned.
+silently abandoned. A cleanup that leaves anything keeps the retry armed: the next server start
+runs it again until the worktree and both branches are gone. A failed `git fetch origin` is its own
+leftover, so the ancestry check is skipped rather than judging the branch against a stale
+`origin/main`.
 
 ### Restart and resume
 
