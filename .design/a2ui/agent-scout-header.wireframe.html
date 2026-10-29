@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Auto Scout agent header — wireframe</title>
+    <style>
+      :root {
+        color: #333;
+        background: #f2f2f2;
+        font-family: system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        font-size: 13px;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 12px;
+        font-weight: 600;
+      }
+      h2 {
+        font-size: 13px;
+        margin: 24px 0 8px;
+        font-weight: 600;
+      }
+      .frame {
+        max-width: 1180px;
+        background: #fff;
+        border: 2px solid #999;
+      }
+      .frame.narrow {
+        max-width: 620px;
+      }
+      .header {
+        border: 2px solid #777;
+        margin: 12px;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+      }
+      .row.narrow {
+        justify-content: flex-start;
+      }
+      .row.wrap {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .identity {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: baseline;
+      }
+      .identity .name {
+        font-size: 18px;
+        font-weight: 700;
+        border-bottom: 1px dashed #999;
+      }
+      .purpose {
+        color: #555;
+      }
+      .status {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .badge {
+        border: 1px dashed #777;
+        padding: 2px 7px;
+        font-size: 11px;
+        border-radius: 9px;
+      }
+      .clock {
+        color: #555;
+        font-size: 11px;
+      }
+      .action {
+        border: 2px solid #333;
+        background: #ccc;
+        padding: 4px 12px;
+        font-weight: 600;
+        font-size: 12px;
+      }
+      .footer {
+        border-top: 2px solid #bbb;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 24px;
+        padding: 8px 12px;
+      }
+      .group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        align-items: center;
+      }
+      .group-title {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+      }
+      .field {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        color: #444;
+      }
+      .input {
+        width: 60px;
+        height: 26px;
+        border: 2px solid #888;
+        display: inline-block;
+        text-align: center;
+        line-height: 22px;
+        font-size: 11px;
+      }
+      .save {
+        border: 2px solid #777;
+        padding: 4px 10px;
+        font-size: 12px;
+      }
+      .alerts {
+        margin: 12px;
+        border: 1px dashed #777;
+        padding: 8px 12px;
+        color: #444;
+      }
+      .label {
+        margin: 0 12px 4px;
+        font-size: 11px;
+        color: #666;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Auto Scout agent header — structure wireframe</h1>
+
+    <h2>Wide workspace</h2>
+    <div class="frame">
+      <div class="header">
+        <div class="row">
+          <div class="identity">
+            <span class="name">Auto Scout</span>
+            <span class="purpose">Scans the repository and files significant findings as issues.</span>
+          </div>
+          <div class="status">
+            <span class="badge">stopped</span>
+            <span class="badge">forge read ok</span>
+            <span class="clock">Last read Oct 29, 09:52</span>
+          </div>
+          <span class="action">Start</span>
+        </div>
+        <div class="footer">
+          <div class="group">
+            <span class="group-title">CADENCE</span>
+            <span class="field">Every <span class="input">30</span> min</span>
+            <span class="field">Last run Oct 29, 09:32</span>
+            <span class="field">Next run Oct 29, 09:33</span>
+            <span class="save">Save cadence</span>
+          </div>
+          <div class="group">
+            <span class="group-title">FILING LIMITS</span>
+            <span class="field">Per hour <span class="input">20</span></span>
+            <span class="field">Open issues <span class="input">5</span></span>
+            <span class="save">Save limits</span>
+          </div>
+        </div>
+      </div>
+      <p class="label">Alert position (only when a save is rejected or a read fails)</p>
+      <div class="alerts">The forge read failed: the last successful read stays visible.</div>
+    </div>
+
+    <h2>Narrow workspace (1024 px): the status and action wrap under the name</h2>
+    <div class="frame narrow">
+      <div class="header">
+        <div class="row wrap">
+          <div class="identity">
+            <span class="name">Auto Scout</span>
+            <span class="purpose">Scans the repository and files significant findings as issues.</span>
+          </div>
+          <div class="row narrow" style="padding: 0">
+            <div class="status">
+              <span class="badge">stopped</span>
+              <span class="badge">forge read stale</span>
+              <span class="clock">Last read never</span>
+            </div>
+            <span class="action">Start</span>
+          </div>
+        </div>
+        <div class="footer">
+          <div class="group">
+            <span class="group-title">CADENCE</span>
+            <span class="field">Every <span class="input">30</span> min</span>
+            <span class="field">Last run never</span>
+            <span class="field">Next run never</span>
+            <span class="save">Save cadence</span>
+          </div>
+          <div class="group">
+            <span class="group-title">FILING LIMITS</span>
+            <span class="field">Per hour <span class="input">20</span></span>
+            <span class="field">Open issues <span class="input">5</span></span>
+            <span class="save">Save limits</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

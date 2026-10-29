@@ -45,3 +45,16 @@ export const Bar: Story = {
     actionCount: 1,
   },
 };
+
+// The bar with its secondary footer band: controls that configure the primary
+// action stay on the header surface, below the state and the action.
+export const BarWithFooter: Story = {
+  args: {
+    eyebrow: "Issues",
+    title: "Auto Scout",
+    subtitle: "dsdenes/devboard",
+    layout: "bar",
+    footer: true,
+    actionCount: 1,
+  },
+};

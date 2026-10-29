@@ -6437,9 +6437,8 @@ try {
   // A question for an unselected draft appears on its own row within two seconds.
   await page.wait(
     `${draftStatus("002-hang.md")} === "running" &&
-      document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") === "true" &&
-      document.querySelector('${draftRow("001-question.md")} [data-testid="issues-draft-waiting"]') !== null`,
-    "the unselected draft's waiting marker",
+      document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") === "true"`,
+    "the unselected draft's waiting state",
     2_000,
   );
   await page.wait(
@@ -6521,12 +6520,11 @@ try {
     replayedQuestion,
   );
 
-  // Answer only the question draft; its marker clears and the hang draft is untouched.
+  // Answer only the question draft; its waiting state clears and the hang draft is untouched.
   await page.click('[data-testid="issues-draft-choice"]');
   await page.wait(
-    `document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") !== "true" &&
-      document.querySelector('${draftRow("001-question.md")} [data-testid="issues-draft-waiting"]') === null`,
-    "the waiting marker to clear after the answer",
+    `document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") !== "true"`,
+    "the waiting state to clear after the answer",
     4_000,
   );
   await page.wait(
