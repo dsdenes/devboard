@@ -7,9 +7,9 @@ Scores follow `20 × (0.35·Goal + 0.25·Action + 0.15·Frequency + 0.15·Unique
 | C1 | Draft heading | 5 | 5 | 5 | 3 | 0 | 84 | P0 | Header title |
 | C2 | File name / path | 3 | 4 | 4 | 4 | 0 | 65 | P1 | Header second line |
 | C3 | Status for this draft | 5 | 4 | 5 | 4 | 0 | 82 | P0 | Header badge, filtered by path |
-| C4 | Start elaboration | 5 | 5 | 3 | 5 | 0 | 84 | P0 | Header primary |
+| C4 | Start elaboration | 5 | 5 | 3 | 5 | 0 | 84 | P0 | Row primary; the detail header does not repeat it |
 | C5 | Stop elaboration | 4 | 4 | 2 | 5 | 3 | 75 | P1 | Header quiet destructive while running |
-| C6 | Start blocker reason | 2 | 4 | 2 | 3 | 1 | 51 | P2 | Start tooltip; list owns the visible reason |
+| C6 | Start blocker reason | 2 | 4 | 2 | 3 | 1 | 51 | P2 | Row Start tooltip and blocker line |
 | C7 | Draft / peer error | 3 | 5 | 2 | 5 | 3 | 73 | P1 | Alert directly under the header |
 | C8 | Proposal text | 5 | 5 | 5 | 5 | 0 | 90 | P0 | First reading block |
 | C9 | Context facts | 4 | 3 | 4 | 4 | 0 | 67 | P1 | Fact grid above the evidence |

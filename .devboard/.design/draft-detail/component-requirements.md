@@ -4,7 +4,7 @@
 |---|---|---|---|---|---|---|
 | Draft identity | Compose | — (`.panel` header region) | design-system overview specimens | heading empty → file name; long heading and long path truncate with full values in `title`; path is repo-relative | `h2` names the panel; path visible, not tooltip-only | panel-title, mono-small, spacing |
 | Status badge | Compose | — (`.badge`) | design-system specimens | `idle`, `running`, `stopped`, `succeeded`, `failed`; filtered to the selected draft's run | word carries state; tone is redundant | badge, success, error, accent, border-strong |
-| Start elaboration | Reuse | `Button` | `stories/design-system.stories.ts` | `default`; disabled while any run is live; tooltip carries the blocker; re-enabled after stop/failure | native button, focus ring, disabled 45% | button-primary |
+| Start elaboration | Reuse | `Button` | `stories/design-system.stories.ts` | rendered once on each draft row, never in the detail header; `default`; disabled while that draft runs; tooltip carries the blocker; re-enabled after stop/failure | native button, focus ring, disabled 45% | button-primary |
 | Stop elaboration | Reuse + compose | `Button` (`ghost`) | `stories/design-system.stories.ts` | present only while this draft's run is live; 24px word; hover/focus takes error treatment | native button with visible label, `data-command` | error, error-surface, border-subtle |
 | Error banner | Compose | — (`.issues-error`) | — | refused read, failed peer, retryable; `role="alert"` | announced; sits before content | error, error-surface |
 | Question block | Reuse + generalise | — | — | message, 0–3 options, recommended flag, free-text answer; empty, long text, narrow width; answer clears on submit | option buttons are named by their label and description; wrapping `form`; labelled input | warning, warning-surface, choice styles |
@@ -25,9 +25,10 @@
   The heading and path ellipsize; the action group never shrinks or wraps below the identity.
 
 ### Button
-- Decision: reuse. Start is `default`; Stop is `ghost` with the quiet-destructive class
-  already documented for the running-agent close control.
-- Data/state: `disabled={issues.draftRunning}` with `title` = blocker or the normal hint.
+- Decision: reuse. Start is `default` and belongs to the draft row; Stop is `ghost` with the
+  quiet-destructive class already documented for the running-agent close control.
+- Data/state: the row's Start uses `disabled={issues.draftRunning(path)}` with `title` = blocker
+  or the normal hint; the detail header carries no Start of its own.
 - Accessibility: the visible labels are the accessible names; `data-command` preserved.
 
 ### IssuesQuestion (generalised from IssuesAgentQuestion)
