@@ -533,6 +533,60 @@ export function issueNumberFromUrl(url: string): number | undefined {
   return Number.isInteger(number) && number > 0 ? number : undefined;
 }
 
+/** Host names that all mean this machine. */
+const LOOPBACK_HOSTS: Record<string, true> = {
+  localhost: true,
+  "127.0.0.1": true,
+  "::1": true,
+  "[::1]": true,
+  "0.0.0.0": true,
+};
+
+function originOf(parsed: URL): string {
+  const host = LOOPBACK_HOSTS[parsed.hostname] === true ? "loopback" : parsed.hostname;
+  const port = parsed.port !== "" ? parsed.port : parsed.protocol === "https:" ? "443" : "80";
+  return `${parsed.protocol}//${host}:${port}`;
+}
+
+/**
+ * The scheme, host, and port of a URL, with loopback aliases folded together.
+ * The watchdog ledger can hold issue URLs filed through an earlier forge, so a
+ * Gitea write must recognise only the instance it is configured for.
+ */
+export function giteaOrigin(value: string): string | undefined {
+  try {
+    return originOf(new URL(value));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The issue number of `url` when it names an issue on `target`'s own origin and
+ * repository, or undefined when it belongs to another forge or repository.
+ */
+export function giteaIssueNumber(target: GiteaTarget, url: string): number | undefined {
+  const number = issueNumberFromUrl(url);
+  if (number === undefined) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return undefined;
+  }
+  if (originOf(parsed) !== giteaOrigin(target.baseUrl)) return undefined;
+  const suffix = `/issues/${number}`;
+  const path = parsed.pathname.replace(/\/+$/, "");
+  if (!path.endsWith(suffix)) return undefined;
+  let repository: string;
+  try {
+    repository = decodeURIComponent(path.slice(0, -suffix.length).replace(/^\/+/, ""));
+  } catch {
+    return undefined;
+  }
+  return repository === target.project ? number : undefined;
+}
+
 export interface GiteaLabel {
   id: number;
   name: string;
