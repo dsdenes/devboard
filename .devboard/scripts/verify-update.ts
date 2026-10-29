@@ -465,8 +465,8 @@ try {
     "the unreadable release description to be journaled with its reason",
   );
   assertTrue(
-    String(unreadableRecord?.text).includes("release check failed"),
-    "the unreadable release description does not name the failed check",
+    String(unreadableRecord?.text).includes("invalid JSON"),
+    "the unreadable release description does not name its reason",
   );
   assertEquals(
     installedVersion(unreadablePrefix),
