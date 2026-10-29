@@ -488,6 +488,47 @@ describe("window and attribution", () => {
     expect(collected.unattributed).toBe(2);
     expect(collected.malformed).toBe(1);
   });
+
+  test("one repeated omp warning is one finding despite its capture paths", async () => {
+    const base = await temporaryDirectory("test-watchdog-omp-capture");
+    const logsDir = join(base, "logs");
+    await mkdir(logsDir, { recursive: true });
+    const instance = instanceFor(base, 8080);
+    const error =
+      "Error: Model stopped: error 400 Upstream request failed: region unavailable\n" +
+      "Upstream request failed: region unavailable (type=server_error)";
+    const warning = (offsetMs: number, skill: string, capture: string) =>
+      JSON.stringify({
+        timestamp: new Date(window.end.getTime() - offsetMs).toISOString(),
+        level: "warn",
+        pid: 500,
+        message: "Skill description compression failed",
+        skill,
+        error: `${error}\nraw-http-request=${join(logsDir, capture)}`,
+      });
+    await writeFile(
+      join(logsDir, "omp.2026-10-24.1.log"),
+      [
+        warning(60_000, "differential-conformance-testing", "1793310094896-1w6x8zcj4ly8q.json"),
+        warning(59_000, "drop-in-compatibility", "1793310094921-3urhboh3f1nj1.json"),
+      ].join("\n"),
+    );
+
+    const collected = readOmpEvidence({
+      logsDir,
+      window,
+      instances: [instance],
+      selfPids: new Set([42]),
+      processInfo: () => ({ ancestors: [instance.pid, 1] }),
+    });
+    expect(collected.events).toHaveLength(2);
+
+    const findings = analyzeEvidence(collected.events, { window });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.category).toBe("omp-warn");
+    expect(findings[0]?.quote).not.toContain("raw-http-request");
+    expect(findings[0]?.instances).toEqual([instance]);
+  });
 });
 
 describe("evidence mapping", () => {
