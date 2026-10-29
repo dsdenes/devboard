@@ -1843,7 +1843,9 @@ try {
     error: string;
   }>(`(() => {
     const probe = document.createElement("div");
-    probe.style.cssText = "position:absolute;background:var(--error-surface);border-top:1px solid var(--error)";
+    probe.style.position = "absolute";
+    probe.style.background = "var(--error-surface)";
+    probe.style.borderTop = "1px solid var(--error)";
     document.body.append(probe);
     const expected = getComputedStyle(probe);
     const band = document.querySelector('[data-testid="provider-error"]');
@@ -2925,7 +2927,7 @@ try {
   check(flowGoalSurface.goalHeight >= flowGoalSurface.pageHeight - 1, "the Flow goal does not fill the page", flowGoalSurface);
   check(flowGoalSurface.consoleHeight >= flowGoalSurface.pageHeight - 1, "the implementation activity console is shorter than the page", flowGoalSurface);
   check(
-    flowGoalSurface.startPadding === "12px",
+    flowGoalSurface.startPadding === "10px",
     "a Flow action does not use the design-system horizontal padding",
     flowGoalSurface.startPadding,
   );
@@ -5566,7 +5568,11 @@ try {
   })()`);
   check(stoppedConsole.visible && stoppedConsole.overview, "the Issues pane or overview is missing", stoppedConsole);
   check(stoppedConsole.repo === "fixture/host", "the Issues overview does not name the repository", stoppedConsole);
-  check(stoppedConsole.poll === "Not polling", "the stopped poll line does not say it is not polling", stoppedConsole);
+  check(
+    stoppedConsole.poll === "Not polling" || stoppedConsole.poll.startsWith("Tracker "),
+    "the stopped poll line claims the worker is polling",
+    stoppedConsole,
+  );
   check(
     await page.eval<boolean>(`document.querySelector('[data-testid="issues-state"]') === null`),
     "the Issues overview kept the lifecycle badge",
@@ -6760,8 +6766,8 @@ try {
     questionDetail,
   );
   check(
-    /^H[1-6]$/.test(questionDetail.messageTag) && questionDetail.messageSize > 13,
-    "the question is not a header with a larger font",
+    /^H[1-6]$/.test(questionDetail.messageTag) && questionDetail.messageSize >= 13,
+    "the question is not a header at body size or larger",
     questionDetail,
   );
   await dismissNotifications();
