@@ -3790,7 +3790,7 @@ try {
   await delay(150);
   const skillDirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-text"]').getAttribute("data-dirty") === "true"`);
   check(skillDirty, "the skill editor does not mark unsaved changes");
-  const dirtyHeader = await page.eval<{ enabled: boolean; state: string }>(`(() => {
+  const dirtyHeader = await page.eval<{ enabled: boolean; state: string; primary: boolean }>(`(() => {
     const button = document.querySelector('[data-testid="discover-skill-save"]');
     return {
       enabled: button !== null && !button.disabled,
@@ -3798,11 +3798,12 @@ try {
         ?.closest('.discover-skill__header')
         ?.querySelector('[data-testid="discover-skill-dirty"]')
         ?.textContent?.trim() ?? "",
+      primary: button?.classList.contains("bg-[var(--primary)]") ?? false,
     };
   })()`);
   check(
-    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes",
-    "the skill header does not enable Save for an unsaved draft",
+    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes" && dirtyHeader.primary,
+    "the skill header does not promote Save to the filled primary for an unsaved draft",
     dirtyHeader,
   );
   const editedSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
@@ -3881,15 +3882,65 @@ try {
     "the restored generated skill",
     10_000,
   );
+  // A deleted live file states its own recovery and gives Recreate the only primary.
+  await rm(join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md"));
+  await page.reload();
+  await runPalette("discover.tab.testing-strategy");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "Live file missing"`,
+    "the missing skill state",
+  );
+  const missingHeader = await page.eval<{
+    state: string;
+    saveDisabled: boolean;
+    saveSecondary: boolean;
+    restorePrimary: boolean;
+    restore: string;
+  }>(`(() => {
+    const header = document.querySelector('.discover-skill__header');
+    const save = header?.querySelector('[data-testid="discover-skill-save"]');
+    const restore = header?.querySelector('[data-testid="discover-skill-restore"]');
+    return {
+      state: header?.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? "",
+      saveDisabled: save === null || save.disabled,
+      saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
+      restorePrimary: restore?.classList.contains("bg-[var(--primary)]") ?? false,
+      restore: restore?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    missingHeader.state === "Live file missing" && missingHeader.saveDisabled &&
+      missingHeader.saveSecondary && missingHeader.restorePrimary &&
+      missingHeader.restore === "Recreate generated version",
+    "the missing skill header does not give the recovery control the only primary",
+    missingHeader,
+  );
+  await page.click('[data-testid="discover-skill-restore"]');
+  await waitFor(
+    async () => {
+      const text = await readFile(join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md"), "utf8").catch(() => "");
+      return text.length > 0 ? true : undefined;
+    },
+    "the recreated skill file",
+    10_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "No unsaved changes"`,
+    "the recreated skill state",
+  );
+
   const skillLayout = await page.eval<{
     preview: boolean;
     split: number;
     badge: boolean;
     editor: number;
     panel: number;
+    header: number;
+    inline: boolean;
     title: string;
     state: string;
     saveDisabled: boolean;
+    saveSecondary: boolean;
     eyebrow: boolean;
     meta: boolean;
     name: boolean;
@@ -3897,18 +3948,29 @@ try {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
     const index = document.querySelector('#workspace-discover .discover-skill-page');
+    const header = panel?.querySelector('.discover-skill__header');
+    const identity = header?.querySelector('.discover-skill__identity');
+    const actions = header?.querySelector('.discover-skill__actions');
     const save = document.querySelector('[data-testid="discover-skill-save"]');
+    const center = (element) => {
+      const box = element?.getBoundingClientRect();
+      return box === undefined ? 0 : box.top + box.height / 2;
+    };
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
       badge: document.querySelector('[data-testid="discover-skill-state"]') !== null,
       editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
       panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
+      header: header === null ? 0 : Math.round(header.getBoundingClientRect().height),
+      inline: identity != null && actions != null &&
+        Math.abs(center(identity) - center(actions)) <= 2,
       title: panel?.querySelector('.panel__title')?.textContent?.trim() ?? "",
       state: panel
         ?.querySelector('[data-testid="discover-skill-status"]')
         ?.textContent?.trim() ?? "",
       saveDisabled: save === null || save.disabled,
+      saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
       name: panel?.querySelector('.panel__header .muted') !== null,
@@ -3922,8 +3984,14 @@ try {
     skillLayout.title,
   );
   check(
-    skillLayout.state === "No unsaved changes" && skillLayout.saveDisabled,
-    "the clean skill header does not state the draft is saved and disable Save",
+    skillLayout.state === "No unsaved changes" && skillLayout.saveDisabled &&
+      skillLayout.saveSecondary,
+    "the clean skill header does not state the draft is saved and quiet Save",
+    skillLayout,
+  );
+  check(
+    skillLayout.header === 30 && skillLayout.inline,
+    "the skill header is not one 30px row with the state and actions",
     skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);
