@@ -16,6 +16,14 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { acquireLock } from "../issues/lock";
 import {
+  repoStateDirectory,
+  scoutRoot,
+  settingsPath,
+  statePath,
+} from "../issues/scout/paths";
+import { emptyState } from "../issues/scout/state";
+import { ScoutWorker } from "../issues/scout/worker";
+import {
   CLEANUP_RETENTION_MS,
   coveredStateDirs,
   runCleanup,
@@ -340,6 +348,76 @@ describe("sweepStateDir", () => {
     const dead = sweepStateDir(stateDir, { now: sweepNow, dryRun: false });
     expect(existsSync(lock)).toBe(false);
     expect(dead.removed.map((candidate) => candidate.path)).toContain(lock);
+  });
+
+  test("keeps a stopped worker's Auto Scout settings and state while sweeping scan archives", async () => {
+    const base = await temporaryDirectory();
+    const repoDir = join(base, "repo");
+    const stateDir = join(repoDir, ".devboard", ".tmp");
+    const saved = { maxPerHour: 2, maxPending: 1, intervalMinutes: 720 };
+    const settings = settingsPath(stateDir, repoDir);
+    const state = statePath(stateDir, repoDir);
+    await mkdir(repoDir, { recursive: true });
+    writeAt(settings, JSON.stringify(saved), old);
+    writeAt(
+      state,
+      JSON.stringify(
+        emptyState({
+          repo: "acme/fixture",
+          root: repoDir,
+          limit: { maxPerHour: saved.maxPerHour, maxPending: saved.maxPending },
+          intervalMinutes: saved.intervalMinutes,
+          now: old,
+        }),
+      ),
+      old,
+    );
+    utimesSync(repoStateDirectory(stateDir, repoDir), old, old);
+    utimesSync(scoutRoot(stateDir), old, old);
+    const scanDir = join(scoutRoot(stateDir), "scans", "2026-10-01T00-00-00-000Z");
+    const staleScan = join(scanDir, "scan.json");
+    writeAt(staleScan, "{}", old);
+    utimesSync(scanDir, old, old);
+    utimesSync(join(scoutRoot(stateDir), "scans"), old, old);
+
+    const report = sweepStateDir(stateDir, { now: sweepNow, dryRun: false });
+    const removed = report.removed.map((candidate) => candidate.path);
+
+    expect(existsSync(settings)).toBe(true);
+    expect(existsSync(state)).toBe(true);
+    expect(removed).not.toContain(settings);
+    expect(removed).not.toContain(state);
+    expect(existsSync(staleScan)).toBe(false);
+    expect(removed).toContain(staleScan);
+
+    const worker = new ScoutWorker({
+      repoDir,
+      stateDir,
+      syncMs: 900_000,
+      cadenceMs: 900_000,
+      now: () => new Date(sweepNow),
+      github: {
+        listIssues: async () => [],
+        listOpenIssueTitles: async () => [],
+        listReleases: async () => [],
+        closingCommit: async () => null,
+        resolveCommit: async () => null,
+        containingReleaseTags: async () => [],
+      },
+      connect: () => {
+        throw new Error("a scan must not start");
+      },
+    });
+    try {
+      expect(worker.start("acme/fixture")).toBe(true);
+      expect(worker.currentState.limits).toEqual({
+        maxPerHour: saved.maxPerHour,
+        maxPending: saved.maxPending,
+      });
+      expect(worker.currentState.intervalMinutes).toBe(saved.intervalMinutes);
+    } finally {
+      await worker.stop();
+    }
   });
 
   test("protects Flow session records from the retention sweep", async () => {

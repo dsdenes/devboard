@@ -11,6 +11,11 @@ import { journalKey } from "../../server/journal";
  */
 
 export const SCOUT_DIRECTORY = "scout";
+/** A repository's state directory is named by its 24-hex journal key. */
+const REPO_STATE_DIRECTORY = /^[0-9a-f]{24}$/;
+export function isRepoStateDirectoryName(name: string): boolean {
+  return REPO_STATE_DIRECTORY.test(name);
+}
 export const STATE_VERSION = 2;
 export const SCAN_VERSION = 2;
 /**
