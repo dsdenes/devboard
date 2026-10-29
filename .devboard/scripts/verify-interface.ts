@@ -6331,19 +6331,21 @@ try {
   await page.wait(`document.querySelector('[data-testid="issues-draft-detail"]') !== null`, "the draft detail");
   const detail = await page.eval<{
     path: string;
-    start: string;
-    startCommand: string;
+    detailStart: boolean;
+    rowStartCommand: string;
     stop: boolean;
     pathLabel: string;
     proposal: string;
     contextSection: boolean;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
-    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    const rowStart = document.querySelector(
+      '[data-testid="issues-draft-row-start"][data-path="${reportDraftPath}"]',
+    );
     return {
       path: panel?.getAttribute("data-path") ?? "",
-      start: document.querySelector('[data-testid="issues-draft-start"]') !== null ? "yes" : "",
-      startCommand: start?.getAttribute("data-command") ?? "",
+      detailStart: document.querySelector('[data-testid="issues-draft-start"]') !== null,
+      rowStartCommand: rowStart?.getAttribute("data-command") ?? "",
       stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
       pathLabel: panel?.querySelector(".issues-draft-detail__path")?.textContent?.trim() ?? "",
       proposal: panel?.querySelector(".issues-draft-detail__prose")?.textContent ?? "",
@@ -6375,8 +6377,10 @@ try {
   await dismissNotifications();
   await saveShot("issues-draft-detail");
   check(
-    detail.start === "yes" && detail.startCommand === "issues.draft.start" && !detail.stop,
-    "the draft detail has the wrong controls",
+    !detail.detailStart &&
+      detail.rowStartCommand === "issues.draft.start" &&
+      !detail.stop,
+    "the draft detail still carries a start control or the row lost its own",
     detail,
   );
 
@@ -6423,14 +6427,12 @@ try {
     "an idle draft's start control is disabled while another elaborates",
     startStates,
   );
-  const blockers = await page.eval<string[]>(
-    `[...document.querySelectorAll('[data-testid="issues-draft-blocked"]')]
-      .map((item) => item.textContent?.trim() ?? "")`,
+  const blockers = await page.eval<number>(
+    `document.querySelectorAll('[data-testid="issues-draft-blocked"]').length`,
   );
   check(
-    blockers.length === 2 &&
-      blockers.every((reason) => reason === "This draft is being elaborated."),
-    "a draft shows another draft's blocker or the wrong reason",
+    blockers === 0,
+    "a draft row still renders an elaboration blocker",
     blockers,
   );
 
@@ -6468,16 +6470,23 @@ try {
     activity: string;
     question: string;
     ordered: boolean;
+    messageTag: string;
+    messageSize: number;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const question = document.querySelector('[data-testid="issues-draft-question"]');
     const activity = document.querySelector('[data-testid="issues-draft-activity"]');
+    const message = question?.querySelector(".issues-question__message");
     return {
       state: document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? "",
       activity: activity?.textContent ?? "",
       question: question?.textContent ?? "",
       ordered: question !== null && activity !== null &&
         (question.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      messageTag: message?.tagName ?? "",
+      messageSize: message === null || message === undefined
+        ? 0
+        : Number.parseFloat(getComputedStyle(message).fontSize),
     };
   })()`);
   check(
@@ -6490,6 +6499,11 @@ try {
   check(
     questionDetail.question.includes("Choose an answer") && questionDetail.ordered,
     "the selected question is missing or below the activity log",
+    questionDetail,
+  );
+  check(
+    /^H[1-6]$/.test(questionDetail.messageTag) && questionDetail.messageSize > 13,
+    "the question is not a header with a larger font",
     questionDetail,
   );
   await dismissNotifications();
@@ -6564,7 +6578,7 @@ try {
   await page.wait(`${draftStatus("001-question.md")} === "running"`, "the other elaboration stays running");
   const stopped = await page.eval<{ stop: boolean; start: boolean; present: boolean }>(`(() => ({
     stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
-    start: document.querySelector('[data-testid="issues-draft-start"]')?.disabled === false,
+    start: document.querySelector('${draftRowStart("002-hang.md")}')?.disabled === false,
     present: document.querySelector('${draftRow("002-hang.md")}') !== null,
   }))()`);
   check(
@@ -6917,21 +6931,21 @@ try {
     "the second submit's running detail",
     8_000,
   );
-  const busyStart = await page.eval<{ disabled: boolean; title: string; blocker: string }>(`(() => {
-    const start = document.querySelector('[data-testid="issues-draft-start"]');
-    const blocked = [...document.querySelectorAll('[data-testid="issues-draft-blocked"]')]
-      .find((item) => item.closest('[data-path="${busyPath}"]') !== null);
+  const busyStart = await page.eval<{ disabled: boolean; title: string; blockers: number }>(`(() => {
+    const start = document.querySelector(
+      '[data-testid="issues-draft-row-start"][data-path="${busyPath}"]',
+    );
     return {
       disabled: start?.disabled === true,
       title: start?.getAttribute("title") ?? "",
-      blocker: blocked?.textContent?.trim() ?? "",
+      blockers: document.querySelectorAll('[data-testid="issues-draft-blocked"]').length,
     };
   })()`);
   check(
     existsSync(join(host, busyPath)) &&
       busyStart.disabled &&
       busyStart.title === "This draft is being elaborated." &&
-      busyStart.blocker === "This draft is being elaborated.",
+      busyStart.blockers === 0,
     "the second submit did not start its own elaboration",
     busyStart,
   );
@@ -6996,7 +7010,9 @@ try {
   );
   const afterCreatedStop = await page.eval<{ stop: boolean; startDisabled: boolean; present: boolean }>(`(() => ({
     stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
-    startDisabled: document.querySelector('[data-testid="issues-draft-start"]')?.disabled === false,
+    startDisabled: document.querySelector(
+      '[data-testid="issues-draft-row-start"][data-path="${busyPath}"]',
+    )?.disabled === false,
     present: document.querySelector('[data-testid="issues-draft"][data-path="${busyPath}"]') !== null,
   }))()`);
   check(
@@ -7084,7 +7100,9 @@ try {
   const startLines = async (): Promise<string[]> =>
     (await agentLogLines(agentLog)).filter((line) => line.startsWith("goal-draft-start "));
   const startsBeforeQuestion = (await startLines()).length;
-  await page.click('[data-testid="issues-draft-start"]');
+  await page.click(
+    `[data-testid="issues-draft-row-start"][data-path="${questionPath}"]`,
+  );
   await page.wait(
     `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("Reading the draft") === true`,
     "the streamed elaboration activity before the version reload",
@@ -7110,11 +7128,15 @@ try {
     message: string;
     options: string[];
     recommended: number;
+    labelFont: number;
+    descriptionFont: number;
   };
   const readQuestionSurface = (): Promise<DraftQuestionSurface> =>
     page.eval<DraftQuestionSurface>(`(() => {
       const question = document.querySelector('[data-testid="issues-draft-question"]');
       const choices = [...document.querySelectorAll('[data-testid="issues-draft-choice"]')];
+      const label = choices[0]?.querySelector('.choice__label');
+      const description = choices[0]?.querySelector('.choice__description');
       return {
         activity: document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "",
         message: question?.textContent?.trim() ?? "",
@@ -7122,12 +7144,19 @@ try {
         recommended: choices.findIndex(
           (choice) => choice.querySelector('.choice__recommended') !== null,
         ),
+        labelFont: label ? parseFloat(getComputedStyle(label).fontSize) : 0,
+        descriptionFont: description ? parseFloat(getComputedStyle(description).fontSize) : 0,
       };
     })()`);
   const questionSurfaceBefore = await readQuestionSurface();
   check(
     questionSurfaceBefore.options.length === 2,
     "the elaboration question has no options",
+    questionSurfaceBefore,
+  );
+  check(
+    questionSurfaceBefore.labelFont >= 13 && questionSurfaceBefore.descriptionFont >= 13,
+    "the elaboration question options are too small to read",
     questionSurfaceBefore,
   );
 
@@ -7206,7 +7235,9 @@ try {
     startTitle: string;
     stop: boolean;
   }>(`(() => {
-    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    const start = document.querySelector(
+      '[data-testid="issues-draft-row-start"][data-path="${questionPath}"]',
+    );
     return {
       startDisabled: start instanceof HTMLButtonElement ? start.disabled : false,
       startTitle: start?.getAttribute("title") ?? "",
@@ -7256,7 +7287,7 @@ try {
     "the hanging draft detail before its reload",
   );
   const startsBeforeHang = (await startLines()).length;
-  await page.click('[data-testid="issues-draft-start"]');
+  await page.click(`[data-testid="issues-draft-row-start"][data-path="${hangPath}"]`);
   await page.wait(
     `document.querySelector('[data-testid="issues-draft-stop"]') !== null &&
       (document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "")
@@ -7316,7 +7347,9 @@ try {
     startDisabled: boolean;
     listed: boolean;
   }>(`(() => {
-    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    const start = document.querySelector(
+      '[data-testid="issues-draft-row-start"][data-path="${hangPath}"]',
+    );
     return {
       stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
       startDisabled: start instanceof HTMLButtonElement ? start.disabled : true,

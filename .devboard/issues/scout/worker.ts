@@ -888,6 +888,18 @@ export class ScoutWorker {
     }
   }
 
+  /**
+   * Claims the terminal answer path: the scan timer can no longer abandon the
+   * scan and the peer is closed exactly once. Closing before the scan file is
+   * written leaves a failed scan with no recorded child for recovery.
+   */
+  private endAgentPhase(active: ActiveScan): void {
+    active.finished = true;
+    clearTimeout(active.timer);
+    active.timer = undefined;
+    this.closePeer(active);
+  }
+
   /** A scan that timed out or whose peer failed: nothing is filed. */
   private abandonScan(active: ActiveScan, detail: string): void {
     if (active.finished) return;
@@ -1087,6 +1099,7 @@ export class ScoutWorker {
       }
     }
     if (!answer.ok) {
+      this.endAgentPhase(active);
       this.writeScan(active, "failed", {
         requested: active.requested,
         filed: 0,
@@ -1098,10 +1111,7 @@ export class ScoutWorker {
 
     // The answer is final: claim the terminal path before touching the
     // tracker, so the scan timer can no longer close a scan that is settling.
-    active.finished = true;
-    clearTimeout(active.timer);
-    active.timer = undefined;
-    this.closePeer(active);
+    this.endAgentPhase(active);
     const result = answer.result;
 
     // Immediately before filing, read every scout issue again. The periodic

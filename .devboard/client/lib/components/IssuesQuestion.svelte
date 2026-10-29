@@ -15,6 +15,8 @@
     inputTestid?: string;
     submitTestid?: string;
     command?: string;
+    /** Heading level of the question message; surfaces nest it under their own heading. */
+    headingLevel?: 3 | 4;
   }
 
   let {
@@ -26,6 +28,7 @@
     inputTestid = "issues-agent-answer-input",
     submitTestid = "issues-agent-answer-submit",
     command = "issues.answer",
+    headingLevel = 3,
   }: Props = $props();
 
   let answer = $state("");
@@ -40,7 +43,9 @@
 </script>
 
 <div class="issues-question" data-testid={testid} data-run={runId}>
-  <p>{question.message}</p>
+  <svelte:element this={`h${headingLevel}`} class="issues-question__message">
+    {question.message}
+  </svelte:element>
   {#if question.options.length > 0}
     <div class="choice-list">
       {#each question.options as option (option.label)}

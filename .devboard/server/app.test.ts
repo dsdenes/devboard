@@ -40,6 +40,8 @@ async function startServer(
     runningVersion?: string | null;
     /** Installs this checkout's `origin` before the app resolves it. */
     origin?: string;
+    hostname?: string;
+    allowedHosts?: string[];
     providers?: (stateDir: string) => ProviderService;
     providersRefreshMs?: number;
     issues?: {
@@ -69,7 +71,8 @@ async function startServer(
   const server = createApp({
     adrDir,
     staticDir,
-    hostname: "127.0.0.1",
+    hostname: options.hostname ?? "127.0.0.1",
+    ...(options.allowedHosts === undefined ? {} : { allowedHosts: options.allowedHosts }),
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
@@ -250,6 +253,71 @@ describe("createApp", () => {
       const { promise, resolve } = Promise.withResolvers<boolean>();
       const socket = new Socket(`ws://${url}/ws`, {
         headers: { Origin: `http://${url}` },
+      });
+      socket.onopen = () => {
+        socket.close();
+        resolve(true);
+      };
+      socket.onerror = () => resolve(false);
+      socket.onclose = () => resolve(false);
+      expect(await promise).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses a WebSocket upgrade whose Host is not one of the listener's names", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      // Host and Origin agree with each other and the Host was rewritten by the
+      // page, so only the listener's own allowlist can refuse this upgrade.
+      const host = `evil.example:${server.port}`;
+      const refused = await fetch(`http://${url}/ws`, {
+        headers: {
+          Host: host,
+          Origin: `http://${host}`,
+          Upgrade: "websocket",
+          Connection: "Upgrade",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+          "Sec-WebSocket-Version": "13",
+        },
+      });
+      expect(refused.status).toBe(403);
+      expect(await refused.text()).toBe("The request host is not served by this dashboard.");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a wildcard bind serves loopback and its allowlist, never another Host", async () => {
+    const { server, url } = await startServer({
+      hostname: "0.0.0.0",
+      allowedHosts: ["dashboard.example"],
+    });
+
+    try {
+      const evil = `evil.example:${server.port}`;
+      const refused = await fetch(`http://${url}/ws`, {
+        headers: {
+          Host: evil,
+          Origin: `http://${evil}`,
+          Upgrade: "websocket",
+          Connection: "Upgrade",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+          "Sec-WebSocket-Version": "13",
+        },
+      });
+      expect(refused.status).toBe(403);
+
+      const Socket = WebSocket as unknown as new (
+        url: string,
+        options: { headers: Record<string, string> },
+      ) => WebSocket;
+      const { promise, resolve } = Promise.withResolvers<boolean>();
+      const allowed = `dashboard.example:${server.port}`;
+      const socket = new Socket(`ws://${url}/ws`, {
+        headers: { Host: allowed, Origin: `http://${allowed}` },
       });
       socket.onopen = () => {
         socket.close();

@@ -258,7 +258,7 @@ export class IssuesStore {
     writeDraftPath(null);
   }
 
-  startDraft(path: string | null = this.draftPath): void {
+  startDraft(path: string | null): void {
     if (path === null || this.draftRunning(path)) return;
     delete this.draftErrors[path];
     connection.send({ type: "startGoalDraft", path });

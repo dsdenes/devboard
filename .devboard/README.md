@@ -952,9 +952,14 @@ history notes, and unknown reasons); skill bodies and descriptions are not part 
 against the same unchanged host fingerprint produce the same sheet digest and the same digest for
 every unchanged glossary, while bounded prose may differ. The fingerprint covers the host `HEAD`
 and the content of tracked and untracked non-ignored files, excluding `.devboard/`, `.worktree/`,
-`.omp/discover/`, `.omp/skills/`, VCS internals, and ignored files; the manifest stores it, and
-`stale` is true only when the current fingerprint is readable and differs. Discover caches nothing:
-every accepted start re-crawls.
+`.omp/discover/`, `.omp/skills/`, VCS internals, and ignored files. Only regular files are read:
+a symlink contributes its target string and a FIFO, device, socket, or other special entry a type
+marker, so the fingerprint never opens one; a regular file's content streams through the hash in
+fixed-size chunks, so a large file cannot exhaust memory. Each digest and the aggregate are cached
+by the file listing plus size, timestamps, and inode, so an unchanged host is not re-read and a
+reconnect or refresh costs no file reads. The manifest stores the fingerprint, and `stale` is true
+only when the current fingerprint is readable and differs. The cache holds digests only; every
+accepted start re-crawls.
 
 The crawl is read-only with respect to the host. Its tools read files and safe read-only git facts
 (`git rev-parse`, `git log`, `git branch`, `git status`, `git ls-files`) only; they never run a
@@ -1178,6 +1183,7 @@ and is retried the same way.
 |---|---|---|
 |`HOST`|`127.0.0.1`|Listen address.|
 |`PORT`|`8080`|Listen port.|
+|`DEVBOARD_ALLOWED_HOSTS`|unset|Comma-separated extra hostnames the dashboard serves in a Host header. A wildcard bind (`0.0.0.0` or `::`) serves only loopback aliases unless names are listed; a reverse proxy's public name belongs here.|
 |`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
 |`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location.|
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
@@ -1727,15 +1733,16 @@ start. A write the server refuses leaves no draft and no peer and shows the serv
 the write keeps the draft listed, selected, and startable, and shows that reason in the detail. A
 double submit while the write or start is pending produces one draft and one peer. Creation never
 runs `gh`, files an issue, creates a worktree or branch, or writes a goal spec; only the draft file
-is created. The report panel's `Goal` action and the open-then-`Start elaboration` path are
-unchanged.
+is created. The report panel's `Goal` action and the path that opens a draft and starts it from
+its row are unchanged.
 
 Selecting one opens `data-testid="issues-draft-detail"`: the header carries the draft's file name,
-the state badge for this draft's run only (absent while the run is `idle`), `issues-draft-start`
-(`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). Each
+the state badge for this draft's run only (absent while the run is `idle`) and, while this draft
+runs, `issues-draft-stop` (`issues.draft.stop`). Starting an elaboration is the row's job: each
 row carries its own `data-status`, renders that state as text, and has its own
-`issues-draft-row-start` control. A row whose elaboration waits for an answer carries
-`data-question="true"`; answering clears it. The body reads the proposal before the
+`issues-draft-row-start` control (`issues.draft.start`), so the detail does not repeat it. A row
+whose elaboration waits for an answer carries `data-question="true"`; answering clears it. The
+body reads the proposal before the
 `## Captured UI context` marker, then the activity stream in `issues-draft-activity` once a run
 exists; the captured UI context itself is not shown. A pending elaboration question
 (`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,
@@ -1758,8 +1765,8 @@ own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAN
 opens one session, and sends exactly `/goal-draft <repository-relative path>`. Each path has at
 most one live peer: a start for a path already running is refused with
 `This draft is being elaborated.` and starts no second peer. While a draft runs, only its own row
-and detail show the disabled start control and the `issues-draft-blocked` reason
-`This draft is being elaborated.`; every other draft stays startable. Each peer's activity
+shows the disabled start control, whose title is `This draft is being elaborated.`; every other
+draft stays startable. Each peer's activity
 streams only into its own run's `issues-draft-activity`, its `ask` question renders only for that
 draft, and an answer goes only to the addressed draft's peer; an answer for a draft with no
 pending question is refused without reaching any peer. Stop closes only the selected draft's peer,

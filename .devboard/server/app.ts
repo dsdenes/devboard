@@ -132,6 +132,8 @@ export interface AppOptions {
   adrDir: string;
   staticDir: string;
   hostname: string;
+  /** Extra hostnames the listener answers to, e.g. a reverse proxy name. */
+  allowedHosts?: readonly string[];
   port: number;
   repoDir?: string;
   goalFile?: string;
@@ -1749,30 +1751,95 @@ async function spawnClone(request: RemoteCloneRequest): Promise<RemoteCloneResul
   }
 }
 
+/** Names a loopback listener answers to besides its configured address. */
+const LOOPBACK_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"] as const;
+
+/** Bind addresses that name no host a browser can put in a URL. */
+const WILDCARD_HOSTNAMES: Record<string, true> = {
+  "0.0.0.0": true,
+  "[::]": true,
+};
+
 /**
- * Whether a request carries an `Origin` header for a page on another host.
- * Browsers send the header on cross-site requests, including WebSocket
- * upgrades; a client without one is not a page and is accepted. The host
- * comparison is shared so the mutating endpoints and the socket cannot drift.
+ * A hostname in the form Bun puts in `URL.hostname`, or null when the value
+ * is not a host at all. Ports are dropped: the listener already chose its
+ * port, and a port never distinguishes one of its own names.
  */
-function isCrossOriginRequest(request: Request, url: URL): boolean {
-  const origin = request.headers.get("origin");
-  if (origin === null) return false;
+function canonicalHostname(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
   try {
-    return new URL(origin).host !== url.host;
+    return new URL(`http://${trimmed}`).hostname.toLowerCase();
   } catch {
-    return true;
+    // A configured IPv6 address may be bare, while a Host header is bracketed.
+    if (!trimmed.includes(":") || trimmed.startsWith("[")) return null;
+    try {
+      return new URL(`http://[${trimmed}]`).hostname.toLowerCase();
+    } catch {
+      return null;
+    }
   }
 }
 
 /**
- * The method, origin, size, and JSON guards shared by the mutating browser
- * endpoints. A cross-origin page must never reach a handler with a side
- * effect; the body is bounded before it is parsed.
+ * The hostnames this listener serves. The configured bind address is one;
+ * loopback aliases cover the default and a container's published port. A
+ * wildcard bind names no host, so it serves only the loopback aliases and the
+ * explicit allowlist.
+ */
+function allowedRequestHostnames(
+  hostname: string,
+  configured: readonly string[] = [],
+): ReadonlySet<string> {
+  const allowed = new Set<string>(LOOPBACK_HOSTNAMES);
+  const bound = canonicalHostname(hostname);
+  if (bound !== null && WILDCARD_HOSTNAMES[bound] !== true) allowed.add(bound);
+  for (const value of configured) {
+    const extra = canonicalHostname(value);
+    if (extra !== null && WILDCARD_HOSTNAMES[extra] !== true) allowed.add(extra);
+  }
+  return allowed;
+}
+
+/** Why a browser request must be refused, or null when it may proceed. */
+type RequestRefusal = "host" | "origin" | null;
+
+/**
+ * The host and origin guards shared by the mutating endpoints and the socket.
+ *
+ * `url.host` is built from the request's Host header, which a rebinding page
+ * controls, so the listener's own names decide which hosts it serves. Only
+ * then does the Origin comparison add the same-origin check; a client without
+ * an Origin header is not a page and is accepted.
+ */
+function requestRefusal(
+  request: Request,
+  url: URL,
+  allowedHostnames: ReadonlySet<string>,
+): RequestRefusal {
+  const host = request.headers.get("host");
+  const hostname = host === null ? null : canonicalHostname(host);
+  if (hostname === null || !allowedHostnames.has(hostname)) return "host";
+
+  const origin = request.headers.get("origin");
+  if (origin === null) return null;
+  try {
+    return new URL(origin).host === url.host ? null : "origin";
+  } catch {
+    return "origin";
+  }
+}
+
+/**
+ * The method, host, origin, size, and JSON guards shared by the mutating
+ * browser endpoints. A request for another host, or a cross-origin page, must
+ * never reach a handler with a side effect; the body is bounded before it is
+ * parsed.
  */
 async function readMutationBody(
   request: Request,
   url: URL,
+  allowedHostnames: ReadonlySet<string>,
 ): Promise<{ value: unknown } | { response: Response }> {
   if (request.method !== "POST") {
     return {
@@ -1780,10 +1847,16 @@ async function readMutationBody(
     };
   }
 
-  if (isCrossOriginRequest(request, url)) {
+  const refusal = requestRefusal(request, url, allowedHostnames);
+  if (refusal !== null) {
     return {
       response: Response.json(
-        { error: "Cross-origin feedback is refused." },
+        {
+          error:
+            refusal === "host"
+              ? "The request host is not served by this dashboard."
+              : "Cross-origin feedback is refused.",
+        },
         { status: 403 },
       ),
     };
@@ -1830,6 +1903,7 @@ async function readMutationBody(
 
 export function createApp(options: AppOptions) {
   const staticRoot = resolve(options.staticDir);
+  const allowedHostnames = allowedRequestHostnames(options.hostname, options.allowedHosts);
   const adrDir = resolve(options.adrDir);
   const repoDir = options.repoDir ?? dirname(adrDir);
   const project = projectLabel(repoDir);
@@ -2956,10 +3030,14 @@ export function createApp(options: AppOptions) {
 
     let agent: AcpConnection;
     try {
+      const env = await peerEnvironment();
+      // A stop or disposal during provider selection clears the run. The
+      // crawl must not start after the operator ended it.
+      if (discoverRun !== run || request !== discoverRequest) return;
       agent = new AcpConnection({
         command: agentCommand,
         cwd: root,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity: AcpActivity) {
           if (discoverRun !== run) return;
           journal.write("activity", activity.text);
@@ -2996,6 +3074,10 @@ export function createApp(options: AppOptions) {
         run,
         `Could not start the Discover agent: ${error instanceof Error ? error.message : String(error)}`,
       );
+      return;
+    }
+    if (discoverRun !== run || request !== discoverRequest) {
+      agent.close();
       return;
     }
     run.agent = agent;
@@ -4011,10 +4093,14 @@ export function createApp(options: AppOptions) {
   /** Runs a preparation peer to its outcome; also resumes a restored one. */
   async function spawnSkillsPreparation(preparation: SkillsPreparation) {
     try {
+      const env = await peerEnvironment();
+      // A reset or disposal during provider selection clears the preparation;
+      // constructing a peer now would leave it unowned.
+      if (skillsPreparation !== preparation) return;
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity) {
           if (skillsPreparation !== preparation) return;
           recordActivity(preparation.activity, activity);
@@ -4039,6 +4125,10 @@ export function createApp(options: AppOptions) {
           process.stderr.write(text);
         },
       });
+      if (skillsPreparation !== preparation) {
+        agent.close();
+        return;
+      }
       preparation.agent = agent;
 
       await agent.run(SKILLS_PROMPT);
@@ -4176,10 +4266,14 @@ export function createApp(options: AppOptions) {
     }
 
     try {
+      const env = await peerEnvironment();
+      // A newer creation or a disposal during provider selection clears the
+      // owner; no peer may be constructed for it.
+      if (goalCreation !== creation) return;
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity) {
           if (goalCreation !== creation) return;
           recordActivity(creation.activity, activity);
@@ -4204,6 +4298,10 @@ export function createApp(options: AppOptions) {
           process.stderr.write(text);
         },
       });
+      if (goalCreation !== creation) {
+        agent.close();
+        return;
+      }
       creation.agent = agent;
 
       await agent.run(GOAL_CREATION_PROMPT);
@@ -4286,10 +4384,14 @@ export function createApp(options: AppOptions) {
     }
 
     try {
+      const env = await peerEnvironment();
+      // A newer revision or a disposal during provider selection clears the
+      // owner; no peer may be constructed for it.
+      if (goalRevision !== revision) return;
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity) {
           if (goalRevision !== revision) return;
           recordActivity(revision.activity, activity);
@@ -4314,6 +4416,10 @@ export function createApp(options: AppOptions) {
           process.stderr.write(text);
         },
       });
+      if (goalRevision !== revision) {
+        agent.close();
+        return;
+      }
       revision.agent = agent;
 
       await agent.run(goalRevisionPrompt(goalFile, goalRevisionRequest));
@@ -4331,10 +4437,14 @@ export function createApp(options: AppOptions) {
 
   async function runAgent(run: ActiveRun, prompt = agentPrompt(adrDir, run.file)): Promise<boolean> {
     try {
+      const env = await peerEnvironment();
+      // A stop or reset during provider selection ends the manual run; no peer
+      // may run its prompt for an owner that is gone.
+      if (!isLiveRun(run)) return false;
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity) {
           if (!isLiveRun(run)) return;
           recordActivity(run.activity, activity);
@@ -4359,6 +4469,10 @@ export function createApp(options: AppOptions) {
           process.stderr.write(text);
         },
       });
+      if (!isLiveRun(run)) {
+        agent.close();
+        return false;
+      }
       run.agent = agent;
 
       await agent.run(prompt);
@@ -4843,10 +4957,14 @@ export function createApp(options: AppOptions) {
       action: laneAction(lane),
     });
     try {
+      const env = await peerEnvironment();
+      // A stop or disposal during provider selection clears the lane; the
+      // prompt must not run for a lane nothing can close.
+      if (!liveLanes.has(lane)) return;
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity) {
           recordLaneActivity(lane, activity);
         },
@@ -4872,6 +4990,10 @@ export function createApp(options: AppOptions) {
           process.stderr.write(text);
         },
       });
+      if (!liveLanes.has(lane)) {
+        agent.close();
+        return;
+      }
       lane.agent = agent;
       if (lifecycle.paused) agent.pause();
       await agent.run(prompt);
@@ -6133,7 +6255,7 @@ export function createApp(options: AppOptions) {
         { status: 503 },
       );
     }
-    const guarded = await readMutationBody(request, url);
+    const guarded = await readMutationBody(request, url, allowedHostnames);
     if ("response" in guarded) return guarded.response;
 
     try {
@@ -6165,7 +6287,7 @@ export function createApp(options: AppOptions) {
    * under `.devboard/goal-proposals/`.
    */
   async function handleGoalProposalRequest(request: Request, url: URL): Promise<Response> {
-    const guarded = await readMutationBody(request, url);
+    const guarded = await readMutationBody(request, url, allowedHostnames);
     if ("response" in guarded) return guarded.response;
 
     try {
@@ -6200,8 +6322,14 @@ export function createApp(options: AppOptions) {
       }
 
       if (url.pathname === "/ws") {
-        if (isCrossOriginRequest(request, url)) {
-          return new Response("Cross-origin WebSocket upgrades are refused.", { status: 403 });
+        const refusal = requestRefusal(request, url, allowedHostnames);
+        if (refusal !== null) {
+          return new Response(
+            refusal === "host"
+              ? "The request host is not served by this dashboard."
+              : "Cross-origin WebSocket upgrades are refused.",
+            { status: 403 },
+          );
         }
         if (server.upgrade(request)) return;
         return new Response("Expected a WebSocket upgrade", { status: 426 });
