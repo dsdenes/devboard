@@ -1284,34 +1284,36 @@ sudo userdel --remove <user>
 
 ## Background agents
 
-Auto Scout and Watchdog are the first two instances of one background-agent contract. A typed
-registry in `server/agents/registry.ts` declares each descriptor's id, label, description, scope,
-lifecycle vocabulary, cadence field and defaults, nullable limits schema, start/stop commands,
-issue projection, sync projection, and detail panel. The shared page, the shared filed-issues
-table, and the Issues sidebar are built from that registry; adding a third continuous agent means
-writing its engine, its adapter, and one registry entry.
+Auto Scout, Watchdog, and Design System are the three instances of one background-agent contract.
+A typed registry in `server/agents/registry.ts` declares each descriptor's id, label, description,
+scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema, start/stop
+commands, issue projection, sync projection, and detail panel. The shared page, the shared
+filed-issues table, and the Issues sidebar are built from that registry; adding a fourth
+continuous agent means writing its engine, its adapter, and one registry entry. The shared page,
+sidebar, and issue table have no agent-id branch: a synthetic fourth descriptor projects and
+validates unchanged.
 
-Both agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
+All three agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
 `starting` appears before a spawned worker exists, `running` once its state is readable, and
 `stopping` from the moment Stop is accepted until the worker exits. A stopped agent is never
 restarted by a dashboard restart, a page open, or a tab restore. A live worker owned by another
 dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cannot Stop it, and
 Start is a no-op with a notice.
 
-Both pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
+All three pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
 lifecycle badge `agent-lifecycle`, the sync badge `agent-sync`, `agent-sync-at`,
 `agent-last-run`, `agent-next-run`, exactly one of `agent-start`/`agent-stop`, `agent-cadence`,
 `agent-limit-hour`, `agent-limit-pending`, `agent-save-settings`, `agent-issues-count`,
 `agent-issues`, and `agent-detail`. Alerts use one position: `agent-error`, `agent-sync-error`,
 and `agent-settings-error`, each with `role="alert"`. Start/Stop is the only filled primary
 control. The header row carries the page identity, the lifecycle badge, the sync badge with its
-last-read clock, and Start/Stop. Its settings footer is one unlabeled row: the Every field with
-the last-run and next-run clocks, Per hour, Open issues, and one Save control. Save validates all
+last-read clock, the last-run clock, and Start/Stop. Its settings footer is one unlabeled row: the
+Every field, the next-run clock, Per hour, Open issues, and one Save control. Save validates all
 three fields and sends one settings command. The sidebar has three groups in
 order: `Issues surfaces` (Overview), `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
-`open-issues-scout` then `open-issues-watchdog`, badges `agent-state-<id>`, counts
-`agent-count-<id>`), and `Issues work` (Issues, Draft goals).
+`open-issues-scout`, `open-issues-watchdog`, then `open-issues-design`, badges
+`agent-state-<id>`, counts `agent-count-<id>`), and `Issues work` (Issues, Draft goals).
 
 ### Transport
 
@@ -1319,11 +1321,12 @@ Browser-to-backend state and controls use the WebSocket from
 `adrs/0003-browser-server-transport-and-api.md`. Commands are `getAgents`, `getAgent`,
 `startAgent`, `stopAgent`, `setAgentSettings`, and the timer gate's `disableAgentTimer`; each
 carries `id`. The prompt surface adds `getAgentPrompt`, `saveAgentPrompt`, and
-`sendAgentPromptChat`, each carrying `id`. The server answers `agentsState` (both agents),
-`agentState` (one), and `agentPromptState` (one agent's prompt section), streams Auto Scout
-activity as `agentActivity`, streams one prompt chat as `agentPromptChat`, and refuses an unknown
-id with an error naming it before spawning anything. `scoutState`, `scoutActivity`, `startScout`,
-`stopScout`, `setScoutLimits`, and `GET /api/watchdog` are gone. The footer indicator still reads
+`sendAgentPromptChat`, each carrying `id`. The server answers `agentsState` (all agents),
+`agentState` (one), and `agentPromptState` (one agent's prompt section), streams each
+activity-panel agent's activity as `agentActivity` with its agent id, streams one prompt chat as
+`agentPromptChat`, and refuses an unknown id with an error naming it before spawning anything.
+`scoutState`, `scoutActivity`, `startScout`, `stopScout`, `setScoutLimits`, and
+`GET /api/watchdog` are gone. The footer indicator still reads
 the same Watchdog snapshot through the agent store.
 
 ### Prompt
@@ -1379,33 +1382,88 @@ renders as `0`. One `agent-save-settings` click validates all three fields and p
 atomic settings write; a running worker applies the whole change without restart. Auto Scout
 defaults to 1 minute and never starts a scan sooner than the interval after the previous scan
 start; Watchdog defaults to 10 minutes, starts its first cycle immediately on Start, and uses the
-interval as its evidence window. `agent-last-run` and `agent-next-run` show both.
+interval as its evidence window; Design System defaults to 60 minutes and never starts a cycle
+sooner than that interval after the previous cycle start. `agent-last-run` and `agent-next-run`
+show both.
 
-Auto Scout defaults to 10 per rolling hour and 5 open; Watchdog defaults to both empty. The
-persisted values survive reload and restart and apply to a running worker. Auto Scout keeps its
-rolling-hour and open-issue enforcement. Watchdog files at most the hourly cap of new issues and
-at most the pending cap of its own open issues, counts open
+Auto Scout and Design System default to 10 per rolling hour and 5 open; Watchdog defaults to both
+empty. The persisted values survive reload and restart and apply to a running worker. Auto Scout
+keeps its rolling-hour and open-issue enforcement. Watchdog files at most the hourly cap of new
+issues and at most the pending cap of its own open issues, counts open
 state from the last successful projection (`projection.json`), keeps excess fingerprints in
 `pendingFiling` instead of dropping them, files nothing new while a cap is set and the projection
 is not `ok`, and never caps comments. With both caps empty its cycle behaves exactly as before.
 
 ### Filed issues
 
-Both pages render one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
+All three pages render one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
 Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `filedAt`
 descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
 `agent-issue-category`, `agent-issue-filed` (a `<time>`), `agent-issue-state`
 (`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). With no rows,
-`agent-issues-empty` renders the same inbox composition on both pages, naming the agent.
+`agent-issues-empty` renders the same inbox composition on every page, naming the agent.
 `agent-issues-count` counts the rows. Auto Scout maps its GitHub title and creation time;
-Watchdog keeps `[watchdog] <category>: <line>`.
+Watchdog keeps `[watchdog] <category>: <line>`; Design System keeps its finding title with its
+category.
 
 ### Detail panels
 
-`agent-detail` is declared by the descriptor. Auto Scout renders `scout-activity`, streamed as
-`agentActivity`. Watchdog renders its retained cycle history (`watchdog-cycles`, `watchdog-cycle`,
+`agent-detail` is declared by the descriptor. Auto Scout renders `scout-activity` and Design
+System renders `design-activity`, both streamed as `agentActivity`. Watchdog renders its retained
+cycle history (`watchdog-cycles`, `watchdog-cycle`,
 `watchdog-cycle-at/-window/-action/-findings/-reason`, `watchdog-cycles-empty`), capped at the
 newest 100 run directories.
+
+### Design System
+
+Design System is the `design` descriptor. Its sidebar entry `open-issues-design` opens the shared
+`agent-page` with `data-agent="design"` and `design-activity`. While started, it audits the
+interface source `<REPO_DIR>/.devboard/client` (`.svelte`, `.css`, `.ts`, and the harness
+`index.html` entry) against the repository-relative documents `DESIGN.md` and
+`design/tokens.json` (overridable with `DESIGN_SOURCE_DIR`, `DESIGN_DOCUMENT`, and
+`DESIGN_TOKEN_DOCUMENT`). The documents are normative: a client value, state treatment, wording,
+spacing, or placement they do not cover is a divergence.
+
+Each cycle writes its input and request under `<REPO_DIR>/.devboard/.tmp/design/cycles/<id>/`,
+runs one ACP turn, and validates the answer before acting. A finding becomes an issue only in one
+of `color`, `typography`, `spacing`, `wording`, `state`, or `placement`, with a documented
+principle or token and its quoted passage, exact evidence paths with line ranges and quotes, every
+affected file, a proposed change, and binary acceptance criteria. Anything else is dropped and
+recorded in activity, never filed. Filed issues carry the exact `design` label and no title
+prefix, and never repeat the normalized title of an existing open issue or any existing `design`
+issue in any state.
+
+Filing uses the shared `agent-limit-hour` and `agent-limit-pending`: the hourly cap counts every
+`design` issue created in the last rolling 60 minutes in any state, the pending cap counts every
+open `design` issue, and one cycle files no more than the smaller room or 100. Zero room files
+nothing and records each skip in activity; clearing a cap resumes filing on the next cycle. A
+failed forge read files nothing and keeps the last known rows. Caps never block an audit, a
+documentation change, or its release.
+
+A documentation edit is admitted only when it establishes or corrects a standard evidenced by two
+distinct interface surfaces or by an internal contradiction inside the documents. It may change
+only `DESIGN.md` and `design/tokens.json`, must keep `## Design principles` and `## UX principles`,
+and must name every added token in both the prose table and the token document. The agent never
+edits a document to record a single literal and never legalizes a drift it reported.
+
+An admitted edit is released autonomously: one worktree under `<REPO_DIR>/.worktree/`, a commit
+limited to the two documents, a fetch and integration of `main` with every conflict resolved and
+every check rerun, a non-force push to `main`, the release workflow wait, the integration
+checkout's fast-forward without discarding uncommitted work, and `cd .devboard && bun run publish`
+(exit 0, npm package, Gitea fallback tarball, and `.sha256`). The released version and URL are
+recorded in activity, then the worktree and branch are removed. A cycle with no admissible
+decision makes no commit, push, workflow wait, or publish. A failed push, workflow, publish, or
+asset check leaves the pushed commit intact, never force-pushes, never reverts, and reports the
+failing step in `agent-error` and activity.
+
+Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
+the canonical source checkout lacks `.devboard/client`, either document is absent, the origin is
+not a supported forge, the account cannot write, the exact `design` label is absent, or `git`,
+`bun`, `npm`, or the release credential is missing. Start publishes `starting` before the spawn
+and `running` once the state is readable. At most one audit and release cycle runs at a time;
+Start, a cadence change, a page open, a tab restore, or a reload never starts a second cycle.
+State lives at `<STATE_DIR>/design/<journalKey(REPO_DIR)>/`; the lock, cycles, and worktrees stay
+inside the checkout, and the worker's audit input never leaves the repository root.
 
 ## Harness watchdog
 
@@ -1487,7 +1545,8 @@ bun run watchdog:uninstall                  # stop, disable, and remove a legacy
 removed GET endpoint, and the footer indicator. `verify:watchdog-live` starts the seeded
 dashboard's watchdog through its Start control (not systemd), waits for a real cycle to file the
 seeded marker, asserts the ledger entry, title, and body, and closes the issue in `finally`.
-`verify:agents` drives both pages through headless Chrome.
+`verify:agents` drives all three pages through headless Chrome; `verify:design` drives the Design
+System route through the same shared interface.
 
 ## Issues mode
 
@@ -2526,8 +2585,8 @@ reload, an invalid save shows its error and sends nothing, a close flips the row
 a release published later fills its blank version, a failed read shows `error` with its reason
 and the last success time while keeping the rows, no review widget or command remains, and Stop
 leaves the table and a released lock. It writes only under `.devboard/.tmp`.
-`bun run verify:agents` builds the client, seeds both agents, and drives headless Chrome through
-the Background agents sidebar section, the identical core test ids on both pages, Start ->
+`bun run verify:agents` builds the client, seeds all three agents, and drives headless Chrome
+through the Background agents sidebar section, the identical core test ids on every page, Start ->
 starting -> running and Stop -> stopping -> stopped, cadence and limit validation and
 persistence, the Watchdog cap, the shared table columns, freshness without a reload, no mutating
 command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and

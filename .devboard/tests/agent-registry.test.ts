@@ -29,7 +29,7 @@ async function temporaryRoot(): Promise<string> {
   return directory;
 }
 
-function thirdDescriptor(): AgentDescriptor {
+function fourthDescriptor(): AgentDescriptor {
   return {
     ...agentRegistry.require("scout"),
     id: "patrol",
@@ -112,10 +112,11 @@ function fakeAdapter(descriptor: AgentDescriptor): AgentAdapter & { starts: numb
 }
 
 describe("background agent registry", () => {
-  test("ships exactly the two declared descriptors with their defaults", () => {
+  test("ships exactly the three declared descriptors with their defaults", () => {
     expect(DEFAULT_AGENT_DESCRIPTORS.map((descriptor) => descriptor.id)).toEqual([
       "scout",
       "watchdog",
+      "design",
     ]);
     const scout = agentRegistry.require("scout");
     expect(scout.label).toBe("Auto Scout");
@@ -129,6 +130,13 @@ describe("background agent registry", () => {
     expect(watchdog.cadence.defaultMinutes).toBe(10);
     expect(watchdog.limits.default).toEqual({ maxPerHour: null, maxPending: null });
     expect(watchdog.detail.panel).toBe("cycles");
+    const design = agentRegistry.require("design");
+    expect(design.label).toBe("Design System");
+    expect(design.scope).toBe("repository");
+    expect(design.cadence.defaultMinutes).toBe(60);
+    expect(design.limits.default).toEqual({ maxPerHour: 10, maxPending: 5 });
+    expect(design.detail.panel).toBe("activity");
+    expect(design.tab).toEqual({ id: "design", kind: "design", title: "Design System" });
     for (const descriptor of DEFAULT_AGENT_DESCRIPTORS) {
       expect(descriptor.lifecycle).toEqual([...AGENT_LIFECYCLES]);
       expect(descriptor.commands.start).toBe("startAgent");
@@ -147,10 +155,10 @@ describe("background agent registry", () => {
     ).toThrow(AgentRegistryError);
   });
 
-  test("a synthetic third descriptor is accepted by validation and projection", () => {
-    const descriptor = thirdDescriptor();
+  test("a synthetic fourth descriptor is accepted by validation and projection", () => {
+    const descriptor = fourthDescriptor();
     const registry = defineAgentRegistry([...DEFAULT_AGENT_DESCRIPTORS, descriptor]);
-    expect(registry.ids()).toEqual(["scout", "watchdog", "patrol"]);
+    expect(registry.ids()).toEqual(["scout", "watchdog", "design", "patrol"]);
     const projected = projectAgentSnapshot(descriptor, snapshotInput(descriptor));
     expect(projected.id).toBe("patrol");
     expect(projected.label).toBe("Patrol");
@@ -167,7 +175,7 @@ describe("background agent registry", () => {
   });
 
   test("a synthetic adapter is listed and controlled through the same bridge", async () => {
-    const descriptor = thirdDescriptor();
+    const descriptor = fourthDescriptor();
     const registry = defineAgentRegistry([...DEFAULT_AGENT_DESCRIPTORS, descriptor]);
     const patrol = fakeAdapter(descriptor);
     const events: Array<Record<string, unknown>> = [];
@@ -182,6 +190,7 @@ describe("background agent registry", () => {
     expect((state?.agents as Array<{ id: string }>).map((agent) => agent.id)).toEqual([
       "scout",
       "watchdog",
+      "design",
       "patrol",
     ]);
     await bridge.handle(target, { type: "startAgent", id: "patrol" });

@@ -269,10 +269,10 @@ const CORE_IDS = [
   "agent-lifecycle",
   "agent-sync",
   "agent-sync-at",
+  "agent-last-run",
   "agent-start",
   "agent-stop",
   "agent-cadence",
-  "agent-last-run",
   "agent-next-run",
   "agent-limit-hour",
   "agent-limit-pending",
@@ -645,7 +645,7 @@ try {
     Array.isArray(groups) &&
       (groups as Array<{ heading: string; ids: string[] }>)[0]?.heading === "Background agents" &&
       JSON.stringify((groups as Array<{ ids: string[] }>)[0]?.ids) ===
-        JSON.stringify(["open-issues-scout", "open-issues-watchdog"]),
+        JSON.stringify(["open-issues-scout", "open-issues-watchdog", "open-issues-design"]),
     `the Background agents section is wrong: ${JSON.stringify(groups)}`,
   );
   const sidebarOrder = await devtools.evaluate(`(() => [
@@ -659,6 +659,7 @@ try {
   for (const [id, label] of [
     ["scout", "Auto Scout"],
     ["watchdog", "Watchdog"],
+    ["design", "Design System"],
   ]) {
     const entry = await devtools.evaluate(`(() => {
       const button = document.querySelector('[data-testid="open-issues-${id}"]');
@@ -694,6 +695,25 @@ try {
     JSON.stringify(scoutCore.filter((id) => id !== "agent-stop")) ===
       JSON.stringify(CORE_IDS.filter((id) => id !== "agent-stop")),
     `the Auto Scout core ids differ: ${JSON.stringify(scoutCore)}`,
+  );
+
+  await click(devtools, "open-issues-design");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-page")) ? true : undefined),
+    "the Design System page",
+    10_000,
+  );
+  const designPage = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-page"]')?.dataset.agent ?? ''`,
+  );
+  assertTrue(designPage === "design", `the Design System page names ${String(designPage)}`);
+  assertTrue(await present(devtools, "agent-issues-empty"), "Design System has no empty table");
+  assertTrue(await present(devtools, "design-activity"), "Design System has no activity panel");
+  const designCore = await coreSequence(devtools);
+  assertTrue(
+    JSON.stringify(designCore.filter((id) => id !== "agent-stop")) ===
+      JSON.stringify(CORE_IDS.filter((id) => id !== "agent-stop")),
+    `the Design System core ids differ: ${JSON.stringify(designCore)}`,
   );
 
   await click(devtools, "open-issues-watchdog");
@@ -1436,7 +1456,7 @@ try {
   console.log("PASS prompt-save-reset");
 
   console.log(
-    "verify:agents: the Background agents section, both shared pages, lifecycle, cadence, " +
+    "verify:agents: the Background agents section, all three shared pages, lifecycle, cadence, " +
       "nullable limits, the Watchdog cap, the shared table, freshness, no mutation on reload, " +
       "the timer gate, and the footer indicator all hold",
   );
