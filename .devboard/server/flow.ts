@@ -206,7 +206,7 @@ interface FlowSession {
   pr: FlowPr | null;
   prError: string | null;
   leftover: string | null;
-  /** True from the merge's terminal write until cleanup has finished. */
+  /** True from the merge's terminal write until a cleanup attempt finishes with no leftovers. */
   cleanupPending: boolean;
   question: FlowQuestion | null;
   pushedTip: string | null;
@@ -848,9 +848,11 @@ export class FlowController {
   }
 
   #publish(): void {
-    // A merge's snapshot is published only once its cleanup has finished, so
-    // "merged" never appears while the worktree and branches still stand.
-    if (this.#session?.cleanupPending === true) return;
+    // A merge's snapshot is held back only while its cleanup is still running,
+    // so "merged" never appears beside work the cleanup is about to remove.
+    // Once the cleanup returns a leftover, its retry stays armed but the merged
+    // state and the text naming what remains must reach the view.
+    if (this.#session?.cleanupPending === true && this.#session.leftover === null) return;
     this.#broadcast({ type: "flowSnapshot", ...this.snapshot() });
   }
 
@@ -970,7 +972,7 @@ export class FlowController {
         if (!entry.session.cleanupPending) continue;
         try {
           entry.session.leftover = await this.#cleanupAfterMerge(entry.session);
-          entry.session.cleanupPending = false;
+          entry.session.cleanupPending = entry.session.leftover !== null;
         } catch (error) {
           this.#journal?.write(
             "server-error",
@@ -1740,10 +1742,15 @@ export class FlowController {
       })),
       previous: session.widgets,
     };
-    writeJson(this.#path("request.json"), request);
+    // Every file this turn reads and writes belongs to the session captured at
+    // entry. A merge followed by createGoal replaces `#session` while the turn
+    // is live; `#path` would then address the replacement's directory.
+    const requestPath = join(directory, "request.json");
+    const widgetsPath = join(directory, "widgets.json");
+    writeJson(requestPath, request);
     // A stale result must never be mistaken for this run's answer.
     try {
-      writeFileSync(this.#path("widgets.json"), "");
+      writeFileSync(widgetsPath, "");
     } catch {
       // The directory is gone; the run below reports it.
     }
@@ -1810,7 +1817,18 @@ export class FlowController {
 
     const elapsed = Date.now() - started;
     const timedOut = elapsed >= this.#analystTimeoutMs - 5;
-    const answer = readJson<{ widgets?: unknown }>(this.#path("widgets.json"));
+    const answer = readJson<{ widgets?: unknown }>(widgetsPath);
+    if (this.#session !== session) {
+      // The turn outlived its session. Its answer belongs to the session it
+      // analyzed, so persisting or broadcasting it would attach stale widgets
+      // to the replacement. The pending tick, if any, now belongs to the new
+      // session and gets its own turn.
+      if (this.#analystPending) {
+        this.#analystPending = false;
+        this.#startAnalyst();
+      }
+      return;
+    }
     const raw =
       answer !== null && typeof answer === "object" && Array.isArray(answer.widgets)
         ? (answer.widgets as RawWidget[])
@@ -1828,7 +1846,7 @@ export class FlowController {
       session.accepted = session.accepted.filter((signature) =>
         session.widgets.some((widget) => widget.id === signature),
       );
-      writeJson(this.#path("widgets.json"), { widgets: this.#widgetsAsRaw(session.widgets) });
+      writeJson(widgetsPath, { widgets: this.#widgetsAsRaw(session.widgets) });
       this.#persist();
       this.#persistArtifacts();
       this.#broadcast({ type: "flowWidgets", widgets: session.widgets });
@@ -2191,10 +2209,15 @@ export class FlowController {
 
     const leftover = await this.#cleanupAfterMerge(session);
     session.leftover = leftover;
-    session.cleanupPending = false;
+    // A cleanup that left something keeps the retry armed: the next restore
+    // finds the merged session still owed its worktree and branches. Only a
+    // cleanup with nothing left releases it.
+    session.cleanupPending = leftover !== null;
     this.#persist();
     if (leftover !== null) {
-      this.#error(`The merge completed, but cleanup left ${leftover}.`);
+      this.#error(
+        `The merge completed, but cleanup left ${leftover}. It will be retried at the next Flow start.`,
+      );
     }
     this.#publish();
   }
@@ -2220,7 +2243,17 @@ export class FlowController {
   async #cleanupAfterMerge(session: FlowSession): Promise<string | null> {
     const leftovers: string[] = [];
 
-    await this.#git(this.repoDir, ["fetch", "origin"]);
+    const fetched = await this.#git(this.repoDir, ["fetch", "origin"]);
+    if (fetched.code !== 0) {
+      // Without a refreshed origin/main the ancestry check would blame the
+      // branch for a stale remote view. The failed fetch is its own leftover,
+      // and the rest waits for the retry.
+      const detail = fetched.stderr.trim();
+      leftovers.push(
+        detail.length === 0 ? "git fetch origin failed" : `git fetch origin failed (${detail})`,
+      );
+      return leftovers.join("; ");
+    }
     const head = await this.#git(this.repoDir, ["symbolic-ref", "--short", "HEAD"]);
     if (head.code === 0 && head.stdout.trim() === "main") {
       const status = await this.#git(this.repoDir, ["status", "--porcelain"]);
