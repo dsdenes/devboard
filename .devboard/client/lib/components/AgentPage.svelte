@@ -7,6 +7,7 @@
   import AgentActivityPanel from "./AgentActivityPanel.svelte";
   import AgentCyclesPanel from "./AgentCyclesPanel.svelte";
   import AgentIssuesTable from "./AgentIssuesTable.svelte";
+  import AgentPromptSection from "./AgentPromptSection.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
   import PageHeader from "./ui/page-header.svelte";
@@ -132,6 +133,12 @@
             {/if}
           </span>
         </span>
+        <span class="agent-settings__run">
+          Last run
+          <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
+            {stamp(snapshot?.cadence.lastRunAt ?? null)}
+          </span>
+        </span>
       {/snippet}
       {#snippet actions()}
         {#if showStop}
@@ -177,12 +184,6 @@
             />
             <span class="agent-settings__unit">min</span>
           </label>
-          <span class="agent-settings__run">
-            Last run
-            <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
-              {stamp(snapshot?.cadence.lastRunAt ?? null)}
-            </span>
-          </span>
           <span class="agent-settings__run">
             Next run
             <span class="mono" data-testid="agent-next-run" title={snapshot?.cadence.nextRunAt ?? "—"}>
@@ -230,6 +231,8 @@
         </div>
       {/snippet}
     </PageHeader>
+
+    <AgentPromptSection {agentId} />
 
     {#if blocked && snapshot?.timer !== null && snapshot?.timer !== undefined}
       <div class="agent-blocked" data-testid="agent-blocked" role="status">
@@ -282,7 +285,7 @@
         {#if detail?.panel === "cycles"}
           <AgentCyclesPanel cycles={detail.cycles} />
         {:else}
-          <AgentActivityPanel lines={activity} scanId={activityScanId} />
+          <AgentActivityPanel agentId={agentId} lines={activity} scanId={activityScanId} />
         {/if}
       </div>
     </div>

@@ -311,6 +311,50 @@ describe("issues bridge commands", () => {
     }
   });
 
+  test("a stalled start preflight fails at the deadline and the next Start retries", async () => {
+    const root = await temporaryDirectory("issues-bridge-preflight-deadline");
+    const stateDir = join(root, "state");
+    let calls = 0;
+    const spawned: string[][] = [];
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      preflightTimeoutMs: 20,
+      preflight: async () => {
+        calls += 1;
+        if (calls === 1) await new Promise<never>(() => undefined);
+        return { ok: true, repository: "acme/fixture" };
+      },
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      const started = Date.now();
+      const first = await subject.start();
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(first.ok).toBe(false);
+      if (!first.ok) expect(first.message).toContain("did not finish within 20 ms");
+      expect(calls).toBe(1);
+      expect(spawned).toHaveLength(0);
+
+      // The timed-out task cleared its memo: this Start runs the preflight
+      // again and spawns the worker the runner now accepts.
+      expect(await subject.start()).toEqual({ ok: true, attached: false });
+      expect(calls).toBe(2);
+      expect(spawned).toHaveLength(1);
+    } finally {
+      subject.dispose();
+    }
+  });
+
   test("a stale lock whose pid was reused lets Start spawn instead of attaching", async () => {
     const root = await temporaryDirectory("issues-bridge-stale");
     const stateDir = join(root, "state");

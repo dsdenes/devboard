@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { pidAlive } from "../issues/lock";
 import { readHarnessVersion } from "../server/version";
 import { ScoutBridge } from "../server/scout";
+import { DesignBridge } from "../server/design";
 import { agentRegistry, projectAgentSnapshot, type AgentSnapshot } from "../server/agents/registry";
 import { readWatchdogStatus } from "../watchdog/status";
 import { readWatchdogSettings } from "../watchdog/settings";
@@ -50,6 +51,22 @@ function workerLifecycle(
 function scoutSnapshot(context: McpContext): AgentSnapshot {
   const descriptor = agentRegistry.require("scout");
   const bridge = new ScoutBridge({
+    descriptor,
+    repoDir: context.repoDir,
+    stateDir: context.stateDir,
+    agentCommand: context.environment.AGENT_COMMAND ?? "omp acp",
+    agentEnvironment: async () => context.environment,
+    runningVersion: readHarnessVersion(context.harnessDir),
+    harnessDir: context.harnessDir,
+    send: () => undefined,
+    environment: context.environment,
+  });
+  return projectAgentSnapshot(descriptor, bridge.snapshot());
+}
+
+function designSnapshot(context: McpContext): AgentSnapshot {
+  const descriptor = agentRegistry.require("design");
+  const bridge = new DesignBridge({
     descriptor,
     repoDir: context.repoDir,
     stateDir: context.stateDir,
@@ -171,6 +188,7 @@ function persistedAgents(context: McpContext): AgentSnapshot[] {
   return agentRegistry.descriptors.map((descriptor) => {
     if (descriptor.id === "scout") return scoutSnapshot(context);
     if (descriptor.id === "watchdog") return watchdogSnapshot(context);
+    if (descriptor.id === "design") return designSnapshot(context);
     return coachSnapshot(context);
   });
 }

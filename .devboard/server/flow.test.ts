@@ -8,6 +8,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -1130,6 +1131,81 @@ describe("Flow untracked file bounds", () => {
       expect(statSync(path).size).toBeLessThan(64 * 1024);
       const state = JSON.parse(readFileSync(path, "utf8")) as unknown;
       expect(JSON.stringify(state)).not.toContain("x".repeat(1024));
+    }
+    client.close();
+  }, 60_000);
+
+  test("untracked symlinks report their target path and never read the target", async () => {
+    const fixture = createFixture("untracked-symlink");
+    const secret = `OUTSIDE-SECRET-${"z".repeat(64)}\n`;
+    const secretPath = join(fixture.root, "outside-secret.txt");
+    writeFileSync(secretPath, secret);
+    const directoryTarget = join(fixture.root, "outside-directory");
+    mkdirSync(directoryTarget, { recursive: true });
+
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", "--flow-implement"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "startFlowImplementation" });
+    const started = await client.waitFor((event) => event.type === "flowImplementationStarted");
+    const sessionId = String(started.sessionId);
+    const worktree = String(started.worktree);
+    await client.waitFor((event) => event.type === "flowStopped");
+
+    symlinkSync(secretPath, join(worktree, "outside-link"));
+    symlinkSync("missing-target.txt", join(worktree, "dangling-link"));
+    symlinkSync(directoryTarget, join(worktree, "directory-link"));
+
+    await waitUntil(
+      () => {
+        const files = latest(client, "flowFiles")?.files as { path: string }[] | undefined;
+        return (
+          Array.isArray(files) &&
+          ["outside-link", "dangling-link", "directory-link"].every((path) =>
+            files.some((file) => file.path === path),
+          )
+        );
+      },
+      "the untracked symlinks in a flowFiles frame",
+    );
+
+    const filesEvent = latest(client, "flowFiles");
+    const files = filesEvent?.files as {
+      path: string;
+      status: string;
+      insertions: number;
+      deletions: number;
+      diff: string;
+      omitted?: string;
+    }[];
+    const link = files.find((file) => file.path === "outside-link");
+    expect(link?.status).toBe("added");
+    expect(link?.omitted).toBeUndefined();
+    expect(link?.insertions).toBe(1);
+    expect(link?.deletions).toBe(0);
+    expect(link?.diff).toContain("new file mode 120000");
+    const contentLines = link?.diff
+      .split("\n")
+      .filter((line) => line.startsWith("+") && !line.startsWith("+++"));
+    expect(contentLines).toEqual([`+${secretPath}`]);
+    expect(link?.diff).not.toContain(secret.trim());
+    expect(JSON.stringify(filesEvent)).not.toContain(secret.trim());
+
+    const dangling = files.find((file) => file.path === "dangling-link");
+    expect(dangling?.status).toBe("added");
+    expect(dangling?.diff).toContain("+missing-target.txt");
+    const directory = files.find((file) => file.path === "directory-link");
+    expect(directory?.status).toBe("added");
+    expect(directory?.diff).toContain(`+${directoryTarget}`);
+
+    const sessionDirectory = join(fixture.stateDir, "flow", journalKey(fixture.root), sessionId);
+    for (const name of ["session.json", "changes.json"]) {
+      const state = readFileSync(join(sessionDirectory, name), "utf8");
+      expect(state).not.toContain(secret.trim());
+      expect(state).toContain('"outside-link"');
     }
     client.close();
   }, 60_000);

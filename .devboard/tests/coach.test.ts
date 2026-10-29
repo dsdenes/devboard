@@ -163,7 +163,7 @@ function memoryDelivery(): CoachDelivery & { created: Array<{ title: string; bod
 
 describe("Coach registration and lifecycle", () => {
   test("the registry declares coach with its defaults", () => {
-    expect(agentRegistry.ids()).toEqual(["scout", "watchdog", "coach"]);
+    expect(agentRegistry.ids()).toEqual(["scout", "watchdog", "design", "coach"]);
     const coach = agentRegistry.require("coach");
     expect(coach.label).toBe("Coach");
     expect(coach.scope).toBe("repository");

@@ -1182,6 +1182,67 @@ describe("discover mode", () => {
   );
 
   test(
+    "keeps a published set readable and re-crawlable after a grounded file is deleted",
+    async () => {
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      const conceptsOf = (state: DiscoverState): Array<Record<string, unknown>> => {
+        const glossary: Record<string, unknown> | undefined = state.glossaries[0];
+        const concepts = glossary?.concepts;
+        return Array.isArray(concepts) ? concepts : [];
+      };
+      try {
+        const published = await runDiscover(client);
+        expect(
+          conceptsOf(published).find((concept) => concept.id === "order")?.grounding,
+        ).toEqual(["code:README.md"]);
+
+        // A refactor deletes the first evidence file the published glossary
+        // grounds. The published set is crawl evidence, so it stays readable.
+        rmSync(join(fixture.root, "README.md"));
+
+        const readable = await discoverState(client);
+        expect(readable.error).toBeNull();
+        expect(readable.sheet).not.toBeNull();
+        expect(readable.glossaries).toHaveLength(1);
+        expect(readable.skills).toHaveLength(DISCOVER_SKILLS.length);
+        expect(readable.stale).toBe(true);
+        expect(
+          conceptsOf(readable).find((concept) => concept.id === "order")?.grounding,
+        ).toEqual(["code:README.md"]);
+
+        // A human decision still lands while a grounding is stale.
+        const rejected = await afterCommand(client, {
+          type: "rejectGlossaryTerm",
+          context: "orders",
+          id: "order",
+          reason: "The evidence file is gone; the term needs a new grounding.",
+        });
+        expect(rejected.error).toBeNull();
+        expect(
+          conceptsOf(rejected).find((concept) => concept.id === "order")?.status,
+        ).toBe("invalidated");
+
+        // The repair crawl reads the same previous set and merges over it.
+        client.send({ type: "discoverProject" });
+        await client.waitFor((message) => message.type === "discoverStarted");
+        const stopped = await client.waitFor((message) => message.type === "discoverStopped");
+        expect(stopped.completed).toBe(true);
+
+        const repaired = await discoverState(client);
+        expect(repaired.error).toBeNull();
+        const order = conceptsOf(repaired).find((concept) => concept.id === "order");
+        expect(order?.status).toBe("invalidated");
+        expect(order?.grounding).toEqual(["code:package.json"]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    60000,
+  );
+
+  test(
     "fingerprints the host, reports stale only on a readable change, and produces one structural digest",
     async () => {
       const fixture = createFixture("determinism");

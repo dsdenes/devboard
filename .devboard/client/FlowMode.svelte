@@ -149,7 +149,9 @@
           <p class="muted" style="margin: 4px 6px;" data-testid="flow-diff-omitted">
             {file.omitted === "large"
               ? "Content omitted: the file is larger than the review limit."
-              : "Content omitted: the file is binary."}
+              : file.omitted === "binary"
+                ? "Content omitted: the file is binary."
+                : "Content omitted: the link target could not be read."}
           </p>
         {:else}
           <div>{@html diffHtml(file.diff, DIFF_OPTIONS)}</div>

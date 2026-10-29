@@ -67,6 +67,10 @@ export interface ScoutIssueRow {
   category: string | null;
   /** The earliest published release that shipped the closing commit, or null. */
   version: string | null;
+  /** When release resolution was last attempted for a null `version`, or null. */
+  versionAttemptAt: string | null;
+  /** Why the last attempt produced no version, or null. */
+  versionError: string | null;
 }
 
 /** The last periodic GitHub read and whether it succeeded. */
@@ -99,6 +103,13 @@ export interface ScoutState {
   lastScanStartedAt: string | null;
   /** Every Auto Scout issue known from GitHub, newest creation first. */
   issues: ScoutIssueRow[];
+  /** Every open issue title the last successful read reported. */
+  openTitles: string[];
+  /**
+   * The releases the last successful read saw. A published release changes
+   * it, which lets every unresolved row attempt resolution again at once.
+   */
+  releaseSignature: string | null;
   sync: ScoutSync;
   scan: ScoutScanRecord | null;
   /** The newest scan, running or finished, so its activity can be replayed. */
@@ -136,7 +147,13 @@ function isIssueState(value: unknown): value is ScoutIssueState {
   return value === "pending" || value === "implemented";
 }
 
-function isIssueRow(value: unknown): value is ScoutIssueRow {
+/** A stored row; the resolution fields predate the newest writer. */
+type StoredIssueRow = Omit<ScoutIssueRow, "versionAttemptAt" | "versionError"> & {
+  versionAttemptAt?: string | null;
+  versionError?: string | null;
+};
+
+function isIssueRow(value: unknown): value is StoredIssueRow {
   return (
     isRecord(value) &&
     isInteger(value.number) &&
@@ -146,8 +163,22 @@ function isIssueRow(value: unknown): value is ScoutIssueRow {
     typeof value.createdAt === "string" &&
     isIssueState(value.state) &&
     nullableString(value.category) &&
-    nullableString(value.version)
+    nullableString(value.version) &&
+    (value.versionAttemptAt === undefined || nullableString(value.versionAttemptAt)) &&
+    (value.versionError === undefined || nullableString(value.versionError))
   );
+}
+
+function storedIssueRow(row: StoredIssueRow): ScoutIssueRow {
+  return {
+    ...row,
+    versionAttemptAt: row.versionAttemptAt ?? null,
+    versionError: row.versionError ?? null,
+  };
+}
+
+function isOpenTitles(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
 function isSync(value: unknown): value is ScoutSync {
@@ -203,6 +234,8 @@ export function emptyState(options: {
     intervalMinutes: options.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES,
     lastScanStartedAt: null,
     issues: [],
+    openTitles: [],
+    releaseSignature: null,
     sync: { state: "stale", at: null, error: null },
     scan: null,
     newestScanId: null,
@@ -238,6 +271,15 @@ export function parseState(text: string): ScoutState | undefined {
     parsed.lastScanStartedAt === undefined ? null : nullableString(parsed.lastScanStartedAt) ? parsed.lastScanStartedAt : undefined;
   if (lastScanStartedAt === undefined) return undefined;
   if (!Array.isArray(parsed.issues) || !parsed.issues.every(isIssueRow)) return undefined;
+  const openTitles = parsed.openTitles === undefined ? [] : parsed.openTitles;
+  if (!isOpenTitles(openTitles)) return undefined;
+  const releaseSignature =
+    parsed.releaseSignature === undefined
+      ? null
+      : nullableString(parsed.releaseSignature)
+        ? parsed.releaseSignature
+        : undefined;
+  if (releaseSignature === undefined) return undefined;
   if (!isSync(parsed.sync)) return undefined;
   if (parsed.scan !== null && !isScan(parsed.scan)) return undefined;
   if (!nullableString(parsed.newestScanId)) return undefined;
@@ -255,7 +297,9 @@ export function parseState(text: string): ScoutState | undefined {
     limits: parsed.limits,
     intervalMinutes,
     lastScanStartedAt,
-    issues: parsed.issues,
+    issues: parsed.issues.map(storedIssueRow),
+    openTitles,
+    releaseSignature,
     sync: parsed.sync,
     scan: parsed.scan as ScoutScanRecord | null,
     newestScanId: parsed.newestScanId,
@@ -302,6 +346,8 @@ export function migrateState(text: string): ScoutState | undefined {
     intervalMinutes: DEFAULT_INTERVAL_MINUTES,
     lastScanStartedAt: null,
     issues: [],
+    openTitles: [],
+    releaseSignature: null,
     sync: { state: "stale", at: null, error: null },
     scan: parsed.scan as ScoutScanRecord | null,
     newestScanId: parsed.newestScanId,

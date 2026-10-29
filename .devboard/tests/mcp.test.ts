@@ -453,7 +453,12 @@ describe("MCP context tools", () => {
     const listed = valueOf(await callTool(context, "background_agents_list", {})) as {
       agents: Array<{ id: string; cadence: { minutes: number } }>;
     };
-    expect(listed.agents.map((agent) => agent.id)).toEqual(["scout", "watchdog", "coach"]);
+    expect(listed.agents.map((agent) => agent.id)).toEqual([
+      "scout",
+      "watchdog",
+      "design",
+      "coach",
+    ]);
     const coach = valueOf(await callTool(context, "background_agent_get", { id: "coach" })) as {
       id: string;
       cadence: { minutes: number };

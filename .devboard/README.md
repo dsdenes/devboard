@@ -893,6 +893,11 @@ resurrects an invalidated id, never overwrites a human decision, and removes an 
 only when the new crawl no longer grounds it. A malformed or structurally invalid glossary fails
 the run atomically with one `discoverError` naming the file and rule.
 
+A published glossary is crawl evidence: its grounding is proved against the host when the crawl
+publishes it, never again on read. A deleted or renamed source file leaves the published set
+readable and stale instead of hiding every artifact and failing the next crawl on the previous
+glossary; only a staged glossary is checked against the live host.
+
 A successful run publishes exactly five skills under `.omp/skills/`: `discover-testing-strategy`,
 `discover-naming-conventions`, `discover-coding-conventions`,
 `discover-architecture-boundaries`, and `discover-glossary`. Each is a directory containing
@@ -1280,45 +1285,95 @@ sudo userdel --remove <user>
 
 ## Background agents
 
-Auto Scout, Watchdog, and Coach are the three instances of one background-agent contract. A typed
-registry in `server/agents/registry.ts` declares each descriptor's id, label, description, scope,
-lifecycle vocabulary, cadence field and defaults, nullable limits schema, start/stop commands,
-issue projection, sync projection, and detail panel. The shared page, the shared filed-issues
-table, and the Issues sidebar are built from that registry; adding a further continuous agent means
-writing its engine, its adapter, and one registry entry.
+Auto Scout, Watchdog, Design System, and Coach are the four instances of one background-agent
+contract. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
+description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
+start/stop commands, issue projection, sync projection, and detail panel. The shared page, the
+shared filed-issues table, and the Issues sidebar are built from that registry; adding a further
+continuous agent means writing its engine, its adapter, and one registry entry. The shared page,
+sidebar, and issue table have no agent-id branch: a synthetic fourth descriptor projects and
+validates unchanged.
 
-Both agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
+All three agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
 `starting` appears before a spawned worker exists, `running` once its state is readable, and
 `stopping` from the moment Stop is accepted until the worker exits. A stopped agent is never
 restarted by a dashboard restart, a page open, or a tab restore. A live worker owned by another
 dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cannot Stop it, and
 Start is a no-op with a notice.
 
-All three pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
+All four pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
 lifecycle badge `agent-lifecycle`, the sync badge `agent-sync`, `agent-sync-at`,
 `agent-last-run`, `agent-next-run`, exactly one of `agent-start`/`agent-stop`, `agent-cadence`,
 `agent-limit-hour`, `agent-limit-pending`, `agent-save-settings`, `agent-issues-count`,
 `agent-issues`, and `agent-detail`. Alerts use one position: `agent-error`, `agent-sync-error`,
 and `agent-settings-error`, each with `role="alert"`. Start/Stop is the only filled primary
 control. The header row carries the page identity, the lifecycle badge, the sync badge with its
-last-read clock, and Start/Stop. Its settings footer is one unlabeled row: the Every field with
-the last-run and next-run clocks, Per hour, Open issues, and one Save control. Save validates all
+last-read clock, the last-run clock, and Start/Stop. Its settings footer is one unlabeled row: the
+Every field, the next-run clock, Per hour, Open issues, and one Save control. Save validates all
 three fields and sends one settings command. The sidebar has three groups in
 order: `Issues surfaces` (Overview), `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
-`open-issues-scout`, `open-issues-watchdog`, then `open-issues-coach`, badges
-`agent-state-<id>`, counts `agent-count-<id>`), and `Issues work` (Issues, Draft goals).
+`open-issues-scout`, `open-issues-watchdog`, `open-issues-design`, then `open-issues-coach`,
+badges `agent-state-<id>`, counts `agent-count-<id>`), and `Issues work` (Issues, Draft goals).
 
 ### Transport
 
 Browser-to-backend state and controls use the WebSocket from
 `adrs/0003-browser-server-transport-and-api.md`. Commands are `getAgents`, `getAgent`,
 `startAgent`, `stopAgent`, `setAgentSettings`, and the timer gate's `disableAgentTimer`; each
-carries `id`. The server answers `agentsState` (every agent) and
-`agentState` (one), streams Auto Scout activity as `agentActivity`, and refuses an unknown id with
-an error naming it before spawning anything. `scoutState`, `scoutActivity`, `startScout`,
-`stopScout`, `setScoutLimits`, and `GET /api/watchdog` are gone. The footer indicator still reads
+carries `id`. The prompt surface adds `getAgentPrompt`, `saveAgentPrompt`, and
+`sendAgentPromptChat`, each carrying `id`. The server answers `agentsState` (all agents),
+`agentState` (one), and `agentPromptState` (one agent's prompt section), streams each
+activity-panel agent's activity as `agentActivity` with its agent id, streams one prompt chat as
+`agentPromptChat`, and refuses an unknown id with an error naming it before spawning anything.
+`scoutState`, `scoutActivity`, `startScout`, `stopScout`, `setScoutLimits`, and
+`GET /api/watchdog` are gone. The footer indicator still reads
 the same Watchdog snapshot through the agent store.
+
+### Prompt
+
+Directly below `agent-header`, before the alert region and `agent-main`, every background-agent
+page renders one prompt section `data-testid="agent-prompt"`. It is a read-only view in an
+installed host and never writes on a page open, tab restore, reconnect, or reload.
+
+The Auto Scout section contains:
+
+- `agent-prompt-command`, the invocation the worker passes:
+  `/scout-recommendations <REPO_DIR>/.devboard/.tmp/scout/scans/<scan-id>`.
+- `agent-prompt-text`, the complete bytes of the effective prompt file
+  `<REPO_DIR>/.devboard/prompts/scout-recommendations.md`, character for character, in a
+  scrollable monospace region with no truncation, ellipsis, or reformatting.
+- `agent-prompt-request`, the request the next scan would write, as formatted JSON with the
+  `buildRequest` keys `version`, `scanId`, `repository`, `repositoryPath`, `requested`,
+  `categories`, `excludedRoots`, `knownTitles`, `draftGoalHeadings`, `significanceThreshold`, and
+  `createdAt`. `requested` comes from the persisted limits and the current board's capacity;
+  `knownTitles` merges the Auto Scout rows, every open issue title, and the draft goal headings;
+  `draftGoalHeadings` comes from `.devboard/goal-proposals/`; `repositoryPath` is the running
+  `REPO_DIR`. `scanId` and `createdAt` are `null` because the worker assigns them when the scan
+  starts; every other value equals the `request.json` that scan writes.
+
+The Watchdog section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no
+prompt, and no other prompt test id. A prompt command for `watchdog` is refused with that same
+statement and has no effect.
+
+When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout section also renders
+`agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
+`agent-prompt-chat-log`, `agent-prompt-message`, and `agent-prompt-send`, and
+`agent-prompt-save`/`agent-prompt-reset`. In every other host those four controls are absent and
+`saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action requires
+a harness source checkout; no file changes.
+
+`agent-prompt-save` writes the editor's exact UTF-8 text to
+`.devboard/prompts/scout-recommendations.md` under the served checkout, adds nothing, strips
+nothing, and writes no other file; success shows `agent-prompt-notice` and a refreshed
+`agent-prompt-text`, and failure shows `agent-prompt-error` with the file unchanged. Only that
+click writes the file. `agent-prompt-reset` discards unsaved editor text and restores the current
+file bytes without writing. A chat turn posts over the WebSocket, streams the reply into
+`agent-prompt-chat-log`, and puts a proposed complete prompt in the editor without any copy; it
+writes no file, creates no scan, files no issue, and changes no Auto Scout state. A failed turn
+shows `agent-prompt-chat-error` and leaves the editor and file untouched. The chat agent reads
+`prompts/agent-prompt-chat.md` and returns the replacement between the line-anchored
+`<prompt-file>` and `</prompt-file>` markers, so Markdown fences inside the prompt survive intact.
 
 ### Cadence and limits
 
@@ -1328,34 +1383,88 @@ renders as `0`. One `agent-save-settings` click validates all three fields and p
 atomic settings write; a running worker applies the whole change without restart. Auto Scout
 defaults to 1 minute and never starts a scan sooner than the interval after the previous scan
 start; Watchdog defaults to 10 minutes, starts its first cycle immediately on Start, and uses the
-interval as its evidence window; Coach defaults to 60 minutes and reads a fixed 24-hour window on
-every cycle. `agent-last-run` and `agent-next-run` show both.
+interval as its evidence window; Design System defaults to 60 minutes and never starts a cycle
+sooner than that interval after the previous cycle start. `agent-last-run` and `agent-next-run`
+show both.
 
-Auto Scout defaults to 10 per rolling hour and 5 open; Watchdog and Coach default to both empty. The
-persisted values survive reload and restart and apply to a running worker. Auto Scout keeps its
-rolling-hour and open-issue enforcement. Watchdog files at most the hourly cap of new issues and
-at most the pending cap of its own open issues, counts open
+Auto Scout and Design System default to 10 per rolling hour and 5 open; Watchdog defaults to both
+empty. The persisted values survive reload and restart and apply to a running worker. Auto Scout
+keeps its rolling-hour and open-issue enforcement. Watchdog files at most the hourly cap of new
+issues and at most the pending cap of its own open issues, counts open
 state from the last successful projection (`projection.json`), keeps excess fingerprints in
 `pendingFiling` instead of dropping them, files nothing new while a cap is set and the projection
 is not `ok`, and never caps comments. With both caps empty its cycle behaves exactly as before.
 
 ### Filed issues
 
-Every agent page renders one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
+All four pages render one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
 Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `filedAt`
 descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
 `agent-issue-category`, `agent-issue-filed` (a `<time>`), `agent-issue-state`
 (`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). With no rows,
-`agent-issues-empty` renders the same inbox composition on every agent page, naming the agent.
+`agent-issues-empty` renders the same inbox composition on every page, naming the agent.
 `agent-issues-count` counts the rows. Auto Scout maps its GitHub title and creation time;
-Watchdog keeps `[watchdog] <category>: <line>`; Coach keeps `[coach] <category>: <line>`.
+Watchdog keeps `[watchdog] <category>: <line>`; Design System keeps its finding title with its
+category.
 
 ### Detail panels
 
-`agent-detail` is declared by the descriptor. Auto Scout renders `scout-activity`, streamed as
-`agentActivity`. Watchdog and Coach render the same retained cycle history (`watchdog-cycles`,
-`watchdog-cycle`, `watchdog-cycle-at/-window/-action/-findings/-reason`, `watchdog-cycles-empty`),
-capped at the newest 100 run directories.
+`agent-detail` is declared by the descriptor. Auto Scout renders `scout-activity` and Design
+System renders `design-activity`, both streamed as `agentActivity`. Watchdog renders its retained
+cycle history (`watchdog-cycles`, `watchdog-cycle`,
+`watchdog-cycle-at/-window/-action/-findings/-reason`, `watchdog-cycles-empty`), capped at the
+newest 100 run directories.
+
+### Design System
+
+Design System is the `design` descriptor. Its sidebar entry `open-issues-design` opens the shared
+`agent-page` with `data-agent="design"` and `design-activity`. While started, it audits the
+interface source `<REPO_DIR>/.devboard/client` (`.svelte`, `.css`, `.ts`, and the harness
+`index.html` entry) against the repository-relative documents `DESIGN.md` and
+`design/tokens.json` (overridable with `DESIGN_SOURCE_DIR`, `DESIGN_DOCUMENT`, and
+`DESIGN_TOKEN_DOCUMENT`). The documents are normative: a client value, state treatment, wording,
+spacing, or placement they do not cover is a divergence.
+
+Each cycle writes its input and request under `<REPO_DIR>/.devboard/.tmp/design/cycles/<id>/`,
+runs one ACP turn, and validates the answer before acting. A finding becomes an issue only in one
+of `color`, `typography`, `spacing`, `wording`, `state`, or `placement`, with a documented
+principle or token and its quoted passage, exact evidence paths with line ranges and quotes, every
+affected file, a proposed change, and binary acceptance criteria. Anything else is dropped and
+recorded in activity, never filed. Filed issues carry the exact `design` label and no title
+prefix, and never repeat the normalized title of an existing open issue or any existing `design`
+issue in any state.
+
+Filing uses the shared `agent-limit-hour` and `agent-limit-pending`: the hourly cap counts every
+`design` issue created in the last rolling 60 minutes in any state, the pending cap counts every
+open `design` issue, and one cycle files no more than the smaller room or 100. Zero room files
+nothing and records each skip in activity; clearing a cap resumes filing on the next cycle. A
+failed forge read files nothing and keeps the last known rows. Caps never block an audit, a
+documentation change, or its release.
+
+A documentation edit is admitted only when it establishes or corrects a standard evidenced by two
+distinct interface surfaces or by an internal contradiction inside the documents. It may change
+only `DESIGN.md` and `design/tokens.json`, must keep `## Design principles` and `## UX principles`,
+and must name every added token in both the prose table and the token document. The agent never
+edits a document to record a single literal and never legalizes a drift it reported.
+
+An admitted edit is released autonomously: one worktree under `<REPO_DIR>/.worktree/`, a commit
+limited to the two documents, a fetch and integration of `main` with every conflict resolved and
+every check rerun, a non-force push to `main`, the release workflow wait, the integration
+checkout's fast-forward without discarding uncommitted work, and `cd .devboard && bun run publish`
+(exit 0, npm package, Gitea fallback tarball, and `.sha256`). The released version and URL are
+recorded in activity, then the worktree and branch are removed. A cycle with no admissible
+decision makes no commit, push, workflow wait, or publish. A failed push, workflow, publish, or
+asset check leaves the pushed commit intact, never force-pushes, never reverts, and reports the
+failing step in `agent-error` and activity.
+
+Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
+the canonical source checkout lacks `.devboard/client`, either document is absent, the origin is
+not a supported forge, the account cannot write, the exact `design` label is absent, or `git`,
+`bun`, `npm`, or the release credential is missing. Start publishes `starting` before the spawn
+and `running` once the state is readable. At most one audit and release cycle runs at a time;
+Start, a cadence change, a page open, a tab restore, or a reload never starts a second cycle.
+State lives at `<STATE_DIR>/design/<journalKey(REPO_DIR)>/`; the lock, cycles, and worktrees stay
+inside the checkout, and the worker's audit input never leaves the repository root.
 
 ## Harness watchdog
 
@@ -1439,7 +1548,8 @@ bun run watchdog:uninstall                  # stop, disable, and remove a legacy
 removed GET endpoint, and the footer indicator. `verify:watchdog-live` starts the seeded
 dashboard's watchdog through its Start control (not systemd), waits for a real cycle to file the
 seeded marker, asserts the ledger entry, title, and body, and closes the issue in `finally`.
-`verify:agents` drives all three pages through headless Chrome.
+`verify:agents` drives all four pages through headless Chrome; `verify:design` drives the Design
+System route through the same shared interface.
 
 ## Coach
 
@@ -1628,6 +1738,7 @@ and seeded sessions, journal, goals, drafts, and issues; speaks JSON-RPC over th
 and proves the catalog, every read, work, and control tool, the refusals, the caps, the generated
 peer registration, the installed-package server, and secret redaction.
 
+
 ## Issues mode
 
 Issues is the fourth mode in the activity rail, below Goal. Each dashboard controls exactly one
@@ -1652,6 +1763,12 @@ path searched, and `.devboard/install.sh` as the remedy, spawns no peer, and wri
 also requires `gh api repos/<owner>/<repo> --jq .permissions.push` to return `true`. A live legacy
 `devboard-orchestrator` lock is refused too; the harness never stops that process. Issues mode no
 longer requires `/implement-all-issues`; that command stays usable by hand outside the mode.
+
+The whole Start preflight has a 20-second deadline. A `gh` probe or preflight that does not settle
+is abandoned at that deadline, its child is killed (`SIGTERM`, then `SIGKILL` after 200 ms), and
+Start answers `{ ok: false, message }` naming the deadline. The in-flight Start task is cleared
+from memory, so the next Start runs the preflight again and spawns the worker when it succeeds;
+no restart is needed.
 
 The worker is spawned detached in its own session from the harness package the server loaded,
 with `REPO_DIR` as its working directory. It holds `<REPO_DIR>/.devboard/.tmp/issues/lock`, which
@@ -2006,6 +2123,10 @@ dashboard command, click, approval, or draft. `approveScout`, `draftScoutGoal`, 
 are not accepted commands. Stop keeps the filed rows and the limits; the next Start reads the
 forge and scans again.
 
+Auto Scout's Start preflight uses the same 20-second deadline as Issues mode: a `gh` permission
+probe that does not settle is killed at the deadline, Start answers a bounded refusal naming it,
+and the cleared task lets the next Start run the preflight again and spawn the worker.
+
 Auto Scout's persisted settings live at
 `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json` and carry `maxPerHour`, `maxPending`,
 and `intervalMinutes`. Empty limits remove that constraint. `maxPerHour` counts every Auto Scout
@@ -2043,8 +2164,13 @@ blank version on the next read.
 
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
 and immediately on Start; the table, states, and versions reflect a change within one interval. One
-periodic read, including every `gh` child it starts, is bounded to 30 seconds; a read that does not
-finish records a sync error and releases the worker, so the next interval reads again. A failed
+periodic read, including every `gh` child it starts and the release resolution that follows it, is
+bounded to 30 seconds; a read that does not finish records a sync error and releases the worker, so
+the next interval reads again. A closed issue whose version does not resolve is attempted at most
+once every six hours, and a newly published release retries every unresolved row at once. Each
+attempt records its time and, when it fails, the reason on the row; the rows that have waited
+longest are attempted first, and the whole resolution shares the read's deadline, so a stubborn
+issue cannot hold `syncing` and starve the remaining rows or the next scan. A failed
 read keeps the last known rows, shows the reason in `agent-sync-error`, and keeps the last success
 time in `agent-sync-at`; the reason clears on the next successful read. Filing stays blocked until
 a read succeeds. A GitHub rate limit (the `gh` text naming a primary or secondary limit, abuse
@@ -2650,13 +2776,20 @@ reload, an invalid save shows its error and sends nothing, a close flips the row
 a release published later fills its blank version, a failed read shows `error` with its reason
 and the last success time while keeping the rows, no review widget or command remains, and Stop
 leaves the table and a released lock. It writes only under `.devboard/.tmp`.
-`bun run verify:agents` builds the client, seeds all three agents, and drives headless Chrome
-through the Background agents sidebar section, the identical core test ids on all three pages,
-Start -> starting -> running and Stop -> stopping -> stopped, cadence and limit validation and
-persistence (including Coach's), Coach's shared cycle detail and filed row, the Watchdog cap, the
-shared table columns, freshness without a reload, no mutating command on reload, the timer-blocked
-state and one-click disable against a stub `systemctl`, and the footer indicator with no console
-error.
+`bun run verify:agents` builds the client, seeds all four agents, and drives headless Chrome
+through the Background agents sidebar section, the identical core test ids on every page, Start ->
+starting -> running and Stop -> stopping -> stopped, cadence and limit validation and
+persistence, the Watchdog cap, the shared table columns, freshness without a reload, no mutating
+command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and
+the footer indicator with no console error. It also proves Coach's shared cycle detail and
+persisted settings, and the prompt section: every page renders
+`agent-prompt` directly after `agent-header`; Auto Scout shows the complete instruction text and
+the next-request JSON; Watchdog shows `agent-prompt-absent`; an installed host is read-only and
+refuses a save with an error while its prompt file stays byte-identical; a source-checkout fixture
+renders the editor, chat, save, and reset, one chat turn streams a reply and changes the editor
+with the file untouched, Save makes the file byte-equal to the editor and a reload renders those
+bytes, Reset restores the file bytes, and a seeded scan's `request.json` matches the preview
+except `scanId` and `createdAt`.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate
@@ -2664,7 +2797,8 @@ id, out-of-range span, uncited file, shortfall, missing score, out-of-range scor
 reason), the version-2 request, the shipped-version rules (earliest release, tie by tag,
 timeline commit, newest comment SHA, open issue, no release), settings and state migration,
 the bridge's limits and absent decision path, the Stop/limits command surface, the Start preflight
-refusals, and the activity delta.
+refusals, a stalled preflight failing at its deadline and the next Start retrying, and the activity
+delta.
 `tests/scout.test.ts` covers filing without a command, the significance score and issue body,
 duplicates against closed issues, open issues, and drafts, both caps across a restart, the
 effective batch, zero capacity, a close freeing a slot, limits applying live and surviving a
@@ -2679,7 +2813,8 @@ starting when one finishes, duplicate prevention, an issue opened mid-run, per-i
 ledger entries, one failure cooling only its issue), Check now clearing every cooldown, pause
 draining every peer, Stop closing every peer without a cooldown, per-agent questions and answer
 routing, two orphan children on a fresh start, version 1 state loading, reopened-issue eligibility,
-history pruning that keeps every running directory, preflight for both wrappers, repo-scoped state
+history pruning that keeps every running directory, preflight for both wrappers, a stalled
+permission probe and the killed `gh` child failing at the preflight deadline, repo-scoped state
 and lock isolation, atomic and damaged state, ledger migration, the activity bounds, and the
 conditional tracker. `tests/cleanup.test.ts` proves the watchdog preserves repo-scoped issues state,
 the repo-anchored lock, Auto Scout settings and state, and Flow session records that Flow restore

@@ -14,6 +14,7 @@ import {
 } from "../lib/forge";
 import { giteaRepository, type FetchLike } from "../lib/gitea";
 import { legacyLiveLock, legacyLockRefusal } from "./legacy";
+import { DEADLINE_EXPIRED, withinDeadline } from "../lib/deadline";
 import type { GhOutcome } from "./tracker";
 
 /**
@@ -25,6 +26,12 @@ import type { GhOutcome } from "./tracker";
 
 export type PreflightResult = { ok: true; repository: string } | { ok: false; message: string };
 
+/** Default wall-clock bound for the whole start preflight. */
+export const ISSUES_PREFLIGHT_TIMEOUT_MS = 20_000;
+
+/** How long a child may ignore SIGTERM before it is sent SIGKILL. */
+const TERMINATE_GRACE_MS = 200;
+
 export interface PreflightOptions {
   repoDir: string;
   stateDir: string;
@@ -33,11 +40,23 @@ export interface PreflightOptions {
   run?: (argv: string[]) => GhOutcome | Promise<GhOutcome>;
   /** Injected transport for the Gitea API. */
   giteaFetch?: FetchLike;
+  /** Whole-preflight deadline; defaults to `ISSUES_PREFLIGHT_TIMEOUT_MS`. */
+  timeoutMs?: number;
 }
 
-async function gh(argv: string[], environment?: Record<string, string | undefined>): Promise<GhOutcome> {
+/**
+ * Runs one `gh` child under a deadline. A child that ignores SIGTERM is
+ * killed with SIGKILL after a short grace, so a stalled credential helper
+ * never keeps the start preflight pending.
+ */
+async function gh(
+  argv: string[],
+  environment: Record<string, string | undefined> | undefined,
+  timeoutMs: number,
+): Promise<GhOutcome & { killed?: boolean }> {
+  let child: Bun.Subprocess<"ignore", "pipe", "pipe">;
   try {
-    const child = Bun.spawn({
+    child = Bun.spawn({
       cmd: ["gh", ...argv],
       stdin: "ignore",
       stdout: "pipe",
@@ -50,14 +69,52 @@ async function gh(argv: string[], environment?: Record<string, string | undefine
         NO_COLOR: "1",
       },
     });
+  } catch (error) {
+    return { code: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+  }
+
+  let killed = false;
+  let grace: Timer | undefined;
+  const terminate = (): void => {
+    if (killed) return;
+    killed = true;
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // The child already exited.
+    }
+    grace = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // It exited inside the grace period.
+      }
+    }, TERMINATE_GRACE_MS);
+    grace.unref?.();
+  };
+
+  const timer = setTimeout(terminate, Math.max(1, timeoutMs));
+  timer.unref?.();
+  try {
     const [stdout, stderr, code] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    return { code, stdout: stdout.trim(), stderr: stderr.trim() };
-  } catch (error) {
-    return { code: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+    const diagnostic = killed
+      ? `${stderr.length === 0 ? "" : `${stderr}\n`}the command did not finish before its deadline`
+      : stderr;
+    // A child killed at the deadline never counts as a successful command,
+    // even when it happened to exit 0 while the signal was being delivered.
+    return {
+      code: killed && code === 0 ? 1 : code,
+      stdout: stdout.trim(),
+      stderr: diagnostic.trim(),
+      killed,
+    };
+  } finally {
+    clearTimeout(timer);
+    clearTimeout(grace);
   }
 }
 
@@ -70,6 +127,7 @@ function firstLine(text: string): string | undefined {
 
 export async function preflightIssues(options: PreflightOptions): Promise<PreflightResult> {
   const environment = options.environment ?? process.env;
+  const timeoutMs = Math.max(1, options.timeoutMs ?? ISSUES_PREFLIGHT_TIMEOUT_MS);
   const root = rootProblem(options.repoDir);
   if (root !== undefined) return { ok: false, message: root };
 
@@ -165,13 +223,22 @@ export async function preflightIssues(options: PreflightOptions): Promise<Prefli
     return { ok: true, repository };
   }
 
-  const execute = options.run ?? ((argv: string[]) => gh(argv, environment));
-  const permission = await execute([
+  const execute = options.run ?? ((argv: string[]) => gh(argv, environment, timeoutMs));
+  const probe = [
     "api",
     `repos/${repository}`,
     "--jq",
     ".permissions.push",
-  ]);
+  ];
+  const permission = await withinDeadline(Promise.resolve(execute(probe)), timeoutMs);
+  if (permission === DEADLINE_EXPIRED) {
+    return {
+      ok: false,
+      message:
+        `missing prerequisite: 'gh api repos/${repository} --jq .permissions.push' ` +
+        `did not finish within ${timeoutMs} ms`,
+    };
+  }
   if (permission.code !== 0 || permission.stdout.trim() !== "true") {
     const detail =
       firstLine(permission.stderr) ??

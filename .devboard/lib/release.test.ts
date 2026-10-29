@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import type { AddressInfo, Socket } from "node:net";
 import {
@@ -10,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   checksumName,
   compareReleaseVersions,
@@ -66,6 +67,14 @@ function harnessTarball(directory: string): string {
     stderr: "pipe",
   });
   expect(packed.exitCode).toBe(0);
+  return tarball;
+}
+
+/** A tarball plus the checksum file a directory release must hold. */
+function releaseTarball(directory: string): string {
+  const tarball = harnessTarball(directory);
+  const digest = createHash("sha256").update(readFileSync(tarball)).digest("hex");
+  writeFileSync(`${tarball}.sha256`, `${digest}  ${basename(tarball)}\n`);
   return tarball;
 }
 
@@ -282,9 +291,46 @@ console.log(installed);
       child.exitCode,
       `${child.stderr.toString()}${child.stdout.toString()}`,
     ).toBe(0);
+    expect(child.stdout.toString().trim()).toBe("9.9.9");
     const target = join(prefix, "node_modules", "@dsdenes", "devboard");
     expect(existsSync(target)).toBe(true);
     expect(JSON.parse(readFileSync(join(target, "package.json"), "utf8")).version).toBe("9.9.9");
+  }, 60_000);
+});
+
+describe("installRelease", () => {
+  test("returns a directory release's version and records it in the prefix", async () => {
+    const root = workspace("directory-install");
+    const tarball = releaseTarball(root);
+    const prefix = join(root, "prefix");
+    mkdirSync(prefix, { recursive: true });
+    const stateDir = join(root, "state");
+    const installed = await installRelease({
+      source: { kind: "dir", directory: root },
+      release: {
+        version: "9.9.9",
+        tag: "v9.9.9",
+        assets: [{ name: tarballName("9.9.9") }, { name: checksumName("9.9.9") }],
+      },
+      prefix,
+      stateDir,
+    });
+    expect(installed).toBe("9.9.9");
+    expect(installed).not.toContain(root);
+    expect(installed).not.toContain(tarball);
+    const manifest: unknown = JSON.parse(readFileSync(join(prefix, "package.json"), "utf8"));
+    if (typeof manifest !== "object" || manifest === null || !("dependencies" in manifest)) {
+      throw new Error("prefix package.json has no dependencies");
+    }
+    expect(manifest.dependencies).toEqual({ "@dsdenes/devboard": "9.9.9" });
+    expect(
+      JSON.parse(
+        readFileSync(
+          join(prefix, "node_modules", "@dsdenes", "devboard", "package.json"),
+          "utf8",
+        ),
+      ).version,
+    ).toBe("9.9.9");
   }, 60_000);
 });
 

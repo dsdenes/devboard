@@ -124,17 +124,10 @@ function npmLatestTag(): string | undefined {
  */
 async function publishedReleaseVersions(): Promise<string[]> {
   const versions: string[] = [];
-  // Fifty newest releases per page; the bound keeps a broken instance from
-  // spinning forever when every page looks full.
-  for (let page = 1; page <= 40; page += 1) {
-    const batch = await giteaListReleases(target, { limit: 50, page });
-    for (const release of batch) {
-      if (typeof release.tag_name !== "string") continue;
-      if (/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(release.tag_name)) {
-        versions.push(release.tag_name.slice(1));
-      }
+  for (const release of await giteaListReleases(target)) {
+    if (/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(release.tag)) {
+      versions.push(release.tag.slice(1));
     }
-    if (batch.length < 50) break;
   }
   return versions;
 }

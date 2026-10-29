@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import type { AddressInfo, Socket } from "node:net";
@@ -38,6 +38,30 @@ async function installedPrefix(version: string): Promise<string> {
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "package.json"), `${JSON.stringify({ version })}\n`);
   return prefix;
+}
+
+/** A release tarball and its checksum, named as the release assets expect. */
+async function releaseArtifacts(
+  version: string,
+): Promise<{ tarball: string; checksum: string }> {
+  const root = await temporaryDirectory();
+  const packageDirectory = join(root, "package");
+  await mkdir(packageDirectory, { recursive: true });
+  await writeFile(
+    join(packageDirectory, "package.json"),
+    `${JSON.stringify({ name: "@dsdenes/devboard", version })}\n`,
+  );
+  const tarball = join(root, tarballName(version));
+  const packed = Bun.spawnSync({
+    cmd: ["tar", "-czf", tarball, "-C", root, "package"],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(packed.exitCode).toBe(0);
+  const checksum = join(root, checksumName(version));
+  const digest = createHash("sha256").update(await readFile(tarball)).digest("hex");
+  await writeFile(checksum, `${digest}  ${tarballName(version)}\n`);
+  return { tarball, checksum };
 }
 
 function journalRecorder(): { journal: Journal; records: Array<[JournalKind, string]> } {
@@ -129,6 +153,91 @@ describe("startUpdater", () => {
       updater.stop();
     }
   });
+
+  test("records the fallback install version, never a filesystem path", async () => {
+    const prefix = await installedPrefix("0.1.0");
+    const stateDir = await temporaryDirectory();
+    const artifacts = await releaseArtifacts("0.1.42");
+    const tarballBytes = await readFile(artifacts.tarball);
+    const checksumBytes = await readFile(artifacts.checksum);
+    const realNpm = Bun.which("npm");
+    if (realNpm === null) throw new Error("npm is not on PATH");
+    const npm = join(stateDir, "outage-npm");
+    await writeFile(
+      npm,
+      `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    @dsdenes/devboard@*) echo "simulated npm outage" >&2; exit 1 ;;
+  esac
+done
+exec '${realNpm}' "$@"
+`,
+    );
+    await chmod(npm, 0o755);
+    const tarball = tarballName("0.1.42");
+    const checksum = checksumName("0.1.42");
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/v1/repos/acme/fixture/releases/tags/v0.1.42") {
+          return Response.json({
+            tag_name: "v0.1.42",
+            assets: [
+              { name: tarball, id: 11 },
+              { name: checksum, id: 12 },
+            ],
+          });
+        }
+        const assets = "/api/v1/repos/acme/fixture/releases/assets";
+        if (url.pathname === `${assets}/11`) {
+          return new Response(tarballBytes, {
+            headers: { "Content-Type": "application/octet-stream" },
+          });
+        }
+        if (url.pathname === `${assets}/12`) return new Response(checksumBytes);
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const { journal, records } = journalRecorder();
+    const updater = startUpdater({
+      repoDir: prefix,
+      prefixDir: prefix,
+      stateDir,
+      currentVersion: "0.1.0",
+      journal,
+      startImmediately: false,
+      source: {
+        kind: "npm",
+        env: { ...process.env, DEVBOARD_NPM: npm },
+        fallback: {
+          kind: "gitea",
+          baseUrl: `http://127.0.0.1:${server.port}`,
+          repo: "acme/fixture",
+        },
+      },
+      fetchRelease: async () => release("0.1.42"),
+    });
+    try {
+      expect(await updater.checkNow()).toBe("installed");
+    } finally {
+      updater.stop();
+      server.stop(true);
+    }
+    expect(records).toEqual([
+      ["update", "installed 0.1.42 (was 0.1.0); a restart loads it"],
+    ]);
+    const record = records[0]?.[1] ?? "";
+    expect(record).not.toContain(prefix);
+    expect(record).not.toContain(stateDir);
+    expect(record).not.toContain("/");
+    const manifest: unknown = JSON.parse(await readFile(join(prefix, "package.json"), "utf8"));
+    if (typeof manifest !== "object" || manifest === null || !("dependencies" in manifest)) {
+      throw new Error("prefix package.json has no dependencies");
+    }
+    expect(manifest.dependencies).toEqual({ "@dsdenes/devboard": "0.1.42" });
+  }, 60_000);
 
   test("does not install into a prefix without the package", async () => {
     const prefix = await temporaryDirectory();

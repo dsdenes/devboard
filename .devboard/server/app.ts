@@ -12,8 +12,8 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { WatchdogActivity, type WatchdogActivityOptions } from "./watchdog";
-import { CoachActivity, type CoachActivityOptions } from "./coach";
 import { BackgroundAgentBridge, type AgentCommand } from "./agents/bridge";
+import { AgentPromptController } from "./agents/prompt";
 import { agentRegistry } from "./agents/registry";
 import {
   AcpConnection,
@@ -42,6 +42,8 @@ import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { originRepository } from "../issues/repository";
 import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
 import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
+import { DesignBridge, type DesignBridgeOptions } from "./design";
+import { CoachActivity, type CoachActivityOptions } from "./coach";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import {
   DISCOVER_SKILLS,
@@ -173,18 +175,26 @@ export interface AppOptions {
    */
   discoverClone?: RemoteCloneRunner;
   /** Issues mode's test seams; production uses the detached worker itself. */
-  issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "closeIssue">;
-  /** Auto Scout's test seams; production uses the detached worker itself. */
-  scout?: Pick<ScoutBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
-  /** Watchdog's test seams; production reads `gh` in the background. */
-  watchdog?: Pick<
-    WatchdogActivityOptions,
-    "reader" | "now" | "intervalMs" | "staleAfterMs" | "preflight" | "spawnWorker" | "systemctl"
+  issues?: Pick<
+    IssuesBridgeOptions,
+    "pollMs" | "preflightTimeoutMs" | "preflight" | "spawnWorker" | "closeIssue"
   >;
+  /** Auto Scout's test seams; production uses the detached worker itself. */
+  scout?: Pick<
+    ScoutBridgeOptions,
+    "pollMs" | "preflightTimeoutMs" | "preflight" | "spawnWorker"
+  >;
+  /** Design System's test seams; production uses the detached worker itself. */
+  design?: Pick<DesignBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
   /** Coach's test seams; production reads its worker's state and ledger. */
   coach?: Pick<
     CoachActivityOptions,
     "reader" | "now" | "intervalMs" | "staleAfterMs" | "preflight" | "spawnWorker"
+  >;
+  /** Watchdog's test seams; production reads `gh` in the background. */
+  watchdog?: Pick<
+    WatchdogActivityOptions,
+    "reader" | "now" | "intervalMs" | "staleAfterMs" | "preflight" | "spawnWorker" | "systemctl"
   >;
   /** Names one proposed-goal draft; production asks the configured ACP agent. */
   goalSlug?: (report: string) => Promise<string>;
@@ -587,6 +597,9 @@ type ClientMessage =
       maxPending?: unknown;
     }
   | { type: "disableAgentTimer"; id?: unknown }
+  | { type: "getAgentPrompt"; id?: unknown }
+  | { type: "saveAgentPrompt"; id?: unknown; text?: unknown }
+  | { type: "sendAgentPromptChat"; id?: unknown; message?: unknown; text?: unknown }
   | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
@@ -718,6 +731,21 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       };
     case "disableAgentTimer":
       return { type: "disableAgentTimer", id: "id" in value ? value.id : undefined };
+    case "getAgentPrompt":
+      return { type: "getAgentPrompt", id: "id" in value ? value.id : undefined };
+    case "saveAgentPrompt":
+      return {
+        type: "saveAgentPrompt",
+        id: "id" in value ? value.id : undefined,
+        text: "text" in value ? value.text : undefined,
+      };
+    case "sendAgentPromptChat":
+      return {
+        type: "sendAgentPromptChat",
+        id: "id" in value ? value.id : undefined,
+        message: "message" in value ? value.message : undefined,
+        text: "text" in value ? value.text : undefined,
+      };
     case "restartServer":
       return {
         type: "restartServer",
@@ -2241,6 +2269,9 @@ export function createApp(options: AppOptions) {
     send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.issues?.pollMs === undefined ? {} : { pollMs: options.issues.pollMs }),
+    ...(options.issues?.preflightTimeoutMs === undefined
+      ? {}
+      : { preflightTimeoutMs: options.issues.preflightTimeoutMs }),
     ...(options.issues?.preflight === undefined ? {} : { preflight: options.issues.preflight }),
     ...(options.issues?.spawnWorker === undefined ? {} : { spawnWorker: options.issues.spawnWorker }),
     ...(options.issues?.closeIssue === undefined ? {} : { closeIssue: options.issues.closeIssue }),
@@ -2269,6 +2300,7 @@ export function createApp(options: AppOptions) {
    */
   const scoutDescriptor = agentRegistry.require("scout");
   const watchdogDescriptor = agentRegistry.require("watchdog");
+  const designDescriptor = agentRegistry.require("design");
   const coachDescriptor = agentRegistry.require("coach");
   const scout = new ScoutBridge({
     descriptor: scoutDescriptor,
@@ -2281,6 +2313,9 @@ export function createApp(options: AppOptions) {
     send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.scout?.pollMs === undefined ? {} : { pollMs: options.scout.pollMs }),
+    ...(options.scout?.preflightTimeoutMs === undefined
+      ? {}
+      : { preflightTimeoutMs: options.scout.preflightTimeoutMs }),
     ...(options.scout?.preflight === undefined ? {} : { preflight: options.scout.preflight }),
     ...(options.scout?.spawnWorker === undefined ? {} : { spawnWorker: options.scout.spawnWorker }),
   });
@@ -2315,6 +2350,28 @@ export function createApp(options: AppOptions) {
   });
 
   /**
+   * Design System audits the interface source and the two design documents,
+   * files `design` issues, and releases accepted documentation to main. It
+   * also runs as a detached worker so it outlives this server.
+   */
+  const design = new DesignBridge({
+    descriptor: designDescriptor,
+    repoDir,
+    stateDir,
+    agentCommand,
+    agentEnvironment: peerEnvironment,
+    runningVersion,
+    harnessDir: runningHarnessDir(),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.design?.pollMs === undefined ? {} : { pollMs: options.design.pollMs }),
+    ...(options.design?.preflight === undefined ? {} : { preflight: options.design.preflight }),
+    ...(options.design?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.design.spawnWorker }),
+  });
+
+  /**
    * Coach reads the ACP transcripts and journal records already on disk,
    * overlays the forge projection its caps count, and commands its detached
    * worker. Opening the page never starts a cycle.
@@ -2344,11 +2401,27 @@ export function createApp(options: AppOptions) {
   /** The shared control plane every background agent answers through. */
   const agents = new BackgroundAgentBridge({
     registry: agentRegistry,
-    adapters: [scout, watchdog, coach],
+    adapters: [scout, watchdog, design, coach],
     broadcast: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });
   agents.begin();
+
+  /**
+   * The prompt half of each agent page. It reads the effective prompt file and
+   * the request the next scan would write; Save writes that one file only from
+   * a harness source checkout, and chat proposes text without writing.
+   */
+  const prompts = new AgentPromptController({
+    registry: agentRegistry,
+    repoDir,
+    stateDir,
+    agentCommand,
+    agentEnvironment: peerEnvironment,
+    harnessDir: runningHarnessDir(),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+  });
 
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
@@ -2789,7 +2862,7 @@ export function createApp(options: AppOptions) {
 
   function refreshDiscoverSnapshot(): void {
     const root = targetRoot();
-    const read = readArtifacts(root, { trustGrounding: remoteTarget !== undefined });
+    const read = readArtifacts(root);
     discoverArtifacts = read.artifacts;
     discoverReadError = read.error;
     if (read.artifacts === null) {
@@ -4779,6 +4852,10 @@ export function createApp(options: AppOptions) {
         lifecyclePausedForManualRun = false;
         if (lifecycleRunning && lifecycle.paused) resumeLifecycle(target);
       }
+      // The sequence's last broadcast happened while it still owned the run, so
+      // the durable state claims an active sequence with no run. Persist the
+      // cleared flags; otherwise a restart resumes work nobody asked for.
+      persistState();
     }
   }
 
@@ -6526,6 +6603,7 @@ export function createApp(options: AppOptions) {
         // whether or not a worker has ever published for it.
         issues.replay(ws);
         agents.replay(ws);
+        prompts.replay(ws);
       },
 
       close(ws) {
@@ -6558,6 +6636,7 @@ export function createApp(options: AppOptions) {
           command.type === "getGoalDraft" ||
           command.type === "getAgents" ||
           command.type === "getAgent" ||
+          command.type === "getAgentPrompt" ||
           command.type === "getSkills" ||
           command.type === "getDiscover" ||
           command.type === "getProviders";
@@ -6706,6 +6785,21 @@ export function createApp(options: AppOptions) {
                 message: "That question is no longer waiting for an answer.",
               });
             }
+          } else if (command.type === "getAgentPrompt") {
+            if (typeof command.id !== "string" || command.id.length === 0) {
+              send(ws, { type: "error", message: "An agent prompt needs its agent id." });
+            } else {
+              prompts.replayOne(ws, command.id);
+            }
+          } else if (command.type === "saveAgentPrompt") {
+            prompts.save(ws, typeof command.id === "string" ? command.id : "", command.text);
+          } else if (command.type === "sendAgentPromptChat") {
+            await prompts.chat(
+              ws,
+              typeof command.id === "string" ? command.id : "",
+              command.message,
+              command.text,
+            );
           } else if (isAgentCommand(command)) {
             await agents.handle(ws, command);
           } else if (command.type === "restartServer") {
@@ -6798,7 +6892,7 @@ export function createApp(options: AppOptions) {
             } else {
               afterDiscoverMutation(
                 ws,
-                confirmGlossaryTerm(targetRoot(), term.context, term.id, remoteTarget !== undefined),
+                confirmGlossaryTerm(targetRoot(), term.context, term.id),
               );
             }
           } else if (command.type === "rejectGlossaryTerm") {
@@ -6813,7 +6907,6 @@ export function createApp(options: AppOptions) {
                   term.context,
                   term.id,
                   command.reason,
-                  remoteTarget !== undefined,
                 ),
               );
             }
@@ -6883,6 +6976,7 @@ export function createApp(options: AppOptions) {
     issues.dispose();
     goalDrafts.dispose(restarting);
     agents.dispose();
+    prompts.dispose();
     scout.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);

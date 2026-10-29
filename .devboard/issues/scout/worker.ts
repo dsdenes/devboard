@@ -11,10 +11,11 @@ import { takeCommands, type ScoutCommand } from "./control";
 import {
   createScoutGitHub,
   isGitHubRateLimited,
-  shippedVersion,
+  resolveShippedVersion,
   type ScoutGitHubClient,
   type ScoutGitHubIssue,
   type ScoutRelease,
+  type VersionResolution,
 } from "./github";
 import { ghCommand } from "./preflight";
 import { originForge } from "../repository";
@@ -42,10 +43,13 @@ import {
 import {
   buildRequest,
   createScanDirectory,
+  knownTitlesFor,
   promptFor,
   readDraftGoalHeadings,
   repairPrompt,
+  scanCapacity,
   writeRequest,
+  type ScanCapacity,
 } from "./scan";
 import {
   DEFAULT_LIMITS,
@@ -80,6 +84,11 @@ const FIRST_LINE_MAX = 400;
 const MAX_ACTIVITY_LINE = 2000;
 /** One periodic read, including its default `gh` calls, may not outlive this. */
 const READ_TIMEOUT_MS = 30_000;
+/**
+ * How long a closed issue whose release could not be determined waits before
+ * another attempt. A newly published release retries immediately.
+ */
+export const RESOLUTION_RETRY_MS = 6 * HOUR_MS;
 
 export interface ScoutWorkerOptions {
   repoDir: string;
@@ -91,9 +100,10 @@ export interface ScoutWorkerOptions {
   /** Test seam: replace the persisted cadence with a shorter interval. */
   cadenceMs?: number;
   /**
-   * One periodic GitHub read is abandoned after this many milliseconds; the
-   * sync records a failure and the next tick may read again. The default
-   * client applies the same deadline to each `gh` child.
+   * One periodic read and the release resolution it starts are abandoned
+   * after this many milliseconds; the sync records a failure and the next
+   * tick may read again. The default client applies the same deadline to
+   * each `gh` child.
    */
   readTimeoutMs?: number;
   /**
@@ -159,17 +169,6 @@ interface GitHubRead {
   openTitles: string[];
 }
 
-interface Capacity {
-  /** How many issues this cycle may create. */
-  batch: number;
-  windowCount: number;
-  openCount: number;
-  hourlyRoom: number;
-  pendingRoom: number;
-  /** When zero capacity may become positive again. */
-  blockedUntil: string | null;
-}
-
 /** Bounded one-line diagnostic from the peer's stderr. */
 function boundedLine(text: string): string {
   const line =
@@ -194,6 +193,21 @@ function newestFirst(rows: ScoutIssueRow[]): ScoutIssueRow[] {
     }
     return right.number - left.number;
   });
+}
+
+/** Identifies the published release list, so a new release revives retries. */
+function releaseSignature(releases: ScoutRelease[]): string {
+  return releases
+    .map((release) => `${release.tag}@${release.publishedAt}`)
+    .sort()
+    .join("\n");
+}
+
+/** A row's last resolution attempt in epoch milliseconds; never attempted is 0. */
+function attemptTime(row: ScoutIssueRow): number {
+  if (row.versionAttemptAt === null) return 0;
+  const at = Date.parse(row.versionAttemptAt);
+  return Number.isFinite(at) ? at : 0;
 }
 
 function limitLabel(value: number | null): string {
@@ -326,6 +340,8 @@ export class ScoutWorker {
       intervalMinutes: settings.intervalMinutes,
       lastScanStartedAt: previous?.lastScanStartedAt ?? null,
       issues: previous?.issues ?? [],
+      openTitles: previous?.openTitles ?? [],
+      releaseSignature: previous?.releaseSignature ?? null,
       sync: previous?.sync ?? { state: "stale", at: null, error: null },
       newestScanId: previous?.newestScanId ?? null,
       lastError,
@@ -535,37 +551,13 @@ export class ScoutWorker {
    * window counts every Auto Scout issue created inside it, in any state, so a
    * restart never forgets a filing.
    */
-  private capacity(now: Date = this.clock()): Capacity {
-    const windowStart = now.getTime() - HOUR_MS;
-    let windowCount = 0;
-    let oldest = Number.POSITIVE_INFINITY;
-    let openCount = 0;
-    for (const issue of this.state.issues) {
-      const createdAt = Date.parse(issue.createdAt);
-      if (Number.isFinite(createdAt) && createdAt > windowStart) {
-        windowCount += 1;
-        if (createdAt < oldest) oldest = createdAt;
-      }
-      if (issue.state === "pending") openCount += 1;
-    }
-    const hourlyRoom =
-      this.state.limits.maxPerHour === null
-        ? Number.POSITIVE_INFINITY
-        : Math.max(0, this.state.limits.maxPerHour - windowCount);
-    const pendingRoom =
-      this.state.limits.maxPending === null
-        ? Number.POSITIVE_INFINITY
-        : Math.max(0, this.state.limits.maxPending - openCount);
-    const batch = Math.min(hourlyRoom, pendingRoom);
-    let blockedUntil: string | null = null;
-    if (batch === 0) {
-      const candidates: number[] = [];
-      if (pendingRoom === 0) candidates.push(now.getTime() + this.syncMs);
-      if (hourlyRoom === 0 && Number.isFinite(oldest)) candidates.push(oldest + HOUR_MS);
-      if (candidates.length === 0) candidates.push(now.getTime() + this.syncMs);
-      blockedUntil = new Date(Math.min(...candidates)).toISOString();
-    }
-    return { batch, windowCount, openCount, hourlyRoom, pendingRoom, blockedUntil };
+  private capacity(now: Date = this.clock()): ScanCapacity {
+    return scanCapacity({
+      issues: this.state.issues,
+      limits: this.state.limits,
+      now,
+      syncMs: this.syncMs,
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -587,14 +579,18 @@ export class ScoutWorker {
    * One periodic read, raced against its deadline. The default client bounds
    * each `gh` child itself; this race also releases the worker from an
    * injected client that never settles, so a stall can never leave `syncing`
-   * set forever.
+   * set forever. The release resolution that follows shares this deadline.
    */
-  private async readGitHubWithinDeadline(): Promise<GitHubRead> {
+  private async readGitHubWithinDeadline(deadline: number): Promise<GitHubRead> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error(`the GitHub read did not finish within ${this.readTimeoutMs} ms`);
+    }
     const timedOut = Promise.withResolvers<never>();
     let timer: Timer | undefined;
     timer = setTimeout(() => {
       timedOut.reject(new Error(`the GitHub read did not finish within ${this.readTimeoutMs} ms`));
-    }, this.readTimeoutMs);
+    }, remaining);
     timer.unref?.();
     try {
       return await Promise.race([this.readGitHub(), timedOut.promise]);
@@ -607,20 +603,23 @@ export class ScoutWorker {
    * The periodic check: every `scout` issue, every published release, and the
    * open titles the next scan must not restate. A failed read keeps the last
    * known rows, records the reason, and blocks filing until a read succeeds.
+   * The read and the release resolution share one deadline, so `syncing`
+   * always clears and a later tick can start a scan.
    */
   async refresh(): Promise<void> {
     if (this.stopping || !this.state.enabled || this.syncing || this.filing) return;
     this.syncing = true;
+    const deadline = Date.now() + this.readTimeoutMs;
     try {
       let read: GitHubRead;
       try {
-        read = await this.readGitHubWithinDeadline();
+        read = await this.readGitHubWithinDeadline(deadline);
       } catch (error) {
         this.recordSyncFailure(detailOf(error));
         return;
       }
       try {
-        await this.applyRead(read);
+        await this.applyRead(read, deadline);
       } catch (error) {
         this.recordSyncFailure(detailOf(error));
         return;
@@ -647,32 +646,95 @@ export class ScoutWorker {
     this.publish();
   }
 
-  private async applyRead(read: GitHubRead, active?: ActiveScan): Promise<void> {
+  /**
+   * Applies one read. A closed issue with no shipped version costs forge
+   * requests to resolve, so each attempt is recorded on its row: an attempt
+   * inside `RESOLUTION_RETRY_MS` is skipped unless a new release appeared,
+   * and the whole resolution shares the read's deadline. A failed resolution
+   * keeps its reason on the row instead of silently returning null forever.
+   */
+  private async applyRead(read: GitHubRead, deadline: number, active?: ActiveScan): Promise<void> {
     const github = active === undefined ? this.github : this.githubFor(active);
     const previous = new Map(this.state.issues.map((row) => [row.number, row]));
+    const signature = releaseSignature(read.releases);
+    const releasesChanged = signature !== this.state.releaseSignature;
+    const now = this.clock().getTime();
     const rows: ScoutIssueRow[] = [];
+    const withheld: Array<{ issue: ScoutGitHubIssue; row: ScoutIssueRow }> = [];
     for (const issue of read.issues) {
       const before = previous.get(issue.number);
       const state = issue.state === "closed" ? "implemented" : "pending";
       const category = before?.category ?? categoryFromBody(issue.body);
-      let version: string | null = state === "implemented" ? (before?.version ?? null) : null;
-      if (state === "implemented" && version === null && github !== undefined) {
-        version = await shippedVersion(issue, github, read.releases);
-      }
-      rows.push({
+      const row: ScoutIssueRow = {
         number: issue.number,
         title: issue.title,
         url: issue.url,
         createdAt: issue.createdAt,
         state,
         category,
-        version,
-      });
+        version: state === "implemented" ? (before?.version ?? null) : null,
+        versionAttemptAt: state === "implemented" ? (before?.versionAttemptAt ?? null) : null,
+        versionError: state === "implemented" ? (before?.versionError ?? null) : null,
+      };
+      rows.push(row);
+      if (row.state !== "implemented" || row.version !== null || github === undefined) continue;
+      if (!releasesChanged && now - attemptTime(row) < RESOLUTION_RETRY_MS) continue;
+      withheld.push({ issue, row });
     }
+    // The longest-waiting row goes first, so a read that runs out of time
+    // cannot starve the same rows on every sync.
+    withheld.sort(
+      (left, right) =>
+        attemptTime(left.row) - attemptTime(right.row) || left.row.number - right.row.number,
+    );
+    if (github !== undefined) {
+      for (const { issue, row } of withheld) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        const resolution = await this.resolveVersionWithin(issue, github, read.releases, remaining);
+        row.versionAttemptAt = this.clock().toISOString();
+        row.versionError = resolution.error;
+        if (resolution.version !== null) {
+          row.version = resolution.version;
+          row.versionError = null;
+        } else {
+          this.log(`#${row.number}: no shipped version: ${resolution.error ?? "no reason"}`);
+        }
+      }
+    }
+    this.state.releaseSignature = signature;
     this.state.issues = newestFirst(rows);
     this.openTitles = read.openTitles;
+    this.state.openTitles = [...read.openTitles];
     this.state.sync = { state: "ok", at: this.clock().toISOString(), error: null };
     this.state.lastError = null;
+  }
+
+  /** One release resolution, raced against what is left of the read deadline. */
+  private async resolveVersionWithin(
+    issue: ScoutGitHubIssue,
+    github: ScoutGitHubClient,
+    releases: ScoutRelease[],
+    remainingMs: number,
+  ): Promise<VersionResolution> {
+    const timedOut = Promise.withResolvers<never>();
+    let timer: Timer | undefined;
+    timer = setTimeout(() => {
+      timedOut.reject(
+        new Error(`release resolution did not finish within ${remainingMs} ms`),
+      );
+    }, remainingMs);
+    timer.unref?.();
+    try {
+      return await Promise.race([
+        resolveShippedVersion(issue, github, releases),
+        timedOut.promise,
+      ]);
+    } catch (error) {
+      return { version: null, error: detailOf(error) };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -703,7 +765,7 @@ export class ScoutWorker {
         repository: this.state.repo,
         repoDir: this.repoDir,
         requested,
-        knownTitles: this.knownTitles(draftGoalHeadings),
+        knownTitles: knownTitlesFor(this.state.issues, this.openTitles, draftGoalHeadings),
         draftGoalHeadings,
       });
       writeRequest(scan.directory, request);
@@ -779,15 +841,6 @@ export class ScoutWorker {
     } finally {
       this.starting = false;
     }
-  }
-
-  /** Normalized titles the scan must not restate: issues in any state, open ones, drafts. */
-  private knownTitles(draftGoalHeadings: string[]): string[] {
-    const titles = new Set<string>();
-    for (const issue of this.state.issues) titles.add(normalizeTitle(issue.title));
-    for (const title of this.openTitles) titles.add(normalizeTitle(title));
-    for (const heading of draftGoalHeadings) titles.add(normalizeTitle(heading));
-    return [...titles].sort();
   }
 
   private recordActivity(entry: AcpActivity): void {
@@ -1173,7 +1226,10 @@ export class ScoutWorker {
         return;
       }
       try {
-        await this.within(active, this.applyRead(read, active));
+        await this.within(
+          active,
+          this.applyRead(read, active.settle?.deadline ?? Date.now() + this.readTimeoutMs, active),
+        );
       } catch (error) {
         if (error instanceof SettleAborted) return;
         const detail = detailOf(error);
@@ -1190,7 +1246,9 @@ export class ScoutWorker {
       if (this.settled(active)) return;
       this.publish();
 
-      const known = new Set(this.knownTitles(active.draftGoalHeadings));
+      const known = new Set(
+        knownTitlesFor(this.state.issues, this.openTitles, active.draftGoalHeadings),
+      );
       const capacity = this.capacity();
       const limit = Math.min(active.requested, capacity.batch);
       let filingError: string | null = null;
@@ -1247,6 +1305,8 @@ export class ScoutWorker {
             state: "pending",
             category: item.category,
             version: null,
+            versionAttemptAt: null,
+            versionError: null,
           },
         ]);
         this.recordScanLine(active, `filed #${created.number} “${item.title}”`);

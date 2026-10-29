@@ -726,7 +726,7 @@ export interface InstallTarballOptions {
  * Replaces the prefix's whole dependency tree with the staged one, so the
  * package and its runtime dependencies move together.
  */
-async function swapNodeModules(prefix: string, staged: string): Promise<string> {
+async function swapNodeModules(prefix: string, staged: string): Promise<void> {
   const updates = join(prefix, ".tmp", "updates");
   await mkdir(updates, { recursive: true });
   const target = join(prefix, "node_modules");
@@ -743,7 +743,6 @@ async function swapNodeModules(prefix: string, staged: string): Promise<string> 
     throw error;
   }
   await rm(backup, { recursive: true, force: true });
-  return packageDir(prefix);
 }
 
 async function stagedInstall(
@@ -789,7 +788,8 @@ async function stagedInstall(
         `installed package reports ${stagedVersion ?? "no version"}, expected ${version}`,
       );
     }
-    return await swapNodeModules(prefix, join(staging, "node_modules"));
+    await swapNodeModules(prefix, join(staging, "node_modules"));
+    return version;
   } finally {
     await rm(staging, { recursive: true, force: true });
   }

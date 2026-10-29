@@ -10,7 +10,12 @@ import {
   statePath,
 } from "../issues/scout/paths";
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
-import { preflightScout, type ScoutPreflightResult } from "../issues/scout/preflight";
+import {
+  SCOUT_PREFLIGHT_TIMEOUT_MS,
+  preflightScout,
+  type ScoutPreflightResult,
+} from "../issues/scout/preflight";
+import { DEADLINE_EXPIRED, withinDeadline } from "../lib/deadline";
 import { cachedRepository } from "../issues/repository";
 import {
   DEFAULT_SETTINGS,
@@ -63,11 +68,14 @@ export interface ScoutBridgeOptions {
   log?: (line: string) => void;
   environment?: Record<string, string | undefined>;
   pollMs?: number;
+  /** Wall-clock bound for the start preflight; defaults to 20 seconds. */
+  preflightTimeoutMs?: number;
   /** Test seams: replace the start preflight and the detached spawn. */
   preflight?: (options: {
     repoDir: string;
     stateDir: string;
     environment: Record<string, string | undefined>;
+    timeoutMs: number;
   }) => Promise<ScoutPreflightResult>;
   spawnWorker?: (argv: string[], environment: Record<string, string | undefined>) => number | undefined;
   now?: () => number;
@@ -91,6 +99,7 @@ export class ScoutBridge implements AgentAdapter {
   private readonly spawnWorker: NonNullable<ScoutBridgeOptions["spawnWorker"]>;
   private readonly log: (line: string) => void;
   private readonly pollMsValue: number;
+  private readonly preflightTimeoutMs: number;
   private readonly now: () => number;
 
   private timer: Timer | undefined;
@@ -118,6 +127,10 @@ export class ScoutBridge implements AgentAdapter {
     this.log = options.log ?? (() => undefined);
     this.pollMsValue = Math.max(50, options.pollMs ?? 250);
     this.now = options.now ?? (() => Date.now());
+    this.preflightTimeoutMs = Math.max(
+      1,
+      options.preflightTimeoutMs ?? SCOUT_PREFLIGHT_TIMEOUT_MS,
+    );
     this.preflight =
       options.preflight ??
       ((request) =>
@@ -125,6 +138,7 @@ export class ScoutBridge implements AgentAdapter {
           repoDir: request.repoDir,
           stateDir: request.stateDir,
           environment: request.environment,
+          timeoutMs: request.timeoutMs,
         }));
     this.spawnWorker = options.spawnWorker ?? ((argv, environment) => this.detach(argv, environment));
   }
@@ -404,11 +418,29 @@ export class ScoutBridge implements AgentAdapter {
     this.startError = null;
     this.notice = null;
     try {
-      const result = await this.preflight({
-        repoDir: this.repoDir,
-        stateDir: this.stateDir,
-        environment: this.environment,
-      });
+      // A preflight that never settles (a stalled `gh`, credential helper, or
+      // transport) loses this race, so Start reports a bounded failure and the
+      // task memo is cleared instead of disabling Start for the server's life.
+      const result = await withinDeadline(
+        Promise.resolve(
+          this.preflight({
+            repoDir: this.repoDir,
+            stateDir: this.stateDir,
+            environment: this.environment,
+            timeoutMs: this.preflightTimeoutMs,
+          }),
+        ),
+        this.preflightTimeoutMs,
+      );
+      if (result === DEADLINE_EXPIRED) {
+        this.starting = false;
+        this.startingSince = null;
+        const message =
+          `the start preflight did not finish within ${this.preflightTimeoutMs} ms; ` +
+          "press Start to retry.";
+        this.startError = message;
+        return { ok: false, message };
+      }
       if (!result.ok) {
         this.starting = false;
         this.startingSince = null;

@@ -2,10 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
-  statSync,
+  readlinkSync,
+  type Stats,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -61,7 +63,7 @@ export interface FlowFile {
   deletions: number;
   diff: string;
   /** Why an untracked file's body was omitted; absent when `diff` holds it. */
-  omitted?: "binary" | "large";
+  omitted?: "binary" | "large" | "unreadable";
 }
 
 export interface FlowWidget {
@@ -518,8 +520,13 @@ export function widgetSignature(
 }
 
 /** One new file's unified diff, built rather than shelled out to git. */
-function untrackedDiff(path: string, content: string): string {
-  const header = ["diff --git a/" + path + " b/" + path, "new file mode 100644", "--- /dev/null", "+++ b/" + path];
+function untrackedDiff(path: string, content: string, mode = "100644"): string {
+  const header = [
+    `diff --git a/${path} b/${path}`,
+    `new file mode ${mode}`,
+    "--- /dev/null",
+    `+++ b/${path}`,
+  ];
   if (content.length === 0) return header.join("\n");
   const lines = content.split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
@@ -527,24 +534,48 @@ function untrackedDiff(path: string, content: string): string {
   return [...header, ...body].join("\n");
 }
 
-function omittedFile(path: string, omitted: "binary" | "large"): FlowFile {
+function omittedFile(path: string, omitted: "binary" | "large" | "unreadable"): FlowFile {
   return { path, status: "added", insertions: 0, deletions: 0, diff: "", omitted };
+}
+
+function addedFile(path: string, diff: string): FlowFile {
+  const counts = countDiffLines(diff);
+  return {
+    path,
+    status: "added",
+    insertions: counts.insertions,
+    deletions: counts.deletions,
+    diff,
+  };
 }
 
 /**
  * One untracked file as a bounded FlowFile. A body above the limit or holding
  * a NUL byte never enters the session or the frame: the path stays visible
- * with zero counts and the reason the body is absent.
+ * with zero counts and the reason the body is absent. A symlink is never read
+ * through: git records its mode and target, so the body is the target string
+ * and a dangling or directory-pointing link stays visible like any other.
  */
 function untrackedFile(worktree: string, path: string): FlowFile | undefined {
   const absolute = join(worktree, path);
+  let stats: Stats;
   try {
-    const stats = statSync(absolute);
-    if (!stats.isFile()) return undefined;
-    if (stats.size > UNTRACKED_BODY_MAX_BYTES) return omittedFile(path, "large");
+    stats = lstatSync(absolute);
   } catch {
     return undefined;
   }
+  if (stats.isSymbolicLink()) {
+    let target: string;
+    try {
+      target = readlinkSync(absolute, "utf8");
+    } catch {
+      return omittedFile(path, "unreadable");
+    }
+    if (Buffer.byteLength(target) > UNTRACKED_BODY_MAX_BYTES) return omittedFile(path, "large");
+    return addedFile(path, untrackedDiff(path, target, "120000"));
+  }
+  if (!stats.isFile()) return undefined;
+  if (stats.size > UNTRACKED_BODY_MAX_BYTES) return omittedFile(path, "large");
   let bytes: Buffer;
   try {
     bytes = readFileSync(absolute);
@@ -554,15 +585,7 @@ function untrackedFile(worktree: string, path: string): FlowFile | undefined {
   // The file may have grown between the stat and the read.
   if (bytes.length > UNTRACKED_BODY_MAX_BYTES) return omittedFile(path, "large");
   if (bytes.includes(0)) return omittedFile(path, "binary");
-  const diff = untrackedDiff(path, bytes.toString("utf8"));
-  const counts = countDiffLines(diff);
-  return {
-    path,
-    status: "added",
-    insertions: counts.insertions,
-    deletions: counts.deletions,
-    diff,
-  };
+  return addedFile(path, untrackedDiff(path, bytes.toString("utf8")));
 }
 
 export class FlowController {

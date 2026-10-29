@@ -8,6 +8,7 @@ import {
 } from "../repository";
 import { configuredGiteaToken, giteaBaseUrl } from "../../lib/forge";
 import { giteaRepository, type FetchLike } from "../../lib/gitea";
+import { DEADLINE_EXPIRED, withinDeadline } from "../../lib/deadline";
 
 /**
  * Everything Start must prove before it spawns a scout: the checkout is the
@@ -18,6 +19,9 @@ import { giteaRepository, type FetchLike } from "../../lib/gitea";
 
 export type ScoutPreflightResult = { ok: true; repository: string } | { ok: false; message: string };
 
+/** Default wall-clock bound for the whole start preflight. */
+export const SCOUT_PREFLIGHT_TIMEOUT_MS = 20_000;
+
 export interface ScoutPreflightOptions {
   repoDir: string;
   stateDir: string;
@@ -26,6 +30,8 @@ export interface ScoutPreflightOptions {
   run?: (argv: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
   /** Injected transport for the Gitea API. */
   giteaFetch?: FetchLike;
+  /** Whole-preflight deadline; defaults to `SCOUT_PREFLIGHT_TIMEOUT_MS`. */
+  timeoutMs?: number;
 }
 
 export interface ScoutCommandOutcome {
@@ -173,6 +179,7 @@ export function scoutCommandPaths(
 
 export async function preflightScout(options: ScoutPreflightOptions): Promise<ScoutPreflightResult> {
   const environment = options.environment ?? process.env;
+  const timeoutMs = Math.max(1, options.timeoutMs ?? SCOUT_PREFLIGHT_TIMEOUT_MS);
   const root = rootProblem(options.repoDir);
   if (root !== undefined) return { ok: false, message: root };
 
@@ -258,8 +265,18 @@ export async function preflightScout(options: ScoutPreflightOptions): Promise<Sc
     return { ok: true, repository };
   }
 
-  const execute = options.run ?? ((argv: string[]) => ghCommand(argv, environment));
-  const permission = await execute(["api", `repos/${repository}`, "--jq", ".permissions.push"]);
+  const execute =
+    options.run ?? ((argv: string[]) => ghCommand(argv, environment, { timeoutMs }));
+  const probe = ["api", `repos/${repository}`, "--jq", ".permissions.push"];
+  const permission = await withinDeadline(Promise.resolve(execute(probe)), timeoutMs);
+  if (permission === DEADLINE_EXPIRED) {
+    return {
+      ok: false,
+      message:
+        `missing prerequisite: 'gh api repos/${repository} --jq .permissions.push' ` +
+        `did not finish within ${timeoutMs} ms`,
+    };
+  }
   if (permission.code !== 0 || permission.stdout.trim() !== "true") {
     const detail =
       firstLine(permission.stderr) ??

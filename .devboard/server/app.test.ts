@@ -111,7 +111,8 @@ function exchange(url: string, command: unknown): Promise<unknown> {
         type === "issuesActivity" ||
         type === "agentsState" ||
         type === "agentState" ||
-        type === "agentActivity")
+        type === "agentActivity" ||
+        type === "agentPromptState")
     ) {
       return;
     }
@@ -571,6 +572,66 @@ describe("createApp", () => {
     }
   });
 
+  test("answers the agent prompt surface and refuses a save on an installed prefix", async () => {
+    const { root, url } = await startServer();
+    await mkdir(join(root, ".devboard", "prompts"), { recursive: true });
+    await writeFile(
+      join(root, ".devboard", "prompts", "scout-recommendations.md"),
+      "# Installed prompt\n",
+    );
+
+    const frames = await collect(
+      url,
+      { type: "getAgentPrompt", id: "scout" },
+      (messages) =>
+        messages.some(
+          (message) =>
+            (message as { type?: string; id?: string }).type === "agentPromptState" &&
+            (message as { id?: string }).id === "scout",
+        ),
+    );
+    const scout = frames.find(
+      (message) => (message as { type?: string }).type === "agentPromptState",
+    ) as {
+      prompt: { absent: boolean; editable: boolean; text: string | null; request: unknown };
+    };
+    expect(scout.prompt.absent).toBe(false);
+    expect(scout.prompt.editable).toBe(false);
+    expect(scout.prompt.text).toBe("# Installed prompt\n");
+    expect(scout.prompt.request).not.toBeNull();
+
+    const watchdogFrames = await collect(
+      url,
+      { type: "getAgentPrompt", id: "watchdog" },
+      (messages) =>
+        messages.some(
+          (message) =>
+            (message as { type?: string; id?: string }).type === "agentPromptState" &&
+            (message as { id?: string }).id === "watchdog",
+        ),
+    );
+    const watchdog = watchdogFrames.find(
+      (message) =>
+        (message as { type?: string; id?: string }).type === "agentPromptState" &&
+        (message as { id?: string }).id === "watchdog",
+    ) as { prompt: { absent: boolean } };
+    expect(watchdog.prompt.absent).toBe(true);
+
+    const refusedFrames = await collect(
+      url,
+      { type: "saveAgentPrompt", id: "scout", text: "changed\n" },
+      (messages) =>
+        messages.some((message) => (message as { type?: string }).type === "agentPromptError"),
+    );
+    const refused = refusedFrames.find(
+      (message) => (message as { type?: string }).type === "agentPromptError",
+    ) as { message: string };
+    expect(refused.message).toContain("harness source checkout");
+    expect(readFileSync(join(root, ".devboard", "prompts", "scout-recommendations.md"), "utf8")).toBe(
+      "# Installed prompt\n",
+    );
+  });
+
   test("does not start an agent while loading or saving the goal", async () => {
     const logPath = join(await temporaryDirectory(), "agent.log");
     const { server, url } = await startServer({
@@ -854,6 +915,7 @@ describe("issues protocol", () => {
       expect(agentsFrame?.agents?.map((agent) => agent.id)).toEqual([
         "scout",
         "watchdog",
+        "design",
         "coach",
       ]);
     } finally {

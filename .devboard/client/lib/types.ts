@@ -163,6 +163,9 @@ export type {
   AgentTimerGate,
 } from "../../server/agents/registry";
 
+export type { AgentPromptState } from "../../server/agents/prompt";
+export type { ScanRequestPreview } from "../../issues/scout/scan";
+
 export interface SkillSummary {
   name: string;
   description: string;
@@ -238,7 +241,7 @@ export interface FlowFile {
   deletions: number;
   diff: string;
   /** Why an untracked file's body was omitted; absent when `diff` holds it. */
-  omitted?: "binary" | "large";
+  omitted?: "binary" | "large" | "unreadable";
 }
 
 export interface FlowWidget {

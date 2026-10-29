@@ -471,7 +471,7 @@ try {
   const agents = await client.call("background_agents_list");
   assertTrue(
     JSON.stringify((agents.agents as Array<{ id: string }>).map((agent) => agent.id)) ===
-      JSON.stringify(["scout", "watchdog", "coach"]),
+      JSON.stringify(["scout", "watchdog", "design", "coach"]),
     "verify:mcp: the live agents snapshot is wrong",
   );
   const coach = await client.call("background_agent_get", { id: "coach" });

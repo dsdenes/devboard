@@ -1195,6 +1195,73 @@ describe("preflight", () => {
     expect(result).toEqual({ ok: true, repository: "acme/fixture" });
   });
 
+  test("a permission probe that never settles fails at the preflight deadline", async () => {
+    const { root, home, environment } = await checkoutWithTools();
+    await mkdir(join(home, ".omp", "agent", "commands"), { recursive: true });
+    await mkdir(join(home, ".omp", "extensions"), { recursive: true });
+    writeFileSync(join(home, ".omp", "agent", "commands", "implement-issue.md"), "# command\n");
+    writeFileSync(join(home, ".omp", "extensions", "implement-goal-issue.ts"), "export {};\n");
+
+    const started = Date.now();
+    const result = await preflightIssues({
+      repoDir: root,
+      stateDir: join(root, "state"),
+      environment,
+      timeoutMs: 20,
+      run: () => new Promise<never>(() => undefined),
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("did not finish within 20 ms");
+  });
+
+  test("the default gh child is killed at the preflight deadline", async () => {
+    const { root, bin, home, environment } = await checkoutWithTools();
+    await mkdir(join(home, ".omp", "agent", "commands"), { recursive: true });
+    await mkdir(join(home, ".omp", "extensions"), { recursive: true });
+    writeFileSync(join(home, ".omp", "agent", "commands", "implement-issue.md"), "# command\n");
+    writeFileSync(join(home, ".omp", "extensions", "implement-goal-issue.ts"), "export {};\n");
+    const pidFile = join(bin, "gh.pid");
+    writeFileSync(
+      join(bin, "gh"),
+      `#!/bin/sh\ntrap '' TERM\nprintf '%s\\n' "$$" > ${JSON.stringify(pidFile)}\nwhile :; do :; done\n`,
+    );
+    Bun.spawnSync({ cmd: ["chmod", "+x", join(bin, "gh")] });
+
+    const started = Date.now();
+    const result = await preflightIssues({
+      repoDir: root,
+      stateDir: join(root, "state"),
+      environment,
+      timeoutMs: 200,
+    });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("did not finish within 200 ms");
+
+    const pid = await waitFor(
+      () => {
+        if (!existsSync(pidFile)) return undefined;
+        const text = readFileSync(pidFile, "utf8").trim();
+        return text.length === 0 ? undefined : Number(text);
+      },
+      "the gh child to record its pid",
+    );
+    await waitFor(
+      () => {
+        try {
+          process.kill(pid, 0);
+          return undefined;
+        } catch {
+          return true;
+        }
+      },
+      "the killed gh child to disappear",
+    );
+  });
+
   test("accepts a Gitea origin with a write-capable token", async () => {
     const { root, home, environment } = await checkoutWithTools(
       "ssh://git@localhost:2223/acme/fixture.git",
