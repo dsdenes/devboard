@@ -161,6 +161,64 @@ function collect(
   return promise;
 }
 
+/**
+ * Keeps every frame a socket receives so a test can observe what a second
+ * connected tab holds. Resolves once the socket is open and able to send.
+ */
+async function watchFrames(url: string): Promise<{
+  send(command: unknown): void;
+  waitFor(
+    predicate: (frame: Record<string, unknown>) => boolean,
+    label: string,
+  ): Promise<Record<string, unknown>>;
+  close(): void;
+}> {
+  const socket = new WebSocket(`ws://${url}/ws`);
+  const frames: Record<string, unknown>[] = [];
+  const waiters: {
+    predicate: (frame: Record<string, unknown>) => boolean;
+    settle: (frame: Record<string, unknown>) => void;
+  }[] = [];
+  socket.onmessage = (event) => {
+    const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+    frames.push(frame);
+    for (let index = waiters.length - 1; index >= 0; index -= 1) {
+      const waiter = waiters[index];
+      if (waiter === undefined || !waiter.predicate(frame)) continue;
+      waiters.splice(index, 1);
+      waiter.settle(frame);
+    }
+  };
+  const opened = Promise.withResolvers<void>();
+  socket.onopen = () => opened.resolve();
+  socket.onerror = () => opened.reject(new Error("websocket failed"));
+  await opened.promise;
+  return {
+    send(command) {
+      socket.send(JSON.stringify(command));
+    },
+    waitFor(predicate, label) {
+      const received = frames.find(predicate);
+      if (received !== undefined) return Promise.resolve(received);
+      const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+      const waiter = { predicate, settle: resolve };
+      waiters.push(waiter);
+      // Only a guard against a broken contract hanging the suite; the awaited
+      // frame is the signal, never this duration.
+      setTimeout(() => {
+        const index = waiters.indexOf(waiter);
+        if (index < 0) return;
+        waiters.splice(index, 1);
+        reject(new Error(`timed out waiting for ${label}`));
+      }, 5000);
+      return promise;
+    },
+    close() {
+      socket.close();
+    },
+  };
+}
+
 function listRecords(url: string): Promise<unknown> {
   return exchange(url, { type: "listRecords" });
 }
@@ -464,6 +522,36 @@ describe("createApp", () => {
       expect(await readFile(goalFile, "utf8")).toBe(edited);
       expect(await exchange(url, { type: "getGoal" })).toEqual({ type: "goal", text: edited });
     } finally {
+      server.stop(true);
+    }
+  });
+
+  test("broadcasts a saved goal to every connected client", async () => {
+    const goalFile = join(await temporaryDirectory(), "GOAL.md");
+    const { server, url } = await startServer({ goalFile, goalText: "Original\n" });
+    const saver = await watchFrames(url);
+    const reader = await watchFrames(url);
+    const edited = "Edited by the first tab\n";
+
+    try {
+      saver.send({ type: "saveGoal", text: edited });
+
+      expect(
+        await saver.waitFor(
+          (frame) => frame.type === "goal" && frame.text === edited,
+          "the saver's confirmation",
+        ),
+      ).toEqual({ type: "goal", text: edited });
+      expect(
+        await reader.waitFor(
+          (frame) => frame.type === "goal" && frame.text === edited,
+          "the second client's goal frame",
+        ),
+      ).toEqual({ type: "goal", text: edited });
+      expect(await readFile(goalFile, "utf8")).toBe(edited);
+    } finally {
+      saver.close();
+      reader.close();
       server.stop(true);
     }
   });

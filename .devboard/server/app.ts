@@ -3683,7 +3683,9 @@ export function createApp(options: AppOptions) {
 
     try {
       await writeGoal(goalFile, text);
-      send(ws, { type: "goal", text });
+      // Every client holds the same baseline, so the confirmation reaches all
+      // of them; the saver's own socket is included in the broadcast.
+      broadcast({ type: "goal", text });
     } catch (error) {
       send(ws, {
         type: "error",

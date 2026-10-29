@@ -2116,7 +2116,10 @@ The client sends:
   if the acknowledgement was lost when the old process exited. With `"whenIdle": true`, a
   dashboard with active work answers `upgradePending` instead and restarts itself as soon as
   that work ends; an idle dashboard restarts immediately.
-- `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`. It is accepted while the lifecycle is paused and refused while the lifecycle is advancing.
+- `saveGoal` replaces the goal document with `text` exactly as submitted and broadcasts a `goal`
+  frame carrying that text to every connected client; the saving client's own frame is its
+  confirmation. A write failure leaves the file unchanged and answers with an `error`. It is
+  accepted while the lifecycle is paused and refused while the lifecycle is advancing.
 - `startRun` without `file` starts the sequence with the lowest-numbered pending record.
 - `startRun` with `file` starts that record first only when it is pending; the sequence then
   continues with the lowest-numbered remaining pending records.
