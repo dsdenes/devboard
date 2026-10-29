@@ -71,7 +71,6 @@
         {notice}
       </p>
     {/if}
-    <pre class="agent-prompt__text mono" data-testid="agent-prompt-text">{prompt.text ?? ""}</pre>
 
     {#if prompt.editable}
       <div class="agent-prompt__editor">
@@ -172,19 +171,6 @@
     letter-spacing: 0.08em;
     margin: 0;
     text-transform: uppercase;
-  }
-
-  .agent-prompt__text {
-    background: var(--background);
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    font-size: 11px;
-    line-height: 1.45;
-    margin: 0;
-    max-height: 220px;
-    overflow: auto;
-    padding: 8px;
-    white-space: pre;
   }
 
   .agent-prompt__editor,

@@ -763,7 +763,7 @@ try {
   );
   console.log("PASS coach-page");
 
-  /* 2b. The prompt section: full text, read-only here. */
+  /* 2b. The prompt section: read-only here. */
   await click(devtools, "open-issues-scout");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
@@ -777,13 +777,6 @@ try {
       installedLayout.beforeAlerts &&
       installedLayout.beforeMain,
     `the installed prompt section is misplaced: ${JSON.stringify(installedLayout)}`,
-  );
-  const installedText = await devtools.evaluate(
-    `document.querySelector('[data-testid="agent-prompt-text"]')?.textContent ?? null`,
-  );
-  assertTrue(
-    installedText === INSTALLED_PROMPT,
-    "the installed prompt text is not the file's bytes",
   );
   for (const testid of [
     "agent-prompt-editor",
@@ -823,7 +816,6 @@ try {
     "the Watchdog absence does not name its promptless behavior",
   );
   for (const testid of [
-    "agent-prompt-text",
     "agent-prompt-editor",
     "agent-prompt-chat",
     "agent-prompt-save",
@@ -1339,10 +1331,6 @@ try {
       sourceLayout.beforeMain,
     `the source prompt section is misplaced: ${JSON.stringify(sourceLayout)}`,
   );
-  const sourceText = await devtools.evaluate(
-    `document.querySelector('[data-testid="agent-prompt-text"]')?.textContent ?? null`,
-  );
-  assertTrue(sourceText === SOURCE_PROMPT, "the source prompt text is not the file's bytes");
   assertTrue(
     readFileSync(
       join(sourceHost.directory, ".devboard", "prompts", "scout-recommendations.md"),
@@ -1413,24 +1401,10 @@ try {
     readFileSync(sourcePromptFile, "utf8") === CHAT_PROPOSAL,
     "Save did not write the editor's bytes",
   );
-  await waitFor(
-    async () =>
-      (await devtools!.evaluate(
-        `document.querySelector('[data-testid="agent-prompt-text"]')?.textContent ?? null`,
-      )) === CHAT_PROPOSAL
-        ? true
-        : undefined,
-    "the saved prompt text",
-    15_000,
-  );
   await devtools.send("Page.reload");
   await waitFor(
     async () =>
-      (await devtools!
-        .evaluate(
-          `document.querySelector('[data-testid="agent-prompt-text"]')?.textContent ?? null`,
-        )
-        .catch(() => null)) === CHAT_PROPOSAL
+      (await valueOf(devtools!, "agent-prompt-editor").catch(() => "")) === CHAT_PROPOSAL
         ? true
         : undefined,
     "the saved prompt after a reload",
