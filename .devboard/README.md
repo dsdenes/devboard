@@ -174,12 +174,11 @@ project's own name (the last path segment, with a folder mark and the full path 
 The right group states the running lane count, the issues worker state with a state dot, the
 watchdog's last action and age, and the running and installed versions; each metric carries a
 10px uppercase label so its meaning never rests on color. When `versionState.stale` is true it
-shows the existing reload control (`reload-devboard`), whose
-accessible name and title name both versions; reload behavior is unchanged. A mode states its
-status in its sidebar and workspace, never a second time in the status bar, except the issues
-worker, which is detached from every dashboard and reports through `issues-indicator`. The theme
-toggle and the notification indicator live in the activity bar's action group, not the status
-bar.
+shows the existing reload control (`reload-devboard`), whose accessible name and title name both
+versions; reload behavior is unchanged. A mode states its status in its sidebar and workspace,
+never a second time in the status bar, except the issues worker, which is detached from every
+dashboard and reports through `issues-indicator`. The theme toggle and the notification indicator
+live in the activity bar's action group, not the status bar.
 
 ### Verifying the interface
 
