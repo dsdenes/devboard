@@ -168,6 +168,8 @@ const discoverError = process.argv.includes("--discover-error");
 const discoverNoExit = process.argv.includes("--discover-no-exit");
 /** Holds a Discover turn active long enough for the UI to render its state. */
 const discoverDelayMs = Number(argument("discover-delay-ms") ?? 0);
+/** One agent id whose turn fails before staging, for the Run all halt drill. */
+const discoverFailAgent = argument("discover-fail-agent");
 
 /** Ask mode: a read-only answer, preceded by thought and tool noise. */
 const ask = process.argv.includes("--ask");
@@ -1494,40 +1496,59 @@ function discoverSkillText(skill: DiscoverSkill): string {
   ].join("\n");
 }
 
-async function runDiscover(staging: string) {
-  stream("Scanning manifests");
-  stream("Reading tests");
-  stream("Mapping architecture");
+/** One agent's slice: its skill, the sheet, or the glossary and its sidecars. */
+function discoverSkillFor(agent: string): DiscoverSkill | undefined {
+  return discoverSkills().find((skill) => skill.name === agent);
+}
+
+function stagedSkillText(skill: DiscoverSkill): string {
+  return discoverSkillText(skill);
+}
+
+async function runDiscoverAgent(agent: string, staging: string) {
+  stream(`Reading the host for ${agent}`);
+  stream(`Staging ${agent}`);
   if (discoverDelayMs > 0) await Bun.sleep(discoverDelayMs);
   if (discoverQuestion) await askQuestions(1);
 
-  if (discoverError) {
-    stream("Crawl failed while reading manifests");
+  if (discoverError || (discoverFailAgent !== undefined && discoverFailAgent === agent)) {
+    stream(`${agent} failed while reading manifests`);
     process.exit(1);
   }
 
   mkdirSync(staging, { recursive: true });
-  writeFileSync(join(staging, "sheet.json"), `${JSON.stringify(discoverSheet(), null, 2)}\n`);
-
-  mkdirSync(join(staging, "glossary"), { recursive: true });
-  const glossary = discoverGlossary();
-  writeFileSync(join(staging, "glossary", "orders.glossary.yaml"), glossary.yaml);
-  if (discoverSignificance !== "missing") {
-    const sidecar =
-      discoverSignificance === "invalid"
-        ? "{ not json"
-        : discoverSignificance === "array"
-          ? "[]"
-          : `${JSON.stringify(discoverSignificanceSidecar(glossary.concepts), null, 2)}\n`;
-    writeFileSync(join(staging, "glossary", "significance.json"), sidecar);
-  }
-
-  const skills = discoverSkills();
-  for (const [index, skill] of skills.entries()) {
-    if (discoverMissingArtifact && index === skills.length - 1) continue;
-    const directory = join(staging, "skills", skill.name);
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "SKILL.md"), discoverSkillText(skill));
+  if (agent === "sheet") {
+    writeFileSync(join(staging, "sheet.json"), `${JSON.stringify(discoverSheet(), null, 2)}\n`);
+  } else if (agent === "discover-glossary") {
+    mkdirSync(join(staging, "glossary"), { recursive: true });
+    const glossary = discoverGlossary();
+    writeFileSync(join(staging, "glossary", "orders.glossary.yaml"), glossary.yaml);
+    if (discoverSignificance !== "missing") {
+      const sidecar =
+        discoverSignificance === "invalid"
+          ? "{ not json"
+          : discoverSignificance === "array"
+            ? "[]"
+            : `${JSON.stringify(discoverSignificanceSidecar(glossary.concepts), null, 2)}\n`;
+      writeFileSync(join(staging, "glossary", "significance.json"), sidecar);
+    }
+    const skill = discoverSkillFor("discover-glossary");
+    if (skill !== undefined) {
+      const directory = join(staging, "skills", skill.name);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, "SKILL.md"), stagedSkillText(skill));
+    }
+  } else {
+    const skill = discoverSkillFor(agent);
+    if (skill === undefined) {
+      process.stderr.write(`stub: unknown discover agent ${agent}\n`);
+      process.exit(2);
+    }
+    if (!discoverMissingArtifact) {
+      const directory = join(staging, "skills", skill.name);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, "SKILL.md"), stagedSkillText(skill));
+    }
   }
 
   if (discoverExtraArtifact) {
@@ -1551,6 +1572,7 @@ async function runDiscover(staging: string) {
   if (discoverNoExit) await Bun.sleep(delayMs > 0 ? delayMs : 60_000);
 }
 
+
 /**
  * The peer is announced with the prompt that starts its first turn, so a test
  * that counts peers sees the announcement together with the turn it started.
@@ -1566,6 +1588,29 @@ async function promptTurn(params: unknown) {
   const text = promptText(params);
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
   const firstLine = text?.split("\n")[0] ?? "";
+
+  // A prompt-chat turn: the base prompt travels between the two markers, and
+  // the reply proposes a complete replacement without writing anything.
+  if (text !== undefined && text.includes("## Operator request") && text.includes("<<<PROMPT\n")) {
+    log("prompt-chat");
+    const start = text.indexOf("<<<PROMPT\n") + "<<<PROMPT\n".length;
+    const end = text.indexOf("\nPROMPT>>>", start);
+    const base = end < 0 ? "" : text.slice(start, end);
+    stream("Here is the revision.");
+    const proposal = `${base.trimEnd()}\n\n<!-- revised by the verification peer -->\n`;
+    write({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "stub-session",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `\n\n<prompt-file>\n${proposal}</prompt-file>\n` },
+        },
+      },
+    });
+    return;
+  }
 
   if (goalSlug !== undefined && text !== undefined && text.includes(GOAL_SLUG_PROMPT_MARKER)) {
     log(`goal-slug ${firstLine}`);
@@ -1671,9 +1716,20 @@ async function promptTurn(params: unknown) {
     return;
   }
 
-  if (discover && firstLine.startsWith("/discover ")) {
+  const discoverCommand = [
+    "/discover-sheet",
+    "/discover-testing-strategy",
+    "/discover-naming-conventions",
+    "/discover-coding-conventions",
+    "/discover-architecture-boundaries",
+    "/discover-glossary",
+  ].find((command) => firstLine.startsWith(`${command} `));
+  if (discover && discoverCommand !== undefined) {
     log(`prompt ${firstLine}`);
-    await runDiscover(firstLine.slice("/discover ".length).trim());
+    await runDiscoverAgent(
+      discoverCommand === "/discover-sheet" ? "sheet" : discoverCommand.slice(1),
+      firstLine.slice(discoverCommand.length).trim(),
+    );
     return;
   }
 

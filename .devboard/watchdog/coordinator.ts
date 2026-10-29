@@ -6,10 +6,19 @@ import { coveredStateDirs, runCleanup, type CleanupReport } from "./cleanup";
 import { discoverInstances, type Instance } from "./discovery";
 import { analyzeEvidence, STALL_MS } from "./findings";
 import { runGh, type GhRun, type IssueInput } from "./github";
+import {
+  DEDUP_STUB_ENV,
+  parseDedupAnswer,
+  readDedupStub,
+  runDedupAgent,
+  type Dedup,
+  type DedupRequest,
+} from "./dedup";
 import { createWatchdogDelivery, type WatchdogDelivery } from "./delivery";
 import {
   loadLedger,
   markCommented,
+  markDuplicate,
   markFiled,
   markPending,
   recordFindings,
@@ -45,7 +54,9 @@ export interface CycleDeps {
   collect: (root: string, instances: Instance[], evidenceWindow: Window) => Collection;
   gh: GhRun;
   delivery?: WatchdogDelivery;
-  /** Environment for delivery construction; defaults to `process.env`. */
+  /** One deduplication turn; defaults to the configured ACP peer. */
+  dedup?: Dedup;
+  /** Environment for delivery and agent construction; defaults to `process.env`. */
   environment?: Record<string, string | undefined>;
 }
 
@@ -74,6 +85,34 @@ export interface ReportIssue {
   line: string;
 }
 
+export interface ReportDedupDecision {
+  fingerprint: string;
+  category: string;
+  decision: "unique" | "duplicate" | "failed";
+  /** The open issue the candidate duplicates. */
+  issue?: string;
+  /** The candidate the agent named as the group's representative. */
+  representative?: string;
+  /** Why the decision failed, for `failed`. */
+  reason?: string;
+}
+
+export interface ReportDedupSuppressed {
+  fingerprint: string;
+  issue: string;
+}
+
+/** This cycle's deduplication gate: one request over the whole candidate set. */
+export interface ReportDeduplication {
+  /** Candidates sent to the agent. */
+  requested: number;
+  /** Open issues the agent reported reading; zero when it was not asked. */
+  openIssuesRead: number;
+  decisions: ReportDedupDecision[];
+  /** Candidates suppressed because their matched issue is still open. */
+  suppressed: ReportDedupSuppressed[];
+}
+
 export type CycleAction =
   | "none"
   | "duplicate"
@@ -98,6 +137,8 @@ export interface Report {
   unattributed: number;
   /** Age-based retention over every covered state directory. */
   cleanup: CleanupReport;
+  /** The deduplication gate over this cycle's candidate set. */
+  deduplication: ReportDeduplication;
 }
 
 export interface CycleOptions {
@@ -109,6 +150,11 @@ export interface CycleOptions {
   windowMs?: number;
   /** Persisted cadence and caps; read from the state directory when omitted. */
   settings?: WatchdogSettings;
+  /**
+   * The dashboard STATE_DIR whose `providers/` holds the deduplication agent's
+   * key. Defaults to the state directory's parent.
+   */
+  providerStateDir?: string;
   deps?: Partial<CycleDeps>;
 }
 
@@ -126,7 +172,7 @@ function isFiled(entry: LedgerEntry | undefined): boolean {
   return entry !== undefined && entry.disposition.startsWith("filed:");
 }
 
-function firstLine(error: unknown): string {
+function diagnosticLine(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   return (
     text
@@ -272,6 +318,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     malformed: collection.malformed,
     unattributed: collection.unattributed,
     cleanup,
+    deduplication: { requested: 0, openIssuesRead: 0, decisions: [], suppressed: [] },
   };
 
   if (dryRun) {
@@ -301,7 +348,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
         ...(deps.environment === undefined ? {} : { environment: deps.environment }),
       });
     } catch (error) {
-      deliveryFailure = firstLine(error);
+      deliveryFailure = diagnosticLine(error);
     }
     return delivery;
   };
@@ -318,6 +365,135 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
   // A configuration failure is a per-fingerprint failure, not a lost cycle:
   // build once here so every queued fingerprint can stay pending below.
   if (queue.length > 0) deliveryFor();
+  const environment = deps.environment ?? process.env;
+  const providerStateDir = resolve(options.providerStateDir ?? join(stateDir, ".."));
+  let failure: string | undefined;
+
+  // Open-only suppression. A candidate the agent matched to an issue stays
+  // suppressed only while that issue is open; the cycle reads that one state
+  // and never compares text itself. An unreadable state re-asks the agent.
+  const suppressed: ReportDedupSuppressed[] = [];
+  const candidates: string[] = [];
+  for (const fingerprint of queue) {
+    const entry = ledger.findings[fingerprint];
+    if (entry === undefined) {
+      ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
+      continue;
+    }
+    if (entry.disposition.startsWith("duplicate:")) {
+      const matched = entry.duplicateOf ?? entry.disposition.slice("duplicate:".length);
+      const state = delivery === undefined ? "open" : await delivery.state(matched);
+      if (state === "open") {
+        suppressed.push({ fingerprint, issue: matched });
+        ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
+        continue;
+      }
+    }
+    candidates.push(fingerprint);
+  }
+
+  const dedup = report.deduplication;
+  dedup.requested = candidates.length;
+  dedup.suppressed = suppressed;
+  const uniqueCandidates: string[] = [];
+  let gateBlocked = false;
+  if (candidates.length > 0) {
+    if (delivery === undefined) {
+      const reason = deliveryFailure ?? "the watchdog delivery is unavailable";
+      failure ??= reason;
+      gateBlocked = true;
+      for (const fingerprint of candidates) {
+        markPending(ledger, fingerprint);
+        dedup.decisions.push({
+          fingerprint,
+          category: ledger.findings[fingerprint]?.category ?? "unknown",
+          decision: "failed",
+          reason,
+        });
+      }
+      context.log(`deduplication not attempted: ${reason}`);
+    } else {
+      const request: DedupRequest = {
+        repository: delivery.repository,
+        window: { start: window.start.toISOString(), end: window.end.toISOString() },
+        candidates: candidates.map((fingerprint) => {
+          const entry = ledger.findings[fingerprint] as LedgerEntry;
+          return {
+            fingerprint,
+            category: entry.category,
+            line: entry.line,
+            firstSeen: entry.firstSeen,
+            lastSeen: entry.lastSeen,
+            count: entry.count,
+            instances: entry.instances,
+            window: { start: window.start.toISOString(), end: window.end.toISOString() },
+          };
+        }),
+      };
+      const stubPath = environment[DEDUP_STUB_ENV];
+      const dedupAgent: Dedup =
+        deps.dedup ??
+        (stubPath !== undefined && stubPath.length > 0
+          ? readDedupStub(stubPath)
+          : (value) =>
+              runDedupAgent(value, { root, stateDir: providerStateDir, environment }));
+      try {
+        // One request over the complete set; no issue is created until this
+        // answer is read and validated.
+        const answer = parseDedupAnswer(await dedupAgent(request), request);
+        dedup.openIssuesRead = answer.openIssues.length;
+        for (const fingerprint of candidates) {
+          const entry = ledger.findings[fingerprint];
+          const decision = answer.decisions.get(fingerprint);
+          if (entry === undefined || decision === undefined) continue;
+          if (decision.decision === "unique") {
+            uniqueCandidates.push(fingerprint);
+            dedup.decisions.push({
+              fingerprint,
+              category: entry.category,
+              decision: "unique",
+            });
+            continue;
+          }
+          if (decision.issue !== undefined) {
+            markDuplicate(ledger, fingerprint, decision.issue, now);
+          } else {
+            ledger.pendingFiling = ledger.pendingFiling.filter(
+              (pending) => pending !== fingerprint,
+            );
+          }
+          dedup.decisions.push({
+            fingerprint,
+            category: entry.category,
+            decision: "duplicate",
+            ...(decision.issue === undefined ? {} : { issue: decision.issue }),
+            ...(decision.representative === undefined
+              ? {}
+              : { representative: decision.representative }),
+          });
+        }
+        context.log(
+          `deduplication: ${candidates.length} candidate(s), ` +
+            `${uniqueCandidates.length} unique, ` +
+            `${candidates.length - uniqueCandidates.length} duplicate`,
+        );
+      } catch (error) {
+        const reason = diagnosticLine(error);
+        failure ??= `the deduplication agent failed: ${reason}`;
+        gateBlocked = true;
+        for (const fingerprint of candidates) {
+          markPending(ledger, fingerprint);
+          dedup.decisions.push({
+            fingerprint,
+            category: ledger.findings[fingerprint]?.category ?? "unknown",
+            decision: "failed",
+            reason,
+          });
+        }
+        context.log(`deduplication failed: ${reason}`);
+      }
+    }
+  }
 
   const issueInput = (fingerprint: string, entry: LedgerEntry): IssueInput => ({
     category: entry.category,
@@ -331,7 +507,6 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     reportPath,
   });
 
-  let failure: string | undefined;
   let commented = 0;
 
   // Caps: with no cap the queue is filed exactly as before. A cap counts new
@@ -366,7 +541,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
   let room = filingRoom();
 
   // Pending filings are retried first: a failed `gh` call never loses evidence.
-  for (const fingerprint of queue) {
+  for (const fingerprint of gateBlocked ? [] : uniqueCandidates) {
     if (room <= 0) {
       markPending(ledger, fingerprint);
       continue;
@@ -406,7 +581,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
   }
 
   const filedThisCycle = new Set(report.issues.map((issue) => issue.fingerprint));
-  for (const finding of findings) {
+  for (const finding of gateBlocked ? [] : findings) {
     const entry = ledger.findings[finding.fingerprint];
     if (entry === undefined || entry.url === undefined) continue;
     if (filedThisCycle.has(finding.fingerprint)) continue;
@@ -447,6 +622,9 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     report.action = "capped";
     report.reason =
       report.reason ?? `filing cap reached; ${ledger.pendingFiling.length} finding(s) stay pending`;
+  } else if (candidates.length > 0 || suppressed.length > 0) {
+    report.action = "duplicate";
+    report.reason = "every candidate duplicates an open issue";
   } else if (findings.length > 0 || ledger.pendingFiling.length > 0) {
     report.action = "duplicate";
     report.reason = "every finding already has an issue";

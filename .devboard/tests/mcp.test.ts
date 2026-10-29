@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { MCP_TOOLS, MCP_TOOL_NAMES } from "../mcp/catalog";
 import { GOAL_TEXT_MAX_BYTES } from "../mcp/goals";
 import { ISSUE_BODY_MAX_BYTES } from "../mcp/issues";
 import { callTool } from "../mcp/tools";
+import { runVerification, VERIFICATION_OUTPUT_MAX_BYTES } from "../mcp/verification";
 import { startStdio } from "../mcp/index";
 import type { McpContext } from "../mcp/context";
 import type { LiveDashboard } from "../mcp/dashboard";
@@ -598,6 +599,79 @@ describe("MCP work and control tools", () => {
     });
     expect(escaped.error?.length).toBeGreaterThan(0);
   });
+
+  // Real time is the subject here: a spawned check must be reaped against the
+  // platform clock, which fake timers cannot drive.
+  test("verification_run settles at its deadline when a descendant holds the pipes", async () => {
+    await mkdir(join(harnessRoot, ".tmp"), { recursive: true });
+    const dir = await mkdtemp(join(harnessRoot, ".tmp", "verification-hang-"));
+    directories.push(dir);
+    const script =
+      "bun -e \"const child = Bun.spawn({ cmd: ['sleep', '60'], stdio: ['ignore', 'inherit', 'inherit'] }); " +
+      "await Bun.write('descendant.pid', String(child.pid)); child.unref(); console.log('spawned');\"";
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ scripts: { "verify:hang": script } }),
+    );
+    const context: McpContext = {
+      repoDir: dir,
+      harnessDir: dir,
+      stateDir: join(dir, "state"),
+      environment: process.env,
+    };
+
+    const pending = runVerification(context, "verify:hang", undefined, { timeoutMs: 2_000 });
+    let descendant: number | undefined;
+    for (let attempt = 0; attempt < 100 && descendant === undefined; attempt += 1) {
+      try {
+        const value = Number((await readFile(join(dir, "descendant.pid"), "utf8")).trim());
+        if (Number.isInteger(value) && value > 0) descendant = value;
+      } catch {
+        // The check has not written the pid yet.
+      }
+      if (descendant === undefined) await Bun.sleep(20);
+    }
+    const result = await pending;
+
+    expect(result.exitCode).toBeNull();
+    expect(result.output).toContain("[timed out after 2000 ms]");
+    if (descendant === undefined) throw new Error("the check never wrote its descendant pid");
+
+    let alive = true;
+    for (let attempt = 0; attempt < 100 && alive; attempt += 1) {
+      try {
+        process.kill(descendant, 0);
+      } catch {
+        alive = false;
+      }
+      if (alive) await Bun.sleep(20);
+    }
+    expect(alive).toBe(false);
+  }, 30_000);
+
+  test("verification_run caps the captured output", async () => {
+    await mkdir(join(harnessRoot, ".tmp"), { recursive: true });
+    const dir = await mkdtemp(join(harnessRoot, ".tmp", "verification-chatty-"));
+    directories.push(dir);
+    const script = "bun -e \"for (let i = 0; i < 400; i += 1) console.log('x'.repeat(200));\"";
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ scripts: { "verify:chatty": script } }),
+    );
+    const context: McpContext = {
+      repoDir: dir,
+      harnessDir: dir,
+      stateDir: join(dir, "state"),
+      environment: process.env,
+    };
+
+    const result = await runVerification(context, "verify:chatty", undefined);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.truncated).toBe(true);
+    expect(result.output.endsWith("\n[output truncated]")).toBe(true);
+    expect(Buffer.byteLength(result.output, "utf8")).toBeLessThan(VERIFICATION_OUTPUT_MAX_BYTES + 64);
+  }, 30_000);
 
   test("every control tool delegates to the one live dashboard", async () => {
     const { context } = await workspace();

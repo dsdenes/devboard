@@ -112,6 +112,9 @@ function exchange(url: string, command: unknown): Promise<unknown> {
       return;
     }
     const type = (message as { type?: unknown }).type;
+    // Discover's card prompts and snapshot are connection-level replays that
+    // precede every client's own reply.
+    if (type === "discoverPromptState" || type === "discoverState") return;
     // A connection-level worker replay precedes this client's own reply.
     if (
       !answer &&
