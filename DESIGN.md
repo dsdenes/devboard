@@ -482,6 +482,17 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   it drops to `secondary` so the band's `Create draft` owns the primary. The trigger keeps
   `aria-expanded` and names the open band through `aria-controls`; the band is a
   `surface-raised` row under the header with `label` type and a right-aligned 6px action gap.
+- **Draft goals body** (`.issues-drafts__body`) — the two-panel surface under the page header:
+  the Proposed goals panel at a 240–340px track and the detail panel on the remaining track, 12px
+  apart, both filling the body height; below 1100px the tracks stack into one column. When the
+  directory holds no drafts the body drops to one full-width Proposed goals panel and renders no
+  detail column: its body centers a 20px `muted-foreground` `NotebookPen` mark (`aria-hidden`),
+  a 13px/600 `No drafts yet` title, and one 12px `muted-foreground` line naming `New goal` and
+  report proposals, in one 360px-capped stack with 24px 16px padding and a 4px rhythm. With
+  drafts but no selected row the detail column carries the same stack (`MousePointerClick`,
+  `No draft selected`, one line naming Proposed goals), so an unselected surface never reads as
+  an empty panel. Neither state adds a frame, tint, shadow, or second action; the panel header
+  keeps the only `New goal` control.
 - **Agent fleet card** (`.issues-agent`) — one card per running agent in the Agents page grid: a
   360px-minimum `surface` card with 1px `border`, 4px radius, 10px padding, and an 8px internal
   rhythm. Its head holds the mono `accent` issue-number link to the tracker and one outline

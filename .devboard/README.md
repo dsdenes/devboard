@@ -2043,7 +2043,11 @@ name names the Issues mode and the `Alt+2` shortcut, and the command palette lis
 same command id. Opening it renders `data-testid="issues-drafts"`: every regular `.md` file
 directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each with
 `data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
-and its first Markdown heading. An empty directory shows `No drafts exist.`.
+and its first Markdown heading. An empty directory replaces the two-column body with one
+full-width Proposed goals panel whose centered state (`data-testid="issues-drafts-empty"`) reads
+`No drafts yet` and explains the creation paths; no empty detail column is rendered. While drafts
+exist but none is selected, the detail column carries the centered `No draft selected` state
+(`data-testid="issues-drafts-selection"`).
 
 The list header carries a `New goal` control (`data-testid="issues-draft-new"`,
 `data-command="issues.draft.new"`); the command palette lists the same id, opens the Draft goals
