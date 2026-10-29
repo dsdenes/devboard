@@ -453,3 +453,80 @@ export async function copyRelease(
     `${createHash("sha256").update(readFileSync(join(destination, target))).digest("hex")}  ${target}\n`;
   await writeFile(join(destination, `${target}.sha256`), checksum);
 }
+
+/**
+ * Starts the MCP server exactly as `<host>/.omp/mcp.json` declares it, with the
+ * installed prefix as the harness environment, and returns `tools/list`'s
+ * names. The declaration's own relative resolution is exercised: no
+ * DEVBOARD_HARNESS_DIR is set, so an installed host must find its package.
+ */
+export async function declaredMcpTools(
+  host: string,
+  prefix: string,
+  timeoutMs = 30_000,
+): Promise<string[]> {
+  const config = JSON.parse(readFileSync(join(host, ".omp", "mcp.json"), "utf8")) as {
+    mcpServers?: Record<string, { command?: string; args?: string[] }>;
+  };
+  const server = config.mcpServers?.devboard;
+  if (server === undefined || typeof server.command !== "string") {
+    throw new Error("the installed .omp/mcp.json declares no devboard server");
+  }
+  const child = spawn(server.command, server.args ?? [], {
+    cwd: host,
+    env: {
+      ...process.env,
+      REPO_DIR: host,
+      STATE_DIR: join(prefix, ".tmp"),
+      HOME: host,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "";
+  const timer = setTimeout(() => child.kill(), timeoutMs);
+  try {
+    child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18" },
+      })}\n${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })}\n`,
+    );
+    const tools = await new Promise<string[]>((settle, reject) => {
+      child.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+        const lines = output.split("\n");
+        for (const line of lines) {
+          if (line.trim().length === 0) continue;
+          try {
+            const message = JSON.parse(line) as {
+              id?: number;
+              result?: { tools?: Array<{ name?: string }> };
+            };
+            if (message.id === 2 && Array.isArray(message.result?.tools)) {
+              settle(
+                message.result.tools
+                  .map((tool) => tool.name)
+                  .filter((name): name is string => typeof name === "string"),
+              );
+              return;
+            }
+          } catch {
+            // A diagnostic line on stdout is a failure the timeout reports.
+          }
+        }
+      });
+      child.on("error", reject);
+      child.on("exit", () => reject(new Error(`the MCP server exited: ${output}`)));
+    });
+    return tools;
+  } finally {
+    clearTimeout(timer);
+    try {
+      child.kill();
+    } catch {
+      // Already gone.
+    }
+  }
+}

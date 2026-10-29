@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { WatchdogActivity, type WatchdogActivityOptions } from "./watchdog";
+import { CoachActivity, type CoachActivityOptions } from "./coach";
 import { BackgroundAgentBridge, type AgentCommand } from "./agents/bridge";
 import { agentRegistry } from "./agents/registry";
 import {
@@ -179,6 +180,11 @@ export interface AppOptions {
   watchdog?: Pick<
     WatchdogActivityOptions,
     "reader" | "now" | "intervalMs" | "staleAfterMs" | "preflight" | "spawnWorker" | "systemctl"
+  >;
+  /** Coach's test seams; production reads its worker's state and ledger. */
+  coach?: Pick<
+    CoachActivityOptions,
+    "reader" | "now" | "intervalMs" | "staleAfterMs" | "preflight" | "spawnWorker"
   >;
   /** Names one proposed-goal draft; production asks the configured ACP agent. */
   goalSlug?: (report: string) => Promise<string>;
@@ -2263,6 +2269,7 @@ export function createApp(options: AppOptions) {
    */
   const scoutDescriptor = agentRegistry.require("scout");
   const watchdogDescriptor = agentRegistry.require("watchdog");
+  const coachDescriptor = agentRegistry.require("coach");
   const scout = new ScoutBridge({
     descriptor: scoutDescriptor,
     repoDir,
@@ -2307,10 +2314,37 @@ export function createApp(options: AppOptions) {
       : { systemctl: options.watchdog.systemctl }),
   });
 
-  /** The shared control plane both background agents answer through. */
+  /**
+   * Coach reads the ACP transcripts and journal records already on disk,
+   * overlays the forge projection its caps count, and commands its detached
+   * worker. Opening the page never starts a cycle.
+   */
+  const coach = new CoachActivity({
+    descriptor: coachDescriptor,
+    repoDir,
+    stateDir,
+    harnessDir: runningHarnessDir(),
+    send: (event, except) => sendAll(event, except),
+    environment: process.env,
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.coach?.reader === undefined ? {} : { reader: options.coach.reader }),
+    ...(options.coach?.now === undefined ? {} : { now: options.coach.now }),
+    ...(options.coach?.intervalMs === undefined
+      ? {}
+      : { intervalMs: options.coach.intervalMs }),
+    ...(options.coach?.staleAfterMs === undefined
+      ? {}
+      : { staleAfterMs: options.coach.staleAfterMs }),
+    ...(options.coach?.preflight === undefined ? {} : { preflight: options.coach.preflight }),
+    ...(options.coach?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.coach.spawnWorker }),
+  });
+
+  /** The shared control plane every background agent answers through. */
   const agents = new BackgroundAgentBridge({
     registry: agentRegistry,
-    adapters: [scout, watchdog],
+    adapters: [scout, watchdog, coach],
     broadcast: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });

@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createReleaseDirectory } from "./harness-package";
+import { MCP_TOOL_NAMES } from "../mcp/catalog";
 import { saveSubscriptions } from "../server/providers";
 import {
   assertEquals,
@@ -34,6 +35,7 @@ import {
   waitFor,
   waitForInstalledVersion,
   websocketCommand,
+  declaredMcpTools,
   type DashboardProcess,
 } from "./verification";
 
@@ -128,8 +130,21 @@ async function installFixture(name: string, releaseDir: string): Promise<string>
     `fixture install did not report the tarball fallback after npm failed:\n${installed.stdout}`,
   );
   step(fallbackLine ?? "tarball fallback used");
+  await assertInstalledMcp(host.directory);
   startedHosts.push(host.directory);
   return host.directory;
+}
+
+async function assertInstalledMcp(host: string): Promise<void> {
+  const prefix = join(host, ".devboard");
+  const harness = installedPackage(prefix);
+  const installedMcp = join(host, ".omp", "mcp.json");
+  assertTrue(readFileSync(installedMcp).equals(readFileSync(join(harness, "omp", "mcp.json"))), "the installed .omp/mcp.json differs from the package");
+  assertEquals(
+    await declaredMcpTools(host, prefix),
+    [...MCP_TOOL_NAMES],
+    "the installed MCP server answers tools/list",
+  );
 }
 
 try {
@@ -152,6 +167,7 @@ try {
   }, previousPort);
   servers.push(server);
   await waitForInstalledVersion(prefix, NEW);
+  await assertInstalledMcp(host);
   assertTrue(processRunning(server.pid), "the server survives its own install");
   // The install lands before the journal line, so wait for the record rather
   // than sampling once and racing the write.

@@ -112,10 +112,11 @@ function fakeAdapter(descriptor: AgentDescriptor): AgentAdapter & { starts: numb
 }
 
 describe("background agent registry", () => {
-  test("ships exactly the two declared descriptors with their defaults", () => {
+  test("ships exactly the three declared descriptors with their defaults", () => {
     expect(DEFAULT_AGENT_DESCRIPTORS.map((descriptor) => descriptor.id)).toEqual([
       "scout",
       "watchdog",
+      "coach",
     ]);
     const scout = agentRegistry.require("scout");
     expect(scout.label).toBe("Auto Scout");
@@ -129,6 +130,12 @@ describe("background agent registry", () => {
     expect(watchdog.cadence.defaultMinutes).toBe(10);
     expect(watchdog.limits.default).toEqual({ maxPerHour: null, maxPending: null });
     expect(watchdog.detail.panel).toBe("cycles");
+    const coach = agentRegistry.require("coach");
+    expect(coach.label).toBe("Coach");
+    expect(coach.scope).toBe("repository");
+    expect(coach.cadence.defaultMinutes).toBe(60);
+    expect(coach.limits.default).toEqual({ maxPerHour: null, maxPending: null });
+    expect(coach.detail.panel).toBe("cycles");
     for (const descriptor of DEFAULT_AGENT_DESCRIPTORS) {
       expect(descriptor.lifecycle).toEqual([...AGENT_LIFECYCLES]);
       expect(descriptor.commands.start).toBe("startAgent");
@@ -150,7 +157,7 @@ describe("background agent registry", () => {
   test("a synthetic third descriptor is accepted by validation and projection", () => {
     const descriptor = thirdDescriptor();
     const registry = defineAgentRegistry([...DEFAULT_AGENT_DESCRIPTORS, descriptor]);
-    expect(registry.ids()).toEqual(["scout", "watchdog", "patrol"]);
+    expect(registry.ids()).toEqual(["scout", "watchdog", "coach", "patrol"]);
     const projected = projectAgentSnapshot(descriptor, snapshotInput(descriptor));
     expect(projected.id).toBe("patrol");
     expect(projected.label).toBe("Patrol");
@@ -182,6 +189,7 @@ describe("background agent registry", () => {
     expect((state?.agents as Array<{ id: string }>).map((agent) => agent.id)).toEqual([
       "scout",
       "watchdog",
+      "coach",
       "patrol",
     ]);
     await bridge.handle(target, { type: "startAgent", id: "patrol" });

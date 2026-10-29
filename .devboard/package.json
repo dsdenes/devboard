@@ -25,7 +25,10 @@
     "verify:providers": "bun run scripts/verify-providers.ts",
     "verify:issues": "bun run scripts/verify-issues.ts",
     "verify:scout": "bun run scripts/verify-scout.ts",
-    "verify:agents": "bun run scripts/verify-agents.ts"
+    "verify:agents": "bun run scripts/verify-agents.ts",
+    "coach": "bun run coach/main.ts",
+    "verify:coach": "bun run scripts/verify-coach.ts",
+    "verify:mcp": "bun run scripts/verify-mcp.ts"
   },
   "files": [
     "package.json",
@@ -47,7 +50,9 @@
     "index.html",
     "vite.config.ts",
     "svelte.config.js",
-    "tsconfig.json"
+    "tsconfig.json",
+    "coach",
+    "mcp"
   ],
   "devDependencies": {
     "@adrkit/cli": "0.20.0",

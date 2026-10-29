@@ -839,7 +839,7 @@ async function installHarnessCopy(host: string, version = INSTALLED_VERSION): Pr
   const home = installedPackageHome(host);
   await rm(join(prefix, "node_modules"), { recursive: true, force: true });
   await mkdir(home, { recursive: true });
-  for (const entry of ["server", "issues", "lib", "watchdog", "dist"]) {
+  for (const entry of ["server", "issues", "lib", "watchdog", "coach", "mcp", "dist"]) {
     await cp(join(harnessRoot, entry), join(home, entry), {
       recursive: true,
       filter: (source) => !source.endsWith(".test.ts"),

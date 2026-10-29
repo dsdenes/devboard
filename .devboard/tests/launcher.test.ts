@@ -90,6 +90,9 @@ describe("public package", () => {
       "lib/release.ts",
       "issues/worker.ts",
       "watchdog/main.ts",
+      "coach/worker.ts",
+      "mcp/index.ts",
+      "omp/mcp.json",
       "templates/host-AGENTS.md",
       "install.sh",
       "tsconfig.json",
@@ -100,6 +103,10 @@ describe("public package", () => {
     expect(files.some((path) => path.startsWith("prompts/"))).toBe(true);
     expect(files.some((path) => path.startsWith("omp/commands/"))).toBe(true);
     expect(files.some((path) => path.startsWith("omp/extensions/"))).toBe(true);
+    const mcp = JSON.parse(readFileSync(join(harnessRoot, "omp", "mcp.json"), "utf8")) as {
+      mcpServers: Record<string, { type: string }>;
+    };
+    expect(mcp.mcpServers.devboard?.type).toBe("stdio");
     expect(files.some((path) => path.startsWith("extensions/"))).toBe(true);
     for (const forbidden of ["node_modules/", ".tmp/", "goals/", "tests/", "launcher/", ".worktree/"]) {
       expect(files.some((path) => path.startsWith(forbidden))).toBe(false);
