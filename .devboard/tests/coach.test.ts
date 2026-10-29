@@ -38,6 +38,7 @@ import {
   parseSynthesisAnswer,
   synthesisPrompt,
   SYNTHESIS_PROMPT_MAX_BYTES,
+  synthesizeFamily,
   type Proposal,
   type Synthesize,
 } from "../coach/synthesize";
@@ -949,6 +950,196 @@ describe("Coach cycle", () => {
     expect(delivery.created).toEqual([]);
     const ledger = loadLedger(coachDirectory(stateDir)).ledger;
     expect(ledger.pendingFiling).toEqual([]);
+  });
+
+  test("a peer proposal that quotes HTTP 401 is not a credential rejection", async () => {
+    const { root, repoDir, stateDir } = await workspace();
+    const now = NOW.toISOString();
+    saveSubscriptions(stateDir, [
+      {
+        id: "alpha",
+        provider: "opencode-go",
+        label: "Alpha",
+        key: "key-alpha",
+        enabled: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    const family = familiesOf(threeFamilies())[0]!;
+    const answer: Proposal = {
+      family: family.key,
+      action: "none",
+      rationale: "The command exits 7 whenever the API answers HTTP 401; no change is needed.",
+      acceptance: ["- [ ] Nothing changes."],
+    };
+    const script = join(root, "stub-acp.ts");
+    await writeFile(
+      script,
+      `#!/usr/bin/env bun
+const sessionId = "stub-session";
+const write = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+let buffer = "";
+for await (const chunk of Bun.stdin.stream()) {
+  buffer += new TextDecoder().decode(chunk, { stream: true });
+  let newline = buffer.indexOf("\\n");
+  while (newline >= 0) {
+    const line = buffer.slice(0, newline).trim();
+    buffer = buffer.slice(newline + 1);
+    newline = buffer.indexOf("\\n");
+    if (line.length === 0) continue;
+    const message = JSON.parse(line);
+    if (typeof message.method !== "string" || message.id === undefined) continue;
+    if (message.method === "initialize") {
+      write({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: 1 } });
+    } else if (message.method === "session/new") {
+      write({ jsonrpc: "2.0", id: message.id, result: { sessionId } });
+    } else if (message.method === "session/prompt") {
+      write({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            messageId: "stub-message",
+            content: { type: "text", text: ${JSON.stringify(JSON.stringify(answer))} },
+          },
+        },
+      });
+      write({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+    }
+  }
+}
+`,
+    );
+    const result = await synthesizeFamily({
+      repoDir,
+      stateDir,
+      family,
+      prompt: "propose one family issue",
+      command: `${process.execPath} ${script}`,
+      environment: {},
+      timeoutMs: 5_000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe(JSON.stringify(answer));
+    expect(parseSynthesisAnswer(result.text!, family.key).action).toBe("none");
+  });
+
+  test("a peer credential error rotates to the next subscription", async () => {
+    const { root, repoDir, stateDir } = await workspace();
+    const now = NOW.toISOString();
+    const row = (id: string, key: string) => ({
+      id,
+      provider: "opencode-go" as const,
+      label: id,
+      key,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    saveSubscriptions(stateDir, [row("alpha", "key-alpha"), row("beta", "key-beta")]);
+    const script = join(root, "stub-acp.ts");
+    await writeFile(
+      script,
+      `#!/usr/bin/env bun
+const sessionId = "stub-session";
+const write = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+let buffer = "";
+for await (const chunk of Bun.stdin.stream()) {
+  buffer += new TextDecoder().decode(chunk, { stream: true });
+  let newline = buffer.indexOf("\\n");
+  while (newline >= 0) {
+    const line = buffer.slice(0, newline).trim();
+    buffer = buffer.slice(newline + 1);
+    newline = buffer.indexOf("\\n");
+    if (line.length === 0) continue;
+    const message = JSON.parse(line);
+    if (typeof message.method !== "string" || message.id === undefined) continue;
+    if (message.method === "initialize") {
+      write({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: 1 } });
+    } else if (message.method === "session/new") {
+      write({ jsonrpc: "2.0", id: message.id, result: { sessionId } });
+    } else if (message.method === "session/prompt") {
+      if (process.env.OPENCODE_API_KEY === "key-alpha") {
+        write({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32000, message: "401 Unauthorized: invalid api key" },
+        });
+      } else {
+        write({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              messageId: "stub-message",
+              content: { type: "text", text: '{"family":"probe","action":"none"}' },
+            },
+          },
+        });
+        write({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+      }
+    }
+  }
+}
+`,
+    );
+    const family = familiesOf(threeFamilies())[0]!;
+    const result = await synthesizeFamily({
+      repoDir,
+      stateDir,
+      family,
+      prompt: "propose one family issue",
+      command: `${process.execPath} ${script}`,
+      environment: {},
+      timeoutMs: 5_000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('"family":"probe"');
+  });
+
+  test("one failed synthesis call does not discard the proposals that parsed", async () => {
+    const { repoDir, stateDir } = await workspace();
+    const collection = collectionOf(threeFamilies());
+    const families = buildFamilies({ ...collection, repoDir });
+    const failed = families.selected[0]!;
+    const delivery = memoryDelivery();
+    let tool = 1;
+    const result = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      collect: () => collection,
+      delivery,
+      synthesize: async (family) => {
+        if (family.key === failed.key) {
+          return {
+            ok: false,
+            model: "stub",
+            durationMs: 1,
+            reason: "the synthesizer peer timed out after 5000ms",
+          };
+        }
+        tool += 1;
+        return {
+          ok: true,
+          model: "stub",
+          durationMs: 1,
+          text: JSON.stringify(toolProposal(family, tool)),
+        };
+      },
+      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+    });
+    expect(result.report.action).toBe("filed");
+    expect(delivery.created).toHaveLength(families.selected.length - 1);
+    expect(delivery.created.some((entry) => entry.title === issueTitle(failed, "tool"))).toBe(false);
+    expect(result.report.synthesis.filter((entry) => !entry.ok)).toHaveLength(1);
+    const ledger = loadLedger(coachDirectory(stateDir)).ledger;
+    expect(ledger.families[failed.key]?.lastAction).toBe("failed");
   });
 
   test("the per-cycle cap holds the excess pending and files it next cycle", async () => {
