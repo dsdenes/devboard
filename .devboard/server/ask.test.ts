@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import { testProviderService } from "./fixtures/test-providers";
+import type { ProviderService } from "./providers";
 
 const temporaryDirectories: string[] = [];
 const temporaryRoot = join(import.meta.dir, "..", ".tmp");
@@ -40,6 +41,8 @@ interface ServerOptions {
   command?: string;
   /** Extra stub arguments after `--ask --log=<path>`. */
   agentArguments?: string[];
+  /** Replaces the deterministic provider service, to defer peer preparation. */
+  providers?: (stateDir: string) => ProviderService;
 }
 
 async function startServer(options: ServerOptions = {}): Promise<TestServer> {
@@ -65,7 +68,8 @@ async function startServer(options: ServerOptions = {}): Promise<TestServer> {
     port: 0,
     repoDir: root,
     stateDir: join(root, "state"),
-    providers: testProviderService(join(root, "state")),
+    providers:
+      options.providers?.(join(root, "state")) ?? testProviderService(join(root, "state")),
     agentCommand: command,
     tracker: async () => undefined,
     trackerSettle: { attempts: 1 },
@@ -399,6 +403,98 @@ describe("ask conversations", () => {
       expect(prompts).toHaveLength(2);
       expect(askLog(testServer.logPath).texts[1]).not.toContain("Earlier in this conversation:");
       expect(askLog(testServer.logPath).spawns).toBe(2);
+    } finally {
+      client.close();
+      testServer.server.stop(true);
+    }
+  });
+
+  test("closing a conversation during provider selection spawns no peer", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const selected = Promise.withResolvers<void>();
+    let hold = false;
+    const testServer = await startServer({
+      providers: (stateDir) => {
+        const providers = testProviderService(stateDir);
+        const select = providers.select.bind(providers);
+        providers.select = async () => {
+          if (hold) {
+            hold = false;
+            entered.resolve();
+            await release.promise;
+          }
+          const result = await select();
+          selected.resolve();
+          return result;
+        };
+        return providers;
+      },
+    });
+    const client = await connect(testServer.url);
+    try {
+      hold = true;
+      client.ask("conversation-closed-early", "What does the issues label mean?");
+      await entered.promise;
+      client.closeAsk("conversation-closed-early");
+      // One socket delivers in order: the reply proves the close was handled
+      // before the environment resolves.
+      client.send({ type: "getProject" });
+      await client.waitFor((message) => message.type === "project");
+      release.resolve();
+      // `selected` resolves before the held ask's continuation is queued; one
+      // more turn of the microtask queue lets that continuation finish.
+      await selected.promise;
+      await Promise.resolve();
+      expect(askLog(testServer.logPath).spawns).toBe(0);
+      expect(askLog(testServer.logPath).prompts).toHaveLength(0);
+
+      // The controller remains usable: a later ask spawns exactly one peer.
+      client.ask("conversation-fresh", "Which file renders it?");
+      await client.waitFor(
+        (message) =>
+          message.type === "askDone" && message.conversationId === "conversation-fresh",
+      );
+      expect(askLog(testServer.logPath).spawns).toBe(1);
+    } finally {
+      client.close();
+      testServer.server.stop(true);
+    }
+  });
+
+  test("server stop during provider selection leaves no peer", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const selected = Promise.withResolvers<void>();
+    let hold = false;
+    const testServer = await startServer({
+      providers: (stateDir) => {
+        const providers = testProviderService(stateDir);
+        const select = providers.select.bind(providers);
+        providers.select = async () => {
+          if (hold) {
+            hold = false;
+            entered.resolve();
+            await release.promise;
+          }
+          const result = await select();
+          selected.resolve();
+          return result;
+        };
+        return providers;
+      },
+    });
+    const client = await connect(testServer.url);
+    try {
+      hold = true;
+      client.ask("conversation-disposed-early", "What does the issues label mean?");
+      await entered.promise;
+      testServer.server.stop(true);
+      release.resolve();
+      await selected.promise;
+      await Promise.resolve();
+      expect(askLog(testServer.logPath).spawns).toBe(0);
+      expect(askLog(testServer.logPath).prompts).toHaveLength(0);
     } finally {
       client.close();
       testServer.server.stop(true);
