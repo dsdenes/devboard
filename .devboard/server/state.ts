@@ -1,4 +1,5 @@
 import { readFileSync, readlinkSync, unlinkSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { journalKey } from "./journal";
 
@@ -119,20 +120,49 @@ export function readStateFile(path: string): StateLoad {
 }
 
 /**
+ * The sibling a staged write fills before it is renamed over its destination.
+ * A per-process name keeps two writers for different files apart even when
+ * they share one directory.
+ */
+function temporarySibling(path: string): string {
+  return `${path}.${process.pid}.tmp`;
+}
+
+/**
  * Replaces the state file atomically: the last complete state stays readable at
  * every instant, and a crash during the write leaves the previous state.
  */
 export function writeStateFile(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  // A per-process name keeps two writers for different repositories apart even
-  // when they share one directory.
-  const temporary = `${path}.${process.pid}.tmp`;
+  const temporary = temporarySibling(path);
   try {
     writeFileSync(temporary, text);
     renameSync(temporary, path);
   } catch (error) {
     try {
       unlinkSync(temporary);
+    } catch {
+      // The temporary file was never created or is already gone.
+    }
+    throw error;
+  }
+}
+
+/**
+ * The asynchronous counterpart of `writeStateFile`, for callers already on
+ * promises: the same staged write and rename, with the same guarantee that the
+ * destination holds either the previous complete text or the new complete text
+ * and never a truncated one.
+ */
+export async function writeFileAtomically(path: string, text: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = temporarySibling(path);
+  try {
+    await writeFile(temporary, text, "utf8");
+    await rename(temporary, path);
+  } catch (error) {
+    try {
+      await unlink(temporary);
     } catch {
       // The temporary file was never created or is already gone.
     }
