@@ -11,6 +11,7 @@ import { liveLockOwner } from "../issues/lock";
 import { ISSUES_DIRECTORY } from "../issues/paths";
 import { isRepoStateDirectoryName, scoutRoot } from "../issues/scout/paths";
 import { JOURNAL_RETENTION_MS } from "../server/journal";
+import { snapshotInUse, STATIC_SNAPSHOT_DIRECTORY } from "../server/static-snapshot";
 
 /**
  * Age-based retention for everything a devboard state directory accumulates.
@@ -202,8 +203,17 @@ export function sweepStateDir(
     join(directory, "orchestrator", "lock"),
   ]);
 
+  const servingDirectory = join(directory, STATIC_SNAPSHOT_DIRECTORY);
+
   const isProtected = (path: string): boolean => {
     if (protectedExact.has(path)) return true;
+    // A running dashboard serves the release it started with from its
+    // snapshot; removing those bytes would silently mix releases again. A
+    // dead process's snapshot stays sweepable.
+    if (path.startsWith(`${servingDirectory}${sep}`)) {
+      const [name] = relative(servingDirectory, path).split(sep);
+      if (name !== undefined && snapshotInUse(name)) return true;
+    }
     if (liveLegacyLock(path)) return true;
     // A checked-out worker's repository-anchored lock is held for as long as
     // the worker runs, however long that is. Its content names the owner, so
