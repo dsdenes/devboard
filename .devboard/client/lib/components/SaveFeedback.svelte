@@ -39,7 +39,6 @@
     border-left: 3px solid var(--success);
     border-radius: 6px;
     bottom: 40px;
-    box-shadow: 0 8px 24px rgb(0 0 0 / 0.32);
     color: var(--text);
     display: flex;
     gap: 8px;

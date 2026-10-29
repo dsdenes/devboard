@@ -833,7 +833,6 @@
     border-left: 3px solid var(--success);
     border-radius: 6px;
     bottom: 40px;
-    box-shadow: 0 8px 24px rgb(0 0 0 / 0.32);
     color: var(--text);
     display: flex;
     gap: 8px;
@@ -940,7 +939,6 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
-    box-shadow: 0 8px 30px rgb(0 0 0 / 0.25);
     color: var(--text);
     display: flex;
     flex-direction: column;
