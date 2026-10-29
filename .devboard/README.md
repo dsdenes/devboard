@@ -1078,12 +1078,12 @@ fixed-size chunks, so a large file cannot exhaust memory. Each digest and the ag
 by the file listing plus size, timestamps, and inode, so an unchanged host is not re-read and a
 reconnect or refresh costs no file reads. The manifest stores the fingerprint, and `stale` is true
 only when the current fingerprint is readable and differs. The cache holds digests only; every
-accepted start re-crawls.
+accepted start reads the host again.
 
-The crawl is read-only with respect to the host. Its tools read files and safe read-only git facts
+Every discovery agent's turn is read-only with respect to the host. It reads files and safe read-only git facts
 (`git rev-parse`, `git log`, `git branch`, `git status`, `git ls-files`) only; they never run a
 project command, test, build, package manager, install, web fetch, or forge query, and the only
-network traffic is the model endpoint that serves the peer. The crawl excludes `.devboard/`,
+network traffic is the model endpoint that serves the peer. Each turn excludes `.devboard/`,
 `.worktree/`, `.git/` internals, `.omp/`, dependency caches, build outputs, and ignored files, but
 reads `README`, `AGENTS.md`, `GOAL.md`, `adrs/`, manifests, configuration, source, tests, and CI
 files that remain. It never modifies `GOAL.md`, `adrs/`, or host source and never writes
@@ -1175,7 +1175,7 @@ it only while `<owner>~<repo>` holds a readable `project.json` and a readable
 drops that one stored target, keeps
 every other retained entry, and sends one `discoverError` naming the missing project to the next
 client. Startup removes every `.staging-*` directory and any leftover directory containing `.git`
-before a recorded run resumes, so the resumed crawl starts from a fresh checkout. The one exception
+before a recorded run resumes, so the resumed agent starts from a fresh checkout. The one exception
 is a transient another live dashboard still claims: two dashboards may serve the same repository
 with one `STATE_DIR`, and a starting dashboard never deletes a checkout a running one owns. A
 restart during a remote run ends the recorded child and keeps its retained snapshot; the
@@ -1258,7 +1258,7 @@ ADRS_DIR=../adrs REPO_DIR=.. bun run start
 ```
 
 Open Discover, enter `https://github.com/octocat/Hello-World`, and confirm the cloning state, a
-completed crawl, the checkout gone from `.devboard/.tmp/discover-remote/`, the retained project at
+completed sequence, the checkout gone from `.devboard/.tmp/discover-remote/`, the retained project at
 `.devboard/.tmp/discover-remote/octocat~hello-world/` with its `.omp/discover`, `.omp/skills`, and
 `project.json`, its sheet and glossaries, and a skill save landing under the retained
 `.omp/skills/`.
