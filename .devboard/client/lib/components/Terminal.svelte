@@ -30,32 +30,28 @@
 
   function palette(): Record<string, string> {
     const styles = getComputedStyle(document.documentElement);
-    const read = (name: string, fallback: string): string => {
-      const value = styles.getPropertyValue(name).trim();
-      return value.length > 0 ? value : fallback;
-    };
-    const light = document.documentElement.dataset.theme === "light";
+    const token = (name: string): string => styles.getPropertyValue(name).trim();
     return {
-      background: light ? "#ffffff" : "#0d1117",
-      foreground: light ? "#1f2328" : "#e6edf3",
-      cursor: light ? "#0969da" : "#58a6ff",
-      selectionBackground: light ? "#b6d7ff" : "#264f78",
-      black: light ? "#24292f" : "#484f58",
-      red: light ? "#cf222e" : "#ff7b72",
-      green: light ? "#116329" : "#3fb950",
-      yellow: light ? "#7d4e00" : "#d29922",
-      blue: light ? "#0550ae" : "#58a6ff",
-      magenta: light ? "#8250df" : "#bc8cff",
-      cyan: light ? "#1b7c83" : "#39c5cf",
-      white: light ? "#6e7781" : "#b1bac4",
-      brightBlack: light ? "#57606a" : "#6e7681",
-      brightRed: read("--error", light ? "#a40e26" : "#ff7b72"),
-      brightGreen: read("--success", light ? "#1a7f37" : "#3fb950"),
-      brightYellow: light ? "#9a6700" : "#e3b341",
-      brightBlue: read("--accent", light ? "#0969da" : "#58a6ff"),
-      brightMagenta: light ? "#6639ba" : "#d2a8ff",
-      brightCyan: light ? "#3192aa" : "#76e3ea",
-      brightWhite: light ? "#1f2328" : "#f0f6fc",
+      background: token("--background"),
+      foreground: token("--foreground"),
+      cursor: token("--accent"),
+      selectionBackground: token("--selection-background"),
+      black: token("--border-strong"),
+      red: token("--error"),
+      green: token("--success"),
+      yellow: token("--warning"),
+      blue: token("--accent"),
+      magenta: token("--flow-entity-border"),
+      cyan: token("--flow-dependency-border"),
+      white: token("--foreground"),
+      brightBlack: token("--muted-foreground"),
+      brightRed: token("--error"),
+      brightGreen: token("--success"),
+      brightYellow: token("--warning"),
+      brightBlue: token("--accent"),
+      brightMagenta: token("--flow-entity-border"),
+      brightCyan: token("--flow-dependency-border"),
+      brightWhite: token("--foreground"),
     };
   }
 
@@ -177,7 +173,7 @@
 
 <style>
   .terminal-host {
-    background: var(--terminal-background);
+    background: var(--background);
     border: 1px solid var(--border);
     border-radius: 4px;
     height: 100%;
