@@ -1204,7 +1204,10 @@ propagation wait (default 1800 seconds).
 
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
-staging prefix, and keeps serving its loaded code. If npm cannot serve the artifact and
+staging prefix, and keeps serving its loaded code. The server copies its client bundle from the
+installed package into `<stateDir>/serving/<pid>-<version>` at startup and serves that copy, so
+replacing the package changes only what a restart loads; an open page keeps requesting the bytes
+it started with. If npm cannot serve the artifact and
 `DEVBOARD_GITEA_URL` is configured, the same version's Gitea tarball is verified against its
 `.sha256` and installed instead. The npm child always runs in
 that staging directory, and the dashboard starts from the host root rather than the replaceable
