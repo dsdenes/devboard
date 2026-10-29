@@ -102,13 +102,10 @@
 
     {#if prompt.editable}
       <div class="agent-prompt__editor">
-        <label class="agent-prompt__subtitle" for={`agent-prompt-editor-${agentId}`}>
-          Editor
-        </label>
         <textarea
-          id={`agent-prompt-editor-${agentId}`}
           class="agent-prompt__textarea mono"
           data-testid="agent-prompt-editor"
+          aria-label="Prompt editor"
           spellcheck="false"
           value={editor}
           oninput={(event) => (editor = event.currentTarget.value)}
