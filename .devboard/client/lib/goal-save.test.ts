@@ -225,6 +225,11 @@ test("a refused goal save stays dirty until the server echoes the saved text", (
     expect(store.goalDraft).toBe("# Existing goal");
     expect(store.goalDirty).toBe(false);
 
+    // Another tab's save reaches a clean store as the new text and draft.
+    socket.deliver({ type: "goal", text: "# Another tab" });
+    expect(store.goalText).toBe("# Another tab");
+    expect(store.goalDraft).toBe("# Another tab");
+
     store.setGoalDraft("# Edited goal");
     store.saveGoal();
     expect(socket.sent).toContain(JSON.stringify({ type: "saveGoal", text: "# Edited goal" }));

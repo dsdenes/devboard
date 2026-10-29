@@ -375,13 +375,15 @@ interface StoredSkills extends StoredRun {
   unmanagedNames: string[] | null;
 }
 
-/** A Discover run a replacement must interrupt rather than resume. */
+/** A Discover run a replacement re-spawns against the same target. */
 interface StoredDiscover {
   runId: string;
   stagingDir: string;
   startedAt: string;
   activity: string[];
   question: StoredQuestion | null;
+  /** The remote project the run crawls; `null` for this checkout's host. */
+  remote: StoredDiscoverTarget | null;
 }
 
 /**
@@ -1572,7 +1574,24 @@ function parseStoredDiscover(value: unknown): StoredDiscover | null {
   const activity = parseStoredActivity(record.activity);
   if (typeof runId !== "string" || typeof stagingDir !== "string") return null;
   if (typeof startedAt !== "string" || activity === undefined) return null;
-  return { runId, stagingDir, startedAt, activity, question: parseStoredQuestion(record.question) };
+  // An absent field is an older host run, except that a run staged under the
+  // remote scratch root is a remote run this version cannot name. Never resume
+  // that one as a host crawl.
+  let remote: StoredDiscoverTarget | null = null;
+  if (record.remote !== undefined && record.remote !== null) {
+    remote = parseStoredDiscoverTarget(record.remote);
+    if (remote === null) return null;
+  } else if (stagingDir.includes(`${sep}discover-remote${sep}`)) {
+    return null;
+  }
+  return {
+    runId,
+    stagingDir,
+    startedAt,
+    activity,
+    question: parseStoredQuestion(record.question),
+    remote,
+  };
 }
 
 /** A stored target is usable only when its URL and its derived names agree. */
@@ -1989,6 +2008,8 @@ export function createApp(options: AppOptions) {
   let discoverWarnings: string[] = [];
   let discoverStale = false;
   let restoredDiscover: StoredDiscover | undefined;
+  /** A reset owned the checkout at death; its work is never resumed. */
+  let restoredResetActive = false;
   let lastDiscoverBusy: string | null = null;
   const DISCOVER_PROMPT = "/discover";
 
@@ -2404,6 +2425,14 @@ export function createApp(options: AppOptions) {
               startedAt: discoverRun.startedAt,
               activity: [...discoverRun.activity],
               question: captureQuestion(discoverRun.question),
+              remote:
+                discoverRun.remote === undefined
+                  ? null
+                  : {
+                      url: discoverRun.remote.url,
+                      owner: discoverRun.remote.owner,
+                      repo: discoverRun.remote.repo,
+                    },
             },
       discoverInterrupted,
       discoverTarget:
@@ -2490,8 +2519,9 @@ export function createApp(options: AppOptions) {
       }
     }
     if (stored.discover !== null) {
-      // The replacement never resumes a crawl: it interrupts it and keeps the
-      // last published artifacts.
+      // The replacement re-spawns the crawl once its predecessor's children
+      // are ended. Until that run starts, the page still reports it interrupted
+      // so a run that cannot be restarted keeps its evidence.
       restoredDiscover = stored.discover;
       discoverInterrupted = true;
     }
@@ -2590,6 +2620,7 @@ export function createApp(options: AppOptions) {
     if (stored.resetActive) {
       // A reset owns the checkout until it reports. Re-running it would repeat
       // deletions and git operations; it is surfaced as failed instead.
+      restoredResetActive = true;
       lanes = [];
       liveLanes.clear();
       epicStates.clear();
@@ -2936,7 +2967,10 @@ export function createApp(options: AppOptions) {
     return true;
   }
 
-  async function startDiscoverProject(ws: { send(data: string): unknown }) {
+  async function startDiscoverProject(
+    ws: { send(data: string): unknown },
+    resumed?: StoredDiscover,
+  ) {
     if (discoverCloning !== null) {
       discoverFailure(ws, "A repository clone is active. Wait for it to finish.");
       return;
@@ -2981,9 +3015,11 @@ export function createApp(options: AppOptions) {
       runId,
       stagingDir,
       cwd: root,
-      startedAt: new Date().toISOString(),
+      // A resumed run keeps its logical start and the activity its successor
+      // already saw; only the peer and its staging are new.
+      startedAt: resumed?.startedAt ?? new Date().toISOString(),
       agent: undefined,
-      activity: [],
+      activity: resumed === undefined ? [] : [...resumed.activity],
       question: null,
       ...(remote === undefined ? {} : { remote }),
     };
@@ -3143,7 +3179,11 @@ export function createApp(options: AppOptions) {
    * The previous target and its retained artifacts stay untouched when the
    * clone or the crawl fails.
    */
-  async function startDiscoverRemote(ws: { send(data: string): unknown }, url: string) {
+  async function startDiscoverRemote(
+    ws: { send(data: string): unknown },
+    url: string,
+    resumed?: StoredDiscover,
+  ) {
     if (remoteUnavailable(ws)) return;
     if (discoverCloning !== null) {
       discoverFailure(ws, "A repository clone is already active.");
@@ -3171,7 +3211,39 @@ export function createApp(options: AppOptions) {
       return;
     }
     if (!(await cloneRemoteProject(ws, parsed.repository))) return;
-    await startDiscoverProject(ws);
+    await startDiscoverProject(ws, resumed);
+  }
+
+  /**
+   * Re-spawns a crawl whose process died. The target is the one the stored run
+   * was started against, never the currently displayed project: a remote run
+   * re-clones its own project so the retained snapshot is replaced only by a
+   * successful crawl. Activity the killed process already reported stays as
+   * the prefix of the resumed run.
+   */
+  async function resumeDiscoverRun(stored: StoredDiscover): Promise<void> {
+    try {
+      if (stored.remote === null) {
+        await startDiscoverProject(restoreTarget, stored);
+        return;
+      }
+      if (!remoteAvailable) {
+        // An installed host cannot re-clone. The interruption remains recorded.
+        discoverFailure(
+          restoreTarget,
+          `The Discover run started at ${stored.startedAt} was interrupted when the server restarted, and a remote run cannot be resumed in this installation.`,
+        );
+        refreshDiscoverSnapshot();
+        broadcastDiscoverState();
+        return;
+      }
+      await startDiscoverRemote(restoreTarget, stored.remote.url, stored);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      discoverFailure(restoreTarget, `The Discover run could not be resumed: ${detail}`);
+      refreshDiscoverSnapshot();
+      broadcastDiscoverState();
+    }
   }
 
   /** The retained project a submitted URL names, by lowercased owner/repo. */
@@ -3611,7 +3683,9 @@ export function createApp(options: AppOptions) {
 
     try {
       await writeGoal(goalFile, text);
-      send(ws, { type: "goal", text });
+      // Every client holds the same baseline, so the confirmation reaches all
+      // of them; the saver's own socket is included in the broadcast.
+      broadcast({ type: "goal", text });
     } catch (error) {
       send(ws, {
         type: "error",
@@ -5798,18 +5872,25 @@ export function createApp(options: AppOptions) {
       restoredDiscover = undefined;
       try {
         rmSync(interrupted.stagingDir, { recursive: true, force: true });
-        // An interrupted run leaves no staging root behind either.
+        // A resumed run uses a fresh staging root of its own.
         rmSync(dirname(interrupted.stagingDir), { recursive: true, force: true });
       } catch {
         // The staging directory may already be gone.
       }
-      discoverInterrupted = true;
-      refreshDiscoverSnapshot();
-      startupNotices.push({
-        type: "discoverError",
-        message: `The Discover run started at ${interrupted.startedAt} was interrupted when the server restarted, so it was not resumed.`,
-      });
-      persistState();
+      if (restoredResetActive) {
+        // The reset owns the checkout and its interruption is reported once.
+        // No crawl may take it over.
+        discoverInterrupted = true;
+        refreshDiscoverSnapshot();
+        startupNotices.push({
+          type: "discoverError",
+          message: `The Discover run started at ${interrupted.startedAt} was interrupted when the server restarted, and the implementation reset was not resumed.`,
+        });
+        persistState();
+      } else {
+        journal.write("lifecycle", "discover-resume");
+        void resumeDiscoverRun(interrupted);
+      }
     }
 
     if (restartWhenIdle) {

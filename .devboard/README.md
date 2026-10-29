@@ -421,8 +421,9 @@ continues from its persisted record, re-spawning that record only while it is st
 and otherwise advancing to the next pending record; goal creation re-spawns `/goal-outcome`; a
 revision re-spawns the same prompt including its original guidance; skills preparation re-spawns
 `/prepare-skills` after restoring the same pre-run snapshot, so a resumed preparation that ends in
-failure restores the exact bytes captured before the original run. Restored activity is kept and
-new lines append. A pending lane or foreground question is replayed to every connecting client
+failure restores the exact bytes captured before the original run. A Discover crawl re-spawns
+`/discover` against the same host, or re-clones the stored remote project first, with its recorded
+activity kept as a prefix. Restored activity is kept and new lines append. A pending lane or foreground question is replayed to every connecting client
 after the restored activity; answering a restored question that the replacement peer has not
 re-issued is refused with `The question is no longer pending.` and the page updates without a
 reload. Before re-spawning a unit, the replacement ends any recorded ACP child of the killed
@@ -978,8 +979,9 @@ A Discover run is active work. While it runs, `startRun`, `startLifecycle`, `res
 tab switching, read-only commands, and `resetImplementation` stay available. While any Goal or
 Flow work is active, `discoverProject` is refused with one `discoverError` naming the active work.
 `restartServer` with `whenIdle: true` treats a Discover run as active and answers `upgradePending`,
-and an immediate restart ends the recorded child, removes staging, publishes nothing, sends one
-`discoverError` naming the interruption, sets the interrupted flag, and never auto-resumes.
+and an immediate restart ends the recorded child before it can publish. The replacement re-spawns
+the crawl against the same target with a fresh staging directory, so nothing from the killed crawl
+is published but the run itself survives the restart.
 `resetImplementation` cancels a run the same way and leaves `.omp/discover` and the Discover skills
 untouched because reset preserves `.omp`. Only one run exists at a time; a stopped or interrupted
 run leaves the previous artifacts readable, and a later start uses a fresh staging directory.
@@ -1045,13 +1047,14 @@ Durable state stores the active target as URL, owner, and repository only. A rep
 it only while `<owner>~<repo>` holds a readable `project.json` and both `.omp` trees, without a
 clone or a re-crawl; otherwise it starts on the host target, drops that one stored target, keeps
 every other retained entry, and sends one `discoverError` naming the missing project to the next
-client. Startup removes every `.staging-*` directory and any leftover directory containing `.git`,
-so a restart never resumes a run and never deletes a retained project. The one exception is a
-transient another live dashboard still claims: two dashboards may serve the same repository with
-one `STATE_DIR`, and a starting dashboard never deletes a checkout a running one owns. A restart
-during a remote crawl interrupts it as a host run does: the recorded child ends, the checkout's
-staging is removed, its retained snapshot stays, and nothing is published or resumed. A stopped
-dashboard removes its own checkout and claim.
+client. Startup removes every `.staging-*` directory and any leftover directory containing `.git`
+before a recorded run resumes, so the resumed crawl starts from a fresh checkout. The one exception
+is a transient another live dashboard still claims: two dashboards may serve the same repository
+with one `STATE_DIR`, and a starting dashboard never deletes a checkout a running one owns. A
+restart during a remote crawl ends the recorded child and keeps its retained snapshot; the
+replacement re-clones the project the stored run named — not whichever target is displayed — runs
+one crawl, and replaces the snapshot only on success. A stopped dashboard removes its own checkout
+and claim.
 
 The protocol adds `{ "type": "discoverRemote", "url": string }`,
 `{ "type": "switchDiscoverRemote", "url": string }`,
@@ -2113,7 +2116,10 @@ The client sends:
   if the acknowledgement was lost when the old process exited. With `"whenIdle": true`, a
   dashboard with active work answers `upgradePending` instead and restarts itself as soon as
   that work ends; an idle dashboard restarts immediately.
-- `saveGoal` replaces the goal document with `text` exactly as submitted and answers with the same text. A write failure leaves the file unchanged and answers with an `error`. It is accepted while the lifecycle is paused and refused while the lifecycle is advancing.
+- `saveGoal` replaces the goal document with `text` exactly as submitted and broadcasts a `goal`
+  frame carrying that text to every connected client; the saving client's own frame is its
+  confirmation. A write failure leaves the file unchanged and answers with an `error`. It is
+  accepted while the lifecycle is paused and refused while the lifecycle is advancing.
 - `startRun` without `file` starts the sequence with the lowest-numbered pending record.
 - `startRun` with `file` starts that record first only when it is pending; the sequence then
   continues with the lowest-numbered remaining pending records.

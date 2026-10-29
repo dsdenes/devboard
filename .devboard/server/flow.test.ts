@@ -370,6 +370,20 @@ function readSession(fixture: Fixture, id: string): Record<string, unknown> {
   ) as Record<string, unknown>;
 }
 
+/**
+ * Makes every atomic save under `directory` fail by occupying the temporary
+ * path the writer opens before it renames. A directory there cannot be opened
+ * for truncation, so a save either fails without touching its destination or
+ * proves that the destination was written in place.
+ */
+function failAtomicWrites(directory: string, names: string[]): () => void {
+  const blockers = names.map((name) => `${join(directory, name)}.${process.pid}.tmp`);
+  for (const blocker of blockers) mkdirSync(blocker, { recursive: true });
+  return () => {
+    for (const blocker of blockers) rmSync(blocker, { recursive: true, force: true });
+  };
+}
+
 async function createGoal(client: TestClient, fixture: Fixture): Promise<void> {
   client.send({ type: "createFlowGoal" });
   await client.waitFor((event) => event.type === "flowQuestion");
@@ -1933,6 +1947,82 @@ describe("Flow persistence and isolation", () => {
     expect(spawns(fixture).length).toBeGreaterThan(spawnsBefore);
     restored.send({ type: "stopFlowImplementation" });
     await restored.waitFor((event) => event.type === "flowStopped");
+    restored.close();
+  }, 90_000);
+
+  test("a failed Flow save leaves the previous session, goal, and decisions bytes intact", async () => {
+    const fixture = createFixture("save-failure");
+    const first = startServer(fixture, {
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-change",
+        "--flow-checkpoints=2",
+        "--flow-step-delay=5000",
+      ],
+    });
+    const client = await connect(first);
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "saveFlowDecisions", text: "# Board\n\nRun one.\n" });
+    await client.waitFor(
+      (event) => event.type === "flowDecisions" && String(event.text).includes("Run one."),
+    );
+    client.send({ type: "startFlowImplementation" });
+    await client.waitFor((event) => event.type === "flowImplementationStarted");
+    await waitUntil(
+      () => {
+        const checkpoints = latest(client, "flowCheckpoints")?.checkpoints as unknown[] | undefined;
+        return Array.isArray(checkpoints) && checkpoints.length > 0;
+      },
+      "the first checkpoint",
+    );
+    client.send({ type: "stopFlowImplementation" });
+    await client.waitFor((event) => event.type === "flowStopped");
+
+    const sessionId = sessionIds(fixture)[0] as string;
+    const directory = join(fixture.stateDir, "flow", journalKey(fixture.root), sessionId);
+    const files = ["session.json", "goal.md", "decisions.md"];
+    const before = files.map((name) => readFileSync(join(directory, name)));
+    expect(before[1]?.toString("utf8")).toBe(FLOW_GOAL);
+
+    const release = failAtomicWrites(directory, files);
+    try {
+      client.send({ type: "saveFlowGoal", text: "# Replaced by hand\n" });
+      client.send({ type: "saveFlowDecisions", text: "# Board\n\nRun two.\n" });
+      await client.waitFor(
+        (event) => event.type === "flowError" && String(event.message).includes("decision board"),
+      );
+      files.forEach((name, index) => {
+        expect(readFileSync(join(directory, name)).equals(before[index] as Buffer)).toBe(true);
+      });
+    } finally {
+      client.close();
+      first.server.stop(true);
+    }
+
+    // The interrupted saves left the last complete session restorable, even
+    // while the replacement's own restore write keeps failing.
+    const second = startServer(fixture, {
+      stub: ["--flow-goal", "--flow-implement", "--flow-change"],
+    });
+    const restored = await connect(second);
+    const snapshot = await restored.waitFor(
+      (event) => event.type === "flowSnapshot" && event.sessionId === sessionId,
+    );
+    expect(snapshot.goal).toBe(FLOW_GOAL);
+    expect(String(snapshot.decisions)).toContain("Run one.");
+    expect(String(snapshot.decisions)).not.toContain("Run two.");
+    expect(snapshot.status).toBe("stopped");
+
+    // Once the obstruction is gone the same controller writes again.
+    release();
+    restored.send({ type: "saveFlowDecisions", text: "# Board\n\nRun three.\n" });
+    await restored.waitFor(
+      (event) => event.type === "flowDecisions" && String(event.text).includes("Run three."),
+    );
+    expect(readFileSync(join(directory, "decisions.md"), "utf8")).toBe("# Board\n\nRun three.\n");
+    expect(readSession(fixture, sessionId).decisions).toBe("# Board\n\nRun three.\n");
     restored.close();
   }, 90_000);
 
