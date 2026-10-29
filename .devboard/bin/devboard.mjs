@@ -862,6 +862,14 @@ async function syncWrappers(host, harness, skip) {
   for (const name of ["commands", "extensions"]) {
     await syncTree(join(harness, "omp", name), join(host, ".omp", name), skip);
   }
+  const mcpSource = join(harness, "omp", "mcp.json");
+  const mcpTarget = join(host, ".omp", "mcp.json");
+  if (existsSync(mcpSource) && !(skip?.has(mcpTarget) ?? false)) {
+    await ensureFixedDirectory(join(host, ".omp"));
+    const current = lstatOrUndefined(mcpTarget);
+    if (current?.isSymbolicLink()) await unlink(mcpTarget);
+    await cp(mcpSource, mcpTarget);
+  }
 }
 
 async function syncAgents(host, harness, skip) {
@@ -893,7 +901,7 @@ async function ensureGitignore(host) {
     source = "";
   }
   const lines = source.split("\n");
-  const wanted = ["/.devboard", "/.omp/commands", "/.omp/extensions"];
+  const wanted = ["/.devboard", "/.omp/commands", "/.omp/extensions", "/.omp/mcp.json"];
   const missing = wanted.filter((entry) => !lines.includes(entry));
   if (missing.length === 0) return [];
   const prefix = source.length > 0 && !source.endsWith("\n") ? `${source}\n` : source;
@@ -1253,6 +1261,17 @@ function wrapperMismatches(host, harness) {
   const failures = [];
   const drift = [];
   const tracked = trackedPaths(host, [".omp/commands", ".omp/extensions"]);
+  const mcpSource = join(harness, "omp", "mcp.json");
+  const mcpTarget = join(host, ".omp", "mcp.json");
+  if (existsSync(mcpSource)) {
+    try {
+      if (!readFileSync(mcpSource).equals(readFileSync(mcpTarget))) {
+        failures.push(".omp/mcp.json differs from the installed package");
+      }
+    } catch {
+      failures.push(".omp/mcp.json is missing");
+    }
+  }
   for (const name of ["commands", "extensions"]) {
     const expectedRoot = join(harness, "omp", name);
     const actualRoot = join(host, ".omp", name);
@@ -1436,7 +1455,7 @@ const CHECKS = [
       if (drift.length > 0) {
         return `drift: preserved tracked paths (${drift.join(", ")})`;
       }
-      return "commands and extensions match the package";
+      return "commands, extensions, and mcp.json match the package";
     },
   },
   {

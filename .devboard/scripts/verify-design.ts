@@ -582,7 +582,12 @@ try {
   ].map((button) => button.getAttribute('data-testid') ?? ''))()`);
   check(
     JSON.stringify(sidebar) ===
-      JSON.stringify(["open-issues-scout", "open-issues-watchdog", "open-issues-design"]),
+      JSON.stringify([
+        "open-issues-scout",
+        "open-issues-watchdog",
+        "open-issues-design",
+        "open-issues-coach",
+      ]),
     "the Background agents order is wrong",
     sidebar,
   );

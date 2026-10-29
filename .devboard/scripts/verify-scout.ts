@@ -1027,7 +1027,7 @@ try {
     10_000,
   );
   check(
-    Array.isArray(agentFrame.agents) && agentFrame.agents.length === 3,
+    Array.isArray(agentFrame.agents) && agentFrame.agents.length === 4,
     "agentsState does not carry all background agents",
     agentFrame,
   );

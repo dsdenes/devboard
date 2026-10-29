@@ -912,7 +912,12 @@ describe("issues protocol", () => {
       );
       expect(issues?.repo).toBe("acme/fixture");
       expect(issues?.present).toBe(false);
-      expect(agentsFrame?.agents?.map((agent) => agent.id)).toEqual(["scout", "watchdog", "design"]);
+      expect(agentsFrame?.agents?.map((agent) => agent.id)).toEqual([
+        "scout",
+        "watchdog",
+        "design",
+        "coach",
+      ]);
     } finally {
       server.stop(true);
     }

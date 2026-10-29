@@ -43,6 +43,7 @@ import { originRepository } from "../issues/repository";
 import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
 import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
+import { CoachActivity, type CoachActivityOptions } from "./coach";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import {
   DISCOVER_SKILLS,
@@ -185,6 +186,11 @@ export interface AppOptions {
   >;
   /** Design System's test seams; production uses the detached worker itself. */
   design?: Pick<DesignBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
+  /** Coach's test seams; production reads its worker's state and ledger. */
+  coach?: Pick<
+    CoachActivityOptions,
+    "reader" | "now" | "intervalMs" | "staleAfterMs" | "preflight" | "spawnWorker"
+  >;
   /** Watchdog's test seams; production reads `gh` in the background. */
   watchdog?: Pick<
     WatchdogActivityOptions,
@@ -2295,6 +2301,7 @@ export function createApp(options: AppOptions) {
   const scoutDescriptor = agentRegistry.require("scout");
   const watchdogDescriptor = agentRegistry.require("watchdog");
   const designDescriptor = agentRegistry.require("design");
+  const coachDescriptor = agentRegistry.require("coach");
   const scout = new ScoutBridge({
     descriptor: scoutDescriptor,
     repoDir,
@@ -2364,10 +2371,37 @@ export function createApp(options: AppOptions) {
       : { spawnWorker: options.design.spawnWorker }),
   });
 
+  /**
+   * Coach reads the ACP transcripts and journal records already on disk,
+   * overlays the forge projection its caps count, and commands its detached
+   * worker. Opening the page never starts a cycle.
+   */
+  const coach = new CoachActivity({
+    descriptor: coachDescriptor,
+    repoDir,
+    stateDir,
+    harnessDir: runningHarnessDir(),
+    send: (event, except) => sendAll(event, except),
+    environment: process.env,
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.coach?.reader === undefined ? {} : { reader: options.coach.reader }),
+    ...(options.coach?.now === undefined ? {} : { now: options.coach.now }),
+    ...(options.coach?.intervalMs === undefined
+      ? {}
+      : { intervalMs: options.coach.intervalMs }),
+    ...(options.coach?.staleAfterMs === undefined
+      ? {}
+      : { staleAfterMs: options.coach.staleAfterMs }),
+    ...(options.coach?.preflight === undefined ? {} : { preflight: options.coach.preflight }),
+    ...(options.coach?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.coach.spawnWorker }),
+  });
+
   /** The shared control plane every background agent answers through. */
   const agents = new BackgroundAgentBridge({
     registry: agentRegistry,
-    adapters: [scout, watchdog, design],
+    adapters: [scout, watchdog, design, coach],
     broadcast: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });
