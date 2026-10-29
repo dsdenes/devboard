@@ -208,8 +208,8 @@
               {issues.draft.name}
             </span>
           </div>
-          <div class="issues-draft-detail__actions">
-            {#if status !== "idle"}
+          {#if status !== "idle"}
+            <div class="issues-draft-detail__actions">
               <span
                 class="badge"
                 data-tone={statusTone(status)}
@@ -217,29 +217,19 @@
               >
                 {status}
               </span>
-            {/if}
-            <Button
-              variant="default"
-              data-testid="issues-draft-start"
-              data-command="issues.draft.start"
-              disabled={running}
-              title={issues.draftStartBlocker(issues.draft.path) ?? "Start the elaboration agent"}
-              onclick={() => issues.startDraft()}
-            >
-              Start elaboration
-            </Button>
-            {#if running}
-              <Button
-                variant="ghost"
-                class="issues-draft-detail__stop"
-                data-testid="issues-draft-stop"
-                data-command="issues.draft.stop"
-                onclick={() => issues.stopDraft()}
-              >
-                Stop
-              </Button>
-            {/if}
-          </div>
+              {#if running}
+                <Button
+                  variant="ghost"
+                  class="issues-draft-detail__stop"
+                  data-testid="issues-draft-stop"
+                  data-command="issues.draft.stop"
+                  onclick={() => issues.stopDraft()}
+                >
+                  Stop
+                </Button>
+              {/if}
+            </div>
+          {/if}
         </div>
         <div class="issues-draft-detail__body">
           {#if error !== null}

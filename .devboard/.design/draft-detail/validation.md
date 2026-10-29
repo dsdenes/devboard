@@ -21,10 +21,11 @@
 - Review a draft: open the report-written draft, read the proposal before the marker, read the
   five captured facts, and the inline Visible text and DOM excerpt.
 - Read a draft without captured context: 001-question shows `No captured UI context.`.
-- Start, question, answer: start 001-question, see the question above the activity log, answer
-  an option, see the draft leave the list and the spec written.
-- Status scoping: while 001-question runs, 002-hang shows `idle`, not `running`.
-- Stop: start 002-hang, see `Stop`, stop it, see `stopped` and Start re-enabled.
+- Start, question, answer: start 001-question from its row, see the question above the
+  activity log, answer an option, see the draft leave the list and the spec written.
+- Status scoping: while 001-question runs, 002-hang shows `idle` and stays startable.
+- Stop: start 002-hang from its row, see `Stop`, stop it, see `stopped` and its row Start
+  re-enabled.
 - Refresh/reload: the report-panel write appears without reload; a reload restores the selected
   path.
 - Read refusal / vanished draft: the suite's refused-path and missing-file checks pass.
@@ -33,12 +34,12 @@
 
 | State | Evidence | Result |
 |---|---|---|
-| Idle with captured context, dark | `idle-dark-1440.png` | heading + path, idle badge, Start; proposal, five facts, inline evidence |
+| Idle with captured context, dark | `idle-dark-1440.png` | heading + path, idle badge; row Start; proposal, five facts, inline evidence |
 | Idle with captured context, light | `idle-light-1440.png` | same content; labels and borders hold in the light palette |
-| Question pending and running | `question-dark-1440.png` | warning question block above the proposal and log; disabled Start; quiet Stop; activity follows |
+| Question pending and running | `question-dark-1440.png` | warning question block above the proposal and log; disabled row Start; quiet Stop; activity follows |
 | Question pending at the floor | `question-dark-1024x720.png` | header fits, title truncates, no horizontal overflow |
 | No captured context | `verify:interface` assertion | `No captured UI context.` |
-| Stopped / failed | `verify:interface` assertions | `stopped` badge, Start re-enabled; error banner path covered |
+| Stopped / failed | `verify:interface` assertions | `stopped` badge, row Start re-enabled; error banner path covered |
 
 ## Dependent pages
 
