@@ -157,6 +157,22 @@ export function leafLines(value: unknown): string[] {
   return [String(value)];
 }
 
+/**
+ * A technology name without the version a crawl appended to it. The sheet
+ * records pinned versions in `runtime.versions`, so the Overview renders the
+ * stack and platform inventories by name alone (`PostgreSQL`, not
+ * `PostgreSQL 15`). A trailing token counts as a version only after
+ * whitespace, so `Log4j` and `HTTP/2` keep their names.
+ */
+export function technologyName(line: string): string {
+  const trimmed = line.trim();
+  const stripped = trimmed.replace(
+    /\s+v?\d+(?:\.\d+)*(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$/i,
+    "",
+  );
+  return stripped.length > 0 ? stripped : trimmed;
+}
+
 export function recordItems(leaf: Leaf | null | undefined): Array<Record<string, unknown>> {
   if (leaf === null || leaf === undefined || !Array.isArray(leaf.value)) return [];
   return leaf.value.filter(

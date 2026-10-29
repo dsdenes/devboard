@@ -783,14 +783,14 @@ most 240 characters; every value and list entry is a single line of at most 160 
 `dependencyMap.routes` entry keeps its leading `/` as part of the HTTP path; that slash is not an
 absolute host path. The
 sheet covers the short platform stack (languages, runtimes, package managers, frameworks, and
-major tools, not individual dependencies), customer-facing deployment (artifact class, artifact,
-target, and pipeline sources), every environment (at least `production`, whose purpose states how
-changes reach it), exact main commands (with `unknown` for an unobserved command), branching
-strategy and model, test levels and pyramid, architecture contexts and their directed dependencies
-plus boundaries, CI provider, triggers, jobs, and quality gates, and the three mandatory sections:
-runtime inventory, entry-point and dependency map, and delivery and versioning. It never guesses,
-invents an additional environment, copies README prose, or records a configuration value; a claim
-it cannot ground is `unknown`.
+major tools by name, not individual dependencies or version numbers), customer-facing deployment
+(artifact class, artifact, target, and pipeline sources), every environment (at least `production`,
+whose purpose states how changes reach it), exact main commands (with `unknown` for an unobserved
+command), branching strategy and model, test levels and pyramid, architecture contexts and their
+directed dependencies plus boundaries, CI provider, triggers, jobs, and quality gates, and the
+three mandatory sections: runtime inventory, entry-point and dependency map, and delivery and
+versioning. It never guesses, invents an additional environment, copies README prose, or records a
+configuration value; a claim it cannot ground is `unknown`.
 
 Main commands render as a two-column `Task`/`Command` table of the observed commands, `$`-prefixed,
 with no header row, under an `N of 8 commands found` count. That count is a disclosure
@@ -826,10 +826,12 @@ with no external system shows `None detected.` in that block instead of an inven
 `unknown`.
 `Stack` renders one full-width chip band after the two columns; a chip whose package is installed
 under `node_modules/` becomes a link to the repository its manifest declares, and every other chip
-stays plain text. Environments is `unknown` here and is not listed. The delivery section, the
-deployment pipeline sources, and the runtime `versions` fact stay hidden because they repeat other
-facts. A sheet with no observed test level and a glossary with no matching term keep an explicit
-empty state.
+stays plain text. Stack chips and the Platform `languages` and `runtimes` facts name the
+technology without a version number, so a recorded `PostgreSQL 15` renders as `PostgreSQL` and a
+duplicate name collapses to one chip; the sheet's stored values stay unchanged. Environments is
+`unknown` here and is not listed. The delivery section, the deployment pipeline sources, and the
+runtime `versions` fact stay hidden. A sheet with no observed test level and a glossary with no
+matching term keep an explicit empty state.
 
 The Glossary page and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
 document per bounded context named `<bounded-context>.glossary.yaml`, top-level `boundedContext`,
