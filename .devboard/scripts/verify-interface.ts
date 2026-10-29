@@ -1717,23 +1717,36 @@ try {
   const sidebarToggle = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar-toggle"]') !== null`);
   check(!sidebarToggle, "the sidebar still renders a hide control");
 
-  // 4b. Providers: indicator, dialog, exactly two providers, masked keys,
+  // 4b. Providers: dialog, exactly two providers, masked keys,
   // usage rows, validation, edit, enable, delete, refresh, palette entry,
   // and focus trapping.
-  await page.wait(
-    `document.querySelector('[data-testid="providers-indicator"]')?.textContent?.includes("OpenCode Go") === true`,
-    "the provider indicator to show the selection",
-  );
-  const providerIndicator = await page.eval<string>(
-    `document.querySelector('[data-testid="providers-indicator"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? ""`,
-  );
+  const statusLeft = await page.eval<{ items: string[]; indicator: boolean }>(`(() => {
+    const group = document.querySelectorAll('[data-testid="status-bar"] .status-group')[0];
+    return {
+      items: group === undefined ? [] : [...group.querySelectorAll(".status-item")].map((item) => item.textContent?.replace(/\\s+/g, " ").trim() ?? ""),
+      indicator: document.querySelector('[data-testid="providers-indicator"]') !== null,
+    };
+  })()`);
   check(
-    providerIndicator.includes("OpenCode Go") && providerIndicator.includes("70%"),
-    "the indicator does not show the selection and lowest remaining percentage",
-    providerIndicator,
+    statusLeft.items.length === 2 &&
+      statusLeft.items[0]?.includes("Connected") &&
+      statusLeft.items[1]?.includes("host"),
+    "the status bar left group holds more than the connection and the project",
+    statusLeft,
   );
+  check(!statusLeft.indicator, "the status bar still renders a providers indicator", statusLeft);
 
-  await page.click('[data-testid="providers-indicator"]');
+  await page.key("k", 2);
+  await page.wait(
+    `document.querySelector('[data-testid="command-palette"]') !== null`,
+    "the palette for Providers",
+  );
+  await page.fill('[data-testid="command-palette-input"]', "Providers");
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="command-item"]')].some((item) => item.getAttribute("data-command") === "settings.providers")`,
+    "the Providers palette entry",
+  );
+  await page.key("Enter");
   await page.wait(
     `document.querySelector('[data-testid="providers-dialog"]') !== null`,
     "the providers dialog",
