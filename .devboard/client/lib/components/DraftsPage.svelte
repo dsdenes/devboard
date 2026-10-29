@@ -261,7 +261,6 @@
                 inputTestid="issues-draft-answer-input"
                 submitTestid="issues-draft-answer-submit"
                 command="issues.draft.answer"
-                headingLevel={4}
               />
             </section>
           {/if}
