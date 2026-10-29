@@ -1351,7 +1351,7 @@ statement and has no effect.
 When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout section also renders
 `agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
 `agent-prompt-chat-log`, `agent-prompt-message`, and `agent-prompt-send`, and
-`agent-prompt-save`/`agent-prompt-reset`. In every other host those four controls are absent and
+`agent-prompt-save`. In every other host those three controls are absent and
 `saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action requires
 a harness source checkout; no file changes.
 
@@ -1359,8 +1359,7 @@ a harness source checkout; no file changes.
 `.devboard/prompts/scout-recommendations.md` under the served checkout, adds nothing, strips
 nothing, and writes no other file; success shows `agent-prompt-notice` and a refreshed
 `agent-prompt-text`, and failure shows `agent-prompt-error` with the file unchanged. Only that
-click writes the file. `agent-prompt-reset` discards unsaved editor text and restores the current
-file bytes without writing. A chat turn posts over the WebSocket, streams the reply into
+click writes the file. A chat turn posts over the WebSocket, streams the reply into
 `agent-prompt-chat-log`, and puts a proposed complete prompt in the editor without any copy; it
 writes no file, creates no scan, files no issue, and changes no Auto Scout state. A failed turn
 shows `agent-prompt-chat-error` and leaves the editor and file untouched. The chat agent reads
@@ -2779,9 +2778,9 @@ persisted settings, and the prompt section: every page renders
 `agent-prompt` directly after `agent-header`; Auto Scout shows the complete instruction text;
 Watchdog shows `agent-prompt-absent`; an installed host is read-only and
 refuses a save with an error while its prompt file stays byte-identical; a source-checkout fixture
-renders the editor, chat, save, and reset, one chat turn streams a reply and changes the editor
+renders the editor, chat, and save, one chat turn streams a reply and changes the editor
 with the file untouched, Save makes the file byte-equal to the editor and a reload renders those
-bytes, and Reset restores the file bytes.
+bytes.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

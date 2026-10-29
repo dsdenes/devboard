@@ -147,11 +147,6 @@ export class AgentsStore {
     connection.send({ type: "sendAgentPromptChat", id, message, text });
   }
 
-  /** Reset is local: it discards the editor text and writes nothing. */
-  resetPrompt(id: string): void {
-    this.promptProposal[id] = null;
-  }
-
   handleEvent(message: Record<string, unknown>): void {
     if (message.type === "agentPromptState" && typeof message.id === "string") {
       const prompt = message.prompt as AgentPromptState | null;
