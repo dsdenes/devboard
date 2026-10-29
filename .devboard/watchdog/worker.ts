@@ -142,21 +142,16 @@ async function main(): Promise<void> {
       case "stop":
         requestStop();
         return;
-      case "limits":
+      case "settings":
         settings = {
           ...settings,
+          intervalMinutes: command.intervalMinutes,
           maxPerHour: command.maxPerHour,
           maxPending: command.maxPending,
         };
         writeWatchdogSettings(stateDir, settings);
-        notice = "Limits saved.";
-        publish("running", true);
-        return;
-      case "cadence":
-        settings = { ...settings, intervalMinutes: command.intervalMinutes };
-        writeWatchdogSettings(stateDir, settings);
         recomputeNext();
-        notice = `Cadence saved: every ${command.intervalMinutes} minute(s).`;
+        notice = `Settings saved: every ${command.intervalMinutes} minute(s).`;
         publish("running", true);
         return;
     }

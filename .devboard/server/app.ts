@@ -573,8 +573,13 @@ type ClientMessage =
   | { type: "getAgent"; id?: unknown }
   | { type: "startAgent"; id?: unknown }
   | { type: "stopAgent"; id?: unknown }
-  | { type: "setAgentLimits"; id?: unknown; maxPerHour?: unknown; maxPending?: unknown }
-  | { type: "setAgentCadence"; id?: unknown; minutes?: unknown }
+  | {
+      type: "setAgentSettings";
+      id?: unknown;
+      minutes?: unknown;
+      maxPerHour?: unknown;
+      maxPending?: unknown;
+    }
   | { type: "disableAgentTimer"; id?: unknown }
   | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
@@ -635,8 +640,7 @@ function isAgentCommand(
     command.type === "getAgent" ||
     command.type === "startAgent" ||
     command.type === "stopAgent" ||
-    command.type === "setAgentLimits" ||
-    command.type === "setAgentCadence" ||
+    command.type === "setAgentSettings" ||
     command.type === "disableAgentTimer"
   );
 }
@@ -698,18 +702,13 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "startAgent", id: "id" in value ? value.id : undefined };
     case "stopAgent":
       return { type: "stopAgent", id: "id" in value ? value.id : undefined };
-    case "setAgentLimits":
+    case "setAgentSettings":
       return {
-        type: "setAgentLimits",
-        id: "id" in value ? value.id : undefined,
-        maxPerHour: "maxPerHour" in value ? value.maxPerHour : undefined,
-        maxPending: "maxPending" in value ? value.maxPending : undefined,
-      };
-    case "setAgentCadence":
-      return {
-        type: "setAgentCadence",
+        type: "setAgentSettings",
         id: "id" in value ? value.id : undefined,
         minutes: "minutes" in value ? value.minutes : undefined,
+        maxPerHour: "maxPerHour" in value ? value.maxPerHour : undefined,
+        maxPending: "maxPending" in value ? value.maxPending : undefined,
       };
     case "disableAgentTimer":
       return { type: "disableAgentTimer", id: "id" in value ? value.id : undefined };

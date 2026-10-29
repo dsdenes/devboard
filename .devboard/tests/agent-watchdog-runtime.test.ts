@@ -235,8 +235,10 @@ describe("detached watchdog worker", () => {
       }, "the worker to publish running");
       const pid = running.pid;
       writeWatchdogCommand(controlDirectory(directory), {
-        type: "cadence",
+        type: "settings",
         intervalMinutes: 30,
+        maxPerHour: null,
+        maxPending: null,
       });
       const changed = await waitFor(() => {
         const state = readJson(workerStatePath(directory));

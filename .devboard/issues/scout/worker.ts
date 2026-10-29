@@ -484,10 +484,15 @@ export class ScoutWorker {
         await this.stop();
         return;
       }
-      case "limits": {
-        if (!isValidLimit(command.maxPerHour) || !isValidLimit(command.maxPending)) {
+      case "settings": {
+        if (
+          !isValidCadence(command.intervalMinutes) ||
+          !isValidLimit(command.maxPerHour) ||
+          !isValidLimit(command.maxPending)
+        ) {
           this.state.lastError =
-            "Auto Scout limits must be empty or integers from 1 through 100.";
+            "Auto Scout settings must use a 1 through 1440 minute cadence and " +
+            "empty or 1 through 100 limits.";
           this.publish();
           return;
         }
@@ -495,25 +500,13 @@ export class ScoutWorker {
           maxPerHour: command.maxPerHour,
           maxPending: command.maxPending,
         };
-        this.persistSettings();
-        this.state.lastError = null;
-        this.state.notice =
-          `Limits saved: ${limitLabel(this.state.limits.maxPerHour)} per hour, ` +
-          `${limitLabel(this.state.limits.maxPending)} open.`;
-        this.state.nextAttemptAt = null;
-        this.publish();
-        return;
-      }
-      case "cadence": {
-        if (!isValidCadence(command.intervalMinutes)) {
-          this.state.lastError = "Auto Scout cadence must be 1 through 1440 minutes.";
-          this.publish();
-          return;
-        }
         this.state.intervalMinutes = command.intervalMinutes;
         this.persistSettings();
         this.state.lastError = null;
-        this.state.notice = `Cadence saved: every ${command.intervalMinutes} minute(s).`;
+        this.state.notice =
+          `Settings saved: every ${command.intervalMinutes} minute(s), ` +
+          `${limitLabel(this.state.limits.maxPerHour)} per hour, ` +
+          `${limitLabel(this.state.limits.maxPending)} open.`;
         this.state.nextAttemptAt = null;
         this.publish();
         return;

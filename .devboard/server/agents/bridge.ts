@@ -26,8 +26,13 @@ export type AgentCommand =
   | { type: "getAgent"; id?: unknown }
   | { type: "startAgent"; id?: unknown }
   | { type: "stopAgent"; id?: unknown }
-  | { type: "setAgentLimits"; id?: unknown; maxPerHour?: unknown; maxPending?: unknown }
-  | { type: "setAgentCadence"; id?: unknown; minutes?: unknown }
+  | {
+      type: "setAgentSettings";
+      id?: unknown;
+      minutes?: unknown;
+      maxPerHour?: unknown;
+      maxPending?: unknown;
+    }
   | { type: "disableAgentTimer"; id?: unknown };
 
 /**
@@ -212,12 +217,12 @@ export class BackgroundAgentBridge {
       this.finish(target, command.id, adapter.stop());
       return;
     }
-    if (command.type === "setAgentLimits") {
-      this.finish(target, command.id, adapter.setLimits(command.maxPerHour, command.maxPending));
-      return;
-    }
-    if (command.type === "setAgentCadence") {
-      this.finish(target, command.id, adapter.setCadence(command.minutes));
+    if (command.type === "setAgentSettings") {
+      this.finish(
+        target,
+        command.id,
+        adapter.setSettings(command.minutes, command.maxPerHour, command.maxPending),
+      );
       return;
     }
     if (command.type === "disableAgentTimer") {

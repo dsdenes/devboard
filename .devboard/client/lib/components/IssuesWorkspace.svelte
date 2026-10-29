@@ -40,7 +40,6 @@
                 : "overview",
   );
 
-  const runCount = $derived(issues.runs.length);
   const queueState = $derived(queueCounts(issues.queue));
   const agents = $derived(issues.agents);
   const asking = $derived(agents.filter((agent) => agent.question !== null).length);
@@ -222,10 +221,6 @@
               <dd class="mono" data-testid="issues-cooldowns">
                 {issues.cooldownCount} cooling · earliest {issues.earliestCooldown ?? "none"}
               </dd>
-            </div>
-            <div>
-              <dt>Runs</dt>
-              <dd>{runCount} kept</dd>
             </div>
           </dl>
           {#if issues.notice !== null}
