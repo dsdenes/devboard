@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { configuredGiteaToken, giteaBaseUrl } from "../../lib/forge";
 import {
   GiteaError,
+  giteaCreateLabel,
   giteaLabels,
   giteaRepository,
   type FetchLike,
@@ -10,14 +11,15 @@ import {
 import { ghCommand } from "../scout/preflight";
 import { findOnPath, originForge, rootProblem } from "../repository";
 import type { ForgeRemote } from "../../lib/forge";
-import { DESIGN_LABEL, type DesignConfig } from "./paths";
+import { DESIGN_LABEL, LABEL_COLOR, LABEL_DESCRIPTION, type DesignConfig } from "./paths";
 
 /**
  * Everything Start proves before it spawns the design worker: the canonical
  * source checkout carries the interface and both documents, the origin is a
- * supported forge with a write-capable account, the `design` label exists, and
- * every tool the autonomous release path needs is present. A refusal names the
- * missing fact, spawns no worker, and writes no state.
+ * supported forge with a write-capable account, the `design` label is present
+ * (created when the repository lacks it), and every tool the autonomous release
+ * path needs is present. A refusal names the missing fact, spawns no worker,
+ * and writes no state.
  */
 
 export type DesignPreflightResult = { ok: true; repository: string } | { ok: false; message: string };
@@ -139,12 +141,30 @@ export async function preflightDesign(options: DesignPreflightOptions): Promise<
             `missing prerequisite: the Gitea token cannot write to ${repository} on ${baseUrl}`,
         };
       }
-      const labels = await giteaLabels({ baseUrl, project: repository, token }, options.giteaFetch);
+      const target = { baseUrl, project: repository, token };
+      const labels = await giteaLabels(target, options.giteaFetch);
       if (!labels.some((label) => label.name === DESIGN_LABEL)) {
-        return {
-          ok: false,
-          message: `missing prerequisite: ${repository} has no exact "${DESIGN_LABEL}" label`,
-        };
+        try {
+          await giteaCreateLabel(
+            target,
+            DESIGN_LABEL,
+            LABEL_COLOR,
+            LABEL_DESCRIPTION,
+            options.giteaFetch,
+          );
+        } catch (error) {
+          // Another dashboard may have created it between the read and the write.
+          const after = await giteaLabels(target, options.giteaFetch);
+          if (!after.some((label) => label.name === DESIGN_LABEL)) {
+            const detail = error instanceof GiteaError ? error.message : String(error);
+            return {
+              ok: false,
+              message:
+                `missing prerequisite: the "${DESIGN_LABEL}" label could not be created in ` +
+                `${repository}: ${detail}`,
+            };
+          }
+        }
       }
     } catch (error) {
       const detail = error instanceof GiteaError ? error.message : String(error);
@@ -172,10 +192,26 @@ export async function preflightDesign(options: DesignPreflightOptions): Promise<
   }
   const label = await execute(["api", `repos/${repository}/labels/${DESIGN_LABEL}`, "--jq", ".name"]);
   if (label.code !== 0 || label.stdout.trim() !== DESIGN_LABEL) {
-    return {
-      ok: false,
-      message: `missing prerequisite: ${repository} has no exact "${DESIGN_LABEL}" label`,
-    };
+    const created = await execute([
+      "label",
+      "create",
+      DESIGN_LABEL,
+      "--repo",
+      repository,
+      "--color",
+      LABEL_COLOR,
+      "--description",
+      LABEL_DESCRIPTION,
+      "--force",
+    ]);
+    if (created.code !== 0) {
+      return {
+        ok: false,
+        message:
+          `missing prerequisite: the "${DESIGN_LABEL}" label could not be created in ` +
+          `${repository}: ${firstLine(created.stderr) ?? `gh exited with code ${created.code}`}`,
+      };
+    }
   }
   return { ok: true, repository };
 }
