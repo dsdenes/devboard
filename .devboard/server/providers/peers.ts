@@ -8,6 +8,7 @@ import {
   type PeerBinding,
 } from "./selection";
 import { ProviderService } from "./service";
+import { readSelectionSnapshot } from "./snapshot";
 
 /**
  * The one generated peer binding every ACP role that spends model prose uses.
@@ -53,6 +54,13 @@ export function openCodePeerBindings(
         `${options.subject} needs an enabled OpenCode Go subscription; add one in the ` +
         "Providers dialog (settings.providers)",
     };
+  }
+  // The dashboard's last selection leads, when it still names an enabled key;
+  // a detached worker follows the same subscription the status bar reports.
+  const snapshot = readSelectionSnapshot(stateDir);
+  if (snapshot?.provider === "opencode-go") {
+    const preferred = candidates.findIndex((entry) => entry.id === snapshot.subscriptionId);
+    if (preferred > 0) candidates.unshift(candidates.splice(preferred, 1)[0]!);
   }
   const fallback = subscriptions.find(
     (entry) => entry.provider === "openrouter" && entry.enabled,
