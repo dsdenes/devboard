@@ -1,10 +1,16 @@
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  constants as fsConstants,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
+  readlinkSync,
   renameSync,
   rmdirSync,
   rmSync,
@@ -692,7 +698,7 @@ function hostFiles(repoDir: string): string[] {
       if (entry === "node_modules" || entry === ".git") continue;
       let stats;
       try {
-        stats = statSync(absolute);
+        stats = lstatSync(absolute);
       } catch {
         continue;
       }
@@ -709,26 +715,150 @@ function contentHash(bytes: Buffer): string {
 }
 
 /**
+ * How much of one regular file enters the hash at a time. The fingerprint never
+ * holds a file in memory, so its largest allocation does not grow with the
+ * largest host file.
+ */
+const FINGERPRINT_CHUNK = 256 * 1024;
+
+/** One stat signature and digest per file; bounded so a huge host cannot grow it without limit. */
+const FINGERPRINT_CACHE_MAX = 65536;
+
+interface FileDigest {
+  /** `lstat` facts that prove the cached digest is current. */
+  signature: string;
+  digest: string;
+}
+
+interface FingerprintDigest {
+  /** The listing signature that produced the aggregate fingerprint. */
+  signature: string;
+  fingerprint: string;
+}
+
+interface HostEntry {
+  path: string;
+  absolute: string;
+  /** `lstat` facts that change whenever the entry or its link target may have. */
+  signature: string;
+  kind: "file" | "symlink" | "special" | "missing";
+  mode: number;
+}
+
+const fileDigests = new Map<string, FileDigest>();
+const fingerprints = new Map<string, FingerprintDigest>();
+
+/** One host entry's stat facts, taken without following a symlink or opening it. */
+function hostEntry(repoDir: string, path: string): HostEntry {
+  const absolute = join(repoDir, path);
+  try {
+    const stats = lstatSync(absolute);
+    const signature = [stats.mode, stats.size, stats.mtimeMs, stats.ctimeMs, stats.ino].join(":");
+    const kind = stats.isFile() ? "file" : stats.isSymbolicLink() ? "symlink" : "special";
+    return { path, absolute, signature, kind, mode: stats.mode };
+  } catch {
+    return { path, absolute, signature: "missing", kind: "missing", mode: 0 };
+  }
+}
+
+/**
+ * The digest of one host entry, read only when its stat signature changed.
+ *
+ * A symlink contributes its target string and any other non-regular entry a
+ * type marker: a FIFO, a device, or a symlink to one is never opened, so it can
+ * neither block the read nor stream an unbounded device into the hash.
+ */
+function entryDigest(entry: HostEntry): string {
+  const cached = fileDigests.get(entry.absolute);
+  if (cached !== undefined && cached.signature === entry.signature) return cached.digest;
+  let digest: string;
+  if (entry.kind === "file") {
+    try {
+      digest = streamedContentHash(entry.absolute);
+    } catch {
+      digest = "unreadable";
+    }
+  } else if (entry.kind === "symlink") {
+    let target: string;
+    try {
+      target = readlinkSync(entry.absolute);
+    } catch {
+      target = "unreadable";
+    }
+    digest = contentHash(Buffer.from(`symlink\u0000${target}`));
+  } else if (entry.kind === "special") {
+    digest = contentHash(Buffer.from(`special\u0000${entry.mode}`));
+  } else {
+    digest = "unreadable";
+  }
+  if (fileDigests.size >= FINGERPRINT_CACHE_MAX) {
+    const oldest = fileDigests.keys().next().value;
+    if (oldest !== undefined) fileDigests.delete(oldest);
+  }
+  fileDigests.set(entry.absolute, { signature: entry.signature, digest });
+  return digest;
+}
+
+/**
+ * A regular file's content digest, read in fixed-size chunks. `O_NONBLOCK`
+ * covers the entry being replaced by a FIFO between `lstat` and `open`, so a
+ * race can fail the read but never wait on it.
+ */
+function streamedContentHash(absolute: string): string {
+  const digest = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(FINGERPRINT_CHUNK);
+  const handle = openSync(absolute, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+  try {
+    for (;;) {
+      const read = readSync(handle, buffer, 0, buffer.length, null);
+      if (read <= 0) break;
+      digest.update(buffer.subarray(0, read));
+    }
+  } finally {
+    closeSync(handle);
+  }
+  return digest.digest("hex");
+}
+
+/**
  * The host fingerprint: `HEAD`, plus the content of every tracked and untracked
  * non-ignored file outside the excluded directories. Two runs on an unchanged
  * host produce one fingerprint.
+ *
+ * The file part is cached: one digest per entry, keyed by its path and stat
+ * signature, plus the aggregate fingerprint keyed by the whole listing. A
+ * refresh on an unchanged host reads no file content and rehashes nothing; only
+ * a listing change or a changed entry's stats invalidate the aggregate.
  */
 export function hostFacts(repoDir: string): HostFacts {
-  const digest = createHash("sha256");
-  for (const path of hostFiles(repoDir)) {
-    digest.update(path);
-    digest.update("\u0000");
-    try {
-      digest.update(contentHash(readFileSync(join(repoDir, path))));
-    } catch {
-      digest.update("unreadable");
+  const entries = hostFiles(repoDir).map((path) => hostEntry(repoDir, path));
+  const listing = createHash("sha256");
+  for (const entry of entries) {
+    listing.update(entry.path);
+    listing.update("\u0000");
+    listing.update(entry.signature);
+    listing.update("\u0000");
+  }
+  const signature = listing.digest("hex");
+  const cached = fingerprints.get(repoDir);
+  let fingerprint: string;
+  if (cached !== undefined && cached.signature === signature) {
+    fingerprint = cached.fingerprint;
+  } else {
+    const digest = createHash("sha256");
+    for (const entry of entries) {
+      digest.update(entry.path);
+      digest.update("\u0000");
+      digest.update(entryDigest(entry));
+      digest.update("\u0000");
     }
-    digest.update("\u0000");
+    fingerprint = digest.digest("hex");
+    fingerprints.set(repoDir, { signature, fingerprint });
   }
   const commit = (gitOutput(repoDir, ["rev-parse", "--short=7", "HEAD"]) ?? "").trim();
   const status = gitOutput(repoDir, ["status", "--porcelain", "--untracked-files=all"]);
   return {
-    fingerprint: digest.digest("hex"),
+    fingerprint,
     commit,
     dirty: status === undefined ? false : dirtyLines(status).length > 0,
   };
