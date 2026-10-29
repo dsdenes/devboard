@@ -240,6 +240,7 @@ export class AcpConnection {
   readonly #argv: string[];
   #nextRequestId = 1;
   #closed = false;
+  #closing = false;
   #sessionId: string | undefined;
   #activityStream: ActivityStream | undefined;
 
@@ -347,6 +348,7 @@ export class AcpConnection {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#closing = true;
     try {
       // A stopped child does not process SIGTERM until it runs again.
       this.#process.kill("SIGCONT");
@@ -397,7 +399,10 @@ export class AcpConnection {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
-        if (text.length > 0) this.#options.onStderr?.(text);
+        // A peer this process terminates reports its own shutdown on stderr.
+        // That notice is a consequence of the close, not evidence of a fault,
+        // so an owner must never journal it as an ACP failure.
+        if (text.length > 0 && !this.#closing) this.#options.onStderr?.(text);
       }
     } catch {
       // stderr is diagnostic only.
