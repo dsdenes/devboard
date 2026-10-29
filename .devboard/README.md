@@ -2130,13 +2130,15 @@ refused with a visible error, and nothing outside the directory is read. The lis
 symlinks.
 
 Every draft may elaborate at the same time; there is no concurrency cap beyond the repository's
-own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND` in `REPO_DIR`,
-opens one session, and sends exactly `/goal-draft <repository-relative path>`. Each path has at
-most one live peer: a start for a path already running is refused with
-`This draft is being elaborated.` and starts no second peer. While a draft runs, only its own row
-shows the disabled start control, whose title is `This draft is being elaborated.`; every other
-draft stays startable. Each peer's activity
-streams only into its own run's `issues-draft-activity`, its `ask` question renders only for that
+own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND --no-skills` in
+`REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-relative path>`. The
+elaboration reads the repository directly and names no skill, so the flag keeps OMP from
+discovering the host's skills; their background description compression would otherwise log a
+warning the watchdog files. Each path has at most one live peer: a start for a path already
+running is refused with `This draft is being elaborated.` and starts no second peer. While a draft
+runs, only its own row shows the disabled start control, whose title is
+`This draft is being elaborated.`; every other draft stays startable. Each peer's activity streams
+only into its own run's `issues-draft-activity`, its `ask` question renders only for that
 draft, and an answer goes only to the addressed draft's peer; an answer for a draft with no
 pending question is refused without reaching any peer. Stop closes only the selected draft's peer,
 records `stopped`, keeps that draft, and leaves every other elaboration running. A successful or
@@ -2339,11 +2341,13 @@ context to `POST /api/goal-proposals`; the server writes one Markdown draft unde
 `201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
-The file name is chosen by one bounded naming turn: an ACP peer starts with `AGENT_COMMAND` in
-`REPO_DIR`, receives the operator report marked as data with a read-only instruction, and must
-answer with only a lowercase kebab-case slug, at most six hyphen-separated words, `[a-z0-9-]`, and
-at most 64 characters. A start failure, an exited peer, a question, a 15-second timeout, or an
-unusable answer falls back to the report's first non-empty line, lowercased, with every run of
+The file name is chosen by one bounded naming turn: an ACP peer starts with
+`AGENT_COMMAND --no-skills` in `REPO_DIR`, receives the operator report marked as data with a
+read-only instruction, and must answer with only a lowercase kebab-case slug, at most six
+hyphen-separated words, `[a-z0-9-]`, and at most 64 characters. A naming turn reads no skill, so
+the flag also keeps OMP's background description compression from logging a warning the watchdog
+files. A start failure, an exited peer, a question, a 15-second timeout, or an unusable answer
+falls back to the report's first non-empty line, lowercased, with every run of
 non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
 hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
 exclusive create, so the first draft is never overwritten. The body opens with
