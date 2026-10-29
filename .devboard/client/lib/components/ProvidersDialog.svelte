@@ -288,7 +288,7 @@
     display: flex;
     flex-direction: column;
     font-size: 11px;
-    gap: 3px;
+    gap: 4px;
   }
 
   .providers-field--key {
@@ -330,8 +330,8 @@
     border-radius: 4px;
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    padding: 7px 8px;
+    gap: 6px;
+    padding: 8px;
   }
 
   .provider-row__head {
