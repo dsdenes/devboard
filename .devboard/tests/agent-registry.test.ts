@@ -148,6 +148,7 @@ describe("background agent registry", () => {
     expect(design.cadence.defaultMinutes).toBe(60);
     expect(design.limits.default).toEqual({ maxPerHour: 10, maxPending: 5 });
     expect(design.detail.panel).toBe("activity");
+    expect(design.documentation).toEqual({ testId: "agent-documentation" });
     expect(design.tab).toEqual({ id: "design", kind: "design", title: "Design System" });
     expect(design.prompt).toEqual({
       kind: "file",
@@ -201,6 +202,31 @@ describe("background agent registry", () => {
     expect(projected.id).toBe("patrol");
     expect(projected.label).toBe("Patrol");
     expect(projected.lifecycle).toBe("running");
+  });
+
+  test("projects only the declared documentation history, bounded and in order", () => {
+    const design = agentRegistry.require("design");
+    const entries = Array.from({ length: 25 }, (_, index) => ({
+      at: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+      version: `0.1.${index}`,
+      url: `https://example.test/releases/tag/v0.1.${index}`,
+      summary: `Change ${index}`,
+      files: ["DESIGN.md"],
+      diff: `+change ${index}`,
+    }));
+    const projected = projectAgentSnapshot(design, {
+      ...snapshotInput(design),
+      detail: { panel: "activity", scanId: null, entries: [] },
+      documentation: entries,
+    });
+    expect(projected.documentation).toHaveLength(20);
+    expect(projected.documentation[0]?.summary).toBe("Change 0");
+    expect(projected.documentation[19]?.version).toBe("0.1.19");
+    const patrol = projectAgentSnapshot(
+      syntheticDescriptor(),
+      snapshotInput(syntheticDescriptor()),
+    );
+    expect(patrol.documentation).toEqual([]);
   });
 
   test("the shared sort puts filedAt newest first and breaks ties by URL", () => {

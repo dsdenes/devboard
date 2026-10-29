@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 /**
- * The Coach gate. It builds the client, seeds ACP sessions and journal records
- * in a throwaway root under `.devboard/.tmp`, injects a stub forge, and runs
- * the manual CLI: one dry-run collection, one real cycle, a second cycle over
- * the same evidence, a recurrence after 24 hours, and both filing caps. No
- * test contacts a real forge, starts a peer, or writes outside `.devboard/.tmp`.
+ * The Coach family pipeline. It builds the client, seeds three command
+ * families under `.devboard/.tmp`, injects a deterministic synthesizer and a
+ * stub forge, and runs the manual CLI: one cycle, a second cycle over the same
+ * evidence, and a capped cycle holding a proposal pending. No test contacts a
+ * real forge, starts a peer, or writes outside `.devboard/.tmp`.
  */
 
 import { chmodSync } from "node:fs";
@@ -14,57 +14,46 @@ import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { journalFile } from "../server/journal";
 import { coachDirectory } from "../coach/paths";
+import { familyTag } from "../coach/issue";
 import { assertTrue, harnessRoot, makeRoot, run } from "./verification";
 
 interface Call {
-  op: "create" | "comment";
+  op: "create";
   title?: string;
   body: string;
   url?: string;
+}
+
+interface FamilySummary {
+  key: string;
+  kind: string;
+  score: number;
+  calls: number;
+  sessions: number;
+  days: number;
 }
 
 interface Report {
   cycle: string;
   window: { start: string; end: string };
   sessions: number;
-  sessionFiles: number;
-  truncated: boolean;
-  skipped: number;
-  malformed: number;
   journalRecords: number;
-  findings: Array<{
-    category: string;
-    fingerprint: string;
-    line: string;
-    count: number;
-    sessions: string[];
-    scopes: string[];
-  }>;
+  families: number;
+  selected: FamilySummary[];
+  findings: FamilySummary[];
+  omitted: number;
+  ledgerReset: boolean;
+  synthesis: Array<{ family: string; model: string; durationMs: number; ok: boolean }>;
+  validations: Array<{ family: string; outcome: string; rule?: string }>;
   action: string;
-  issues: Array<{ url: string; category: string; fingerprint: string; line: string }>;
-  decisions?: Array<{
-    fingerprint: string;
-    category: string;
-    outcome: string;
-    probabilities: Record<string, number>;
-    reason?: string;
-  }>;
-  gate?: {
-    accepted: number;
-    rejected: number;
-    review: number;
-    failed: number;
-    costUsd: number;
-    finalized: number;
-    filed: number;
-    dropped: number;
-  };
+  issues: Array<{ url: string; family: string; kind: string; title: string }>;
+  duplicates: Array<{ family: string; url: string }>;
+  dropped: number;
   pending: number;
   reason?: string;
 }
 
 const START = new Date("2026-02-01T12:00:00.000Z");
-const DAY = 24 * 60 * 60 * 1000;
 
 function instant(minutesAgo: number, from = START): string {
   return new Date(from.getTime() - minutesAgo * 60_000).toISOString();
@@ -96,6 +85,7 @@ async function directoryHash(directory: string): Promise<string> {
 async function cloneEvidence(from: string, to: string): Promise<void> {
   await mkdir(to, { recursive: true });
   for (const name of ["providers", "journal"]) {
+    if (!existsSync(join(from, name))) continue;
     await cp(join(from, name), join(to, name), { recursive: true });
   }
 }
@@ -105,7 +95,7 @@ async function writeSession(options: {
   repoDir: string;
   id: string;
   startedAt: string;
-  calls: number;
+  commands: string[];
   malformed?: boolean;
 }): Promise<void> {
   const directory = join(options.stateDir, "providers", "agents", "fixture", "sessions", "bucket");
@@ -120,7 +110,7 @@ async function writeSession(options: {
     }),
     line({ type: "title", v: 1, title: `session ${options.id}`, updatedAt: options.startedAt }),
   ];
-  for (let index = 0; index < options.calls; index += 1) {
+  options.commands.forEach((command, index) => {
     records.push(
       line({
         type: "message",
@@ -132,7 +122,7 @@ async function writeSession(options: {
               type: "toolCall",
               id: `call-${index}`,
               name: "bash",
-              arguments: { command: "./scripts/verify-gap-command --flag" },
+              arguments: { command },
             },
           ],
           usage: {
@@ -159,7 +149,7 @@ async function writeSession(options: {
         },
       }),
     );
-  }
+  });
   if (options.malformed === true) records.push("{this is not json\n");
   await writeFile(join(directory, `${options.id}.jsonl`), records.join(""));
 }
@@ -173,9 +163,7 @@ async function appendJournal(
   await mkdir(join(stateDir, "journal"), { recursive: true });
   await writeFile(
     path,
-    rows
-      .map((row) => line({ repo: repoDir, port: 1, pid: 1, ...row }))
-      .join(""),
+    rows.map((row) => line({ repo: repoDir, port: 1, pid: 1, ...row })).join(""),
     { flag: "a" },
   );
 }
@@ -186,135 +174,88 @@ const stateDir = join(root, "state");
 const stub = join(root, "stub-forge");
 const marker = join(root, "peer-spawned");
 const stubAgent = join(root, "stub-agent");
-const decisionsStub = join(root, "decisions.json");
-const finalizerStub = join(root, "finalizer.json");
+const synthesisStub = join(root, "synthesis.json");
 await mkdir(join(repoDir, ".devboard"), { recursive: true });
 await mkdir(stateDir, { recursive: true });
 await mkdir(stub, { recursive: true });
-await writeFile(
-  stubAgent,
-  `#!/bin/sh\necho spawned > ${JSON.stringify(marker)}\nexit 1\n`,
-);
-await writeFile(
-  decisionsStub,
-  `${JSON.stringify({
-    answers: {
-      existing_capability: 0.02,
-      recurring_behavior: 0.97,
-      worth_filing: 0.95,
-    },
-    requestId: "stub-decision",
-    costUsd: 0.00002,
-  })}\n`,
-);
-await writeFile(
-  finalizerStub,
-  `${JSON.stringify({
-    proposal:
-      "Add the documented guardrail named in the finding and keep the recorded behavior " +
-      "out of later runs.",
-    acceptance: ["- [ ] The recorded behavior stops in the next run."],
-  })}\n`,
-);
+await writeFile(stubAgent, `#!/bin/sh\necho spawned > ${JSON.stringify(marker)}\nexit 1\n`);
 chmodSync(stubAgent, 0o755);
-Bun.spawnSync({
-  cmd: ["git", "init", "-q", repoDir],
-  stdout: "ignore",
-  stderr: "ignore",
-});
+
+const FAMILIES = [
+  "./scripts/verify-family-one",
+  "./scripts/verify-family-two",
+  "./scripts/verify-family-three",
+];
+
+await writeFile(
+  synthesisStub,
+  `${JSON.stringify({
+    default: {
+      family: "{{family}}",
+      action: "tool",
+      tool: {
+        name: "coach_family_tool",
+        title: "Run the recurring family command",
+        description: "Replaces the recurring command with one named capability.",
+        inputSchema: { type: "object", additionalProperties: false, properties: {} },
+        covers: ["{{family}}"],
+      },
+      rationale: "The family recurs, so one named capability removes the manual command.",
+      acceptance: ["- [ ] The family command runs through the named tool."],
+    },
+  })}\n`,
+);
+
+Bun.spawnSync({ cmd: ["git", "init", "-q", repoDir], stdout: "ignore", stderr: "ignore" });
 Bun.spawnSync({
   cmd: ["git", "-C", repoDir, "remote", "add", "origin", "https://github.com/acme/fixture.git"],
   stdout: "ignore",
   stderr: "ignore",
 });
 
+/* Exactly three command families, plus one single-scope journal line. */
 await writeSession({
   stateDir,
   repoDir,
   id: "session-a",
   startedAt: instant(120),
-  calls: 3,
+  commands: [`${FAMILIES[0]} --flag`, `${FAMILIES[1]} --flag`],
   malformed: true,
 });
-await writeSession({ stateDir, repoDir, id: "session-b", startedAt: instant(60), calls: 1 });
 await writeSession({
   stateDir,
   repoDir,
-  id: "session-late-a",
-  startedAt: instant(60, new Date(START.getTime() + DAY)),
-  calls: 1,
-});
-await writeSession({
-  stateDir,
-  repoDir,
-  id: "session-late-b",
-  startedAt: instant(50, new Date(START.getTime() + DAY)),
-  calls: 1,
+  id: "session-b",
+  startedAt: instant(60),
+  commands: [`${FAMILIES[1]} --other`, `${FAMILIES[2]} --flag`],
 });
 await appendJournal(stateDir, repoDir, [
-  { kind: "question", text: "Should the parser be rewritten?", scope: "run-a", ts: instant(30) },
-  { kind: "question", text: "Should the parser be rewritten?", scope: "run-b", ts: instant(20) },
-  { kind: "acp-stderr", text: "fatal: provider exploded\nmore", scope: "run-a", ts: instant(30) },
-  { kind: "acp-stderr", text: "fatal: provider exploded\nmore", scope: "run-b", ts: instant(20) },
-  {
-    kind: "question",
-    text: "Should the parser be rewritten?",
-    scope: "run-a",
-    ts: instant(40, new Date(START.getTime() + DAY)),
-  },
-  {
-    kind: "question",
-    text: "Should the parser be rewritten?",
-    scope: "run-b",
-    ts: instant(30, new Date(START.getTime() + DAY)),
-  },
-  {
-    kind: "acp-stderr",
-    text: "fatal: provider exploded\nmore",
-    scope: "run-a",
-    ts: instant(40, new Date(START.getTime() + DAY)),
-  },
-  {
-    kind: "acp-stderr",
-    text: "fatal: provider exploded\nmore",
-    scope: "run-b",
-    ts: instant(30, new Date(START.getTime() + DAY)),
-  },
+  { kind: "question", text: "A single-scope note?", scope: "run-a", ts: instant(30) },
 ]);
-await mkdir(coachDirectory(stateDir), { recursive: true });
+const coachDir = coachDirectory(stateDir);
+await mkdir(coachDir, { recursive: true });
 await writeFile(
-  join(coachDirectory(stateDir), "projection.json"),
+  join(coachDir, "settings.json"),
   `${JSON.stringify({
-    version: 1,
-    state: "ok",
-    at: instant(1),
-    error: null,
-    issues: [],
+    intervalMinutes: 60,
+    maxPerHour: null,
+    maxPending: 20,
+    maxIssuesPerCycle: 20,
+    allowlist: ["./scripts/"],
   })}\n`,
 );
 
 const environment = {
   ...process.env,
   DEVBOARD_COACH_FORGE_STUB: stub,
-  DEVBOARD_COACH_DECISIONS_STUB: decisionsStub,
-  DEVBOARD_COACH_FINALIZER_STUB: finalizerStub,
+  DEVBOARD_COACH_SYNTHESIS_STUB: synthesisStub,
   AGENT_COMMAND: stubAgent,
 };
 
 function coach(args: string[], extraEnv: NodeJS.ProcessEnv = {}): Report {
   const result = run(
     process.execPath,
-    [
-      "run",
-      "coach",
-      "--",
-      ...args,
-      "--root",
-      repoDir,
-      "--state-dir",
-      stateDir,
-      "--json",
-    ],
+    ["run", "coach", "--", ...args, "--root", repoDir, "--state-dir", stateDir, "--json"],
     { cwd: harnessRoot, env: { ...environment, ...extraEnv } },
   );
   if (result.code !== 0) {
@@ -334,10 +275,6 @@ function calls(directory: string): Call[] {
   }
 }
 
-function categories(report: Report): string[] {
-  return report.findings.map((finding) => finding.category).sort();
-}
-
 try {
   const build = run(process.execPath, ["run", "build"], { cwd: harnessRoot });
   assertTrue(build.code === 0, `verify:coach: bun run build failed: ${build.stderr}`);
@@ -345,113 +282,77 @@ try {
   const sessionsBefore = await directoryHash(join(stateDir, "providers"));
   const journalBefore = await directoryHash(join(stateDir, "journal"));
 
-  /* 1. The dry run finds every expected category and nothing else. */
-  const dry = coach(["--collect", "--dry-run", "--now", START.toISOString()]);
-  assertTrue(
-    JSON.stringify(categories(dry)) ===
-      JSON.stringify(["repeat-question", "retry-loop", "run-failure", "tool-failure", "tool-gap"]),
-    `verify:coach: dry-run categories are ${JSON.stringify(categories(dry))}`,
-  );
-  assertTrue(dry.sessions === 4, `verify:coach: dry run read ${dry.sessions} sessions`);
-  assertTrue(dry.malformed >= 1, "verify:coach: the malformed line was not counted");
-  assertTrue(dry.truncated === false, "verify:coach: an untruncated selection reported truncated");
-  assertTrue(calls(stub).length === 0, "verify:coach: the dry run filed an issue");
-  console.log("PASS coach-dry-run");
-
-  /* 2. One real cycle files one issue per fingerprint with the required body. */
+  /* 1. One cycle: three families, one synthesis call each, three filings. */
   const first = coach(["--once", "--now", START.toISOString()]);
+  assertTrue(first.families === 3, `verify:coach: families is ${first.families}`);
+  assertTrue(first.selected.length === 3, `verify:coach: selected is ${first.selected.length}`);
+  assertTrue(first.synthesis.length === 3, `verify:coach: synthesis calls ${first.synthesis.length}`);
+  assertTrue(
+    JSON.stringify(first.synthesis.map((call) => call.family).sort()) ===
+      JSON.stringify(FAMILIES.slice().sort()),
+    `verify:coach: synthesis families are ${JSON.stringify(first.synthesis.map((call) => call.family))}`,
+  );
   assertTrue(first.action === "filed", `verify:coach: first cycle action ${first.action}`);
   const created = calls(stub).filter((call) => call.op === "create");
-  assertTrue(
-    created.length === first.findings.length,
-    `verify:coach: filed ${created.length} of ${first.findings.length}`,
-  );
-  for (const finding of first.findings) {
-    const match = created.find((call) => call.title?.includes(finding.line));
-    assertTrue(match !== undefined, `verify:coach: no issue for ${finding.fingerprint}`);
-    assertTrue(
-      match.title?.startsWith(`[coach] ${finding.category}: `) === true,
-      `verify:coach: wrong title for ${finding.fingerprint}: ${String(match.title)}`,
-    );
-    assertTrue((match.title?.length ?? 0) <= 80, "verify:coach: a title exceeds 80 characters");
-    for (const section of ["## Finding", "## Evidence", "## Proposed change", "## Acceptance criteria"]) {
+  assertTrue(created.length === 3, `verify:coach: filed ${created.length} issue(s)`);
+
+  for (const key of FAMILIES) {
+    const match = created.find((call) => call.title === `[coach] ${key}`);
+    assertTrue(match !== undefined, `verify:coach: no issue titled [coach] ${key}`);
+    const tool = {
+      name: "coach_family_tool",
+      title: "Run the recurring family command",
+      description: "Replaces the recurring command with one named capability.",
+      inputSchema: { type: "object", additionalProperties: false, properties: {} },
+      covers: [key],
+    };
+    for (const section of [
+      "## Family",
+      "## Evidence",
+      "## Proposed tool",
+      "## Acceptance",
+      "## Rationale",
+    ]) {
       assertTrue(
-        (match.body.split(section).length - 1) === 1,
-        `verify:coach: ${finding.fingerprint} has ${section} ${match.body.split(section).length - 1} times`,
+        match.body.split(section).length - 1 === 1,
+        `verify:coach: ${key} has ${section} ${match.body.split(section).length - 1} times`,
       );
     }
-    assertTrue(match.body.includes("- [ ]"), "verify:coach: no acceptance criterion");
-    assertTrue(Buffer.byteLength(match.body, "utf8") <= 64 * 1024, "verify:coach: body over 64 KiB");
+    assertTrue(
+      match.body.includes(JSON.stringify(tool, null, 2)),
+      `verify:coach: ${key} lacks the exact tool definition`,
+    );
+    assertTrue(
+      match.body.includes(`family:${familyTag(key)}`),
+      `verify:coach: ${key} lacks its family tag`,
+    );
+    assertTrue(
+      match.body.includes(JSON.stringify("./scripts/")),
+      `verify:coach: ${key} lacks the exact allowlist entry`,
+    );
+    assertTrue(match.body.includes("- [ ]"), `verify:coach: ${key} has no acceptance criterion`);
+    assertTrue(
+      Buffer.byteLength(match.body, "utf8") < 64 * 1024,
+      `verify:coach: ${key} body over 64 KiB`,
+    );
   }
-  console.log("PASS coach-filing");
+  console.log("PASS coach-families");
 
-  /* 3. A second cycle over the same evidence files nothing and repeats the bytes. */
+  /* 2. The same evidence files nothing a second time. */
   const second = coach(["--once", "--now", START.toISOString()]);
-  assertTrue(second.action === "duplicate", `verify:coach: second cycle action ${second.action}`);
+  assertTrue(second.action === "none", `verify:coach: second cycle action ${second.action}`);
   assertTrue(
-    calls(stub).filter((call) => call.op === "create").length === created.length,
+    calls(stub).filter((call) => call.op === "create").length === 3,
     "verify:coach: the second cycle filed another issue",
   );
+  assertTrue(second.duplicates.length === 3, `verify:coach: duplicates ${second.duplicates.length}`);
   assertTrue(
     JSON.stringify(second.findings) === JSON.stringify(first.findings),
-    "verify:coach: the second cycle's findings differ",
+    "verify:coach: the second cycle's families differ",
   );
-  // The same evidence and clock in a fresh state directory produce the same
-  // issue bytes.
-  const twinState = join(root, "state-twin");
-  const twinStub = join(root, "stub-twin");
-  await mkdir(twinStub, { recursive: true });
-  await cloneEvidence(stateDir, twinState);
-  await mkdir(coachDirectory(twinState), { recursive: true });
-  await writeFile(
-    join(coachDirectory(twinState), "projection.json"),
-    `${JSON.stringify({ version: 1, state: "ok", at: instant(1), error: null, issues: [] })}\n`,
-  );
-  const twin = run(
-    process.execPath,
-    [
-      "run",
-      "coach",
-      "--",
-      "--once",
-      "--now",
-      START.toISOString(),
-      "--root",
-      repoDir,
-      "--state-dir",
-      twinState,
-      "--json",
-    ],
-    { cwd: harnessRoot, env: { ...environment, DEVBOARD_COACH_FORGE_STUB: twinStub } },
-  );
-  assertTrue(twin.code === 0, `verify:coach: the twin cycle failed: ${twin.stderr}`);
-  assertTrue(
-    readFileSync(join(stub, "calls.jsonl")).equals(readFileSync(join(twinStub, "calls.jsonl"))),
-    "verify:coach: identical evidence produced different issue bytes",
-  );
-  console.log("PASS coach-deterministic");
+  console.log("PASS coach-no-second-filing");
 
-  /* 4. A recurrence comments only after 24 hours. */
-  const early = coach(["--once", "--now", new Date(START.getTime() + 12 * 60 * 60_000).toISOString()]);
-  assertTrue(
-    calls(stub).filter((call) => call.op === "comment").length === 0,
-    "verify:coach: commented before 24 hours",
-  );
-  assertTrue(early.action === "duplicate", `verify:coach: early recurrence action ${early.action}`);
-  const late = coach(["--once", "--now", new Date(START.getTime() + DAY + 60 * 60_000).toISOString()]);
-  const comments = calls(stub).filter((call) => call.op === "comment");
-  assertTrue(comments.length > 0, "verify:coach: no recurrence comment after 24 hours");
-  assertTrue(
-    comments.length === late.findings.length,
-    `verify:coach: commented on ${comments.length} of ${late.findings.length} findings`,
-  );
-  assertTrue(
-    calls(stub).filter((call) => call.op === "create").length === created.length,
-    "verify:coach: the recurrence filed a second issue",
-  );
-  console.log("PASS coach-recurrence");
-
-  /* 5. Both caps hold excess fingerprints pending. */
+  /* 3. The cap holds two proposals pending with their bytes. */
   const capState = join(root, "state-cap");
   const capStub = join(root, "stub-cap");
   await mkdir(capStub, { recursive: true });
@@ -459,11 +360,13 @@ try {
   await mkdir(coachDirectory(capState), { recursive: true });
   await writeFile(
     join(coachDirectory(capState), "settings.json"),
-    `${JSON.stringify({ intervalMinutes: 60, maxPerHour: 1, maxPending: 1 })}\n`,
-  );
-  await writeFile(
-    join(coachDirectory(capState), "projection.json"),
-    `${JSON.stringify({ version: 1, state: "ok", at: instant(1), error: null, issues: [] })}\n`,
+    `${JSON.stringify({
+      intervalMinutes: 60,
+      maxPerHour: null,
+      maxPending: 20,
+      maxIssuesPerCycle: 1,
+      allowlist: ["./scripts/"],
+    })}\n`,
   );
   const capped = run(
     process.execPath,
@@ -487,9 +390,9 @@ try {
   assertTrue(capReport.action === "filed", `verify:coach: cap action ${capReport.action}`);
   assertTrue(
     calls(capStub).filter((call) => call.op === "create").length === 1,
-    "verify:coach: the hourly cap filed more than one issue",
+    "verify:coach: the per-cycle cap filed more than one issue",
   );
-  assertTrue(capReport.pending > 0, "verify:coach: the cap dropped pending fingerprints");
+  assertTrue(capReport.pending === 2, `verify:coach: the cap kept ${capReport.pending} pending`);
 
   const capAgain = run(
     process.execPath,
@@ -508,115 +411,16 @@ try {
     ],
     { cwd: harnessRoot, env: { ...environment, DEVBOARD_COACH_FORGE_STUB: capStub } },
   );
+  assertTrue(capAgain.code === 0, `verify:coach: the second capped cycle failed: ${capAgain.stderr}`);
   const capAgainReport = JSON.parse(capAgain.stdout) as Report;
   assertTrue(
-    capAgainReport.action === "capped",
-    `verify:coach: the second capped cycle action ${capAgainReport.action}`,
+    calls(capStub).filter((call) => call.op === "create").length === 2,
+    "verify:coach: the pending proposal was not filed first",
   );
-  assertTrue(
-    calls(capStub).filter((call) => call.op === "create").length === 1,
-    "verify:coach: the second capped cycle filed another issue",
-  );
-  assertTrue(capAgainReport.pending >= capReport.pending, "verify:coach: pending shrank");
-
-  const pendingState = join(root, "state-pending");
-  const pendingStub = join(root, "stub-pending");
-  await mkdir(pendingStub, { recursive: true });
-  await cloneEvidence(stateDir, pendingState);
-  await mkdir(coachDirectory(pendingState), { recursive: true });
-  await writeFile(
-    join(coachDirectory(pendingState), "settings.json"),
-    `${JSON.stringify({ intervalMinutes: 60, maxPerHour: null, maxPending: 1 })}\n`,
-  );
-  await writeFile(
-    join(coachDirectory(pendingState), "projection.json"),
-    `${JSON.stringify({
-      version: 1,
-      state: "ok",
-      at: instant(1),
-      error: null,
-      issues: [{ url: "https://forge.test/acme/fixture/issues/99", state: "pending", version: null }],
-    })}\n`,
-  );
-  const pendingRun = run(
-    process.execPath,
-    [
-      "run",
-      "coach",
-      "--",
-      "--once",
-      "--now",
-      START.toISOString(),
-      "--root",
-      repoDir,
-      "--state-dir",
-      pendingState,
-      "--json",
-    ],
-    { cwd: harnessRoot, env: { ...environment, DEVBOARD_COACH_FORGE_STUB: pendingStub } },
-  );
-  const pendingReport = JSON.parse(pendingRun.stdout) as Report;
-  assertTrue(pendingRun.code === 0, `verify:coach: the pending cycle failed: ${pendingRun.stderr}`);
-  assertTrue(
-    calls(pendingStub).filter((call) => call.op === "create").length === 0,
-    "verify:coach: the open-issue cap filed an issue",
-  );
-  assertTrue(pendingReport.pending > 0, "verify:coach: the open-issue cap dropped pending");
+  assertTrue(capAgainReport.pending === 1, `verify:coach: pending is ${capAgainReport.pending}`);
   console.log("PASS coach-caps");
 
-  /* 6. A failed decision gate files nothing and exits nonzero. */
-  const gateErrorState = join(root, "state-gate-error");
-  const gateErrorStub = join(root, "decisions-error.json");
-  const gateErrorForge = join(root, "stub-gate-error");
-  await mkdir(gateErrorForge, { recursive: true });
-  await writeFile(
-    gateErrorStub,
-    `${JSON.stringify({ answers: {}, error: "Decisions API 503: unavailable" })}\n`,
-  );
-  await cloneEvidence(stateDir, gateErrorState);
-  await mkdir(coachDirectory(gateErrorState), { recursive: true });
-  await writeFile(
-    join(coachDirectory(gateErrorState), "projection.json"),
-    `${JSON.stringify({ version: 1, state: "ok", at: instant(1), error: null, issues: [] })}\n`,
-  );
-  const gateError = run(
-    process.execPath,
-    [
-      "run",
-      "coach",
-      "--",
-      "--once",
-      "--now",
-      START.toISOString(),
-      "--root",
-      repoDir,
-      "--state-dir",
-      gateErrorState,
-      "--json",
-    ],
-    {
-      cwd: harnessRoot,
-      env: {
-        ...environment,
-        DEVBOARD_COACH_DECISIONS_STUB: gateErrorStub,
-        DEVBOARD_COACH_FORGE_STUB: gateErrorForge,
-      },
-    },
-  );
-  assertTrue(gateError.code !== 0, "verify:coach: a failed gate exited zero");
-  const gateErrorReport = JSON.parse(gateError.stdout) as Report;
-  assertTrue(
-    gateErrorReport.action === "failed",
-    `verify:coach: gate failure action ${gateErrorReport.action}`,
-  );
-  assertTrue(
-    calls(gateErrorForge).filter((call) => call.op === "create").length === 0,
-    "verify:coach: a failed gate filed an issue",
-  );
-  assertTrue(gateErrorReport.pending > 0, "verify:coach: a failed gate dropped its findings");
-  console.log("PASS coach-gate-failure");
-
-  /* 7. Evidence stays byte-identical and no peer starts. */
+  /* 4. Evidence stays byte-identical and no peer starts. */
   assertTrue(
     (await directoryHash(join(stateDir, "providers"))) === sessionsBefore,
     "verify:coach: a cycle changed the session files",

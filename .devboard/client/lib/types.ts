@@ -164,6 +164,7 @@ export type {
   AgentCyclesDetail,
   AgentDescriptor,
   AgentDetail,
+  AgentDocumentationEntry,
   AgentIssueRow,
   AgentIssueState,
   AgentLifecycle,

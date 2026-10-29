@@ -68,6 +68,9 @@ async function createFixture(): Promise<Fixture> {
   await mkdir(join(repo, "adrs"), { recursive: true });
   await mkdir(drafts, { recursive: true });
   await mkdir(stateDir, { recursive: true });
+  const staticDir = join(root, "dist");
+  await mkdir(staticDir, { recursive: true });
+  await writeFile(join(staticDir, "index.html"), "<!doctype html><title>Fixture</title>");
   await writeFile(join(repo, "GOAL.md"), "# Goal\n\nFixture.\n");
   await writeFile(join(repo, ".gitignore"), "state/\n.tmp/\n");
   // Every ACP peer resolves a provider first; this fixture's usage endpoints

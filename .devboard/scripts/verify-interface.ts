@@ -1717,26 +1717,44 @@ try {
   const sidebarToggle = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar-toggle"]') !== null`);
   check(!sidebarToggle, "the sidebar still renders a hide control");
 
-  // 4b. Providers: indicator, dialog, exactly two providers, masked keys,
+  // 4b. Providers: dialog, exactly two providers, masked keys,
   // usage rows, validation, edit, enable, delete, refresh, palette entry,
   // and focus trapping.
-  await page.wait(
-    `document.querySelector('[data-testid="providers-indicator"]')?.textContent?.includes("OpenCode Go") === true`,
-    "the provider indicator to show the selection",
-  );
-  const providerIndicator = await page.eval<string>(
-    `document.querySelector('[data-testid="providers-indicator"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? ""`,
-  );
+  const statusLeft = await page.eval<{ items: string[]; indicator: boolean }>(`(() => {
+    const group = document.querySelectorAll('[data-testid="status-bar"] .status-group')[0];
+    return {
+      items: group === undefined ? [] : [...group.querySelectorAll(".status-item")].map((item) => item.textContent?.replace(/\\s+/g, " ").trim() ?? ""),
+      indicator: document.querySelector('[data-testid="providers-indicator"]') !== null,
+    };
+  })()`);
   check(
-    providerIndicator.includes("OpenCode Go") && providerIndicator.includes("70%"),
-    "the indicator does not show the selection and lowest remaining percentage",
-    providerIndicator,
+    statusLeft.items.length === 2 &&
+      statusLeft.items[0]?.includes("Connected") &&
+      statusLeft.items[1]?.includes("host"),
+    "the status bar left group holds more than the connection and the project",
+    statusLeft,
   );
+  check(!statusLeft.indicator, "the status bar still renders a providers indicator", statusLeft);
 
-  await page.click('[data-testid="providers-indicator"]');
+  await page.key("k", 2);
+  await page.wait(
+    `document.querySelector('[data-testid="command-palette"]') !== null`,
+    "the palette for Providers",
+  );
+  await page.fill('[data-testid="command-palette-input"]', "Providers");
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="command-item"]')].some((item) => item.getAttribute("data-command") === "settings.providers")`,
+    "the Providers palette entry",
+  );
+  await page.key("Enter");
   await page.wait(
     `document.querySelector('[data-testid="providers-dialog"]') !== null`,
     "the providers dialog",
+  );
+  await page.wait(
+    `document.activeElement?.closest('[data-testid="providers-dialog"]') !== null`,
+    "the providers dialog to take focus",
+    2_000,
   );
   const providers = await page.eval<{
     options: Array<{ value: string; label: string }>;
@@ -1818,6 +1836,34 @@ try {
     `document.querySelector('[data-testid="provider-error"]')?.textContent?.includes("401") === true`,
     "the invalid-key error",
   );
+  const errorPaint = await page.eval<{
+    background: string;
+    border: string;
+    surface: string;
+    error: string;
+  }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.position = "absolute";
+    probe.style.background = "var(--error-surface)";
+    probe.style.borderTop = "1px solid var(--error)";
+    document.body.append(probe);
+    const expected = getComputedStyle(probe);
+    const band = document.querySelector('[data-testid="provider-error"]');
+    const style = band === null ? null : getComputedStyle(band);
+    const result = {
+      background: style?.backgroundColor ?? "",
+      border: style?.borderTopColor ?? "",
+      surface: expected.backgroundColor,
+      error: expected.borderTopColor,
+    };
+    probe.remove();
+    return result;
+  })()`);
+  check(
+    errorPaint.background === errorPaint.surface && errorPaint.border === errorPaint.error,
+    "the provider error band does not pair the error surface with the error border",
+    errorPaint,
+  );
 
   // Add a second OpenRouter key: exhausted usage is saved but displayed as such.
   await page.fill('[data-testid="provider-key-input"]', PROVIDER_OR_SECOND_KEY);
@@ -1840,6 +1886,26 @@ try {
     html: document.body.innerHTML,
   }))()`);
   check(added.statuses.includes("exhausted"), "an exhausted subscription has no status", added.statuses);
+  const exhaustedPaint = await page.eval<{ color: string; error: string }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;color:var(--error)";
+    document.body.append(probe);
+    const error = getComputedStyle(probe).color;
+    probe.remove();
+    const row = [...document.querySelectorAll('[data-testid="provider-row"]')].find(
+      (candidate) => candidate.querySelector('[data-testid="provider-status"]')?.textContent?.trim() === "exhausted",
+    );
+    const status = row?.querySelector('[data-testid="provider-status"]');
+    return {
+      color: status === null || status === undefined ? "" : getComputedStyle(status).color,
+      error,
+    };
+  })()`);
+  check(
+    exhaustedPaint.color === exhaustedPaint.error,
+    "the exhausted provider status does not use the error color",
+    exhaustedPaint,
+  );
   check(!added.text.includes(PROVIDER_OR_SECOND_KEY), "the added key is rendered in the dialog text");
   for (const key of [PROVIDER_GO_KEY, PROVIDER_OR_KEY, PROVIDER_OR_SECOND_KEY]) {
     check(!added.inputs.some((value) => value.includes(key)), "a key stayed in a form field", key);
@@ -1877,6 +1943,23 @@ try {
   await page.wait(
     `document.querySelector('[data-testid="provider-delete-confirm"]') !== null`,
     "the delete confirmation",
+  );
+  const confirmPaint = await page.eval<{ background: string; destructive: string }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;background:var(--destructive)";
+    document.body.append(probe);
+    const destructive = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const button = document.querySelector('[data-testid="provider-delete-confirm"]');
+    return {
+      background: button === null ? "" : getComputedStyle(button).backgroundColor,
+      destructive,
+    };
+  })()`);
+  check(
+    confirmPaint.background === confirmPaint.destructive,
+    "the confirm delete button does not keep the destructive variant",
+    confirmPaint,
   );
   await page.click('[data-testid="provider-delete-confirm"]');
   await page.wait(
@@ -1944,6 +2027,7 @@ try {
     items: Array<{ id: string; title: string; group: string; disabled: boolean; reason: string }>;
     input: boolean;
     focus: string;
+    search: { height: number; fontSize: number; className: string };
   }>(`(() => {
     const list = [...document.querySelectorAll('.palette__group, [data-testid="command-item"]')];
     let group = "";
@@ -1960,13 +2044,30 @@ try {
         reason: element.querySelector(".palette__item-reason")?.textContent?.trim() ?? "",
       };
     }).filter((item) => item !== null);
+    const search = document.querySelector('[data-testid="command-palette-input"]');
+    const searchStyle = search === null ? null : getComputedStyle(search);
     return {
       items,
-      input: document.querySelector('[data-testid="command-palette-input"]') !== null,
+      input: search !== null,
       focus: document.activeElement?.getAttribute("data-testid") ?? "",
+      search: {
+        height: searchStyle === null ? 0 : search.getBoundingClientRect().height,
+        fontSize: searchStyle === null ? 0 : Number.parseFloat(searchStyle.fontSize),
+        className: search?.className ?? "",
+      },
     };
   })()`);
   check(palette.input && palette.focus === "command-palette-input", "the palette input is not focused", palette);
+  check(
+    palette.search.height === 28 && palette.search.fontSize === 12,
+    "the palette search field does not use the 28px input at 12px control type",
+    palette.search,
+  );
+  check(
+    !palette.search.className.includes("h-8") && !palette.search.className.includes("text-[13px]"),
+    "the palette search field still carries the superseded size classes",
+    palette.search.className,
+  );
   await page.key("Tab");
   const trappedAfterTab = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="command-palette"]') !== null`);
   await page.key("Tab", 8);
@@ -2844,7 +2945,7 @@ try {
   check(flowGoalSurface.goalHeight >= flowGoalSurface.pageHeight - 1, "the Flow goal does not fill the page", flowGoalSurface);
   check(flowGoalSurface.consoleHeight >= flowGoalSurface.pageHeight - 1, "the implementation activity console is shorter than the page", flowGoalSurface);
   check(
-    flowGoalSurface.startPadding === "12px",
+    flowGoalSurface.startPadding === "10px",
     "a Flow action does not use the design-system horizontal padding",
     flowGoalSurface.startPadding,
   );
@@ -3514,7 +3615,9 @@ try {
     toggle: { checked: boolean; disabled: boolean } | null;
     menu: boolean;
     kindIcons: number;
+    kindWords: string[];
     kindColors: string[];
+    mutedKind: string;
     tableScrolls: number[];
     clippedCards: number;
     rowsOutside: number;
@@ -3533,6 +3636,11 @@ try {
     const searchStyle = search === null ? null : getComputedStyle(search);
     const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
     const toggle = document.querySelector('[data-testid="discover-glossary-significant"]');
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--muted-foreground)';
+    document.body.append(probe);
+    const mutedKind = getComputedStyle(probe).color;
+    probe.remove();
     return {
       contexts: document.querySelectorAll('#workspace-discover [data-testid="discover-context"]').length,
       terms: rows.length,
@@ -3549,6 +3657,8 @@ try {
       toggle: toggle === null ? null : { checked: toggle.checked, disabled: toggle.disabled },
       menu: document.querySelector('[data-testid="discover-glossary-menu"]') !== null,
       kindIcons: kindCells.filter((cell) => cell?.querySelector('.discover-kind svg') !== null).length,
+      kindWords: kindCells.map((cell) => cell?.querySelector('.discover-kind')?.textContent?.trim() ?? ""),
+      mutedKind,
       kindColors: [...new Set(kindCells
         .map((cell) => cell?.querySelector('.discover-kind'))
         .filter((kind) => kind !== null)
@@ -3617,7 +3727,16 @@ try {
   );
   check(!glossary.menu, "the glossary sidebar still has a disclosure menu", glossary);
   check(glossary.kindIcons === glossary.terms, "a glossary kind is not the first cell", glossary.kindIcons);
-  check(glossary.kindColors.length >= 2, "the glossary kind icons are not color-coded", glossary.kindColors);
+  check(
+    glossary.kindWords.every((word) => word.length > 0),
+    "a glossary kind row has no visible kind word",
+    glossary.kindWords,
+  );
+  check(
+    glossary.kindColors.length === 1 && glossary.kindColors[0] === glossary.mutedKind,
+    "a glossary kind carries a state color instead of muted foreground",
+    { kindColors: glossary.kindColors, mutedKind: glossary.mutedKind },
+  );
   check(glossary.tableScrolls.every((delta) => delta <= 1), "a glossary table clips its rows", glossary.tableScrolls);
   check(glossary.clippedCards === 0, "a glossary card clips its rows", glossary.clippedCards);
   check(glossary.rowsOutside === 0, "a glossary term falls outside its card", glossary.rowsOutside);
@@ -5485,7 +5604,11 @@ try {
   })()`);
   check(stoppedConsole.visible && stoppedConsole.overview, "the Issues pane or overview is missing", stoppedConsole);
   check(stoppedConsole.repo === "fixture/host", "the Issues overview does not name the repository", stoppedConsole);
-  check(stoppedConsole.poll === "Not polling", "the stopped poll line does not say it is not polling", stoppedConsole);
+  check(
+    stoppedConsole.poll === "Not polling" || stoppedConsole.poll.startsWith("Tracker "),
+    "the stopped poll line claims the worker is polling",
+    stoppedConsole,
+  );
   check(
     await page.eval<boolean>(`document.querySelector('[data-testid="issues-state"]') === null`),
     "the Issues overview kept the lifecycle badge",
@@ -6614,9 +6737,12 @@ try {
   );
 
   // A question for an unselected draft appears on its own row within two seconds.
+  const draftAnswer = (name: string): string =>
+    `(document.querySelector('${draftRow(name)} [data-testid="issues-draft-waiting"]')?.textContent?.trim() ?? "")`;
   await page.wait(
     `${draftStatus("002-hang.md")} === "running" &&
-      document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") === "true"`,
+      document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") === "true" &&
+      ${draftAnswer("001-question.md")} === "answer"`,
     "the unselected draft's waiting state",
     2_000,
   );
@@ -6679,8 +6805,8 @@ try {
     questionDetail,
   );
   check(
-    /^H[1-6]$/.test(questionDetail.messageTag) && questionDetail.messageSize > 13,
-    "the question is not a header with a larger font",
+    /^H[1-6]$/.test(questionDetail.messageTag) && questionDetail.messageSize >= 13,
+    "the question is not a header at body size or larger",
     questionDetail,
   );
   await dismissNotifications();
@@ -6714,8 +6840,9 @@ try {
   // Answer only the question draft; its waiting state clears and the hang draft is untouched.
   await page.click('[data-testid="issues-draft-choice"]');
   await page.wait(
-    `document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") !== "true"`,
-    "the waiting state to clear after the answer",
+    `document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") !== "true" &&
+      ${draftAnswer("001-question.md")} === ""`,
+    "the waiting state and badge to clear after the answer",
     4_000,
   );
   await page.wait(

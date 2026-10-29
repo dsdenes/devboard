@@ -1,6 +1,7 @@
 import { fixtureRecord } from "./fixtures/adr-source";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -234,6 +235,10 @@ interface StartOptions {
   stateDir?: string;
   stub?: string[];
   clone?: CloneHarness;
+  /** Spawn the real `git` through PATH instead of the injected fixture. */
+  realClone?: boolean;
+  /** Shortens the real clone bound; the injected runner ignores it. */
+  cloneTimeoutMs?: number;
 }
 
 function startServer(options: StartOptions = {}): TestServer {
@@ -253,7 +258,8 @@ function startServer(options: StartOptions = {}): TestServer {
     agentCommand: command,
     tracker: async () => undefined,
     trackerSettle: { attempts: 1 },
-    discoverClone: clones.runner,
+    discoverClone: options.realClone === true ? undefined : clones.runner,
+    discoverCloneTimeoutMs: options.cloneTimeoutMs,
   });
   return { server, fixture, url: `127.0.0.1:${server.port}`, clones };
 }
@@ -882,6 +888,77 @@ describe("discover remote target", () => {
       }
     },
     60_000,
+  );
+
+  test(
+    "times out a clone whose helper holds stderr, reaps both, and accepts the next clone",
+    async () => {
+      const fixture = createFixture("clone-stalled-helper");
+      const shimDir = join(fixture.root, "bin");
+      mkdirSync(shimDir, { recursive: true });
+      const marker = join(fixture.root, "clone-stalled");
+      const childPidFile = join(fixture.root, "clone-child.pid");
+      const helperPidFile = join(fixture.root, "clone-helper.pid");
+      const shim = join(shimDir, "git");
+      writeFileSync(
+        shim,
+        [
+          "#!/bin/sh",
+          `if [ -e '${marker}' ]; then exit 128; fi`,
+          `: > '${marker}'`,
+          `echo $$ > '${childPidFile}'`,
+          "sleep 30 &",
+          `echo $! > '${helperPidFile}'`,
+          "wait",
+          "",
+        ].join("\n"),
+      );
+      chmodSync(shim, 0o755);
+      const pathBefore = process.env.PATH;
+      const { server, url } = startServer({ fixture, realClone: true, cloneTimeoutMs: 1500 });
+      const client = await connect(url);
+      const alive = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      try {
+        process.env.PATH = `${shimDir}:${pathBefore ?? ""}`;
+        const startedAt = Date.now();
+        const failed = client.waitNext((message) => message.type === "discoverError");
+        client.send({ type: "discoverRemote", url: "https://github.com/octocat/Hello-World" });
+        const error = await failed;
+        expect(String(error.message)).toContain("timed out");
+        expect(Date.now() - startedAt).toBeLessThan(6_000);
+
+        // The stalled clone child and the helper holding its stderr are gone.
+        const childPid = Number(readFileSync(childPidFile, "utf8"));
+        const helperPid = Number(readFileSync(helperPidFile, "utf8"));
+        await waitFor(
+          () => !alive(childPid) && !alive(helperPid),
+          "the stalled clone and its helper to exit",
+          5_000,
+        );
+        expect(scratchEntries(fixture)).toEqual([]);
+
+        // The guard cleared with the timeout: the next clone is accepted.
+        const cloning = client.waitNext(isCloningState);
+        const refused = client.waitNext((message) => message.type === "discoverError");
+        client.send({ type: "discoverRemote", url: "https://github.com/octocat/Other" });
+        await cloning;
+        const second = await refused;
+        expect(String(second.message)).not.toContain("A repository clone is active");
+        expect(String(second.message)).toContain("status 128");
+      } finally {
+        process.env.PATH = pathBefore;
+        client.close();
+        server.stop(true);
+      }
+    },
+    30_000,
   );
 
   test(

@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { AcpConnection, type AcpActivity, type AcpQuestion } from "../../server/acp";
+import {
+  createWorkerProviderEnvironment,
+  type WorkerProviderEnvironment,
+} from "../../server/providers/worker-environment";
 import { recordedChildAlive } from "../../server/state";
 import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner } from "../lock";
@@ -114,6 +118,8 @@ export interface ScoutWorkerOptions {
   now?: () => Date;
   /** Injected for tests; defaults to the real ACP client. */
   connect?: (options: IssuesPeerOptions) => AcpPeer;
+  /** Resolves each scan's provider environment; re-reads the store per scan. */
+  providerEnvironment?: WorkerProviderEnvironment;
   /**
    * Injected for tests; defaults to the checkout's `gh` reads. An injected
    * client owns its own bound: `refresh` races the whole read against
@@ -231,6 +237,7 @@ export class ScoutWorker {
   private readonly environment: Record<string, string | undefined>;
   private readonly clock: () => Date;
   private readonly connect: NonNullable<ScoutWorkerOptions["connect"]>;
+  private readonly providerEnvironment: WorkerProviderEnvironment;
   private readonly injectedGithub: ScoutGitHubClient | undefined;
   private readonly fileIssue: typeof fileScoutIssue;
   private readonly harnessVersion: string | null;
@@ -272,6 +279,9 @@ export class ScoutWorker {
     this.clock = options.now ?? (() => new Date());
     this.connect =
       options.connect ?? ((peerOptions) => new AcpConnection(peerOptions) as unknown as AcpPeer);
+    this.providerEnvironment =
+      options.providerEnvironment ??
+      createWorkerProviderEnvironment(this.stateDir, this.environment);
     this.injectedGithub = options.github;
     this.fileIssue = options.fileIssue ?? fileScoutIssue;
     this.harnessVersion =
@@ -774,9 +784,11 @@ export class ScoutWorker {
 
       let peer: AcpPeer;
       try {
+        const environment = await this.providerEnvironment();
         peer = this.connect({
           command: this.agentCommand,
           cwd: this.repoDir,
+          env: environment,
           onActivity: (entry) => this.recordActivity(entry),
           onSessionUpdate: () => this.notePeerUpdate(),
           onQuestion: (question) => this.answerQuestion(question),
