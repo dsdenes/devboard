@@ -120,9 +120,6 @@
         <span class="badge" data-tone={lifecycleTone} data-testid="agent-lifecycle" data-state={lifecycle}>
           {lifecycle}
         </span>
-        <span class="badge" data-tone={sync.state === "ok" ? "success" : sync.state === "error" ? "error" : "stale"} data-testid="agent-sync" data-state={sync.state}>
-          forge read {sync.state}
-        </span>
         <span class="agent-sync-at">
           Last read
           <span class="mono" data-testid="agent-sync-at" title={sync.at ?? "never"}>
