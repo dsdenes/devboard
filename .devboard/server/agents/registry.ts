@@ -578,6 +578,30 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     detail: { panel: "activity", testId: "agent-detail" },
     tab: { id: "design", kind: "design", title: "Design System" },
   }),
+  validateAgentDescriptor({
+    id: "coach",
+    label: "Coach",
+    description:
+      "Reviews repeated agent mistakes and manual work and files one improvement issue per pattern.",
+    scope: "repository",
+    lifecycle: AGENT_LIFECYCLES,
+    cadence: {
+      field: "intervalMinutes",
+      defaultMinutes: 60,
+      minMinutes: 1,
+      maxMinutes: 1440,
+    },
+    limits: {
+      maxPerHour: { min: 1, max: 100, nullable: true },
+      maxPending: { min: 1, max: 100, nullable: true },
+      default: { maxPerHour: null, maxPending: null },
+    },
+    commands: SHARED_COMMANDS,
+    issues: SHARED_ISSUES,
+    sync: SHARED_SYNC,
+    detail: { panel: "cycles", testId: "agent-detail" },
+    tab: { id: "coach", kind: "coach", title: "Coach" },
+  }),
 ]);
 
 export const agentRegistry: AgentRegistry = defineAgentRegistry(DEFAULT_AGENT_DESCRIPTORS);

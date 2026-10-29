@@ -12,6 +12,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createReleaseDirectory } from "./harness-package";
+import { MCP_TOOL_NAMES } from "../mcp/catalog";
 import {
   assertTrue,
   assertEquals,
@@ -35,6 +36,7 @@ import {
   toolPath,
   treesMatch,
   waitFor,
+  declaredMcpTools,
   type HostFixture,
 } from "./verification";
 
@@ -141,6 +143,23 @@ try {
     treesMatch(join(harness, "omp", "extensions"), join(host.directory, ".omp", "extensions")),
     "extensions match the installed package",
   );
+  const installedMcp = join(host.directory, ".omp", "mcp.json");
+  assertTrue(existsSync(installedMcp), ".omp/mcp.json is missing");
+  assertTrue(!isSymlink(installedMcp), ".omp/mcp.json is a symlink");
+  assertTrue(
+    readFileSync(installedMcp).equals(readFileSync(join(harness, "omp", "mcp.json"))),
+    ".omp/mcp.json matches the installed package",
+  );
+  assertTrue(
+    readFileSync(installedMcp).equals(readFileSync(join(repoRoot, ".devboard", "omp", "mcp.json"))),
+    ".omp/mcp.json matches the canonical file",
+  );
+  assertEquals(
+    await declaredMcpTools(host.directory, prefix),
+    [...MCP_TOOL_NAMES],
+    "the installed MCP server answers tools/list",
+  );
+  step("installed MCP server answers initialize and tools/list");
   assertTrue(!existsSync(join(host.directory, ".omp", "commands", "host-local.md")), "deleted tracked wrapper stays absent");
   assertTrue(readFileSync(join(host.directory, ".omp", "local.md"), "utf8") === "kept\n", "untracked .omp file is preserved");
   const agents = join(host.directory, "AGENTS.md");

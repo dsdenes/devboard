@@ -404,7 +404,21 @@ describe("peer binding", () => {
     expect(parsed.retry.fallbackChains["opencode-go/*"]).toEqual([
       "openrouter/deepseek/deepseek-v4.1-flash-1017",
     ]);
-    expect(readdirSync(binding.agentDir).filter((name) => name !== "config.yml")).toEqual([]);
+    expect(readdirSync(binding.agentDir).sort()).toEqual([
+      "config.yml",
+      "devboard-mcp.ts",
+      "mcp.json",
+    ]);
+    const mcp = JSON.parse(readFileSync(join(binding.agentDir, "mcp.json"), "utf8")) as {
+      mcpServers: Record<string, { type: string; command: string; args: string[] }>;
+    };
+    expect(mcp.mcpServers.devboard?.type).toBe("stdio");
+    expect(mcp.mcpServers.devboard?.command).toBe("sh");
+    expect(mcp.mcpServers.devboard?.args?.[0]).toBe("-c");
+    expect(mcp.mcpServers.devboard?.args?.join(" ")).toContain("PI_CODING_AGENT_DIR/devboard-mcp.ts");
+    const wrapper = readFileSync(join(binding.agentDir, "devboard-mcp.ts"), "utf8");
+    expect(wrapper).toContain(join("mcp", "index.ts"));
+    expect(wrapper).toContain("startStdio");
   });
 
   test("an OpenRouter selection omits the Go key and the fallback chain", async () => {

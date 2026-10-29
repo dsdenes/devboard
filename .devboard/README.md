@@ -369,9 +369,10 @@ bun run adr:queue    # adr queue --dir ../adrs
 push to `main` and every pull request. On a pull request it also runs the `mbeacom/adrkit` action
 with `dir: adrs`, which comments the pull request's governing decisions.
 
-`.devboard/omp/mcp.json` declares a stdio MCP server named `adrkit` that runs
-`bunx @adrkit/mcp --cwd . --dir adrs`. It answers `tools/list` with `search_decisions`,
-`get_decision`, `get_decision_context`, and `list_superseded`.
+`.devboard/omp/mcp.json` declares two stdio MCP servers. `adrkit` runs
+`bunx @adrkit/mcp --cwd . --dir adrs` and answers `tools/list` with `search_decisions`,
+`get_decision`, `get_decision_context`, and `list_superseded`. `devboard` runs the harness's own
+server; see [Devboard MCP server](#devboard-mcp-server) for its tools, bounds, and confinement.
 
 ## Durable state
 
@@ -1286,11 +1287,11 @@ sudo userdel --remove <user>
 
 ## Background agents
 
-Auto Scout, Watchdog, and Design System are the three instances of one background-agent contract.
-A typed registry in `server/agents/registry.ts` declares each descriptor's id, label, description,
-scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema, start/stop
-commands, issue projection, sync projection, and detail panel. The shared page, the shared
-filed-issues table, and the Issues sidebar are built from that registry; adding a fourth
+Auto Scout, Watchdog, Design System, and Coach are the four instances of one background-agent
+contract. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
+description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
+start/stop commands, issue projection, sync projection, and detail panel. The shared page, the
+shared filed-issues table, and the Issues sidebar are built from that registry; adding a further
 continuous agent means writing its engine, its adapter, and one registry entry. The shared page,
 sidebar, and issue table have no agent-id branch: a synthetic fourth descriptor projects and
 validates unchanged.
@@ -1302,7 +1303,7 @@ restarted by a dashboard restart, a page open, or a tab restore. A live worker o
 dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cannot Stop it, and
 Start is a no-op with a notice.
 
-All three pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
+All four pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
 lifecycle badge `agent-lifecycle`, the sync badge `agent-sync`, `agent-sync-at`,
 `agent-last-run`, `agent-next-run`, exactly one of `agent-start`/`agent-stop`, `agent-cadence`,
 `agent-limit-hour`, `agent-limit-pending`, `agent-save-settings`, `agent-issues-count`,
@@ -1314,8 +1315,8 @@ Every field, the next-run clock, Per hour, Open issues, and one Save control. Sa
 three fields and sends one settings command. The sidebar has three groups in
 order: `Issues surfaces` (Overview), `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
-`open-issues-scout`, `open-issues-watchdog`, then `open-issues-design`, badges
-`agent-state-<id>`, counts `agent-count-<id>`), and `Issues work` (Issues, Draft goals).
+`open-issues-scout`, `open-issues-watchdog`, `open-issues-design`, then `open-issues-coach`,
+badges `agent-state-<id>`, counts `agent-count-<id>`), and `Issues work` (Issues, Draft goals).
 
 ### Transport
 
@@ -1396,7 +1397,7 @@ is not `ok`, and never caps comments. With both caps empty its cycle behaves exa
 
 ### Filed issues
 
-All three pages render one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
+All four pages render one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
 Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `filedAt`
 descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
 `agent-issue-category`, `agent-issue-filed` (a `<time>`), `agent-issue-state`
@@ -1519,6 +1520,8 @@ than seven days are deleted; these are never deleted at any age:
   `projection.json`, and `control/`.
 - `.tmp/orchestrator/state.json`, `ledger.json`, and `lock`.
 - `.tmp/issues/` and `.tmp/flow/` in full.
+- `.tmp/coach/` in full: worker, settings, control, ledger, lock, runs, latest report, and the
+  forge projection its caps count.
 - `.tmp/scout/<24-hex>/`, every repository's Auto Scout settings, worker state, and control
   commands, so a stopped worker keeps its caps and cadence.
 - the run directory of the cycle performing the sweep, and a live `devboard-<pid>.lock`.
@@ -1546,8 +1549,196 @@ bun run watchdog:uninstall                  # stop, disable, and remove a legacy
 removed GET endpoint, and the footer indicator. `verify:watchdog-live` starts the seeded
 dashboard's watchdog through its Start control (not systemd), waits for a real cycle to file the
 seeded marker, asserts the ledger entry, title, and body, and closes the issue in `finally`.
-`verify:agents` drives all three pages through headless Chrome; `verify:design` drives the Design
+`verify:agents` drives all four pages through headless Chrome; `verify:design` drives the Design
 System route through the same shared interface.
+
+## Coach
+
+Coach is the `coach` descriptor in the shared background-agent contract: label `Coach`, scope
+`repository`, cadence default 60 minutes, and nullable limits that default to unlimited. Its page
+is the shared `agent-page` with `data-agent="coach"` and every shared core id; `agent-detail`
+renders the shared cycle history. Opening, selecting, restoring, or reloading the page starts
+nothing. Start and Stop command one detached worker per repository state directory.
+
+Coach's files live under `<STATE_DIR>/coach/`: `worker.json` (published lifecycle), `settings.json`,
+`control/`, `state.json` (the ledger), `lock`, `runs/<cycle>/report.json|report.md`, `latest.json`,
+and `projection.json` (the last successful forge projection the caps count). Start reaches
+`starting` before the worker exists and `running` once its state is readable; Stop reaches
+`stopping` and then `stopped` after the running cycle ends and before any further cycle starts. A
+stopped worker is not restarted by a dashboard restart, a page open, or a tab restore; a live
+worker owned by another dashboard's state directory reads `running` with `owned: false`, cannot be
+stopped from this dashboard, and Start is a no-op with a notice. Start preflight requires a GitHub
+or Gitea origin and a write-capable account; a refusal names the missing fact, writes no state,
+spawns nothing, and renders `agent-error`.
+
+### Evidence
+
+One cycle's window is the 24 hours ending at cycle start. It reads:
+
+- every `.jsonl` under `<STATE_DIR>/providers/agents/*/sessions/**` whose `session` record names a
+  `cwd` equal to the resolved `REPO_DIR` or inside `<REPO_DIR>/.worktree/`; any other cwd is
+  ignored. The newest 1,000 selected files by session start are read and the report carries
+  `truncated: true` with the totals when files were left out.
+- this repository's dashboard journal, live and rotated, keeping the in-window records of kinds
+  `question`, `acp-stderr`, `activity`, `run-start`, and `run-stop`, de-duplicated across a
+  rotation exactly as the existing journal reader does.
+
+Malformed JSONL lines and sessions without a usable timestamp, `cwd`, or id are counted and
+skipped; they never abort the cycle. The report carries the window, session count, journal record
+count, malformed count, and skipped-session count. Nothing under `$HOME`, `/tmp`, another checkout,
+or outside `REPO_DIR` and `STATE_DIR` is read.
+
+### Detection
+
+A finding exists only for these categories and thresholds:
+
+|Category|Evidence and threshold|Fingerprint signature|
+|---|---|---|
+|`tool-failure`|a `toolResult` with `isError: true`, in at least two distinct sessions|tool name + normalized first text line|
+|`retry-loop`|one tool-call identity repeated at least three times in one session, at least two of its calls after an error for that tool|session id + tool name + normalized arguments|
+|`repeat-question`|the same normalized journal `question` text in at least two distinct run/lane scopes|the normalized question|
+|`run-failure`|the same normalized first `acp-stderr` line in at least two distinct run/lane scopes|the normalized line|
+|`tool-gap`|one normalized `bash` signature called at least three times across at least two sessions, at least 12 characters, not trivial, not covered by an MCP `covers` entry|the normalized command|
+
+A fingerprint is the first 16 hex characters of SHA-256 over the category and its normalized
+signature. Exactly one finding exists per fingerprint per cycle; findings are ordered by category,
+then line, then fingerprint. Each carries its category, fingerprint, a one-line summary of at most
+80 characters, first and last occurrence times, total count, and the contributing session ids or
+journal scopes. Two cycles over identical evidence with the same clock produce identical findings
+in identical order.
+
+Command normalization replaces the repository root, `.worktree/<name>`, UUIDs, ISO timestamps,
+7-or-more-character hex tokens, and whitespace. The fixed trivial set is `ls`, `pwd`, `cat`, `head`,
+`tail`, `wc`, `git status`, `git diff`, `git log`, `bun test`, `bun run check`, `bun run build`,
+and `bunx tsc --noEmit`. The MCP catalog's `covers` lists are the only command signatures that
+suppress a `tool-gap` finding.
+
+### Filed issues and the ledger
+
+The title is `[coach] <category>: <line>`, one line, at most 80 characters; no `goal` label is
+applied. The body is at most 64 KiB and carries exactly one `## Finding`, `## Evidence`,
+`## Proposed change`, and `## Acceptance criteria` section. Evidence lists each contributing
+session's id, start time, relative cwd, input/output/cache tokens, total cost, and at most 2,000
+characters of normalized excerpts; journal findings list their scopes. The proposed change names a
+concrete prompt guardrail, failure-avoidance helper, or MCP tool with its intended name and
+inputs; a `tool-gap` finding always proposes a deterministic tool rather than an LLM step.
+
+`<STATE_DIR>/coach/state.json` records every fingerprint with `pending` or `filed:<url>` and its
+first and last sighting. It is written atomically after every successful filing or comment, so a
+hard kill never loses the fact that an issue exists. A `filed:<url>` fingerprint is never filed
+again. A recurrence at least 24 hours after the previous filing or comment comments on the
+existing issue once per interval. With a cap set, a cycle files at most that many new issues per
+rolling hour and at most that many of its own open issues, counts open state from the last
+successful projection, keeps excess fingerprints pending instead of dropping them, files nothing
+new while the project is not `ok`, and never caps comments. A failed filing or comment keeps the
+fingerprint pending and records the reason.
+
+A cycle spawns no ACP peer, makes no model call, edits no prompt, wrapper, source, session file, or
+journal record, and writes only `<STATE_DIR>/coach/`. The page and worker send no command that
+starts, stops, or repairs another agent.
+
+Run it by hand from `.devboard`:
+
+```bash
+bun run coach -- --collect --dry-run --root <checkout> --state-dir <state> --json
+bun run coach -- --once --root <checkout> --state-dir <state> [--now <ISO>] --json
+```
+
+`verify:coach` seeds sessions and journal records under `.devboard/.tmp`, injects a stub forge, and
+proves every category and threshold, the dry run, one issue per fingerprint, deterministic issue
+bytes, no second filing, the 24-hour recurrence comment, both caps keeping fingerprints pending,
+byte-identical evidence, and that no ACP peer starts.
+
+## Devboard MCP server
+
+`.devboard/omp/mcp.json` declares `mcpServers.devboard` with `type: "stdio"`. Its command and
+arguments contain no absolute path: a small `sh -c` probe resolves the harness from
+`DEVBOARD_HARNESS_DIR` when set, else the checkout's `.devboard`, else the installed prefix's
+`node_modules/@dsdenes/devboard`. `install.sh` copies the file to `<host>/.omp/mcp.json` and the
+launcher installs the same bytes on install and update. The package carries the server at
+`mcp/index.ts`; the launcher and `verify:install`/`verify:update` prove the installed command
+answers `initialize` and `tools/list`.
+
+Every ACP peer the dashboard starts also receives an `mcp.json` beside its generated `config.yml`
+in `PI_CODING_AGENT_DIR`. That registration invokes a generated `devboard-mcp.ts` wrapper, so a
+peer whose cwd is a worktree or a temporary clone discovers the server without a project `.omp`
+directory. Model roles, provider selection, keys, and the peer environment are unchanged.
+
+The server speaks newline-delimited JSON-RPC over stdio. Only JSON-RPC messages reach stdout;
+diagnostics go to stderr. It answers `initialize` (protocol version, `serverInfo.name`,
+`capabilities.tools`), accepts `notifications/initialized`, answers `tools/list` with the catalog
+sorted by name, and answers `tools/call`. An unknown method returns JSON-RPC error `-32601`; an
+unknown tool returns an error result without a side effect. It exits cleanly on stdin EOF and
+starts no HTTP listener.
+
+### Read tools
+
+|Tool|Inputs|Bounds|
+|---|---|---|
+|`devboard_status`|none|root, harness, state, live dashboard port/pid, version and versionState; no secret|
+|`agent_sessions_list`|`since`, `until`, `cwd`, `limit`, `offset`|50 rows default, 200 max, newest first|
+|`agent_session_read`|`id`, `offset`, `limit`|50 messages default, 200 max, 64 KiB of text|
+|`agent_session_search`|`query`, `limit`|case-insensitive, 100 matches, 200-character snippets|
+|`journal_search`|`kind`, `scope`, `since`, `until`, `query`, `limit`|200 records, 64 KiB, newest first|
+|`background_agents_list`|none|the live `getAgents` snapshot, or persisted state|
+|`background_agent_get`|`id`|the live `getAgent` snapshot, or persisted state|
+|`goal_get`|none|the goal document, bounded at 64 KiB|
+|`goal_drafts_list`|none|`.devboard/goal-proposals/*.md`|
+|`goal_draft_read`|`path`|one draft, bounded at 64 KiB|
+|`issues_list`|`state`, `limit`|open and closed issues, 200 rows|
+|`issue_get`|`number`|title, bounded body, labels, state, URL|
+
+The ACP session parser, token and cost summation, and tool-error fingerprint are the same module
+Coach reads, so a seeded session reports the same id, relative cwd, totals, cost, tool name, and
+error fingerprint through both surfaces. Every truncated response states `truncated: true` and the
+next offset where paging exists.
+
+### Work tools
+
+- `goal_spec_write` accepts the five section bodies and an optional slug, writes exactly
+  `<REPO_DIR>/.devboard/goals/<slug>.md` with `## Objective`, `## Success criteria`,
+  `## Verification`, `## Boundaries`, and `## Stop conditions` once each in that order, derives a
+  lowercase kebab-case slug of at most six words, uses the first free `-2`, `-3`, … suffix, and
+  refuses an empty section.
+- `goal_draft_file` accepts a repository-relative spec path under `.devboard/goals/`, a one-line
+  title of at most 200 characters with no leading heading marker, and an optional repository-relative
+  draft under `.devboard/goal-proposals/`. It ensures the exact `goal` label, files the spec's bytes
+  as the issue body, reads the issue back, verifies the label and byte equality, and only then
+  removes the named draft. A failure names the step and keeps the draft.
+- `issue_close` closes one issue through the repository's forge as `completed` or `not planned` and
+  returns the resulting state.
+- `verification_run` runs only `test`, `check`, `build`, `typecheck`, or a `verify:<name>` present
+  in `.devboard/package.json`, with `.devboard` as cwd, an optional bounded list of existing test
+  paths, a 900-second timeout, and at most 16 KiB of captured output. Any other check, a path
+  outside `.devboard`, or an unknown `verify:<name>` is refused before anything runs.
+
+### Control tools
+
+`background_agent_control` (`start`, `stop`, `set_settings`, `disable_timer`), `issues_control`
+(`start`, `pause`, `resume`, `stop`, `check_now`), `lifecycle_control` (`start`, `pause`, `resume`,
+`stop`, `start_run` with a repository-relative `adrs/*.md`), `goal_control` (`save`, `create`,
+`revise`, `prepare_skills`, `reset_implementation`), and `flow_control` (`create_goal`, `save_goal`,
+`start_implementation`, `stop_implementation`) discover the single live dashboard whose `REPO_DIR`
+resolves to this repository, delegate to its existing command handling, wait for the resulting
+state or event, and return it. They never write a second copy of live state. Zero matches and more
+than one match are refused with a message naming the repository and every port found; an action the
+dashboard refuses is an error result naming its reason, with no state change.
+
+### Confinement
+
+Every path argument resolves inside `REPO_DIR`, `STATE_DIR`, or the one directory its tool names.
+Absolute paths, `..`, and symlinks leaving those roots are refused. The server never executes an
+arbitrary shell command, never prints a known secret environment value or a token-shaped string,
+never edits a prompt, command wrapper, or source file, never creates a worktree, branch, commit,
+merge, or push, and never applies a label other than the exact `goal` label `goal_draft_file`
+requires. Read-only tools leave every file byte-identical, a refused call has no side effect, and an
+identical call on unchanged state returns identical JSON except for live timestamps.
+
+`verify:mcp` starts a source dashboard against a throwaway host with a stub forge, stub ACP command,
+and seeded sessions, journal, goals, drafts, and issues; speaks JSON-RPC over the declared command;
+and proves the catalog, every read, work, and control tool, the refusals, the caps, the generated
+peer registration, the installed-package server, and secret redaction.
+
 
 ## Issues mode
 
@@ -2586,12 +2777,13 @@ reload, an invalid save shows its error and sends nothing, a close flips the row
 a release published later fills its blank version, a failed read shows `error` with its reason
 and the last success time while keeping the rows, no review widget or command remains, and Stop
 leaves the table and a released lock. It writes only under `.devboard/.tmp`.
-`bun run verify:agents` builds the client, seeds all three agents, and drives headless Chrome
+`bun run verify:agents` builds the client, seeds all four agents, and drives headless Chrome
 through the Background agents sidebar section, the identical core test ids on every page, Start ->
 starting -> running and Stop -> stopping -> stopped, cadence and limit validation and
 persistence, the Watchdog cap, the shared table columns, freshness without a reload, no mutating
 command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and
-the footer indicator with no console error. It also proves the prompt section: both pages render
+the footer indicator with no console error. It also proves Coach's shared cycle detail and
+persisted settings, and the prompt section: every page renders
 `agent-prompt` directly after `agent-header`; Auto Scout shows the complete instruction text and
 the next-request JSON; Watchdog shows `agent-prompt-absent`; an installed host is read-only and
 refuses a save with an error while its prompt file stays byte-identical; a source-checkout fixture
