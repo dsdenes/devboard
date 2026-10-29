@@ -763,9 +763,10 @@ significance sidecar and is read as legacy, with no error.
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint. The
 Overview page is a project sheet, not a card grid. A masthead
-(`data-testid="discover-freshness"`) carries the project name and the
-discovery date. The commit, the dirty flag, and the staleness flag stay in the sheet and the state
-payload but render no header badge. Below the masthead the sheet is one bounded two-column spine:
+(`data-testid="discover-freshness"`) carries the project name, the project definition below it when
+the crawl recorded one, and the discovery date. The commit, the dirty flag, and the staleness flag
+stay in the sheet and the state payload but render no header badge. Below the masthead the sheet is
+one bounded two-column spine:
 `Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates, and
 Bounded contexts in the main column on the right. Every section carries
 `data-testid="discover-card"` and `data-field`; the commands, testing, and quality-gate panels are
