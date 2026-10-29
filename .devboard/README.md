@@ -2123,8 +2123,9 @@ row carries its own `data-status`, renders that state as text, and has its own
 `issues-draft-row-start` control (`issues.draft.start`); the detail does not repeat it. Starting
 a draft from its row selects that draft before the start is sent, so `issues-draft-detail`
 switches to it and the `issues-draft-activity` stream on screen belongs to the goal just started.
-A row whose elaboration waits for an answer carries `data-question="true"`; answering clears it.
-The body reads the proposal before the
+A row whose elaboration waits for an answer carries `data-question="true"` and renders a warning
+`answer` badge (`issues-draft-waiting`) so the wait is visible without opening that draft;
+answering clears both. The body reads the proposal before the
 `## Captured UI context` marker, then the activity stream in `issues-draft-activity` once a run
 exists; the captured UI context itself is not shown. A pending elaboration question
 (`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,
