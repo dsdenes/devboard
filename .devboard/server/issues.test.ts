@@ -514,6 +514,59 @@ describe("dashboard tracker sync", () => {
     }
   });
 
+  test("a failed abandon write is retried by the next fresh read", async () => {
+    const root = await temporaryDirectory("issues-sync-abandon-retry");
+    const stateDir = join(root, "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" as const }),
+      enabled: true,
+      agents: [runningAgent(5, "run-5")],
+      queue: [
+        { ...issue(5), handled: false, runId: null, agentRunId: "run-5" },
+        { ...issue(6), handled: false, runId: null, agentRunId: null },
+      ],
+    });
+    // A file where the control directory belongs makes the abandon write fail.
+    const control = controlDirectory(stateDir, root);
+    await writeFile(control, "not a directory\n");
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => ({ kind: "issues", issues: [issue(6)], etag: null }),
+    });
+    try {
+      await subject.syncNow();
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([6]);
+      expect(await controlCommands(stateDir, root)).toEqual([]);
+
+      await rm(control, { force: true });
+      await subject.syncNow();
+      expect(await controlCommands(stateDir, root)).toEqual([{ type: "abandon", number: 5 }]);
+
+      // A successful write is not repeated on later reads.
+      await subject.syncNow();
+      expect(await controlCommands(stateDir, root)).toEqual([{ type: "abandon", number: 5 }]);
+    } finally {
+      subject.dispose();
+      lock.release();
+    }
+  });
+
   test("a run younger than the read is neither hidden nor abandoned", async () => {
     const root = await temporaryDirectory("issues-sync-young-run");
     const stateDir = join(root, "state");

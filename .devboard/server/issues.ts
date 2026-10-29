@@ -219,6 +219,8 @@ export class IssuesBridge {
    * is a decision, so its peer stops instead of finishing unseen. A run that
    * started after the read began was never in its answer and is left alone.
    * Only a live worker attached to this state directory receives the command.
+   * The fingerprint is recorded only after the command is written, so a
+   * transient write failure is retried by the next fresh read.
    */
   private stopClosedRuns(open: Set<number>, readStartedAt: number): void {
     const state = this.currentState();
@@ -240,12 +242,12 @@ export class IssuesBridge {
     for (const agent of eligible) {
       const key = `${agent.issueNumber}:${agent.runId}`;
       if (this.abandoned.has(key)) continue;
-      this.abandoned.add(key);
       try {
         writeCommand(controlDirectory(this.stateDir, this.repoDir), {
           type: "abandon",
           number: agent.issueNumber,
         });
+        this.abandoned.add(key);
       } catch (error) {
         this.log(
           `could not ask the issues worker to stop #${agent.issueNumber}: ${
