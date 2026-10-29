@@ -208,7 +208,6 @@ async function setInput(devtools: Devtools, testid: string, value: string): Prom
 const CORE_IDS = [
   "agent-header",
   "agent-lifecycle",
-  "agent-sync",
   "agent-sync-at",
   "agent-last-run",
   "agent-start",

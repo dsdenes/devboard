@@ -1290,8 +1290,8 @@ sudo userdel --remove <user>
 Auto Scout, Watchdog, Design System, and Coach are the four instances of one background-agent
 contract. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
 description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
-start/stop commands, issue projection, sync projection, and detail panel. The shared page, the
-shared filed-issues table, and the Issues sidebar are built from that registry; adding a further
+start/stop commands, issue projection, and detail panel. The shared page, the shared filed-issues
+table, and the Issues sidebar are built from that registry; adding a further
 continuous agent means writing its engine, its adapter, and one registry entry. The shared page,
 sidebar, and issue table have no agent-id branch: a synthetic fourth descriptor projects and
 validates unchanged.
@@ -1304,16 +1304,15 @@ dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cann
 Start is a no-op with a notice.
 
 All four pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
-lifecycle badge `agent-lifecycle`, the sync badge `agent-sync`, `agent-sync-at`,
-`agent-last-run`, `agent-next-run`, exactly one of `agent-start`/`agent-stop`, `agent-cadence`,
-`agent-limit-hour`, `agent-limit-pending`, `agent-save-settings`, `agent-issues-count`,
-`agent-issues`, and `agent-detail`. Alerts use one position: `agent-error`, `agent-sync-error`,
-and `agent-settings-error`, each with `role="alert"`. Start/Stop is the only filled primary
-control. The header row carries the page identity, the lifecycle badge, the sync badge with its
-last-read clock, the last-run clock, and Start/Stop. Its settings footer is one unlabeled row: the
-Every field, the next-run clock, Per hour, Open issues, and one Save control. Save validates all
-three fields and sends one settings command. The sidebar has three groups in
-order: `Issues surfaces` (Overview), `Background agents`
+lifecycle badge `agent-lifecycle`, `agent-sync-at`, `agent-last-run`, `agent-next-run`, exactly
+one of `agent-start`/`agent-stop`, `agent-cadence`, `agent-limit-hour`, `agent-limit-pending`,
+`agent-save-settings`, `agent-issues-count`, `agent-issues`, and `agent-detail`. Alerts use one
+position: `agent-error`, `agent-sync-error`, and `agent-settings-error`, each with `role="alert"`.
+Start/Stop is the only filled primary control. The header row carries the page identity, the
+lifecycle badge, the last-read clock, the last-run clock, and Start/Stop. Its settings footer is
+one unlabeled row: the Every field, the next-run clock, Per hour, Open issues, and one Save
+control. Save validates all three fields and sends one settings command. The sidebar has three
+groups in order: `Issues surfaces` (Overview), `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
 `open-issues-scout`, `open-issues-watchdog`, `open-issues-design`, then `open-issues-coach`,
 badges `agent-state-<id>`, counts `agent-count-<id>`), and `Issues work` (Issues, Draft goals).
@@ -2105,7 +2104,7 @@ agent leaves the queue on the next poll.
 Auto Scout is the `scout` descriptor in the shared background-agent contract. The Issues sidebar
 entry `open-issues-scout` opens the shared `agent-page` with `data-agent="scout"`; opening,
 selecting, restoring, or reloading a tab starts nothing. The page shows the shared lifecycle,
-sync, cadence, limits, filed-issues table, and detail panel described above, plus
+last-read clock, cadence, limits, filed-issues table, and detail panel described above, plus
 `scout-activity` for the current or newest scan. The page also shows `agent-error` for the last
 error and `agent-sync-error` for a failed forge read.
 

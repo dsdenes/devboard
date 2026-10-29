@@ -178,10 +178,6 @@ export interface AgentDescriptor {
     testId: "agent-issue";
     columns: typeof AGENT_ISSUE_COLUMNS;
   };
-  sync: {
-    testId: "agent-sync";
-    states: typeof AGENT_SYNC_STATES;
-  };
   detail: {
     panel: "activity" | "cycles";
     testId: "agent-detail";
@@ -294,14 +290,6 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
     descriptor.issues.columns.join(",") !== AGENT_ISSUE_COLUMNS.join(",")
   ) {
     throw new AgentRegistryError(`${id}: issues must project the shared table columns`);
-  }
-  if (
-    !isRecord(descriptor.sync) ||
-    descriptor.sync.testId !== "agent-sync" ||
-    !Array.isArray(descriptor.sync.states) ||
-    descriptor.sync.states.join(",") !== AGENT_SYNC_STATES.join(",")
-  ) {
-    throw new AgentRegistryError(`${id}: sync must project the shared states`);
   }
   if (
     !isRecord(descriptor.detail) ||
@@ -434,7 +422,7 @@ export function projectAgentSnapshot(
   const sync = input.sync;
   if (
     !isRecord(sync) ||
-    !descriptor.sync.states.includes(sync.state) ||
+    !AGENT_SYNC_STATES.includes(sync.state as AgentSyncState) ||
     !(sync.at === null || typeof sync.at === "string") ||
     !(sync.error === null || typeof sync.error === "string")
   ) {
@@ -500,11 +488,6 @@ const SHARED_ISSUES = {
   columns: AGENT_ISSUE_COLUMNS,
 } as const;
 
-const SHARED_SYNC = {
-  testId: "agent-sync",
-  states: AGENT_SYNC_STATES,
-} as const;
-
 export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.freeze([
   validateAgentDescriptor({
     id: "scout",
@@ -525,7 +508,6 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     },
     commands: SHARED_COMMANDS,
     issues: SHARED_ISSUES,
-    sync: SHARED_SYNC,
     detail: { panel: "activity", testId: "agent-detail" },
     tab: { id: "scout", kind: "scout", title: "Auto Scout" },
   }),
@@ -548,7 +530,6 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     },
     commands: SHARED_COMMANDS,
     issues: SHARED_ISSUES,
-    sync: SHARED_SYNC,
     detail: { panel: "cycles", testId: "agent-detail" },
     tab: { id: "watchdog", kind: "watchdog", title: "Watchdog" },
     timerGate: { unit: "devboard-watchdog.timer" },
@@ -574,7 +555,6 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     },
     commands: SHARED_COMMANDS,
     issues: SHARED_ISSUES,
-    sync: SHARED_SYNC,
     detail: { panel: "activity", testId: "agent-detail" },
     tab: { id: "design", kind: "design", title: "Design System" },
   }),
@@ -598,7 +578,6 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     },
     commands: SHARED_COMMANDS,
     issues: SHARED_ISSUES,
-    sync: SHARED_SYNC,
     detail: { panel: "cycles", testId: "agent-detail" },
     tab: { id: "coach", kind: "coach", title: "Coach" },
   }),

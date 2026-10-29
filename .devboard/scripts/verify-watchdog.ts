@@ -672,11 +672,8 @@ exit 0
       async () => {
         const value = renderedIssues(await devtools.evaluate(readIssues).catch(() => undefined));
         if (value === undefined || value.length !== 3) return undefined;
-        const sync = await devtools
-          .evaluate(`document.querySelector('[data-testid="agent-sync"]')?.dataset.state ?? ''`)
-          .catch(() => "");
         const states = value.map((issue) => `${issue.url}:${issue.state}:${issue.version}`);
-        return sync === "ok" && states[0] === `${issueUrl(0)}:pending:` &&
+        return states[0] === `${issueUrl(0)}:pending:` &&
           states[1] === `${issueUrl(1)}:implemented:v1.0.0` &&
           states[2] === `${issueUrl(2)}:implemented:`
           ? value
@@ -739,21 +736,13 @@ exit 0
       trackerWhileFailing.code !== 0 && trackerWhileFailing.stderr.includes("Bad credentials"),
       "the fail fixture no longer fails tracker reads",
     );
-    const failed = await waitFor(
+    await waitFor(
       async () => {
-        const state = await devtools
-          .evaluate(`document.querySelector('[data-testid="agent-sync"]')?.dataset.state ?? ''`)
-          .catch(() => "");
-        return state === "error" ? state : undefined;
+        const value = await text(devtools, "agent-sync-error").catch(() => "");
+        return value.includes("Bad credentials") ? value : undefined;
       },
-      "the failed sync badge",
+      "the sync error reason",
       90_000,
-    );
-    assertTrue(failed === "error", "the sync badge did not report an error");
-    const failureText = await text(devtools, "agent-sync-error");
-    assertTrue(
-      failureText.includes("Bad credentials"),
-      `the sync error does not show the failure reason: ${failureText}`,
     );
     const afterFailure = renderedIssues(await devtools.evaluate(readIssues));
     assertTrue(
@@ -779,10 +768,11 @@ exit 0
     const recovered = await waitFor(
       async () => {
         const value = renderedIssues(await devtools.evaluate(readIssues).catch(() => undefined));
-        const sync = await devtools
-          .evaluate(`document.querySelector('[data-testid="agent-sync"]')?.dataset.state ?? ''`)
-          .catch(() => "");
-        return sync === "ok" && value?.[2]?.version === "v1.2.0" ? value : undefined;
+        if (value?.[2]?.version !== "v1.2.0") return undefined;
+        const failing = await devtools
+          .evaluate(`document.querySelector('[data-testid="agent-sync-error"]') !== null`)
+          .catch(() => true);
+        return failing === false ? value : undefined;
       },
       "the recovered GitHub projection",
       90_000,
@@ -790,10 +780,6 @@ exit 0
     assertTrue(
       recovered[1]?.version === "v1.0.0",
       "the earliest release changed after a later one was published",
-    );
-    assertTrue(
-      !(await present(devtools, "agent-sync-error")),
-      "a successful read did not clear the failure reason",
     );
     console.log("PASS agent-sync-recovered");
 
