@@ -140,7 +140,7 @@
         <input
           bind:this={input}
           bind:value={query}
-          class="h-8 w-full rounded-sm border border-[var(--border-strong)] bg-[var(--background)] px-2 text-[13px] text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)] focus-visible:border-[var(--ring)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          class="h-7 w-full rounded-sm border border-[var(--border-strong)] bg-[var(--background)] px-2 text-[12px] text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)] focus-visible:border-[var(--ring)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           type="text"
           role="combobox"
           aria-expanded="true"
