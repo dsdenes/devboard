@@ -1,5 +1,6 @@
 import {
   authEnvironment,
+  DEFAULT_COMMAND_TIMEOUT_MS,
   isAuthFailure,
   resolveForgeAuth,
   type AuthOutcome,
@@ -121,6 +122,16 @@ const GIT_ENV = {
   GH_NO_UPDATE_NOTIFIER: "1",
 } as const;
 
+/** Construction seams for tests and the Flow controller's bounded command. */
+export interface CommandFlowForgeOptions {
+  env?: Record<string, string>;
+  /** Injectable credential resolution; production always uses `resolveForgeAuth`. */
+  resolve?: (exec: Exec, options: ResolveOptions) => Promise<AuthOutcome>;
+  giteaFetch?: FetchLike;
+  /** Bound on one forge command and on the whole credential resolution. */
+  timeoutMs?: number;
+}
+
 /**
  * Runs the host's `gh`/`glab` after resolving a write-capable account for the
  * exact repository. The resolved token lives only in the child environment.
@@ -131,21 +142,14 @@ export class CommandFlowForge implements FlowPrAdapter {
   readonly #resolver: (exec: Exec, options: ResolveOptions) => Promise<AuthOutcome>;
   readonly #auth = new Map<string, Promise<ResolvedAuth>>();
   readonly #giteaFetch: FetchLike | undefined;
+  readonly #timeoutMs: number;
 
-  /**
-   * `resolve` is injectable so a test can prove the command shapes without a
-   * real credential store. Production always uses `resolveForgeAuth`.
-   */
-  constructor(
-    exec: Exec,
-    env: Record<string, string> = {},
-    resolve: (exec: Exec, options: ResolveOptions) => Promise<AuthOutcome> = resolveForgeAuth,
-    giteaFetch?: FetchLike,
-  ) {
+  constructor(exec: Exec, options: CommandFlowForgeOptions = {}) {
     this.#exec = exec;
-    this.#env = env;
-    this.#resolver = resolve;
-    this.#giteaFetch = giteaFetch;
+    this.#env = options.env ?? {};
+    this.#resolver = options.resolve ?? resolveForgeAuth;
+    this.#giteaFetch = options.giteaFetch;
+    this.#timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
   }
 
   async #resolve(target: ForgeTarget, cwd: string): Promise<ResolvedAuth> {
@@ -160,6 +164,7 @@ export class CommandFlowForge implements FlowPrAdapter {
         cwd,
         required: "write",
         env: { ...process.env, ...this.#env },
+        deadline: Date.now() + this.#timeoutMs,
         ...(target.baseUrl === undefined ? {} : { baseUrl: target.baseUrl }),
         ...(this.#giteaFetch === undefined ? {} : { giteaFetch: this.#giteaFetch }),
       });
@@ -187,6 +192,7 @@ export class CommandFlowForge implements FlowPrAdapter {
       result = await this.#exec(command, args, {
         cwd,
         env: { ...authEnvironment(auth), ...GIT_ENV },
+        timeout: this.#timeoutMs,
       });
     } catch (error) {
       result = {
@@ -382,6 +388,7 @@ export class CommandFlowForge implements FlowPrAdapter {
       result = await this.#exec("git", ["push", "origin", "--delete", branch], {
         cwd,
         env: { ...process.env, ...GIT_ENV } as Record<string, string>,
+        timeout: this.#timeoutMs,
       });
     } catch (error) {
       result = {

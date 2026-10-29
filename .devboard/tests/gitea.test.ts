@@ -311,9 +311,10 @@ describe("Gitea Flow pull requests", () => {
     const calls: Recorded[] = [];
     const forge = new CommandFlowForge(
       async () => ({ code: 1, stdout: "", stderr: "" }),
-      { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
-      undefined,
-      fakeGitea(calls),
+      {
+        env: { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
+        giteaFetch: fakeGitea(calls),
+      },
     );
     const target = {
       forge: "gitea" as const,
@@ -343,20 +344,21 @@ describe("Gitea Flow pull requests", () => {
     const fake = fakeGiteaPull();
     const forge = new CommandFlowForge(
       async () => ({ code: 1, stdout: "", stderr: "" }),
-      {},
-      async () => ({
-        forge: "gitea",
-        host: "localhost",
-        project: "acme/fixture",
-        login: "fixture",
-        token: "fixture-secret-token",
-        source: "test",
-        baseUrl: "http://gitea.test",
-        active: true,
-        permission: "push",
-        canWrite: true,
-      }),
-      fake.fetch,
+      {
+        resolve: async () => ({
+          forge: "gitea",
+          host: "localhost",
+          project: "acme/fixture",
+          login: "fixture",
+          token: "fixture-secret-token",
+          source: "test",
+          baseUrl: "http://gitea.test",
+          active: true,
+          permission: "push",
+          canWrite: true,
+        }),
+        giteaFetch: fake.fetch,
+      },
     );
     const input = {
       cwd: "/repo",

@@ -3,6 +3,7 @@ import {
   authEnvironment,
   isAuthFailure,
   resolveForgeAuth,
+  spawnExec,
   type Exec,
   type ResolvedAuth,
 } from "../lib/forge-auth.ts";
@@ -388,4 +389,46 @@ describe("authEnvironment", () => {
     expect(environment.OAUTH_TOKEN).toBeUndefined();
     expect(environment.GITLAB_HOST).toBe("gitlab.com");
   });
+});
+
+describe("The default executor's deadline", () => {
+  test("kills a child that outlives its timeout and settles without waiting for it", async () => {
+    // The bound under test is a real wall-clock deadline on a real child, so
+    // fake timers cannot drive it.
+    const started = Date.now();
+    const result = await spawnExec("bun", ["-e", "setTimeout(() => {}, 60_000)"], {
+      cwd: import.meta.dir,
+      timeout: 100,
+    });
+
+    expect(result.killed).toBe(true);
+    expect(result.code).toBe(-1);
+    expect(result.stderr).toContain("timed out");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  }, 10_000);
+
+  test("kills a child when the signal aborts", async () => {
+    const controller = new AbortController();
+    const pending = spawnExec("bun", ["-e", "setTimeout(() => {}, 60_000)"], {
+      cwd: import.meta.dir,
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    const result = await pending;
+    expect(result.killed).toBe(true);
+    expect(result.code).toBe(-1);
+    expect(result.stderr).toContain("aborted");
+  }, 10_000);
+
+  test("returns the output of a child that finishes inside its bound", async () => {
+    const result = await spawnExec("bun", ["-e", "console.log('inside')"], {
+      cwd: import.meta.dir,
+      timeout: 10_000,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe("inside");
+    expect(result.killed).toBe(false);
+  }, 10_000);
 });

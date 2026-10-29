@@ -13,6 +13,8 @@
  * as arguments, and never included in an error message.
  */
 
+import type { Subprocess } from "bun";
+
 export interface ExecResult {
   stdout: string;
   stderr: string;
@@ -34,6 +36,86 @@ export type Exec = (
   args: string[],
   options: ExecOptions,
 ) => Promise<ExecResult>;
+
+/** Default bound on one CLI child, used wherever a caller names none. */
+export const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
+
+/** Kills a child; one that already exited is not an error. */
+function terminate(child: Pick<Subprocess<"ignore", "pipe", "pipe">, "kill">): void {
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // It exited between the guard and the signal.
+  }
+}
+
+/**
+ * The production `Exec`. `timeout` and `signal` kill the child and settle at
+ * once with a killed result: it never waits for pipes that a stalled peer or
+ * an inherited grandchild could hold open after the child is gone.
+ */
+export const spawnExec: Exec = async (command, args, options) => {
+  if (options.signal?.aborted) {
+    return { stdout: "", stderr: "the command was aborted.", code: -1, killed: true };
+  }
+  let child: Subprocess<"ignore", "pipe", "pipe">;
+  try {
+    child = Bun.spawn({
+      cmd: [command, ...args],
+      cwd: options.cwd,
+      env: options.env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  } catch (error) {
+    return {
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+      code: -1,
+      killed: false,
+    };
+  }
+
+  let settled = false;
+  const cancelled = Promise.withResolvers<ExecResult>();
+  const stop = (message: string): void => {
+    if (settled) return;
+    settled = true;
+    terminate(child);
+    cancelled.resolve({ stdout: "", stderr: message, code: -1, killed: true });
+  };
+  const onAbort = (): void => stop("the command was aborted.");
+  const timeoutMs = options.timeout === undefined ? undefined : Math.max(1, options.timeout);
+  const timer =
+    timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => stop(`the command timed out after ${timeoutMs} ms.`), timeoutMs);
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    const finished = Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]).then(([stdout, stderr, code]) => {
+      settled = true;
+      return { stdout, stderr, code, killed: code === 137 };
+    });
+    return await (timeoutMs === undefined && options.signal === undefined
+      ? finished
+      : Promise.race([finished, cancelled.promise]));
+  } catch (error) {
+    return {
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+      code: -1,
+      killed: false,
+    };
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+};
 
 import {
   configuredGiteaUrl,

@@ -69,6 +69,7 @@ interface Recorded {
   command: string;
   args: string[];
   env: Record<string, string> | undefined;
+  timeout: number | undefined;
 }
 
 type Responder = (command: string, args: string[]) => { stdout: string; stderr: string; code: number } | undefined;
@@ -83,7 +84,7 @@ function recordingExecutor(
 } {
   const calls: Recorded[] = [];
   const exec: Exec = async (command, args, options) => {
-    calls.push({ command, args, env: options.env });
+    calls.push({ command, args, env: options.env, timeout: options.timeout });
     const answer = responder(command, args);
     if (answer !== undefined) return answer;
     if (fallback !== undefined) return await fallback(command, args, options);
@@ -123,7 +124,7 @@ const AUTH = {
 
 function forge(responder: Responder) {
   const { exec, calls } = recordingExecutor(responder);
-  const adapter = new CommandFlowForge(exec, {}, async () => AUTH);
+  const adapter = new CommandFlowForge(exec, { resolve: async () => AUTH });
   return { adapter, calls, exec };
 }
 
@@ -282,11 +283,13 @@ describe("Flow forge command shapes", () => {
 
   test("a missing write-capable account and a missing URL fail without inventing a PR", async () => {
     const { exec, calls } = recordingExecutor();
-    const denied = new CommandFlowForge(exec, {}, async () => ({ error: "no write access" }));
+    const denied = new CommandFlowForge(exec, {
+      resolve: async () => ({ error: "no write access" }),
+    });
     await expect(denied.createDraft(PR_INPUT)).rejects.toThrow("no write access");
 
     const silentExec = recordingExecutor(() => ({ stdout: "", stderr: "", code: 0 })).exec;
-    const silent = new CommandFlowForge(silentExec, {}, async () => AUTH);
+    const silent = new CommandFlowForge(silentExec, { resolve: async () => AUTH });
     await expect(silent.createDraft(PR_INPUT)).rejects.toThrow("no URL");
     expect(calls.some((call) => call.command === "gh" && call.args.includes("issue"))).toBe(false);
   });
@@ -296,6 +299,34 @@ describe("Flow forge command shapes", () => {
     await adapter.deleteRemoteBranch(TEST_ROOT, "flow/abc12345");
     expect(calls[0]?.command).toBe("git");
     expect(calls[0]?.args).toEqual(["push", "origin", "--delete", "flow/abc12345"]);
+  });
+
+  test("every forge command and the credential probe carry the configured deadline", async () => {
+    let remaining: number | undefined;
+    const { exec, calls } = recordingExecutor((command, args) => {
+      if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+        return { stdout: "https://github.com/acme/project/pull/3\n", stderr: "", code: 0 };
+      }
+      if (command === "git" && args[0] === "push") {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      return undefined;
+    });
+    const adapter = new CommandFlowForge(exec, {
+      timeoutMs: 1234,
+      resolve: async (_exec, options) => {
+        remaining = (options.deadline ?? 0) - Date.now();
+        return AUTH;
+      },
+    });
+
+    await adapter.createDraft(PR_INPUT);
+    await adapter.deleteRemoteBranch(TEST_ROOT, "flow/abc12345");
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(call.timeout).toBe(1234);
+    expect(remaining).toBeGreaterThan(0);
+    expect(remaining).toBeLessThanOrEqual(1234);
   });
 });
 
@@ -353,6 +384,7 @@ interface StartOptions {
   /** `null` leaves the real origin classification in place. */
   forgeTarget?: ForgeTarget | null;
   watchMs?: number;
+  commandTimeoutMs?: number;
 }
 
 function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
@@ -381,6 +413,9 @@ function startServer(fixture: Fixture, options: StartOptions = {}): TestServer {
       watchMs: options.watchMs ?? 40,
       analystTimeoutMs: 10_000,
       goalTimeoutMs: 10_000,
+      ...(options.commandTimeoutMs === undefined
+        ? {}
+        : { commandTimeoutMs: options.commandTimeoutMs }),
     },
   });
   cleanup.push(() => server.stop(true));
@@ -683,20 +718,21 @@ describe("Flow pull-request lifecycle", () => {
     const fake = fakeGiteaPull();
     const giteaForge = new CommandFlowForge(
       async () => ({ code: 1, stdout: "", stderr: "" }),
-      {},
-      async () => ({
-        forge: "gitea",
-        host: "localhost",
-        project: "acme/fixture",
-        login: "fixture",
-        token: "fixture-secret-token",
-        source: "test",
-        baseUrl: "http://gitea.test",
-        active: true,
-        permission: "push",
-        canWrite: true,
-      }),
-      fake.fetch,
+      {
+        resolve: async () => ({
+          forge: "gitea",
+          host: "localhost",
+          project: "acme/fixture",
+          login: "fixture",
+          token: "fixture-secret-token",
+          source: "test",
+          baseUrl: "http://gitea.test",
+          active: true,
+          permission: "push",
+          canWrite: true,
+        }),
+        giteaFetch: fake.fetch,
+      },
     );
     const server = startServer(fixture, {
       forge: giteaForge,
@@ -1083,7 +1119,7 @@ describe("Flow pull-request lifecycle", () => {
     const recorder = recordingExecutor();
     const failing: Exec = async (command, args, options) => {
       if (command === "git" && args.includes("worktree") && args.includes("remove")) {
-        recorder.calls.push({ command, args, env: options.env });
+        recorder.calls.push({ command, args, env: options.env, timeout: options.timeout });
         return { stdout: "", stderr: "fatal: worktree is locked", code: 128 };
       }
       return recorder.exec(command, args, options);
@@ -1296,7 +1332,7 @@ describe("Flow pull-request lifecycle", () => {
     const recorder = recordingExecutor();
     const flaky: Exec = async (command, args, options) => {
       if (command === "git" && args.includes("push") && rejectPush) {
-        recorder.calls.push({ command, args, env: options.env });
+        recorder.calls.push({ command, args, env: options.env, timeout: options.timeout });
         return { stdout: "", stderr: "! [rejected] non-fast-forward", code: 1 };
       }
       return recorder.exec(command, args, options);
@@ -1331,6 +1367,67 @@ describe("Flow pull-request lifecycle", () => {
       expect(text).not.toContain("search issues");
       expect(text).not.toContain("epic");
     }
+    await stopFlow(client);
+    client.close();
+  }, 60_000);
+
+  test("a push that outlives its deadline settles, records the failure, and the next checkpoint syncs", async () => {
+    const fixture = createFixture("pr-push-timeout");
+    const forgeStub = new StubForge();
+    const bound = 150;
+    let stall = true;
+    let pushStartedAt = 0;
+    const recorder = recordingExecutor();
+    const stalling: Exec = async (command, args, options) => {
+      if (stall && command === "git" && args[0] === "push" && args[2] !== "main") {
+        stall = false;
+        pushStartedAt = Date.now();
+        if (options.timeout === undefined) throw new Error("the push had no deadline");
+        // The production bound is a real deadline; this stub stands in for a
+        // child that settles when it expires, so the wait is the behavior.
+        await Bun.sleep(options.timeout);
+        return {
+          stdout: "",
+          stderr: `the command timed out after ${options.timeout} ms.`,
+          code: -1,
+          killed: true,
+        };
+      }
+      return recorder.exec(command, args, options);
+    };
+    const server = startServer(fixture, {
+      forge: forgeStub,
+      exec: stalling,
+      commandTimeoutMs: bound,
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-change",
+        "--flow-checkpoints=2",
+        `--flow-wait-file=${join(fixture.stateDir, "proceed")}`,
+      ],
+    });
+    const client = await connect(server);
+    await connected(client);
+    await createGoal(client);
+    const session = await startFlow(client, fixture);
+
+    const error = await client.waitFor((event) => event.type === "flowError", 30_000);
+    expect(String(error.message)).toContain("timed out");
+    expect(pushStartedAt).toBeGreaterThan(0);
+    expect(Date.now() - pushStartedAt).toBeLessThan(5_000);
+    expect(String(storedSession(fixture, session.id)?.prError)).toContain("timed out");
+
+    // The next checkpoint must reach #syncPullRequest: a busy flag left set by
+    // the stall would keep the PR from ever being created.
+    mkdirSync(fixture.stateDir, { recursive: true });
+    writeFileSync(join(fixture.stateDir, "proceed"), "second checkpoint\n");
+    const pr = await client.waitFor(
+      (event) => event.type === "flowPr" && event.pr !== null,
+      30_000,
+    );
+    expect(pullRequestState(pr)).toBe("draft");
+    expect(forgeStub.calls.filter((call) => call.op === "createDraft")).toHaveLength(1);
     await stopFlow(client);
     client.close();
   }, 60_000);

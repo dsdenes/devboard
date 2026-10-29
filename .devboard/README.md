@@ -598,6 +598,12 @@ merges it manually through the forge, and only as a merge commit — never squas
 only after both modes' work has stopped and the worktree is clean. Flow never merges on a
 schedule, never force-pushes, and never rewrites the branch.
 
+Every `git`, `gh`, and `glab` child Flow starts carries the `commandTimeoutMs` bound (60 s by
+default), and the forge's credential probe is bounded by the same value. A command that outlives
+it is killed and reported as a failed push or forge call: the failure is persisted in `prError`,
+the pull-request busy flag is cleared, and a later checkpoint or `retryFlowPr` can sync again
+without restarting the server.
+
 After a successful merge the server fast-forwards the host's `main` checkout when it is on `main`
 and clean, removes the worktree, and deletes the local and remote branch once the branch tip is an
 ancestor of `origin/main`. Whatever it could not remove is reported as a leftover and as one

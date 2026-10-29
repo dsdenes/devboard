@@ -18,7 +18,12 @@ import {
   type ForgePrState,
   type ForgeTarget,
 } from "./forge-pr";
-import type { Exec, Forge } from "../lib/forge-auth.ts";
+import {
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  spawnExec,
+  type Exec,
+  type Forge,
+} from "../lib/forge-auth.ts";
 import { giteaBaseUrl, parseForgeRemote } from "../lib/forge";
 import { journalKey, type Journal } from "./journal";
 import type { RecordedChild } from "./state";
@@ -175,6 +180,8 @@ export interface FlowOptions {
   analystTimeoutMs?: number;
   /** Bound on one goal interview turn. */
   goalTimeoutMs?: number;
+  /** Bound on one git/gh/glab child; a stalled command settles as killed. */
+  commandTimeoutMs?: number;
   /** Describes active Goal Mode work, if any. */
   goalWorkActive?: () => string | undefined;
 }
@@ -568,6 +575,7 @@ export class FlowController {
   readonly #watchMs: number;
   readonly #analystTimeoutMs: number;
   readonly #goalTimeoutMs: number;
+  readonly #commandTimeoutMs: number;
   readonly #goalWorkActive: () => string | undefined;
 
   #session: FlowSession | undefined;
@@ -607,33 +615,11 @@ export class FlowController {
     this.#broadcast = options.broadcast;
     this.#journal = options.journal;
     this.#forgeTarget = options.forgeTarget;
-    this.#exec =
-      options.exec ??
-      (async (command, args, execOptions) => {
-        try {
-          const child = Bun.spawn({
-            cmd: [command, ...args],
-            cwd: execOptions.cwd,
-            env: execOptions.env,
-            stdin: "ignore",
-            stdout: "pipe",
-            stderr: "pipe",
-          });
-          const [stdout, stderr, code] = await Promise.all([
-            new Response(child.stdout).text(),
-            new Response(child.stderr).text(),
-            child.exited,
-          ]);
-          return { stdout, stderr, code };
-        } catch (error) {
-          return {
-            stdout: "",
-            stderr: error instanceof Error ? error.message : String(error),
-            code: -1,
-          };
-        }
-      });
-    this.#forge = options.forge ?? new CommandFlowForge(this.#exec);
+    this.#commandTimeoutMs = Math.max(1, options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
+    this.#exec = options.exec ?? spawnExec;
+    this.#forge = options.forge ?? new CommandFlowForge(this.#exec, {
+      timeoutMs: this.#commandTimeoutMs,
+    });
     this.#now = options.now ?? Date.now;
     this.#watchMs = Math.max(10, options.watchMs ?? DEFAULT_WATCH_MS);
     this.#analystTimeoutMs = Math.max(10, options.analystTimeoutMs ?? DEFAULT_ANALYST_TIMEOUT_MS);
@@ -1496,6 +1482,7 @@ export class FlowController {
     return this.#exec("git", args, {
       cwd,
       env: { ...(process.env as Record<string, string>), ...GIT_ENV },
+      timeout: this.#commandTimeoutMs,
     }).then(
       (result) => result,
       (error) => ({
