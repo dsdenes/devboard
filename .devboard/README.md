@@ -162,11 +162,12 @@ assistive technology.
 ### Notifications and status bar
 
 Server errors and notices appear in the notification region (`data-testid="notifications"`) with
-severity, text, and dismissal, and remain in a history opened from the status bar. Every error and
-warning card also carries `File issue`: it files that notification's text and card context as a UI
-issue through `/api/feedback` at once, then replaces itself with the issue URL. Notifications
-never replace mode content or steal focus, and several arrivals are all retained. Flow blockers
-and verification results also remain in their mode context.
+severity, the subsystem or the exact agent label that raised them, text, and dismissal. Each card
+closes itself after five seconds; every entry stays in the history opened from the status bar.
+Every error and warning card also carries `File issue`: it files that notification's text and card
+context as a UI issue through `/api/feedback` at once, then replaces itself with the issue URL.
+Notifications never replace mode content or steal focus, and several arrivals are all retained.
+Flow blockers and verification results also remain in their mode context.
 
 The 26px status bar is two groups. The left group states the WebSocket connection, the
 project's own name (the last path segment, with a folder mark and the full path in its tooltip),

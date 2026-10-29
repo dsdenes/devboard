@@ -265,7 +265,7 @@ export class AgentsStore {
     if (value.error !== previousError) {
       this.lastError.set(value.id, value.error);
       if (!first && value.error !== null) {
-        notifications.push("Background agents", "error", value.error);
+        notifications.push(value.label, "error", value.error);
       }
     }
     const pending = this.pendingSettings.get(value.id);
@@ -284,11 +284,7 @@ export class AgentsStore {
     if (value.notice !== previousNotice) {
       this.lastNotice.set(value.id, value.notice);
       if (!first && value.notice !== null && value.notice.startsWith("Filed ")) {
-        notifications.push(
-          value.label === "Auto Scout" ? "Auto Scout" : "Background agents",
-          "success",
-          value.notice,
-        );
+        notifications.push(value.label, "success", value.notice);
       }
     }
   }

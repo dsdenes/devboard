@@ -7483,18 +7483,25 @@ try {
   check(notification.live === "polite", "the notification region is not a live region", notification);
   const notificationFocus = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="notifications"]') === null`);
   check(notificationFocus, "a notification stole focus");
+  // The card closes itself after five seconds, so the rest of the filing flow
+  // runs on its history entry, where the same controls stay available.
+  await saveShot("notification-issue-file");
+  await page.click('[data-testid="notification-indicator"]');
+  await page.wait(
+    `document.querySelector('[data-testid="notification-history"]') !== null`,
+    "the notification history",
+  );
   startServer();
   await waitForHttp(baseUrl);
   await page.wait(`document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`, "reconnection", 30_000);
   await clearFeedback();
-  await saveShot("notification-issue-file");
   const notificationFile = await page.eval<{
     present: boolean;
     label: string;
     text: string;
     disabled: boolean;
   }>(`(() => {
-    const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+    const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
       (item) => item.textContent.includes("Not connected"),
     );
     const button = entry?.querySelector(".notification__file");
@@ -7515,7 +7522,7 @@ try {
   );
   const clickNotificationFile = (): Promise<unknown> =>
     page.eval(`(() => {
-      const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+      const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
         (item) => item.textContent.includes("Not connected"),
       );
       entry?.querySelector(".notification__file")?.click();
@@ -7525,7 +7532,7 @@ try {
   await setFeedbackMode("fail");
   await clickNotificationFile();
   await page.wait(
-    `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some(
+    `[...document.querySelectorAll('[data-testid="notification-history"] .notification')].some(
       (entry) =>
         entry.textContent.includes("Not connected") &&
         entry.querySelector(".notification__error")?.textContent?.includes("Issue creation failed") === true,
@@ -7534,7 +7541,7 @@ try {
     20_000,
   );
   const notificationFailure = await page.eval<{ text: string; retry: boolean }>(`(() => {
-    const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+    const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
       (item) => item.textContent.includes("Not connected"),
     );
     const retry = entry?.querySelector(".notification__file");
@@ -7554,7 +7561,7 @@ try {
   await clickNotificationFile();
   await waitForFeedbackCalls(2);
   await page.wait(
-    `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some(
+    `[...document.querySelectorAll('[data-testid="notification-history"] .notification')].some(
       (entry) => entry.textContent.includes("Not connected") && entry.querySelector(".notification__link") !== null,
     )`,
     "the notification issue link",
@@ -7585,7 +7592,7 @@ try {
     feedbackRequests,
   );
   const notificationLink = await page.eval<{ text: string; href: string }>(`(() => {
-    const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+    const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
       (item) => item.textContent.includes("Not connected"),
     );
     const link = entry?.querySelector(".notification__link");
@@ -7600,19 +7607,17 @@ try {
     "the notification does not link to the filed issue",
     notificationLink,
   );
-  await page.click('[data-testid="notification-indicator"]');
-  await page.wait(`document.querySelector('[data-testid="notification-history"]') !== null`, "the notification history");
-  await page.key("Escape");
-  await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
   const dismiss = await page.eval<boolean>(`(() => {
     const button = document.querySelector(
-      '[data-testid="notifications"] .notification [aria-label="Dismiss notification"]',
+      '[data-testid="notification-history"] .notification [aria-label="Dismiss notification"]',
     );
     if (button === null) return false;
     button.click();
     return true;
   })()`);
-  check(dismiss, "the notification region has no dismissal control");
+  check(dismiss, "the notification history has no dismissal control");
+  await page.key("Escape");
+  await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
 
   // 17. Viewport boundary.
   await devtools.send("Emulation.setDeviceMetricsOverride", {
