@@ -5,7 +5,7 @@
 | Order | A2UI ID | Region | Journey | Items | Priority |
 |---|---|---|---|---|---|
 | 1 | region_identity | Draft title, file name | Review, Start | C1, C2 | P0 / P1 |
-| 2 | region_actions | Status badge, Start, Stop | Review, Start | C3, C4, C5, C6 | P0 / P1 / P2 |
+| 2 | region_actions | Status badge, Stop | Review, Start | C3, C5 | P0 / P1 |
 | 3 | region_alert | Error banner, only when present | Review, Start | C7 | P1 |
 | 4 | region_question | Elaboration question, only while pending | Start | C14, C15, C16 | P0 while pending |
 | 5 | region_proposal | Proposed goal text | Review | C8 | P0 |
@@ -19,7 +19,7 @@ Panel (surface, border, 4px radius, fills the grid cell)
       h2 heading, ellipsis, full value in title          P0
       file name, mono-small muted, ellipsis              P1
     actions (row, 6px gaps, never shrinks)
-      [status badge] [Start elaboration] [Stop?]          P0 / P1
+      [status badge] [Stop?]                              P0 / P1
   body (column, 12px padding, 16px between sections, scrolls)
     [error alert]                                         P1
     section question (warning border + surface)           P0 while pending
@@ -41,8 +41,9 @@ Panel (surface, border, 4px radius, fills the grid cell)
 
 ## Primary action
 
-- Start elaboration is the one filled primary, in the header, beside the status it changes.
-  It is disabled while any elaboration runs, and its tooltip states the blocker.
+- Start elaboration is the one filled primary and lives on each draft row, next to the draft it
+  starts; the detail header does not repeat it beside the status it changes.
+- The row's Start is disabled while that draft runs, and its tooltip states the blocker.
 - Stop takes the documented quiet-destructive style (24px word, `border-subtle`, muted until
   hover/focus turns `error-surface`/`error`). It appears only while this draft's run is live.
 - The question's option cards and `Answer` are the critical path while a question is pending;
@@ -61,12 +62,12 @@ Panel (surface, border, 4px radius, fills the grid cell)
 
 ## State coverage
 
-- Idle: badge `idle`, filled Start, no activity section, no question.
-- Another draft running: badge `idle` for this draft, Start disabled with the blocker tooltip.
-- This draft running: badge `running`, quiet Stop, activity section streaming, question block
-  on top as soon as one arrives.
-- Stopped: badge `stopped`, Start re-enabled, activity retained.
-- Failed: badge `failed`, error alert with the server reason, draft retained, Start retry.
+- Idle: badge `idle`, row Start enabled, no activity section, no question.
+- Another draft running: badge `idle` for this draft, its row Start remains enabled.
+- This draft running: badge `running`, row Start disabled with the blocker tooltip, quiet Stop,
+  activity section streaming, question block on top as soon as one arrives.
+- Stopped: badge `stopped`, row Start re-enabled, activity retained.
+- Failed: badge `failed`, error alert with the server reason, draft retained, row Start retries.
 - Read refused / vanished: the store clears the selection and the page renders the list; a
   refused read on a still-listed draft shows the alert.
 - No captured context marker: "No captured UI context." in the context section.

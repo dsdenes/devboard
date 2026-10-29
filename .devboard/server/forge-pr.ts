@@ -335,10 +335,12 @@ export class CommandFlowForge implements FlowPrAdapter {
       return;
     }
     // A merge commit is the only accepted method: never squash, never rebase.
+    // glab has no flag that forces a merge commit; it is the default when neither
+    // --squash nor --rebase is passed, and `--merge` does not exist there.
     const args =
       target.forge === "github"
         ? ["pr", "merge", String(number), "--merge"]
-        : ["mr", "merge", String(number), "--merge", "--yes"];
+        : ["mr", "merge", String(number), "--yes"];
     const result = await this.#run(cwd, target, target.forge === "github" ? "gh" : "glab", args);
     if (result.code !== 0) throw forgeFailure("merge the pull request", result);
   }

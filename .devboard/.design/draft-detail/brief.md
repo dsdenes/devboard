@@ -51,14 +51,14 @@
 - Exit: stay to elaborate, or select another draft.
 
 ### Start and supervise an elaboration
-- Trigger: the operator chooses `Start elaboration`.
+- Trigger: the operator chooses Start on the draft's row.
 - Steps: read the status, follow the streamed activity, answer the question when it appears.
 - Decision points: keep waiting, answer with an option or free text, or stop.
 - Success: the question is the first thing after the header, the answer sends, and the draft
   eventually leaves the list with its spec written.
-- Failure routes: another draft is already elaborating — Start is disabled with the reason in
-  its tooltip and in the list; the peer fails — the error banner keeps the draft and accepts a
-  retry; Stop — the run records `stopped`, keeps the activity, and re-enables Start.
+- Failure routes: another elaboration for the same draft is live — the row's Start is disabled
+  with the reason in its tooltip; the peer fails — the error banner keeps the draft and accepts a
+  retry; Stop — the run records `stopped`, keeps the activity, and re-enables the row's Start.
 - Recovery: answer the question, restart after a failure or stop, or select the running draft.
 - Exit: leave the page; the run continues.
 

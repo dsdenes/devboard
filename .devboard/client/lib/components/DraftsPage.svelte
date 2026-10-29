@@ -69,8 +69,8 @@
   <header class="issues-overview__header">
     <div>
       <h1 class="issues-overview__title">Draft goals</h1>
-      <p class="issues-overview__repo mono">
-        {issues.draftStatus} · {issues.drafts.length} draft(s)
+      <p class="issues-overview__repo mono" title={issues.repoLabel}>
+        {issues.repoLabel} · {issues.draftStatus} · {issues.drafts.length} draft(s)
       </p>
     </div>
   </header>
@@ -78,25 +78,22 @@
     <section class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Proposed goals</h2>
-        <div class="issues-drafts__header-actions">
-          <span class="panel__subtitle issues-drafts__repo" title={issues.repoLabel}>
-            {issues.repoLabel}
-          </span>
-          <Button
-            variant="secondary"
-            size="sm"
-            data-testid="issues-draft-new"
-            data-command="issues.draft.new"
-            aria-expanded={issues.draftCreateOpen}
-            onclick={() => issues.beginDraftCreate()}
-          >
-            New goal
-          </Button>
-        </div>
+        <Button
+          variant={issues.draftCreateOpen ? "secondary" : "default"}
+          size="sm"
+          data-testid="issues-draft-new"
+          data-command="issues.draft.new"
+          aria-expanded={issues.draftCreateOpen}
+          aria-controls={issues.draftCreateOpen ? "issues-draft-new-popover" : undefined}
+          onclick={() => issues.beginDraftCreate()}
+        >
+          New goal
+        </Button>
       </div>
       {#if issues.draftCreateOpen}
         <div
           class="issues-draft-new"
+          id="issues-draft-new-popover"
           data-testid="issues-draft-new-popover"
           role="dialog"
           aria-label="New goal"
@@ -211,8 +208,8 @@
               {issues.draft.name}
             </span>
           </div>
-          <div class="issues-draft-detail__actions">
-            {#if status !== "idle"}
+          {#if status !== "idle"}
+            <div class="issues-draft-detail__actions">
               <span
                 class="badge"
                 data-tone={statusTone(status)}
@@ -220,29 +217,19 @@
               >
                 {status}
               </span>
-            {/if}
-            <Button
-              variant="default"
-              data-testid="issues-draft-start"
-              data-command="issues.draft.start"
-              disabled={running}
-              title={issues.draftStartBlocker(issues.draft.path) ?? "Start the elaboration agent"}
-              onclick={() => issues.startDraft()}
-            >
-              Start elaboration
-            </Button>
-            {#if running}
-              <Button
-                variant="ghost"
-                class="issues-draft-detail__stop"
-                data-testid="issues-draft-stop"
-                data-command="issues.draft.stop"
-                onclick={() => issues.stopDraft()}
-              >
-                Stop
-              </Button>
-            {/if}
-          </div>
+              {#if running}
+                <Button
+                  variant="ghost"
+                  class="issues-draft-detail__stop"
+                  data-testid="issues-draft-stop"
+                  data-command="issues.draft.stop"
+                  onclick={() => issues.stopDraft()}
+                >
+                  Stop
+                </Button>
+              {/if}
+            </div>
+          {/if}
         </div>
         <div class="issues-draft-detail__body">
           {#if error !== null}

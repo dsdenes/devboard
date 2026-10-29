@@ -6331,19 +6331,21 @@ try {
   await page.wait(`document.querySelector('[data-testid="issues-draft-detail"]') !== null`, "the draft detail");
   const detail = await page.eval<{
     path: string;
-    start: string;
-    startCommand: string;
+    detailStart: boolean;
+    rowStartCommand: string;
     stop: boolean;
     pathLabel: string;
     proposal: string;
     contextSection: boolean;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
-    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    const rowStart = document.querySelector(
+      '[data-testid="issues-draft-row-start"][data-path="${reportDraftPath}"]',
+    );
     return {
       path: panel?.getAttribute("data-path") ?? "",
-      start: document.querySelector('[data-testid="issues-draft-start"]') !== null ? "yes" : "",
-      startCommand: start?.getAttribute("data-command") ?? "",
+      detailStart: document.querySelector('[data-testid="issues-draft-start"]') !== null,
+      rowStartCommand: rowStart?.getAttribute("data-command") ?? "",
       stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
       pathLabel: panel?.querySelector(".issues-draft-detail__path")?.textContent?.trim() ?? "",
       proposal: panel?.querySelector(".issues-draft-detail__prose")?.textContent ?? "",
@@ -6375,8 +6377,10 @@ try {
   await dismissNotifications();
   await saveShot("issues-draft-detail");
   check(
-    detail.start === "yes" && detail.startCommand === "issues.draft.start" && !detail.stop,
-    "the draft detail has the wrong controls",
+    !detail.detailStart &&
+      detail.rowStartCommand === "issues.draft.start" &&
+      !detail.stop,
+    "the draft detail still carries a start control or the row lost its own",
     detail,
   );
 
@@ -6574,7 +6578,7 @@ try {
   await page.wait(`${draftStatus("001-question.md")} === "running"`, "the other elaboration stays running");
   const stopped = await page.eval<{ stop: boolean; start: boolean; present: boolean }>(`(() => ({
     stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
-    start: document.querySelector('[data-testid="issues-draft-start"]')?.disabled === false,
+    start: document.querySelector('${draftRowStart("002-hang.md")}')?.disabled === false,
     present: document.querySelector('${draftRow("002-hang.md")}') !== null,
   }))()`);
   check(
@@ -6928,7 +6932,9 @@ try {
     8_000,
   );
   const busyStart = await page.eval<{ disabled: boolean; title: string; blockers: number }>(`(() => {
-    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    const start = document.querySelector(
+      '[data-testid="issues-draft-row-start"][data-path="${busyPath}"]',
+    );
     return {
       disabled: start?.disabled === true,
       title: start?.getAttribute("title") ?? "",
@@ -7004,7 +7010,9 @@ try {
   );
   const afterCreatedStop = await page.eval<{ stop: boolean; startDisabled: boolean; present: boolean }>(`(() => ({
     stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
-    startDisabled: document.querySelector('[data-testid="issues-draft-start"]')?.disabled === false,
+    startDisabled: document.querySelector(
+      '[data-testid="issues-draft-row-start"][data-path="${busyPath}"]',
+    )?.disabled === false,
     present: document.querySelector('[data-testid="issues-draft"][data-path="${busyPath}"]') !== null,
   }))()`);
   check(
@@ -7092,7 +7100,9 @@ try {
   const startLines = async (): Promise<string[]> =>
     (await agentLogLines(agentLog)).filter((line) => line.startsWith("goal-draft-start "));
   const startsBeforeQuestion = (await startLines()).length;
-  await page.click('[data-testid="issues-draft-start"]');
+  await page.click(
+    `[data-testid="issues-draft-row-start"][data-path="${questionPath}"]`,
+  );
   await page.wait(
     `document.querySelector('[data-testid="issues-draft-activity"]')?.textContent?.includes("Reading the draft") === true`,
     "the streamed elaboration activity before the version reload",
@@ -7225,7 +7235,9 @@ try {
     startTitle: string;
     stop: boolean;
   }>(`(() => {
-    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    const start = document.querySelector(
+      '[data-testid="issues-draft-row-start"][data-path="${questionPath}"]',
+    );
     return {
       startDisabled: start instanceof HTMLButtonElement ? start.disabled : false,
       startTitle: start?.getAttribute("title") ?? "",
@@ -7275,7 +7287,7 @@ try {
     "the hanging draft detail before its reload",
   );
   const startsBeforeHang = (await startLines()).length;
-  await page.click('[data-testid="issues-draft-start"]');
+  await page.click(`[data-testid="issues-draft-row-start"][data-path="${hangPath}"]`);
   await page.wait(
     `document.querySelector('[data-testid="issues-draft-stop"]') !== null &&
       (document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "")
@@ -7335,7 +7347,9 @@ try {
     startDisabled: boolean;
     listed: boolean;
   }>(`(() => {
-    const start = document.querySelector('[data-testid="issues-draft-start"]');
+    const start = document.querySelector(
+      '[data-testid="issues-draft-row-start"][data-path="${hangPath}"]',
+    );
     return {
       stop: document.querySelector('[data-testid="issues-draft-stop"]') !== null,
       startDisabled: start instanceof HTMLButtonElement ? start.disabled : true,

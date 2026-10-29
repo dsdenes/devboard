@@ -141,6 +141,27 @@ function argsOf(calls: Recorded[], command: string): string[][] {
   return calls.filter((call) => call.command === command).map((call) => call.args);
 }
 
+/** The flags `glab mr merge --help` documents; anything else fails before GitLab is called. */
+const GITLAB_MR_MERGE_FLAGS: Record<string, true> = {
+  "-h": true,
+  "--help": true,
+  "-m": true,
+  "--message": true,
+  "-r": true,
+  "--rebase": true,
+  "-d": true,
+  "--remove-source-branch": true,
+  "-R": true,
+  "--repo": true,
+  "--sha": true,
+  "-s": true,
+  "--squash": true,
+  "--squash-message": true,
+  "--auto-merge": true,
+  "-y": true,
+  "--yes": true,
+};
+
 describe("Flow forge command shapes", () => {
   test("GitHub creates a draft, updates, readies, views, and merges with a merge commit", async () => {
     const { adapter, calls } = forge((command, args) => {
@@ -238,6 +259,15 @@ describe("Flow forge command shapes", () => {
           code: 0,
         };
       }
+      if (args[0] === "mr" && args[1] === "merge") {
+        const unknown = args.slice(2).find((arg) => {
+          if (!arg.startsWith("-")) return false;
+          return GITLAB_MR_MERGE_FLAGS[arg.split("=")[0] ?? arg] !== true;
+        });
+        if (unknown !== undefined) {
+          return { stdout: "", stderr: `Unknown flag: ${unknown}.\n`, code: 1 };
+        }
+      }
       return { stdout: "", stderr: "", code: 0 };
     });
 
@@ -277,8 +307,12 @@ describe("Flow forge command shapes", () => {
     const state = await adapter.view(TEST_ROOT, GITLAB, 9);
     expect(state).toMatchObject({ state: "open", draft: true, number: 9 });
 
-    await adapter.merge(TEST_ROOT, GITLAB, 9);
-    expect(argsOf(calls, "glab")[4]).toEqual(["mr", "merge", "9", "--merge", "--yes"]);
+    await expect(adapter.merge(TEST_ROOT, GITLAB, 9)).resolves.toBeUndefined();
+    const mergeArgs = argsOf(calls, "glab")[4];
+    expect(mergeArgs).toEqual(["mr", "merge", "9", "--yes"]);
+    expect(mergeArgs).not.toContain("--merge");
+    expect(mergeArgs).not.toContain("--squash");
+    expect(mergeArgs).not.toContain("--rebase");
   });
 
   test("a missing write-capable account and a missing URL fail without inventing a PR", async () => {

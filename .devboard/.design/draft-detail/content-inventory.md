@@ -10,9 +10,9 @@ journeys in `brief.md`.
 | C1 | Draft heading | `GoalDraftSummary.heading` (first Markdown heading) | Review, Start | Recognise which goal is proposed | Keep | Primary identity; the heading is the human title |
 | C2 | File name and relative path | `GoalDraftSummary.name/path` | Review, Start | Correlate with the list, the report, and the spec written later | Keep | The durable identity; the list already shows it, the detail owns the full path |
 | C3 | Run status for this draft | `issues.draftRun.status` filtered by `path` | Review, Start | Know whether this draft is idle, running, stopped, or failed | Keep | Owns the header badge; must not borrow another draft's run |
-| C4 | Start elaboration | `issues.draft.start` | Start | Run the elaboration | Keep | The single primary action |
+| C4 | Start elaboration | `issues.draft.start` | Start | Run the elaboration | Keep (outside) | Each row owns the single Start; the detail does not repeat the primary |
 | C5 | Stop elaboration | `issues.draft.stop` | Start | Stop the peer and keep the draft | Keep | The only way to interrupt a wrong elaboration |
-| C6 | Start blocker reason | `draftStartBlocker(path)` | Start | Understand a disabled Start | Keep | Stated in the control's tooltip; the list also carries it |
+| C6 | Start blocker reason | `draftStartBlocker(path)` | Start | Understand a disabled Start | Keep (outside) | The row Start's tooltip states it; the detail does not repeat it |
 | C7 | Draft or peer error | `draftError`, `draftRun.error` | Review, Start | Recover from a refused read or failed peer | Keep | Needs a visible alert, not a raw log line |
 | C8 | Proposal text before `## Captured UI context` | `GoalDraftDetail.text` | Review | Judge the proposal | Keep | The reading surface; the raw source block is gone |
 | C9 | Captured route, URL, selected element, viewport, time | `## Captured UI context` facts | Review | Decide whether the evidence matches the report | Keep | Compact facts; currently a wall of text |
@@ -33,6 +33,8 @@ journeys in `brief.md`.
 - C9 and C10/C11 render once: the structured context is read from the parsed draft, and the
   raw source block that repeated the whole file is gone.
 - C1 and C2 share one two-line header instead of the heading appearing again inside the text.
+- C4 and C6 stay on the draft row; the detail header carried a second Start with the same
+  blocker, and that copy is gone.
 - C17 and C19 are removed outright, and C12 is dropped with the raw source block it rendered.
 - C3 is filtered to the selected draft; the previous component showed the global run status
   even when another draft was elaborating.
