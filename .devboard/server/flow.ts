@@ -26,7 +26,7 @@ import {
 } from "../lib/forge-auth.ts";
 import { giteaBaseUrl, parseForgeRemote } from "../lib/forge";
 import { journalKey, type Journal } from "./journal";
-import type { RecordedChild } from "./state";
+import { writeStateFile, type RecordedChild } from "./state";
 
 /**
  * Flow Mode: one implementation agent in an isolated worktree, reviewable as
@@ -289,9 +289,13 @@ function readText(path: string): string | undefined {
   }
 }
 
+/**
+ * Replaces a Flow file atomically, sharing the state writer's guarantee: a
+ * failed save leaves the previous complete bytes in place instead of a
+ * truncated file that a restore would read as an empty goal or decision board.
+ */
 function writeText(path: string, text: string): void {
-  mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(path, text);
+  writeStateFile(path, text);
 }
 
 function writeJson(path: string, value: unknown): void {
