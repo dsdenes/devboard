@@ -924,7 +924,7 @@
     border: 1px solid var(--accent);
     border-radius: 999px;
     color: var(--accent);
-    font-size: 0.85rem;
+    font-size: 12px;
     font-weight: 600;
     left: 50%;
     padding: 0.45rem 1rem;
@@ -986,7 +986,7 @@
     border: none;
     color: var(--muted);
     cursor: pointer;
-    font-size: 1.1rem;
+    font-size: 12px;
     line-height: 1;
     padding: 0 0.2rem;
   }
@@ -997,7 +997,7 @@
 
   .feedback-selector {
     color: var(--muted);
-    font-size: 0.75rem;
+    font-size: 11.5px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1047,7 +1047,7 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     color: var(--text);
-    font-size: 0.8rem;
+    font-size: 12px;
     margin: 0;
     overflow-wrap: anywhere;
     padding: 0.4rem 0.55rem;
@@ -1070,7 +1070,7 @@
     border-radius: 6px;
     color: var(--text);
     font: inherit;
-    font-size: 0.9rem;
+    font-size: 12px;
     padding: 0.5rem;
     resize: vertical;
     width: 100%;
@@ -1093,7 +1093,7 @@
     color: var(--surface);
     cursor: pointer;
     font: inherit;
-    font-size: 0.85rem;
+    font-size: 12px;
     font-weight: 600;
     padding: 0.4rem 0.8rem;
   }
@@ -1111,13 +1111,13 @@
 
   .feedback-status {
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: 12px;
     margin: 0;
   }
 
   .feedback-error {
     color: var(--error);
-    font-size: 0.8rem;
+    font-size: 12px;
     margin: 0;
   }
 </style>
