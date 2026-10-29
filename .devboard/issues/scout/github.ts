@@ -33,8 +33,10 @@ export {
   isSha,
   parseJsonArray,
   parseJsonLines,
+  resolveShippedVersion,
   shaTokens,
   shippedVersion,
+  type VersionResolution,
 } from "../../lib/github-release";
 
 export interface ScoutGitHubIssue {
