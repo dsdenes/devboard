@@ -75,6 +75,7 @@ export async function suggestGoalSlug(report: string, options: GoalSlugOptions):
       command: options.command,
       cwd: options.cwd,
       ...(options.env === undefined ? {} : { env: options.env }),
+      permissionPolicy: "deny",
       onActivity: () => {},
       onText: (text) => {
         answer += text;

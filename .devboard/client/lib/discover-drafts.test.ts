@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { ConnectionStore } from "./connection.svelte";
 import { DiscoverStore } from "./discover.svelte";
+import { saveFeedback } from "./save-feedback.svelte";
 import type { DiscoverSkill, DiscoverTarget } from "./types";
 
 /**
@@ -79,6 +80,7 @@ function restoreGlobals(): void {
 
 afterEach(() => {
   FakeSocket.instances = [];
+  saveFeedback.dismiss();
   restoreGlobals();
 });
 
@@ -132,6 +134,10 @@ function assertDraftScope(store: DiscoverStore, socket: FakeSocket): void {
     text: "b",
     target: { kind: "remote", owner: "octocat", repo: "Beta" },
   });
+
+  // The snapshot reporting the saved text confirms it, and only then.
+  deliver(socket, beta, "b");
+  expect(saveFeedback.text).toBe(`${SKILL}/SKILL.md saved.`);
 
   // Returning to the first project restores its unsaved text instead of the
   // second project's published content.

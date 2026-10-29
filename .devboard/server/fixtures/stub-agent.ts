@@ -9,7 +9,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { createHash } from "node:crypto";
 import { frontmatterStatus, isPendingStatus, setFrontmatterStatus } from "./adr-source";
 import { GOAL_SLUG_PROMPT_MARKER } from "../goal-slug";
@@ -191,6 +191,12 @@ if (goalDraft) log(`goal-draft-start ${process.pid}`);
 const goalDraftFinish = argument("goal-draft-finish");
 /** Draft naming mode: answer a naming turn with this text, verbatim. */
 const goalSlug = argument("goal-slug");
+/**
+ * A path the peer writes only after the client grants the request_permission
+ * frame it sends on every read-only conversation turn. The turn logs the
+ * client's answer so a test proves the cancelled outcome, not just the absence.
+ */
+const permissionProbe = argument("permission-probe");
 const ASK_INSTRUCTION = "This conversation is read-only.";
 const ASK_ANSWER_ONE =
   "The issues indicator shows the lifecycle the detached worker published for this repository. " +
@@ -225,6 +231,44 @@ function request(method: string, params: unknown): Promise<unknown> {
   pending.set(String(id), resolve);
   write({ jsonrpc: "2.0", id, method, params });
   return promise;
+}
+
+/**
+ * A mutating action behind an ACP permission request. A read-only client must
+ * answer cancelled; only an explicit allow selection performs the write.
+ */
+async function probePermission() {
+  if (permissionProbe === undefined) return;
+  const response = await request("session/request_permission", {
+    sessionId: "stub-session",
+    toolCall: {
+      toolCallId: "permission-probe",
+      title: "Write the permission probe",
+      kind: "edit",
+      status: "pending",
+    },
+    options: [
+      { optionId: "reject", name: "Reject", kind: "reject_once" },
+      { optionId: "allow", name: "Allow", kind: "allow_once" },
+    ],
+  });
+  const result =
+    typeof response === "object" && response !== null
+      ? (response as Record<string, unknown>)
+      : undefined;
+  const outcomeRecord =
+    typeof result?.outcome === "object" && result.outcome !== null
+      ? (result.outcome as Record<string, unknown>)
+      : undefined;
+  const outcome = typeof outcomeRecord?.outcome === "string" ? outcomeRecord.outcome : "none";
+  const optionId = typeof outcomeRecord?.optionId === "string" ? outcomeRecord.optionId : "";
+  log(`permission ${outcome}${optionId.length > 0 ? ` ${optionId}` : ""}`);
+  if (outcome === "selected" && optionId === "allow") {
+    const target = isAbsolute(permissionProbe)
+      ? permissionProbe
+      : join(process.cwd(), permissionProbe);
+    writeFileSync(target, "granted\n");
+  }
 }
 
 function pendingCount(directory: string): number {
@@ -908,6 +952,7 @@ async function runFlowWidget(rest: string) {
   const split = /^(\S+)\s+(\S+)/.exec(rest);
   log(`flow-widget ${split?.[1] ?? ""} ${split?.[2] ?? ""}`);
   stream("Reviewing the widget and its diff");
+  await probePermission();
   await askQuestions(1);
   stream("The widget conversation is read-only");
 }
@@ -1500,6 +1545,7 @@ async function promptTurn(params: unknown) {
   if (!announced) {
     announced = true;
     log(`spawn ${process.pid}`);
+    log(`argv ${process.argv.slice(2).join(" ")}`);
   }
   const text = promptText(params);
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;
@@ -1507,6 +1553,7 @@ async function promptTurn(params: unknown) {
 
   if (goalSlug !== undefined && text !== undefined && text.includes(GOAL_SLUG_PROMPT_MARKER)) {
     log(`goal-slug ${firstLine}`);
+    await probePermission();
     write({
       jsonrpc: "2.0",
       method: "session/update",
@@ -1528,6 +1575,7 @@ async function promptTurn(params: unknown) {
     const question = /(?:^|\n)Question: ([^\n]*)/.exec(text)?.[1] ?? "";
     log(`ask-prompt ${askTurns} ${question}`);
     log(`ask-text ${askTurns} ${JSON.stringify(text)}`);
+    await probePermission();
     // Thoughts and tool activity precede the answer; the panel must drop them.
     write({
       jsonrpc: "2.0",

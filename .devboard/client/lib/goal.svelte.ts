@@ -1,5 +1,6 @@
 import { connection } from "./connection.svelte";
 import { discover } from "./discover.svelte";
+import { saveFeedback } from "./save-feedback.svelte";
 import type {
   AdrRecord,
   Lane,
@@ -479,6 +480,7 @@ export class GoalStore {
             this.goalDirty = false;
             this.goalDraft = message.text;
             this.pendingGoalSave = null;
+            saveFeedback.saved("Goal saved.");
           }
         } else if (!this.goalDirty) {
           this.goalDraft = message.text;

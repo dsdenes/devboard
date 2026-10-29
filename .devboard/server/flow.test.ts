@@ -1356,8 +1356,15 @@ describe("Flow steering, decisions, and conversation", () => {
 
   test("a widget conversation is read-only, queues a message, and its conclusion becomes steering", async () => {
     const fixture = createFixture("conversation");
+    const probePath = join(fixture.root, "permission-probe.txt");
     const testServer = startServer(fixture, {
-      stub: ["--flow-goal", "--flow-implement", "--flow-change", "--flow-widget"],
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-change",
+        "--flow-widget",
+        `--permission-probe=${probePath}`,
+      ],
     });
     const client = await connect(testServer);
     await connected(client);
@@ -1392,6 +1399,11 @@ describe("Flow steering, decisions, and conversation", () => {
     await client.waitFor(
       (event) => event.type === "flowConversationActivity" && String(event.text).includes("Answer"),
     );
+
+    await waitForStub(fixture, (line) => line === "permission cancelled");
+    const permissionLines = stubLog(fixture).filter((line) => line.startsWith("permission "));
+    expect(permissionLines).toEqual(["permission cancelled"]);
+    expect(existsSync(probePath)).toBe(false);
 
     client.send({ type: "sendFlowConversation", text: "Explain the contract change" });
     client.send({ type: "sendFlowConversation", text: "And the naming choice" });

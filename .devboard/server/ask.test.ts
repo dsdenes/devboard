@@ -273,6 +273,35 @@ describe("ask conversations", () => {
     }
   });
 
+  test("cancels every permission request and performs no write", async () => {
+    const probePath = join(
+      import.meta.dir,
+      "..",
+      ".tmp",
+      `ask-permission-${crypto.randomUUID()}.txt`,
+    );
+    const testServer = await startServer({
+      agentArguments: [`--permission-probe=${probePath}`],
+    });
+    const client = await connect(testServer.url);
+    try {
+      client.ask("conversation-read-only", "Which file renders the issues label?");
+      await client.waitFor(
+        (message) =>
+          message.type === "askDone" && message.conversationId === "conversation-read-only",
+      );
+
+      const lines = logLines(testServer.logPath);
+      expect(lines.filter((line) => line === "permission cancelled")).toHaveLength(1);
+      expect(lines.some((line) => line.startsWith("permission selected"))).toBe(false);
+      expect(existsSync(probePath)).toBe(false);
+    } finally {
+      client.close();
+      testServer.server.stop(true);
+      await rm(probePath, { force: true });
+    }
+  });
+
   test("refuses a second ask while the first turn is in flight", async () => {
     const testServer = await startServer({ agentArguments: ["--ask-delay-ms=250"] });
     const client = await connect(testServer.url);

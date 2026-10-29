@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { ConnectionStore, connection } from "./connection.svelte";
 import { FlowStore } from "./flow.svelte";
+import { saveFeedback } from "./save-feedback.svelte";
 import type { FlowSnapshot } from "./types";
 
 interface FakeEnvelope {
@@ -83,6 +84,7 @@ function snapshot(goal: string, decisions: string): FlowSnapshot {
 
 afterEach(() => {
   FakeSocket.instances = [];
+  saveFeedback.dismiss();
   restoreGlobals();
 });
 
@@ -133,13 +135,19 @@ test("a save on an open connection clears the matching dirty flag once confirmed
   store.applySnapshot(snapshot("edited goal", "old decisions"));
   expect(store.goalDirty).toBe(false);
   expect(store.goalDraft).toBe("edited goal");
+  expect(saveFeedback.text).toBe("Flow goal saved.");
 
   store.setDecisionsDraft("edited decisions");
   store.saveDecisions();
-  expect(store.decisionsDirty).toBe(false);
+  // The board stays dirty until the server echoes the exact text it accepted.
+  expect(store.decisionsDirty).toBe(true);
   expect(socket.sent).toContain(
     JSON.stringify({ type: "saveFlowDecisions", text: "edited decisions" }),
   );
+  store.handleEvent({ type: "flowDecisions", text: "edited decisions" });
+  expect(store.decisionsDirty).toBe(false);
+  expect(store.decisionsDraft).toBe("edited decisions");
+  expect(saveFeedback.text).toBe("Decision board saved.");
 
   // A later disconnect must not let the next save look successful.
   socket.close();
@@ -174,6 +182,7 @@ test("a refused goal save keeps the draft until the same text is confirmed", () 
   store.applySnapshot(snapshot("old goal", "old decisions"));
   expect(store.goalDirty).toBe(true);
   expect(store.goalDraft).toBe("edited goal");
+  expect(saveFeedback.text).toBeNull();
 
   // The same text saved after the implementation stops is confirmed by the
   // snapshot carrying it.
@@ -181,6 +190,7 @@ test("a refused goal save keeps the draft until the same text is confirmed", () 
   store.applySnapshot(snapshot("edited goal", "old decisions"));
   expect(store.goalDirty).toBe(false);
   expect(store.goalDraft).toBe("edited goal");
+  expect(saveFeedback.text).toBe("Flow goal saved.");
 
   connection.dispose();
 });

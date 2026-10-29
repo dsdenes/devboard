@@ -1,6 +1,7 @@
 import { connection, type ConnectionStore } from "./connection.svelte";
 import { dependencyName } from "../../lib/dependencies.ts";
 import { notifications } from "./notifications.svelte";
+import { saveFeedback } from "./save-feedback.svelte";
 import {
   commandAlias,
   conceptSignificance,
@@ -115,6 +116,9 @@ export class DiscoverStore {
 
   /** Unsaved skill text per target identity; a switch never leaks across targets. */
   private draftScopes = $state<Record<string, SkillDraftScope>>({});
+
+  /** The last skill save, kept until a snapshot reports its live text. */
+  private pendingSkillSave: { key: string; name: string; text: string } | null = null;
 
   get drafts(): Record<string, string> {
     return this.draftScopeOf(draftTargetKey(this.state?.target)).drafts;
@@ -354,6 +358,14 @@ export class DiscoverStore {
     const key = draftTargetKey(this.state?.target);
     const scope = this.draftScopeOf(key);
     const live = this.skill(name)?.live ?? this.skill(name)?.baseline ?? "";
+    if (
+      this.pendingSkillSave !== null &&
+      this.pendingSkillSave.key === key &&
+      this.pendingSkillSave.name === name &&
+      this.pendingSkillSave.text !== text
+    ) {
+      this.pendingSkillSave = null;
+    }
     this.writeDraftScope(key, {
       drafts: { ...scope.drafts, [name]: text },
       dirty: { ...scope.dirty, [name]: text !== live },
@@ -361,12 +373,15 @@ export class DiscoverStore {
   }
 
   saveSkill(name: string): void {
-    this.socket.send({
+    const key = draftTargetKey(this.state?.target);
+    const text = this.skillDraft(name);
+    const sent = this.socket.send({
       type: "saveDiscoverSkill",
       name,
-      text: this.skillDraft(name),
+      text,
       target: saveTargetOf(this.target),
     });
+    if (sent) this.pendingSkillSave = { key, name, text };
   }
 
   restoreSkill(name: string): void {
@@ -444,6 +459,19 @@ export class DiscoverStore {
       : [];
     this.interrupted = payload.interrupted === true;
     this.syncDrafts(payload);
+    this.confirmSkillSave(payload);
+  }
+
+  /** Clears a pending skill save once the snapshot reports its live text. */
+  private confirmSkillSave(payload: DiscoverStatePayload): void {
+    const pending = this.pendingSkillSave;
+    if (pending === null) return;
+    if (draftTargetKey(payload.target) !== pending.key) return;
+    const skills = Array.isArray(payload.skills) ? payload.skills : [];
+    const saved = skills.find((skill) => skill?.name === pending.name);
+    if ((saved?.live ?? saved?.baseline) !== pending.text) return;
+    this.pendingSkillSave = null;
+    saveFeedback.saved(`${pending.name}/SKILL.md saved.`);
   }
 
   handleEvent(message: Message): void {

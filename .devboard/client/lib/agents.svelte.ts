@@ -7,6 +7,7 @@ import type {
 } from "./types";
 import { connection } from "./connection.svelte";
 import { notifications } from "./notifications.svelte";
+import { saveFeedback } from "./save-feedback.svelte";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -64,6 +65,15 @@ function applyActivity(lines: string[], entries: ActivityEntry[], replay: boolea
   return next;
 }
 
+/** One comparable key for the three settings a save sends. */
+function settingsSignature(
+  minutes: number,
+  maxPerHour: number | null,
+  maxPending: number | null,
+): string {
+  return `${minutes}/${maxPerHour ?? "-"}/${maxPending ?? "-"}`;
+}
+
 /**
  * The one store behind every background-agent page. It never polls and never
  * starts a worker: the server replays both agents on connect and pushes a
@@ -82,6 +92,8 @@ export class AgentsStore {
   private readonly seen = new Set<string>();
   private readonly lastError = new Map<string, string | null>();
   private readonly lastNotice = new Map<string, string | null>();
+  /** Settings sent per agent, kept until a snapshot echoes them. */
+  private readonly pendingSettings = new Map<string, string>();
 
   get descriptors(): readonly AgentDescriptor[] {
     return agentRegistry.descriptors;
@@ -124,7 +136,11 @@ export class AgentsStore {
     maxPerHour: number | null,
     maxPending: number | null,
   ): void {
-    connection.send({ type: "setAgentSettings", id, minutes, maxPerHour, maxPending });
+    if (
+      connection.send({ type: "setAgentSettings", id, minutes, maxPerHour, maxPending })
+    ) {
+      this.pendingSettings.set(id, settingsSignature(minutes, maxPerHour, maxPending));
+    }
   }
 
   disableTimer(id: string): void {
@@ -161,6 +177,7 @@ export class AgentsStore {
       if (prompt !== undefined && typeof message.text === "string") {
         this.prompts[message.id] = { ...prompt, text: message.text };
       }
+      saveFeedback.saved("Prompt saved.");
       return;
     }
     if (message.type === "agentPromptError" && typeof message.id === "string") {
@@ -250,6 +267,18 @@ export class AgentsStore {
       if (!first && value.error !== null) {
         notifications.push("Background agents", "error", value.error);
       }
+    }
+    const pending = this.pendingSettings.get(value.id);
+    if (
+      pending !== undefined &&
+      settingsSignature(
+        value.cadence.minutes,
+        value.limits.maxPerHour,
+        value.limits.maxPending,
+      ) === pending
+    ) {
+      this.pendingSettings.delete(value.id);
+      saveFeedback.saved(`${value.label} settings saved.`);
     }
     const previousNotice = this.lastNotice.get(value.id) ?? null;
     if (value.notice !== previousNotice) {

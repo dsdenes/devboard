@@ -146,6 +146,13 @@ workspace: the editor takes every remaining pixel and the Revision guidance fiel
 multiline text area pinned to the page bottom. Flow diffs remain rendered by
 `diff2html`; the client never parses unified diff hunks.
 
+Every Save control in the shell reports a confirmed write with the same transient
+`data-testid="save-feedback"` status toast: the Goal document, both Flow editors, the Discover
+skill file, an agent prompt, an agent's cadence and limits, and a provider subscription. The
+toast replaces the previous confirmation, clears itself after three seconds, and appears only
+after the server confirms the exact value it persisted; a refused or invalid save keeps its
+existing inline error or alert and shows no confirmation.
+
 xterm.js renders read-only agent output for Goal current activity and history, lane current
 activity and history, Flow goal creation, implementation activity, conversation activity, and
 Discover activity. Terminals preserve ANSI output, are selectable and copyable, auto-scroll
@@ -1025,7 +1032,10 @@ A submit broadcasts `discoverState` with `cloning = { url }` before spawning any
 exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
 the retained root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`,
 `NO_COLOR=1`, and a 300-second timeout. On success the checkout becomes the crawl root and exactly
-one crawl runs against it. Publication writes into the checkout's `.omp`; when the crawl succeeds,
+one crawl runs against it. The crawl peer starts with `--no-skills`, so neither a clone's nor a
+host's `.omp/skills` are discovered or loaded; the crawl contract excludes every `.omp` path, and
+OMP's background description compression of a foreign skill would otherwise log a warning the
+watchdog files. Publication writes into the checkout's `.omp`; when the crawl succeeds,
 the two published trees are copied into `<owner>~<repo>/`, `project.json` is rewritten with the
 submitted URL and the completion time, and the checkout is removed. The active target moves to the
 new project only after its bytes are retained, so a failed clone or a failed crawl leaves the
@@ -1659,6 +1669,12 @@ session's id, start time, relative cwd, input/output/cache tokens, total cost, a
 characters of normalized excerpts; journal findings list their scopes. The proposed change and the
 acceptance criteria are the finalizer's answer; they name a stable capability or an existing
 catalog tool, never a tool named after a fingerprint or a single command string.
+
+Every title, body, comment, and failure reason is redacted before the bytes leave the process:
+against the worker environment, against every API key registered in the Providers store, and
+against the GitHub, Gitea, GitLab, npm, OpenCode Go, and OpenRouter token shapes. Peers receive
+their keys from that store, so a transcript can echo a secret the worker never held; the registered
+values close that path.
 
 `<STATE_DIR>/coach/state.json` (version 2) records every fingerprint with `pending`,
 `filed:<url>`, or `rejected`, plus the last gate decision (probabilities, model, request id, cost,
