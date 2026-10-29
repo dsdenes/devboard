@@ -1212,10 +1212,14 @@ export class FlowController {
     }
     this.#persistedGoal = null;
     try {
+      const env = await this.#agentEnvironment();
+      // A disposal during provider selection clears the interview; no peer may
+      // be constructed for an owner that is gone.
+      if (this.#goalCreation !== creation) return;
       const agent = new AcpConnection({
         command: this.#agentCommand,
         cwd: this.repoDir,
-        env: await this.#agentEnvironment(),
+        env,
         onActivity: (activity: AcpActivity) => {
           if (this.#goalCreation !== creation) return;
           const append = activity.append && creation.activity.length > 0;
@@ -1241,6 +1245,10 @@ export class FlowController {
         },
         onStderr: (text) => this.#journal?.write("acp-stderr", text),
       });
+      if (this.#goalCreation !== creation) {
+        agent.close();
+        return;
+      }
       creation.agent = agent;
       // A timeout is its own outcome: an interrupted interview is never an
       // accepted goal, and its peer is closed before anything is read.
@@ -1390,10 +1398,15 @@ export class FlowController {
     const directory = this.sessionDir;
     if (directory === undefined) return;
     try {
+      const env = await this.#agentEnvironment();
+      // Stop or dispose during provider selection already released the claim;
+      // no peer may be constructed for an implementation that no longer owns
+      // the worktree.
+      if (this.#implementation !== implementation) return;
       const agent = new AcpConnection({
         command: this.#agentCommand,
         cwd: session.worktree,
-        env: await this.#agentEnvironment(),
+        env,
         onActivity: (update: AcpActivity) => {
           if (this.#implementation !== implementation) {
             implementation.agent?.close();
@@ -1431,6 +1444,10 @@ export class FlowController {
         },
         onStderr: (text) => this.#journal?.write("acp-stderr", text),
       });
+      if (this.#implementation !== implementation) {
+        agent.close();
+        return;
+      }
       implementation.agent = agent;
       await agent.run(`/flow-implement ${directory}`);
       if (this.#implementation !== implementation) {
@@ -1727,6 +1744,9 @@ export class FlowController {
       // Provider selection refuses before any peer exists when no subscription
       // can serve it. That refusal belongs to this turn, never to the process.
       const env = await this.#agentEnvironment();
+      // Disposal during provider selection ends the controller; a peer started
+      // now would have no owner left to close it.
+      if (this.#disposed) return;
       agent = new AcpConnection({
         command: this.#agentCommand,
         cwd: this.repoDir,
@@ -1737,12 +1757,14 @@ export class FlowController {
         },
         onStderr: (text) => this.#journal?.write("acp-stderr", text),
       });
+      if (this.#disposed) return;
       this.#analyst = agent;
       await Promise.race([
         agent.run(`/flow-change ${directory}\n\n${context}`),
         timeout(this.#analystTimeoutMs),
       ]);
     } catch (error) {
+      if (this.#disposed) return;
       const message = error instanceof Error ? error.message : String(error);
       this.#journal?.write("server-error", `flow analyst failed: ${message}`);
       // A binding failure has no peer to close and no turn to blame; the
@@ -2441,10 +2463,14 @@ export class FlowController {
     ].join("\n");
 
     try {
+      const env = await this.#agentEnvironment();
+      // A close, a replacement, or a disposal during provider selection clears
+      // the owner; constructing now would leave a peer nothing can close.
+      if (this.#conversation !== conversation) return;
       const agent = new AcpConnection({
         command: this.#agentCommand,
         cwd: this.repoDir,
-        env: await this.#agentEnvironment(),
+        env,
         onActivity: (activity: AcpActivity) => {
           if (this.#conversation !== conversation) return;
           const append = activity.append && conversation.activity.length > 0;
@@ -2473,9 +2499,16 @@ export class FlowController {
         },
         onStderr: (text) => this.#journal?.write("acp-stderr", text),
       });
+      if (this.#conversation !== conversation) {
+        agent.close();
+        return;
+      }
       conversation.agent = agent;
       void this.#pumpConversation(conversation, `/flow-widget ${directory} ${widgetId}\n\n${context}`);
     } catch (error) {
+      // A rejection that lands after a replacement belongs to the superseded
+      // conversation and must never close the current one.
+      if (this.#conversation !== conversation) return;
       this.#error(error instanceof Error ? error.message : String(error));
       this.closeConversation();
     }
