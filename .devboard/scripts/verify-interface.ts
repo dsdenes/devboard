@@ -5430,6 +5430,7 @@ try {
   );
   const overview = await page.eval<{
     cooldowns: string;
+    facts: string[];
     summaryIssues: string[];
     summaryIssueLinks: Array<{ tag: string; text: string; href: string; target: string }>;
     sideBeforeOutput: boolean;
@@ -5455,6 +5456,9 @@ try {
     const asking = document.querySelector('[data-testid="issues-overview-asking"]');
     return {
       cooldowns: document.querySelector('[data-testid="issues-cooldowns"]')?.textContent ?? "",
+      facts: [...(side?.querySelectorAll(".issues-facts > div") ?? [])].map(
+        (row) => row.querySelector("dt")?.textContent?.trim() ?? "",
+      ),
       summaryIssues: [...(summary?.querySelectorAll(".issues-agent-row") ?? [])].map(
         (item) => item.getAttribute("data-issue") ?? "",
       ),
@@ -5498,6 +5502,11 @@ try {
     overview.asking.text === "3 need answers" && overview.asking.tone === "warning",
     "the running-agent header does not count the blocked agents",
     overview.asking,
+  );
+  check(
+    overview.facts.join(",") === "Worker,Agents,Queue,Cooldowns",
+    "the automation facts no longer read Worker, Agents, Queue, and Cooldowns only",
+    overview.facts,
   );
   check(
     overview.poll.tone === "active" &&
