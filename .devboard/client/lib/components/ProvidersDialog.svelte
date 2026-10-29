@@ -269,8 +269,8 @@
   }
 
   .providers-error {
-    background: color-mix(in srgb, var(--destructive) 16%, transparent);
-    border: 1px solid var(--destructive);
+    background: var(--error-surface);
+    border: 1px solid var(--error);
     border-radius: 4px;
     font-size: 12px;
     margin: 0;
@@ -371,7 +371,7 @@
 
   .provider-row[data-status="exhausted"] .provider-row__status,
   .provider-row[data-status="invalid"] .provider-row__status {
-    color: var(--destructive);
+    color: var(--error);
   }
 
   .provider-row__meta {
@@ -383,7 +383,7 @@
   }
 
   .provider-row__error {
-    color: var(--destructive);
+    color: var(--error);
     font-size: 11px;
     margin: 0;
   }

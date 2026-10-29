@@ -1836,6 +1836,32 @@ try {
     `document.querySelector('[data-testid="provider-error"]')?.textContent?.includes("401") === true`,
     "the invalid-key error",
   );
+  const errorPaint = await page.eval<{
+    background: string;
+    border: string;
+    surface: string;
+    error: string;
+  }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;background:var(--error-surface);border-top:1px solid var(--error)";
+    document.body.append(probe);
+    const expected = getComputedStyle(probe);
+    const band = document.querySelector('[data-testid="provider-error"]');
+    const style = band === null ? null : getComputedStyle(band);
+    const result = {
+      background: style?.backgroundColor ?? "",
+      border: style?.borderTopColor ?? "",
+      surface: expected.backgroundColor,
+      error: expected.borderTopColor,
+    };
+    probe.remove();
+    return result;
+  })()`);
+  check(
+    errorPaint.background === errorPaint.surface && errorPaint.border === errorPaint.error,
+    "the provider error band does not pair the error surface with the error border",
+    errorPaint,
+  );
 
   // Add a second OpenRouter key: exhausted usage is saved but displayed as such.
   await page.fill('[data-testid="provider-key-input"]', PROVIDER_OR_SECOND_KEY);
@@ -1858,6 +1884,26 @@ try {
     html: document.body.innerHTML,
   }))()`);
   check(added.statuses.includes("exhausted"), "an exhausted subscription has no status", added.statuses);
+  const exhaustedPaint = await page.eval<{ color: string; error: string }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;color:var(--error)";
+    document.body.append(probe);
+    const error = getComputedStyle(probe).color;
+    probe.remove();
+    const row = [...document.querySelectorAll('[data-testid="provider-row"]')].find(
+      (candidate) => candidate.querySelector('[data-testid="provider-status"]')?.textContent?.trim() === "exhausted",
+    );
+    const status = row?.querySelector('[data-testid="provider-status"]');
+    return {
+      color: status === null || status === undefined ? "" : getComputedStyle(status).color,
+      error,
+    };
+  })()`);
+  check(
+    exhaustedPaint.color === exhaustedPaint.error,
+    "the exhausted provider status does not use the error color",
+    exhaustedPaint,
+  );
   check(!added.text.includes(PROVIDER_OR_SECOND_KEY), "the added key is rendered in the dialog text");
   for (const key of [PROVIDER_GO_KEY, PROVIDER_OR_KEY, PROVIDER_OR_SECOND_KEY]) {
     check(!added.inputs.some((value) => value.includes(key)), "a key stayed in a form field", key);
@@ -1895,6 +1941,23 @@ try {
   await page.wait(
     `document.querySelector('[data-testid="provider-delete-confirm"]') !== null`,
     "the delete confirmation",
+  );
+  const confirmPaint = await page.eval<{ background: string; destructive: string }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;background:var(--destructive)";
+    document.body.append(probe);
+    const destructive = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const button = document.querySelector('[data-testid="provider-delete-confirm"]');
+    return {
+      background: button === null ? "" : getComputedStyle(button).backgroundColor,
+      destructive,
+    };
+  })()`);
+  check(
+    confirmPaint.background === confirmPaint.destructive,
+    "the confirm delete button does not keep the destructive variant",
+    confirmPaint,
   );
   await page.click('[data-testid="provider-delete-confirm"]');
   await page.wait(
