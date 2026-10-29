@@ -237,20 +237,26 @@ source checkout; it resolves the npm version and artifact for the target host al
 
 `install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
 `.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
-package's files. It keeps `.devboard/.tmp`, copies `templates/host-AGENTS.md` to
+package's files. It keeps `.devboard/.tmp`, copies the package's `prompts/`, `extensions/`, and
+`lib/` trees to `<host>/.devboard/`, copies `templates/host-AGENTS.md` to
 `<host>/AGENTS.md` when that file is a symlink or absent (an existing regular file is untouched
 and reported as drift), adds the three ignored paths to `.gitignore`, and leaves exactly one
-dashboard running from the installed package. A reinstall keeps the version and `.tmp`; `update`
+dashboard running from the installed package. The copied trees are what the command wrappers
+open by repo-root-relative path: each command reads `.devboard/prompts/<name>.md`, each omp
+extension re-exports `.devboard/extensions/<name>.ts`, and those extensions import
+`../lib/*.ts`. The package itself stays under `.devboard/node_modules`. A reinstall keeps the
+version and `.tmp`; `update` re-copies the three trees from the newly installed package and
 never starts, stops, or restarts the dashboard. When the freshly started dashboard does not answer
 within 30 seconds, `install` stops that child before it exits nonzero, so a failed install leaves
 no dashboard behind.
 
 `doctor` checks Node 20+, Bun, npm, the git root, npm's version and artifact metadata (or the
 configured Gitea fallback and its digest), the installed package, the installed version against
-the newest version, `omp` and its authenticated probe, wrapper byte-equality, `AGENTS.md`, the
-dashboard's package and HTTP response, a non-symlinked `.devboard`, and a recorded update failure.
-Drift in a regular `AGENTS.md` is reported without failing the check; every other mismatch exits
-nonzero. Gitea is never required: with no address configured the checks consult npm only.
+the newest version, `omp` and its authenticated probe, wrapper byte-equality, byte-equality of
+the copied `prompts/`, `extensions/`, and `lib/` trees, `AGENTS.md`, the dashboard's package and
+HTTP response, a non-symlinked `.devboard`, and a recorded update failure. Drift in a regular
+`AGENTS.md` is reported without failing the check; every other mismatch exits nonzero. Gitea is
+never required: with no address configured the checks consult npm only.
 
 `--host <path>` targets another repository. `DEVBOARD_RELEASE_DIR` points the launcher and the
 server at a local directory of tarballs for offline verification and CI fixtures. `DEVBOARD_NPM`
