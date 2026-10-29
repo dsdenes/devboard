@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Tooltip } from "bits-ui";
   import Bell from "lucide-svelte/icons/bell";
+  import Blocks from "lucide-svelte/icons/blocks";
   import Compass from "lucide-svelte/icons/compass";
   import Flag from "lucide-svelte/icons/flag";
   import ListTodo from "lucide-svelte/icons/list-todo";
@@ -219,6 +220,27 @@
       </Tooltip.Trigger>
       <Tooltip.Portal>
         <Tooltip.Content sideOffset={6} class={tooltipClass}>Discover — Alt+4</Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        role="tab"
+        id="mode-devboard-tab"
+        aria-controls="workspace-devboard"
+        aria-selected={layout.mode === "devboard"}
+        aria-label="Devboard (Alt+5)"
+        title="Devboard — Alt+5"
+        data-testid="mode-devboard"
+        data-command="view.mode.devboard"
+        class="activity-tab"
+        onclick={() => layout.setMode("devboard")}
+      >
+        <Blocks size={18} strokeWidth={1.7} aria-hidden="true" />
+        <span class="activity-tab__label">Devboard</span>
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content sideOffset={6} class={tooltipClass}>Devboard — Alt+5</Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
   </div>

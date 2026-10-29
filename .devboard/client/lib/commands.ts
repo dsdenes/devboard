@@ -1,4 +1,5 @@
 import { TABS } from "./discover-format";
+import { DEVBOARD_TAB } from "./devboard.svelte";
 import type { GoalStore } from "./goal.svelte";
 import type { FlowStore } from "./flow.svelte";
 import type { DiscoverStore } from "./discover.svelte";
@@ -86,6 +87,14 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     group: "View",
     shortcut: "Alt+4",
     run: () => layout.setMode("discover"),
+  });
+  add({
+    id: "view.mode.devboard",
+    title: "Switch to Devboard",
+    group: "View",
+    shortcut: "Alt+5",
+    keywords: "mcp tools catalog",
+    run: () => layout.setMode("devboard"),
   });
   add({
     id: "view.theme.toggle",
@@ -242,6 +251,14 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
         ctx.openTab(mode, tab);
       },
     });
+  });
+
+  add({
+    id: "devboard.tab.tools",
+    title: "Open MCP tools",
+    group: "Devboard",
+    keywords: "catalog read-only",
+    run: () => ctx.openTab("devboard", DEVBOARD_TAB),
   });
 
   // Close commands mirror the close controls a surface renders itself.
