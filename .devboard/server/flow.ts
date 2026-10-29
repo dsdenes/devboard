@@ -1668,7 +1668,20 @@ export class FlowController {
       this.#analystPending = true;
       return;
     }
-    void this.#runAnalyst();
+    this.#startAnalyst();
+  }
+
+  /**
+   * Starts one analyst turn whose rejection is always observed. A throw out of
+   * `#runAnalyst` must never reach Bun's unhandled-rejection process exit.
+   */
+  #startAnalyst(): void {
+    void this.#runAnalyst().catch((error) => {
+      this.#journal?.write(
+        "server-error",
+        `flow analyst failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
   }
 
   async #runAnalyst(): Promise<void> {
@@ -1721,29 +1734,35 @@ export class FlowController {
     ].join("\n");
 
     const started = Date.now();
-    const agent = new AcpConnection({
-      command: this.#agentCommand,
-      cwd: this.repoDir,
-      env: await this.#agentEnvironment(),
-      onActivity: () => {},
-      onQuestion: (question) => {
-        agent.answer(question.id, question.options[0]?.label ?? "Continue");
-      },
-      onStderr: (text) => this.#journal?.write("acp-stderr", text),
-    });
-    this.#analyst = agent;
+    let agent: AcpConnection | undefined;
+    let bindingFailure: string | undefined;
     try {
+      // Provider selection refuses before any peer exists when no subscription
+      // can serve it. That refusal belongs to this turn, never to the process.
+      const env = await this.#agentEnvironment();
+      agent = new AcpConnection({
+        command: this.#agentCommand,
+        cwd: this.repoDir,
+        env,
+        onActivity: () => {},
+        onQuestion: (question) => {
+          agent?.answer(question.id, question.options[0]?.label ?? "Continue");
+        },
+        onStderr: (text) => this.#journal?.write("acp-stderr", text),
+      });
+      this.#analyst = agent;
       await Promise.race([
         agent.run(`/flow-change ${directory}\n\n${context}`),
         timeout(this.#analystTimeoutMs),
       ]);
     } catch (error) {
-      this.#journal?.write(
-        "server-error",
-        `flow analyst failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      this.#journal?.write("server-error", `flow analyst failed: ${message}`);
+      // A binding failure has no peer to close and no turn to blame; the
+      // fallback below reports it once, like a failed analyst result.
+      if (agent === undefined) bindingFailure = message;
     } finally {
-      agent.close();
+      agent?.close();
       this.#analyst = undefined;
     }
 
@@ -1757,9 +1776,11 @@ export class FlowController {
     const validated = raw === undefined ? undefined : this.#validateWidgets(raw, session.files);
     if (validated === undefined) {
       this.#error(
-        timedOut
-          ? "The Flow analyst timed out; every changed file is shown as a structure change."
-          : "The Flow analyst returned no valid widget list; every changed file is shown as a structure change.",
+        bindingFailure !== undefined
+          ? `The Flow analyst could not start: ${bindingFailure}. Every changed file is shown as a structure change.`
+          : timedOut
+            ? "The Flow analyst timed out; every changed file is shown as a structure change."
+            : "The Flow analyst returned no valid widget list; every changed file is shown as a structure change.",
       );
       session.widgets = this.#reconcile([], session.files, session);
       session.accepted = session.accepted.filter((signature) =>
@@ -1783,7 +1804,7 @@ export class FlowController {
 
     if (this.#analystPending) {
       this.#analystPending = false;
-      void this.#runAnalyst();
+      this.#startAnalyst();
     }
   }
 
