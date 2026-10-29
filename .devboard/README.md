@@ -1798,8 +1798,10 @@ One cycle's window is the 24 hours ending at cycle start. It reads:
 
 - every `.jsonl` under `<STATE_DIR>/providers/agents/*/sessions/**` whose `session` record names a
   `cwd` equal to the resolved `REPO_DIR` or inside `<REPO_DIR>/.worktree/`; any other cwd is
-  ignored. The newest 1,000 selected files by session start are read and the report carries
-  `truncated: true` with the totals when files were left out.
+  ignored. Selection reads file metadata and the `session` header only: a transcript last written
+  before the window starts is skipped, and the newest 1,000 selected files by session start are
+  the only ones parsed. The report carries `truncated: true` with the totals when files were left
+  out.
 - this repository's dashboard journal, live and rotated, keeping the in-window records of kinds
   `question`, `acp-stderr`, `activity`, `run-start`, and `run-stop`, de-duplicated across a
   rotation exactly as the existing journal reader does.
@@ -1967,7 +1969,9 @@ starts no HTTP listener.
 The ACP session parser, token and cost summation, and tool-error fingerprint are the same module
 Coach reads, so a seeded session reports the same id, relative cwd, totals, cost, tool name, and
 error fingerprint through both surfaces. Every truncated response states `truncated: true` and the
-next offset where paging exists.
+next offset where paging exists. Selection stats each transcript and reads its `session` header;
+only the newest 1,000 selected transcripts are parsed, and `agent_session_read` resolves the id
+from those headers and parses only the matching file, so one read does not cost the corpus.
 
 ### Work tools
 
