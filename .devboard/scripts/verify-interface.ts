@@ -2862,7 +2862,7 @@ try {
   check(flowGoalSurface.goalHeight >= flowGoalSurface.pageHeight - 1, "the Flow goal does not fill the page", flowGoalSurface);
   check(flowGoalSurface.consoleHeight >= flowGoalSurface.pageHeight - 1, "the implementation activity console is shorter than the page", flowGoalSurface);
   check(
-    flowGoalSurface.startPadding === "12px",
+    flowGoalSurface.startPadding === "10px",
     "a Flow action does not use the design-system horizontal padding",
     flowGoalSurface.startPadding,
   );
