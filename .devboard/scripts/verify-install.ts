@@ -223,6 +223,19 @@ try {
     existsSync(installedPrompt) && readFileSync(installedPrompt, "utf8").length > 0,
     ".devboard/prompts/implement-issue.md is missing or empty",
   );
+  // The shipped prompts invoke this exact path; it imports `../lib/*.ts` from
+  // the installed prefix, so running it proves the whole tree arrived.
+  const installedWrapper = join(freshPrefix, "scripts", "forge-auth.ts");
+  const wrapperHelp = Bun.spawnSync({
+    cmd: ["bun", installedWrapper, "--help"],
+    cwd: fresh.directory,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  assertTrue(
+    wrapperHelp.exitCode === 0,
+    `the installed forge-auth wrapper does not run:\n${wrapperHelp.stderr.toString()}`,
+  );
   // The probe's specifier is the installed host's path, not a module this
   // file can import statically: it exercises the wrapper's own resolution.
   const extensionLoad = Bun.spawnSync({
@@ -253,6 +266,12 @@ try {
       `update re-copies .devboard/${name} from the installed package`,
     );
   }
+  assertTrue(
+    readFileSync(join(installedPackage(freshPrefix), "scripts", "forge-auth.ts")).equals(
+      readFileSync(join(freshPrefix, "scripts", "forge-auth.ts")),
+    ),
+    "update re-copies .devboard/scripts/forge-auth.ts from the installed package",
+  );
 
   step("reinstalling over a tracked nested wrapper");
   const nestedTracked = join(host.directory, ".omp", "commands", "custom", "deploy.md");
