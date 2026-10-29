@@ -362,7 +362,10 @@
     window.addEventListener("resize", onResize);
     window.addEventListener("keydown", handleKeydown, true);
 
-    connection.onOpen(() => goal.resetActiveOperations());
+    connection.onOpen(() => {
+      goal.resetActiveOperations();
+      discover.resetActiveOperations();
+    });
     connection.onMessage((message) => {
       const record = message as Record<string, unknown>;
       goal.handleEvent(record);

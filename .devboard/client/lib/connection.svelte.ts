@@ -75,6 +75,10 @@ export class ConnectionStore {
 
   connect(): void {
     if (typeof window === "undefined") return;
+    // An explicit connect revives a store a previous dispose stopped, so a
+    // remounted app (and a test file that reuses the singleton) reconnects
+    // after its socket drops again.
+    this.disposed = false;
     this.state = "connecting";
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const current = new WebSocket(`${protocol}//${location.host}/ws`);

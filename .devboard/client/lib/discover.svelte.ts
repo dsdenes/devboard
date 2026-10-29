@@ -79,6 +79,21 @@ export class DiscoverStore {
     this.socket = socket;
   }
 
+  /**
+   * Clears the operation flags before a reconnect's state requests are sent.
+   * A stop frame missed during the disconnect otherwise leaves the tab busy,
+   * while the server's replayed snapshot restores a run that is still active.
+   */
+  resetActiveOperations(): void {
+    this.active = false;
+    this.runId = null;
+    this.startedAt = null;
+    this.question = null;
+    this.answerDraft = "";
+    this.interrupted = false;
+    this.transition = null;
+  }
+
   state = $state<DiscoverStatePayload | null>(null);
   active = $state(false);
   runId = $state<string | null>(null);
