@@ -7,9 +7,12 @@ import { emptyState, writeSettings, writeState } from "../../issues/scout/state"
 import { agentRegistry } from "./registry";
 import {
   AgentPromptController,
+  DiscoverPromptController,
   buildChatPrompt,
   parsePromptProposal,
 } from "./prompt";
+import { DiscoverStore } from "../../client/lib/discover.svelte";
+import { DISCOVER_AGENTS } from "./registry";
 
 const roots: string[] = [];
 const PROMPT = "---\ndescription: fixture\n---\n\n# Fixture prompt\n\nKeep this byte for byte.\n";
@@ -307,5 +310,258 @@ describe("prompt proposal parsing", () => {
     expect(prompt).toContain("Rules");
     expect(prompt).toContain("BASE\n");
     expect(prompt).toContain("Make it shorter.");
+  });
+});
+
+const DISCOVER_PROMPT_FILES = [
+  "discover-sheet.md",
+  "discover-testing-strategy.md",
+  "discover-naming-conventions.md",
+  "discover-coding-conventions.md",
+  "discover-architecture-boundaries.md",
+  "discover-glossary.md",
+];
+
+/** A fixture that `isHarnessSourceCheckout` accepts, with the six prompts. */
+async function discoverSourceRoot(name = "discover-source"): Promise<string> {
+  const root = await temporaryRoot(name);
+  mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
+  writeFileSync(
+    join(root, ".devboard", "package.json"),
+    `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.1.0" }, null, 2)}\n`,
+  );
+  for (const file of DISCOVER_PROMPT_FILES) {
+    writeFileSync(
+      join(root, ".devboard", "prompts", file),
+      readFileSync(join(HARNESS_ROOT, "prompts", file), "utf8"),
+    );
+  }
+  return root;
+}
+
+function discoverController(
+  root: string,
+  options: { agentCommand?: string } = {},
+): DiscoverPromptController {
+  return new DiscoverPromptController({
+    repoDir: root,
+    agentCommand: options.agentCommand ?? `bun ${CHAT_STUB}`,
+    agentEnvironment: async () => ({ ...process.env }),
+    harnessDir: HARNESS_ROOT,
+    send: () => undefined,
+  });
+}
+
+describe("discover prompt snapshots", () => {
+  test("each of the six agents publishes exactly its own prompt file bytes", async () => {
+    const root = await discoverSourceRoot();
+    const prompts = discoverController(root);
+    const seen = new Set<string>();
+    for (const descriptor of DISCOVER_AGENTS) {
+      const prompt = prompts.snapshot(descriptor.id);
+      expect(prompt?.agent).toBe(descriptor.id);
+      expect(prompt?.editable).toBe(true);
+      expect(prompt?.error).toBeNull();
+      const bytes = readFileSync(join(HARNESS_ROOT, "prompts", descriptor.promptFile), "utf8");
+      expect(prompt?.text).toBe(bytes);
+      expect(seen.has(bytes)).toBe(false);
+      seen.add(bytes);
+    }
+    expect(seen.size).toBe(6);
+    prompts.dispose();
+  });
+
+  test("an installed prefix shows every prompt read-only", async () => {
+    const root = await temporaryRoot("discover-installed");
+    mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
+    for (const file of DISCOVER_PROMPT_FILES) {
+      writeFileSync(join(root, ".devboard", "prompts", file), `# ${file}\n`);
+    }
+    const prompts = discoverController(root, { agentCommand: "definitely-not-an-agent" });
+    for (const descriptor of DISCOVER_AGENTS) {
+      const prompt = prompts.snapshot(descriptor.id);
+      expect(prompt?.editable).toBe(false);
+      expect(prompt?.text).toBe(`# ${descriptor.promptFile}\n`);
+    }
+    prompts.dispose();
+  });
+});
+
+describe("discover prompt save", () => {
+  test("writes exactly one agent's prompt file and nothing else", async () => {
+    const root = await discoverSourceRoot();
+    const prompts = discoverController(root);
+    const before = new Map(
+      DISCOVER_PROMPT_FILES.map((file) => [
+        file,
+        readFileSync(join(root, ".devboard", "prompts", file), "utf8"),
+      ]),
+    );
+    const frames: Array<Record<string, unknown>> = [];
+    prompts.save(
+      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
+      "discover-naming-conventions",
+      "exact bytes\n",
+    );
+    expect(readFileSync(join(root, ".devboard", "prompts", "discover-naming-conventions.md"), "utf8")).toBe(
+      "exact bytes\n",
+    );
+    for (const [file, text] of before) {
+      if (file === "discover-naming-conventions.md") continue;
+      expect(readFileSync(join(root, ".devboard", "prompts", file), "utf8")).toBe(text);
+    }
+    expect(frames[0]).toEqual({
+      type: "discoverPromptSaved",
+      agent: "discover-naming-conventions",
+      text: "exact bytes\n",
+      notice: "Prompt saved. The next /discover-naming-conventions run reads this file.",
+    });
+    expect(prompts.snapshot("discover-naming-conventions")?.text).toBe("exact bytes\n");
+    expect(prompts.snapshot("sheet")?.text).not.toBe("exact bytes\n");
+    prompts.dispose();
+  });
+
+  test("an installed prefix refuses and leaves every prompt byte-identical", async () => {
+    const root = await temporaryRoot("discover-installed-save");
+    mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
+    const file = join(root, ".devboard", "prompts", "discover-glossary.md");
+    writeFileSync(file, "# glossary\n");
+    const frames: Array<Record<string, unknown>> = [];
+    const prompts = discoverController(root);
+    prompts.save(
+      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
+      "discover-glossary",
+      "replacement\n",
+    );
+    expect(readFileSync(file, "utf8")).toBe("# glossary\n");
+    expect(frames[0]?.type).toBe("discoverPromptError");
+    expect(String(frames[0]?.message)).toContain("harness source checkout");
+    prompts.dispose();
+  });
+});
+
+describe("discover prompt chat", () => {
+  test("streams one reply per turn, proposes a replacement, and writes no file", async () => {
+    const root = await discoverSourceRoot();
+    const file = join(root, ".devboard", "prompts", "discover-sheet.md");
+    const before = readFileSync(file, "utf8");
+    const frames: Array<Record<string, unknown>> = [];
+    const prompts = discoverController(root);
+    await prompts.chat(
+      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
+      "sheet",
+      "Tighten the evidence rule.",
+      before,
+    );
+    prompts.dispose();
+    const chunks = frames.filter((frame) => frame.type === "discoverPromptChat");
+    expect(chunks.length).toBeGreaterThan(0);
+    for (const chunk of chunks) expect(chunk.agent).toBe("sheet");
+    const done = frames.find((frame) => frame.type === "discoverPromptChatDone");
+    expect(done?.agent).toBe("sheet");
+    expect(done?.proposal).toBe("# Revised prompt\n\nFollow it.\n");
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(frames.some((frame) => frame.type === "discoverPromptSaved")).toBe(false);
+  });
+
+  test("a failed turn reports a chat error and leaves the editor base alone", async () => {
+    const root = await discoverSourceRoot();
+    const file = join(root, ".devboard", "prompts", "discover-testing-strategy.md");
+    const before = readFileSync(file, "utf8");
+    const frames: Array<Record<string, unknown>> = [];
+    const prompts = discoverController(root, {
+      agentCommand: `env PROMPT_STUB_FAIL=1 bun ${CHAT_STUB}`,
+    });
+    await prompts.chat(
+      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
+      "discover-testing-strategy",
+      "Change it.",
+      before,
+    );
+    prompts.dispose();
+    const failure = frames.find((frame) => frame.type === "discoverPromptChatError");
+    expect(failure?.agent).toBe("discover-testing-strategy");
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  test("an installed prefix refuses chat without spawning", async () => {
+    const root = await temporaryRoot("discover-installed-chat");
+    mkdirSync(join(root, ".devboard", "prompts"), { recursive: true });
+    const file = join(root, ".devboard", "prompts", "discover-sheet.md");
+    writeFileSync(file, "# sheet\n");
+    const frames: Array<Record<string, unknown>> = [];
+    const prompts = discoverController(root, { agentCommand: "definitely-not-an-agent" });
+    await prompts.chat(
+      { send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) },
+      "sheet",
+      "Change it.",
+      "# sheet\n",
+    );
+    prompts.dispose();
+    expect(frames[0]?.type).toBe("discoverPromptChatError");
+    expect(String(frames[0]?.message)).toContain("harness source checkout");
+    expect(readFileSync(file, "utf8")).toBe("# sheet\n");
+  });
+});
+
+describe("discover prompt reset", () => {
+  test("asks for the file's current bytes without writing", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const store = new DiscoverStore({
+      open: true,
+      send: (data: unknown) => {
+        sent.push(data as Record<string, unknown>);
+        return true;
+      },
+    } as unknown as ConstructorParameters<typeof DiscoverStore>[0]);
+    const prompt = {
+      agent: "sheet",
+      editable: true,
+      text: "# Sheet prompt\n",
+      error: null,
+    };
+    store.handleEvent({
+      type: "discoverState",
+      state: {
+        active: false,
+        runId: null,
+        startedAt: null,
+        activeAgent: null,
+        runningAll: false,
+        agents: [
+          {
+            id: "sheet",
+            label: "Data Sheet",
+            command: "/discover-sheet",
+            state: "idle",
+            startedAt: null,
+            endedAt: null,
+            error: null,
+            prompt,
+          },
+        ],
+        interrupted: false,
+        warnings: [],
+        target: { kind: "host" },
+        skills: [],
+        glossaries: [],
+      },
+    });
+    expect(store.agentPrompt("sheet")?.text).toBe("# Sheet prompt\n");
+    expect(store.resetToken("sheet")).toBe(0);
+    store.resetPrompt("sheet");
+    expect(store.resetToken("sheet")).toBe(1);
+    expect(sent).toEqual([{ type: "getDiscover" }]);
+
+    // The fresh read replaces the card's prompt bytes; nothing is written.
+    store.handleEvent({
+      type: "discoverPromptState",
+      agent: "sheet",
+      prompt: { ...prompt, text: "# Sheet prompt, revised on disk\n" },
+    });
+    expect(store.agentPrompt("sheet")?.text).toBe(
+      "# Sheet prompt, revised on disk\n",
+    );
+    expect(sent).toHaveLength(1);
   });
 });

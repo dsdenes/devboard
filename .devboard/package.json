@@ -29,7 +29,8 @@
     "verify:design": "bun run scripts/verify-design.ts",
     "coach": "bun run coach/main.ts",
     "verify:coach": "bun run scripts/verify-coach.ts",
-    "verify:mcp": "bun run scripts/verify-mcp.ts"
+    "verify:mcp": "bun run scripts/verify-mcp.ts",
+    "verify:discover": "bun run scripts/verify-discover.ts"
   },
   "files": [
     "package.json",

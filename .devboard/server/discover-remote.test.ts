@@ -432,6 +432,19 @@ async function runProject(client: TestClient): Promise<DiscoverState> {
   return discoverState(client);
 }
 
+async function runRemoteAgent(client: TestClient, agent: string): Promise<DiscoverState> {
+  const started = client.waitNext(
+    (message) => message.type === "discoverStarted" && message.agent === agent,
+  );
+  const stopped = client.waitNext(
+    (message) => message.type === "discoverStopped" && message.agent === agent,
+  );
+  client.send({ type: "discoverAgent", agent });
+  await started;
+  expect((await stopped).completed).toBe(true);
+  return discoverState(client);
+}
+
 async function switchRemote(client: TestClient, url: string): Promise<DiscoverState> {
   const reply = client.waitNext((message) => message.type === "discoverState");
   client.send({ type: "switchDiscoverRemote", url });
@@ -744,7 +757,7 @@ describe("discover remote target", () => {
   );
 
   test(
-    "runs exactly one bounded git clone, crawls once, and retains the published bytes",
+    "runs exactly one bounded git clone, crawls all six agents, and retains the published bytes",
     async () => {
       const fixture = createFixture("clone");
       const source = createSourceRepository("clone-source");
@@ -808,12 +821,24 @@ describe("discover remote target", () => {
         expect(state.glossaries.length).toBe(1);
         expect(state.skills.map((skill) => skill.name)).toEqual([...DISCOVER_SKILLS]);
 
-        expect(spawnCount(fixture.logPath)).toBe(1);
-        const prompt = prompts(fixture.logPath)[0] ?? "";
-        expect(prompt).toMatch(/^\/discover \/.*\/\.staging-run-[a-z0-9-]+\/\.omp\/discover\/staging\/run-[a-z0-9-]+$/);
-        expect(
-          logLines(fixture.logPath).find((line) => line.startsWith("argv ")) ?? "",
-        ).toContain("--no-skills");
+        expect(spawnCount(fixture.logPath)).toBe(6);
+        const sent = prompts(fixture.logPath);
+        expect(sent.map((prompt) => prompt.split(" ")[0])).toEqual([
+          "/discover-sheet",
+          "/discover-glossary",
+          "/discover-testing-strategy",
+          "/discover-naming-conventions",
+          "/discover-coding-conventions",
+          "/discover-architecture-boundaries",
+        ]);
+        for (const prompt of sent) {
+          expect(prompt).toMatch(
+            /^\/discover-\S+ \/.*\/\.staging-run-[a-z0-9-]+\/\.omp\/discover\/staging\/run-[a-z0-9-]+$/,
+          );
+        }
+        for (const line of logLines(fixture.logPath)) {
+          if (line.startsWith("argv ")) expect(line).toContain("--no-skills");
+        }
         expect(existsSync(join(retained, ".omp", "discover", "staging"))).toBe(false);
 
         // The dashboard's own host is untouched.
@@ -997,7 +1022,7 @@ describe("discover remote target", () => {
         });
         await Promise.all(refusals);
         expect(clones.calls.length).toBe(2);
-        expect(spawnCount(fixture.logPath)).toBe(1);
+        expect(spawnCount(fixture.logPath)).toBe(6);
         expect(treeBytes(retainedDirectory(fixture, "octocat", "hello-world"))).toEqual(
           retainedBefore,
         );
@@ -1008,7 +1033,7 @@ describe("discover remote target", () => {
 
         gate.resolve();
         expect((await stopped).completed).toBe(true);
-        expect(spawnCount(fixture.logPath)).toBe(2);
+        expect(spawnCount(fixture.logPath)).toBe(12);
         expect((await discoverState(client)).retained).toHaveLength(2);
         expectNoCheckout(fixture);
       } finally {
@@ -1082,7 +1107,7 @@ describe("discover remote target", () => {
         expect(replay.sheet).not.toBeNull();
         expect(restored.events.some((message) => message.type === "discoverError")).toBe(false);
         expect(guest.calls.length).toBe(0);
-        expect(spawnCount(fixture.logPath)).toBe(2);
+        expect(spawnCount(fixture.logPath)).toBe(12);
         expectNoCheckout(fixture);
       } finally {
         restored.close();
@@ -1090,6 +1115,58 @@ describe("discover remote target", () => {
       }
     },
     90_000,
+  );
+
+  test(
+    "publishes one agent's slice into the retained snapshot and keeps the rest byte-identical",
+    async () => {
+      const fixture = createFixture("retained-agent");
+      const clones = cloneHarness({ source: createSourceRepository("retained-agent-source") });
+      const { server, url } = startServer({ fixture, clone: clones });
+      const client = await connect(url);
+      try {
+        await runRemote(client, "https://github.com/octocat/Hello-World");
+        const retained = retainedDirectory(fixture, "octocat", "hello-world");
+        const before = treeBytes(retained);
+        const spawns = spawnCount(fixture.logPath);
+
+        const sheet = await runRemoteAgent(client, "sheet");
+        expect(sheet.target).toMatchObject({ kind: "remote", checkout: false });
+        expect(sheet.sheet).not.toBeNull();
+        expect(sheet.skills.map((skill) => skill.name)).toHaveLength(5);
+        expect(spawnCount(fixture.logPath)).toBe(spawns + 1);
+        const afterSheet = treeBytes(retained);
+        for (const [path, bytes] of before) {
+          // project.json records the retention time; the manifest and decisions
+          // are bookkeeping the server may rewrite.
+          if (path === "project.json") continue;
+          if (path === ".omp/discover/manifest.json" || path === ".omp/discover/decisions.json") {
+            continue;
+          }
+          if (path === ".omp/discover/sheet.json") continue;
+          expect(afterSheet.get(path)).toBe(bytes);
+        }
+        expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
+        expectNoCheckout(fixture);
+
+        const testing = await runRemoteAgent(client, "discover-testing-strategy");
+        expect(testing.skills.map((skill) => skill.name)).toHaveLength(5);
+        const afterTesting = treeBytes(retained);
+        for (const [path, bytes] of afterSheet) {
+          if (path === "project.json") continue;
+          if (path === ".omp/discover/manifest.json" || path === ".omp/discover/decisions.json") {
+            continue;
+          }
+          if (path === ".omp/discover/skills/discover-testing-strategy/SKILL.md") continue;
+          if (path === ".omp/skills/discover-testing-strategy/SKILL.md") continue;
+          expect(afterTesting.get(path)).toBe(bytes);
+        }
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    120_000,
   );
 
   test(
@@ -1156,7 +1233,7 @@ describe("discover remote target", () => {
         first.server.stop(true);
       }
       const recordBefore = retainedRecord(fixture, "octocat", "hello-world");
-      expect(spawnCount(fixture.logPath)).toBe(1);
+      expect(spawnCount(fixture.logPath)).toBe(6);
 
       const next = cloneHarness({ source: createSourceRepository("rediscover-source-two") });
       const second = startServer({ fixture, clone: next });
@@ -1166,7 +1243,7 @@ describe("discover remote target", () => {
         expect(replay.target).toMatchObject({ kind: "remote", checkout: false });
         const state = await runProject(restored);
         expect(next.calls.length).toBe(1);
-        expect(spawnCount(fixture.logPath)).toBe(2);
+        expect(spawnCount(fixture.logPath)).toBe(12);
         expect(state.target).toMatchObject({ kind: "remote", checkout: false });
         expect(state.sheet).not.toBeNull();
         const recordAfter = retainedRecord(fixture, "octocat", "hello-world");
@@ -1214,7 +1291,7 @@ describe("discover remote target", () => {
         const stopped = failedClient.waitNext((message) => message.type === "discoverStopped");
         failedClient.send({ type: "discoverProject" });
         await started;
-        expect(String((await failed).message)).toContain("Discover failed");
+        expect(String((await failed).message)).toMatch(/failed/);
         expect((await stopped).completed).toBe(false);
         expect(failedClient.events.filter((event) => event.type === "discoverError")).toHaveLength(1);
         expect(treeBytes(retained)).toEqual(published);

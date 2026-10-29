@@ -5,8 +5,13 @@ import {
   AGENT_LIFECYCLES,
   AgentRegistryError,
   DEFAULT_AGENT_DESCRIPTORS,
+  DISCOVER_AGENTS,
+  DISCOVER_AGENT_IDS,
+  DISCOVER_RUN_ORDER,
   agentRegistry,
   defineAgentRegistry,
+  discoverAgent,
+  isDiscoverAgentId,
   projectAgentSnapshot,
   sortAgentIssues,
   type AgentDescriptor,
@@ -273,6 +278,57 @@ describe("background agent registry", () => {
     ]);
     expect(scout.starts).toBe(0);
     bridge.dispose();
+  });
+
+  test("ships the six discovery agents with one prompt file and command each", () => {
+    expect(DISCOVER_AGENT_IDS).toEqual([
+      "sheet",
+      "discover-testing-strategy",
+      "discover-naming-conventions",
+      "discover-coding-conventions",
+      "discover-architecture-boundaries",
+      "discover-glossary",
+    ]);
+    expect(DISCOVER_AGENTS.map((descriptor) => descriptor.id)).toEqual([...DISCOVER_AGENT_IDS]);
+    expect(DISCOVER_AGENTS.map((descriptor) => descriptor.label)).toEqual([
+      "Data Sheet",
+      "Testing Strategy",
+      "Naming Conventions",
+      "Coding Conventions",
+      "Architecture & Boundaries",
+      "Glossary Agent",
+    ]);
+    expect(DISCOVER_RUN_ORDER).toEqual([
+      "sheet",
+      "discover-glossary",
+      "discover-testing-strategy",
+      "discover-naming-conventions",
+      "discover-coding-conventions",
+      "discover-architecture-boundaries",
+    ]);
+    const promptFiles = new Set(DISCOVER_AGENTS.map((descriptor) => descriptor.promptFile));
+    const commands = new Set(DISCOVER_AGENTS.map((descriptor) => descriptor.command));
+    expect(promptFiles.size).toBe(6);
+    expect(commands.size).toBe(6);
+    for (const descriptor of DISCOVER_AGENTS) {
+      expect(descriptor.command).toBe(
+        descriptor.id === "sheet" ? "/discover-sheet" : `/${descriptor.id}`,
+      );
+      expect(descriptor.promptFile).toBe(
+        descriptor.id === "sheet" ? "discover-sheet.md" : `${descriptor.id}.md`,
+      );
+      expect(discoverAgent(descriptor.id)).toBe(descriptor);
+      expect(isDiscoverAgentId(descriptor.id)).toBe(true);
+    }
+    const sheet = discoverAgent("sheet");
+    expect(sheet?.skill).toBeNull();
+    expect(sheet?.glossary).toBe(false);
+    const glossary = discoverAgent("discover-glossary");
+    expect(glossary?.skill).toBe("discover-glossary");
+    expect(glossary?.glossary).toBe(true);
+    expect(isDiscoverAgentId("discover-sheet")).toBe(false);
+    expect(isDiscoverAgentId(42)).toBe(false);
+    expect(discoverAgent("ghost")).toBeUndefined();
   });
 
   test("lives only under the harness temporary directory", async () => {

@@ -4125,3 +4125,143 @@ a.code-chip--link:focus-visible {
     max-height: 320px;
   }
 }
+
+/* One discovery agent card: its own run, activity, prompt, and prompt chat. */
+.discover-agent {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.discover-agent__header {
+  align-items: flex-start;
+}
+
+.discover-agent__actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.discover-agent__state {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.discover-agent__state[data-state="running"] {
+  color: var(--accent);
+}
+
+.discover-agent__state[data-state="failed"] {
+  color: var(--destructive, var(--error));
+}
+
+.discover-agent__state[data-state="succeeded"] {
+  color: var(--success, var(--accent));
+}
+
+.discover-agent .discover-run-tag {
+  border: 0;
+  padding: 0;
+}
+
+.discover-agent__activity-log {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  gap: 2px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.discover-agent__activity-line {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.discover-agent__prompt-text {
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.discover-agent__prompt-editor,
+.discover-agent__chat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.discover-agent__textarea {
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  min-height: 220px;
+  padding: 8px;
+  resize: vertical;
+  white-space: pre;
+  width: 100%;
+}
+
+.discover-agent__prompt-actions,
+.discover-agent__chat-input {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.discover-agent__chat-log {
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  min-height: 24px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.discover-agent__chat-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.discover-agent__chat-role {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.discover-agent__chat-text {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.discover-agent__notice {
+  color: var(--success, var(--accent));
+  font-size: 11px;
+  margin: 0;
+}

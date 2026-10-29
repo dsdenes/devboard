@@ -20,6 +20,11 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { dependencyName, normalizeRepositoryUrl } from "../lib/dependencies.ts";
+import {
+  type DiscoverAgentDescriptor,
+  type DiscoverAgentId,
+  discoverAgent,
+} from "./agents/registry.ts";
 
 /**
  * Discover Mode's artifact contract: the project sheet, the UbiLang glossaries,
@@ -49,6 +54,31 @@ const DISCOVER_SKILLS_BY_NAME: Record<string, true> = Object.fromEntries(
 
 function isDiscoverSkill(name: string): name is DiscoverSkillName {
   return Object.hasOwn(DISCOVER_SKILLS_BY_NAME, name);
+}
+
+/** One of the six independently triggerable Discover agents. */
+export interface AgentOwnership {
+  descriptor: DiscoverAgentDescriptor;
+  /** Artifact roots, relative to the target root, this agent may publish. */
+  skills: DiscoverSkillName[];
+  sheet: boolean;
+  glossary: boolean;
+}
+
+/** Resolves an agent id to the exact artifacts it owns; null for an unknown id. */
+export function agentOwnership(id: string): AgentOwnership | null {
+  const descriptor = discoverAgent(id);
+  if (descriptor === undefined) return null;
+  const skills: DiscoverSkillName[] = [];
+  if (descriptor.skill !== null && isDiscoverSkill(descriptor.skill)) {
+    skills.push(descriptor.skill);
+  }
+  return {
+    descriptor,
+    skills,
+    sheet: descriptor.skill === null,
+    glossary: descriptor.glossary,
+  };
 }
 
 export const DISCOVER_SHEET_SECTIONS = [
@@ -441,10 +471,9 @@ export function retainedProjectReady(
   record: RetainedRemoteProject,
 ): boolean {
   if (basename(resolve(directory)) !== remoteCloneName(record.owner, record.repo)) return false;
-  return (
-    existsSync(join(directory, ".omp", "discover")) &&
-    existsSync(join(directory, ".omp", "skills"))
-  );
+  // The manifest lives under `.omp/discover` for every slice; a live skill tree
+  // exists only once a skill agent has published.
+  return existsSync(join(directory, ".omp", "discover"));
 }
 
 /** Every readable retained project, newest completed discovery first. */
@@ -486,8 +515,10 @@ export function retainRemoteProject(
   const published = join(checkoutDir, ".omp");
   const discoverSource = join(published, "discover");
   const skillsSource = join(published, "skills");
-  if (!existsSync(discoverSource) || !existsSync(skillsSource)) {
-    return "the crawl published no Discover artifacts to retain";
+  // One agent's slice is a complete publication: the sheet alone has no live
+  // skill, and a skill agents' baseline always sits beside its manifest.
+  if (!existsSync(discoverSource)) {
+    return "the agent published no Discover artifacts to retain";
   }
   const staging = join(scratchRoot, `${REMOTE_TRANSIENT_PREFIX}retain-${runId}`);
   const previous = join(scratchRoot, `${REMOTE_TRANSIENT_PREFIX}previous-${runId}`);
@@ -500,7 +531,9 @@ export function retainRemoteProject(
     rmSync(staging, { recursive: true, force: true });
     mkdirSync(join(staging, ".omp"), { recursive: true });
     cpSync(discoverSource, join(staging, ".omp", "discover"), { recursive: true });
-    cpSync(skillsSource, join(staging, ".omp", "skills"), { recursive: true });
+    if (existsSync(skillsSource)) {
+      cpSync(skillsSource, join(staging, ".omp", "skills"), { recursive: true });
+    }
     writeFileSync(join(staging, REMOTE_RECORD_NAME), `${JSON.stringify(record, null, 2)}\n`);
     rmSync(previous, { recursive: true, force: true });
     const hadPrevious = existsSync(destination);
@@ -2429,13 +2462,6 @@ function validateSkillText(name: string, text: string, path: string): StagedSkil
 
 // ------------------------------------------------------- staged validation
 
-export interface StagedArtifacts {
-  sheet: Sheet;
-  glossaries: Glossary[];
-  significance: GlossarySignificance;
-  skills: StagedSkill[];
-}
-
 function walkFiles(root: string, prefix = ""): string[] {
   const entries = readdirSync(join(root, prefix), { withFileTypes: true });
   const files: string[] = [];
@@ -2447,123 +2473,133 @@ function walkFiles(root: string, prefix = ""): string[] {
   return files.sort();
 }
 
-export function validateStaged(
+/** One agent's staged slice; every field other than `skills` is agent-specific. */
+export interface AgentStaged {
+  sheet?: Sheet;
+  glossaries?: Glossary[];
+  significance?: GlossarySignificance;
+  skills: StagedSkill[];
+}
+
+/**
+ * Validates exactly the slice one agent owns. It never reads another agent's
+ * sheet, glossary, baseline, or live skill: a host with no published artifacts
+ * can publish any one slice, and an unrelated artifact cannot fail this run.
+ */
+export function validateAgentStaged(
   repoDir: string,
   stagingDir: string,
   freshness: Freshness,
-): StagedArtifacts {
-  if (!existsSync(stagingDir)) {
-    throw new DiscoverValidationError("the crawl left no staging directory");
+  agentId: string,
+): AgentStaged {
+  const ownership = agentOwnership(agentId);
+  if (ownership === null) {
+    throw new DiscoverValidationError(`unknown Discover agent: ${agentId}`);
   }
+  if (!existsSync(stagingDir)) {
+    throw new DiscoverValidationError("the agent left no staging directory");
+  }
+  const ownedSkills = new Set<string>(ownership.skills);
   const files = walkFiles(stagingDir);
-  const skillDirs = new Set(
-    files
-      .filter((file) => file.startsWith(`${STAGED_SKILL_DIR}/`))
-      .map((file) => file.split("/")[1] as string),
-  );
   for (const file of files) {
     const parts = file.split("/");
     const allowed =
-      file === STAGED_SHEET ||
-      file === STAGED_SIGNIFICANCE ||
-      (parts[0] === STAGED_GLOSSARY_DIR &&
-        parts.length === 2 &&
-        parts[1] !== undefined &&
-        parts[1].endsWith(".glossary.yaml")) ||
+      (ownership.sheet && file === STAGED_SHEET) ||
+      (ownership.glossary &&
+        (file === STAGED_SIGNIFICANCE ||
+          (parts[0] === STAGED_GLOSSARY_DIR &&
+            parts.length === 2 &&
+            parts[1] !== undefined &&
+            parts[1].endsWith(".glossary.yaml")))) ||
       (parts[0] === STAGED_SKILL_DIR &&
         parts.length === 3 &&
         parts[2] === "SKILL.md" &&
-        skillDirs.has(parts[1] as string));
+        ownedSkills.has(parts[1] as string));
     if (!allowed) {
       throw new DiscoverValidationError(
-        `the crawl wrote ${file}, which is not part of the staged Discover set`,
+        `the agent wrote ${file}, which is not part of the ${ownership.descriptor.id} staged set`,
       );
     }
   }
-  if (!files.includes(STAGED_SHEET)) {
-    throw new DiscoverValidationError("the crawl left no sheet.json");
-  }
 
-  let rawSheet: unknown;
-  try {
-    rawSheet = JSON.parse(readFileSync(join(stagingDir, STAGED_SHEET), "utf8"));
-  } catch (error) {
-    throw new DiscoverValidationError(
-      `sheet.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  const sheet = normalizeSheet(rawSheet, freshness);
-
-  const context = { repoDir, files: hostFiles(repoDir) };
-  const glossaryFiles = files.filter(
-    (file) => file.startsWith(`${STAGED_GLOSSARY_DIR}/`) && file.endsWith(".glossary.yaml"),
-  );
-  if (glossaryFiles.length === 0) {
-    throw new DiscoverValidationError("the crawl left no glossary document");
-  }
-  const glossaries: Glossary[] = [];
-  const contexts = new Set<string>();
-  for (const file of glossaryFiles) {
-    let text: string;
+  const staged: AgentStaged = { skills: [] };
+  if (ownership.sheet) {
+    if (!files.includes(STAGED_SHEET)) {
+      throw new DiscoverValidationError("the agent left no sheet.json");
+    }
+    let rawSheet: unknown;
     try {
-      text = readFileSync(join(stagingDir, file), "utf8");
+      rawSheet = JSON.parse(readFileSync(join(stagingDir, STAGED_SHEET), "utf8"));
     } catch (error) {
-      throw new DiscoverValidationError(`could not read ${file}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new DiscoverValidationError(
+        `sheet.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-    const glossary = parseGlossary(text, file, context, { staged: true });
-    if (contexts.has(glossary.boundedContext)) {
-      throw new DiscoverValidationError(`two glossaries name ${glossary.boundedContext}`);
-    }
-    contexts.add(glossary.boundedContext);
-    glossaries.push(glossary);
+    staged.sheet = normalizeSheet(rawSheet, freshness);
   }
 
-  if (!files.includes(STAGED_SIGNIFICANCE)) {
-    throw new DiscoverValidationError(`the crawl left no ${STAGED_SIGNIFICANCE}`);
-  }
-  let rawSignificance: unknown;
-  try {
-    rawSignificance = JSON.parse(readFileSync(join(stagingDir, STAGED_SIGNIFICANCE), "utf8"));
-  } catch (error) {
-    throw new DiscoverValidationError(
-      `${STAGED_SIGNIFICANCE} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+  if (ownership.glossary) {
+    const context = { repoDir, files: hostFiles(repoDir) };
+    const glossaryFiles = files.filter(
+      (file) => file.startsWith(`${STAGED_GLOSSARY_DIR}/`) && file.endsWith(".glossary.yaml"),
+    );
+    if (glossaryFiles.length === 0) {
+      throw new DiscoverValidationError("the agent left no glossary document");
+    }
+    const glossaries: Glossary[] = [];
+    const contexts = new Set<string>();
+    for (const file of glossaryFiles) {
+      let text: string;
+      try {
+        text = readFileSync(join(stagingDir, file), "utf8");
+      } catch (error) {
+        throw new DiscoverValidationError(
+          `could not read ${file}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      const glossary = parseGlossary(text, file, context, { staged: true });
+      if (contexts.has(glossary.boundedContext)) {
+        throw new DiscoverValidationError(`two glossaries name ${glossary.boundedContext}`);
+      }
+      contexts.add(glossary.boundedContext);
+      glossaries.push(glossary);
+    }
+    if (!files.includes(STAGED_SIGNIFICANCE)) {
+      throw new DiscoverValidationError(`the agent left no ${STAGED_SIGNIFICANCE}`);
+    }
+    let rawSignificance: unknown;
+    try {
+      rawSignificance = JSON.parse(readFileSync(join(stagingDir, STAGED_SIGNIFICANCE), "utf8"));
+    } catch (error) {
+      throw new DiscoverValidationError(
+        `${STAGED_SIGNIFICANCE} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    staged.glossaries = glossaries;
+    staged.significance = parseSignificance(
+      rawSignificance,
+      STAGED_SIGNIFICANCE,
+      glossaries,
     );
   }
-  const significance = parseSignificance(rawSignificance, STAGED_SIGNIFICANCE, glossaries);
 
-  const skills: StagedSkill[] = [];
-  for (const name of DISCOVER_SKILLS) {
+  for (const name of ownership.skills) {
     const file = `${STAGED_SKILL_DIR}/${name}/SKILL.md`;
     if (!files.includes(file)) {
-      throw new DiscoverValidationError(`the crawl left no ${name} skill`);
+      throw new DiscoverValidationError(`the agent left no ${name} skill`);
     }
-    skills.push(validateSkillText(name, readFileSync(join(stagingDir, file), "utf8"), file));
-  }
-  for (const directory of skillDirs) {
-    if (!isDiscoverSkill(directory)) {
-      throw new DiscoverValidationError(`the crawl wrote an undeclared skill ${directory}`);
-    }
+    staged.skills.push(validateSkillText(name, readFileSync(join(stagingDir, file), "utf8"), file));
   }
 
-  const contradictions = skillContradictions(
-    skills.map((skill) => ({ name: skill.name, body: skill.body })),
-  );
-  if (contradictions.length > 0) {
-    const [first] = contradictions;
-    throw new DiscoverValidationError(
-      `the generated skills contradict each other: ${first?.skills[0]} and ${first?.skills[1]} disagree about ${first?.subject}`,
-    );
-  }
-
-  const glossarySkill = skills.find((skill) => skill.name === "discover-glossary");
-  for (const glossary of glossaries) {
+  const glossarySkill = staged.skills.find((skill) => skill.name === "discover-glossary");
+  for (const glossary of staged.glossaries ?? []) {
     const path = `.omp/discover/glossary/${glossary.boundedContext}.glossary.yaml`;
     if (glossarySkill === undefined || !glossarySkill.body.includes(path)) {
       throw new DiscoverValidationError(`discover-glossary does not name ${path}`);
     }
   }
 
-  return { sheet, glossaries, significance, skills };
+  return staged;
 }
 
 // ------------------------------------------------------------- decisions
@@ -2632,7 +2668,8 @@ export interface Manifest {
   fingerprint: string;
   publishedAt: string;
   runId: string;
-  sheetDigest: string;
+  /** Null when no sheet agent has published; the other agents never write it. */
+  sheetDigest: string | null;
   glossaryDigests: Record<string, string>;
   skills: ManifestSkill[];
   paths: {
@@ -2721,7 +2758,7 @@ function writeTransaction(writes: FileWrite[], deletions: string[]): void {
 
 interface PublishedRead {
   manifest: Manifest;
-  sheet: Sheet;
+  sheet: Sheet | null;
   glossaries: Glossary[];
   significance: GlossarySignificance;
   decisions: Decision[];
@@ -2737,28 +2774,31 @@ function readPublished(repoDir: string): PublishedRead | undefined {
   const manifest = readManifest(repoDir);
   if (manifest === undefined) return undefined;
   const context = { repoDir, files: hostFiles(repoDir) };
-  const sheetPath = join(repoDir, manifest.paths.sheet);
-  let rawSheet: unknown;
-  try {
-    rawSheet = JSON.parse(readFileSync(sheetPath, "utf8"));
-  } catch (error) {
-    throw new DiscoverValidationError(
-      `sheet.json is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+  let sheet: Sheet | null = null;
+  if (manifest.sheetDigest !== null && manifest.sheetDigest !== undefined) {
+    const sheetPath = join(repoDir, manifest.paths.sheet);
+    let rawSheet: unknown;
+    try {
+      rawSheet = JSON.parse(readFileSync(sheetPath, "utf8"));
+    } catch (error) {
+      throw new DiscoverValidationError(
+        `sheet.json is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (!isRecord(rawSheet)) throw new DiscoverValidationError("sheet.json is not an object");
+    const freshness = rawSheet.freshness;
+    if (!isRecord(freshness)) throw new DiscoverValidationError("sheet.json has no freshness header");
+    sheet = normalizeSheet(
+      Object.fromEntries(Object.entries(rawSheet).filter(([key]) => key !== "freshness")),
+      {
+        project: textValue(freshness.project, "freshness.project", 200),
+        commit: textValue(freshness.commit, "freshness.commit", 64),
+        dirty: freshness.dirty === true,
+        discoveredAt: textValue(freshness.discoveredAt, "freshness.discoveredAt", 64),
+        fingerprint: textValue(freshness.fingerprint, "freshness.fingerprint", 128),
+      },
     );
   }
-  if (!isRecord(rawSheet)) throw new DiscoverValidationError("sheet.json is not an object");
-  const freshness = rawSheet.freshness;
-  if (!isRecord(freshness)) throw new DiscoverValidationError("sheet.json has no freshness header");
-  const sheet = normalizeSheet(
-    Object.fromEntries(Object.entries(rawSheet).filter(([key]) => key !== "freshness")),
-    {
-      project: textValue(freshness.project, "freshness.project", 200),
-      commit: textValue(freshness.commit, "freshness.commit", 64),
-      dirty: freshness.dirty === true,
-      discoveredAt: textValue(freshness.discoveredAt, "freshness.discoveredAt", 64),
-      fingerprint: textValue(freshness.fingerprint, "freshness.fingerprint", 128),
-    },
-  );
   const glossaries: Glossary[] = [];
   for (const relativePath of manifest.paths.glossaries) {
     const file = join(repoDir, relativePath);
@@ -2833,190 +2873,281 @@ export interface PublishInput {
   repoDir: string;
   runId: string;
   facts: HostFacts;
-  staged: StagedArtifacts;
+  staged: AgentStaged;
   project: string;
+  agent: DiscoverAgentId;
 }
 
 export interface PublishResult {
   manifest: Manifest;
-  sheet: Sheet;
-  glossaries: Glossary[];
-  decisions: Decision[];
   warnings: string[];
 }
 
-export function publishStaged(input: PublishInput): PublishResult {
-  const { repoDir, runId, facts, staged, project } = input;
+/** Reads only the glossaries a previous glossary agent published. */
+function readPublishedGlossaries(repoDir: string, manifest: Manifest | undefined): Glossary[] {
+  if (manifest === undefined) return [];
+  const context = { repoDir, files: hostFiles(repoDir) };
+  const glossaries: Glossary[] = [];
+  for (const relativePath of manifest.paths.glossaries ?? []) {
+    let text: string;
+    try {
+      text = readFileSync(join(repoDir, relativePath), "utf8");
+    } catch (error) {
+      throw new DiscoverValidationError(
+        `${relativePath} is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    glossaries.push(
+      parseGlossary(text, relativePath, context, { staged: false, trustGrounding: true }),
+    );
+  }
+  return glossaries;
+}
 
-  for (const name of DISCOVER_SKILLS) {
+interface SkillPublication {
+  entry: ManifestSkill;
+  writes: FileWrite[];
+}
+
+/**
+ * One owned skill's baseline and live file. A developer's edited live skill is
+ * preserved byte for byte, an unedited one is replaced by the new baseline, and
+ * a deleted one is not recreated.
+ */
+function publishSkill(
+  repoDir: string,
+  stagedSkill: StagedSkill,
+  previous: ManifestSkill | undefined,
+): SkillPublication {
+  const name = stagedSkill.name;
+  const baseline = stagedSkill.text;
+  const baselineHash = hashText(baseline);
+  const livePath = liveSkillPath(repoDir, name);
+  const writes: FileWrite[] = [{ path: baselinePath(repoDir, name), content: baseline }];
+  let state: ManifestSkill["state"];
+  let currentHash: string | null;
+  if (!existsSync(livePath)) {
+    if (previous === undefined) {
+      // The first publication of this skill installs its live file.
+      state = "generated";
+      currentHash = baselineHash;
+      writes.push({ path: livePath, content: baseline });
+    } else {
+      state = "missing";
+      currentHash = null;
+    }
+  } else {
+    const liveText = readFileSync(livePath, "utf8");
+    currentHash = hashText(liveText);
+    if (previous !== undefined && currentHash !== previous.baselineHash) {
+      state = "edited";
+    } else if (previous === undefined && currentHash !== baselineHash) {
+      state = "edited";
+    } else {
+      state = "generated";
+      currentHash = baselineHash;
+      writes.push({ path: livePath, content: baseline });
+    }
+  }
+  return { entry: { name, baselineHash, currentHash, state }, writes };
+}
+
+/**
+ * Validates and publishes exactly one agent's slice. It reads and writes only
+ * what that agent owns plus the manifest and decisions bookkeeping, so every
+ * artifact owned by another agent keeps its bytes through this publication.
+ */
+export function publishAgentStaged(input: PublishInput): PublishResult {
+  const { repoDir, runId, facts, staged, project, agent } = input;
+  const ownership = agentOwnership(agent);
+  if (ownership === null) throw new DiscoverValidationError(`unknown Discover agent: ${agent}`);
+
+  for (const name of ownership.skills) {
     const collision = collisionAt(repoDir, name);
     if (collision !== undefined) throw new DiscoverValidationError(collision);
   }
 
-  const previous = readPublished(repoDir);
-  const previousByName = new Map(staged.glossaries.map((glossary) => [glossary.boundedContext, glossary]));
-  const merged: Glossary[] = staged.glossaries.map((glossary) =>
-    mergeGlossary(
-      previous?.glossaries.find(
-        (candidate) => candidate.boundedContext === glossary.boundedContext,
-      ),
-      glossary,
-    ),
+  const previousManifest = readManifest(repoDir);
+  const previousSkills = new Map<string, ManifestSkill>(
+    (previousManifest?.skills ?? []).map((skill) => [skill.name, skill] as const),
   );
-  for (const previousGlossary of previous?.glossaries ?? []) {
-    if (previousByName.has(previousGlossary.boundedContext)) continue;
-    // A bounded context the crawl no longer sees keeps its human decisions.
-    if (previousGlossary.concepts.some(
-      (concept) => concept.status === "confirmed" || concept.status === "invalidated",
-    )) {
-      merged.push(previousGlossary);
-    }
-  }
-  merged.sort((left, right) => left.boundedContext.localeCompare(right.boundedContext));
+  const skillEntries = new Map<string, ManifestSkill>(previousSkills);
+  const writes: FileWrite[] = [];
+  const deletions: string[] = [];
 
-  // Discovery does not ask the operator to confirm terms one by one: every
-  // newly crawled term is published as confirmed. An invalidated term stays
-  // invalidated because it records a human decision.
-  for (const glossary of merged) {
-    for (const concept of glossary.concepts) {
-      if (concept.status === "proposed" || concept.status === "unconfirmed") {
-        concept.status = "confirmed";
+  let mergedGlossaries: Glossary[] | null = null;
+  if (ownership.glossary) {
+    const previousGlossaries = readPublishedGlossaries(repoDir, previousManifest);
+    const previousByName = new Map(
+      (staged.glossaries ?? []).map((glossary) => [glossary.boundedContext, glossary]),
+    );
+    mergedGlossaries = (staged.glossaries ?? []).map((glossary) =>
+      mergeGlossary(
+        previousGlossaries.find(
+          (candidate) => candidate.boundedContext === glossary.boundedContext,
+        ),
+        glossary,
+      ),
+    );
+    for (const previousGlossary of previousGlossaries) {
+      if (previousByName.has(previousGlossary.boundedContext)) continue;
+      // A bounded context the crawl no longer sees keeps its human decisions.
+      if (
+        previousGlossary.concepts.some(
+          (concept) => concept.status === "confirmed" || concept.status === "invalidated",
+        )
+      ) {
+        mergedGlossaries.push(previousGlossary);
+      }
+    }
+    mergedGlossaries.sort((left, right) =>
+      left.boundedContext.localeCompare(right.boundedContext),
+    );
+    // Discovery does not ask the operator to confirm terms one by one: every
+    // newly crawled term is published as confirmed. An invalidated term stays
+    // invalidated because it records a human decision.
+    for (const glossary of mergedGlossaries) {
+      for (const concept of glossary.concepts) {
+        if (concept.status === "proposed" || concept.status === "unconfirmed") {
+          concept.status = "confirmed";
+        }
+      }
+    }
+    writes.push({
+      path: significancePath(repoDir),
+      content: renderJson({
+        schemaVersion: SIGNIFICANCE_SCHEMA_VERSION,
+        contexts: staged.significance ?? {},
+      }),
+    });
+    for (const glossary of mergedGlossaries) {
+      writes.push({
+        path: glossaryPath(repoDir, glossary.boundedContext),
+        content: renderGlossary(glossary),
+      });
+    }
+    const desiredGlossaries = new Set(
+      mergedGlossaries.map((glossary) => glossaryPath(repoDir, glossary.boundedContext)),
+    );
+    const glossaryRoot = join(discoverRoot(repoDir), "glossary");
+    if (existsSync(glossaryRoot)) {
+      for (const entry of readdirSync(glossaryRoot)) {
+        const absolute = join(glossaryRoot, entry);
+        if (!desiredGlossaries.has(absolute) && statSync(absolute).isFile()) {
+          deletions.push(absolute);
+        }
       }
     }
   }
 
-  const freshness: Freshness = {
-    project,
-    commit: facts.commit,
-    dirty: facts.dirty,
-    discoveredAt: new Date().toISOString(),
+  for (const stagedSkill of staged.skills) {
+    const publication = publishSkill(
+      repoDir,
+      stagedSkill,
+      previousSkills.get(stagedSkill.name),
+    );
+    skillEntries.set(stagedSkill.name, publication.entry);
+    writes.push(...publication.writes);
+  }
+
+  let sheetValue: Sheet | null = null;
+  let sheetDigestValue: string | null = previousManifest?.sheetDigest ?? null;
+  if (ownership.sheet) {
+    if (staged.sheet === undefined) {
+      throw new DiscoverValidationError("the agent left no sheet.json");
+    }
+    const freshness: Freshness = {
+      project,
+      commit: facts.commit,
+      dirty: facts.dirty,
+      discoveredAt: new Date().toISOString(),
+      fingerprint: facts.fingerprint,
+    };
+    sheetValue = normalizeSheet(
+      Object.fromEntries(
+        Object.entries(staged.sheet as unknown as Record<string, unknown>).filter(
+          ([key]) => key !== "freshness",
+        ),
+      ),
+      freshness,
+    );
+    sheetDigestValue = sheetDigest(sheetValue);
+    writes.push({ path: join(repoDir, ".omp/discover/sheet.json"), content: renderJson(sheetValue) });
+  }
+
+  const orderedSkills = DISCOVER_SKILLS.flatMap((name) => {
+    const entry = skillEntries.get(name);
+    return entry === undefined ? [] : [entry];
+  });
+  const glossaryDigests =
+    mergedGlossaries === null
+      ? (previousManifest?.glossaryDigests ?? {})
+      : Object.fromEntries(
+          mergedGlossaries.map((glossary) => [
+            glossary.boundedContext,
+            glossaryDigest(glossary),
+          ]),
+        );
+  const manifest: Manifest = {
+    schemaVersion: DISCOVER_SCHEMA_VERSION,
     fingerprint: facts.fingerprint,
-  };
-  const sheet = normalizeSheet(
-    Object.fromEntries(
-      Object.entries(staged.sheet as unknown as Record<string, unknown>).filter(
-        ([key]) => key !== "freshness",
+    publishedAt: new Date().toISOString(),
+    runId,
+    sheetDigest: sheetDigestValue,
+    glossaryDigests,
+    skills: orderedSkills,
+    paths: {
+      manifest: ".omp/discover/manifest.json",
+      sheet: ".omp/discover/sheet.json",
+      decisions: ".omp/discover/decisions.json",
+      glossaries:
+        mergedGlossaries === null
+          ? (previousManifest?.paths.glossaries ?? [])
+          : mergedGlossaries.map(
+              (glossary) => `.omp/discover/glossary/${glossary.boundedContext}.glossary.yaml`,
+            ),
+      baselines: Object.fromEntries(
+        orderedSkills.map((entry) => [entry.name, `.omp/discover/skills/${entry.name}/SKILL.md`]),
       ),
-    ),
-    freshness,
-  );
-
-  const previousBaselines = new Map<string, string>(
-    (previous?.manifest.skills ?? []).map((skill) => [skill.name, skill.baselineHash]),
-  );
-  const skillEntries: ManifestSkill[] = [];
-  const skillWrites: FileWrite[] = [];
-  const previousBaselineText = new Map<string, string>();
-  for (const skill of DISCOVER_SKILLS) {
-    const stagedSkill = staged.skills.find((entry) => entry.name === skill);
-    if (stagedSkill === undefined) throw new DiscoverValidationError(`the crawl left no ${skill}`);
-    const baseline = `${stagedSkill.text}`;
-    const baselineHash = hashText(baseline);
-    const livePath = liveSkillPath(repoDir, skill);
-    const previousBaselineHash = previousBaselines.get(skill);
-    const previousBaselinePath = baselinePath(repoDir, skill);
-    if (existsSync(previousBaselinePath)) {
-      previousBaselineText.set(skill, readFileSync(previousBaselinePath, "utf8"));
-    }
-    let state: ManifestSkill["state"];
-    let currentHash: string | null;
-    if (!existsSync(livePath)) {
-      if (previous?.manifest === undefined) {
-        // The first publication installs every live skill.
-        state = "generated";
-        currentHash = hashText(baseline);
-        skillWrites.push({ path: livePath, content: baseline });
-      } else {
-        // A skill the developer deleted is not recreated; Restore copies the
-        // current baseline.
-        state = "missing";
-        currentHash = null;
-      }
-    } else {
-      const liveText = readFileSync(livePath, "utf8");
-      currentHash = hashText(liveText);
-      if (previousBaselineHash !== undefined && currentHash !== previousBaselineHash) {
-        state = "edited";
-      } else if (previousBaselineHash === undefined && currentHash !== baselineHash) {
-        state = "edited";
-      } else {
-        state = "generated";
-        currentHash = baselineHash;
-        skillWrites.push({ path: livePath, content: baseline });
-      }
-    }
-    skillEntries.push({ name: skill, baselineHash, currentHash, state });
-    skillWrites.push({ path: previousBaselinePath, content: baseline });
+      live: Object.fromEntries(
+        orderedSkills.map((entry) => [entry.name, `.omp/skills/${entry.name}/SKILL.md`]),
+      ),
+      significance:
+        ownership.glossary || previousManifest === undefined
+          ? ".omp/discover/significance.json"
+          : previousManifest.paths.significance,
+    },
+  };
+  if (!ownership.glossary && previousManifest === undefined) {
+    // A skill-only first publication carries no sidecar path at all.
+    delete manifest.paths.significance;
   }
+
+  const decisions = readDecisions(repoDir);
+  writes.push({ path: join(repoDir, manifest.paths.manifest), content: renderJson(manifest) });
+  writes.push({ path: join(repoDir, manifest.paths.decisions), content: renderJson(decisions) });
+  writeTransaction(writes, deletions);
 
   const warnings: string[] = [];
-  const liveBodies = skillEntries
-    .filter((entry) => entry.state === "edited")
-    .map((entry) => ({
-      name: entry.name,
-      body: readFileSync(liveSkillPath(repoDir, entry.name), "utf8"),
-    }));
+  const liveBodies: Array<{ name: string; body: string }> = [];
+  for (const entry of orderedSkills) {
+    if (entry.state !== "edited") continue;
+    try {
+      liveBodies.push({
+        name: entry.name,
+        body: readFileSync(liveSkillPath(repoDir, entry.name), "utf8"),
+      });
+    } catch {
+      // A live skill that cannot be read is reported by the editor, not here.
+    }
+  }
   for (const contradiction of skillContradictions(liveBodies)) {
     warnings.push(
       `${contradiction.skills[0]} and ${contradiction.skills[1]} disagree about ${contradiction.subject}`,
     );
   }
 
-  const manifest: Manifest = {
-    schemaVersion: DISCOVER_SCHEMA_VERSION,
-    fingerprint: facts.fingerprint,
-    publishedAt: new Date().toISOString(),
-    runId,
-    sheetDigest: sheetDigest(sheet),
-    glossaryDigests: Object.fromEntries(
-      merged.map((glossary) => [glossary.boundedContext, glossaryDigest(glossary)]),
-    ),
-    skills: skillEntries,
-    paths: {
-      manifest: ".omp/discover/manifest.json",
-      sheet: ".omp/discover/sheet.json",
-      decisions: ".omp/discover/decisions.json",
-      glossaries: merged.map(
-        (glossary) => `.omp/discover/glossary/${glossary.boundedContext}.glossary.yaml`,
-      ),
-      baselines: Object.fromEntries(
-        DISCOVER_SKILLS.map((name) => [name, `.omp/discover/skills/${name}/SKILL.md`]),
-      ),
-      live: Object.fromEntries(DISCOVER_SKILLS.map((name) => [name, `.omp/skills/${name}/SKILL.md`])),
-      significance: ".omp/discover/significance.json",
-    },
-  };
-
-  const decisions = previous?.decisions ?? [];
-  const writes: FileWrite[] = [
-    { path: join(repoDir, manifest.paths.sheet), content: renderJson(sheet) },
-    { path: join(repoDir, manifest.paths.manifest), content: renderJson(manifest) },
-    { path: join(repoDir, manifest.paths.decisions), content: renderJson(decisions) },
-    {
-      path: significancePath(repoDir),
-      content: renderJson({
-        schemaVersion: SIGNIFICANCE_SCHEMA_VERSION,
-        contexts: staged.significance,
-      }),
-    },
-    ...merged.map((glossary) => ({
-      path: glossaryPath(repoDir, glossary.boundedContext),
-      content: renderGlossary(glossary),
-    })),
-    ...skillWrites,
-  ];
-  const desiredGlossaries = new Set(merged.map((glossary) => glossaryPath(repoDir, glossary.boundedContext)));
-  const deletions: string[] = [];
-  const glossaryRoot = join(discoverRoot(repoDir), "glossary");
-  if (existsSync(glossaryRoot)) {
-    for (const entry of readdirSync(glossaryRoot)) {
-      const absolute = join(glossaryRoot, entry);
-      if (!desiredGlossaries.has(absolute) && statSync(absolute).isFile()) deletions.push(absolute);
-    }
-  }
-  writeTransaction(writes, deletions);
-
-  return { manifest, sheet, glossaries: merged, decisions, warnings };
+  return { manifest, warnings };
 }
 
 // ---------------------------------------------------------- published view
@@ -3033,7 +3164,8 @@ export interface SkillView {
 
 export interface DiscoverArtifacts {
   manifest: Manifest;
-  sheet: Sheet;
+  /** Null until the sheet agent publishes; every other page tolerates that. */
+  sheet: Sheet | null;
   glossaries: Glossary[];
   usage: GlossaryUsage;
   significance: GlossarySignificance;
@@ -3147,19 +3279,15 @@ export function readArtifacts(repoDir: string): ArtifactsRead {
   try {
     const published = readPublished(repoDir);
     if (published === undefined) return { artifacts: null, error: null };
-    const skills = DISCOVER_SKILLS.map((name) =>
-      readSkillView(repoDir, published.manifest, name),
-    );
+    const skills = DISCOVER_SKILLS.filter((name) =>
+      published.manifest.skills.some((skill) => skill.name === name),
+    ).map((name) => readSkillView(repoDir, published.manifest, name));
     return {
       artifacts: {
         manifest: published.manifest,
         sheet: published.sheet,
         glossaries: published.glossaries,
-        usage: glossaryUsage(
-          repoDir,
-          published.glossaries,
-          published.sheet.freshness.fingerprint,
-        ),
+        usage: glossaryUsage(repoDir, published.glossaries, published.manifest.fingerprint),
         significance: published.significance,
         decisions: published.decisions,
         skills,
@@ -3216,8 +3344,10 @@ export function saveLiveSkill(repoDir: string, name: string, text: string): stri
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
+  const entry = manifest.skills.find((skill) => skill.name === name);
+  if (entry === undefined) return `${name} has no published baseline`;
   const currentHash = hashText(text);
-  const baselineHash = manifest.skills.find((skill) => skill.name === name)?.baselineHash ?? currentHash;
+  const baselineHash = entry.baselineHash;
   const state: ManifestSkill["state"] = currentHash === baselineHash ? "generated" : "edited";
   const next: Manifest = {
     ...manifest,
@@ -3241,6 +3371,9 @@ export function restoreLiveSkill(repoDir: string, name: string): string | null {
   }
   const manifest = readManifest(repoDir);
   if (manifest === undefined) return "no Discover artifacts are published";
+  if (!manifest.skills.some((skill) => skill.name === name)) {
+    return `${name} has no published baseline`;
+  }
   const baselineFile = baselinePath(repoDir, name);
   if (!existsSync(baselineFile)) return `no generated baseline exists for ${name}`;
   const liveFile = liveSkillPath(repoDir, name);
