@@ -6,6 +6,7 @@ import {
   readGoalDraft,
   resolveGoalDraft,
 } from "../server/goal-drafts";
+import { boundBytes } from "../lib/text-budget";
 import { issuesFor, resolveContained } from "./context";
 import type { McpContext } from "./context";
 
@@ -25,12 +26,6 @@ export const GOAL_SECTION_HEADINGS = [
   "Stop conditions",
 ] as const;
 
-function bounded(text: string, limit = GOAL_TEXT_MAX_BYTES): { text: string; truncated: boolean } {
-  const bytes = Buffer.byteLength(text, "utf8");
-  if (bytes <= limit) return { text, truncated: false };
-  return { text: `${text.slice(0, limit - 3)}...`, truncated: true };
-}
-
 export function goalText(context: McpContext): { goal: string; truncated: boolean } {
   const path = context.environment.GOAL_FILE ?? join(context.repoDir, "GOAL.md");
   let text = "";
@@ -39,7 +34,7 @@ export function goalText(context: McpContext): { goal: string; truncated: boolea
   } catch {
     text = "";
   }
-  const result = bounded(text);
+  const result = boundBytes(text, GOAL_TEXT_MAX_BYTES);
   return { goal: result.text, truncated: result.truncated };
 }
 
@@ -49,7 +44,7 @@ export function goalDrafts(context: McpContext) {
 
 export function goalDraft(context: McpContext, path: unknown) {
   const draft = readGoalDraft(context.repoDir, path);
-  const result = bounded(draft.text);
+  const result = boundBytes(draft.text, GOAL_TEXT_MAX_BYTES);
   return { ...draft, text: result.text, truncated: result.truncated };
 }
 

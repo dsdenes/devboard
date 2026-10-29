@@ -2,6 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { MCP_TOOLS, MCP_TOOL_NAMES } from "../mcp/catalog";
+import { GOAL_TEXT_MAX_BYTES } from "../mcp/goals";
+import { ISSUE_BODY_MAX_BYTES } from "../mcp/issues";
 import { callTool } from "../mcp/tools";
 import { startStdio } from "../mcp/index";
 import type { McpContext } from "../mcp/context";
@@ -551,6 +553,37 @@ describe("MCP work and control tools", () => {
       issues: Array<{ number: number }>;
     };
     expect(listed.issues.map((issue) => issue.number)).toEqual([created.number]);
+  });
+
+  test("multibyte issue bodies and goals stay within their byte budgets", async () => {
+    const { context } = await workspace();
+    const forge = fakeForge();
+    const injected = { ...context, forgeIssues: forge };
+    const body = "界".repeat(70_000);
+    const created = await forge.create({ title: "cjk", body, labels: [] });
+    const read = valueOf(await callTool(injected, "issue_get", { number: created.number })) as {
+      body: string;
+      truncated: boolean;
+    };
+    expect(read.truncated).toBe(true);
+    expect(Buffer.byteLength(read.body, "utf8")).toBeLessThanOrEqual(ISSUE_BODY_MAX_BYTES);
+
+    await writeFile(join(context.repoDir, "GOAL.md"), body);
+    const goal = valueOf(await callTool(context, "goal_get", {})) as {
+      goal: string;
+      truncated: boolean;
+    };
+    expect(goal.truncated).toBe(true);
+    expect(Buffer.byteLength(goal.goal, "utf8")).toBeLessThanOrEqual(GOAL_TEXT_MAX_BYTES);
+
+    const draftPath = ".devboard/goal-proposals/cjk.md";
+    await writeFile(join(context.repoDir, draftPath), body);
+    const draft = valueOf(await callTool(context, "goal_draft_read", { path: draftPath })) as {
+      text: string;
+      truncated: boolean;
+    };
+    expect(draft.truncated).toBe(true);
+    expect(Buffer.byteLength(draft.text, "utf8")).toBeLessThanOrEqual(GOAL_TEXT_MAX_BYTES);
   });
 
   test("verification_run refuses anything outside the allowlist without spawning", async () => {

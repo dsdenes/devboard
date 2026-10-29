@@ -1,4 +1,5 @@
 import type { ForgeIssueState } from "../lib/forge-issues";
+import { boundBytes } from "../lib/text-budget";
 import { issuesFor, type McpContext } from "./context";
 
 /** Issue reads and the one close mutation, through the repository's forge. */
@@ -16,13 +17,8 @@ export interface IssueRow {
 }
 
 function boundedBody(body: string): { body: string; truncated: boolean } {
-  if (Buffer.byteLength(body, "utf8") <= ISSUE_BODY_MAX_BYTES) {
-    return { body, truncated: false };
-  }
-  return {
-    body: `${body.slice(0, ISSUE_BODY_MAX_BYTES - 3)}...`,
-    truncated: true,
-  };
+  const bounded = boundBytes(body, ISSUE_BODY_MAX_BYTES);
+  return { body: bounded.text, truncated: bounded.truncated };
 }
 
 export async function listIssues(

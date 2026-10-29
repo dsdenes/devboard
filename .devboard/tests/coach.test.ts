@@ -37,6 +37,7 @@ import {
 import {
   parseSynthesisAnswer,
   synthesisPrompt,
+  SYNTHESIS_PROMPT_MAX_BYTES,
   type Proposal,
   type Synthesize,
 } from "../coach/synthesize";
@@ -605,6 +606,27 @@ describe("Coach synthesis contract and prompt", () => {
     expect(prompt).toContain('"bun "');
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThan(24 * 1024);
     expect(synthesisPrompt({ family, settings, openIssues })).toBe(prompt);
+  });
+
+  test("a prompt above the byte budget is cut to the budget", () => {
+    const huge: CoachFamily = {
+      key: family.key,
+      kind: "command",
+      calls: 1,
+      sessions: ["a"],
+      days: 1,
+      firstAt: family.firstAt,
+      lastAt: family.lastAt,
+      score: 1,
+      fragments: [{ text: "界".repeat(30_000), count: 1 }],
+      excerpts: [],
+    };
+    const prompt = synthesisPrompt({
+      family: huge,
+      settings: DEFAULT_COACH_SETTINGS,
+      openIssues: [],
+    });
+    expect(Buffer.byteLength(prompt, "utf8")).toBeLessThan(SYNTHESIS_PROMPT_MAX_BYTES);
   });
 
   test("the contract rejects missing, extra, and mistyped fields", () => {

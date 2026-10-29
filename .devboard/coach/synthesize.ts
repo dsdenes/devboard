@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { boundBytes } from "../lib/text-budget";
 import { AcpConnection } from "../server/acp";
 import type { PeerBinding } from "../server/providers/selection";
 import { MCP_COVERS, MCP_TOOLS } from "../mcp/catalog";
@@ -69,10 +70,6 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
-}
-
-function bounded(value: string, max: number): string {
-  return value.length <= max ? value : `${value.slice(0, max - 1).trimEnd()}…`;
 }
 
 function json(value: unknown): string {
@@ -153,7 +150,7 @@ export function synthesisPrompt(input: {
     } else if (issues.length > 1) {
       issues = issues.slice(0, -1);
     } else {
-      text = bounded(text, SYNTHESIS_PROMPT_MAX_BYTES - 1);
+      text = boundBytes(text, SYNTHESIS_PROMPT_MAX_BYTES - 1, "…").text;
       break;
     }
     text = render();
