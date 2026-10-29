@@ -108,7 +108,7 @@ test("a save on a closed connection keeps the drafts dirty", () => {
   expect(store.decisionsDraft).toBe("edited decisions");
 });
 
-test("a save on an open connection clears the matching dirty flag", () => {
+test("a save on an open connection clears the matching dirty flag once confirmed", () => {
   FakeSocket.instances = [];
   installGlobals({
     WebSocket: FakeSocket as unknown as typeof WebSocket,
@@ -125,10 +125,14 @@ test("a save on an open connection clears the matching dirty flag", () => {
 
   store.setGoalDraft("edited goal");
   store.saveGoal();
-  expect(store.goalDirty).toBe(false);
+  expect(store.goalDirty).toBe(true);
   expect(socket.sent).toContain(
     JSON.stringify({ type: "saveFlowGoal", text: "edited goal" }),
   );
+
+  store.applySnapshot(snapshot("edited goal", "old decisions"));
+  expect(store.goalDirty).toBe(false);
+  expect(store.goalDraft).toBe("edited goal");
 
   store.setDecisionsDraft("edited decisions");
   store.saveDecisions();
@@ -143,6 +147,71 @@ test("a save on an open connection clears the matching dirty flag", () => {
   store.saveGoal();
   expect(store.goalDirty).toBe(true);
   expect(store.goalDraft).toBe("second edit");
+
+  connection.dispose();
+});
+
+test("a refused goal save keeps the draft until the same text is confirmed", () => {
+  FakeSocket.instances = [];
+  installGlobals({
+    WebSocket: FakeSocket as unknown as typeof WebSocket,
+    window: fakeWindow(),
+    location: { protocol: "http:", host: "test.invalid" },
+  });
+  const store = new FlowStore();
+  store.applySnapshot(snapshot("old goal", "old decisions"));
+
+  connection.connect();
+  const socket = FakeSocket.instances[0];
+  if (socket === undefined) throw new Error("no socket created");
+  socket.open();
+
+  store.setGoalDraft("edited goal");
+  store.saveGoal();
+  // The server refuses while the implementation runs and publishes the
+  // persisted goal; that snapshot must not revert the editor.
+  store.handleEvent({ type: "flowError", message: "The Flow implementation is running." });
+  store.applySnapshot(snapshot("old goal", "old decisions"));
+  expect(store.goalDirty).toBe(true);
+  expect(store.goalDraft).toBe("edited goal");
+
+  // The same text saved after the implementation stops is confirmed by the
+  // snapshot carrying it.
+  store.saveGoal();
+  store.applySnapshot(snapshot("edited goal", "old decisions"));
+  expect(store.goalDirty).toBe(false);
+  expect(store.goalDraft).toBe("edited goal");
+
+  connection.dispose();
+});
+
+test("a snapshot with a different goal never replaces a pending draft", () => {
+  FakeSocket.instances = [];
+  installGlobals({
+    WebSocket: FakeSocket as unknown as typeof WebSocket,
+    window: fakeWindow(),
+    location: { protocol: "http:", host: "test.invalid" },
+  });
+  const store = new FlowStore();
+  store.applySnapshot(snapshot("old goal", "old decisions"));
+
+  connection.connect();
+  const socket = FakeSocket.instances[0];
+  if (socket === undefined) throw new Error("no socket created");
+  socket.open();
+
+  store.setGoalDraft("edited goal");
+  store.saveGoal();
+  store.applySnapshot(snapshot("another goal", "old decisions"));
+  expect(store.goalDirty).toBe(true);
+  expect(store.goalDraft).toBe("edited goal");
+
+  // Editing away from the sent text drops the pending save, so later
+  // snapshots cannot clear the newer draft either.
+  store.setGoalDraft("newer edit");
+  store.applySnapshot(snapshot("edited goal", "old decisions"));
+  expect(store.goalDirty).toBe(true);
+  expect(store.goalDraft).toBe("newer edit");
 
   connection.dispose();
 });
