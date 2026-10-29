@@ -1162,18 +1162,18 @@ try {
   await writeFile(
     join(coachDir, "state.json"),
     JSON.stringify({
-      version: 2,
-      findings: {
-        "fingerprint-coach": {
-          category: "tool-failure",
-          line: "bash failed: Synthetic Coach finding",
-          subject: "bash\nSynthetic Coach finding",
+      version: 3,
+      families: {
+        "bun run publish": {
           firstSeen: now,
           lastSeen: now,
-          count: 2,
-          disposition: "filed:https://github.com/acme/fixture/issues/103",
-          url: "https://github.com/acme/fixture/issues/103",
-          filedAt: now,
+          calls: 2,
+          sessions: 2,
+          kind: "command",
+          lastAction: "filed",
+          lastIssueUrl: "https://github.com/acme/fixture/issues/103",
+          lastTitle: "[coach] bun run publish",
+          lastFiledAt: now,
         },
       },
       pendingFiling: [],
@@ -1184,7 +1184,9 @@ try {
     JSON.stringify({
       cycle: now,
       window: { start: now, end: now, minutes: 1440 },
-      findings: [{}],
+      families: 3,
+      selected: [{ key: "bun run publish", kind: "command", score: 4 }],
+      findings: [{ key: "bun run publish", kind: "command", score: 4 }],
       action: "filed",
       issues: [{ url: "https://github.com/acme/fixture/issues/103" }],
       pending: 0,
@@ -1198,7 +1200,7 @@ try {
   );
   const coachRows = await rows(devtools);
   assertTrue(
-    coachRows[0]?.title === "[coach] tool-failure: bash failed: Synthetic Coach finding",
+    coachRows[0]?.title === "[coach] bun run publish",
     `the Coach title is wrong: ${JSON.stringify(coachRows)}`,
   );
   await waitFor(
