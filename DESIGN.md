@@ -503,14 +503,16 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   control with a two-line identity column and a trailing status badge, plus a right-aligned `sm`
   outline `Start` control. The first line is the draft file name in 12px mono with its path as the
   tooltip; the second is the proposal heading in 12px `muted-foreground`, one line with ellipsis
-  and the full heading as its tooltip. The badge states this draft's run (`idle`, `running`,
-  `succeeded`, `failed`, `stopped`) in words and ends before the action gap. Rows use 6px 10px
-  padding and a `border-subtle` rule; hover takes `row-hover` across the whole row, and the current
-  row takes `accent-surface`, a 2px `accent` left edge, and an `accent` file name. The open control
-  takes an inset 2px `ring` on `focus-visible`. The row's `Start` is always visible, never revealed
-  only on hover, names its draft in its accessible name, names a blocker as its tooltip, and is
-  disabled at 45% opacity while that draft runs. The `New goal` form is a `surface-raised` band
-  under the panel header with `label` type, an 8px rhythm, and a right-aligned 6px action gap.
+  and the full heading as its tooltip. A 6px meta group ends before the action gap: while the
+  elaboration waits for an answer it carries a `warning` `answer` badge, and the trailing badge
+  always states this draft's run (`idle`, `running`, `succeeded`, `failed`, `stopped`) in words.
+  Rows use 6px 10px padding and a `border-subtle` rule; hover takes `row-hover` across the whole
+  row, and the current row takes `accent-surface`, a 2px `accent` left edge, and an `accent` file
+  name. The open control takes an inset 2px `ring` on `focus-visible`. The row's `Start` is always
+  visible, never revealed only on hover, names its draft in its accessible name, names a blocker
+  as its tooltip, and is disabled at 45% opacity while that draft runs. The `New goal` form is a
+  `surface-raised` band under the panel header with `label` type, an 8px rhythm, and a
+  right-aligned 6px action gap.
 - **Draft goals header** (`.issues-drafts-page .panel__header`) — the Draft goals page states
   repository identity, workspace status, and draft count once, in the page header's `mono-small`
   identity line (`<owner>/<repo> · idle · 0 draft(s)`); the Proposed goals panel header carries
@@ -633,12 +635,16 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   muted, `Saved` success, `Unsaved changes` warning), and a right-aligned `Save` that is the
   filled primary only while the draft differs from the saved text and a neutral secondary control
   otherwise. The identity and action group are centered on the row, matching the Flow goal header.
-- **Discover skill header** (`.discover-skill__header`) — the skill editor's header: the
-  relative path `<skill>/SKILL.md` in the `panel-title` size, with the skill name in `foreground`
-  and the file name in `muted-foreground`; a second 11px draft line (`No unsaved changes` muted,
-  `Unsaved changes` warning, `Live file missing` error); and a right action group holding the
-  outline restore control and a primary `Save` disabled until the draft differs from the live
-  text. The path truncates with a full-path `title`; the state line and actions never shrink.
+- **Discover skill header** (`.discover-skill__header`) — the skill editor's header is one 30px
+  row: the relative path `<skill>/SKILL.md` in the `panel-title` size sits on the leading edge,
+  with the skill name in `foreground` and the file name in `muted-foreground`. The trailing
+  action group starts with the 11px draft state (`No unsaved changes` muted, `Unsaved changes`
+  warning, `Live file missing` error), then the controls. `Save` is the filled primary only while
+  the draft differs from the live text and a disabled `secondary` otherwise; it stays disabled
+  while the live file is missing. The restore control is `outline` while an edit can be discarded
+  and becomes the filled primary as `Recreate generated version` when the live file is missing, so
+  the surface always has at most one primary and never a disabled one as its emphasis. The path
+  truncates with a full-path `title` while the state and actions never shrink or wrap.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page

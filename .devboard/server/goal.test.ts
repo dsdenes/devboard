@@ -47,22 +47,54 @@ describe("writeGoal", () => {
     expect(readdirSync(join(directory, "nested"))).toEqual(["GOAL.md"]);
   });
 
-  test("a failed staged write leaves the previous goal intact and rejects", async () => {
+  test("overlapping saves both resolve and publish one complete goal", async () => {
     const directory = await temporaryDirectory();
     const path = defaultGoalPath(directory);
-    const previous = "# Previous\n";
-    await writeFile(path, previous);
-    // A directory where the staged sibling goes fails the write the way a full
-    // or read-only goal directory does, after the temporary path is chosen.
-    const blocked = `${path}.${process.pid}.tmp`;
-    await mkdir(blocked);
+    await writeFile(path, "# Original\n");
+    const first = `# First\n${"first writer's line\n".repeat(50_000)}`;
+    const second = `# Second\n${"second writer's line\n".repeat(50_000)}`;
 
-    try {
-      await expect(writeGoal(path, "# Never written\n")).rejects.toThrow();
-      expect(await readGoal(path)).toBe(previous);
-    } finally {
-      await rm(blocked, { recursive: true, force: true });
-    }
+    await Promise.all([writeGoal(path, first), writeGoal(path, second)]);
+
+    expect([first, second]).toContain(await readGoal(path));
+    // Both writers staged beside the destination; neither left its sibling
+    // behind after the rename published the winner.
+    expect(readdirSync(directory)).toEqual(["GOAL.md"]);
+  });
+
+  test("a failed rename removes only its own staging file", async () => {
+    const directory = await temporaryDirectory();
+    // Renaming a file over a directory fails after the text is staged.
+    const blocked = join(directory, "blocked-goal");
+    await mkdir(blocked);
+    // Another writer's staging file, as an in-flight save would leave it.
+    const foreignName = `GOAL.md.${process.pid}.0.tmp`;
+    const foreign = join(directory, foreignName);
+    const foreignText = "another writer's staging file\n";
+    await writeFile(foreign, foreignText);
+
+    await expect(writeGoal(blocked, "# Never published\n")).rejects.toThrow();
+
+    expect(readdirSync(directory).sort()).toEqual(["blocked-goal", foreignName].sort());
+    expect(await readFile(foreign, "utf8")).toBe(foreignText);
+  });
+
+  test("a failed save leaves a concurrent successful save's goal intact", async () => {
+    const directory = await temporaryDirectory();
+    const blocked = join(directory, "blocked");
+    await mkdir(blocked);
+    const path = defaultGoalPath(directory);
+    const surviving = "# Surviving goal\n";
+
+    const [failed, succeeded] = await Promise.allSettled([
+      writeGoal(blocked, "# Never published\n"),
+      writeGoal(path, surviving),
+    ]);
+
+    expect(failed.status).toBe("rejected");
+    expect(succeeded.status).toBe("fulfilled");
+    expect(await readGoal(path)).toBe(surviving);
+    expect(readdirSync(directory).sort()).toEqual(["GOAL.md", "blocked"]);
   });
 
   test("a reader sees only the previous or the new complete goal during a save", async () => {

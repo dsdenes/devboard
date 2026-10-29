@@ -5,7 +5,6 @@
   import { goal } from "../goal.svelte";
   import { issues } from "../issues.svelte";
   import { layout } from "../layout.svelte";
-  import { providers } from "../providers.svelte";
   import { statusTone } from "../status-tone";
   import IconButton from "./ui/icon-button.svelte";
   import WatchdogIndicator from "./watchdog-indicator.svelte";
@@ -70,19 +69,6 @@
       <FolderGit2 size={12} aria-hidden="true" />
       <span class="mono" data-testid="status-project">{projectName}</span>
     </span>
-    <button
-      type="button"
-      class="status-item status-item--button status-providers"
-      data-testid="providers-indicator"
-      data-command="settings.providers"
-      data-state={providers.selection === null ? "none" : providers.selection.provider}
-      title={providers.indicatorTitle}
-      aria-label={`${providers.indicatorLabel}. Open the Providers dialog.`}
-      onclick={() => providers.openDialog()}
-    >
-      <span class="status-providers__dot" aria-hidden="true"></span>
-      <span class="status-providers__label">{providers.indicatorLabel}</span>
-    </button>
   </div>
   <span class="status-bar__spacer" aria-hidden="true"></span>
   <div class="status-group status-group--metrics">

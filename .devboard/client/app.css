@@ -1917,22 +1917,30 @@ kbd {
   min-height: 0;
 }
 
-/* The skill header pairs the file identity with a draft-state line and the actions. */
+/* The skill header keeps the file identity, its draft state, and the actions on one
+   30px row; the path yields first, while the state and controls never shrink. */
 .discover-skill__header {
-  align-items: flex-start;
+  align-items: center;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   gap: 12px;
+  height: auto;
+  min-height: 30px;
+  padding: 0 8px;
 }
 
 .discover-skill__identity {
+  align-items: center;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex: 1 1 160px;
+  gap: 8px;
   min-width: 0;
 }
 
 .discover-skill__title {
   line-height: 1.2;
   max-width: 100%;
+  min-width: 0;
 }
 
 .discover-skill__file {
@@ -1942,8 +1950,10 @@ kbd {
 
 .discover-skill__state {
   color: var(--muted-foreground);
+  flex: 0 0 auto;
   font-size: 11px;
   line-height: 1.2;
+  white-space: nowrap;
 }
 
 .discover-skill__state[data-state="dirty"] {
@@ -1955,9 +1965,10 @@ kbd {
 }
 
 .discover-skill__actions {
-  align-self: center;
   flex: 0 0 auto;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  margin-left: auto;
 }
 
 /* Warnings page. */
@@ -3470,7 +3481,10 @@ a.code-chip--link:focus-visible {
   white-space: nowrap;
 }
 
-.issues-draft__badge {
+.issues-draft__meta {
+  align-items: center;
+  display: flex;
+  gap: 6px;
   justify-self: end;
 }
 
@@ -4012,36 +4026,6 @@ a.code-chip--link:focus-visible {
 }
 
 .status-issues__label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.status-providers {
-  border: 1px solid transparent;
-  max-width: 240px;
-}
-
-.status-providers__dot {
-  background: var(--border-strong);
-  border-radius: 999px;
-  flex: 0 0 auto;
-  height: 6px;
-  width: 6px;
-}
-
-.status-providers[data-state="opencode-go"] .status-providers__dot {
-  background: var(--success);
-}
-
-.status-providers[data-state="openrouter"] .status-providers__dot {
-  background: var(--warning);
-}
-
-.status-providers[data-state="none"] .status-providers__dot {
-  background: var(--error);
-}
-
-.status-providers__label {
   overflow: hidden;
   text-overflow: ellipsis;
 }

@@ -1,6 +1,10 @@
 import { mkdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AcpConnection, type AcpActivity, type AcpQuestion } from "../server/acp";
+import {
+  createWorkerProviderEnvironment,
+  type WorkerProviderEnvironment,
+} from "../server/providers/worker-environment";
 import { recordedChildAlive } from "../server/state";
 import { readHarnessVersion } from "../server/version";
 import { takeCommands, type IssuesCommand } from "./control";
@@ -82,6 +86,8 @@ export interface WorkerOptions {
   pollTimeoutMs?: number;
   /** Injected for tests; defaults to the real ACP client. */
   connect?: (options: IssuesPeerOptions) => AcpPeer;
+  /** Resolves each agent's provider environment; re-reads the store per run. */
+  providerEnvironment?: WorkerProviderEnvironment;
   /** Injected for tests; defaults to the origin tracker's state for one issue. */
   issueState?: (number: number) => Promise<IssueStateResult>;
   harnessVersion?: string | null;
@@ -103,6 +109,8 @@ export interface AcpPeer {
 export interface IssuesPeerOptions {
   command: string;
   cwd: string;
+  /** The selected provider environment for this one peer. */
+  env?: Record<string, string | undefined>;
   onActivity: (activity: AcpActivity) => void;
   /** Every session update, including progress that maps to no activity line. */
   onSessionUpdate?: () => void;
@@ -284,6 +292,7 @@ export class IssuesWorker {
   private readonly listIssues: NonNullable<WorkerOptions["listIssues"]>;
   private readonly pollTimeoutMs: number;
   private readonly connect: NonNullable<WorkerOptions["connect"]>;
+  private readonly providerEnvironment: WorkerProviderEnvironment;
   private readonly issueState: NonNullable<WorkerOptions["issueState"]>;
   private readonly harnessVersion: string | null;
   private readonly log: (line: string) => void;
@@ -335,6 +344,9 @@ export class IssuesWorker {
       });
     this.connect =
       options.connect ?? ((peerOptions) => new AcpConnection(peerOptions) as unknown as AcpPeer);
+    this.providerEnvironment =
+      options.providerEnvironment ??
+      createWorkerProviderEnvironment(this.stateDir, this.environment);
     this.issueState =
       options.issueState ??
       ((number) => {
@@ -720,7 +732,7 @@ export class IssuesWorker {
         }
       }
       this.publish();
-      this.maybeTrigger();
+      await this.maybeTrigger();
     } finally {
       this.polling = false;
     }
@@ -784,7 +796,7 @@ export class IssuesWorker {
     this.state.queue = this.state.queue.map((issue) => this.queued(issue));
   }
 
-  private maybeTrigger(): void {
+  private async maybeTrigger(): Promise<void> {
     if (this.stopping || this.state.paused || !this.state.enabled) return;
     for (const issue of this.state.queue) {
       if (this.active.size >= MAX_CONCURRENT_PEERS) break;
@@ -793,7 +805,8 @@ export class IssuesWorker {
       if (until !== undefined && until > this.clock().getTime()) continue;
       if (this.active.has(issue.number)) continue;
       if (this.cooldownRemaining(issue.number)) continue;
-      this.begin(issue);
+      await this.begin(issue);
+      if (this.stopping) break;
     }
     this.state.lifecycle = this.settledLifecycle();
     this.publish();
@@ -806,9 +819,9 @@ export class IssuesWorker {
     return { pid: active.peer.pid, argv: [...active.peer.argv], cwd: this.repoDir };
   }
 
-  private openRun(
+  private async openRun(
     issue: IssuesIssue,
-  ): { active: ActiveRun } | { runId: string; directory: string; error: string } {
+  ): Promise<{ active: ActiveRun } | { runId: string; directory: string; error: string }> {
     const now = this.clock();
     const base = runsDirectory(this.stateDir, this.repoDir);
     mkdirSync(base, { recursive: true });
@@ -849,9 +862,11 @@ export class IssuesWorker {
     };
     let peer: AcpPeer;
     try {
+      const environment = await this.providerEnvironment();
       peer = this.connect({
         command: this.agentCommand,
         cwd: this.repoDir,
+        env: environment,
         onActivity: (entry) => this.recordActivity(active, entry),
         onQuestion: (question) => this.recordQuestion(active, question),
         onStderr: (text) => firstLine.push(text),
@@ -865,10 +880,14 @@ export class IssuesWorker {
   }
 
   /** Starts one peer for one issue and records its run and agent entry. */
-  private begin(issue: IssuesIssue): void {
-    const opened = this.openRun(issue);
+  private async begin(issue: IssuesIssue): Promise<void> {
+    const opened = await this.openRun(issue);
     if ("error" in opened) {
       this.failWithoutPeer(issue, opened.runId, opened.directory, opened.error);
+      return;
+    }
+    if (this.stopping) {
+      this.closePeer(opened.active);
       return;
     }
     const active = opened.active;
