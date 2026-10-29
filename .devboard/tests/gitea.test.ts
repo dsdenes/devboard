@@ -9,6 +9,7 @@ import { shippedVersion } from "../lib/github-release.ts";
 import { createScoutGitHub } from "../issues/scout/github.ts";
 import { pollOpenIssues } from "../issues/tracker";
 import { closeIssue } from "../server/issue-close";
+import { listIssues } from "../mcp/issues";
 import { fakeGiteaPull } from "../server/fixtures/fake-gitea-pull";
 import { CommandFlowForge } from "../server/forge-pr";
 import { fileScoutIssue } from "../issues/scout/actions";
@@ -400,6 +401,13 @@ describe("Gitea pagination", () => {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
+      if (url.pathname.endsWith("/api/v1/repos/acme/fixture")) {
+        return json({
+          full_name: "acme/fixture",
+          private: false,
+          permissions: { pull: true, push: false },
+        });
+      }
       if (url.pathname.endsWith("/issues")) {
         return json(
           Array.from({ length: count }, (_, offset) => {
@@ -408,7 +416,7 @@ describe("Gitea pagination", () => {
               number,
               title: `issue ${number}`,
               html_url: `http://gitea.test/acme/fixture/issues/${number}`,
-              created_at: "2026-10-01T00:00:00Z",
+              created_at: new Date(Date.UTC(2026, 0, 1) + (number - 1) * 60_000).toISOString(),
               state: "open",
               body: "",
               labels: [],
@@ -445,6 +453,29 @@ describe("Gitea pagination", () => {
     );
     expect(calls.length).toBe(4);
     expect(calls[0]!.url).toContain("limit=50");
+  });
+
+  test("serves the newest issues to the forge list and the MCP issues_list path", async () => {
+    const repoDir = repository();
+    const forge = createForgeIssues({
+      repoDir,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      fetchImpl: capped(150),
+    });
+
+    // Coach's duplicate check reads exactly this window.
+    const window = await forge.list("open", 100);
+    expect(window.map((issue) => issue.number)).toEqual(
+      Array.from({ length: 100 }, (_, index) => 150 - index),
+    );
+
+    const listed = await listIssues(
+      { repoDir, harnessDir: repoDir, stateDir: repoDir, environment: {}, forgeIssues: forge },
+      { state: "open", limit: 100 },
+    );
+    expect(listed.truncated).toBe(true);
+    expect(listed.issues[0]!.number).toBe(150);
+    expect(listed.issues.at(-1)!.number).toBe(51);
   });
 
   test("lists every label when the server caps a response below the request", async () => {
