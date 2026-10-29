@@ -1178,6 +1178,7 @@ and is retried the same way.
 |---|---|---|
 |`HOST`|`127.0.0.1`|Listen address.|
 |`PORT`|`8080`|Listen port.|
+|`DEVBOARD_ALLOWED_HOSTS`|unset|Comma-separated extra hostnames the dashboard serves in a Host header. A wildcard bind (`0.0.0.0` or `::`) serves only loopback aliases unless names are listed; a reverse proxy's public name belongs here.|
 |`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
 |`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location.|
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|

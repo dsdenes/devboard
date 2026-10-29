@@ -280,6 +280,36 @@ describe("feedback endpoint", () => {
     }
   });
 
+  test("refuses a request whose Host is not one of the listener's names", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const host = `evil.example:${server.port}`;
+      const response = await submit(url, report(), { host, origin: `http://${host}` });
+
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error: "The request host is not served by this dashboard.",
+      });
+      expect(calls).toHaveLength(0);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("accepts a same-origin request for its listener host", async () => {
+    const { server, url, calls } = await startServer();
+
+    try {
+      const response = await submit(url, report(), { origin: `http://${url}` });
+
+      expect(response.status).toBe(201);
+      expect(calls).toHaveLength(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("reports a delivery failure with its diagnostic", async () => {
     const { server, url } = await startServer({ mode: "fail" });
 
