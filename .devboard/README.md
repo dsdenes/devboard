@@ -1053,16 +1053,18 @@ directory leave with the checkout.
 A submit broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs
 exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
 the retained root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`,
-`NO_COLOR=1`, and a 300-second timeout. On success the checkout becomes the crawl root and exactly
-one crawl runs against it. The crawl peer starts with `--no-skills`, so neither a clone's nor a
-host's `.omp/skills` are discovered or loaded; the crawl contract excludes every `.omp` path, and
-OMP's background description compression of a foreign skill would otherwise log a warning the
-watchdog files. Publication writes into the checkout's `.omp`; when the crawl succeeds,
-the two published trees are copied into `<owner>~<repo>/`, `project.json` is rewritten with the
-submitted URL and the completion time, and the checkout is removed. The active target moves to the
-new project only after its bytes are retained, so a failed clone or a failed crawl leaves the
-previous target, its bytes, its entry, and its completion time untouched and reports exactly one
-`discoverError`. A second `discoverRemote`, `discoverProject`, `switchDiscoverRemote`,
+`NO_COLOR=1`, and a 300-second timeout. The timeout ends the clone even when a helper inherits
+and holds the stderr pipe: the child's process group is killed, the staging checkout is removed,
+and the next Discover command is accepted. On success the checkout becomes the crawl root and
+exactly one crawl runs against it. The crawl peer starts with `--no-skills`, so neither a
+clone's nor a host's `.omp/skills` are discovered or loaded; the crawl contract excludes every
+`.omp` path, and OMP's background description compression of a foreign skill would otherwise
+log a warning the watchdog files. Publication writes into the checkout's `.omp`; when the crawl
+succeeds, the two published trees are copied into `<owner>~<repo>/`, `project.json` is rewritten
+with the submitted URL and the completion time, and the checkout is removed. The active target
+moves to the new project only after its bytes are retained, so a failed clone or a failed crawl
+leaves the previous target, its bytes, its entry, and its completion time untouched and reports
+exactly one `discoverError`. A second `discoverRemote`, `discoverProject`, `switchDiscoverRemote`,
 `removeDiscoverRemote`, or `clearDiscoverRemote` while `cloning` is non-null is refused with one
 `discoverError`, as it is while a Discover run or other Goal/Flow work is active. A clone is never
 resumed.
