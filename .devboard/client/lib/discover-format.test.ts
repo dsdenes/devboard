@@ -207,14 +207,6 @@ describe("test levels", () => {
     expect(implementedTiers(pyramidTiers(unknown))).toEqual([]);
   });
 
-  test("keeps happy-path counts on the listed levels", () => {
-    const tiers = implementedTiers(pyramidTiers(levels));
-    expect(tiers.map((tier) => [tier.level, tier.tests, tier.happyPath, tier.command])).toEqual([
-      ["unit", "118", "92", "npm run test:unit"],
-      ["integration", "4", "1", "node --test"],
-    ]);
-  });
-
   test("prefers the manifest's declaration for a recorded command", () => {
     const aliases = [
       { command: "node --test test/*.test.js", alias: "npm test" },

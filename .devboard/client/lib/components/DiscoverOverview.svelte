@@ -32,7 +32,6 @@
   const LEVEL_COLUMNS = [
     { id: "level", header: "Level", accessorKey: "level" },
     { id: "tests", header: "Tests", accessorKey: "tests" },
-    { id: "happyPath", header: "Happy path", accessorKey: "happyPath" },
     { id: "command", header: "Command", accessorKey: "command" },
   ];
   const QUALITY_GATE_COLUMNS = [
@@ -108,12 +107,9 @@
     tiers.map((tier) => {
       const parsed = Number.parseInt(tier.tests, 10);
       const tests = Number.isFinite(parsed) ? parsed : 0;
-      const parsedHappy = Number.parseInt(tier.happyPath, 10);
-      const happyLabel = Number.isFinite(parsedHappy) ? `${parsedHappy}` : "—";
       return {
         level: humanize(tier.level),
         tests: `${tests} ${tests === 1 ? "test" : "tests"}`,
-        happyPath: happyLabel,
         command: tier.command.length > 0 ? discover.aliasFor(tier.command) : "",
         rawLevel: tier.level,
       };

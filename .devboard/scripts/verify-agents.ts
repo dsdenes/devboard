@@ -310,6 +310,8 @@ const INSTALLED_PROMPT =
   "---\ndescription: installed fixture\n---\n\n# Installed Auto Scout prompt\n\nRead-only here.\n";
 const SOURCE_PROMPT =
   "---\ndescription: source fixture\n---\n\n# Source Auto Scout prompt\n\nKeep every byte.\n";
+const INSTALLED_DESIGN_PROMPT = "# Installed Design System prompt\n\nRead-only here.\n";
+const SOURCE_DESIGN_PROMPT = "# Source Design System prompt\n\nKeep every byte.\n";
 const CHAT_PROPOSAL =
   "---\ndescription: revised\n---\n\n# Revised Auto Scout prompt\n\nSaved by the gate.\n";
 const SOURCE_ACP = join(import.meta.dir, "..", "tests", "fixtures", "verify-source-acp.ts");
@@ -388,6 +390,10 @@ try {
     join(host.directory, ".devboard", "prompts", "scout-recommendations.md"),
     INSTALLED_PROMPT,
   );
+  await writeFile(
+    join(host.directory, ".devboard", "prompts", "design-system.md"),
+    INSTALLED_DESIGN_PROMPT,
+  );
   await mkdir(join(host.directory, ".omp", "commands"), { recursive: true });
   await writeFile(
     join(host.directory, ".omp", "commands", "scout-recommendations.md"),
@@ -463,6 +469,10 @@ try {
   await writeFile(
     join(sourceHost.directory, ".devboard", "prompts", "scout-recommendations.md"),
     SOURCE_PROMPT,
+  );
+  await writeFile(
+    join(sourceHost.directory, ".devboard", "prompts", "design-system.md"),
+    SOURCE_DESIGN_PROMPT,
   );
   await mkdir(join(sourceHost.directory, ".devboard", "goal-proposals"), { recursive: true });
   await writeFile(
@@ -761,6 +771,15 @@ try {
     (await text(devtools, "agent-lifecycle")).includes("stopped"),
     "Coach does not start stopped",
   );
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt-absent")) ? true : undefined),
+    "the Coach prompt absence",
+    10_000,
+  );
+  assertTrue(
+    (await text(devtools, "agent-prompt-absent")).includes("Coach"),
+    "the Coach absence does not name its promptless behavior",
+  );
   console.log("PASS coach-page");
 
   /* 2b. The prompt section: read-only here. */
@@ -804,6 +823,41 @@ try {
       INSTALLED_PROMPT,
     "the installed prompt file changed",
   );
+
+  await click(devtools, "open-issues-design");
+  const designLoaded = await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `(() => {
+            const section = document.querySelector('[data-testid="agent-prompt"]');
+            const title = section?.querySelector('h2');
+            return section?.dataset.agent === "design" &&
+              title?.textContent?.trim() === "Prompt";
+          })()`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the Design System prompt file",
+    10_000,
+  );
+  assertTrue(designLoaded, "the installed Design System section never loaded its prompt");
+  assertTrue(
+    (await countOf(devtools, "agent-prompt-absent")) === 0,
+    "the Design System prompt is declared absent",
+  );
+  for (const testid of [
+    "agent-prompt-editor",
+    "agent-prompt-chat",
+    "agent-prompt-save",
+  ]) {
+    assertTrue(
+      (await countOf(devtools, testid)) === 0,
+      `${testid} is rendered for Design System in an installed host`,
+    );
+  }
+  console.log("PASS design-prompt-read-only");
 
   await click(devtools, "open-issues-watchdog");
   await waitFor(
@@ -1414,6 +1468,62 @@ try {
     30_000,
   );
   console.log("PASS prompt-save");
+
+  /* 11. The source checkout's Design System prompt is the same editable surface. */
+  await click(devtools, "open-issues-design");
+  await waitFor(
+    async () =>
+      (await valueOf(devtools!, "agent-prompt-editor").catch(() => "")) === SOURCE_DESIGN_PROMPT
+        ? true
+        : undefined,
+    "the Design System prompt in the source editor",
+    15_000,
+  );
+  const designLayout = await promptLayout(devtools);
+  assertTrue(
+    designLayout.one &&
+      designLayout.afterHeader &&
+      designLayout.beforeAlerts &&
+      designLayout.beforeMain,
+    `the source Design System prompt section is misplaced: ${JSON.stringify(designLayout)}`,
+  );
+  assertTrue(
+    (await countOf(devtools, "agent-prompt-absent")) === 0,
+    "the source Design System prompt is declared absent",
+  );
+  for (const testid of [
+    "agent-prompt-chat",
+    "agent-prompt-message",
+    "agent-prompt-send",
+    "agent-prompt-save",
+  ]) {
+    assertTrue(
+      (await countOf(devtools, testid)) === 1,
+      `${testid} is missing on the source Design System page`,
+    );
+  }
+  const designPromptFile = join(
+    sourceHost.directory,
+    ".devboard",
+    "prompts",
+    "design-system.md",
+  );
+  await setInput(devtools, "agent-prompt-editor", "design saved\n");
+  await click(devtools, "agent-prompt-save");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt-notice")) ? true : undefined),
+    "the Design System save notice",
+    15_000,
+  );
+  assertTrue(
+    readFileSync(designPromptFile, "utf8") === "design saved\n",
+    "Save did not write the Design System prompt file",
+  );
+  assertTrue(
+    readFileSync(sourcePromptFile, "utf8") === CHAT_PROPOSAL,
+    "the Design System save changed the Auto Scout prompt file",
+  );
+  console.log("PASS design-prompt-source");
 
   console.log(
     "verify:agents: the Background agents section, all four shared pages, lifecycle, cadence, " +

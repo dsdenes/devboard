@@ -215,8 +215,6 @@ export function recordColumnValues(record: Record<string, unknown>, key: string)
 export interface PyramidTier {
   level: string;
   tests: string;
-  /** Test cases that exercise the level's primary success path. */
-  happyPath: string;
   /** The recorded command that runs this level. */
   command: string;
 }
@@ -227,7 +225,6 @@ export function pyramidTiers(leaf: Leaf | null | undefined): PyramidTier[] {
     .map((record) => ({
       level: scalarText(record.level) || "other",
       tests: scalarText(record.tests) || "unknown",
-      happyPath: scalarText(record.happyPath) || "unknown",
       command: scalarText(record.command),
     }))
     .sort(

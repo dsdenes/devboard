@@ -3224,8 +3224,8 @@ try {
     discoverChrome,
   );
   check(
-    discoverChrome.headers.join("|") === "Level|Tests|Happy path|Command",
-    "the test level table does not carry its happy-path and command columns",
+    discoverChrome.headers.join("|") === "Level|Tests|Command",
+    "the test level table does not carry its level, test count, and command columns",
     discoverChrome.headers,
   );
   check(
