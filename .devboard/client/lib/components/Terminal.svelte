@@ -177,7 +177,7 @@
 
 <style>
   .terminal-host {
-    background: var(--terminal-background);
+    background: var(--background);
     border: 1px solid var(--border);
     border-radius: 4px;
     height: 100%;
