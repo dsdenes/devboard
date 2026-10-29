@@ -260,8 +260,8 @@ kbd {
   position: relative;
 }
 
-/* The armed issue action reads as selected: accent surface, border, icon, and
-   a rail bar matching an active mode tab. */
+/* The armed issue action reads as selected: the secondary-hover fill and a rail
+   bar matching an active mode tab. */
 .activity-bar__action[aria-pressed="true"]::before {
   background: var(--accent);
   border-radius: 0 2px 2px 0;

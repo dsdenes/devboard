@@ -4986,6 +4986,78 @@ try {
     "the armed report action does not read as active",
     reportActive,
   );
+  await page.wait(
+    `(() => {
+      const probe = document.createElement("div");
+      probe.style.cssText = "position:absolute;background:var(--secondary-hover)";
+      document.body.append(probe);
+      const expected = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      const button = document.querySelector('[data-testid="activity-report"]');
+      return button !== null && getComputedStyle(button).backgroundColor === expected;
+    })()`,
+    "the armed report action to settle on the secondary-hover fill",
+  );
+  const activePaint = await page.eval<{
+    background: string;
+    border: string;
+    color: string;
+    surface: string;
+    strongBorder: string;
+    foreground: string;
+    accentSurface: string;
+    ghost: { background: string; border: string; color: string; pressed: boolean };
+  }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText =
+      "position:absolute;background:var(--secondary-hover);border-top:1px solid var(--border-strong);" +
+      "color:var(--foreground)";
+    document.body.append(probe);
+    const style = getComputedStyle(probe);
+    const accentProbe = document.createElement("div");
+    accentProbe.style.cssText = "position:absolute;background:var(--accent-surface)";
+    document.body.append(accentProbe);
+    const expected = {
+      surface: style.backgroundColor,
+      strongBorder: style.borderTopColor,
+      foreground: style.color,
+      accentSurface: getComputedStyle(accentProbe).backgroundColor,
+    };
+    accentProbe.remove();
+    probe.remove();
+    const button = document.querySelector('[data-testid="activity-report"]');
+    const ghost = document.querySelector('[data-testid="theme-toggle"]');
+    const buttonStyle = button === null ? null : getComputedStyle(button);
+    const ghostStyle = ghost === null ? null : getComputedStyle(ghost);
+    return {
+      background: buttonStyle?.backgroundColor ?? "",
+      border: buttonStyle?.borderTopColor ?? "",
+      color: buttonStyle?.color ?? "",
+      ...expected,
+      ghost: {
+        background: ghostStyle?.backgroundColor ?? "",
+        border: ghostStyle?.borderTopColor ?? "",
+        color: ghostStyle?.color ?? "",
+        pressed: ghost?.getAttribute("aria-pressed") === "true",
+      },
+    };
+  })()`);
+  check(
+    activePaint.background === activePaint.surface &&
+      activePaint.background !== activePaint.accentSurface &&
+      activePaint.border === activePaint.strongBorder &&
+      activePaint.color === activePaint.foreground,
+    "the armed issue action does not paint the secondary-hover fill with foreground text and a strong border",
+    activePaint,
+  );
+  check(
+    !activePaint.ghost.pressed &&
+      activePaint.ghost.background === "rgba(0, 0, 0, 0)" &&
+      activePaint.ghost.border === "rgba(0, 0, 0, 0)" &&
+      activePaint.ghost.color === activePaint.foreground,
+    "an idle ghost icon button no longer reads as unchanged",
+    activePaint,
+  );
   await page.click('[data-testid="activity-report"]');
   await page.wait(
     `document.querySelector('.feedback-hint') === null`,
