@@ -6423,14 +6423,12 @@ try {
     "an idle draft's start control is disabled while another elaborates",
     startStates,
   );
-  const blockers = await page.eval<string[]>(
-    `[...document.querySelectorAll('[data-testid="issues-draft-blocked"]')]
-      .map((item) => item.textContent?.trim() ?? "")`,
+  const blockers = await page.eval<number>(
+    `document.querySelectorAll('[data-testid="issues-draft-blocked"]').length`,
   );
   check(
-    blockers.length === 2 &&
-      blockers.every((reason) => reason === "This draft is being elaborated."),
-    "a draft shows another draft's blocker or the wrong reason",
+    blockers === 0,
+    "a draft row still renders an elaboration blocker",
     blockers,
   );
 
@@ -6917,21 +6915,19 @@ try {
     "the second submit's running detail",
     8_000,
   );
-  const busyStart = await page.eval<{ disabled: boolean; title: string; blocker: string }>(`(() => {
+  const busyStart = await page.eval<{ disabled: boolean; title: string; blockers: number }>(`(() => {
     const start = document.querySelector('[data-testid="issues-draft-start"]');
-    const blocked = [...document.querySelectorAll('[data-testid="issues-draft-blocked"]')]
-      .find((item) => item.closest('[data-path="${busyPath}"]') !== null);
     return {
       disabled: start?.disabled === true,
       title: start?.getAttribute("title") ?? "",
-      blocker: blocked?.textContent?.trim() ?? "",
+      blockers: document.querySelectorAll('[data-testid="issues-draft-blocked"]').length,
     };
   })()`);
   check(
     existsSync(join(host, busyPath)) &&
       busyStart.disabled &&
       busyStart.title === "This draft is being elaborated." &&
-      busyStart.blocker === "This draft is being elaborated.",
+      busyStart.blockers === 0,
     "the second submit did not start its own elaboration",
     busyStart,
   );

@@ -163,9 +163,6 @@
                 <span class="mono">{draft.name}</span>
                 <span class="issues-draft__heading">{draft.heading || "No heading"}</span>
                 <span class="badge" data-tone={statusTone(draftStatus)}>{draftStatus}</span>
-                {#if blocker !== null}
-                  <span class="issues-draft__blocked" data-testid="issues-draft-blocked">{blocker}</span>
-                {/if}
               </button>
               <div style="display: flex; align-items: center; padding: 0 8px;">
                 <Button
