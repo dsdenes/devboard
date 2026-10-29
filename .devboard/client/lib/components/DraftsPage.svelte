@@ -240,9 +240,6 @@
               class="issues-draft-detail__question"
               aria-label="Elaboration question"
             >
-              <h3 class="issues-draft-detail__label issues-draft-detail__label--warning">
-                Elaboration question
-              </h3>
               <IssuesQuestion
                 question={question}
                 testid="issues-draft-question"
@@ -251,7 +248,6 @@
                 inputTestid="issues-draft-answer-input"
                 submitTestid="issues-draft-answer-submit"
                 command="issues.draft.answer"
-                headingLevel={4}
               />
             </section>
           {/if}

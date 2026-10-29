@@ -23,8 +23,7 @@ Panel (surface, border, 4px radius, fills the grid cell)
   body (column, 12px padding, 16px between sections, scrolls)
     [error alert]                                         P1
     section question (warning border + surface)           P0 while pending
-      overline "Elaboration question"
-      question text
+      question heading, h3
       option cards (one recommended label)
       free-text answer + submit
     section proposal
