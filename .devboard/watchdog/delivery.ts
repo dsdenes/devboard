@@ -5,7 +5,7 @@ import {
 import {
   giteaCommentIssue,
   giteaCreateIssue,
-  issueNumberFromUrl,
+  giteaIssueNumber,
 } from "../lib/gitea";
 import { originForge } from "../issues/repository";
 import {
@@ -84,8 +84,13 @@ export function createWatchdogDelivery(options: DeliveryOptions): WatchdogDelive
         }
       },
       async comment(url, input) {
-        const number = issueNumberFromUrl(url);
-        if (number === undefined) return { ok: false, reason: "the issue URL has no number" };
+        const number = giteaIssueNumber(target, url);
+        if (number === undefined) {
+          return {
+            ok: false,
+            reason: `the ledger URL is not an issue in ${target.baseUrl}/${target.project}: ${url}`,
+          };
+        }
         try {
           await giteaCommentIssue(target, number, watchdogComment(input), options.fetchImpl);
           return { ok: true };

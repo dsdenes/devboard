@@ -455,7 +455,67 @@ describe("Gitea watchdog delivery", () => {
       reportPath: "/report.json",
     });
     expect(commented).toEqual({ ok: true });
-    expect(calls.some((call) => call.url.endsWith("/issues/12/comments"))).toBe(true);
+    expect(
+      calls.filter(
+        (call) =>
+          call.method === "POST" &&
+          call.url === "http://gitea.test/api/v1/repos/acme/fixture/issues/12/comments",
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("refuses a ledger URL filed through another forge", async () => {
+    const calls: Recorded[] = [];
+    const delivery = createWatchdogDelivery({
+      root: repository(),
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
+      gh: () => {
+        throw new Error("gh must not run for a Gitea origin");
+      },
+      fetchImpl: fakeGitea(calls),
+    });
+    const url = "https://github.com/acme/fixture/issues/12";
+    const commented = await delivery.comment(url, {
+      category: "server-error",
+      fingerprint: "fingerprint",
+      line: "Synthetic error",
+      firstSeen: "2026-10-01T00:00:00Z",
+      lastSeen: "2026-10-01T00:00:00Z",
+      count: 2,
+      window: { start: new Date("2026-10-01T00:00:00Z"), end: new Date("2026-10-01T00:01:00Z") },
+      instances: [],
+      reportPath: "/report.json",
+    });
+    expect(commented.ok).toBe(false);
+    if (!commented.ok) expect(commented.reason).toContain(url);
+    expect(calls).toEqual([]);
+  });
+
+  test("refuses a ledger URL from another repository on the same origin", async () => {
+    const calls: Recorded[] = [];
+    const delivery = createWatchdogDelivery({
+      root: repository(),
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
+      gh: () => {
+        throw new Error("gh must not run for a Gitea origin");
+      },
+      fetchImpl: fakeGitea(calls),
+    });
+    const url = "http://gitea.test/other/fixture/issues/12";
+    const commented = await delivery.comment(url, {
+      category: "server-error",
+      fingerprint: "fingerprint",
+      line: "Synthetic error",
+      firstSeen: "2026-10-01T00:00:00Z",
+      lastSeen: "2026-10-01T00:00:00Z",
+      count: 2,
+      window: { start: new Date("2026-10-01T00:00:00Z"), end: new Date("2026-10-01T00:01:00Z") },
+      instances: [],
+      reportPath: "/report.json",
+    });
+    expect(commented.ok).toBe(false);
+    if (!commented.ok) expect(commented.reason).toContain(url);
+    expect(calls).toEqual([]);
   });
 });
 

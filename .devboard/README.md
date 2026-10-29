@@ -1455,6 +1455,8 @@ than seven days are deleted; these are never deleted at any age:
   `projection.json`, and `control/`.
 - `.tmp/orchestrator/state.json`, `ledger.json`, and `lock`.
 - `.tmp/issues/` and `.tmp/flow/` in full.
+- `.tmp/scout/<24-hex>/`, every repository's Auto Scout settings, worker state, and control
+  commands, so a stopped worker keeps its caps and cadence.
 - the run directory of the cycle performing the sweep, and a live `devboard-<pid>.lock`.
 
 - any `lock` file whose content records a live `LockOwner`, such as the checkout-anchored
@@ -2542,8 +2544,8 @@ routing, two orphan children on a fresh start, version 1 state loading, reopened
 history pruning that keeps every running directory, preflight for both wrappers, repo-scoped state
 and lock isolation, atomic and damaged state, ledger migration, the activity bounds, and the
 conditional tracker. `tests/cleanup.test.ts` proves the watchdog preserves repo-scoped issues state,
-the repo-anchored lock, and Flow session records that Flow restore still reads, while sweeping
-legacy orchestrator run files. Every fixture stays under `.devboard/.tmp`.
+the repo-anchored lock, Auto Scout settings and state, and Flow session records that Flow restore
+still reads, while sweeping legacy orchestrator run files and stale scan archives. Every fixture stays under `.devboard/.tmp`.
 `tests/launcher.test.ts` covers the single public package: the manifest, the help output, the
 tarball's required and forbidden paths, the fallback asset name, and template identity. `lib/inventory.test.ts` covers the publish report. `lib/release.test.ts`
 covers installing a release when the process working directory has been deleted.
