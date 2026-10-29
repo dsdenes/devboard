@@ -1131,6 +1131,166 @@ describe("Flow change widgets", () => {
       controller.dispose();
     }
   }, 60_000);
+
+  test("an analyst turn writes its request and widgets into its own session directory", async () => {
+    const fixture = createFixture("analyst-bind");
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", "--flow-implement", "--flow-change"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "startFlowImplementation" });
+    const started = await client.waitFor((event) => event.type === "flowImplementationStarted");
+    const sessionId = String(started.sessionId);
+    await waitUntil(
+      () => {
+        const widgets = latest(client, "flowWidgets")?.widgets;
+        return Array.isArray(widgets) && widgets.length > 0;
+      },
+      "the analyst widget list",
+    );
+
+    const directory = join(fixture.stateDir, "flow", journalKey(fixture.root), sessionId);
+    const request = JSON.parse(readFileSync(join(directory, "request.json"), "utf8")) as {
+      files?: { path?: string }[];
+    };
+    expect((request.files ?? []).map((file) => file.path)).toContain("src/app.txt");
+    const answer = JSON.parse(readFileSync(join(directory, "widgets.json"), "utf8")) as {
+      widgets?: unknown[];
+    };
+    expect((answer.widgets ?? []).length).toBeGreaterThan(0);
+    const persisted = readSession(fixture, sessionId).widgets as unknown[] | undefined;
+    expect(persisted?.length ?? 0).toBeGreaterThan(0);
+
+    await client.waitFor((event) => event.type === "flowStopped");
+    client.close();
+  }, 60_000);
+
+  test("an analyst turn that outlives its session never writes or broadcasts into the replacement", async () => {
+    const fixture = createFixture("analyst-orphan");
+    const events: Event[] = [];
+    let environmentCalls = 0;
+    let analystGated = false;
+    const release = Promise.withResolvers<void>();
+    const controller = new FlowController({
+      repoDir: fixture.root,
+      stateDir: fixture.stateDir,
+      agentCommand: `bun ${STUB_AGENT} --log=${fixture.logPath} --flow-goal --flow-implement --flow-change`,
+      agentEnvironment: async () => {
+        environmentCalls += 1;
+        // The goal interview and the implementation are the first two peers;
+        // hold the first analyst peer inside its environment lookup.
+        if (environmentCalls === 3) {
+          analystGated = true;
+          await release.promise;
+        }
+        return { ...process.env };
+      },
+      broadcast: (event) => events.push(event as Event),
+      forge: new StubForge({ logPath: fixture.forgeLog }),
+      forgeTarget: { forge: "github", host: "forge.test", project: "acme/fixture" },
+      watchMs: 20,
+      analystTimeoutMs: 10_000,
+      goalTimeoutMs: 10_000,
+    });
+    try {
+      void controller.createGoal();
+      await waitUntil(
+        () => events.some((event) => event.type === "flowQuestion" && event.target === "goal"),
+        "the goal interview question",
+      );
+      const question = events.find((event) => event.type === "flowQuestion");
+      controller.answer(question?.id, "Alpha", "goal");
+      await waitUntil(
+        () => events.some((event) => event.type === "flowGoalStopped" && event.completed === true),
+        "the goal interview to finish",
+      );
+      void controller.startImplementation();
+      await waitUntil(
+        () => events.some((event) => event.type === "flowImplementationStarted"),
+        "the implementation start",
+      );
+      const started = events.find((event) => event.type === "flowImplementationStarted");
+      const oldId = String(started?.sessionId);
+
+      await waitUntil(
+        () => events.some((event) => event.type === "flowPr" && event.pr !== null),
+        "the draft pull request",
+      );
+      await waitUntil(() => analystGated, "the analyst environment to be gated");
+      await waitUntil(
+        () => events.some((event) => event.type === "flowStopped"),
+        "the implementation to stop",
+      );
+      await controller.markPrReady();
+      await waitUntil(
+        () =>
+          events.some(
+            (event) =>
+              event.type === "flowPr" &&
+              (event.pr as { state?: string } | null)?.state === "live",
+          ),
+        "the live pull request",
+      );
+      await controller.mergePr();
+      await waitUntil(
+        () => events.some((event) => event.type === "flowSnapshot" && event.status === "merged"),
+        "the merged session",
+      );
+
+      const goalMark = events.length;
+      void controller.createGoal();
+      await waitUntil(
+        () =>
+          events.slice(goalMark).some(
+            (event) => event.type === "flowSnapshot" && event.sessionId !== oldId,
+          ),
+        "the replacement session",
+      );
+      await waitUntil(
+        () =>
+          events.slice(goalMark).some(
+            (event) => event.type === "flowQuestion" && event.target === "goal",
+          ),
+        "the replacement goal question",
+      );
+      const replacement = events.find(
+        (event) => event.type === "flowSnapshot" && event.sessionId !== oldId,
+      );
+      const newId = String(replacement?.sessionId);
+      const switchIndex = events.findIndex(
+        (event) => event.type === "flowSnapshot" && event.sessionId === newId,
+      );
+      const newQuestion = events
+        .slice(goalMark)
+        .find((event) => event.type === "flowQuestion" && event.target === "goal");
+      controller.answer(newQuestion?.id, "Beta", "goal");
+      await waitUntil(
+        () =>
+          events
+            .slice(goalMark)
+            .some((event) => event.type === "flowGoalStopped" && event.completed === true),
+        "the replacement goal interview to finish",
+      );
+
+      release.resolve();
+      await waitForStub(fixture, (line) => line.startsWith("flow-widgets "));
+      // `hasActiveWork` stays true while the analyst result is being applied,
+      // so a false value proves the discarded turn has fully settled.
+      await waitUntil(() => !controller.hasActiveWork(), "the analyzer turn to settle");
+
+      const flowRoot = join(fixture.stateDir, "flow", journalKey(fixture.root));
+      expect(existsSync(join(flowRoot, newId, "request.json"))).toBe(false);
+      expect(existsSync(join(flowRoot, newId, "widgets.json"))).toBe(false);
+      expect(existsSync(join(flowRoot, oldId, "request.json"))).toBe(true);
+      expect(events.slice(switchIndex).some((event) => event.type === "flowWidgets")).toBe(false);
+      const replacementWidgets = readSession(fixture, newId).widgets as unknown[] | undefined;
+      expect(replacementWidgets ?? []).toEqual([]);
+    } finally {
+      controller.dispose();
+    }
+  }, 90_000);
 });
 
 describe("Flow untracked file bounds", () => {

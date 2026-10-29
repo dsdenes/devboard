@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { resolveForgeAuth } from "../lib/forge-auth.ts";
 import { giteaBaseUrl, parseForgeRemote } from "../lib/forge.ts";
+import { createForgeIssues } from "../lib/forge-issues.ts";
 import { giteaLabels, giteaListIssues, giteaListReleases, type FetchLike } from "../lib/gitea.ts";
 import { shippedVersion } from "../lib/github-release.ts";
 import { createScoutGitHub } from "../issues/scout/github.ts";
@@ -113,7 +114,10 @@ function requestedReleasePages(calls: string[]): string[] {
     .map((call) => new URL(call, "http://gitea.test").searchParams.get("page") ?? "");
 }
 
-function fakeGitea(calls: Recorded[] = []): FetchLike {
+function fakeGitea(
+  calls: Recorded[] = [],
+  permissions: { push: boolean; pull: boolean } = { push: true, pull: true },
+): FetchLike {
   return async (input, init) => {
     const url = String(input);
     const method = init?.method ?? "GET";
@@ -127,9 +131,20 @@ function fakeGitea(calls: Recorded[] = []): FetchLike {
     const json = (value: unknown, status = 200) =>
       new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
     if (url.endsWith("/api/v1/repos/acme/fixture")) {
-      return json({ full_name: "acme/fixture", private: false, permissions: { push: true, pull: true } });
+      return json({ full_name: "acme/fixture", private: false, permissions });
     }
     if (url.endsWith("/api/v1/user")) return json({ login: "acme-bot" });
+    if (method === "GET" && /\/issues\/5$/.test(url)) {
+      return json({
+        number: 5,
+        title: "Live Gitea issue",
+        html_url: "http://gitea.test/acme/fixture/issues/5",
+        created_at: "2026-10-01T00:00:00Z",
+        state: "open",
+        body: "body",
+        labels: [{ name: "goal" }],
+      });
+    }
     if (url.includes("/issues?state=open")) {
       return json([
         {
@@ -277,6 +292,56 @@ describe("Gitea issues", () => {
     expect(
       calls.some((call) => call.method === "PATCH" && call.url.endsWith("/issues/5")),
     ).toBe(true);
+  });
+});
+
+describe("Gitea forge issue client", () => {
+  test("reads issues on a public repository without a token", async () => {
+    const calls: Recorded[] = [];
+    const issues = createForgeIssues({
+      repoDir: repository(),
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      fetchImpl: fakeGitea(calls, { push: false, pull: true }),
+    });
+
+    expect(await issues.list("open")).toEqual([
+      {
+        number: 5,
+        title: "Live Gitea issue",
+        state: "open",
+        labels: ["goal"],
+        url: "http://gitea.test/acme/fixture/issues/5",
+        createdAt: "2026-10-01T00:00:00Z",
+      },
+    ]);
+    expect(await issues.get(5)).toMatchObject({
+      number: 5,
+      title: "Live Gitea issue",
+      state: "open",
+      body: "body",
+      labels: ["goal"],
+    });
+    expect(calls.some((call) => call.method === "GET" && call.url.endsWith("/issues/5"))).toBe(
+      true,
+    );
+
+    await expect(issues.ensureLabel("goal")).rejects.toThrow("writing needs GITEA_TOKEN");
+    expect(calls.some((call) => call.method === "POST" && call.url.endsWith("/labels"))).toBe(
+      false,
+    );
+  });
+
+  test("reads issues with a pull-only token but refuses to write", async () => {
+    const calls: Recorded[] = [];
+    const issues = createForgeIssues({
+      repoDir: repository(),
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test", GITEA_TOKEN: "gitea-token" },
+      fetchImpl: fakeGitea(calls, { push: false, pull: true }),
+    });
+
+    expect(await issues.list("open")).toHaveLength(1);
+    expect((await issues.get(5)).number).toBe(5);
+    await expect(issues.ensureLabel("goal")).rejects.toThrow("cannot write");
   });
 });
 

@@ -556,6 +556,18 @@ function pullRequestState(event: Event): string | undefined {
   return typeof pr.state === "string" ? pr.state : undefined;
 }
 
+/**
+ * The fake forge, except its remote-branch deletion is a real push against the
+ * fixture's bare origin, so a test can prove the branch is gone rather than
+ * only that the adapter was asked to delete it.
+ */
+class DeletingForge extends StubForge {
+  override async deleteRemoteBranch(cwd: string, branch: string): Promise<void> {
+    await super.deleteRemoteBranch(cwd, branch);
+    git(cwd, ["push", "origin", "--delete", branch]);
+  }
+}
+
 async function waitForStub(fixture: Fixture, predicate: (line: string) => boolean, timeout = 10_000) {
   const deadline = Date.now() + timeout;
   const read = () => {
@@ -1183,8 +1195,143 @@ describe("Flow pull-request lifecycle", () => {
     expect(String(merged.leftover)).toContain(session.worktree);
     expect(String(merged.leftover)).toContain(session.branch);
     expect(existsSync(session.worktree)).toBe(true);
-    expect((merged.pr as { state: string }).state).toBe("merged");
+    expect(pullRequestState(merged)).toBe("merged");
+    // The failed cleanup keeps the retry armed rather than marking the merge done.
+    const stored = storedSession(fixture, session.id);
+    expect(stored?.cleanupPending).toBe(true);
+    expect(String(stored?.leftover)).toContain(session.worktree);
     client.close();
+  }, 90_000);
+
+  test("a failed cleanup fetch is reported and retried at the next Flow start", async () => {
+    const fixture = createFixture("pr-cleanup-fetch-retry");
+    const forgeStub = new DeletingForge();
+    let fetchAttempts = 0;
+    const recorder = recordingExecutor();
+    const failing: Exec = async (command, args, options) => {
+      if (
+        command === "git" &&
+        args.length === 2 &&
+        args[0] === "fetch" &&
+        args[1] === "origin"
+      ) {
+        fetchAttempts += 1;
+        if (fetchAttempts === 1) {
+          return { stdout: "", stderr: "fatal: unable to access 'origin'", code: 128 };
+        }
+      }
+      return recorder.exec(command, args, options);
+    };
+    const server = startServer(fixture, {
+      forge: forgeStub,
+      exec: failing,
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-change",
+        "--flow-checkpoints=2",
+        "--flow-step-delay=8000",
+      ],
+    });
+    const client = await connect(server);
+    await connected(client);
+    await createGoal(client);
+    const session = await startFlow(client, fixture);
+    await client.waitFor((event) => event.type === "flowPr" && event.pr !== null);
+    await stopFlow(client);
+    client.send({ type: "markFlowPrReady" });
+    await client.waitFor(
+      (event) => event.type === "flowPr" && pullRequestState(event) === "live",
+    );
+
+    // The forge merges the PR: reproduce the merge commit on the bare origin.
+    const clone = join(fixture.root, ".worktree", "fetch-retry-clone");
+    git(fixture.root, ["clone", join(fixture.root, "origin.git"), clone]);
+    git(clone, [
+      "-c",
+      "user.name=Forge",
+      "-c",
+      "user.email=forge@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "merge",
+      "--no-ff",
+      `origin/${session.branch}`,
+      "-m",
+      `Merge pull request #7 from ${session.branch}`,
+    ]);
+    git(clone, ["push", "origin", "main"]);
+
+    client.send({ type: "mergeFlowPr" });
+    const merged = await client.waitFor(
+      (event) => event.type === "flowSnapshot" && event.status === "merged",
+    );
+    expect(pullRequestState(merged)).toBe("merged");
+    expect(String(merged.leftover)).toContain("git fetch origin failed");
+    // A failed fetch is its own leftover, never a stale-ancestry verdict.
+    expect(String(merged.leftover)).not.toContain("not an ancestor");
+    expect(
+      server.calls.some((call) => call.command === "git" && call.args.includes("merge-base")),
+    ).toBe(false);
+    expect(existsSync(session.worktree)).toBe(true);
+    expect(fetchAttempts).toBe(1);
+
+    const stored = storedSession(fixture, session.id);
+    expect(stored?.status).toBe("merged");
+    expect(stored?.cleanupPending).toBe(true);
+    expect(String(stored?.leftover)).toContain("git fetch origin failed");
+    expect(git(fixture.root, ["rev-parse", "--verify", `refs/heads/${session.branch}`]).trim()).toMatch(
+      /^[0-9a-f]{40}$/,
+    );
+    expect(
+      git(fixture.root, [
+        "--git-dir",
+        join(fixture.root, "origin.git"),
+        "rev-parse",
+        "--verify",
+        `refs/heads/${session.branch}`,
+      ]).trim(),
+    ).toMatch(/^[0-9a-f]{40}$/);
+
+    client.close();
+    server.server.stop(true);
+
+    startServer(fixture, { forge: forgeStub, exec: failing });
+    await waitUntil(() => {
+      const restored = storedSession(fixture, session.id);
+      return restored?.cleanupPending === false && restored.leftover === null;
+    }, "restore to retry the failed merge cleanup");
+    // The retry ran the whole cleanup again, not a skipped session.
+    expect(fetchAttempts).toBe(2);
+
+    const restored = storedSession(fixture, session.id);
+    expect(restored?.status).toBe("merged");
+    expect(prState(restored)).toBe("merged");
+    expect(existsSync(session.worktree)).toBe(false);
+    const localBranch = Bun.spawnSync({
+      cmd: ["git", "-C", fixture.root, "rev-parse", "--verify", `refs/heads/${session.branch}`],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(localBranch.exitCode).not.toBe(0);
+    const remoteBranch = Bun.spawnSync({
+      cmd: [
+        "git",
+        "-C",
+        fixture.root,
+        "--git-dir",
+        join(fixture.root, "origin.git"),
+        "rev-parse",
+        "--verify",
+        `refs/heads/${session.branch}`,
+      ],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(remoteBranch.exitCode).not.toBe(0);
+    expect(
+      forgeStub.calls.some((call) => call.op === "deleteRemoteBranch" && call.branch === session.branch),
+    ).toBe(true);
   }, 90_000);
 
   test("restore archives a merged request stored beside a stopped status", async () => {
