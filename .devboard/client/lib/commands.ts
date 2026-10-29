@@ -164,11 +164,11 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
   });
   add({
     id: "app.notifications.dismiss",
-    title: "Dismiss the newest notification",
+    title: "Dismiss the newest open notification",
     group: "Application",
-    disabled: () => disabledWhen(notifications.items.length === 0, "No notifications are waiting."),
+    disabled: () => disabledWhen(notifications.live.length === 0, "No notification is open."),
     run: () => {
-      const newest = notifications.items[0];
+      const newest = notifications.live[0];
       if (newest !== undefined) notifications.dismiss(newest.id);
     },
   });
