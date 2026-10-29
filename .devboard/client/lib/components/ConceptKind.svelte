@@ -55,10 +55,10 @@
     color: var(--success);
   }
   .discover-kind[data-kind="actor"] {
-    color: var(--flow-entity-border);
+    color: var(--flow-entity);
   }
   .discover-kind[data-kind="value"] {
-    color: var(--flow-dependency-border);
+    color: var(--flow-dependency);
   }
   .discover-kind[data-kind="rule"] {
     color: var(--error);

@@ -571,8 +571,8 @@ files it covers. The seven categories are:
   file no clearer category explains.
 
 Every category has its own color token, each with a light and a dark variant:
-`--flow-contract-border` and `--flow-contract-surface` through
-`--flow-structure-border` and `--flow-structure-surface`, defined for the day theme in `:root` and
+`--flow-contract` and `--flow-contract-surface` through
+`--flow-structure` and `--flow-structure-surface`, defined for the day theme in `:root` and
 overridden in the dark theme. A widget carries `data-category="<category>"` and always renders its
 category label as text, so the color is never the only signal.
 
