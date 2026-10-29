@@ -420,66 +420,46 @@ export class DesignBridge implements AgentAdapter {
     return { ok: true };
   }
 
-  setLimits(maxPerHour: unknown, maxPending: unknown): AgentCommandResult {
+  setSettings(
+    minutes: unknown,
+    maxPerHour: unknown,
+    maxPending: unknown,
+  ): AgentCommandResult {
+    if (!isValidCadence(minutes)) {
+      return { ok: false, message: "The cadence must be an integer from 1 through 1440 minutes." };
+    }
     if (!isValidLimit(maxPerHour) || !isValidLimit(maxPending)) {
       return { ok: false, message: "Both limits must be empty or integers from 1 through 100." };
     }
-    const settings = this.settings(this.currentState());
     try {
-      writeSettings(settingsPath(this.stateDir, this.repoDir), { ...settings, maxPerHour, maxPending });
+      writeSettings(settingsPath(this.stateDir, this.repoDir), {
+        maxPerHour,
+        maxPending,
+        intervalMinutes: minutes,
+      });
     } catch (error) {
       return {
         ok: false,
-        message: `Could not save the limits: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Could not save the settings: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       };
     }
     const owner = this.lockOwner();
     if (this.owned(owner)) {
       try {
         writeCommand(controlDirectory(this.stateDir, this.repoDir), {
-          type: "limits",
+          type: "settings",
+          intervalMinutes: minutes,
           maxPerHour,
           maxPending,
         });
       } catch (error) {
         return {
           ok: false,
-          message: `Could not reach the worker: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-    }
-    this.startError = null;
-    this.refresh();
-    return { ok: true };
-  }
-
-  setCadence(minutes: unknown): AgentCommandResult {
-    if (!isValidCadence(minutes)) {
-      return { ok: false, message: "The cadence must be an integer from 1 through 1440 minutes." };
-    }
-    const settings = this.settings(this.currentState());
-    try {
-      writeSettings(settingsPath(this.stateDir, this.repoDir), {
-        ...settings,
-        intervalMinutes: minutes,
-      });
-    } catch (error) {
-      return {
-        ok: false,
-        message: `Could not save the cadence: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
-    const owner = this.lockOwner();
-    if (this.owned(owner)) {
-      try {
-        writeCommand(controlDirectory(this.stateDir, this.repoDir), {
-          type: "cadence",
-          intervalMinutes: minutes,
-        });
-      } catch (error) {
-        return {
-          ok: false,
-          message: `Could not reach the worker: ${error instanceof Error ? error.message : String(error)}`,
+          message: `Could not reach the worker: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         };
       }
     }

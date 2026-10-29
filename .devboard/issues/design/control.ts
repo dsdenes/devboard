@@ -11,7 +11,13 @@ import { isValidCadence, isValidLimit } from "./state";
 export type DesignCommand =
   | { type: "stop" }
   | { type: "limits"; maxPerHour: number | null; maxPending: number | null }
-  | { type: "cadence"; intervalMinutes: number };
+  | { type: "cadence"; intervalMinutes: number }
+  | {
+      type: "settings";
+      intervalMinutes: number;
+      maxPerHour: number | null;
+      maxPending: number | null;
+    };
 
 let sequence = 0;
 
@@ -47,6 +53,20 @@ export function parseCommand(text: string): DesignCommand | undefined {
     case "cadence":
       if (!isValidCadence(parsed.intervalMinutes)) return undefined;
       return { type: "cadence", intervalMinutes: parsed.intervalMinutes };
+    case "settings":
+      if (
+        !isValidCadence(parsed.intervalMinutes) ||
+        !isValidLimit(parsed.maxPerHour) ||
+        !isValidLimit(parsed.maxPending)
+      ) {
+        return undefined;
+      }
+      return {
+        type: "settings",
+        intervalMinutes: parsed.intervalMinutes,
+        maxPerHour: parsed.maxPerHour,
+        maxPending: parsed.maxPending,
+      };
     default:
       return undefined;
   }

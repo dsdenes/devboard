@@ -214,10 +214,10 @@ const CORE_IDS = [
   "agent-start",
   "agent-stop",
   "agent-cadence",
-  "agent-save-cadence",
+  "agent-next-run",
   "agent-limit-hour",
   "agent-limit-pending",
-  "agent-save-limits",
+  "agent-save-settings",
   "agent-issues-count",
   "agent-issues",
   "agent-detail",
@@ -690,7 +690,7 @@ try {
 
   /* 2. A full pending cap files nothing; clearing it resumes filing. */
   await setInput(devtools, "agent-limit-pending", "1");
-  await click(devtools, "agent-save-limits");
+  await click(devtools, "agent-save-settings");
   const beforeCap = (await rows(devtools)).length;
   await click(devtools, "agent-start");
   await waitFor(
@@ -710,7 +710,7 @@ try {
     await rows(devtools),
   );
   await setInput(devtools, "agent-limit-pending", "");
-  await click(devtools, "agent-save-limits");
+  await click(devtools, "agent-save-settings");
   await waitFor(
     async () => ((await rows(devtools!)).length > beforeCap ? true : undefined),
     "filing to resume after the cap is cleared",

@@ -404,6 +404,28 @@ export class DesignWorker {
         this.publish();
         return;
       }
+      case "settings": {
+        if (
+          !isValidCadence(command.intervalMinutes) ||
+          !isValidLimit(command.maxPerHour) ||
+          !isValidLimit(command.maxPending)
+        ) {
+          this.state.lastError =
+            "Design System settings must be 1 through 1440 minutes and nullable 1..100 caps.";
+          this.publish();
+          return;
+        }
+        this.state.intervalMinutes = command.intervalMinutes;
+        this.state.limits = {
+          maxPerHour: command.maxPerHour,
+          maxPending: command.maxPending,
+        };
+        this.persistSettings();
+        this.state.lastError = null;
+        this.state.notice = "Settings saved.";
+        this.publish();
+        return;
+      }
     }
   }
 
