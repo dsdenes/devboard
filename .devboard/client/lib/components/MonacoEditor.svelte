@@ -38,64 +38,76 @@
     getWorker: () => new EditorWorker(),
   };
 
-  monaco.editor.defineTheme("devboard-dark", {
-    base: "vs-dark",
-    inherit: true,
-    rules: [
-      { token: "keyword", foreground: "ff7b72" },
-      { token: "string", foreground: "a5d6ff" },
-      { token: "comment", foreground: "8b949e", fontStyle: "italic" },
-      { token: "heading", foreground: "79c0ff", fontStyle: "bold" },
-      { token: "strong", foreground: "e6edf3", fontStyle: "bold" },
-      { token: "emphasis", foreground: "e6edf3", fontStyle: "italic" },
-    ],
-    colors: {
-      "editor.background": "#0d1117",
-      "editor.foreground": "#e6edf3",
-      "editorLineNumber.foreground": "#6e7681",
-      "editorLineNumber.activeForeground": "#c9d1d9",
-      "editor.selectionBackground": "#264f78",
-      "editor.lineHighlightBackground": "#161b22",
-      "editorCursor.foreground": "#58a6ff",
-      "editorWidget.background": "#161b22",
-      "editorWidget.border": "#6e7681",
-      "scrollbarSlider.background": "#484f5866",
-      "scrollbarSlider.hoverBackground": "#6e768199",
-    },
-  });
+  const THEME = "devboard";
 
-  monaco.editor.defineTheme("devboard-light", {
-    base: "vs",
-    inherit: true,
-    rules: [
-      { token: "keyword", foreground: "cf222e" },
-      { token: "string", foreground: "0a3069" },
-      { token: "comment", foreground: "57606a", fontStyle: "italic" },
-      { token: "heading", foreground: "0550ae", fontStyle: "bold" },
-    ],
-    colors: {
-      "editor.background": "#ffffff",
-      "editor.foreground": "#1f2328",
-      "editorLineNumber.foreground": "#8c959f",
-      "editorLineNumber.activeForeground": "#1f2328",
-      "editor.selectionBackground": "#b6d7ff",
-      "editor.lineHighlightBackground": "#f6f8fa",
-      "editorCursor.foreground": "#0969da",
-      "editorWidget.background": "#ffffff",
-      "editorWidget.border": "#6e7781",
-    },
-  });
+  const COLOR_TOKENS: Record<string, string> = {
+    "editor.background": "--background",
+    "editor.foreground": "--foreground",
+    "editorLineNumber.foreground": "--muted-foreground",
+    "editorLineNumber.activeForeground": "--foreground",
+    "editor.selectionBackground": "--selection-background",
+    "editor.lineHighlightBackground": "--surface",
+    "editorCursor.foreground": "--accent",
+    "editorWidget.background": "--surface",
+    "editorWidget.border": "--border-strong",
+    "scrollbarSlider.background": "--border",
+    "scrollbarSlider.hoverBackground": "--border-strong",
+  };
 
-  function currentTheme(): string {
-    return document.documentElement.dataset.theme === "light" ? "devboard-light" : "devboard-dark";
+  const RULE_TOKENS: { token: string; color: string; fontStyle?: string }[] = [
+    { token: "keyword", color: "--error" },
+    { token: "string", color: "--accent" },
+    { token: "comment", color: "--muted-foreground", fontStyle: "italic" },
+    { token: "heading", color: "--accent", fontStyle: "bold" },
+    { token: "strong", color: "--foreground", fontStyle: "bold" },
+    { token: "emphasis", color: "--foreground", fontStyle: "italic" },
+  ];
+
+  function applyTheme(): void {
+    const styles = getComputedStyle(document.documentElement);
+    const token = (name: string): string => {
+      const value = styles.getPropertyValue(name).trim();
+      // The build minifies opaque colors to shorthand hex; Monaco's color
+      // parsers only accept the six- and eight-digit forms.
+      const shorthand = /^#([0-9a-f]{3,4})$/i.exec(value);
+      if (shorthand === null) return value;
+      const digits = shorthand[1] ?? "";
+      return `#${[...digits].map((digit) => digit + digit).join("")}`;
+    };
+
+    const colors: Record<string, string> = {};
+    for (const [id, name] of Object.entries(COLOR_TOKENS)) {
+      const value = token(name);
+      if (value.length > 0) colors[id] = value;
+    }
+
+    const rules: monaco.editor.ITokenThemeRule[] = [];
+    for (const rule of RULE_TOKENS) {
+      const foreground = token(rule.color);
+      if (foreground.length === 0) continue;
+      rules.push(
+        rule.fontStyle === undefined
+          ? { token: rule.token, foreground }
+          : { token: rule.token, foreground, fontStyle: rule.fontStyle },
+      );
+    }
+
+    monaco.editor.defineTheme(THEME, {
+      base: document.documentElement.dataset.theme === "light" ? "vs" : "vs-dark",
+      inherit: true,
+      rules,
+      colors,
+    });
+    monaco.editor.setTheme(THEME);
   }
 
   onMount(() => {
     if (host === undefined) return;
+    applyTheme();
     editor = monaco.editor.create(host, {
       value,
       language,
-      theme: currentTheme(),
+      theme: THEME,
       ariaLabel: label,
       readOnly,
       domReadOnly: readOnly,
@@ -158,7 +170,8 @@
   });
 
   $effect(() => {
-    monaco.editor.setTheme(layout.theme === "light" ? "devboard-light" : "devboard-dark");
+    void layout.theme;
+    applyTheme();
   });
 </script>
 

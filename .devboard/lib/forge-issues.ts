@@ -266,8 +266,8 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
     return run(argv, stdin, authEnvironment(resolved, environment));
   };
 
-  const target = async (): Promise<GiteaTarget> => {
-    const resolved = await auth("write");
+  const target = async (required: "read" | "write"): Promise<GiteaTarget> => {
+    const resolved = await auth(required);
     const baseUrl = resolved.baseUrl ?? giteaBaseUrl(remote, environment);
     if (baseUrl === undefined || baseUrl.length === 0) {
       throw new ForgeIssueError("the Gitea address is not configured");
@@ -284,7 +284,7 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
     repository: remote.project,
     async list(state, limit = 100) {
       if (forge === "gitea") {
-        const issues = await giteaListIssues(await target(), state, options.fetchImpl);
+        const issues = await giteaListIssues(await target("read"), state, options.fetchImpl);
         return issues.slice(0, limit).map((issue) => ({
           number: issue.number,
           title: issue.title,
@@ -348,7 +348,7 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
         throw new ForgeIssueError("An issue number must be a positive integer.");
       }
       if (forge === "gitea") {
-        return giteaDocument(await giteaIssue(await target(), number, options.fetchImpl));
+        return giteaDocument(await giteaIssue(await target("read"), number, options.fetchImpl));
       }
       const outcome = await github("read", [
         "issue",
@@ -373,7 +373,7 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
     async ensureLabel(name) {
       if (forge === "gitea") {
         await giteaEnsureLabel(
-          await target(),
+          await target("write"),
           name,
           "1d76db",
           "Devboard goal specification",
@@ -399,7 +399,7 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
     },
     async create(input) {
       if (forge === "gitea") {
-        const gitea = await target();
+        const gitea = await target("write");
         const labels =
           input.labels === undefined || input.labels.length === 0
             ? []
@@ -442,7 +442,7 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
     async comment(targetValue, body) {
       const url = typeof targetValue === "string" ? targetValue : String(targetValue);
       if (forge === "gitea") {
-        const gitea = await target();
+        const gitea = await target("write");
         const number = giteaIssueNumber(gitea, url);
         if (number === undefined) {
           throw new ForgeIssueError(`not an issue in ${gitea.baseUrl}/${gitea.project}: ${url}`);
@@ -463,7 +463,7 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
     },
     async close(number, reason) {
       if (forge === "gitea") {
-        await giteaCloseIssue(await target(), number, options.fetchImpl);
+        await giteaCloseIssue(await target("write"), number, options.fetchImpl);
         return client.get(number);
       }
       const outcome = await github("write", [
