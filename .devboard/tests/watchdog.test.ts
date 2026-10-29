@@ -850,6 +850,50 @@ describe("filing", () => {
     expect(existsSync(join(result.runDir as string, "coordinator.log"))).toBe(true);
   });
 
+  test("persists each filing and comment before the next forge call", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    const events = [
+      event(root, 2, SERVER_ERROR, "server-error", instanceFor(root, 8080)),
+      event(root, 1, "update install failed: checksum mismatch", "update-error"),
+    ];
+    const filedBeforeSecondCall: number[] = [];
+    const commentedBeforeSecondComment: number[] = [];
+    const { gh } = ghStub((_call, index) => {
+      if (index === 1) {
+        filedBeforeSecondCall.push(
+          Object.values(loadLedger(stateDir).findings).filter((entry) =>
+            entry.disposition.startsWith("filed:"),
+          ).length,
+        );
+      }
+      if (index === 3) {
+        commentedBeforeSecondComment.push(
+          Object.values(loadLedger(stateDir).findings).filter(
+            (entry) => entry.lastCommentAt !== undefined,
+          ).length,
+        );
+      }
+      return {};
+    });
+
+    const first = await runCycle(cycleFor(root, { events, gh }));
+    expect(first.report.action).toBe("filed");
+    expect(first.report.issues).toHaveLength(2);
+    expect(filedBeforeSecondCall).toEqual([1]);
+
+    const later = await runCycle(
+      cycleFor(root, { events, gh, now: new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000) }),
+    );
+    expect(later.report.action).toBe("commented");
+    expect(later.report.issues).toEqual([]);
+    expect(commentedBeforeSecondComment).toEqual([1]);
+    const ledger = loadLedger(stateDir);
+    expect(
+      Object.values(ledger.findings).filter((entry) => entry.lastCommentAt !== undefined),
+    ).toHaveLength(2);
+  });
+
   test("a start in a cycle's final five minutes stalls in the next cycle", async () => {
     const { root } = await fixtureRepository();
     const instance = instanceFor(root, 8080);

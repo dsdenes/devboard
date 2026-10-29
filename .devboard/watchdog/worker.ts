@@ -126,11 +126,21 @@ async function main(): Promise<void> {
       : new Date().toISOString();
   };
 
+  // The dashboard's Stop writes a control command; a signal is the same
+  // request. Either way the running cycle finishes and the finally below
+  // publishes stopped, releases the lock, and leaves the cycle's report.
+  const requestStop = (): void => {
+    if (stopping) return;
+    stopping = true;
+    publish("stopping", false);
+  };
+  process.on("SIGTERM", requestStop);
+  process.on("SIGINT", requestStop);
+
   const apply = (command: WatchdogCommand): void => {
     switch (command.type) {
       case "stop":
-        stopping = true;
-        publish("stopping", false);
+        requestStop();
         return;
       case "limits":
         settings = {
@@ -193,6 +203,8 @@ async function main(): Promise<void> {
     }
   } finally {
     clearInterval(controlTimer);
+    process.off("SIGTERM", requestStop);
+    process.off("SIGINT", requestStop);
     consume();
     publish("stopped", false);
     lock.release();

@@ -1361,6 +1361,12 @@ when it owns the recorded `STATE_DIR`. The machine lock still serializes cycles.
 `enabled: false`, releases the lock, and leaves no live child; during a cycle it stays `stopping`
 until that cycle finishes and starts no further cycle.
 
+Stop waits a ten-minute cycle grace: a signal or a control command sets the same stopping flag,
+the worker finishes the running cycle, and then publishes `stopped`. The dashboard re-reads
+`worker.json` and signals only when that state still is not `stopped` after the grace, sending
+`SIGTERM` first and `SIGKILL` two seconds later. The ledger is persisted after every successful
+issue creation or comment, so a hard kill cannot leave an accepted filing unrecorded.
+
 The legacy `devboard-watchdog.timer` is no longer the scheduler. While it is active or enabled,
 the Watchdog page shows `agent-blocked` naming it, disables `agent-start`, and offers
 `agent-disable-timer`, which runs `systemctl --user disable --now devboard-watchdog.timer` only
@@ -2560,14 +2566,15 @@ applies the seven-day limit and the size bound without deleting the live window.
 `tests/watchdog.test.ts` covers discovery (de-duplication, harness resolution, self-exclusion,
 legacy logs), the inclusive ten-minute window, omp-log attribution and self-exclusion, the exact
 evidence mapping (prose never produces a finding), host-independent fingerprints, filing and
-commenting against a stub `gh`, pending retries after a failed call, duplicate windows, the
-version 1 ledger migration, and the absence of any commit, merge, push, or publish.
+commenting against a stub `gh`, per-filing and per-comment ledger persistence, pending retries
+after a failed call, duplicate windows, the version 1 ledger migration, and the absence of any
+commit, merge, push, or publish.
 `tests/watchdog-api.test.ts` covers the adapter projection, the newest-cycle history, the shared
 issue row order and fields, open/closed state mapping, the `ok`/`error`/`stale` transitions
 against a stubbed GitHub reader and clock, the never-waits contract, the removed GET endpoint,
 and the WebSocket `agentState` reply. `tests/agent-registry.test.ts` covers the registry, the
 synthetic third descriptor, shared issue sorting, and unknown-id refusal.
-`tests/agent-watchdog-runtime.test.ts` covers the detached worker's first cycle and Stop, cadence
-application without restart, the lifecycle transitions, foreign ownership, preflight refusals,
-and the timer gate. All new fixtures live under `.devboard/.tmp`; no test uses the network or a
-real model.
+`tests/agent-watchdog-runtime.test.ts` covers the detached worker's first cycle, Stop during a
+slow filing cycle, a SIGTERM that lets the cycle finish, cadence application without restart, the
+lifecycle transitions, foreign ownership, preflight refusals, and the timer gate. All new
+fixtures live under `.devboard/.tmp`; no test uses the network or a real model.
