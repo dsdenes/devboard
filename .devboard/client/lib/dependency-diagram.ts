@@ -35,6 +35,30 @@ export function dependencyEdges(value: unknown): DependencyEdge[] {
   return edges;
 }
 
+/** Fit keeps the graph whole; actual size keeps every label at its drawn size. */
+export type DiagramMode = "fit" | "actual";
+
+/**
+ * A fitted diagram may not shrink its 12px labels below a readable size. This
+ * is the smallest fit scale that still clears 10.8px of text.
+ */
+export const DIAGRAM_MIN_READABLE_SCALE = 0.9;
+
+/**
+ * Picks the diagram presentation for a measured graph. A chosen mode always
+ * wins; otherwise the graph fits only while its labels stay readable, and a
+ * wide graph opens at actual size inside the scrolling canvas.
+ */
+export function diagramMode(
+  naturalWidth: number,
+  availableWidth: number,
+  chosen: DiagramMode | null,
+): DiagramMode {
+  if (chosen !== null) return chosen;
+  if (naturalWidth <= 0 || availableWidth <= 0) return "fit";
+  return availableWidth / naturalWidth >= DIAGRAM_MIN_READABLE_SCALE ? "fit" : "actual";
+}
+
 function mermaidLabel(text: string): string {
   return text.replace(/"/g, "#quot;").replace(/[\r\n]+/g, " ").trim();
 }
@@ -63,7 +87,7 @@ export function dependencyChart(
 
   const lines = ["flowchart LR"];
   for (const [label, id] of labels) {
-    lines.push(`  ${id}["${mermaidLabel(label)}"]`);
+    lines.push(`  ${id}("${mermaidLabel(label)}")`);
   }
   for (const edge of edges) {
     const from = labels.get(edge.from);

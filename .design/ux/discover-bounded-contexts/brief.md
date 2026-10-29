@@ -106,16 +106,16 @@ Trigger: the crawl could not observe source code, or observed only some boundary
 
 - Editing contexts, boundaries, or dependencies. Only the glossary decisions and the five skills
   are editable in Discover.
-- Drawing dependency edges between contexts; the sheet stores no edge list, and inventing one
-  would misstate the crawl's evidence.
+- Drawing dependency edges inside this list; the separate dependency graph widget below the role
+  rows owns that drawing, and an edge the crawl does not record is never invented.
 - Repeating glossary term lists, test strategy, or commands inside this card.
 - Showing command, build, or CI facts; those have their own cards.
 - Aggregating a project "architecture score" or metric.
 
 ## Assumptions
 
-- `sheet.architecture` carries `contexts`, `dependencyDirection`, `externalBoundaries`, and
-  `sharedKernels` exactly as the prompt schema defines them.
+- `sheet.architecture` carries `contexts`, `dependencies`, `dependencyDirection`,
+  `externalBoundaries`, and `sharedKernels` exactly as the prompt schema defines them.
 - Boundary values are free strings without per-context association, so grouping by role is the
   only honest visualization.
 - The crawler sorts contexts and values canonically; the card preserves that order.

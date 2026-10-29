@@ -64,9 +64,10 @@ adds no control, so focus order and keyboard paths in the shell are unchanged.
   equal, isolated status and produced two empty boxes with "None detected." on the shipped fixture.
   A labeled role list shows exactly the groups that exist, states a missing group in one line, and
   lets the dependency direction join them as the rule that binds the groups.
-- **No diagram.** The sheet carries no context-to-context edges and no mapping from a boundary to
-  a context. A graph would have to invent those edges. A role list states exactly what the crawl
-  observed.
+- **No diagram in this list.** The role list carries no mapping from a boundary to a context, so
+  a graph beside it would have to invent those edges. The observed context-to-context edges are
+  drawn by the separate dependency graph widget below the role list. A role list states exactly
+  what the crawl observed.
 - **Dependency direction promoted.** It was present in the sheet and rendered nowhere. It is the
   sentence that turns the group list into a decision about where a change belongs.
 - **Rejected: keep the table and restyle it.** Styling the table cannot fix column pressure at the

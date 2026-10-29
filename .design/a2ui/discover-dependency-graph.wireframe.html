@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Discover dependency graph</title>
+<style>
+  :root { --ink:#2b2b2b; --muted:#6b6b6b; --line:#c9c9c9; --paper:#fdfdfd; --fill:#f4f4f4; --accent:#5a6b7a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:ui-sans-serif,system-ui,sans-serif; font-size:13px; line-height:1.45; }
+  .wf { max-width:1000px; margin:0 auto; padding:16px; }
+  .wf-title { font-size:15px; font-weight:700; margin:0 0 2px; }
+  .wf-note { color:var(--muted); font-size:11px; margin:0 0 16px; }
+  .wf-ann { color:var(--accent); display:block; font-size:9px; font-weight:700; letter-spacing:.06em; margin:0 0 4px; text-transform:uppercase; }
+  .card { border:1px solid var(--line); margin:0 0 20px; padding:10px; }
+  h2 { font-size:10px; font-weight:700; letter-spacing:.08em; margin:0 0 4px; text-transform:uppercase; }
+  p { margin:0; overflow-wrap:anywhere; }
+  .bar { align-items:center; display:flex; gap:8px; justify-content:space-between; margin-bottom:4px; min-height:24px; }
+  .legend { color:var(--muted); font-size:11px; }
+  .zoom { background:transparent; border:0; color:var(--ink); font:inherit; font-size:11px; padding:0; text-decoration:underline; }
+  .canvas { background:var(--paper); border:1px solid var(--line); border-radius:4px; overflow:auto; padding:8px; }
+  .canvas.scroll { max-height:220px; }
+  .canvas:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  .graph { display:flex; align-items:center; gap:28px; min-width:max-content; }
+  .node { border:1px solid var(--line); border-radius:4px; padding:8px 12px; font-size:12px; font-weight:500; white-space:nowrap; }
+  .arrow { border-top:1px solid var(--muted); position:relative; width:28px; }
+  .arrow::after { border-bottom:1px solid var(--muted); border-right:1px solid var(--muted); content:""; height:5px; position:absolute; right:0; top:-4px; transform:rotate(-45deg); width:5px; }
+  .arrow span { color:var(--muted); font-size:9px; left:0; position:absolute; top:-14px; white-space:nowrap; }
+  .state { border-top:1px solid var(--line); margin-top:10px; padding-top:8px; }
+  .state:first-of-type { border-top:0; margin-top:0; padding-top:0; }
+  .empty { color:var(--muted); font-size:12px; }
+  @media (max-width:768px) { .bar { align-items:flex-start; flex-direction:column; gap:4px; } }
+</style>
+</head>
+<body>
+<div class="wf">
+  <p class="wf-title">Wireframe — Discover · Dependency graph</p>
+  <p class="wf-note">Structure only. Neutral primitives; no production components, tokens, or brand
+    assets. Two states of the same sub-block, at the card's full body width.</p>
+
+  <article class="card">
+    <span class="wf-ann">region_graph · P0 edges, P1 nodes and legend</span>
+    <h2>Dependency graph</h2>
+
+    <div class="state">
+      <span class="wf-ann">graph fits · no zoom control</span>
+      <div class="bar">
+        <p class="legend">Arrows point from a context to the context it uses.</p>
+      </div>
+      <div class="canvas" tabindex="0">
+        <div class="graph">
+          <span class="node">Checkout</span>
+          <span class="arrow"><span>uses</span></span>
+          <span class="node">Orders</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="state">
+      <span class="wf-ann">wide graph · actual size · control present</span>
+      <div class="bar">
+        <p class="legend">Arrows point from a context to the context it uses.</p>
+        <button class="zoom" type="button">Fit width</button>
+      </div>
+      <div class="canvas scroll" tabindex="0">
+        <div class="graph">
+          <span class="node">Context 01 Application Deployment</span>
+          <span class="arrow"><span>uses</span></span>
+          <span class="node">Context 02 Database Operations</span>
+          <span class="arrow"><span>uses</span></span>
+          <span class="node">Context 03 Project Environment</span>
+          <span class="arrow"><span>uses</span></span>
+          <span class="node">Context 04 Server Infrastructure</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="state">
+      <span class="wf-ann">render failure</span>
+      <p class="empty">The dependency diagram could not be rendered.</p>
+    </div>
+  </article>
+</div>
+</body>
+</html>
