@@ -114,6 +114,43 @@ function requestedReleasePages(calls: string[]): string[] {
     .map((call) => new URL(call, "http://gitea.test").searchParams.get("page") ?? "");
 }
 
+/**
+ * A Gitea transport for closed issues: every `/issues/<n>` reads closed, every
+ * timeline names `commit`, and each repository's release scan is one release
+ * followed by the terminating empty page.
+ */
+function fakeClosedIssues(commit: string, calls: string[]): FetchLike {
+  return async (input) => {
+    const url = new URL(String(input));
+    calls.push(`${url.pathname}${url.search}`);
+    if (/^\/api\/v1\/repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(url.pathname)) {
+      return Response.json({ state: "closed" });
+    }
+    if (/^\/api\/v1\/repos\/[^/]+\/[^/]+\/issues\/\d+\/timeline$/.test(url.pathname)) {
+      return Response.json([{ commit_id: commit }]);
+    }
+    if (url.pathname.endsWith("/releases")) {
+      const page = Number(url.searchParams.get("page") ?? "1");
+      return Response.json(
+        page === 1 ? [{ tag_name: "v1.0.0", published_at: "2026-09-01T00:00:00Z" }] : [],
+      );
+    }
+    return Response.json({ message: `unexpected ${url}` });
+  };
+}
+
+/** Release page requests per repository, so a shared cache is visible. */
+function releasePagesByRepository(calls: string[]): Record<string, string[]> {
+  const pages: Record<string, string[]> = {};
+  for (const call of calls) {
+    const url = new URL(call, "http://gitea.test");
+    const match = /^\/api\/v1\/repos\/([^/]+\/[^/]+)\/releases$/.exec(url.pathname);
+    if (match === null) continue;
+    (pages[match[1]!] ??= []).push(url.searchParams.get("page") ?? "");
+  }
+  return pages;
+}
+
 function fakeGitea(
   calls: Recorded[] = [],
   permissions: { push: boolean; pull: boolean } = { push: true, pull: true },
@@ -702,6 +739,47 @@ describe("Gitea watchdog activity", () => {
       { url: "http://gitea.test/acme/fixture/issues/5", state: "implemented", version: "v1.0.0" },
     ]);
     expect(requestedReleasePages(calls)).toContain("2");
+  });
+
+  test("scans a repository's releases once for all of its closed issues", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const calls: string[] = [];
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl: fakeClosedIssues(tagged.commit, calls),
+    });
+    const facts = await reader.project([
+      "http://gitea.test/acme/fixture/issues/5",
+      "http://gitea.test/acme/fixture/issues/6",
+      "http://gitea.test/acme/fixture/issues/7",
+    ]);
+
+    expect(facts.map((fact) => fact.version)).toEqual(["v1.0.0", "v1.0.0", "v1.0.0"]);
+    expect(releasePagesByRepository(calls)).toEqual({ "acme/fixture": ["1", "2"] });
+  });
+
+  test("scans each repository's releases once when the ledger names two", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const calls: string[] = [];
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl: fakeClosedIssues(tagged.commit, calls),
+    });
+    const facts = await reader.project([
+      "http://gitea.test/acme/alpha/issues/5",
+      "http://gitea.test/acme/alpha/issues/6",
+      "http://gitea.test/acme/beta/issues/5",
+    ]);
+
+    expect(facts.map((fact) => fact.version)).toEqual(["v1.0.0", "v1.0.0", "v1.0.0"]);
+    expect(releasePagesByRepository(calls)).toEqual({
+      "acme/alpha": ["1", "2"],
+      "acme/beta": ["1", "2"],
+    });
   });
 
   test("the scout reads releases behind the response cap", async () => {

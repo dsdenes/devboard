@@ -5,8 +5,9 @@
 This checkout builds and releases the harness; hosts run an installed copy.
 
 - `<host>/.devboard` is a real npm prefix holding
-  `node_modules/@dsdenes/devboard`. It is never a symlink to this checkout and never a copy of
-  these sources.
+  `node_modules/@dsdenes/devboard` plus the host copies of `prompts/`, `extensions/`, and `lib/`
+  that the copied wrappers open by repo-root-relative path. It is never a symlink to this
+  checkout and never a full copy of these sources.
 - The public `@dsdenes/devboard` package at this directory carries the CLI and the whole harness.
   `bin/devboard.mjs` installs, updates, and checks hosts; npm is the version and artifact
   authority. The canonical Gitea release is a fallback record, not a second package.
