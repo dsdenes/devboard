@@ -1944,6 +1944,7 @@ try {
     items: Array<{ id: string; title: string; group: string; disabled: boolean; reason: string }>;
     input: boolean;
     focus: string;
+    search: { height: number; fontSize: number; className: string };
   }>(`(() => {
     const list = [...document.querySelectorAll('.palette__group, [data-testid="command-item"]')];
     let group = "";
@@ -1960,13 +1961,30 @@ try {
         reason: element.querySelector(".palette__item-reason")?.textContent?.trim() ?? "",
       };
     }).filter((item) => item !== null);
+    const search = document.querySelector('[data-testid="command-palette-input"]');
+    const searchStyle = search === null ? null : getComputedStyle(search);
     return {
       items,
-      input: document.querySelector('[data-testid="command-palette-input"]') !== null,
+      input: search !== null,
       focus: document.activeElement?.getAttribute("data-testid") ?? "",
+      search: {
+        height: searchStyle === null ? 0 : search.getBoundingClientRect().height,
+        fontSize: searchStyle === null ? 0 : Number.parseFloat(searchStyle.fontSize),
+        className: search?.className ?? "",
+      },
     };
   })()`);
   check(palette.input && palette.focus === "command-palette-input", "the palette input is not focused", palette);
+  check(
+    palette.search.height === 28 && palette.search.fontSize === 12,
+    "the palette search field does not use the 28px input at 12px control type",
+    palette.search,
+  );
+  check(
+    !palette.search.className.includes("h-8") && !palette.search.className.includes("text-[13px]"),
+    "the palette search field still carries the superseded size classes",
+    palette.search.className,
+  );
   await page.key("Tab");
   const trappedAfterTab = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="command-palette"]') !== null`);
   await page.key("Tab", 8);
