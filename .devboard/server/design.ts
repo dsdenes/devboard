@@ -237,6 +237,7 @@ export class DesignBridge implements AgentAdapter {
       },
       limits: { maxPerHour: settings.maxPerHour, maxPending: settings.maxPending },
       issues: issues.map(projectIssue),
+      documentation: state?.documentation ?? [],
       pending: issues.filter((issue) => issue.state === "pending").length,
       sync,
       detail: { panel: "activity", scanId: cycleId, entries: [...this.lastActivity] },

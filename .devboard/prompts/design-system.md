@@ -86,3 +86,15 @@ documented tokens and the audited surfaces; adding a missing section is a requir
 edit, not unrelated prose. A token addition or correction appears in both the prose tables and
 `design/tokens.json`. Change no other prose. When no admissible decision exists, answer
 `{"decision": "none"}` and leave the drafts untouched.
+
+## Release
+
+You edit only your cycle draft. An admitted edit is released by the worker, never by you, from one
+isolated worktree under `<REPO_DIR>/.worktree/`. In that worktree the worker commits only
+`DESIGN.md` and `design/tokens.json`, fetches and integrates `origin/main`, and pushes `main`
+without force; it then waits for the release workflow to succeed, and runs
+`cd .devboard && bun run publish`. After the push it advances the main checkout by fast-forward and
+removes the worktree and its branch.
+
+You never edit the main checkout and never run git: no branch, worktree, commit, push, or publish.
+Your only write surface is `<cycle-dir>/draft/`.
