@@ -1526,7 +1526,9 @@ spawns nothing, writes no state, and renders `agent-error`.
 The cycle itself is unchanged: it detects and reports, never fixes, reading the previous interval
 of journal and omp evidence, filing one issue per fingerprint, and commenting on recurrences after
 24 hours. A failing `gh` call leaves the fingerprint pending for the next cycle; a fingerprint
-already `filed:<url>` is never filed again. No cycle closes an issue.
+already `filed:<url>` is never filed again. No cycle closes an issue. A fingerprint covers the
+category and the normalized evidence line only: the per-occurrence `raw-http-request` capture path
+omp appends to an error it logs is removed, so repeated occurrences of one failure file one issue.
 
 ### State-directory cleanup
 
