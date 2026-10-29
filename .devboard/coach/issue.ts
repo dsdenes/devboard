@@ -105,10 +105,13 @@ function parts(input: CoachIssueInput, excerptLimit: number): BodyParts {
   return {
     finding: findingLines,
     evidence: evidenceLines,
-    proposal: recommendation.proposal.split("\n"),
-    acceptance: recommendation.acceptance.map((criterion) =>
-      criterion.startsWith("- [ ]") ? criterion : `- [ ] ${criterion}`,
-    ),
+    proposal: recommendation.proposal
+      .split("\n")
+      .map((line) => safeQuoteLine(line.trimEnd())),
+    acceptance: recommendation.acceptance.map((criterion) => {
+      const single = criterion.replace(/\s+/g, " ").trim();
+      return safeQuoteLine(single.startsWith("- [ ]") ? single : `- [ ] ${single}`);
+    }),
   };
 }
 

@@ -726,6 +726,37 @@ describe("Coach issue bytes and filing", () => {
     }
   });
 
+  test("finalizer prose cannot open a fifth section or hide a criterion", () => {
+    const finding: CoachFinding = {
+      category: "tool-gap",
+      fingerprint: "aaaaaaaaaaaaaaaa",
+      line: "manual command repeated: ./scripts/thing --flag",
+      subject: "./scripts/thing --flag",
+      firstAt: NOW.toISOString(),
+      lastAt: NOW.toISOString(),
+      count: 3,
+      sessions: ["a", "b"],
+      scopes: [],
+    };
+    const body = coachBody({
+      finding,
+      evidence: {
+        window: { start: instant(1440), end: NOW.toISOString() },
+        sessions: new Map(),
+        scopes: new Map(),
+        repoDir: "/repo",
+      },
+      recommendation: {
+        proposal: "## Injected heading\nAdd the documented guardrail.",
+        acceptance: ["- [ ] first line\nsecond line"],
+      },
+    });
+    for (const section of ["## Finding", "## Evidence", "## Proposed change", "## Acceptance criteria"]) {
+      expect(body.split(section).length - 1).toBe(1);
+    }
+    expect(body).toContain("- [ ] first line second line");
+  });
+
   test("a first cycle files once, a second files nothing, and a recurrence comments", async () => {
     const { repoDir, stateDir } = await workspace();
     for (const id of ["a", "b"]) {
