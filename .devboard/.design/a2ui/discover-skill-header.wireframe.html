@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Discover skill header — wireframe</title>
+    <style>
+      :root { color-scheme: light; }
+      body {
+        background: #f4f4f4;
+        color: #222;
+        font: 13px/1.4 system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+      }
+      .page { margin: 0 auto; max-width: 880px; }
+      .title { font-size: 20px; font-weight: 600; margin: 0 0 8px; }
+      .panel { background: #fff; border: 1px solid #bbb; margin: 0 0 12px; }
+      .row {
+        align-items: center;
+        border-bottom: 1px solid #ccc;
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        min-height: 30px;
+        padding: 4px 8px;
+      }
+      .identity { font-family: ui-monospace, monospace; font-size: 12px; font-weight: 600; }
+      .actions { align-items: center; display: flex; gap: 8px; }
+      .state { color: #666; font-size: 11px; white-space: nowrap; }
+      .button {
+        border: 1px solid #888;
+        border-radius: 4px;
+        font-size: 12px;
+        padding: 4px 10px;
+      }
+      .button--quiet { background: #eee; color: #555; }
+      .body { min-height: 220px; padding: 12px; }
+      .line { background: #eee; height: 10px; margin: 0 0 8px; }
+      .line--short { width: 62%; }
+      .note { color: #555; font-size: 12px; margin-top: 16px; }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <h1 class="title">Naming Conventions</h1>
+      <section class="panel" aria-label="Editor">
+        <div class="row">
+          <span class="identity">discover-naming-conventions/SKILL.md</span>
+          <div class="actions">
+            <span class="state">No unsaved changes</span>
+            <span class="button button--quiet">Save</span>
+          </div>
+        </div>
+        <div class="body" aria-label="Markdown editor">
+          <div class="line"></div>
+          <div class="line line--short"></div>
+          <div class="line"></div>
+        </div>
+      </section>
+      <p class="note">
+        Structural wireframe. Identity leads, the draft state qualifies the action, and the action
+        trails on one 30px row. The header wraps the action group to a second row before clipping.
+      </p>
+    </main>
+  </body>
+</html>

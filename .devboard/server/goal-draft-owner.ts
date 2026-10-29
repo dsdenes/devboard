@@ -534,7 +534,11 @@ export async function runGoalDraftOwner(argv: string[]): Promise<void> {
 
   try {
     peer = new AcpConnection({
-      command: process.env.AGENT_COMMAND ?? "omp acp",
+      // The elaboration contract reads the repository directly and names no
+      // skill. OMP's background description compression of a loaded skill logs
+      // a warning the watchdog files when the selected model cannot serve that
+      // request, so this peer discovers none.
+      command: `${process.env.AGENT_COMMAND ?? "omp acp"} --no-skills`,
       cwd: repoDir,
       onActivity: (activity: AcpActivity) => {
         if (done) return;

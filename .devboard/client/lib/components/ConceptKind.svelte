@@ -37,30 +37,9 @@
 <style>
   .discover-kind {
     align-items: center;
+    color: var(--muted-foreground);
     display: inline-flex;
     gap: 4px;
     white-space: nowrap;
-  }
-
-  .discover-kind[data-kind="entity"] {
-    color: var(--accent);
-  }
-  .discover-kind[data-kind="event"] {
-    color: var(--warning);
-  }
-  .discover-kind[data-kind="field"] {
-    color: var(--muted-foreground);
-  }
-  .discover-kind[data-kind="role"] {
-    color: var(--success);
-  }
-  .discover-kind[data-kind="actor"] {
-    color: var(--flow-entity);
-  }
-  .discover-kind[data-kind="value"] {
-    color: var(--flow-dependency);
-  }
-  .discover-kind[data-kind="rule"] {
-    color: var(--error);
   }
 </style>

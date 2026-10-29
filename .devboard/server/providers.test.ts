@@ -15,13 +15,16 @@ import {
   ProviderService,
   ProviderUnavailableError,
   agentDirectory,
+  createWorkerProviderEnvironment,
   credentialsPath,
   decideProvider,
   generatedConfig,
   loadSubscriptions,
   maskKey,
   rankSubscriptions,
+  readSelectionSnapshot,
   saveSubscriptions,
+  workerPeerEnvironment,
   type StoredSubscription,
 } from "./providers";
 import { runCleanup } from "../watchdog/cleanup";
@@ -349,6 +352,82 @@ describe("selection", () => {
     }
     const empty = decideProvider([], false);
     expect(empty.kind === "refused" && empty.reason).toContain("Providers dialog");
+  });
+});
+
+describe("worker provider environment", () => {
+  test("re-reads the store for every agent so a new key is used by the next run", async () => {
+    const stateDir = temporaryRoot();
+    saveSubscriptions(stateDir, [subscription("alpha", "opencode-go", { key: "alpha-key" })]);
+    const responses: FakeResponses = {
+      go: { "alpha-key": { rolling: 80, weekly: 80, monthly: 80 } },
+    };
+    const options = {
+      fetch: fakeFetch(responses),
+      usageBaseUrls: {
+        "opencode-go": "http://stub.test/zen/go",
+        openrouter: "http://stub.test/api",
+      },
+    };
+    const first = await workerPeerEnvironment(stateDir, {}, options);
+    expect(first.OPENCODE_API_KEY).toBe("alpha-key");
+
+    saveSubscriptions(stateDir, [
+      subscription("alpha", "opencode-go", { key: "alpha-key" }),
+      subscription("bravo", "opencode-go", { key: "bravo-key" }),
+    ]);
+    responses.go!["bravo-key"] = { rolling: 10, weekly: 10, monthly: 10 };
+    const second = await workerPeerEnvironment(stateDir, {}, options);
+    expect(second.OPENCODE_API_KEY).toBe("bravo-key");
+    expect(second.PI_CODING_AGENT_DIR).toBe(
+      agentDirectory(stateDir, "opencode-go", "bravo"),
+    );
+  });
+
+  test("leaves the inherited environment alone when no credential is configured", async () => {
+    const stateDir = temporaryRoot();
+    const inherited = { PATH: "/bin", AGENT_COMMAND: "stub" };
+    expect(await workerPeerEnvironment(stateDir, inherited)).toBe(inherited);
+  });
+
+  test("refuses instead of reusing the pinned key after the store empties", async () => {
+    const stateDir = temporaryRoot();
+    saveSubscriptions(stateDir, [subscription("alpha", "opencode-go", { key: "alpha-key" })]);
+    const resolve = createWorkerProviderEnvironment(
+      stateDir,
+      { OPENCODE_API_KEY: "pinned-key" },
+      {
+        fetch: fakeFetch({ go: { "alpha-key": { rolling: 10, weekly: 10, monthly: 10 } } }),
+        usageBaseUrls: {
+          "opencode-go": "http://stub.test/zen/go",
+          openrouter: "http://stub.test/api",
+        },
+      },
+    );
+    expect((await resolve()).OPENCODE_API_KEY).toBe("alpha-key");
+    rmSync(credentialsPath(stateDir));
+    await expect(resolve()).rejects.toBeInstanceOf(ProviderUnavailableError);
+  });
+});
+
+describe("selection snapshot", () => {
+  test("publishes the active row for workers and follows a removal", async () => {
+    const stateDir = temporaryRoot();
+    saveSubscriptions(stateDir, [
+      subscription("alpha", "opencode-go", { key: "alpha-key" }),
+      subscription("bravo", "opencode-go", { key: "bravo-key" }),
+    ]);
+    const providers = service(stateDir, {
+      go: {
+        "alpha-key": { rolling: 80, weekly: 80, monthly: 80 },
+        "bravo-key": { rolling: 10, weekly: 10, monthly: 10 },
+      },
+    });
+    await providers.refresh(true);
+    expect(readSelectionSnapshot(stateDir)?.subscriptionId).toBe("bravo");
+
+    expect(providers.remove("bravo").ok).toBe(true);
+    expect(readSelectionSnapshot(stateDir)?.subscriptionId).toBe("alpha");
   });
 });
 
