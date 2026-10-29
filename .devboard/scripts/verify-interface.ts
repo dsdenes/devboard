@@ -7106,11 +7106,15 @@ try {
     message: string;
     options: string[];
     recommended: number;
+    labelFont: number;
+    descriptionFont: number;
   };
   const readQuestionSurface = (): Promise<DraftQuestionSurface> =>
     page.eval<DraftQuestionSurface>(`(() => {
       const question = document.querySelector('[data-testid="issues-draft-question"]');
       const choices = [...document.querySelectorAll('[data-testid="issues-draft-choice"]')];
+      const label = choices[0]?.querySelector('.choice__label');
+      const description = choices[0]?.querySelector('.choice__description');
       return {
         activity: document.querySelector('[data-testid="issues-draft-activity"]')?.textContent ?? "",
         message: question?.textContent?.trim() ?? "",
@@ -7118,12 +7122,19 @@ try {
         recommended: choices.findIndex(
           (choice) => choice.querySelector('.choice__recommended') !== null,
         ),
+        labelFont: label ? parseFloat(getComputedStyle(label).fontSize) : 0,
+        descriptionFont: description ? parseFloat(getComputedStyle(description).fontSize) : 0,
       };
     })()`);
   const questionSurfaceBefore = await readQuestionSurface();
   check(
     questionSurfaceBefore.options.length === 2,
     "the elaboration question has no options",
+    questionSurfaceBefore,
+  );
+  check(
+    questionSurfaceBefore.labelFont >= 13 && questionSurfaceBefore.descriptionFont >= 13,
+    "the elaboration question options are too small to read",
     questionSurfaceBefore,
   );
 
