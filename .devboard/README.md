@@ -1448,9 +1448,12 @@ Caps never block an audit, a documentation change, or its release.
 
 A documentation edit is admitted only when it establishes or corrects a standard evidenced by two
 distinct interface surfaces or by an internal contradiction inside the documents. It may change
-only `DESIGN.md` and `design/tokens.json`, must keep `## Design principles` and `## UX principles`,
-and must name every added token in both the prose table and the token document. The agent never
-edits a document to record a single literal and never legalizes a drift it reported.
+only `DESIGN.md` and `design/tokens.json`, must contain `## Design principles` and
+`## UX principles` (adding either section when the current document lacks it), and must name
+every added token in both the prose table and the token document. The agent never edits a
+document to record a single literal and never legalizes a drift it reported. A draft that breaks
+this contract is refused and recorded in activity without releasing and without an operator-facing
+error; only a failed push, workflow, publish, or asset check is reported as a cycle failure.
 
 An admitted edit is released autonomously: one worktree under `<REPO_DIR>/.worktree/`, a commit
 limited to the two documents, a fetch and integration of `main` with every conflict resolved and
