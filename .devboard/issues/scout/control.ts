@@ -7,14 +7,18 @@ import { isValidCadence, isValidLimit } from "./state";
  * The dashboard-to-scout channel. Commands are individual files created by
  * atomic rename, so the worker never reads a half-written command, and their
  * names sort in submission order. A worker consumes them from any dashboard
- * attached to the same repository state. Only Stop and a limits change remain:
- * filing needs no command.
+ * attached to the same repository state. Only Stop and one settings change
+ * remain: filing needs no command.
  */
 
 export type ScoutCommand =
   | { type: "stop" }
-  | { type: "limits"; maxPerHour: number | null; maxPending: number | null }
-  | { type: "cadence"; intervalMinutes: number };
+  | {
+      type: "settings";
+      intervalMinutes: number;
+      maxPerHour: number | null;
+      maxPending: number | null;
+    };
 
 let sequence = 0;
 
@@ -40,16 +44,20 @@ export function parseCommand(text: string): ScoutCommand | undefined {
   switch (parsed.type) {
     case "stop":
       return { type: "stop" };
-    case "limits":
-      if (!isValidLimit(parsed.maxPerHour) || !isValidLimit(parsed.maxPending)) return undefined;
+    case "settings":
+      if (
+        !isValidCadence(parsed.intervalMinutes) ||
+        !isValidLimit(parsed.maxPerHour) ||
+        !isValidLimit(parsed.maxPending)
+      ) {
+        return undefined;
+      }
       return {
-        type: "limits",
+        type: "settings",
+        intervalMinutes: parsed.intervalMinutes,
         maxPerHour: parsed.maxPerHour,
         maxPending: parsed.maxPending,
       };
-    case "cadence":
-      if (!isValidCadence(parsed.intervalMinutes)) return undefined;
-      return { type: "cadence", intervalMinutes: parsed.intervalMinutes };
     default:
       return undefined;
   }

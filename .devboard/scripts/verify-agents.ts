@@ -200,10 +200,9 @@ const CORE_IDS = [
   "agent-stop",
   "agent-cadence",
   "agent-next-run",
-  "agent-save-cadence",
   "agent-limit-hour",
   "agent-limit-pending",
-  "agent-save-limits",
+  "agent-save-settings",
   "agent-issues-count",
   "agent-issues",
   "agent-detail",
@@ -520,35 +519,38 @@ try {
   );
   console.log("PASS shared-page-shape");
 
-  /* 3. Cadence and limits: invalid sends nothing, valid persists. */
+  /* 3. Cadence and limits: one Save validates both, then persists them. */
+  const settingsButton = await devtools.evaluate(
+    `document.querySelectorAll('[data-testid="agent-save-settings"]').length`,
+  );
+  assertTrue(settingsButton === 1, `the page renders ${String(settingsButton)} save buttons`);
   await setInput(devtools, "agent-cadence", "0");
-  await click(devtools, "agent-save-cadence");
+  await click(devtools, "agent-save-settings");
   const cadenceError = await waitFor(
     async () => {
-      const value = await text(devtools!, "agent-cadence-error");
-      return value.length > 0 ? value : undefined;
+      const value = await text(devtools!, "agent-settings-error");
+      return value.includes("1 through 1440") ? value : undefined;
     },
     "the cadence error",
     10_000,
   );
   assertTrue(cadenceError.includes("1 through 1440"), "the cadence error is wrong");
+  await setInput(devtools, "agent-cadence", "30");
   await setInput(devtools, "agent-limit-hour", "0");
-  await click(devtools, "agent-save-limits");
+  await click(devtools, "agent-save-settings");
   const limitsError = await waitFor(
     async () => {
-      const value = await text(devtools!, "agent-limits-error");
-      return value.length > 0 ? value : undefined;
+      const value = await text(devtools!, "agent-settings-error");
+      return value.includes("1 through 100") ? value : undefined;
     },
     "the limits error",
     10_000,
   );
   assertTrue(limitsError.includes("1 through 100"), "the limits error is wrong");
 
-  await setInput(devtools, "agent-cadence", "30");
-  await click(devtools, "agent-save-cadence");
   await setInput(devtools, "agent-limit-hour", "");
   await setInput(devtools, "agent-limit-pending", "");
-  await click(devtools, "agent-save-limits");
+  await click(devtools, "agent-save-settings");
   await waitFor(
     () => {
       try {
@@ -620,7 +622,7 @@ try {
   assertTrue(
     Array.isArray(sent) &&
       !(sent as string[]).some((type) =>
-        ["startAgent", "stopAgent", "setAgentLimits", "setAgentCadence", "disableAgentTimer"].includes(
+        ["startAgent", "stopAgent", "setAgentSettings", "disableAgentTimer"].includes(
           type,
         ),
       ),
@@ -820,7 +822,7 @@ try {
     issues: [],
   });
   await setInput(devtools, "agent-limit-hour", "1");
-  await click(devtools, "agent-save-limits");
+  await click(devtools, "agent-save-settings");
   await waitFor(
     () => {
       try {

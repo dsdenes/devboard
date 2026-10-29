@@ -105,10 +105,7 @@ function fakeAdapter(descriptor: AgentDescriptor): AgentAdapter & { starts: numb
       snapshot = { ...snapshot, lifecycle: "stopped", enabled: false, attached: false };
       return { ok: true };
     },
-    setLimits(): AgentCommandResult {
-      return { ok: true };
-    },
-    setCadence(): AgentCommandResult {
+    setSettings(): AgentCommandResult {
       return { ok: true };
     },
   };

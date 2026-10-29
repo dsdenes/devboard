@@ -544,7 +544,13 @@ describe("direct filing", () => {
       expect(peer.corrections).toHaveLength(1);
       expect(f.filed).toEqual([]);
       expect(failed.lastError).toContain("server/app.ts does not exist");
-      expect(readScanFile(scanDirectory(f.root, basename(scanPath)))?.status).toBe("failed");
+      expect(peer.closed).toBe(true);
+      const failedScan = readScanFile(scanDirectory(f.root, basename(scanPath)));
+      expect(failedScan?.status).toBe("failed");
+      expect(failedScan?.error).toContain("server/app.ts does not exist");
+      // The peer closed before the record was written, so no failed scan
+      // leaves a live child for startup recovery to terminate.
+      expect(failedScan?.acp).toBeNull();
     } finally {
       await f.worker.stop();
     }
@@ -785,26 +791,28 @@ describe("caps", () => {
   });
 });
 
-describe("limits", () => {
-  test("a limits command applies to a running worker and survives a restart", async () => {
-    const f = await fixture({ label: "limits" });
+describe("settings", () => {
+  test("one settings command applies cadence and limits and survives a restart", async () => {
+    const f = await fixture({ label: "settings" });
     let resumed: ScoutWorker | undefined;
     try {
-      decide(f, { type: "limits", maxPerHour: 1, maxPending: 1 });
-      const limited = await waitFor(
+      decide(f, { type: "settings", intervalMinutes: 30, maxPerHour: 1, maxPending: 1 });
+      const saved = await waitFor(
         () =>
-          f.state().limits.maxPerHour === 1 && f.state().limits.maxPending === 1
+          f.state().intervalMinutes === 30 &&
+          f.state().limits.maxPerHour === 1 &&
+          f.state().limits.maxPending === 1
             ? f.state()
             : undefined,
-        "the applied limits",
+        "the applied settings",
       );
-      expect(limited.limits).toEqual({ maxPerHour: 1, maxPending: 1 });
+      expect(saved.limits).toEqual({ maxPerHour: 1, maxPending: 1 });
       expect(readSettings(settingsPath(f.stateDir, f.root))).toEqual({
         maxPerHour: 1,
         maxPending: 1,
-        intervalMinutes: 1,
+        intervalMinutes: 30,
       });
-      expect(limited.notice).toContain("Limits saved");
+      expect(saved.notice).toContain("Settings saved");
 
       await f.worker.stop();
       resumed = new ScoutWorker({
@@ -816,13 +824,13 @@ describe("limits", () => {
       });
       workers.push(resumed);
       expect(resumed.start("acme/fixture")).toBe(true);
+      expect(resumed.currentState.intervalMinutes).toBe(30);
       expect(resumed.currentState.limits).toEqual({ maxPerHour: 1, maxPending: 1 });
       await resumed.stop();
     } finally {
       await f.worker.stop();
     }
   });
-
 });
 
 describe("periodic reads and state mapping", () => {

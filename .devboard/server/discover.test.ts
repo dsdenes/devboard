@@ -15,6 +15,7 @@ import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
 import { declaredCommandAliases } from "./discover";
+import { readStateFile, stateFile } from "./state";
 import { testProviderService } from "./fixtures/test-providers";
 import type { ProviderService } from "./providers";
 
@@ -1378,9 +1379,9 @@ describe("discover mode", () => {
   );
 
   test(
-    "cancels an active run on reset and interrupts one on restart without auto-resuming",
+    "cancels an active run on reset",
     async () => {
-      const fixture = createFixture("reset-restart");
+      const fixture = createFixture("reset-run");
       const first = startServer({ fixture });
       const client = await connect(first.url);
       try {
@@ -1406,50 +1407,79 @@ describe("discover mode", () => {
           active.close();
           running.server.stop(true);
         }
-
-        // A restart while a run is live interrupts it: no resume, staging gone,
-        // artifacts intact.
-        const live = startServer({
-          fixture,
-          stub: ["--discover", "--discover-no-exit", "--delay-ms=60000"],
-        });
-        const before = await connect(live.url);
-        let runId = "";
-        try {
-          before.send({ type: "discoverProject" });
-          runId = String((await before.waitFor((message) => message.type === "discoverStarted")).runId);
-          await waitUntil(
-            () => existsSync(join(fixture.root, ".omp", "discover", "staging", runId)),
-            "staging exists before restart",
-          );
-        } finally {
-          before.close();
-          live.server.stop(true);
-        }
-        const spawns = spawnCount(fixture.logPath);
-
-        const replacement = startServer({
-          fixture,
-          stub: ["--discover", "--discover-no-exit", "--delay-ms=60000"],
-        });
-        const after = await connect(replacement.url);
-        try {
-          const interruption = await after.waitFor((message) => message.type === "discoverError");
-          expect(String(interruption.message)).toContain("interrupted");
-          const restored = await afterCommand(after, { type: "getDiscover" });
-          expect(restored.interrupted).toBe(true);
-          expect(restored.active).toBe(false);
-          await Bun.sleep(200);
-          expect(spawnCount(fixture.logPath)).toBe(spawns);
-          expect(existsSync(join(fixture.root, ".omp", "discover", "staging", runId))).toBe(false);
-          expect(ompBytes(fixture.root)).toEqual(published);
-        } finally {
-          after.close();
-          replacement.server.stop(true);
-        }
       } finally {
         client.close();
         first.server.stop(true);
+      }
+    },
+    90000,
+  );
+
+  test(
+    "resumes a live run on restart against the same host",
+    async () => {
+      const fixture = createFixture("restart-resume");
+      const seeded = startServer({ fixture });
+      const seedClient = await connect(seeded.url);
+      try {
+        expect((await runDiscover(seedClient)).sheet).not.toBeNull();
+      } finally {
+        seedClient.close();
+        seeded.server.stop(true);
+      }
+
+      // A restart while a run is live re-spawns the crawl against the same
+      // host, replaces the staging directory, and publishes on completion.
+      const live = startServer({
+        fixture,
+        stub: ["--discover", "--discover-no-exit", "--delay-ms=60000"],
+      });
+      const before = await connect(live.url);
+      let runId = "";
+      try {
+        before.send({ type: "discoverProject" });
+        runId = String((await before.waitFor((message) => message.type === "discoverStarted")).runId);
+        await waitUntil(
+          () => existsSync(join(fixture.root, ".omp", "discover", "staging", runId)),
+          "staging exists before restart",
+        );
+      } finally {
+        before.close();
+        live.server.stop(true);
+      }
+      const spawns = spawnCount(fixture.logPath);
+
+      const replacement = startServer({
+        fixture,
+        stub: ["--discover", "--discover-delay-ms=500"],
+      });
+      const after = await connect(replacement.url);
+      try {
+        const resumed = await after.waitFor((message) => message.type === "discoverStarted");
+        expect(String(resumed.runId)).not.toBe(runId);
+        const stopped = await after.waitFor((message) => message.type === "discoverStopped");
+        expect(stopped.completed).toBe(true);
+        expect(spawnCount(fixture.logPath)).toBe(spawns + 1);
+        const restored = await afterCommand(after, { type: "getDiscover" });
+        expect(restored.interrupted).toBe(false);
+        expect(restored.active).toBe(false);
+        expect(restored.sheet).not.toBeNull();
+        expect(existsSync(join(fixture.root, ".omp", "discover", "staging", runId))).toBe(false);
+        expect(
+          existsSync(join(fixture.root, ".omp", "discover", "staging", String(resumed.runId))),
+        ).toBe(false);
+        const manifest = JSON.parse(
+          readFileSync(join(fixture.root, ".omp", "discover", "manifest.json"), "utf8"),
+        ) as Record<string, unknown>;
+        expect(manifest.runId).toBe(resumed.runId);
+        const loaded = readStateFile(stateFile(fixture.stateDir, fixture.root));
+        expect(loaded.kind).toBe("loaded");
+        if (loaded.kind === "loaded") {
+          expect((loaded.value as Record<string, unknown>).discover).toBeNull();
+        }
+      } finally {
+        after.close();
+        replacement.server.stop(true);
       }
     },
     90000,

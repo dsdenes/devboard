@@ -6,6 +6,7 @@ import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
 import {
   giteaJson,
+  giteaOrigin,
   giteaRepository,
   repoPath,
   type FetchLike,
@@ -122,35 +123,13 @@ export interface WatchdogGitHubReaderOptions {
   fetchImpl?: FetchLike;
 }
 
-/** Host names that all mean this machine. */
-const LOOPBACK_HOSTS: Record<string, true> = {
-  localhost: true,
-  "127.0.0.1": true,
-  "::1": true,
-  "[::1]": true,
-  "0.0.0.0": true,
-};
-
 /**
- * The scheme, host, and port of a URL, with loopback aliases folded together.
- * The watchdog ledger can hold issue URLs filed through an earlier forge, so
- * the Gitea reader must recognise only the issues its own instance serves.
+ * Whether a ledger URL belongs to the issues the Gitea reader can serve:
+ * another forge's URL is skipped instead of read by number.
  */
-function originKey(value: string): string | undefined {
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    return undefined;
-  }
-  const host = LOOPBACK_HOSTS[parsed.hostname] === true ? "loopback" : parsed.hostname;
-  const port = parsed.port !== "" ? parsed.port : parsed.protocol === "https:" ? "443" : "80";
-  return `${parsed.protocol}//${host}:${port}`;
-}
-
 function servedBy(value: string, baseUrl: string): boolean {
-  const issue = originKey(value);
-  return issue !== undefined && issue === originKey(baseUrl);
+  const issue = giteaOrigin(value);
+  return issue !== undefined && issue === giteaOrigin(baseUrl);
 }
 
 function createWatchdogGiteaReader(
@@ -756,17 +735,26 @@ export class WatchdogActivity implements AgentAdapter {
     return { ok: true };
   }
 
-  setLimits(maxPerHour: unknown, maxPending: unknown): AgentCommandResult {
+  /** Saves the cadence and both caps as one settings write. */
+  setSettings(minutes: unknown, maxPerHour: unknown, maxPending: unknown): AgentCommandResult {
+    if (!isValidWatchdogCadence(minutes)) {
+      return { ok: false, message: "The cadence must be an integer from 1 through 1440 minutes." };
+    }
     if (!isValidWatchdogLimit(maxPerHour) || !isValidWatchdogLimit(maxPending)) {
       return { ok: false, message: "Both limits must be empty or integers from 1 through 100." };
     }
     const settings = readWatchdogSettings(this.watchdogDir);
     try {
-      writeWatchdogSettings(this.watchdogDir, { ...settings, maxPerHour, maxPending });
+      writeWatchdogSettings(this.watchdogDir, {
+        ...settings,
+        intervalMinutes: minutes,
+        maxPerHour,
+        maxPending,
+      });
     } catch (error) {
       return {
         ok: false,
-        message: `Could not save the limits: ${
+        message: `Could not save the settings: ${
           error instanceof Error ? error.message : String(error)
         }`,
       };
@@ -775,7 +763,8 @@ export class WatchdogActivity implements AgentAdapter {
     if (worker !== undefined && processAlive(worker.pid) && resolve(worker.stateDir) === this.stateDir) {
       try {
         writeWatchdogCommand(controlDirectory(this.watchdogDir), {
-          type: "limits",
+          type: "settings",
+          intervalMinutes: minutes,
           maxPerHour,
           maxPending,
         });
@@ -790,41 +779,6 @@ export class WatchdogActivity implements AgentAdapter {
     }
     this.startError = null;
     if (this.shouldPersistProjection()) this.persistProjection();
-    return { ok: true };
-  }
-
-  setCadence(minutes: unknown): AgentCommandResult {
-    if (!isValidWatchdogCadence(minutes)) {
-      return { ok: false, message: "The cadence must be an integer from 1 through 1440 minutes." };
-    }
-    const settings = readWatchdogSettings(this.watchdogDir);
-    try {
-      writeWatchdogSettings(this.watchdogDir, { ...settings, intervalMinutes: minutes });
-    } catch (error) {
-      return {
-        ok: false,
-        message: `Could not save the cadence: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      };
-    }
-    const worker = readWorkerState(this.watchdogDir);
-    if (worker !== undefined && processAlive(worker.pid) && resolve(worker.stateDir) === this.stateDir) {
-      try {
-        writeWatchdogCommand(controlDirectory(this.watchdogDir), {
-          type: "cadence",
-          intervalMinutes: minutes,
-        });
-      } catch (error) {
-        return {
-          ok: false,
-          message: `Could not reach the worker: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        };
-      }
-    }
-    this.startError = null;
     return { ok: true };
   }
 

@@ -9,6 +9,7 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { liveLockOwner } from "../issues/lock";
 import { ISSUES_DIRECTORY } from "../issues/paths";
+import { isRepoStateDirectoryName, scoutRoot } from "../issues/scout/paths";
 import { JOURNAL_RETENTION_MS } from "../server/journal";
 
 /**
@@ -166,6 +167,7 @@ export function sweepStateDir(
     return report;
   }
   const directory = info;
+  const scoutDirectory = scoutRoot(directory);
   const protectedPrefixes = [
     join(directory, "state"),
     join(directory, "journal"),
@@ -205,6 +207,14 @@ export function sweepStateDir(
     // protect any `lock` file whose recorded owner is still alive; a lock with
     // a dead owner stays sweepable, and so does everything else under `scout`.
     if (basename(path) === "lock" && liveLockOwner(path) !== undefined) return true;
+    // Auto Scout persists one repository's settings and worker state in
+    // `<stateDir>/scout/<24-hex>`. A stopped worker's files are operator input,
+    // not scratch: its caps and cadence must survive inactivity. Scan archives
+    // and a dead worker's lock beside that directory stay sweepable.
+    if (path.startsWith(`${scoutDirectory}${sep}`)) {
+      const [key] = relative(scoutDirectory, path).split(sep);
+      if (key !== undefined && isRepoStateDirectoryName(key)) return true;
+    }
     // A provider store may live below a state directory that is itself nested
     // inside this sweep's root (verification scratch, a worktree). Identify the
     // store by its contents, so no credentials file is ever swept at any depth.

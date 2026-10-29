@@ -484,10 +484,15 @@ export class ScoutWorker {
         await this.stop();
         return;
       }
-      case "limits": {
-        if (!isValidLimit(command.maxPerHour) || !isValidLimit(command.maxPending)) {
+      case "settings": {
+        if (
+          !isValidCadence(command.intervalMinutes) ||
+          !isValidLimit(command.maxPerHour) ||
+          !isValidLimit(command.maxPending)
+        ) {
           this.state.lastError =
-            "Auto Scout limits must be empty or integers from 1 through 100.";
+            "Auto Scout settings must use a 1 through 1440 minute cadence and " +
+            "empty or 1 through 100 limits.";
           this.publish();
           return;
         }
@@ -495,25 +500,13 @@ export class ScoutWorker {
           maxPerHour: command.maxPerHour,
           maxPending: command.maxPending,
         };
-        this.persistSettings();
-        this.state.lastError = null;
-        this.state.notice =
-          `Limits saved: ${limitLabel(this.state.limits.maxPerHour)} per hour, ` +
-          `${limitLabel(this.state.limits.maxPending)} open.`;
-        this.state.nextAttemptAt = null;
-        this.publish();
-        return;
-      }
-      case "cadence": {
-        if (!isValidCadence(command.intervalMinutes)) {
-          this.state.lastError = "Auto Scout cadence must be 1 through 1440 minutes.";
-          this.publish();
-          return;
-        }
         this.state.intervalMinutes = command.intervalMinutes;
         this.persistSettings();
         this.state.lastError = null;
-        this.state.notice = `Cadence saved: every ${command.intervalMinutes} minute(s).`;
+        this.state.notice =
+          `Settings saved: every ${command.intervalMinutes} minute(s), ` +
+          `${limitLabel(this.state.limits.maxPerHour)} per hour, ` +
+          `${limitLabel(this.state.limits.maxPending)} open.`;
         this.state.nextAttemptAt = null;
         this.publish();
         return;
@@ -928,6 +921,18 @@ export class ScoutWorker {
     }
   }
 
+  /**
+   * Claims the terminal answer path: the scan timer can no longer abandon the
+   * scan and the peer is closed exactly once. Closing before the scan file is
+   * written leaves a failed scan with no recorded child for recovery.
+   */
+  private endAgentPhase(active: ActiveScan): void {
+    active.finished = true;
+    clearTimeout(active.timer);
+    active.timer = undefined;
+    this.closePeer(active);
+  }
+
   /** A scan that timed out or whose peer failed: nothing is filed. */
   private abandonScan(active: ActiveScan, detail: string): void {
     if (active.finished) return;
@@ -1127,6 +1132,7 @@ export class ScoutWorker {
       }
     }
     if (!answer.ok) {
+      this.endAgentPhase(active);
       this.writeScan(active, "failed", {
         requested: active.requested,
         filed: 0,
@@ -1138,10 +1144,7 @@ export class ScoutWorker {
 
     // The answer is final: claim the terminal path before touching the
     // tracker, so the scan timer can no longer close a scan that is settling.
-    active.finished = true;
-    clearTimeout(active.timer);
-    active.timer = undefined;
-    this.closePeer(active);
+    this.endAgentPhase(active);
     const result = answer.result;
 
     // Immediately before filing, read every scout issue again. The periodic

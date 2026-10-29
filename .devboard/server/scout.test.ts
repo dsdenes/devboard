@@ -608,7 +608,7 @@ describe("bridge", () => {
       pollMs: 60_000,
       spawnWorker: () => undefined,
     });
-    expect(bridge.setLimits(20, 3)).toEqual({ ok: true });
+    expect(bridge.setSettings(1, 20, 3)).toEqual({ ok: true });
     expect(readSettings(settingsPath(stateDir, root))).toEqual({
       maxPerHour: 20,
       maxPending: 3,
@@ -624,9 +624,10 @@ describe("bridge", () => {
       [20, 101],
       [2.5, 3],
     ]) {
-      const refused = bridge.setLimits(perHour, pending);
+      const refused = bridge.setSettings(1, perHour, pending);
       expect(refused.ok).toBe(false);
     }
+    expect(bridge.setSettings(0, 20, 3).ok).toBe(false);
     expect(readSettings(settingsPath(stateDir, root))).toEqual({
       maxPerHour: 20,
       maxPending: 3,
@@ -953,14 +954,24 @@ describe("bridge", () => {
 });
 
 describe("command surface", () => {
-  test("Stop and limits parse; approve, draft, and reject do not", () => {
+  test("Stop and settings parse; approve, draft, and reject do not", () => {
     expect(parseCommand('{"type":"stop"}')).toEqual({ type: "stop" });
-    expect(parseCommand('{"type":"limits","maxPerHour":3,"maxPending":2}')).toEqual({
-      type: "limits",
+    expect(
+      parseCommand(
+        '{"type":"settings","intervalMinutes":5,"maxPerHour":3,"maxPending":2}',
+      ),
+    ).toEqual({
+      type: "settings",
+      intervalMinutes: 5,
       maxPerHour: 3,
       maxPending: 2,
     });
-    expect(parseCommand('{"type":"limits","maxPerHour":0,"maxPending":2}')).toBeUndefined();
+    expect(
+      parseCommand('{"type":"settings","intervalMinutes":5,"maxPerHour":0,"maxPending":2}'),
+    ).toBeUndefined();
+    expect(
+      parseCommand('{"type":"settings","intervalMinutes":0,"maxPerHour":3,"maxPending":2}'),
+    ).toBeUndefined();
     expect(parseCommand('{"type":"approve","id":"abc"}')).toBeUndefined();
     expect(parseCommand('{"type":"draft","id":"abc"}')).toBeUndefined();
     expect(parseCommand('{"type":"reject","id":"abc"}')).toBeUndefined();
