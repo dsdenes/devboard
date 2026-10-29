@@ -802,6 +802,62 @@ describe("design worker", () => {
     await worker.stop();
   });
 
+  test("a draft missing a principle section is refused without a cycle error", async () => {
+    const { repo, stateDir } = await fixture("missing-principles");
+    const design = readFileSync(join(repo, "DESIGN.md"), "utf8");
+    writeFileSync(
+      join(repo, "DESIGN.md"),
+      design
+        .replace("## Design principles", "## Styling")
+        .replace("## UX principles", "## Interactions"),
+    );
+    let released = 0;
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      cadenceMs: 60 * 60_000,
+      syncMs: 10_000,
+      manualCycles: true,
+      github: {
+        listIssues: async () => [],
+        listReleases: async () => [],
+        listOpenIssueTitles: async () => [],
+        closingCommit: async () => null,
+        resolveCommit: async () => null,
+        containingReleaseTags: async () => [],
+      },
+      fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+      release: async () => {
+        released += 1;
+        return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" };
+      },
+      connect: () =>
+        fakePeer((directory) => {
+          writeFileSync(
+            join(directory, "draft", "DESIGN.md"),
+            `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
+          );
+          writeFileSync(join(directory, "audit.json"), JSON.stringify(editDecision()));
+        }, { connects: 0 }).peer as never,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.refresh();
+    await worker.beginCycle();
+    await worker.waitForCycle();
+    expect(released).toBe(0);
+    expect(worker.currentState.lifecycle).toBe("idle");
+    expect(worker.currentState.lastError).toBeNull();
+    const cycleId = worker.currentState.newestCycleId!;
+    const activity = readFileSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
+      "utf8",
+    );
+    expect(activity).toContain("documentation rejected");
+    expect(activity).toContain("lacks ## Design principles and ## UX principles");
+    expect(activity).not.toContain("release failed");
+    await worker.stop();
+  });
+
   test("a zero room files nothing and records each skipped finding", async () => {
     const { repo, stateDir } = await fixture("zero-room");
     const filed: string[] = [];
