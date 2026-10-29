@@ -15,6 +15,10 @@ import {
 } from "./store";
 import { fetchUsage, type UsageReport, type UsageStatus } from "./usage";
 import {
+  removeSelectionSnapshot,
+  writeSelectionSnapshot,
+} from "./snapshot";
+import {
   agentDirectory,
   decideProvider,
   generatedConfig,
@@ -149,6 +153,32 @@ export class ProviderService {
     return this.#subscriptions.map((subscription) => ({ ...subscription }));
   }
 
+  /**
+   * Re-reads the credential file for a long-lived worker, keeping cached usage
+   * for an unchanged key and dropping it for a removed or replaced one.
+   */
+  reload(): void {
+    const loaded = loadSubscriptions(this.#stateDir);
+    const next = loaded.subscriptions;
+    const nextIds = new Set(next.map((subscription) => subscription.id));
+    for (const id of this.#usage.keys()) {
+      if (!nextIds.has(id)) this.#usage.delete(id);
+    }
+    for (const subscription of next) {
+      const previous = this.#subscriptions.find((entry) => entry.id === subscription.id);
+      if (
+        previous !== undefined &&
+        (previous.key !== subscription.key || previous.provider !== subscription.provider)
+      ) {
+        this.#usage.delete(subscription.id);
+      }
+    }
+    this.#subscriptions = next;
+    if (loaded.preserved !== undefined) {
+      this.#log(`providers: unusable credentials were preserved at ${loaded.preserved}`);
+    }
+  }
+
   #baseUrl(provider: ProviderId): string {
     return (
       this.#usageBaseUrls[provider] ??
@@ -199,10 +229,40 @@ export class ProviderService {
         if (current !== undefined && current.key === key) this.#usage.set(subscription.id, report);
       }),
     );
+    this.#publishSelection();
   }
 
   #ranked(): RankedSubscription[] {
     return rankSubscriptions(this.#subscriptions, this.#usage);
+  }
+
+  /**
+   * Publishes the same decision the status bar shows so detached workers can
+   * follow it without probing usage themselves. A refusal removes the file, so
+   * no worker keeps using a key the dashboard has stopped selecting.
+   */
+  #publishSelection(): void {
+    const decision = decideProvider(this.#ranked(), this.#subscriptions.length > 0);
+    try {
+      if (decision.kind === "selected") {
+        writeSelectionSnapshot(this.#stateDir, {
+          provider: decision.subscription.provider,
+          subscriptionId: decision.subscription.id,
+          label: decision.subscription.label,
+          model: PROVIDERS[decision.subscription.provider].model,
+          remainingFraction: decision.usage?.remainingFraction ?? null,
+          checkedAt: new Date(this.#now()).toISOString(),
+        });
+      } else {
+        removeSelectionSnapshot(this.#stateDir);
+      }
+    } catch (error) {
+      this.#log(
+        `providers: the selection snapshot could not be written: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   view(): ProvidersView {
@@ -318,6 +378,7 @@ export class ProviderService {
     this.#subscriptions = next;
     if (existing !== undefined && existing.key !== key) this.#usage.delete(id);
     if (report !== undefined) this.#usage.set(id, report);
+    this.#publishSelection();
     return { ok: true };
   }
 
@@ -338,6 +399,7 @@ export class ProviderService {
     }
     this.#subscriptions = next;
     this.#usage.delete(id);
+    this.#publishSelection();
     return { ok: true };
   }
 
@@ -360,6 +422,7 @@ export class ProviderService {
       };
     }
     this.#subscriptions = next;
+    this.#publishSelection();
     return { ok: true };
   }
 

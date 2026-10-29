@@ -148,7 +148,9 @@ export class ProviderStore {
   get indicatorLabel(): string {
     const selection = this.selection;
     if (selection === null) return "No provider";
-    return `${selection.providerName} · ${percentText(selection.remainingFraction)}`;
+    const label =
+      selection.label === selection.providerName ? "" : ` · ${selection.label}`;
+    return `${selection.providerName}${label} · ${percentText(selection.remainingFraction)}`;
   }
 
   get indicatorTitle(): string {
@@ -156,9 +158,9 @@ export class ProviderStore {
     if (selection === null) {
       return this.refusal ?? "No provider subscription is configured. Open the Providers dialog.";
     }
-    return `${selection.providerName} (${selection.label}) serves peers on ${selection.model}; ${percentText(
-      selection.remainingFraction,
-    )} remaining. ${this.rule}.`;
+    return `${selection.providerName} (${selection.label}) is selected for the next peer on ${
+      selection.model
+    }; ${percentText(selection.remainingFraction)} remaining. ${this.rule}.`;
   }
 
   request(): void {

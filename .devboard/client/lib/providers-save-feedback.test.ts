@@ -101,3 +101,21 @@ test("a provider save confirms only on the state frame that follows it", () => {
   store.handleEvent({ type: "providersState", subscriptions: [], selection: null });
   expect(saveFeedback.text).toBe("Provider saved.");
 });
+
+test("the indicator names the selected subscription and its next-peer role", () => {
+  const store = new ProviderStore();
+  store.handleEvent({
+    type: "providersState",
+    subscriptions: [],
+    selection: {
+      provider: "opencode-go",
+      providerName: "OpenCode Go",
+      label: "Go #3",
+      model: "opencode-go/deepseek-v4.1-flash",
+      remainingFraction: 1,
+    },
+    refusal: null,
+  });
+  expect(store.indicatorLabel).toBe("OpenCode Go · Go #3 · 100%");
+  expect(store.indicatorTitle).toContain("selected for the next peer");
+});

@@ -284,7 +284,9 @@ The operator registers keys in the **Providers** dialog, reachable from the stat
 (`data-testid="providers-indicator"`) and the `settings.providers` palette command. The dialog
 supports add, edit, enable/disable, delete with confirmation, refresh, and save. It shows each
 key's masked value, status (`ok`, `near limit`, `exhausted`, `invalid`, `unknown`), every quota
-window's remaining fraction, and the last check time.
+window's remaining fraction, and the last check time. The status-bar control names the selected
+subscription, not only its provider, and its tooltip says the selection applies to the next
+peer; a running peer keeps the key it started with.
 
 Credentials live in `<stateDir>/providers/credentials.json` (directory `0700`, file `0600`,
 atomic replacement). The file survives a dashboard restart and is never removed by
@@ -303,6 +305,15 @@ server forces one refresh and pushes a fresh `providersState` every 60 seconds, 
 status-bar indicator never stays stale. With no client connected the periodic refresh makes no
 provider call, and the next client's `getProviders` refreshes first.
 
+A detached worker outlives the credential list it was started with, so every agent it starts
+resolves the provider again instead of inheriting the worker's original key. The issue worker
+resolves once per issue run, Auto Scout once per scan, and Design once per cycle; a run that
+started before a key was added keeps its key, and the next run uses the current selection. Every
+refresh also writes `<stateDir>/providers/selection.json` with the selected provider, subscription
+id, label, model, and headroom; the file carries no key material. The Coach finalizer cannot probe
+usage, so it reads that snapshot and leads with the subscription the status bar reports, then falls
+back to the operator's list order when no snapshot exists.
+
 Remaining is `1 - percent/100` for each Go window and `limit_remaining / limit` for OpenRouter,
 or unlimited when the account has no limit. A subscription is eligible only when every gating
 window is strictly above **1% remaining**; that is the rule the dialog states. Eligible
@@ -314,14 +325,14 @@ starts and the UI and event stream report the reason. With no subscription confi
 every peer start is refused with an error pointing at the Providers dialog, so a peer never
 silently inherits the operator's OMP login.
 
-Every agent process — goal work, lifecycle lanes, Flow, issues, Auto Scout, Ask, Discover, goal
-drafts, and skills preparation — starts with `PI_CODING_AGENT_DIR` pointing at a generated
-directory under `<stateDir>/providers/agents/`. Its `config.yml` pins `default`, `plan`, `smol`,
-`slow`, and `task` to the selected model. A Go selection also sets `retry.modelFallback: true`,
-`retry.fallbackOn: any`, and a chain from `opencode-go/*` to the OpenRouter fallback; an
-OpenRouter selection sets no chain. Every selection also names `ollama`, `lm-studio`,
-`llama.cpp`, and `apple` in `disabledProviders`: OMP discovers those implicit local model
-servers on every start, a peer can only run the two catalog providers, and the failed probes
+Every agent process — goal work, lifecycle lanes, Flow, issues, Auto Scout, Design, Ask, Discover,
+goal drafts, skills preparation, and the Coach finalizer — starts with `PI_CODING_AGENT_DIR`
+pointing at a generated directory under `<stateDir>/providers/agents/`. Its `config.yml` pins
+`default`, `plan`, `smol`, `slow`, and `task` to the selected model. A Go selection also sets
+`retry.modelFallback: true`, `retry.fallbackOn: any`, and a chain from `opencode-go/*` to the
+OpenRouter fallback; an OpenRouter selection sets no chain. Every selection also names `ollama`,
+`lm-studio`, `llama.cpp`, and `apple` in `disabledProviders`: OMP discovers those implicit local
+model servers on every start, a peer can only run the two catalog providers, and the failed probes
 would otherwise log warnings the watchdog files as evidence. The peer environment removes the
 operator's inherited `OPENCODE_API_KEY` and `OPENROUTER_API_KEY` first, then adds only the
 selected keys (a Go peer also receives an OpenRouter key when one exists, for its fallback
@@ -1671,14 +1682,16 @@ stays pending with the reason, and the report names it.
 ### Finalizer
 
 Only findings the gate accepted reach one ACP peer call per cycle. The peer is `AGENT_COMMAND`
-(default `omp acp`) built from every enabled OpenCode Go subscription in the operator's list order,
-pinned to `opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled. The
-coach does not probe the usage endpoint: a quota read cannot decide whether a cycle finishes. A
-peer that answers with a rejected credential rotates to the next enabled Go subscription and, when
-none is left, fails closed. It receives the survivors and the catalog and must answer one JSON
-object: for every survivor, `file` with a proposal and 1 to 5 acceptance criteria, or `drop` with
-`duplicate_of` naming another survivor that is itself filed. A missing decision, an unknown
-fingerprint, an absent proposal, invalid JSON, a refused permission, or a timeout files nothing.
+(default `omp acp`) built from every enabled OpenCode Go subscription, led by the dashboard's
+published selection when it still names an enabled key and otherwise by the operator's list order,
+pinned to `opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled.
+The coach does not probe the usage endpoint: a quota read cannot decide whether a cycle finishes,
+so it follows `selection.json` instead. A peer that answers with a rejected credential rotates to
+the next enabled Go subscription and, when none is left, fails closed. It receives the survivors
+and the catalog and must answer one JSON object: for every survivor, `file` with a proposal and 1
+to 5 acceptance criteria, or `drop` with `duplicate_of` naming another survivor that is itself
+filed. A missing decision, an unknown fingerprint, an absent proposal, invalid JSON, a refused
+permission, or a timeout files nothing.
 
 ### Filed issues and the ledger
 

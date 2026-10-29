@@ -5,7 +5,9 @@ import { mkdir, mkdtemp, readdir, readFile as readBytes, rm, writeFile } from "n
 import { join, resolve } from "node:path";
 import { journalFile } from "../server/journal";
 import { agentRegistry } from "../server/agents/registry";
-import { saveSubscriptions } from "../server/providers";
+import { saveSubscriptions, writeSelectionSnapshot } from "../server/providers";
+import { OPENCODE_GO_MODEL } from "../server/providers/catalog";
+import { openCodePeers } from "../coach/providers";
 import { CoachActivity, preflightCoach } from "../server/coach";
 import { coachDirectory } from "../coach/paths";
 import { readCoachSettings, writeCoachSettings, DEFAULT_COACH_SETTINGS } from "../coach/settings";
@@ -1359,5 +1361,33 @@ describe("Coach issue bytes and filing", () => {
     const beforeStatus = readCoachStatus(coachDirectory(stateDir));
     expect(beforeStatus.pending).toBe(0);
     expect(await directoryHash(join(stateDir, "providers"))).toBe(beforeSessions);
+  });
+});
+
+describe("Coach finalizer provider order", () => {
+  test("leads with the dashboard's published selection", async () => {
+    const stateDir = await temporaryRoot();
+    const now = NOW.toISOString();
+    const row = (id: string, label: string) => ({
+      id,
+      provider: "opencode-go" as const,
+      label,
+      key: `key-${id}`,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    saveSubscriptions(stateDir, [row("alpha", "Alpha"), row("bravo", "Bravo")]);
+    writeSelectionSnapshot(stateDir, {
+      provider: "opencode-go",
+      subscriptionId: "bravo",
+      label: "Bravo",
+      model: OPENCODE_GO_MODEL,
+      remainingFraction: 1,
+      checkedAt: now,
+    });
+    const peers = openCodePeers(stateDir, {});
+    expect(peers.ok).toBe(true);
+    if (peers.ok) expect(peers.value[0]?.subscriptionId).toBe("bravo");
   });
 });

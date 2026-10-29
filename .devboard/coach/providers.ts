@@ -7,6 +7,7 @@ import {
   type PeerBinding,
 } from "../server/providers/selection";
 import { ProviderService } from "../server/providers/service";
+import { readSelectionSnapshot } from "../server/providers/snapshot";
 
 /**
  * The Coach's two provider needs. The decision gate is a plain HTTPS call, so
@@ -54,9 +55,11 @@ export function openRouterKey(
 }
 
 /**
- * One finalizer binding per enabled OpenCode Go subscription, in the operator's
- * list order, each with its pinned model. An enabled OpenRouter subscription
- * supplies the fallback chain's key when one exists.
+ * One finalizer binding per enabled OpenCode Go subscription, led by the
+ * dashboard's last selection when it still names an enabled key, then the
+ * operator's list order. An enabled OpenRouter subscription supplies the
+ * fallback chain's key when one exists. Reading the snapshot keeps the
+ * finalizer on the subscription the status bar reports without probing usage.
  */
 export function openCodePeers(
   stateDir: string,
@@ -74,6 +77,11 @@ export function openCodePeers(
         "the finalizer needs an enabled OpenCode Go subscription; add one in the " +
         "Providers dialog (settings.providers)",
     };
+  }
+  const snapshot = readSelectionSnapshot(stateDir);
+  if (snapshot?.provider === "opencode-go") {
+    const preferred = candidates.findIndex((entry) => entry.id === snapshot.subscriptionId);
+    if (preferred > 0) candidates.unshift(candidates.splice(preferred, 1)[0]!);
   }
   const fallback = subscriptions.find(
     (entry) => entry.provider === "openrouter" && entry.enabled,
