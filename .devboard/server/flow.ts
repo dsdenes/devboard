@@ -2101,26 +2101,26 @@ export class FlowController {
       // The forge is the authority on the request's current state: a request
       // closed or reopened elsewhere is never merged on stale local state.
       const current = await this.#forge.view(this.repoDir, target, session.pr.number);
-      if (current.state !== "open" || current.draft) {
+      if (current.state === "merged") {
+        // A previous merge reached the forge but not this session's state:
+        // adopt it instead of refusing the only local recovery path.
+        this.#adoptMerge(session, session.pr, current.url);
+      } else if (current.state !== "open" || current.draft) {
         this.#error("The pull request is not an open, live pull request.");
         return;
+      } else {
+        await this.#forge.merge(this.repoDir, target, session.pr.number);
+        // The successful merge call is the authority. The confirming read
+        // only refreshes the URL: a failed or lagging read must not leave the
+        // forge merged while this session stays live and unmergeable.
+        let url = session.pr.url;
+        try {
+          url = (await this.#forge.view(this.repoDir, target, session.pr.number)).url;
+        } catch {
+          // The merge itself succeeded; only the optional URL refresh was lost.
+        }
+        this.#adoptMerge(session, session.pr, url);
       }
-      await this.#forge.merge(this.repoDir, target, session.pr.number);
-      const state = await this.#forge.view(this.repoDir, target, session.pr.number);
-      if (state.state !== "merged") {
-        throw new Error("The forge did not report the pull request as merged.");
-      }
-      session.pr = { ...session.pr, url: state.url, state: "merged" };
-      // One write carries the merged request, the merged status, and the
-      // pending cleanup: a restart can never restore a merged request beside
-      // a status that still allows starting work on it.
-      session.status = "merged";
-      session.leftover = null;
-      session.cleanupPending = true;
-      this.#persist();
-      this.#broadcast({ type: "flowPr", pr: session.pr });
-      this.#registerHistory();
-      this.#stopWatchdog();
     } catch (error) {
       this.#error(error instanceof Error ? error.message : String(error));
       return;
@@ -2134,6 +2134,23 @@ export class FlowController {
       this.#error(`The merge completed, but cleanup left ${leftover}.`);
     }
     this.#publish();
+  }
+
+  /**
+   * Records a merge the forge has confirmed and arms the cleanup. One write
+   * carries the merged request, the merged status, and the pending cleanup, so
+   * a restart can never restore a merged request beside a status that still
+   * allows starting work on it.
+   */
+  #adoptMerge(session: FlowSession, pr: FlowPr, url: string): void {
+    session.pr = { ...pr, url, state: "merged" };
+    session.status = "merged";
+    session.leftover = null;
+    session.cleanupPending = true;
+    this.#persist();
+    this.#broadcast({ type: "flowPr", pr: session.pr });
+    this.#registerHistory();
+    this.#stopWatchdog();
   }
 
   /** Removes the merged work, reporting what it could not clean up. */

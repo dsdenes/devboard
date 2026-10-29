@@ -926,6 +926,157 @@ describe("Flow pull-request lifecycle", () => {
     client.close();
   }, 90_000);
 
+  test("a failed post-merge read still persists the merge and finishes the cleanup", async () => {
+    const fixture = createFixture("pr-merge-unconfirmed");
+    const forgeStub = new StubForge({ failViewAfterMerge: "forge read timed out" });
+    const server = startServer(fixture, {
+      forge: forgeStub,
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-change",
+        "--flow-checkpoints=2",
+        "--flow-step-delay=8000",
+      ],
+    });
+    const client = await connect(server);
+    await connected(client);
+    await createGoal(client);
+    const session = await startFlow(client, fixture);
+    await client.waitFor((event) => event.type === "flowPr" && event.pr !== null);
+    await stopFlow(client);
+    client.send({ type: "markFlowPrReady" });
+    await client.waitFor((event) => event.type === "flowPr" && pullRequestState(event) === "live");
+
+    // The forge merges the PR: reproduce the merge commit on the bare origin.
+    const clone = join(fixture.root, ".worktree", "unconfirmed-clone");
+    git(fixture.root, ["clone", join(fixture.root, "origin.git"), clone]);
+    git(clone, [
+      "-c",
+      "user.name=Forge",
+      "-c",
+      "user.email=forge@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "merge",
+      "--no-ff",
+      `origin/${session.branch}`,
+      "-m",
+      `Merge pull request #7 from ${session.branch}`,
+    ]);
+    git(clone, ["push", "origin", "main"]);
+
+    client.send({ type: "mergeFlowPr" });
+    const merged = await client.waitFor((event) => event.type === "flowSnapshot" && event.status === "merged");
+    // The merge call succeeded, so the failed confirming read is not an error.
+    expect(
+      client.events.some(
+        (event) =>
+          event.type === "flowError" &&
+          /forge read timed out|did not report/.test(String(event.message)),
+      ),
+    ).toBe(false);
+    expect(forgeStub.calls.filter((call) => call.op === "merge")).toHaveLength(1);
+    // Ready read once; the merge read the forge, merged, and re-read.
+    expect(forgeStub.calls.filter((call) => call.op === "view")).toHaveLength(3);
+    expect(pullRequestState(merged)).toBe("merged");
+    expect(merged.leftover).toBeNull();
+    expect(existsSync(session.worktree)).toBe(false);
+
+    const stored = storedSession(fixture, session.id);
+    expect(stored?.status).toBe("merged");
+    expect(prState(stored)).toBe("merged");
+    expect(stored?.cleanupPending).toBe(false);
+
+    client.send({ type: "resetImplementation" });
+    const started = await client.waitFor(
+      (event) => event.type === "implementationResetStarted" || event.type === "error",
+    );
+    expect(started.type).toBe("implementationResetStarted");
+    client.close();
+  }, 90_000);
+
+  test("Merge adopts a forge-merged request left live by an interrupted merge", async () => {
+    const fixture = createFixture("pr-merge-adopt");
+    const forgeStub = new StubForge();
+    const server = startServer(fixture, {
+      forge: forgeStub,
+      stub: [
+        "--flow-goal",
+        "--flow-implement",
+        "--flow-change",
+        "--flow-checkpoints=2",
+        "--flow-step-delay=8000",
+      ],
+    });
+    const client = await connect(server);
+    await connected(client);
+    await createGoal(client);
+    const session = await startFlow(client, fixture);
+    await client.waitFor((event) => event.type === "flowPr" && event.pr !== null);
+    await stopFlow(client);
+    client.send({ type: "markFlowPrReady" });
+    await client.waitFor((event) => event.type === "flowPr" && pullRequestState(event) === "live");
+
+    // The forge merged the request while the local state still says live and
+    // stopped: the exact aftermath of a merge whose local write never landed.
+    const clone = join(fixture.root, ".worktree", "adopt-clone");
+    git(fixture.root, ["clone", join(fixture.root, "origin.git"), clone]);
+    git(clone, [
+      "-c",
+      "user.name=Forge",
+      "-c",
+      "user.email=forge@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "merge",
+      "--no-ff",
+      `origin/${session.branch}`,
+      "-m",
+      `Merge pull request #7 from ${session.branch}`,
+    ]);
+    git(clone, ["push", "origin", "main"]);
+    client.close();
+    server.server.stop(true);
+    forgeStub.setState("merged");
+
+    const restarted = startServer(fixture, { forge: forgeStub });
+    const recovered = await connect(restarted);
+    await connected(recovered);
+    await recovered.waitFor(
+      (event) => event.type === "flowSnapshot" && event.sessionId === session.id,
+    );
+
+    recovered.send({ type: "mergeFlowPr" });
+    const merged = await recovered.waitFor(
+      (event) => event.type === "flowSnapshot" && event.status === "merged",
+    );
+    expect(
+      recovered.events.some(
+        (event) =>
+          event.type === "flowError" &&
+          String(event.message).includes("not an open, live"),
+      ),
+    ).toBe(false);
+    // Recovery is a state adoption, not another forge merge.
+    expect(forgeStub.calls.filter((call) => call.op === "merge")).toHaveLength(0);
+    expect(pullRequestState(merged)).toBe("merged");
+    expect(merged.leftover).toBeNull();
+    expect(existsSync(session.worktree)).toBe(false);
+
+    const stored = storedSession(fixture, session.id);
+    expect(stored?.status).toBe("merged");
+    expect(prState(stored)).toBe("merged");
+    expect(stored?.cleanupPending).toBe(false);
+
+    recovered.send({ type: "resetImplementation" });
+    const started = await recovered.waitFor(
+      (event) => event.type === "implementationResetStarted" || event.type === "error",
+    );
+    expect(started.type).toBe("implementationResetStarted");
+    recovered.close();
+  }, 90_000);
+
   test("cleanup failure keeps the merged PR, the worktree, and its branch and reports both", async () => {
     const fixture = createFixture("pr-cleanup-failure");
     const forgeStub = new StubForge();

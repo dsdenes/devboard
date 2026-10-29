@@ -22,6 +22,8 @@ export interface StubForgeOptions {
   failCreate?: string;
   failReady?: string;
   failMerge?: string;
+  /** Message the next `view` after a successful merge throws. */
+  failViewAfterMerge?: string;
   /** Draft PR number the stub invents. */
   number?: number;
   /** URL base the stub invents; GitHub and GitLab spell the path differently. */
@@ -49,6 +51,7 @@ export class StubForge implements FlowPrAdapter {
   #pr: ForgePrState | undefined;
   #title = "";
   #body = "";
+  #viewFailsAfterMerge: string | undefined;
 
   constructor(options: StubForgeOptions = {}) {
     this.#options = options;
@@ -71,6 +74,7 @@ export class StubForge implements FlowPrAdapter {
     this.#options.failCreate = undefined;
     this.#options.failReady = undefined;
     this.#options.failMerge = undefined;
+    this.#options.failViewAfterMerge = undefined;
   }
 
   /** Forces the state a forge would report on the next `view`. */
@@ -127,10 +131,16 @@ export class StubForge implements FlowPrAdapter {
     this.#record({ op: "merge", number, input: { cwd, target, method: "merge" } });
     if (this.#options.failMerge !== undefined) throw new Error(this.#options.failMerge);
     if (this.#pr !== undefined) this.#pr = { ...this.#pr, state: "merged", draft: false };
+    this.#viewFailsAfterMerge = this.#options.failViewAfterMerge;
   }
 
   async view(cwd: string, target: ForgeTarget, number: number): Promise<ForgePrState> {
     this.#record({ op: "view", number, input: { cwd, target } });
+    const failure = this.#viewFailsAfterMerge;
+    if (failure !== undefined) {
+      this.#viewFailsAfterMerge = undefined;
+      throw new Error(failure);
+    }
     if (this.#pr === undefined) throw new Error("No pull request exists.");
     return this.#pr;
   }
