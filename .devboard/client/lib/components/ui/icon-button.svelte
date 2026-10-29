@@ -48,7 +48,7 @@
   <Tooltip.Portal>
     <Tooltip.Content
       sideOffset={6}
-      class="z-50 rounded-sm border border-[var(--border-strong)] bg-[var(--surface-raised)] px-2 py-1 text-[11px] text-[var(--foreground)] shadow-md"
+      class="z-50 rounded-sm border border-[var(--border-strong)] bg-[var(--surface-raised)] px-2 py-1 text-[12px] text-[var(--foreground)] shadow-md"
     >
       {label}
     </Tooltip.Content>
