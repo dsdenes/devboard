@@ -1364,8 +1364,8 @@ file bytes without writing. A chat turn posts over the WebSocket, streams the re
 `agent-prompt-chat-log`, and puts a proposed complete prompt in the editor without any copy; it
 writes no file, creates no scan, files no issue, and changes no Auto Scout state. A failed turn
 shows `agent-prompt-chat-error` and leaves the editor and file untouched. The chat agent reads
-`prompts/agent-prompt-chat.md` and returns the replacement between the line-anchored `<prompt-file>` and `</prompt-file>` markers,
-so Markdown fences inside the prompt survive intact.
+`prompts/agent-prompt-chat.md` and returns the replacement between the line-anchored
+`<prompt-file>` and `</prompt-file>` markers, so Markdown fences inside the prompt survive intact.
 
 ### Cadence and limits
 
