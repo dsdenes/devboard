@@ -3514,7 +3514,9 @@ try {
     toggle: { checked: boolean; disabled: boolean } | null;
     menu: boolean;
     kindIcons: number;
+    kindWords: string[];
     kindColors: string[];
+    mutedKind: string;
     tableScrolls: number[];
     clippedCards: number;
     rowsOutside: number;
@@ -3533,6 +3535,11 @@ try {
     const searchStyle = search === null ? null : getComputedStyle(search);
     const slider = document.querySelector('[data-testid="discover-glossary-threshold"]');
     const toggle = document.querySelector('[data-testid="discover-glossary-significant"]');
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--muted-foreground)';
+    document.body.append(probe);
+    const mutedKind = getComputedStyle(probe).color;
+    probe.remove();
     return {
       contexts: document.querySelectorAll('#workspace-discover [data-testid="discover-context"]').length,
       terms: rows.length,
@@ -3549,6 +3556,8 @@ try {
       toggle: toggle === null ? null : { checked: toggle.checked, disabled: toggle.disabled },
       menu: document.querySelector('[data-testid="discover-glossary-menu"]') !== null,
       kindIcons: kindCells.filter((cell) => cell?.querySelector('.discover-kind svg') !== null).length,
+      kindWords: kindCells.map((cell) => cell?.querySelector('.discover-kind')?.textContent?.trim() ?? ""),
+      mutedKind,
       kindColors: [...new Set(kindCells
         .map((cell) => cell?.querySelector('.discover-kind'))
         .filter((kind) => kind !== null)
@@ -3617,7 +3626,16 @@ try {
   );
   check(!glossary.menu, "the glossary sidebar still has a disclosure menu", glossary);
   check(glossary.kindIcons === glossary.terms, "a glossary kind is not the first cell", glossary.kindIcons);
-  check(glossary.kindColors.length >= 2, "the glossary kind icons are not color-coded", glossary.kindColors);
+  check(
+    glossary.kindWords.every((word) => word.length > 0),
+    "a glossary kind row has no visible kind word",
+    glossary.kindWords,
+  );
+  check(
+    glossary.kindColors.length === 1 && glossary.kindColors[0] === glossary.mutedKind,
+    "a glossary kind carries a state color instead of muted foreground",
+    { kindColors: glossary.kindColors, mutedKind: glossary.mutedKind },
+  );
   check(glossary.tableScrolls.every((delta) => delta <= 1), "a glossary table clips its rows", glossary.tableScrolls);
   check(glossary.clippedCards === 0, "a glossary card clips its rows", glossary.clippedCards);
   check(glossary.rowsOutside === 0, "a glossary term falls outside its card", glossary.rowsOutside);
