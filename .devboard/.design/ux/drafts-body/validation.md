@@ -132,12 +132,14 @@ selected
     stays, and the body remains one panel.
 - Console/network: zero console entries and zero failed requests among 10 observed requests on
   the Draft goals page in the empty state; the tab reported no exceptions.
-- Checks: `bun run check` — 0 errors, 0 warnings across 1763 files. `bun test` — 1071 pass, 0
-  fail across 83 files (6461 assertions). `bun run verify:design` — pass, including the normative
-  documents, page shape, and freshness gates. A first `bun test` run failed the Flow concurrent
-  start test because `.devboard/.tmp/flow-tests` held state from an earlier aborted run; after
-  removing that directory the same test and the full suite passed, and the same test passed in a
-  fresh detached `origin/main` worktree without any cleanup.
+- Checks: `bun run check` — 0 errors, 0 warnings across 1763 files. `bun test
+  --max-concurrency=1` — 1073 pass, 0 fail across 83 files (6469 assertions).
+  `bun run verify:design` — pass, including the normative documents, page shape, and freshness
+  gates. The machine was running other agents' suites at the same time; default-concurrency runs
+  intermittently timed out unrelated Flow, discover-remote, and launcher tests, each of which
+  passed in isolation and in the serial full run. An earlier Flow concurrent-start failure came
+  from stale `.devboard/.tmp/flow-tests` state and disappeared after that directory was removed;
+  the same test passed in a fresh detached `origin/main` worktree without cleanup.
 - Dependent pages: none. No shared component, token, DTCG, OpenUI, or Storybook artifact changed;
   `Button` and the panel primitives are reused. `verify:design` exercises the shared page shape.
 - Not run: `bun run verify:interface` does not reach the Draft goals checks. It stops at the shared
