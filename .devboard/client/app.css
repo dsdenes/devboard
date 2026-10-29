@@ -1918,12 +1918,12 @@ kbd {
 }
 
 /* The skill header keeps the file identity, its draft state, and the actions on one
-   30px row; the action group moves to a second row before any control is clipped. */
+   30px row; the path yields first, while the state and controls never shrink. */
 .discover-skill__header {
   align-items: center;
   flex: 0 0 auto;
-  flex-wrap: wrap;
-  gap: 4px 12px;
+  flex-wrap: nowrap;
+  gap: 12px;
   height: auto;
   min-height: 30px;
   padding: 0 8px;

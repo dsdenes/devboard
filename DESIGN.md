@@ -642,8 +642,7 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   while the live file is missing. The restore control is `outline` while an edit can be discarded
   and becomes the filled primary as `Recreate generated version` when the live file is missing, so
   the surface always has at most one primary and never a disabled one as its emphasis. The path
-  truncates with a full-path `title`; the state and actions never shrink, and the action group
-  moves to a second row before any control is clipped.
+  truncates with a full-path `title` while the state and actions never shrink or wrap.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page

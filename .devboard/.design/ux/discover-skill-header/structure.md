@@ -39,14 +39,14 @@ The page title above the panel is unchanged; it is outside this element and keep
 - Loading: no separate state; the page renders the editor when the skill record exists.
 - Save/restore failure: the state keeps its value and the existing notification names the error.
 - Long path: one line with ellipsis and the full path as its `title`.
-- Narrow: the header wraps to a second row before any control is clipped; the editor absorbs the
-  lost height.
+- Narrow: the path truncates with its full-path tooltip; the state and actions keep their size
+  and stay on the row, so no control is clipped.
 
 ## Responsive order
 
 - Desktop: path left; state, Save, Restore right on one row.
-- Narrow or over-wide sidebar: path truncates first; if the action group still cannot fit, it
-  moves to a second header row, keeping state → Save → Restore order.
+- Narrow or over-wide sidebar: the path truncates first; the action group keeps state → Save →
+  Restore order on the same row.
 - Mobile: no layout below 1024×720; the viewport guard replaces the workspace.
 
 ## Rationale
