@@ -22,9 +22,10 @@ export interface AcpConnectionOptions {
   /**
    * `allow` selects the first allow option for a permission request. `deny`
    * cancels every request and every elicitation, for a peer that must answer
-   * from its prompt alone.
+   * from its prompt alone. `read-only` cancels permission requests but still
+   * surfaces elicitations as questions.
    */
-  permissionPolicy?: "allow" | "deny";
+  permissionPolicy?: "allow" | "deny" | "read-only";
   onActivity: (activity: AcpActivity) => void;
   /**
    * Called for every `session/update` frame, including tool progress that maps
@@ -453,7 +454,10 @@ export class AcpConnection {
         this.#handleElicitation(id, params);
         return;
       case "session/request_permission": {
-        if (this.#options.permissionPolicy === "deny") {
+        if (
+          this.#options.permissionPolicy === "deny" ||
+          this.#options.permissionPolicy === "read-only"
+        ) {
           this.#respond(id, { outcome: { outcome: "cancelled" } });
           return;
         }
@@ -496,6 +500,7 @@ export class AcpConnection {
     }
     if (this.#options.permissionPolicy === "deny") {
       this.#respond(wireId, { action: "cancel" });
+      return;
     }
     const schema = asRecord(request.requestedSchema);
     const properties = asRecord(schema?.properties) ?? {};

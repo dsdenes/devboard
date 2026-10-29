@@ -15,7 +15,7 @@
           "border-transparent bg-transparent text-[var(--foreground)] hover:bg-[var(--secondary)]",
         destructive:
           "border-[var(--destructive)] bg-[var(--destructive)] text-[var(--destructive-foreground)] hover:opacity-90",
-        link: "border-transparent bg-transparent text-[var(--primary)] underline-offset-4 hover:underline",
+        link: "border-transparent bg-transparent text-[var(--accent)] underline-offset-4 hover:underline",
       },
       size: {
         default: "h-7 px-3",
