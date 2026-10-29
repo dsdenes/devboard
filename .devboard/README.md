@@ -1846,8 +1846,10 @@ next offset where paging exists.
   returns the resulting state.
 - `verification_run` runs only `test`, `check`, `build`, `typecheck`, or a `verify:<name>` present
   in `.devboard/package.json`, with `.devboard` as cwd, an optional bounded list of existing test
-  paths, a 900-second timeout, and at most 16 KiB of captured output. Any other check, a path
-  outside `.devboard`, or an unknown `verify:<name>` is refused before anything runs.
+  paths, a 900-second deadline, and at most 16 KiB of captured output. The deadline covers the
+  output reads too and reaps the check's process group, so a descendant that inherits the pipes
+  cannot hold the call. Any other check, a path outside `.devboard`, or an unknown
+  `verify:<name>` is refused before anything runs.
 
 ### Control tools
 
