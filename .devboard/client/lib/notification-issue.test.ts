@@ -22,7 +22,7 @@ describe("notification issue report", () => {
     expect(report).toContain("\n\nSource: Flow\nRaised at: 2026-10-28T11:29:44.932Z");
   });
 
-  test("names the subsystem that raised the notification", () => {
+  test("names the agent that raised the notification", () => {
     const report = notificationReport(
       notification({ severity: "success", source: "Auto Scout", text: "Filed 2 issues." }),
     );

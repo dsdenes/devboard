@@ -11,7 +11,7 @@
 
   let { feedbackenabled }: Props = $props();
 
-  const visible = $derived(notifications.items.slice(0, 4));
+  const visible = $derived(notifications.live.slice(0, 4));
   /** Bounds shared with the server's report context. */
   const MAX_DOM_EXCERPT = 4000;
   const MAX_VISIBLE_TEXT = 1500;

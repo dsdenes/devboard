@@ -555,6 +555,10 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   link; `role="status"` on success and `role="alert"` with `error` text on failure. A proposed
   goal's `Goal proposed: .devboard/goal-proposals/<file>.md` result carries no link. It clears the
   notification region, which stays in the lower-right corner.
+- **Notification card** (`.notification` in `NotificationRegion.svelte`) — names its source beside
+  the timestamp: the subsystem that raised it, or the exact agent label that filed. A live card
+  closes itself five seconds after it arrives; its history entry keeps the same text, timestamp,
+  and actions, so filing and dismissal stay available there.
 - **Notification entry action** (`.notification__actions` in `NotificationRegion.svelte`) — every
   error and warning notification carries one `File issue` ghost `sm` button beside its dismiss
   icon. It files that notification's text as a UI issue through `/api/feedback` at once, without
