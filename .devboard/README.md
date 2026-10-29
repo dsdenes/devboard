@@ -1438,8 +1438,9 @@ Filing uses the shared `agent-limit-hour` and `agent-limit-pending`: the hourly 
 `design` issue created in the last rolling 60 minutes in any state, the pending cap counts every
 open `design` issue, and one cycle files no more than the smaller room or 100. Zero room files
 nothing and records each skip in activity; clearing a cap resumes filing on the next cycle. A
-failed forge read files nothing and keeps the last known rows. Caps never block an audit, a
-documentation change, or its release.
+failed forge read files nothing and keeps the last known rows. Age alone never blocks filing: a
+read that succeeded before the cycle keeps filing even when the audit outlasts the sync interval.
+Caps never block an audit, a documentation change, or its release.
 
 A documentation edit is admitted only when it establishes or corrects a standard evidenced by two
 distinct interface surfaces or by an internal contradiction inside the documents. It may change

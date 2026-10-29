@@ -399,7 +399,7 @@
           variant={flow.goalDirty ? "default" : "secondary"}
           data-command="flow.goal.save"
           data-testid="save-flow-goal"
-          disabled={!flow.goalDirty}
+          disabled={!flow.goalDirty || flow.goalCreation !== null}
           onclick={() => flow.saveGoal()}
         >
           Save

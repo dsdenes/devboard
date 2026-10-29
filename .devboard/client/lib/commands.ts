@@ -562,6 +562,8 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     title: "Save flow goal",
     group: "Flow",
     shortcut: "Ctrl+S",
+    disabled: () =>
+      disabledWhen(flow.goalCreation !== null, "The Flow goal interview is active."),
     run: () => {
       ctx.openTab("flow", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" });
       flow.saveGoal();
