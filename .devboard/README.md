@@ -1307,8 +1307,8 @@ sudo userdel --remove <user>
 Auto Scout, Watchdog, Design System, and Coach are the four instances of one background-agent
 contract. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
 description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
-start/stop commands, issue projection, and detail panel. The shared page, the shared filed-issues
-table, and the Issues sidebar are built from that registry; adding a further
+start/stop commands, issue projection, detail panel, and prompt source. The shared page, the
+shared filed-issues table, and the Issues sidebar are built from that registry; adding a further
 continuous agent means writing its engine, its adapter, and one registry entry. The shared page,
 sidebar, and issue table have no agent-id branch: a synthetic fourth descriptor projects and
 validates unchanged.
@@ -1354,27 +1354,31 @@ Directly below `agent-header`, before the alert region and `agent-main`, every b
 page renders one prompt section `data-testid="agent-prompt"`. It is a read-only view in an
 installed host and never writes on a page open, tab restore, reconnect, or reload.
 
-The Watchdog section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no
-prompt, and no other prompt test id. A prompt command for `watchdog` is refused with that same
-statement and has no effect.
+Auto Scout and Design System read the effective prompt file their worker command opens:
+`.devboard/prompts/scout-recommendations.md` and `.devboard/prompts/design-system.md`. The Watchdog
+section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no prompt. The
+Coach section contains it too, naming that Coach assembles its prompt from each cycle's findings.
+Both render no other prompt test id, and a prompt command for either is refused with that same
+descriptor statement and has no effect.
 
-When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout section renders
+When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections render
 `agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
 `agent-prompt-chat-log` (present only once the chat has a turn), `agent-prompt-message`,
 `agent-prompt-send`, and `agent-prompt-save`. In every other host those three controls are absent
 and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action
 requires a harness source checkout; no file changes.
 
-`agent-prompt-save` writes the editor's exact UTF-8 text to
-`.devboard/prompts/scout-recommendations.md` under the served checkout, adds nothing, strips
-nothing, and writes no other file; success shows `agent-prompt-notice` and leaves the editor on
-the saved bytes, and failure shows `agent-prompt-error` with the file unchanged. Only that
-click writes the file. A chat turn posts over the WebSocket, streams the reply into
-`agent-prompt-chat-log`, and puts a proposed complete prompt in the editor without any copy; it
-writes no file, creates no scan, files no issue, and changes no Auto Scout state. A failed turn
-shows `agent-prompt-chat-error` and leaves the editor and file untouched. The chat agent reads
-`prompts/agent-prompt-chat.md` and returns the replacement between the line-anchored
-`<prompt-file>` and `</prompt-file>` markers, so Markdown fences inside the prompt survive intact.
+`agent-prompt-save` writes the editor's exact UTF-8 text to the descriptor's prompt file under the
+served checkout, adds nothing, strips nothing, and writes no other file; success shows
+`agent-prompt-notice` and leaves the editor on the saved bytes, and failure shows
+`agent-prompt-error` with the file unchanged. The notice names the run that reads the file next:
+the next scan for Auto Scout and the next cycle for Design System. Only that click writes the file.
+A chat turn posts over the WebSocket, streams the reply into `agent-prompt-chat-log`, and puts a
+proposed complete prompt in the editor without any copy; it writes no file, creates no scan, files
+no issue, and changes no agent state. A failed turn shows `agent-prompt-chat-error` and leaves the
+editor and file untouched. The chat agent reads `prompts/agent-prompt-chat.md` and returns the
+replacement between the line-anchored `<prompt-file>` and `</prompt-file>` markers, so Markdown
+fences inside the prompt survive intact.
 
 ### Cadence and limits
 
@@ -1419,9 +1423,11 @@ newest 100 run directories.
 ### Design System
 
 Design System is the `design` descriptor. Its sidebar entry `open-issues-design` opens the shared
-`agent-page` with `data-agent="design"` and `design-activity`. While started, it audits the
-interface source `<REPO_DIR>/.devboard/client` (`.svelte`, `.css`, `.ts`, and the harness
-`index.html` entry) against the repository-relative documents `DESIGN.md` and
+`agent-page` with `data-agent="design"` and `design-activity`. Its prompt section shows
+`.devboard/prompts/design-system.md`, the file the `/design-system-audit` command reads; in a
+harness source checkout it is editable and chat-backed exactly like the Auto Scout prompt. While
+started, it audits the interface source `<REPO_DIR>/.devboard/client` (`.svelte`, `.css`, `.ts`,
+and the harness `index.html` entry) against the repository-relative documents `DESIGN.md` and
 `design/tokens.json` (overridable with `DESIGN_SOURCE_DIR`, `DESIGN_DOCUMENT`, and
 `DESIGN_TOKEN_DOCUMENT`). The documents are normative: a client value, state treatment, wording,
 spacing, or placement they do not cover is a divergence.
@@ -2859,11 +2865,12 @@ persistence, the Watchdog cap, the shared table columns, freshness without a rel
 command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and
 the footer indicator with no console error. It also proves Coach's shared cycle detail and
 persisted settings, and the prompt section: every page renders `agent-prompt` directly after
-`agent-header`; Watchdog shows `agent-prompt-absent`; an installed host is read-only and refuses
-a save with an error while its prompt file stays byte-identical; a source-checkout fixture
-renders the editor, chat, and save, one chat turn streams a reply and changes the editor with the
-file untouched, Save makes the file byte-equal to the editor and a reload puts those bytes back
-in the editor.
+`agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach show
+`agent-prompt-absent`; an installed host is read-only and refuses a save with an error while its
+prompt files stay byte-identical; a source-checkout fixture renders the editor, chat, and save for
+both file-backed agents, one chat turn streams a reply and changes the editor with the file
+untouched, Save makes each file byte-equal to its editor and a reload puts those bytes back in the
+editor.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

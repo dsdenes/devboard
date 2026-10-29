@@ -125,12 +125,18 @@ describe("background agent registry", () => {
     expect(scout.cadence.defaultMinutes).toBe(1);
     expect(scout.limits.default).toEqual({ maxPerHour: 10, maxPending: 5 });
     expect(scout.detail.panel).toBe("activity");
+    expect(scout.prompt).toEqual({
+      kind: "file",
+      file: "scout-recommendations.md",
+      notice: "Prompt saved. The next scan reads this file.",
+    });
     const watchdog = agentRegistry.require("watchdog");
     expect(watchdog.label).toBe("Watchdog");
     expect(watchdog.scope).toBe("machine");
     expect(watchdog.cadence.defaultMinutes).toBe(10);
     expect(watchdog.limits.default).toEqual({ maxPerHour: null, maxPending: null });
     expect(watchdog.detail.panel).toBe("cycles");
+    expect(watchdog.prompt.kind).toBe("absent");
     const design = agentRegistry.require("design");
     expect(design.label).toBe("Design System");
     expect(design.scope).toBe("repository");
@@ -138,6 +144,11 @@ describe("background agent registry", () => {
     expect(design.limits.default).toEqual({ maxPerHour: 10, maxPending: 5 });
     expect(design.detail.panel).toBe("activity");
     expect(design.tab).toEqual({ id: "design", kind: "design", title: "Design System" });
+    expect(design.prompt).toEqual({
+      kind: "file",
+      file: "design-system.md",
+      notice: "Prompt saved. The next cycle reads this file.",
+    });
     const coach = agentRegistry.require("coach");
     expect(coach.label).toBe("Coach");
     expect(coach.scope).toBe("repository");
@@ -145,6 +156,7 @@ describe("background agent registry", () => {
     expect(coach.limits.default).toEqual({ maxPerHour: 10, maxPending: 20 });
     expect(coach.detail.panel).toBe("cycles");
     expect(coach.tab).toEqual({ id: "coach", kind: "coach", title: "Coach" });
+    expect(coach.prompt.kind).toBe("absent");
     for (const descriptor of DEFAULT_AGENT_DESCRIPTORS) {
       expect(descriptor.lifecycle).toEqual([...AGENT_LIFECYCLES]);
       expect(descriptor.commands.start).toBe("startAgent");
@@ -161,6 +173,19 @@ describe("background agent registry", () => {
     expect(() =>
       defineAgentRegistry([{ ...scout, cadence: { ...scout.cadence, defaultMinutes: 0 } }]),
     ).toThrow(AgentRegistryError);
+  });
+
+  test("refuses a prompt that leaves the prompts directory or lacks its words", () => {
+    const scout = DEFAULT_AGENT_DESCRIPTORS[0]!;
+    for (const prompt of [
+      { kind: "file", file: "../escape.md", notice: "Saved." },
+      { kind: "file", file: "no-extension", notice: "Saved." },
+      { kind: "file", file: "ok.md", notice: " " },
+      { kind: "absent", message: "" },
+      { kind: "neither" },
+    ]) {
+      expect(() => defineAgentRegistry([{ ...scout, prompt }])).toThrow(AgentRegistryError);
+    }
   });
 
   test("a synthetic extra descriptor is accepted by validation and projection", () => {

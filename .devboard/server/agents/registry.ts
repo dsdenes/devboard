@@ -156,11 +156,28 @@ export interface AgentSnapshotInput {
   timer?: AgentTimerGate | null;
 }
 
+/** The prompt section's source: one harness prompt file, or a stated absence. */
+export type AgentPromptDescriptor =
+  | {
+      kind: "file";
+      /** The file under `.devboard/prompts` that the section reads and saves. */
+      file: string;
+      /** The Save confirmation, naming the run that reads the file next. */
+      notice: string;
+    }
+  | {
+      kind: "absent";
+      /** Why this agent has no prompt file to show or edit. */
+      message: string;
+    };
+
 export interface AgentDescriptor {
   id: string;
   label: string;
   description: string;
   scope: AgentScope;
+  /** What the shared prompt section shows for this agent. */
+  prompt: AgentPromptDescriptor;
   lifecycle: readonly AgentLifecycle[];
   cadence: AgentCadence;
   limits: {
@@ -240,6 +257,22 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
   }
   if (descriptor.scope !== "repository" && descriptor.scope !== "machine") {
     throw new AgentRegistryError(`${id}: scope must be repository or machine`);
+  }
+  const prompt = descriptor.prompt;
+  if (!isRecord(prompt) || (prompt.kind !== "file" && prompt.kind !== "absent")) {
+    throw new AgentRegistryError(`${id}: prompt must name its file or its absence`);
+  }
+  if (prompt.kind === "file") {
+    if (typeof prompt.file !== "string" || !/^[a-z0-9][a-z0-9-]*\.md$/.test(prompt.file)) {
+      throw new AgentRegistryError(
+        `${id}: prompt file must be one prompts directory Markdown file`,
+      );
+    }
+    if (typeof prompt.notice !== "string" || prompt.notice.trim().length === 0) {
+      throw new AgentRegistryError(`${id}: prompt file needs a save notice`);
+    }
+  } else if (typeof prompt.message !== "string" || prompt.message.trim().length === 0) {
+    throw new AgentRegistryError(`${id}: prompt absence needs its message`);
   }
   if (
     !Array.isArray(descriptor.lifecycle) ||
@@ -494,6 +527,11 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     label: "Auto Scout",
     description: "Scans the repository and files significant findings as issues.",
     scope: "repository",
+    prompt: {
+      kind: "file",
+      file: "scout-recommendations.md",
+      notice: "Prompt saved. The next scan reads this file.",
+    },
     lifecycle: AGENT_LIFECYCLES,
     cadence: {
       field: "intervalMinutes",
@@ -516,6 +554,10 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     label: "Watchdog",
     description: "Watches dashboard evidence and files significant machine findings as issues.",
     scope: "machine",
+    prompt: {
+      kind: "absent",
+      message: "Watchdog runs no agent, so it has no prompt to show or edit.",
+    },
     lifecycle: AGENT_LIFECYCLES,
     cadence: {
       field: "intervalMinutes",
@@ -541,6 +583,11 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
       "Audits the interface against its documented design system and files capped issues for " +
       "every divergence.",
     scope: "repository",
+    prompt: {
+      kind: "file",
+      file: "design-system.md",
+      notice: "Prompt saved. The next cycle reads this file.",
+    },
     lifecycle: AGENT_LIFECYCLES,
     cadence: {
       field: "intervalMinutes",
@@ -564,6 +611,12 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     description:
       "Reviews repeated agent mistakes and manual work and files one improvement issue per pattern.",
     scope: "repository",
+    prompt: {
+      kind: "absent",
+      message:
+        "Coach assembles its prompt from each cycle's findings, so it has no prompt file to show " +
+        "or edit.",
+    },
     lifecycle: AGENT_LIFECYCLES,
     cadence: {
       field: "intervalMinutes",
