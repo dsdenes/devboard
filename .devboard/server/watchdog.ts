@@ -355,6 +355,14 @@ export interface WatchdogActivityOptions {
 
 /** How long a spawned worker may take to publish its state before Start fails. */
 const START_PROOF_MS = 5_000;
+/**
+ * How long Stop leaves a live worker alone to finish its cycle and publish
+ * stopped before the proof escalates. A cycle may wait on forge calls, so this
+ * is far longer than the worker's control poll.
+ */
+const STOP_CYCLE_GRACE_MS = 10 * 60_000;
+/** How long a signalled worker may take to publish stopped before SIGKILL. */
+const STOP_KILL_GRACE_MS = 2_000;
 /** The timer gate is re-read in the background at most this often. */
 const TIMER_REFRESH_MS = 5_000;
 
@@ -477,10 +485,7 @@ export class WatchdogActivity implements AgentAdapter {
       clearInterval(this.timer);
       this.timer = undefined;
     }
-    if (this.stopping !== undefined) {
-      clearTimeout(this.stopping.timer);
-      this.stopping = undefined;
-    }
+    this.clearStopProof();
   }
 
   /** Awaits the background projection refresh a snapshot scheduled. */
@@ -594,6 +599,9 @@ export class WatchdogActivity implements AgentAdapter {
       this.startError = "the Watchdog worker did not publish its state within 5 seconds";
     }
     if (this.stopRequested && !attached) this.stopRequested = false;
+    // A worker that published stopped needs no proof, even if its process is
+    // still finishing its exit.
+    if (!attached) this.clearStopProof();
     if (attached && !owned) {
       this.notice =
         `Watchdog is running for this root from another dashboard ` +
@@ -839,27 +847,49 @@ export class WatchdogActivity implements AgentAdapter {
   }
 
   private scheduleStopProof(pid: number): void {
-    if (this.stopping !== undefined) clearTimeout(this.stopping.timer);
+    this.clearStopProof();
     const timer = setTimeout(() => {
       this.stopping = undefined;
-      if (!processAlive(pid)) return;
+      this.escalateStop(pid);
+    }, STOP_CYCLE_GRACE_MS);
+    timer.unref?.();
+    this.stopping = { pid, timer };
+  }
+
+  private clearStopProof(): void {
+    if (this.stopping !== undefined) clearTimeout(this.stopping.timer);
+    this.stopping = undefined;
+  }
+
+  /** True when the worker published stopped or is no longer alive. */
+  private stopSettled(pid: number): boolean {
+    if (!processAlive(pid)) return true;
+    const worker = readWorkerState(this.watchdogDir);
+    return worker !== undefined && worker.pid === pid && worker.lifecycle === "stopped";
+  }
+
+  /**
+   * The grace ended without a stopped state. Signal only a process the table
+   * proves is this root's worker, then give its handler the kill grace.
+   */
+  private escalateStop(pid: number): void {
+    if (this.stopSettled(pid)) return;
+    if (!this.provesWorker(pid)) return;
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.stopping = undefined;
+      if (this.stopSettled(pid)) return;
       if (!this.provesWorker(pid)) return;
       try {
-        process.kill(pid, "SIGTERM");
+        process.kill(pid, "SIGKILL");
       } catch {
-        return;
+        // It exited between the proof and the signal.
       }
-      const killTimer = setTimeout(() => {
-        if (!processAlive(pid)) return;
-        if (!this.provesWorker(pid)) return;
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // It exited between the proof and the signal.
-        }
-      }, 2000);
-      killTimer.unref?.();
-    }, 3000);
+    }, STOP_KILL_GRACE_MS);
     timer.unref?.();
     this.stopping = { pid, timer };
   }

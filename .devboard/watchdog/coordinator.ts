@@ -388,6 +388,9 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     if (filed.ok) {
       room -= 1;
       markFiled(ledger, fingerprint, filed.url, now);
+      // Persist each success before the next call: a hard kill after this
+      // point must not refile an issue the forge already accepted.
+      saveLedger(context.stateDir, ledger);
       report.issues.push({
         url: filed.url,
         category: entry.category,
@@ -422,6 +425,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     );
     if (comment.ok) {
       markCommented(ledger, finding.fingerprint, now);
+      saveLedger(context.stateDir, ledger);
       commented += 1;
       context.log(`commented on ${entry.url}`);
       continue;

@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { agentRegistry } from "../server/agents/registry";
 import { WatchdogActivity, preflightWatchdog } from "../server/watchdog";
 import { writeWatchdogCommand } from "../watchdog/control";
+import { loadLedger, saveLedger } from "../watchdog/ledger";
 import {
   controlDirectory,
   lockPath,
@@ -126,6 +127,145 @@ describe("detached watchdog worker", () => {
       if (child.exitCode === null) child.kill("SIGKILL");
     }
   }, 30_000);
+
+  test("Stop during a filing cycle finishes the cycle and keeps its filing", async () => {
+    const root = await temporaryRoot();
+    const directory = watchdogDirectory(root);
+    const stateDir = join(root, "state");
+    const bin = join(root, "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(
+      join(bin, "gh"),
+      "#!/bin/sh\nsleep 5\necho https://github.com/acme/fixture/issues/1\n",
+      { mode: 0o755 },
+    );
+    const fingerprint = "0123456789abcdef0123456789abcdef";
+    const seenAt = new Date().toISOString();
+    saveLedger(directory, {
+      version: 2,
+      findings: {
+        [fingerprint]: {
+          category: "server-error",
+          line: "Synthetic finding held by a slow forge call",
+          firstSeen: seenAt,
+          lastSeen: seenAt,
+          count: 1,
+          disposition: "none",
+          instances: [],
+        },
+      },
+      pendingFiling: [fingerprint],
+    });
+    const activity = adapter(root);
+    const child = spawn(
+      process.execPath,
+      [
+        join(harnessRoot, "watchdog", "worker.ts"),
+        "--root",
+        root,
+        "--state-dir",
+        directory,
+        "--owner-state-dir",
+        stateDir,
+      ],
+      {
+        cwd: harnessRoot,
+        stdio: "ignore",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      },
+    );
+    try {
+      await waitFor(
+        () => (existsSync(join(directory, "runs")) ? true : undefined),
+        "the filing cycle to start",
+      );
+      const stop = activity.stop();
+      expect(stop.ok).toBe(true);
+      await waitFor(
+        () => (readJson(workerStatePath(directory))?.lifecycle === "stopped" ? true : undefined),
+        "the worker to finish its cycle and publish stopped",
+      );
+      await waitFor(
+        () => (existsSync(lockPath(directory)) ? undefined : true),
+        "the lock release",
+      );
+      const latest = readJson(join(directory, "latest.json"));
+      expect(latest?.action).toBe("filed");
+      expect(latest?.issues).toHaveLength(1);
+      expect(existsSync(String(latest?.reportPath))).toBe(true);
+      const ledger = loadLedger(directory);
+      expect(ledger.findings[fingerprint]?.disposition).toBe(
+        "filed:https://github.com/acme/fixture/issues/1",
+      );
+      expect(ledger.pendingFiling).toEqual([]);
+      expect(readJson(workerStatePath(directory))?.enabled).toBe(false);
+      expect(activity.snapshot().lifecycle).toBe("stopped");
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL");
+      activity.dispose();
+    }
+  }, 30_000);
+
+  test("a SIGTERM during a cycle finishes it and publishes stopped", async () => {
+    const root = await temporaryRoot();
+    const directory = watchdogDirectory(root);
+    const bin = join(root, "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(
+      join(bin, "gh"),
+      "#!/bin/sh\nsleep 2\necho https://github.com/acme/fixture/issues/2\n",
+      { mode: 0o755 },
+    );
+    const fingerprint = "fedcba9876543210fedcba9876543210";
+    const seenAt = new Date().toISOString();
+    saveLedger(directory, {
+      version: 2,
+      findings: {
+        [fingerprint]: {
+          category: "server-error",
+          line: "Synthetic finding held by a slow signal path",
+          firstSeen: seenAt,
+          lastSeen: seenAt,
+          count: 1,
+          disposition: "none",
+          instances: [],
+        },
+      },
+      pendingFiling: [fingerprint],
+    });
+    const child = spawn(
+      process.execPath,
+      [join(harnessRoot, "watchdog", "worker.ts"), "--root", root, "--state-dir", directory],
+      {
+        cwd: harnessRoot,
+        stdio: "ignore",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      },
+    );
+    try {
+      await waitFor(
+        () => (existsSync(join(directory, "runs")) ? true : undefined),
+        "the filing cycle to start",
+      );
+      child.kill("SIGTERM");
+      await waitFor(
+        () => (readJson(workerStatePath(directory))?.lifecycle === "stopped" ? true : undefined),
+        "the worker to finish its cycle and publish stopped",
+      );
+      const latest = readJson(join(directory, "latest.json"));
+      expect(latest?.action).toBe("filed");
+      expect(latest?.issues).toHaveLength(1);
+      expect(loadLedger(directory).findings[fingerprint]?.disposition).toBe(
+        "filed:https://github.com/acme/fixture/issues/2",
+      );
+      await waitFor(
+        () => (existsSync(lockPath(directory)) ? undefined : true),
+        "the lock release",
+      );
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    }
+  }, 20_000);
 
   test("applies a saved cadence without restarting the worker", async () => {
     const root = await temporaryRoot();
