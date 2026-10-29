@@ -143,28 +143,50 @@ export interface ClosingCommitClient {
   containingReleaseTags(commit: string, releases: GitHubRelease[]): Promise<string[]>;
 }
 
+/** The shipped release and, when there is none, why the resolution failed. */
+export interface VersionResolution {
+  version: string | null;
+  /** Why `version` is null; null when the issue is open or the version shipped. */
+  error: string | null;
+}
+
 /**
  * The release that shipped the issue's closing commit: the timeline's commit
  * when present, otherwise the newest comment's SHA, resolved to one full
  * commit, then matched against the earliest published release containing it.
+ * Every failure is reported rather than thrown, so a caller can record why a
+ * closed issue stays unresolved.
  */
+export async function resolveShippedVersion<Issue extends ClosingCommitIssue>(
+  issue: Issue,
+  client: ClosingCommitClient,
+  releases: GitHubRelease[],
+): Promise<VersionResolution> {
+  if (issue.state !== "closed") return { version: null, error: null };
+  try {
+    const candidate = await client.closingCommit(issue.number);
+    if (candidate === null) return { version: null, error: "no closing commit was found" };
+    const commit = await client.resolveCommit(candidate);
+    if (commit === null) {
+      return { version: null, error: `closing commit ${candidate} could not be resolved` };
+    }
+    const tags = await client.containingReleaseTags(commit, releases);
+    const version = earliestRelease(releases, tags);
+    if (version === null) {
+      return { version: null, error: `no published release contains ${commit}` };
+    }
+    return { version, error: null };
+  } catch (error) {
+    return { version: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function shippedVersion<Issue extends ClosingCommitIssue>(
   issue: Issue,
   client: ClosingCommitClient,
   releases: GitHubRelease[],
 ): Promise<string | null> {
-  if (issue.state !== "closed") return null;
-  try {
-    const candidate = await client.closingCommit(issue.number);
-    if (candidate === null) return null;
-    const commit = await client.resolveCommit(candidate);
-    if (commit === null) return null;
-    const tags = await client.containingReleaseTags(commit, releases);
-    return earliestRelease(releases, tags);
-  } catch {
-    // Resolution is retried on the next periodic read.
-    return null;
-  }
+  return (await resolveShippedVersion(issue, client, releases)).version;
 }
 
 function firstLine(text: string): string {

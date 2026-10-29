@@ -70,6 +70,8 @@ function seededState(root: string): void {
       state: "pending",
       category: "clarity",
       version: null,
+      versionAttemptAt: null,
+      versionError: null,
     },
     {
       number: 102,
@@ -79,6 +81,8 @@ function seededState(root: string): void {
       state: "implemented",
       category: "tests",
       version: "v1.0.0",
+      versionAttemptAt: null,
+      versionError: null,
     },
   ];
   state.openTitles = ["Existing open issue"];
