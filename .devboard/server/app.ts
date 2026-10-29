@@ -53,6 +53,7 @@ import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
 import { CoachActivity, type CoachActivityOptions } from "./coach";
 import { openJournal, type Journal, type JournalKind } from "./journal";
+import { toolListPayload } from "../mcp/catalog";
 import {
   DISCOVER_SKILLS,
   artifactsStale,
@@ -584,6 +585,7 @@ type ClientMessage =
   | { type: "getGoal" }
   | { type: "getProject" }
   | { type: "getVersion" }
+  | { type: "getMcpTools" }
   | { type: "getIssues" }
   | { type: "getIssuesRun"; runId?: unknown }
   | { type: "startIssues" }
@@ -691,6 +693,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "getProject" };
     case "getVersion":
       return { type: "getVersion" };
+    case "getMcpTools":
+      return { type: "getMcpTools" };
     case "getIssues":
       return { type: "getIssues" };
     case "getIssuesRun":
@@ -6983,6 +6987,7 @@ export function createApp(options: AppOptions) {
           command.type === "getGoal" ||
           command.type === "getProject" ||
           command.type === "getVersion" ||
+          command.type === "getMcpTools" ||
           command.type === "getIssues" ||
           command.type === "getIssuesRun" ||
           command.type === "getGoalDrafts" ||
@@ -7008,6 +7013,9 @@ export function createApp(options: AppOptions) {
             send(ws, { type: "project", path: project });
           } else if (command.type === "getVersion") {
             sendVersion(ws);
+          } else if (command.type === "getMcpTools") {
+            const catalog = toolListPayload();
+            send(ws, { type: "mcpTools", tools: catalog.tools });
           } else if (command.type === "getIssues") {
             issues.replay(ws);
           } else if (command.type === "getIssuesRun") {

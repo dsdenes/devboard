@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createApp, projectLabel } from "./app";
 import { journalFile, journalKey } from "./journal";
+import { toolListPayload } from "../mcp/catalog";
 import { ProviderService, saveSubscriptions } from "./providers";
 import { acquireLock } from "../issues/lock";
 import { testProviderService } from "./fixtures/test-providers";
@@ -474,6 +475,19 @@ describe("createApp", () => {
         latest: "new",
         stale: true,
         feedbackEnabled: false,
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("answers getMcpTools with exactly the tools/list payload", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      expect(await exchange(url, { type: "getMcpTools" })).toEqual({
+        type: "mcpTools",
+        tools: toolListPayload().tools,
       });
     } finally {
       server.stop(true);

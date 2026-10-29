@@ -2,6 +2,7 @@
   import ChevronRight from "lucide-svelte/icons/chevron-right";
   import { DISCOVER_AGENTS } from "../../../server/agents/registry";
   import { SECTION_TABS, SKILL_TABS } from "../discover-format";
+  import { DEVBOARD_SIDEBAR, DEVBOARD_TAB } from "../devboard.svelte";
   import { discover } from "../discover.svelte";
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
@@ -31,7 +32,9 @@
         ? "Issues"
         : layout.mode === "flow"
           ? "Flow"
-          : "Discover",
+          : layout.mode === "discover"
+            ? "Discover"
+            : "Devboard",
   );
   const resolvedCount = $derived(goal.records.filter((record) => !record.pending).length);
   const pendingRecords = $derived(goal.records.filter((record) => record.pending));
@@ -601,7 +604,7 @@
           <p class="sidebar-empty">No blockers.</p>
         {/each}
       </section>
-    {:else}
+    {:else if layout.mode === "discover"}
       <section
         class="sidebar-group"
         aria-label="Discovery"
@@ -723,6 +726,21 @@
           </button>
         </section>
       {/if}
+    {:else}
+      <section class="sidebar-group" aria-label="Devboard sections">
+        {#each DEVBOARD_SIDEBAR as entry (entry.id)}
+          <button
+            type="button"
+            class="sidebar-item"
+            aria-current={isActive(DEVBOARD_TAB.id)}
+            data-testid="devboard-tab"
+            data-command={entry.command}
+            onclick={() => open("devboard", DEVBOARD_TAB.id, DEVBOARD_TAB.kind, DEVBOARD_TAB.resourceId, DEVBOARD_TAB.title)}
+          >
+            <span class="sidebar-item__label">{entry.label}</span>
+          </button>
+        {/each}
+      </section>
     {/if}
   </div>
 </aside>
