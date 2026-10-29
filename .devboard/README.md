@@ -799,14 +799,14 @@ most 240 characters; every value and list entry is a single line of at most 160 
 `dependencyMap.routes` entry keeps its leading `/` as part of the HTTP path; that slash is not an
 absolute host path. The
 sheet covers the short platform stack (languages, runtimes, package managers, frameworks, and
-major tools, not individual dependencies), customer-facing deployment (artifact class, artifact,
-target, and pipeline sources), every environment (at least `production`, whose purpose states how
-changes reach it), exact main commands (with `unknown` for an unobserved command), branching
-strategy and model, test levels and pyramid, architecture contexts and their directed dependencies
-plus boundaries, CI provider, triggers, jobs, and quality gates, and the three mandatory sections:
-runtime inventory, entry-point and dependency map, and delivery and versioning. It never guesses,
-invents an additional environment, copies README prose, or records a configuration value; a claim
-it cannot ground is `unknown`.
+major tools by name, not individual dependencies or version numbers), customer-facing deployment
+(artifact class, artifact, target, and pipeline sources), every environment (at least `production`,
+whose purpose states how changes reach it), exact main commands (with `unknown` for an unobserved
+command), branching strategy and model, test levels and pyramid, architecture contexts and their
+directed dependencies plus boundaries, CI provider, triggers, jobs, and quality gates, and the
+three mandatory sections: runtime inventory, entry-point and dependency map, and delivery and
+versioning. It never guesses, invents an additional environment, copies README prose, or records a
+configuration value; a claim it cannot ground is `unknown`.
 
 Main commands render as a two-column `Task`/`Command` table of the observed commands, `$`-prefixed,
 with no header row, under an `N of 8 commands found` count. That count is a disclosure
@@ -817,11 +817,9 @@ that no other recorded command aliases. A command the host manifest declares as 
 as its invocation — `npm test` for `scripts.test`, `npm run <name>` for any other script — instead
 of the program the script expands to; the recorded program is the chip's tooltip. Every command,
 path, package, and boundary value uses the same inline code chip (`.code-chip`); no surface has a
-second inline-code presentation. Testing shows the test, level, and
-happy-path totals and the whole-suite command (`data-testid="discover-suite-command"`), then a
-`Level`/`Tests`/`Command` table (`data-testid="discover-pyramid"`). Happy path is the
-part of a level's count that exercises the primary success path, recorded as an exact count from
-`0` to the level's total; the summary percentage appears only when every listed level reports one.
+second inline-code presentation. Testing shows the test and level totals and the whole-suite
+command (`data-testid="discover-suite-command"`), then a
+`Level`/`Tests`/`Command` table (`data-testid="discover-pyramid"`).
 `Command` is the narrowest declared invocation for that level. Only a level that carries a test is
 listed and counted; a recorded level with no test case is omitted, so a sheet cannot claim a
 second level while its table holds none. Every listed level states an exact test count, never
@@ -844,10 +842,12 @@ with no external system shows `None detected.` in that block instead of an inven
 `unknown`.
 `Stack` renders one full-width chip band after the two columns; a chip whose package is installed
 under `node_modules/` becomes a link to the repository its manifest declares, and every other chip
-stays plain text. Environments is `unknown` here and is not listed. The delivery section, the
-deployment pipeline sources, and the runtime `versions` fact stay hidden because they repeat other
-facts. A sheet with no observed test level and a glossary with no matching term keep an explicit
-empty state.
+stays plain text. Stack chips and the Platform `languages` and `runtimes` facts name the
+technology without a version number, so a recorded `PostgreSQL 15` renders as `PostgreSQL` and a
+duplicate name collapses to one chip; the sheet's stored values stay unchanged. Environments is
+`unknown` here and is not listed. The delivery section, the deployment pipeline sources, and the
+runtime `versions` fact stay hidden. A sheet with no observed test level and a glossary with no
+matching term keep an explicit empty state.
 
 The Glossary page and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
 document per bounded context named `<bounded-context>.glossary.yaml`, top-level `boundedContext`,
@@ -1115,24 +1115,28 @@ while a clone or a Discover run is active or while the existing busy rules refus
 `cloning` (`{ "url" }` or `null`). `getDiscover` answers with the same snapshot, and a connecting
 client still receives it before its own command replies.
 
-While `remoteAvailable` is true the Overview renders a target strip as its first region, above the
-project header and the sheet or the empty state: a retained-project dropdown
-(`data-testid="discover-remote-select"`) whose options are the retained URLs, newest first, with the
-active project selected and no host option; one row per retained project with a remove control
-(`data-testid="discover-remote-remove"`, carrying the URL in `data-url`); an input
-(`data-testid="discover-remote-url"`) labelled for a GitHub repository URL with the placeholder
-`https://github.com/owner/repo`; a submit control (`data-testid="discover-remote-start"`) labelled
-`Discover from URL`; and a clear control (`data-testid="discover-remote-clear"`) only while the
-target is remote. The strip is secondary in weight yet first in reading order, so an operator sees
-the active target before anything it affects. A source checkout with nothing published still learns
-the gate: the server replays one `discoverState` on connect when `remoteAvailable` is true, even
-with no artifacts and no run. The submit control is disabled while the socket is closed, `cloning`
-is non-null, a run is active, or `discoverState.busy` is set, and its `title` names the reason; it
-is also disabled for empty or whitespace-only input. Submitting sends exactly one frame with the
-trimmed URL and starts nothing else; selecting an option sends exactly one `switchDiscoverRemote`
+While `remoteAvailable` is true the Overview renders a manual-testing target panel as its first
+region, above the project header and the sheet or the empty state. The panel header states the
+title and, with retained projects, their count. Its body separates the two scopes: a `Retained
+project` toolbar pairs its label with a dropdown (`data-testid="discover-remote-select"`) whose
+options are the retained URLs, newest first, with the active project selected and no host option;
+a bordered list carries one 28px row per retained project with the URL and a remove control
+(`data-testid="discover-remote-remove"`, carrying the URL in `data-url`), the active row taking the
+accent surface, a 2px accent edge, and an `Active` badge; a surface-raised block labelled
+`Discover another repository` holds an input (`data-testid="discover-remote-url"`) labelled for a
+GitHub repository URL with the placeholder `https://github.com/owner/repo` and a submit control
+(`data-testid="discover-remote-start"`) labelled `Discover from URL`; the panel footer carries a
+clear control (`data-testid="discover-remote-clear"`) only while the target is remote. The panel is
+secondary in weight yet first in reading order, so an operator sees the active target before
+anything it affects. A source checkout with nothing published still learns the gate: the server
+replays one `discoverState` on connect when `remoteAvailable` is true, even with no artifacts and
+no run. The submit control is disabled while the socket is closed, `cloning` is non-null, a run is
+active, or `discoverState.busy` is set, and its `title` names the reason; it is also disabled for
+empty or whitespace-only input. Submitting sends exactly one frame with the trimmed URL and starts
+nothing else; selecting an option sends exactly one `switchDiscoverRemote`
 and starts nothing else; removing sends exactly one `removeDiscoverRemote`; clearing sends exactly
-one `clearDiscoverRemote`. Rendering the strip on load, reconnect, mode switch, or page switch sends
-no frame. While cloning, the strip shows the cloning URL and the activity area shows no run; errors
+one `clearDiscoverRemote`. Rendering the panel on load, reconnect, mode switch, or page switch sends
+no frame. While cloning, the panel shows the cloning URL and the activity area shows no run; errors
 reach the Discover error and notification surfaces only.
 
 `server/discover-remote.test.ts` proves retention after a successful crawl with the checkout
@@ -2075,7 +2079,11 @@ name names the Issues mode and the `Alt+2` shortcut, and the command palette lis
 same command id. Opening it renders `data-testid="issues-drafts"`: every regular `.md` file
 directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each with
 `data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
-and its first Markdown heading. An empty directory shows `No drafts exist.`.
+and its first Markdown heading. An empty directory replaces the two-column body with one
+full-width Proposed goals panel whose centered state (`data-testid="issues-drafts-empty"`) reads
+`No drafts yet` and explains the creation paths; no empty detail column is rendered. While drafts
+exist but none is selected, the detail column carries the centered `No draft selected` state
+(`data-testid="issues-drafts-selection"`).
 
 The list header carries a `New goal` control (`data-testid="issues-draft-new"`,
 `data-command="issues.draft.new"`); the command palette lists the same id, opens the Draft goals

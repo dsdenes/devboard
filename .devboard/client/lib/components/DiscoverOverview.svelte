@@ -6,13 +6,13 @@
     implementedTiers,
     isLeaf,
     leafLines,
-    pyramidHappyPathCount,
     pyramidTiers,
     pyramidTestCount,
     recordItems,
     scalarText,
     sectionEntries,
     sectionLeaf,
+    technologyName,
     unknownText,
   } from "../discover-format";
   import { connection } from "../connection.svelte";
@@ -64,6 +64,9 @@
 
   const MONO_FIELDS = new Set(["artifact", "defaultBranch", "manifests"]);
 
+  /** Platform leaves that name technologies rather than facts about them. */
+  const TECHNOLOGY_FIELDS = new Set(["languages", "runtimes"]);
+
   const sheet = $derived(discover.sheet);
   const freshness = $derived(discover.freshness);
   const definition = $derived(sectionLeaf(sheet, "definition"));
@@ -110,7 +113,6 @@
   const recordedTiers = $derived(pyramidTiers(levels));
   const tiers = $derived(implementedTiers(recordedTiers));
   const testTotal = $derived(pyramidTestCount(tiers));
-  const happyPath = $derived(pyramidHappyPathCount(tiers));
   const levelRows = $derived(
     tiers.map((tier) => {
       const parsed = Number.parseInt(tier.tests, 10);
@@ -154,7 +156,9 @@
 
   const stackLeaf = $derived(sectionLeaf(sheet, "stack"));
   const stackLines = $derived(
-    stackLeaf === undefined || stackLeaf.confidence === "unknown" ? [] : leafLines(stackLeaf.value),
+    stackLeaf === undefined || stackLeaf.confidence === "unknown"
+      ? []
+      : [...new Set(leafLines(stackLeaf.value).map(technologyName))],
   );
 
   const architectureSection = $derived(sheet?.architecture);
@@ -214,6 +218,12 @@
 
   function leafText(leaf: Leaf): string {
     return leafLines(leaf.value).join(", ");
+  }
+
+  /** A fact line; a technology inventory drops the versions the crawl appended. */
+  function factText(key: string, leaf: Leaf): string {
+    if (!TECHNOLOGY_FIELDS.has(key)) return leafText(leaf);
+    return leafLines(leaf.value).map(technologyName).join(", ");
   }
 
   function boundaryValues(leaf: Leaf, kind: BoundaryGroup["kind"]): string[] {
@@ -364,7 +374,7 @@
       {#each facts as [key, leaf] (key)}
         <div class="discover-fact">
           <dt>{humanize(key)}</dt>
-          <dd class:discover-mono={MONO_FIELDS.has(key)}>{leafText(leaf)}</dd>
+          <dd class:discover-mono={MONO_FIELDS.has(key)}>{factText(key, leaf)}</dd>
         </div>
       {/each}
     </dl>
@@ -494,10 +504,13 @@
       <section class="panel discover-remote" data-testid="discover-remote" aria-label="Discover remote target">
         <div class="panel__header">
           <h2 class="panel__title">Manual testing target</h2>
+          {#if discover.retained.length > 0}
+            <span class="panel__subtitle">{discover.retained.length} retained</span>
+          {/if}
         </div>
         <div class="panel__body stack-sm">
           {#if discover.retained.length > 0}
-            <div class="discover-remote__retained">
+            <div class="discover-remote__toolbar">
               <label class="discover-remote__label" for="discover-remote-select">Retained project</label>
               <select
                 id="discover-remote-select"
@@ -520,10 +533,14 @@
                   class="discover-remote__item"
                   class:discover-remote__item--active={project.url === discover.remoteTarget?.url}
                 >
-                  <span class="discover-remote__url">{project.url}</span>
+                  <span class="discover-remote__url" title={project.url}>{project.url}</span>
+                  {#if project.url === discover.remoteTarget?.url}
+                    <span class="badge" data-tone="accent">Active</span>
+                  {/if}
                   <Button
                     variant="ghost"
                     size="sm"
+                    class="discover-remote__remove"
                     data-testid="discover-remote-remove"
                     data-url={project.url}
                     disabled={discover.remoteChangeDisabled}
@@ -543,43 +560,52 @@
               discover.startRemote();
             }}
           >
-            <Input
-              type="url"
-              aria-label="GitHub repository URL"
-              placeholder="https://github.com/owner/repo"
-              autocomplete="off"
-              spellcheck="false"
-              value={discover.remoteUrl}
-              oninput={(event) => (discover.remoteUrl = event.currentTarget.value)}
-              data-testid="discover-remote-url"
-            />
-            <Button
-              variant="outline"
-              type="submit"
-              data-testid="discover-remote-start"
-              disabled={discover.remoteStartDisabled}
-              title={discover.remoteStartTitle}
-            >
-              Discover from URL
-            </Button>
-            {#if discover.remoteTarget !== null}
+            <label class="discover-remote__label" for="discover-remote-url">
+              Discover another repository
+            </label>
+            <div class="discover-remote__form-row">
+              <Input
+                id="discover-remote-url"
+                type="url"
+                aria-label="GitHub repository URL"
+                placeholder="https://github.com/owner/repo"
+                autocomplete="off"
+                spellcheck="false"
+                value={discover.remoteUrl}
+                oninput={(event) => (discover.remoteUrl = event.currentTarget.value)}
+                data-testid="discover-remote-url"
+              />
               <Button
-                variant="ghost"
-                data-testid="discover-remote-clear"
-                disabled={discover.remoteChangeDisabled}
-                title={discover.remoteChangeTitle}
-                onclick={() => discover.clearRemote()}
+                variant="outline"
+                type="submit"
+                data-testid="discover-remote-start"
+                disabled={discover.remoteStartDisabled}
+                title={discover.remoteStartTitle}
               >
-                Clear remote target
+                Discover from URL
               </Button>
-            {/if}
+            </div>
           </form>
           {#if discover.cloning !== null}
-            <p class="muted" data-testid="discover-remote-cloning">
+            <p class="discover-remote__cloning" data-testid="discover-remote-cloning">
               Cloning <code>{discover.cloning.url}</code>…
             </p>
           {/if}
         </div>
+        {#if discover.remoteTarget !== null}
+          <div class="panel__footer">
+            <Button
+              variant="ghost"
+              size="sm"
+              data-testid="discover-remote-clear"
+              disabled={discover.remoteChangeDisabled}
+              title={discover.remoteChangeTitle}
+              onclick={() => discover.clearRemote()}
+            >
+              Clear remote target
+            </Button>
+          </div>
+        {/if}
       </section>
     {/if}
   {/snippet}
@@ -702,14 +728,6 @@
                         {tiers.length === 1 ? "level" : "levels"}
                       </span>
                     </div>
-                    {#if happyPath !== null}
-                      <div class="discover-stat">
-                        <span class="discover-stat__value">
-                          {Math.round((happyPath.happy / happyPath.tests) * 100)}%
-                        </span>
-                        <span class="discover-stat__label">happy path</span>
-                      </div>
-                    {/if}
                   </div>
                   {#if discover.testCommand.length > 0}
                     <div class="discover-command-line" data-testid="discover-suite-command">

@@ -157,6 +157,22 @@ export function leafLines(value: unknown): string[] {
   return [String(value)];
 }
 
+/**
+ * A technology name without the version a crawl appended to it. The sheet
+ * records pinned versions in `runtime.versions`, so the Overview renders the
+ * stack and platform inventories by name alone (`PostgreSQL`, not
+ * `PostgreSQL 15`). A trailing token counts as a version only after
+ * whitespace, so `Log4j` and `HTTP/2` keep their names.
+ */
+export function technologyName(line: string): string {
+  const trimmed = line.trim();
+  const stripped = trimmed.replace(
+    /\s+v?\d+(?:\.\d+)*(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$/i,
+    "",
+  );
+  return stripped.length > 0 ? stripped : trimmed;
+}
+
 export function recordItems(leaf: Leaf | null | undefined): Array<Record<string, unknown>> {
   if (leaf === null || leaf === undefined || !Array.isArray(leaf.value)) return [];
   return leaf.value.filter(
@@ -215,8 +231,6 @@ export function recordColumnValues(record: Record<string, unknown>, key: string)
 export interface PyramidTier {
   level: string;
   tests: string;
-  /** Test cases that exercise the level's primary success path. */
-  happyPath: string;
   /** The recorded command that runs this level. */
   command: string;
 }
@@ -227,7 +241,6 @@ export function pyramidTiers(leaf: Leaf | null | undefined): PyramidTier[] {
     .map((record) => ({
       level: scalarText(record.level) || "other",
       tests: scalarText(record.tests) || "unknown",
-      happyPath: scalarText(record.happyPath) || "unknown",
       command: scalarText(record.command),
     }))
     .sort(
@@ -240,23 +253,6 @@ export function pyramidTiers(leaf: Leaf | null | undefined): PyramidTier[] {
 /** Tiers that actually carry tests; a recorded level with zero tests is not implemented. */
 export function implementedTiers(tiers: PyramidTier[]): PyramidTier[] {
   return tiers.filter((tier) => (Number.parseInt(tier.tests, 10) || 0) > 0);
-}
-
-/**
- * Happy-path and total test counts, but only when every tier reports both: a
- * partial sum would read as coverage the crawl never observed.
- */
-export function pyramidHappyPathCount(tiers: PyramidTier[]): { happy: number; tests: number } | null {
-  let happy = 0;
-  let tests = 0;
-  for (const tier of tiers) {
-    const tierHappy = Number.parseInt(tier.happyPath, 10);
-    const tierTests = Number.parseInt(tier.tests, 10);
-    if (!Number.isFinite(tierHappy) || !Number.isFinite(tierTests)) return null;
-    happy += tierHappy;
-    tests += tierTests;
-  }
-  return tests > 0 ? { happy, tests } : null;
 }
 
 export interface CommandAlias {

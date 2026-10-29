@@ -147,6 +147,8 @@ const discoverSheetSecret = process.argv.includes("--discover-sheet-secret");
 const discoverSheetTwoSentences = process.argv.includes("--discover-sheet-two-sentences");
 /** Stages HTTP routes whose leading slash is part of the fact. */
 const discoverSheetRoutes = process.argv.includes("--discover-sheet-routes");
+/** Stages a stack and platform inventory the older prompt wrote, with versions. */
+const discoverVersionedNames = process.argv.includes("--discover-versioned-names");
 /** Stages a level without `happyPath`, the shape an older prompt wrote. */
 const discoverSheetNoHappyPath = process.argv.includes("--discover-sheet-no-happy-path");
 /** Stages a happy-path count larger than the level's test count. */
@@ -1043,7 +1045,7 @@ function discoverSheet(): Record<string, unknown> {
       "declared",
     ),
     stack: discoverLeaf(
-      ["Bun", "TypeScript"],
+      discoverVersionedNames ? ["Bun 1.2.3", "TypeScript 5.6.2"] : ["Bun", "TypeScript"],
       [paths.manifest],
       paths.hasManifest ? "declared" : "inferred",
     ),
@@ -1183,8 +1185,16 @@ function discoverSheet(): Record<string, unknown> {
           : discoverLeaf([], [paths.ci], "observed"),
     },
     runtime: {
-      languages: discoverLeaf(["TypeScript"], [paths.manifest], "declared"),
-      runtimes: discoverLeaf(["Bun"], [paths.manifest], "declared"),
+      languages: discoverLeaf(
+        [discoverVersionedNames ? "TypeScript 5.6.2" : "TypeScript"],
+        [paths.manifest],
+        "declared",
+      ),
+      runtimes: discoverLeaf(
+        [discoverVersionedNames ? "Bun 1.2.3" : "Bun"],
+        [paths.manifest],
+        "declared",
+      ),
       packageManagers: discoverLeaf(["bun"], [paths.manifest], "declared"),
       versions: discoverLeaf([], [paths.manifest], "observed"),
       manifests: paths.hasManifest
