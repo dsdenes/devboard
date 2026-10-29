@@ -61,6 +61,17 @@ function readJson(path: string): Record<string, unknown> | undefined {
   }
 }
 
+/** Fingerprints a cycle report filed; discovery may also file unrelated evidence. */
+function filedFingerprints(latest: Record<string, unknown> | undefined): string[] {
+  if (!Array.isArray(latest?.issues)) return [];
+  return latest.issues
+    .filter(
+      (issue): issue is Record<string, unknown> =>
+        typeof issue === "object" && issue !== null,
+    )
+    .map((issue) => (typeof issue.fingerprint === "string" ? issue.fingerprint : ""));
+}
+
 function adapter(
   root: string,
   options: {
@@ -128,7 +139,7 @@ describe("detached watchdog worker", () => {
     }
   }, 30_000);
 
-  test("Stop during a filing cycle finishes the cycle and keeps its filing", async () => {
+  test("Stop and SIGTERM during a filing cycle finish it and keep its filing", async () => {
     const root = await temporaryRoot();
     const directory = watchdogDirectory(root);
     const stateDir = join(root, "state");
@@ -136,7 +147,7 @@ describe("detached watchdog worker", () => {
     await mkdir(bin, { recursive: true });
     await writeFile(
       join(bin, "gh"),
-      "#!/bin/sh\nsleep 5\necho https://github.com/acme/fixture/issues/1\n",
+      "#!/bin/sh\nsleep 4\necho https://github.com/acme/fixture/issues/1\n",
       { mode: 0o755 },
     );
     const fingerprint = "0123456789abcdef0123456789abcdef";
@@ -181,6 +192,7 @@ describe("detached watchdog worker", () => {
       );
       const stop = activity.stop();
       expect(stop.ok).toBe(true);
+      child.kill("SIGTERM");
       await waitFor(
         () => (readJson(workerStatePath(directory))?.lifecycle === "stopped" ? true : undefined),
         "the worker to finish its cycle and publish stopped",
@@ -191,7 +203,9 @@ describe("detached watchdog worker", () => {
       );
       const latest = readJson(join(directory, "latest.json"));
       expect(latest?.action).toBe("filed");
-      expect(latest?.issues).toHaveLength(1);
+      expect(filedFingerprints(latest).filter((value) => value === fingerprint)).toEqual([
+        fingerprint,
+      ]);
       expect(existsSync(String(latest?.reportPath))).toBe(true);
       const ledger = loadLedger(directory);
       expect(ledger.findings[fingerprint]?.disposition).toBe(
@@ -205,67 +219,6 @@ describe("detached watchdog worker", () => {
       activity.dispose();
     }
   }, 30_000);
-
-  test("a SIGTERM during a cycle finishes it and publishes stopped", async () => {
-    const root = await temporaryRoot();
-    const directory = watchdogDirectory(root);
-    const bin = join(root, "bin");
-    await mkdir(bin, { recursive: true });
-    await writeFile(
-      join(bin, "gh"),
-      "#!/bin/sh\nsleep 2\necho https://github.com/acme/fixture/issues/2\n",
-      { mode: 0o755 },
-    );
-    const fingerprint = "fedcba9876543210fedcba9876543210";
-    const seenAt = new Date().toISOString();
-    saveLedger(directory, {
-      version: 2,
-      findings: {
-        [fingerprint]: {
-          category: "server-error",
-          line: "Synthetic finding held by a slow signal path",
-          firstSeen: seenAt,
-          lastSeen: seenAt,
-          count: 1,
-          disposition: "none",
-          instances: [],
-        },
-      },
-      pendingFiling: [fingerprint],
-    });
-    const child = spawn(
-      process.execPath,
-      [join(harnessRoot, "watchdog", "worker.ts"), "--root", root, "--state-dir", directory],
-      {
-        cwd: harnessRoot,
-        stdio: "ignore",
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
-      },
-    );
-    try {
-      await waitFor(
-        () => (existsSync(join(directory, "runs")) ? true : undefined),
-        "the filing cycle to start",
-      );
-      child.kill("SIGTERM");
-      await waitFor(
-        () => (readJson(workerStatePath(directory))?.lifecycle === "stopped" ? true : undefined),
-        "the worker to finish its cycle and publish stopped",
-      );
-      const latest = readJson(join(directory, "latest.json"));
-      expect(latest?.action).toBe("filed");
-      expect(latest?.issues).toHaveLength(1);
-      expect(loadLedger(directory).findings[fingerprint]?.disposition).toBe(
-        "filed:https://github.com/acme/fixture/issues/2",
-      );
-      await waitFor(
-        () => (existsSync(lockPath(directory)) ? undefined : true),
-        "the lock release",
-      );
-    } finally {
-      if (child.exitCode === null) child.kill("SIGKILL");
-    }
-  }, 20_000);
 
   test("applies a saved cadence without restarting the worker", async () => {
     const root = await temporaryRoot();
