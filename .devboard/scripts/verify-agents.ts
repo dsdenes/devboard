@@ -763,12 +763,6 @@ try {
     installedText === INSTALLED_PROMPT,
     "the installed prompt text is not the file's bytes",
   );
-  const installedCommand = await text(devtools, "agent-prompt-command");
-  assertTrue(
-    installedCommand.includes("/scout-recommendations") &&
-      installedCommand.includes(join(".devboard", ".tmp", "scout", "scans")),
-    `the prompt command is wrong: ${installedCommand}`,
-  );
   const installedRequest = await requestPreview(devtools);
   assertTrue(
     JSON.stringify(Object.keys(installedRequest)) ===

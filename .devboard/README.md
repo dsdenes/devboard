@@ -1339,8 +1339,6 @@ installed host and never writes on a page open, tab restore, reconnect, or reloa
 
 The Auto Scout section contains:
 
-- `agent-prompt-command`, the invocation the worker passes:
-  `/scout-recommendations <REPO_DIR>/.devboard/.tmp/scout/scans/<scan-id>`.
 - `agent-prompt-text`, the complete bytes of the effective prompt file
   `<REPO_DIR>/.devboard/prompts/scout-recommendations.md`, character for character, in a
   scrollable monospace region with no truncation, ellipsis, or reformatting.

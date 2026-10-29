@@ -78,9 +78,6 @@
         {prompt.editable ? "editable from the harness source checkout" : "read-only"}
       </span>
     </div>
-    <p class="agent-prompt__command mono" data-testid="agent-prompt-command">
-      {prompt.command}
-    </p>
     {#if error !== null}
       <p class="issues-error" data-testid="agent-prompt-error" role="alert">{error}</p>
     {/if}
@@ -197,12 +194,6 @@
   .agent-prompt__absent {
     font-size: 12px;
     margin: 0;
-  }
-
-  .agent-prompt__command {
-    font-size: 11px;
-    margin: 0;
-    overflow-wrap: anywhere;
   }
 
   .agent-prompt__subtitle {

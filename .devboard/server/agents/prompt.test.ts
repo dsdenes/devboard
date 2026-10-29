@@ -99,16 +99,13 @@ afterAll(async () => {
 });
 
 describe("prompt snapshot", () => {
-  test("Auto Scout publishes the exact file, its invocation, and the next request", async () => {
+  test("Auto Scout publishes the exact file and the next request", async () => {
     const root = await sourceRoot();
     seededState(root);
     const prompt = controller(root).snapshot("scout");
     expect(prompt?.absent).toBe(false);
     expect(prompt?.editable).toBe(true);
     expect(prompt?.text).toBe(PROMPT);
-    expect(prompt?.command).toBe(
-      `/scout-recommendations ${join(root, ".devboard", ".tmp", "scout", "scans", "<scan-id>")}`,
-    );
     expect(prompt?.error).toBeNull();
     const request = prompt?.request;
     expect(request).not.toBeNull();
@@ -168,7 +165,6 @@ describe("prompt snapshot", () => {
       id: "watchdog",
       absent: true,
       editable: false,
-      command: null,
       text: null,
       request: null,
       error: null,
