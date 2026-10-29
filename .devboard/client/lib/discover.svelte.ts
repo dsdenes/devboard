@@ -1,4 +1,4 @@
-import { connection } from "./connection.svelte";
+import { connection, type ConnectionStore } from "./connection.svelte";
 import { dependencyName } from "../../lib/dependencies.ts";
 import { notifications } from "./notifications.svelte";
 import {
@@ -39,7 +39,46 @@ function appendLine(lines: string[], text: string, append: boolean): string[] {
   return [...lines, text];
 }
 
+/** The frame field naming the Discover target a skill edit belongs to. */
+type SkillSaveTarget =
+  | { kind: "host" }
+  | { kind: "remote"; owner: string; repo: string };
+
+interface SkillDraftScope {
+  drafts: Record<string, string>;
+  dirty: Record<string, boolean>;
+}
+
+const EMPTY_DRAFT_SCOPE: SkillDraftScope = { drafts: {}, dirty: {} };
+
+/**
+ * The identity drafts are scoped to. Every project shares the five fixed skill
+ * names, so the target — not the name — decides which unsaved text belongs to
+ * which project.
+ */
+function draftTargetKey(target: DiscoverTarget | null | undefined): string {
+  if (target?.kind === "remote") {
+    return `remote:${target.owner.toLowerCase()}/${target.repo.toLowerCase()}`;
+  }
+  return "host";
+}
+
+/** The minimal target descriptor `saveDiscoverSkill` carries to the server. */
+function saveTargetOf(target: DiscoverTarget): SkillSaveTarget {
+  if (target.kind === "remote") {
+    return { kind: "remote", owner: target.owner, repo: target.repo };
+  }
+  return { kind: "host" };
+}
+
 export class DiscoverStore {
+  /** The socket every command goes through; a test supplies its own. */
+  private readonly socket: ConnectionStore;
+
+  constructor(socket: ConnectionStore = connection) {
+    this.socket = socket;
+  }
+
   state = $state<DiscoverStatePayload | null>(null);
   active = $state(false);
   runId = $state<string | null>(null);
@@ -59,8 +98,24 @@ export class DiscoverStore {
   /** Hide scored terms below the floor; on by default. */
   glossarySignificantOnly = $state(true);
 
-  drafts = $state<Record<string, string>>({});
-  dirty = $state<Record<string, boolean>>({});
+  /** Unsaved skill text per target identity; a switch never leaks across targets. */
+  private draftScopes = $state<Record<string, SkillDraftScope>>({});
+
+  get drafts(): Record<string, string> {
+    return this.draftScopeOf(draftTargetKey(this.state?.target)).drafts;
+  }
+
+  get dirty(): Record<string, boolean> {
+    return this.draftScopeOf(draftTargetKey(this.state?.target)).dirty;
+  }
+
+  private draftScopeOf(key: string): SkillDraftScope {
+    return this.draftScopes[key] ?? EMPTY_DRAFT_SCOPE;
+  }
+
+  private writeDraftScope(key: string, scope: SkillDraftScope): void {
+    this.draftScopes = { ...this.draftScopes, [key]: scope };
+  }
 
   get remoteAvailable(): boolean {
     return this.state?.remoteAvailable === true;
@@ -95,7 +150,7 @@ export class DiscoverStore {
   }
 
   get remoteChangeTitle(): string | undefined {
-    if (!connection.open) return "Not connected";
+    if (!this.socket.open) return "Not connected";
     if (this.cloning !== null) return "A repository clone is running";
     if (this.active) return "A Discover run is active";
     return this.busy ?? undefined;
@@ -111,7 +166,7 @@ export class DiscoverStore {
   }
 
   get remoteStartTitle(): string | undefined {
-    if (!connection.open) return "Not connected";
+    if (!this.socket.open) return "Not connected";
     if (this.cloning !== null) return "A repository clone is running";
     if (this.active) return "A Discover run is active";
     if (this.busy !== null) return this.busy;
@@ -208,11 +263,11 @@ export class DiscoverStore {
   }
 
   get startDisabled(): boolean {
-    return !connection.open || this.active || this.busy !== null;
+    return !this.socket.open || this.active || this.busy !== null;
   }
 
   get startTitle(): string | undefined {
-    if (!connection.open) return "Not connected";
+    if (!this.socket.open) return "Not connected";
     if (this.active) return "A Discover run is active";
     return this.busy ?? undefined;
   }
@@ -237,7 +292,7 @@ export class DiscoverStore {
   }
 
   start(): void {
-    connection.send({ type: "discoverProject" });
+    this.socket.send({ type: "discoverProject" });
   }
 
   /** Sends exactly one `discoverRemote` for the trimmed URL. */
@@ -245,29 +300,29 @@ export class DiscoverStore {
     const url = this.remoteUrl.trim();
     if (url.length === 0 || this.remoteStartTitle !== undefined) return;
     this.remoteUrl = "";
-    connection.send({ type: "discoverRemote", url });
+    this.socket.send({ type: "discoverRemote", url });
   }
 
   /** Returns to this checkout's own artifacts; retained projects are kept. */
   clearRemote(): void {
     this.remoteUrl = "";
-    connection.send({ type: "clearDiscoverRemote" });
+    this.socket.send({ type: "clearDiscoverRemote" });
   }
 
   /** Switches to a retained project; never clones or crawls. */
   switchRemote(url: string): void {
     if (url.length === 0 || url === this.remoteTarget?.url) return;
-    connection.send({ type: "switchDiscoverRemote", url });
+    this.socket.send({ type: "switchDiscoverRemote", url });
   }
 
   /** Deletes one retained project; the host target returns when it was active. */
   removeRemote(url: string): void {
     if (url.length === 0) return;
-    connection.send({ type: "removeDiscoverRemote", url });
+    this.socket.send({ type: "removeDiscoverRemote", url });
   }
 
   stop(): void {
-    connection.send({ type: "stopDiscover" });
+    this.socket.send({ type: "stopDiscover" });
   }
 
   answer(value: string): void {
@@ -277,33 +332,50 @@ export class DiscoverStore {
     const id = this.question.id;
     this.question = null;
     this.answerDraft = "";
-    connection.send({ type: "answerDiscover", id, value: trimmed });
+    this.socket.send({ type: "answerDiscover", id, value: trimmed });
   }
 
   updateDraft(name: string, text: string): void {
-    this.drafts = { ...this.drafts, [name]: text };
+    const key = draftTargetKey(this.state?.target);
+    const scope = this.draftScopeOf(key);
     const live = this.skill(name)?.live ?? this.skill(name)?.baseline ?? "";
-    this.dirty = { ...this.dirty, [name]: text !== live };
+    this.writeDraftScope(key, {
+      drafts: { ...scope.drafts, [name]: text },
+      dirty: { ...scope.dirty, [name]: text !== live },
+    });
   }
 
   saveSkill(name: string): void {
-    connection.send({ type: "saveDiscoverSkill", name, text: this.skillDraft(name) });
+    this.socket.send({
+      type: "saveDiscoverSkill",
+      name,
+      text: this.skillDraft(name),
+      target: saveTargetOf(this.target),
+    });
   }
 
   restoreSkill(name: string): void {
     const baseline = this.skill(name)?.baseline ?? null;
     if (baseline !== null) {
-      this.drafts = { ...this.drafts, [name]: baseline };
-      this.dirty = { ...this.dirty, [name]: false };
+      const key = draftTargetKey(this.state?.target);
+      const scope = this.draftScopeOf(key);
+      this.writeDraftScope(key, {
+        drafts: { ...scope.drafts, [name]: baseline },
+        dirty: { ...scope.dirty, [name]: false },
+      });
     }
-    connection.send({ type: "restoreDiscoverSkill", name });
+    this.socket.send({ type: "restoreDiscoverSkill", name });
   }
 
   discardDraft(name: string): void {
     const entry = this.skill(name);
     const live = entry?.live ?? entry?.baseline ?? "";
-    this.drafts = { ...this.drafts, [name]: live };
-    this.dirty = { ...this.dirty, [name]: false };
+    const key = draftTargetKey(this.state?.target);
+    const scope = this.draftScopeOf(key);
+    this.writeDraftScope(key, {
+      drafts: { ...scope.drafts, [name]: live },
+      dirty: { ...scope.dirty, [name]: false },
+    });
   }
 
   setGlossarySearch(value: string): void {
@@ -328,14 +400,21 @@ export class DiscoverStore {
 
   private syncDrafts(payload: DiscoverStatePayload): void {
     const skills = Array.isArray(payload.skills) ? payload.skills : [];
+    const key = draftTargetKey(payload.target);
+    const scope = this.draftScopeOf(key);
+    let drafts = scope.drafts;
+    let dirty = scope.dirty;
     for (const skill of skills) {
       if (typeof skill?.name !== "string") continue;
       const live = skill.live ?? skill.baseline ?? "";
-      if (this.dirty[skill.name] !== true) {
-        this.drafts = { ...this.drafts, [skill.name]: live };
-      } else if (this.drafts[skill.name] === live) {
-        this.dirty = { ...this.dirty, [skill.name]: false };
+      if (dirty[skill.name] !== true) {
+        drafts = { ...drafts, [skill.name]: live };
+      } else if (drafts[skill.name] === live) {
+        dirty = { ...dirty, [skill.name]: false };
       }
+    }
+    if (drafts !== scope.drafts || dirty !== scope.dirty) {
+      this.writeDraftScope(key, { drafts, dirty });
     }
   }
 

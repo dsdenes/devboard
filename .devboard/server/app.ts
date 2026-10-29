@@ -517,6 +517,33 @@ function goalRevisionPrompt(goalFile: string, request: string | undefined): stri
   ].join("\n");
 }
 
+/** The Discover target a client's skill edit was authored against. */
+type SkillSaveTarget =
+  | { kind: "host" }
+  | { kind: "remote"; owner: string; repo: string };
+
+/** Reads a save frame's target descriptor; a malformed or absent one is null. */
+function parseSkillSaveTarget(value: unknown): SkillSaveTarget | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  if (record.kind === "host") return { kind: "host" };
+  if (record.kind !== "remote") return null;
+  const owner = record.owner;
+  const repo = record.repo;
+  if (typeof owner !== "string" || owner.length === 0) return null;
+  if (typeof repo !== "string" || repo.length === 0) return null;
+  return { kind: "remote", owner, repo };
+}
+
+/** Remote identities compare by owner/repo, the same way retention names them. */
+function sameSkillSaveTarget(left: SkillSaveTarget, right: SkillSaveTarget): boolean {
+  if (left.kind === "host" && right.kind === "host") return true;
+  if (left.kind === "remote" && right.kind === "remote") {
+    return remoteCloneName(left.owner, left.repo) === remoteCloneName(right.owner, right.repo);
+  }
+  return false;
+}
+
 type ClientMessage =
   | { type: "listRecords" }
   | { type: "getGoal" }
@@ -582,7 +609,7 @@ type ClientMessage =
   | { type: "stopDiscover" }
   | { type: "answerDiscover"; id?: unknown; value?: unknown }
   | { type: "getDiscover" }
-  | { type: "saveDiscoverSkill"; name?: unknown; text?: unknown }
+  | { type: "saveDiscoverSkill"; name?: unknown; text?: unknown; target?: unknown }
   | { type: "restoreDiscoverSkill"; name?: unknown }
   | { type: "confirmGlossaryTerm"; context?: unknown; id?: unknown }
   | { type: "rejectGlossaryTerm"; context?: unknown; id?: unknown; reason?: unknown }
@@ -795,6 +822,7 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
         type: "saveDiscoverSkill",
         name: "name" in value ? value.name : undefined,
         text: "text" in value ? value.text : undefined,
+        target: "target" in value ? value.target : undefined,
       };
     case "restoreDiscoverSkill":
       return { type: "restoreDiscoverSkill", name: "name" in value ? value.name : undefined };
@@ -3193,13 +3221,37 @@ export function createApp(options: AppOptions) {
     broadcastDiscoverState();
   }
 
+  /**
+   * A skill edit belongs to the target it was written against. Every project
+   * shares the five fixed skill names, so a stale client must not have its text
+   * applied through `targetRoot()` after the active target changed.
+   */
+  function activeSkillSaveTarget(): SkillSaveTarget {
+    if (remoteTarget === undefined) return { kind: "host" };
+    return { kind: "remote", owner: remoteTarget.owner, repo: remoteTarget.repo };
+  }
+
   function saveDiscoverSkillCommand(
     ws: { send(data: string): unknown },
     name: unknown,
     text: unknown,
+    target: unknown,
   ) {
     if (typeof name !== "string" || typeof text !== "string") {
       discoverFailure(ws, "Saving a Discover skill needs its name and text.");
+      return;
+    }
+    const editedFor = parseSkillSaveTarget(target);
+    if (editedFor === null) {
+      discoverFailure(ws, "Saving a Discover skill needs the target it was edited for.");
+      return;
+    }
+    if (!sameSkillSaveTarget(editedFor, activeSkillSaveTarget())) {
+      discoverFailure(
+        ws,
+        "The skill was edited for a different Discover target, so it was not saved. " +
+          "Switch back to that project and save again.",
+      );
       return;
     }
     afterDiscoverMutation(ws, saveLiveSkill(targetRoot(), name, text));
@@ -6403,7 +6455,7 @@ export function createApp(options: AppOptions) {
           } else if (command.type === "answerDiscover") {
             answerDiscoverQuestion(ws, command.id, command.value);
           } else if (command.type === "saveDiscoverSkill") {
-            saveDiscoverSkillCommand(ws, command.name, command.text);
+            saveDiscoverSkillCommand(ws, command.name, command.text, command.target);
           } else if (command.type === "restoreDiscoverSkill") {
             restoreDiscoverSkillCommand(ws, command.name);
           } else if (command.type === "confirmGlossaryTerm") {

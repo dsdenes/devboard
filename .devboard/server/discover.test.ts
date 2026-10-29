@@ -908,6 +908,7 @@ describe("discover mode", () => {
           type: "saveDiscoverSkill",
           name: editedName,
           text: edited,
+          target: { kind: "host" },
         });
         expect(saved.skills.find((skill) => skill.name === editedName)?.state).toBe("edited");
         expect(readFileSync(livePath, "utf8")).toBe(edited);
@@ -917,12 +918,18 @@ describe("discover mode", () => {
           type: "saveDiscoverSkill",
           name: editedName,
           text: edited.replace('  devboard-family: "discover"\n', ""),
+          target: { kind: "host" },
         });
         const refused = await client.waitFor((message) => message.type === "discoverError");
         expect(String(refused.message)).toContain("devboard-family");
         expect(readFileSync(livePath, "utf8")).toBe(edited);
 
-        client.send({ type: "saveDiscoverSkill", name: "prepare-only", text: edited });
+        client.send({
+          type: "saveDiscoverSkill",
+          name: "prepare-only",
+          text: edited,
+          target: { kind: "host" },
+        });
         const unknown = await client.waitFor((message) => message.type === "discoverError");
         expect(String(unknown.message)).toContain("not one of the five");
       } finally {
@@ -1180,6 +1187,7 @@ describe("discover mode", () => {
           type: "saveDiscoverSkill",
           name: "discover-naming-conventions",
           text: edited,
+          target: { kind: "host" },
         });
 
         prepareClient.send({ type: "prepareSkills" });

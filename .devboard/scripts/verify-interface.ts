@@ -3721,11 +3721,13 @@ try {
     return true;
   })()`);
   check(saveClicked, "the skill Save control is missing");
-  let skillFrame: { type?: string; text?: string };
+  let skillFrame: { type?: string; text?: string; target?: { kind?: string } };
   try {
     skillFrame = await waitFor(
       async () =>
-        page.eval<{ type?: string; text?: string } | undefined>(`(() => {
+        page.eval<
+          { type?: string; text?: string; target?: { kind?: string } } | undefined
+        >(`(() => {
           const frames = (window.__viFrames ?? []).map((frame) => {
             try { return JSON.parse(frame); } catch (error) { return null; }
           });
@@ -3738,6 +3740,11 @@ try {
     throw new Error(`the skill save did not reach the server: ${error instanceof Error ? error.message : String(error)}`);
   }
   check(skillFrame.text === editedSkill, "the skill save did not send the exact editor text", skillFrame);
+  check(
+    skillFrame.target?.kind === "host",
+    "the skill save did not name the host target it was edited for",
+    skillFrame,
+  );
   try {
     await waitFor(
       async () => {
