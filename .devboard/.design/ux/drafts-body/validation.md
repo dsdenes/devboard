@@ -115,4 +115,36 @@ selected
   - Drafts, no selection, light, 1024×720: `selection-1024-light.png`
   - Drafts, no selection, dark, 1024×720: `selection-1024-dark.png`
   - Selected draft detail: checked in the browser, unchanged from the documented detail panel.
-- Findings: pending.
+- Measured result:
+  - Empty at 1440×900: `issues-drafts__body` grid resolves to one 1033.86px track; exactly one
+    panel; no detail or selection panel. Stack 360×83.67px, horizontal center 907.06 against the
+    body center 907.07. Notebook mark 20×20px, `aria-hidden="true"`, `rgb(139,148,158)`.
+  - Empty at 1024×720: one 618.89px track; stack 360px wide and two copy lines; document
+    `scrollWidth === clientWidth === 1024`.
+  - Drafts, no selection at 1440×900: `340px 681.86px` tracks, 12px gap; the selection stack is
+    centered on both axes of the detail panel (center deltas below 0.5px horizontal and 32px
+    vertical, the latter only from the 30px panel header).
+  - Drafts, no selection at 1024×720: one column, list panel above the selection panel;
+    `scrollWidth === clientWidth === 1024`.
+  - Selected row: `issues-draft-detail` carries the selected path, the selection panel is gone,
+    and the proposal text renders; the detail panel's internals are unchanged.
+  - Creation band: `New goal` keeps `aria-expanded="true"` and `aria-controls`, the empty stack
+    stays, and the body remains one panel.
+- Console/network: zero console entries and zero failed requests among 10 observed requests on
+  the Draft goals page in the empty state; the tab reported no exceptions.
+- Checks: `bun run check` — 0 errors, 0 warnings across 1762 files. `bun test` — 1064 pass, 0
+  fail across 81 files (6436 assertions). `bun run verify:design` — pass, including the normative
+  documents, page shape, and freshness gates. A first `bun test` run failed the Flow concurrent
+  start test because `.devboard/.tmp/flow-tests` held state from an earlier aborted run; after
+  removing that directory the same test and the full suite passed, and the same test passed in a
+  fresh detached `origin/main` worktree without any cleanup.
+- Dependent pages: none. No shared component, token, DTCG, OpenUI, or Storybook artifact changed;
+  `Button` and the panel primitives are reused. `verify:design` exercises the shared page shape.
+- Not run: `bun run verify:interface` does not reach the Draft goals checks. It stops at the shared
+  Issues poll assertion (`scripts/verify-interface.ts:5341`) with
+  `poll: "Tracker sync starting"` instead of `"Not polling"`. A clean detached `origin/main`
+  worktree at `9b9808d` reproduces the same failure at the same line, so the gate is blocked by a
+  canonical-line defect outside this change. The Draft goals surface is verified by the browser
+  evidence above.
+- Verdict: pass for the changed surface; one repository-wide gate is blocked upstream and named
+  above.
