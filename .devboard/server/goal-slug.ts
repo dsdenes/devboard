@@ -72,7 +72,10 @@ export async function suggestGoalSlug(report: string, options: GoalSlugOptions):
     const connect =
       options.connect ?? ((peerOptions) => new AcpConnection(peerOptions) as GoalSlugPeer);
     peer = connect({
-      command: options.command,
+      // A naming turn reads no skill. OMP's background description compression
+      // of a loaded skill logs a warning the watchdog files when the selected
+      // model cannot serve that request, so this peer discovers none.
+      command: `${options.command} --no-skills`,
       cwd: options.cwd,
       ...(options.env === undefined ? {} : { env: options.env }),
       permissionPolicy: "deny",

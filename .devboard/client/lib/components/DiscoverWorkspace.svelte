@@ -310,6 +310,8 @@
               >
                 <span>{activeSkill}</span><span class="discover-skill__file">/SKILL.md</span>
               </h2>
+            </div>
+            <div class="row-sm discover-skill__actions">
               {#if skillDirty}
                 <span
                   class="discover-skill__state"
@@ -335,10 +337,8 @@
                   No unsaved changes
                 </span>
               {/if}
-            </div>
-            <div class="row-sm discover-skill__actions">
               <Button
-                variant="default"
+                variant={skillDirty ? "default" : "secondary"}
                 data-command={`discover.skill.save.${activeSkill}`}
                 data-testid="discover-skill-save"
                 disabled={!skillDirty || skillState === "missing"}
@@ -353,7 +353,7 @@
               </Button>
               {#if skillState !== "generated"}
                 <Button
-                  variant="outline"
+                  variant={skillState === "missing" ? "default" : "outline"}
                   data-command={`discover.skill.restore.${activeSkill}`}
                   data-testid="discover-skill-restore"
                   title={skillState === "missing"

@@ -182,6 +182,19 @@ describe("draft listing and reading", () => {
 });
 
 describe("elaboration", () => {
+  test("starts the elaboration peer without skills", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "noskills.md"), draftText("No skills", "STUB-HANG body"));
+    const { manager } = managerFor(root, stateDir, log);
+
+    expect((await manager.start(draftPath("noskills.md"))).ok).toBe(true);
+    const argv = await waitFor(
+      () => logLines(log).find((line) => line.startsWith("argv ")),
+      "the peer's argv",
+    );
+    expect(argv).toContain("--no-skills");
+  });
+
   test("starts two distinct drafts at once with one live owner and snapshot per path", async () => {
     const { root, drafts, stateDir, log } = await fixture();
     writeFileSync(join(drafts, "one.md"), draftText("One", "STUB-HANG body"));
