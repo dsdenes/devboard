@@ -59,7 +59,9 @@ The width survives a reload.
   and warnings only while at least one exists. The glossary entry carries the published term
   count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
   meta, so an exception is visible before the page opens. The Glossary entry is a plain section
-  link: it has no disclosure control and no nested per-term menu.
+  link: it has no disclosure control and no nested per-term menu. An unsaved skill edit belongs
+  to the project it was written against: switching to another retained project shows that
+  project's own text, and saving there never writes the earlier project's draft.
 
 Selecting an entry opens or focuses its workspace surface. Informational entries open the
 surface that holds the same facts. The Flow overview opens with the flow-goal editor, which takes

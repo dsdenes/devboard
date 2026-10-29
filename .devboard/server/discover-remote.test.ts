@@ -27,6 +27,8 @@ import {
 import { readStateFile, stateFile } from "./state";
 import { journalFile } from "./journal";
 import { testProviderService } from "./fixtures/test-providers";
+import { ConnectionStore } from "../client/lib/connection.svelte";
+import { DiscoverStore } from "../client/lib/discover.svelte";
 
 /**
  * Discover's remote target: the source-checkout gate, URL validation, the one
@@ -1566,6 +1568,7 @@ describe("discover remote target", () => {
           type: "saveDiscoverSkill",
           name: "discover-testing-strategy",
           text: `${live}\n- Retained edit.\n`,
+          target: { kind: "remote", owner: "octocat", repo: "Hello-World" },
         });
         expect(
           readFileSync(join(retained, ".omp", "skills", "discover-testing-strategy", "SKILL.md"), "utf8"),
@@ -1673,3 +1676,139 @@ async function discoverStateAndMutation(
   client.send(command);
   return stateOf(await reply);
 }
+
+/** The Discover store normally runs in a browser tab; these globals stand in. */
+function installDiscoverClientGlobals(host: string): () => void {
+  const target = globalThis as unknown as Record<string, unknown>;
+  const previous = { window: target.window, location: target.location };
+  target.window = {
+    setTimeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    setInterval: globalThis.setInterval.bind(globalThis),
+    clearInterval: globalThis.clearInterval.bind(globalThis),
+  };
+  target.location = { protocol: "http:", host };
+  return () => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete target[key];
+      else target[key] = value;
+    }
+  };
+}
+
+async function waitFor(predicate: () => boolean, label: string, timeout = 10_000): Promise<void> {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await Bun.sleep(25);
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+test(
+  "a target switch never writes one retained project's draft into another",
+  async () => {
+    const fixture = createFixture("draft-scope");
+    const clones = cloneHarness({ source: createSourceRepository("draft-scope-first") });
+    const { server, url } = startServer({ fixture, clone: clones });
+    const client = await connect(url);
+    const firstUrl = "https://github.com/octocat/Alpha";
+    const secondUrl = "https://github.com/octocat/Beta";
+    const skillName = "discover-testing-strategy";
+    const sockets = new ConnectionStore();
+    const store = new DiscoverStore(sockets);
+    const frames: Record<string, unknown>[] = [];
+    let restoreGlobals: (() => void) | null = null;
+    try {
+      // Two retained projects, crawled in order, share the same five skills.
+      await runRemote(client, firstUrl);
+      clones.behavior.source = createSourceRepository("draft-scope-second");
+      await runRemote(client, secondUrl);
+
+      const alphaPath = join(
+        retainedDirectory(fixture, "octocat", "alpha"),
+        ".omp",
+        "skills",
+        skillName,
+        "SKILL.md",
+      );
+      const betaPath = join(
+        retainedDirectory(fixture, "octocat", "beta"),
+        ".omp",
+        "skills",
+        skillName,
+        "SKILL.md",
+      );
+      const alphaBefore = readFileSync(alphaPath);
+
+      restoreGlobals = installDiscoverClientGlobals(url);
+      sockets.onMessage((message) => {
+        frames.push(message as Record<string, unknown>);
+        store.handleEvent(message as Record<string, unknown>);
+      });
+      sockets.connect();
+      await waitFor(() => sockets.open, "the Discover store connection");
+      sockets.send({ type: "getDiscover" });
+      await waitFor(
+        () => store.target.kind === "remote" && store.target.repo === "Beta",
+        "the Beta snapshot",
+      );
+
+      store.switchRemote(firstUrl);
+      await waitFor(
+        () => store.target.kind === "remote" && store.target.repo === "Alpha",
+        "the Alpha snapshot",
+      );
+      const liveAlpha = store.skill(skillName)?.live ?? "";
+      expect(liveAlpha.length).toBeGreaterThan(0);
+      store.updateDraft(skillName, `${liveAlpha}\n- Edited against Alpha.\n`);
+      expect(store.skillDirty(skillName)).toBe(true);
+
+      store.switchRemote(secondUrl);
+      await waitFor(
+        () => store.target.kind === "remote" && store.target.repo === "Beta",
+        "the Beta snapshot after the switch",
+      );
+      const liveBeta = store.skill(skillName)?.live ?? "";
+      expect(liveBeta.length).toBeGreaterThan(0);
+      expect(store.skillDraft(skillName)).toBe(liveBeta);
+      expect(store.skillDirty(skillName)).toBe(false);
+
+      const mark = frames.length;
+      store.saveSkill(skillName);
+      await waitFor(
+        () =>
+          frames
+            .slice(mark)
+            .some(
+              (message) =>
+                message.type === "discoverState" || message.type === "discoverError",
+            ),
+        "the save round trip",
+      );
+      expect(frames.slice(mark).filter((message) => message.type === "discoverError")).toEqual(
+        [],
+      );
+      expect(readFileSync(alphaPath).equals(alphaBefore)).toBe(true);
+      expect(readFileSync(betaPath, "utf8")).toBe(liveBeta);
+
+      // A client still holding Alpha's draft may not write it into Beta.
+      const refusalReply = client.waitNext((message) => message.type === "discoverError");
+      client.send({
+        type: "saveDiscoverSkill",
+        name: skillName,
+        text: `${liveAlpha}\n- Edited against Alpha.\n`,
+        target: { kind: "remote", owner: "octocat", repo: "Alpha" },
+      });
+      expect(String((await refusalReply).message)).toContain("different Discover target");
+      expect(readFileSync(alphaPath).equals(alphaBefore)).toBe(true);
+      expect(readFileSync(betaPath, "utf8")).toBe(liveBeta);
+    } finally {
+      sockets.dispose();
+      restoreGlobals?.();
+      client.close();
+      server.stop(true);
+    }
+  },
+  120_000,
+);
