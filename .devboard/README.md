@@ -233,7 +233,9 @@ package's files. It keeps `.devboard/.tmp`, copies `templates/host-AGENTS.md` to
 `<host>/AGENTS.md` when that file is a symlink or absent (an existing regular file is untouched
 and reported as drift), adds the three ignored paths to `.gitignore`, and leaves exactly one
 dashboard running from the installed package. A reinstall keeps the version and `.tmp`; `update`
-never starts, stops, or restarts the dashboard.
+never starts, stops, or restarts the dashboard. When the freshly started dashboard does not answer
+within 30 seconds, `install` stops that child before it exits nonzero, so a failed install leaves
+no dashboard behind.
 
 `doctor` checks Node 20+, Bun, npm, the git root, npm's version and artifact metadata (or the
 configured Gitea fallback and its digest), the installed package, the installed version against

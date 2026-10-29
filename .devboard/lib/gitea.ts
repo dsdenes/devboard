@@ -284,8 +284,9 @@ function publishedRelease(value: unknown): GiteaRelease | undefined {
 
 /**
  * Every published release, newest first, drafts excluded. The server caps one
- * response, so this pages until a page adds no new tag; watchdog and scout
- * read releases only through here so neither can see a truncated list.
+ * response, so this pages until a page adds no new tag; the watchdog, the
+ * scout, and the design agent read releases only through here, so none can
+ * see a truncated list.
  */
 export async function giteaListReleases(
   target: GiteaTarget,
