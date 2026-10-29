@@ -8,7 +8,16 @@ import { issueBody } from "../issues/design/actions";
 import { createDesignForge } from "../issues/design/forge";
 import { preflightDesign } from "../issues/design/preflight";
 import { releaseDocuments, type ReleaseResult, type RunCommand } from "../issues/design/release";
-import { capacityFor, writeSettings, type DesignIssueRow } from "../issues/design/state";
+import {
+  DOCUMENTATION_HISTORY_LIMIT,
+  capacityFor,
+  emptyState,
+  parseState,
+  recordDocumentationEntry,
+  writeSettings,
+  type DesignDocumentationEntry,
+  type DesignIssueRow,
+} from "../issues/design/state";
 import { DesignWorker } from "../issues/design/worker";
 import {
   DESIGN_LABEL,
@@ -17,6 +26,7 @@ import {
   designConfig,
   lockPath,
   settingsPath,
+  statePath,
 } from "../issues/design/paths";
 
 const harnessRoot = join(import.meta.dir, "..");
@@ -319,6 +329,73 @@ describe("design capacity", () => {
   });
 });
 
+function documentationEntry(index: number): DesignDocumentationEntry {
+  return {
+    at: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+    version: `0.1.${index}`,
+    url: `https://forge.test/releases/tag/v0.1.${index}`,
+    summary: `Change ${index}`,
+    files: ["DESIGN.md", "design/tokens.json"],
+    diff: `+change ${index}`,
+  };
+}
+
+describe("design documentation history", () => {
+  test("a state file without the history loads with an empty history", () => {
+    const state = emptyState({ repo: "acme/fixture", root: "/repo" });
+    expect(state.documentation).toEqual([]);
+    const legacy = { ...state } as Record<string, unknown>;
+    delete legacy.documentation;
+    const parsed = parseState(JSON.stringify(legacy));
+    expect(parsed?.documentation).toEqual([]);
+  });
+
+  test("parses a stored history in its stored order", () => {
+    const state = emptyState({ repo: "acme/fixture", root: "/repo" });
+    state.documentation = [documentationEntry(2), documentationEntry(1)];
+    const parsed = parseState(JSON.stringify(state));
+    expect(parsed?.documentation).toEqual(state.documentation);
+  });
+
+  test("a malformed history is refused instead of half-loaded", () => {
+    const state = emptyState({ repo: "acme/fixture", root: "/repo" });
+    const broken = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+    broken.documentation = [{ version: "0.1.3" }];
+    expect(parseState(JSON.stringify(broken))).toBeUndefined();
+  });
+
+  test("records the newest entry first and bounds the stored history", () => {
+    let history: DesignDocumentationEntry[] = [];
+    for (let index = 1; index <= DOCUMENTATION_HISTORY_LIMIT + 4; index += 1) {
+      history = recordDocumentationEntry(history, documentationEntry(index));
+    }
+    expect(history).toHaveLength(DOCUMENTATION_HISTORY_LIMIT);
+    expect(history[0]?.version).toBe(`0.1.${DOCUMENTATION_HISTORY_LIMIT + 4}`);
+    expect(history.at(-1)?.version).toBe("0.1.5");
+    expect(new Set(history.map((entry) => entry.version)).size).toBe(
+      DOCUMENTATION_HISTORY_LIMIT,
+    );
+  });
+
+  test("the design prompt names the isolated worktree release path", () => {
+    const prompt = readFileSync(join(harnessRoot, "prompts", "design-system.md"), "utf8");
+    for (const concept of [
+      "worktree",
+      "origin/main",
+      "bun run publish",
+      "main checkout",
+      "without force",
+      "release workflow",
+      ".worktree/",
+      "audit.json",
+      "draft",
+    ]) {
+      expect(prompt).toContain(concept);
+    }
+    expect(prompt).toContain("never run git");
+  });
+});
+
 interface FakePeer {
   peer: {
     pid: number | undefined;
@@ -378,7 +455,7 @@ describe("design worker", () => {
       },
       release: async () => {
         released += 1;
-        return { ok: true, version: "0.1.9", url: "https://forge.test/released", sha: "a", branch: "b" };
+        return { ok: true, version: "0.1.9", url: "https://forge.test/released", sha: "a", branch: "b", files: [], diff: "" };
       },
       connect: () =>
         fakePeer((directory) => {
@@ -396,6 +473,7 @@ describe("design worker", () => {
     expect(released).toBe(0);
     expect(worker.currentState.issues[0]?.number).toBe(7);
     expect(worker.currentState.release).toBeNull();
+    expect(worker.currentState.documentation).toEqual([]);
     const cycleId = worker.currentState.newestCycleId!;
     const activity = readFileSync(
       join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
@@ -403,6 +481,63 @@ describe("design worker", () => {
     );
     expect(activity).toContain("filed #7");
     await worker.stop();
+  });
+
+  test("a successful release records its summary, files, version, URL, time, and diff", async () => {
+    const { repo, stateDir } = await fixture("history");
+    const at = new Date("2026-03-04T05:06:07.000Z");
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      cadenceMs: 60 * 60_000,
+      syncMs: 10_000,
+      manualCycles: true,
+      now: () => at,
+      github: {
+        listIssues: async () => [],
+        listReleases: async () => [],
+        listOpenIssueTitles: async () => [],
+        closingCommit: async () => null,
+        resolveCommit: async () => null,
+        containingReleaseTags: async () => [],
+      },
+      fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+      release: async () => ({
+        ok: true,
+        version: "0.1.42",
+        url: "https://forge.test/acme/fixture/releases/tag/v0.1.42",
+        sha: "abc",
+        branch: "design/cycle-1",
+        files: ["DESIGN.md", "design/tokens.json"],
+        diff: "--- a/DESIGN.md\n+++ b/DESIGN.md\n@@ -1 +1 @@\n-old\n+new\n",
+      }),
+      connect: () =>
+        fakePeer((directory) => {
+          writeFileSync(
+            join(directory, "draft", "DESIGN.md"),
+            `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
+          );
+          writeFileSync(join(directory, "audit.json"), JSON.stringify(editDecision()));
+        }, { connects: 0 }).peer as never,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.refresh();
+    await worker.beginCycle();
+    await worker.waitForCycle();
+    expect(worker.currentState.documentation).toHaveLength(1);
+    expect(worker.currentState.documentation[0]).toEqual({
+      at: at.toISOString(),
+      version: "0.1.42",
+      url: "https://forge.test/acme/fixture/releases/tag/v0.1.42",
+      summary: "Document the accent standard",
+      files: ["DESIGN.md", "design/tokens.json"],
+      diff: "--- a/DESIGN.md\n+++ b/DESIGN.md\n@@ -1 +1 @@\n-old\n+new\n",
+    });
+    await worker.stop();
+    const persisted = JSON.parse(
+      readFileSync(statePath(stateDir, repo), "utf8"),
+    ) as { documentation?: unknown[] };
+    expect(persisted.documentation).toHaveLength(1);
   });
 
   test("a single flight never starts a second cycle", async () => {
@@ -423,7 +558,7 @@ describe("design worker", () => {
         containingReleaseTags: async () => [],
       },
       fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
-      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" }),
+      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
       connect: () =>
         fakePeer((directory) => {
           writeFileSync(
@@ -464,7 +599,7 @@ describe("design worker", () => {
         filed.push(options.finding.title);
         return { number: 7, url: "https://forge.test/acme/fixture/issues/7" };
       },
-      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" }),
+      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
       connect: () => ({
         pid: undefined,
         argv: [],
@@ -524,7 +659,7 @@ describe("design worker", () => {
         filed.push(options.finding.title);
         return { number: 1, url: "https://forge.test/issues/1" };
       },
-      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" }),
+      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
       connect: () =>
         fakePeer((directory) => {
           writeFileSync(
@@ -569,7 +704,7 @@ describe("design worker", () => {
         filed.push(options.finding.title);
         return { number: 1, url: "https://forge.test/issues/1" };
       },
-      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" }),
+      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
       connect: () =>
         fakePeer((directory) => {
           writeFileSync(join(directory, "audit.json"), "{ not json");
@@ -605,7 +740,7 @@ describe("design worker", () => {
       fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
       release: async () => {
         released += 1;
-        return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" };
+        return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" };
       },
       connect: () =>
         fakePeer((directory) => {
@@ -622,6 +757,7 @@ describe("design worker", () => {
     await worker.beginCycle();
     await worker.waitForCycle();
     expect(released).toBe(0);
+    expect(worker.currentState.documentation).toEqual([]);
     expect(readFileSync(join(repo, "DESIGN.md"), "utf8")).toContain("Use tokens for every color");
     await worker.stop();
   });
@@ -666,6 +802,7 @@ describe("design worker", () => {
     expect(worker.cyclingNow).toBe(false);
     expect(worker.currentState.lifecycle).toBe("idle");
     expect(worker.currentState.lastError).toContain("boom");
+    expect(worker.currentState.documentation).toEqual([]);
 
     await worker.beginCycle();
     await worker.waitForCycle();
@@ -734,6 +871,8 @@ describe("design worker", () => {
       url: "https://forge.test/released",
       sha: "a",
       branch: "b",
+      files: [],
+      diff: "",
     });
     await stopping;
     expect(observed.stoppedCalls).toBe(1);
@@ -768,7 +907,7 @@ describe("design worker", () => {
       fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
       release: async () => {
         released += 1;
-        return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" };
+        return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" };
       },
       connect: () =>
         fakePeer((directory) => {
@@ -829,7 +968,7 @@ describe("design worker", () => {
       fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
       release: async () => {
         released += 1;
-        return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" };
+        return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" };
       },
       connect: () =>
         fakePeer((directory) => {
@@ -845,6 +984,7 @@ describe("design worker", () => {
     await worker.beginCycle();
     await worker.waitForCycle();
     expect(released).toBe(0);
+    expect(worker.currentState.documentation).toEqual([]);
     expect(worker.currentState.lifecycle).toBe("idle");
     expect(worker.currentState.lastError).toBeNull();
     const cycleId = worker.currentState.newestCycleId!;
@@ -888,7 +1028,7 @@ describe("design worker", () => {
         filed.push(options.finding.title);
         return { number: 2, url: "https://forge.test/acme/fixture/issues/2" };
       },
-      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" }),
+      release: async () => ({ ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b", files: [], diff: "" }),
       connect: () =>
         fakePeer((directory) => {
           writeFileSync(
@@ -1156,6 +1296,12 @@ describe("design release planner", () => {
     expect(bareHead).toBe(result.sha);
     const bareFiles = run("git", ["--git-dir", bare, "show", "--name-only", "--format=", "main"]);
     expect(bareFiles.split("\n").sort()).toEqual(["DESIGN.md", "design/tokens.json"].sort());
+    expect(result.files).toEqual(["DESIGN.md", "design/tokens.json"]);
+    expect(result.diff).toContain("--- a/DESIGN.md");
+    expect(result.diff).toContain("+++ b/DESIGN.md");
+    expect(result.diff).toContain("+## Design principles");
+    expect(result.diff).toContain("+- Accent is one token.");
+    expect(result.diff).toContain("--- a/design/tokens.json");
     expect(existsSync(join(repo, ".worktree", "design-cycle-1"))).toBe(false);
     expect(run("git", ["branch", "--list", "design/cycle-1"], repo)).toBe("");
   });

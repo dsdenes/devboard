@@ -3,7 +3,14 @@ import type { AgentSession } from "../lib/agent-sessions";
 import { selectSessions } from "../lib/agent-sessions";
 import type { Instance } from "../watchdog/discovery";
 import { parseTimestamp, readJournalEvidence } from "../watchdog/collect";
-import type { CoachJournalRecord } from "./findings";
+
+/** One journal record the family builder reads. */
+export interface CoachJournalRecord {
+  kind: string;
+  ts: string;
+  text: string;
+  scope: string | null;
+}
 
 /**
  * One cycle's evidence. Sessions come from the shared ACP transcript reader

@@ -49,87 +49,89 @@
   }
 </script>
 
-<section
+<details
   class="agent-prompt"
   data-testid="agent-prompt"
   data-agent={agentId}
   aria-label="Agent prompt"
 >
-  {#if prompt === null}
-    <p class="agent-prompt__hint">Loading the prompt…</p>
-  {:else if prompt.absent}
-    <p class="agent-prompt__absent" data-testid="agent-prompt-absent">
-      {descriptor?.prompt.kind === "absent"
-        ? descriptor.prompt.message
-        : `No prompt file is available for ${agentId}.`}
-    </p>
-  {:else}
-    <div class="agent-prompt__head">
-      <h2 class="agent-prompt__title">Prompt</h2>
-    </div>
-    {#if error !== null}
-      <p class="issues-error" data-testid="agent-prompt-error" role="alert">{error}</p>
-    {/if}
-    {#if notice !== null}
-      <p class="agent-prompt__notice" data-testid="agent-prompt-notice" role="status">
-        {notice}
+  <summary class="agent-prompt__summary" data-testid="agent-prompt-summary">
+    <span class="agent-prompt__title">Prompt</span>
+  </summary>
+  <div class="agent-prompt__body" data-testid="agent-prompt-body">
+    {#if prompt === null}
+      <p class="agent-prompt__hint">Loading the prompt…</p>
+    {:else if prompt.absent}
+      <p class="agent-prompt__absent" data-testid="agent-prompt-absent">
+        {descriptor?.prompt.kind === "absent"
+          ? descriptor.prompt.message
+          : `No prompt file is available for ${agentId}.`}
       </p>
-    {/if}
+    {:else}
+      {#if error !== null}
+        <p class="issues-error" data-testid="agent-prompt-error" role="alert">{error}</p>
+      {/if}
+      {#if notice !== null}
+        <p class="agent-prompt__notice" data-testid="agent-prompt-notice" role="status">
+          {notice}
+        </p>
+      {/if}
 
-    {#if prompt.editable}
-      <div class="agent-prompt__editor">
-        <textarea
-          class="agent-prompt__textarea mono"
-          data-testid="agent-prompt-editor"
-          aria-label="Prompt editor"
-          spellcheck="false"
-          value={editor}
-          oninput={(event) => (editor = event.currentTarget.value)}
-        ></textarea>
-        <div class="agent-prompt__actions">
-          <Button variant="secondary" data-testid="agent-prompt-save" onclick={() => agents.savePrompt(agentId, editor)}>
-            Save prompt
-          </Button>
-        </div>
-      </div>
-
-      <section class="agent-prompt__chat" data-testid="agent-prompt-chat" aria-label="Prompt chat">
-        {#if chat.length > 0}
-          <div class="agent-prompt__chat-log" data-testid="agent-prompt-chat-log" role="log">
-            {#each chat as entry}
-              <div class="agent-prompt__chat-entry" data-role={entry.role}>
-                <span class="agent-prompt__chat-role">{entry.role}</span>
-                <span class="agent-prompt__chat-text">{entry.text}</span>
-              </div>
-            {/each}
+      {#if prompt.editable}
+        <div class="agent-prompt__editor">
+          <textarea
+            class="agent-prompt__textarea mono"
+            data-testid="agent-prompt-editor"
+            aria-label="Prompt editor"
+            spellcheck="false"
+            value={editor}
+            oninput={(event) => (editor = event.currentTarget.value)}
+          ></textarea>
+          <div class="agent-prompt__actions">
+            <Button variant="secondary" data-testid="agent-prompt-save" onclick={() => agents.savePrompt(agentId, editor)}>
+              Save prompt
+            </Button>
           </div>
-        {/if}
-        {#if chatError !== null}
-          <p class="issues-error" data-testid="agent-prompt-chat-error" role="alert">
-            {chatError}
-          </p>
-        {/if}
-        <div class="agent-prompt__chat-input">
-          <Input
-            data-testid="agent-prompt-message"
-            placeholder="Describe the change you want"
-            value={message}
-            oninput={(event) => (message = event.currentTarget.value)}
-            onkeydown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                send();
-              }
-            }}
-          />
-          <Button variant="secondary" data-testid="agent-prompt-send" onclick={send}>
-            Send
-          </Button>
         </div>
-      </section>
+
+        <section class="agent-prompt__chat" data-testid="agent-prompt-chat" aria-label="Prompt chat">
+          {#if chat.length > 0}
+            <div class="agent-prompt__chat-log" data-testid="agent-prompt-chat-log" role="log">
+              {#each chat as entry}
+                <div class="agent-prompt__chat-entry" data-role={entry.role}>
+                  <span class="agent-prompt__chat-role">{entry.role}</span>
+                  <span class="agent-prompt__chat-text">{entry.text}</span>
+                </div>
+              {/each}
+            </div>
+          {/if}
+          {#if chatError !== null}
+            <p class="issues-error" data-testid="agent-prompt-chat-error" role="alert">
+              {chatError}
+            </p>
+          {/if}
+          <div class="agent-prompt__chat-input">
+            <Input
+              data-testid="agent-prompt-message"
+              placeholder="Describe the change you want"
+              value={message}
+              oninput={(event) => (message = event.currentTarget.value)}
+              onkeydown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  send();
+                }
+              }}
+            />
+            <Button variant="secondary" data-testid="agent-prompt-send" onclick={send}>
+              Send
+            </Button>
+          </div>
+        </section>
+      {/if}
     {/if}
-  {/if}
-</section>
+  </div>
+</details>
 
 <style>
   .agent-prompt {
@@ -142,10 +144,18 @@
     padding: 10px 12px;
   }
 
-  .agent-prompt__head {
+  .agent-prompt__summary {
     align-items: baseline;
+    cursor: pointer;
     display: flex;
     gap: 10px;
+    list-style-position: inside;
+  }
+
+  .agent-prompt__body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
 
   .agent-prompt__title {

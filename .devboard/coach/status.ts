@@ -2,18 +2,21 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentCycle } from "../server/agents/registry";
 import { latestWatchdogCycle, readWatchdogCycles } from "../watchdog/history";
+import type { FamilyKind } from "./families";
 import { loadLedger } from "./ledger";
 
 /**
- * The read-only Coach view the dashboard serves: the newest cycle, the ledger's
- * filed issues, the pending count, and the retained cycle history. It never
- * carries an environment value.
+ * The read-only Coach view the dashboard serves: the newest cycle, the filed
+ * families from the ledger, the pending depth, and the retained cycle history.
+ * It never carries an environment value.
  */
 
 export interface CoachIssue {
   url: string;
-  category: string;
-  line: string;
+  family: string;
+  /** The exact title the filed issue carries. */
+  title: string;
+  kind: FamilyKind;
   filedAt: string;
 }
 
@@ -21,11 +24,16 @@ export interface CoachStatus {
   cycle: string | null;
   action: string;
   reason?: string;
-  findings: number;
-  issues: CoachIssue[];
+  /** Total families in the newest window. */
+  families: number;
+  /** Families selected for synthesis in the newest window. */
+  selected: number;
+  /** Issues filed by the newest cycle. */
+  filed: number;
+  /** Pending proposals dropped by the newest cycle. */
+  dropped: number;
   pending: number;
-  /** Fingerprints the gate rejected and no issue owns. */
-  rejected: number;
+  issues: CoachIssue[];
   cycles: AgentCycle[];
 }
 
@@ -39,35 +47,34 @@ export function readCoachStatus(coachDir: string): CoachStatus {
   } catch {
     // No cycle has run yet.
   }
-  const ledger = loadLedger(coachDir);
-  const issues = Object.values(ledger.findings)
-    .filter(
-      (entry): entry is typeof entry & { url: string } =>
-        entry.disposition.startsWith("filed:") && typeof entry.url === "string",
-    )
-    .map((entry) => ({
-      url: entry.url,
-      category: entry.category,
-      line: entry.line,
-      filedAt: entry.filedAt ?? entry.firstSeen,
+  const ledger = loadLedger(coachDir).ledger;
+  const issues = Object.entries(ledger.families)
+    .filter(([, entry]) => entry.lastIssueUrl !== undefined)
+    .map(([family, entry]) => ({
+      url: entry.lastIssueUrl!,
+      family,
+      title: entry.lastTitle ?? `[coach] ${family}`,
+      kind: entry.kind,
+      filedAt: entry.lastFiledAt ?? entry.lastSeen,
     }))
     .sort(
       (left, right) =>
         right.filedAt.localeCompare(left.filedAt) || left.url.localeCompare(right.url),
     );
-  const entries = Object.values(ledger.findings);
   return {
     cycle: typeof latest.cycle === "string" ? latest.cycle : null,
     action: typeof latest.action === "string" ? latest.action : "none",
     ...(typeof latest.reason === "string" ? { reason: latest.reason } : {}),
-    findings: Array.isArray(latest.findings) ? latest.findings.length : 0,
-    issues,
+    families: typeof latest.families === "number" ? latest.families : 0,
+    selected: Array.isArray(latest.selected) ? latest.selected.length : 0,
+    filed: Array.isArray(latest.issues) ? latest.issues.length : 0,
+    dropped: typeof latest.dropped === "number" ? latest.dropped : 0,
     pending: ledger.pendingFiling.length,
-    rejected: entries.filter((entry) => entry.disposition === "rejected").length,
+    issues,
     cycles: readWatchdogCycles(
       coachDir,
-      latestWatchdogCycle(latest, (fingerprint) => ledger.findings[fingerprint]?.url),
-      (fingerprint) => ledger.findings[fingerprint]?.url,
+      latestWatchdogCycle(latest, (family) => ledger.families[family]?.lastIssueUrl),
+      (family) => ledger.families[family]?.lastIssueUrl,
     ),
   };
 }

@@ -305,6 +305,23 @@ describe("sweepStateDir", () => {
     expect(removed).not.toContain(join(stateDir, "issues"));
   });
 
+  test("keeps a live dashboard's static snapshot and sweeps a dead one", async () => {
+    const base = await temporaryDirectory();
+    const stateDir = join(base, ".tmp");
+    const serving = join(stateDir, "serving");
+    const liveSnapshot = join(serving, `${process.pid}-1.0.0`);
+    const deadSnapshot = join(serving, `${deadPid()}-1.0.0`);
+    writeAt(join(liveSnapshot, "index.html"), "<!doctype html><title>live</title>", old);
+    utimesSync(liveSnapshot, old, old);
+    writeAt(join(deadSnapshot, "index.html"), "<!doctype html><title>dead</title>", old);
+    utimesSync(deadSnapshot, old, old);
+
+    sweepStateDir(stateDir, { now: sweepNow, dryRun: false });
+
+    expect(existsSync(join(liveSnapshot, "index.html"))).toBe(true);
+    expect(existsSync(deadSnapshot)).toBe(false);
+  });
+
   test("keeps a live scout lock and sweeps a dead owner's lock", async () => {
     const base = await temporaryDirectory();
     const stateDir = join(base, ".tmp");

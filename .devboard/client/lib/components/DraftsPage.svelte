@@ -184,8 +184,18 @@
                       {draft.heading || "No heading"}
                     </span>
                   </span>
-                  <span class="badge issues-draft__badge" data-tone={statusTone(draftStatus)}>
-                    {draftStatus}
+                  <span class="issues-draft__meta">
+                    {#if waiting}
+                      <span
+                        class="badge"
+                        data-tone="warning"
+                        data-testid="issues-draft-waiting"
+                        title="This draft is waiting for your answer."
+                      >
+                        answer
+                      </span>
+                    {/if}
+                    <span class="badge" data-tone={statusTone(draftStatus)}>{draftStatus}</span>
                   </span>
                 </button>
                 <div class="issues-draft-row__action">

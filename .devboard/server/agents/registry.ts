@@ -85,6 +85,17 @@ export interface AgentSync {
   error: string | null;
 }
 
+/** One released documentation change, shared by the page and the server. */
+export interface AgentDocumentationEntry {
+  at: string;
+  version: string;
+  url: string;
+  summary: string;
+  files: string[];
+  /** The exact unified diff of the released documents. */
+  diff: string;
+}
+
 export interface AgentTimerGate {
   unit: string;
   /** The legacy unit's state; `absent` when systemd or the unit is missing. */
@@ -126,6 +137,8 @@ export interface AgentSnapshot {
   };
   limits: AgentLimits;
   issues: AgentIssueRow[];
+  /** Released documentation changes, newest first; empty for most agents. */
+  documentation: AgentDocumentationEntry[];
   /** Findings or fingerprints waiting for a successful filing. */
   pending: number;
   sync: AgentSync;
@@ -148,6 +161,8 @@ export interface AgentSnapshotInput {
   };
   limits: AgentLimits;
   issues: AgentIssueRow[];
+  /** Optional so an adapter of an older server keeps projecting. */
+  documentation?: AgentDocumentationEntry[];
   pending: number;
   sync: AgentSync;
   detail: AgentDetail;
@@ -198,6 +213,10 @@ export interface AgentDescriptor {
   detail: {
     panel: "activity" | "cycles";
     testId: "agent-detail";
+  };
+  /** A released documentation list rendered above the filed issues table. */
+  documentation?: {
+    testId: "agent-documentation";
   };
   tab: {
     id: string;
@@ -332,6 +351,13 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
     throw new AgentRegistryError(`${id}: detail must declare the shared panel`);
   }
   if (
+    descriptor.documentation !== undefined &&
+    (!isRecord(descriptor.documentation) ||
+      descriptor.documentation.testId !== "agent-documentation")
+  ) {
+    throw new AgentRegistryError(`${id}: documentation must declare the shared panel`);
+  }
+  if (
     !isRecord(descriptor.tab) ||
     descriptor.tab.id !== id ||
     descriptor.tab.kind !== id ||
@@ -422,6 +448,23 @@ function normalizeIssue(row: AgentIssueRow): AgentIssueRow {
   };
 }
 
+function normalizeDocumentation(value: unknown): AgentDocumentationEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(
+      (entry): entry is AgentDocumentationEntry =>
+        isRecord(entry) &&
+        typeof entry.at === "string" &&
+        typeof entry.version === "string" &&
+        typeof entry.url === "string" &&
+        typeof entry.summary === "string" &&
+        Array.isArray(entry.files) &&
+        entry.files.every((file) => typeof file === "string") &&
+        typeof entry.diff === "string",
+    )
+    .slice(0, 20);
+}
+
 /** The one sort every agent's filed-issue table uses. */
 export function sortAgentIssues(rows: readonly AgentIssueRow[]): AgentIssueRow[] {
   const instant = (value: string): number => {
@@ -490,6 +533,7 @@ export function projectAgentSnapshot(
       maxPending: input.limits.maxPending,
     },
     issues: sortAgentIssues(input.issues.map(normalizeIssue)),
+    documentation: normalizeDocumentation(input.documentation),
     pending:
       typeof input.pending === "number" && Number.isInteger(input.pending) && input.pending >= 0
         ? input.pending
@@ -603,6 +647,7 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     commands: SHARED_COMMANDS,
     issues: SHARED_ISSUES,
     detail: { panel: "activity", testId: "agent-detail" },
+    documentation: { testId: "agent-documentation" },
     tab: { id: "design", kind: "design", title: "Design System" },
   }),
   validateAgentDescriptor({

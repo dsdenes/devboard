@@ -9,7 +9,7 @@ import { join, resolve } from "node:path";
 
 export const COACH_DIRECTORY = "coach";
 export const WORKER_VERSION = 1;
-export const LEDGER_VERSION = 2;
+export const LEDGER_VERSION = 3;
 export const PROJECTION_VERSION = 1;
 
 export function coachDirectory(stateDir: string): string {
@@ -28,7 +28,7 @@ export function controlDirectory(directory: string): string {
   return join(directory, "control");
 }
 
-/** The ledger: one entry per fingerprint plus the pending queue. */
+/** The ledger: one entry per family plus the pending queue. */
 export function ledgerPath(directory: string): string {
   return join(directory, "state.json");
 }

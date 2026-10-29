@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { AcpConnection, type AcpActivity, type AcpQuestion } from "../../server/acp";
+import {
+  createWorkerProviderEnvironment,
+  type WorkerProviderEnvironment,
+} from "../../server/providers/worker-environment";
 import { recordedChildAlive } from "../../server/state";
 import { readHarnessVersion } from "../../server/version";
 import { acquireLock, liveLockOwner } from "../lock";
@@ -39,6 +43,7 @@ import {
   isValidLimit,
   loadState,
   readSettings,
+  recordDocumentationEntry,
   writeSettings,
   writeState,
   type DesignIssueRow,
@@ -87,6 +92,8 @@ export interface DesignWorkerOptions {
   timeoutMs?: number;
   now?: () => Date;
   connect?: (options: IssuesPeerOptions) => AcpPeer;
+  /** Resolves each cycle's provider environment; re-reads the store per cycle. */
+  providerEnvironment?: WorkerProviderEnvironment;
   github?: DesignForgeClient;
   fileIssue?: typeof fileDesignIssue;
   release?: typeof releaseDocuments;
@@ -163,6 +170,7 @@ export class DesignWorker {
   private readonly environment: Record<string, string | undefined>;
   private readonly clock: () => Date;
   private readonly connect: NonNullable<DesignWorkerOptions["connect"]>;
+  private readonly providerEnvironment: WorkerProviderEnvironment;
   private readonly injectedGithub: DesignForgeClient | undefined;
   private readonly fileIssue: typeof fileDesignIssue;
   private readonly release: typeof releaseDocuments;
@@ -214,6 +222,9 @@ export class DesignWorker {
     this.clock = options.now ?? (() => new Date());
     this.connect =
       options.connect ?? ((peerOptions) => new AcpConnection(peerOptions) as unknown as AcpPeer);
+    this.providerEnvironment =
+      options.providerEnvironment ??
+      createWorkerProviderEnvironment(this.stateDir, this.environment);
     this.injectedGithub = options.github;
     this.fileIssue = options.fileIssue ?? fileDesignIssue;
     this.release = options.release ?? releaseDocuments;
@@ -278,6 +289,7 @@ export class DesignWorker {
       sync: previous?.sync ?? { state: "stale", at: null, error: null },
       newestCycleId: previous?.newestCycleId ?? null,
       release: previous?.release ?? null,
+      documentation: previous?.documentation ?? [],
       lastError: null,
       notice: previous?.notice ?? null,
       updatedAt: now.toISOString(),
@@ -640,9 +652,11 @@ export class DesignWorker {
 
       let peer: AcpPeer;
       try {
+        const environment = await this.providerEnvironment();
         peer = this.connect({
           command: this.agentCommand,
           cwd: directory,
+          env: environment,
           onActivity: (entry: AcpActivity) => this.recordActivity(entry),
           onSessionUpdate: () => this.notePeerUpdate(),
           onQuestion: (question) => this.answerQuestion(question),
@@ -924,11 +938,20 @@ export class DesignWorker {
             });
             if (!released.ok) releaseError = released.detail;
             else {
+              const at = this.clock().toISOString();
               this.state.release = {
                 version: released.version,
                 url: released.url,
-                at: this.clock().toISOString(),
+                at,
               };
+              this.state.documentation = recordDocumentationEntry(this.state.documentation, {
+                at,
+                version: released.version,
+                url: released.url,
+                summary: audit.documentation.summary,
+                files: released.files,
+                diff: released.diff,
+              });
               record(`released ${released.version}: ${released.url}`);
             }
           }
