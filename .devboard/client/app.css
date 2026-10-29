@@ -3249,24 +3249,6 @@ a.code-chip--link:focus-visible {
   padding: 0;
 }
 
-.issues-drafts__header-actions {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-}
-
-.issues-drafts__header-actions > button {
-  flex: 0 0 auto;
-}
-
-.issues-drafts__repo {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .issues-draft-new {
   background: var(--surface-raised);
   border-bottom: 1px solid var(--border);
