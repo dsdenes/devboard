@@ -169,11 +169,6 @@
                   <span class="issues-draft__heading" title={draft.heading || "No heading"}>
                     {draft.heading || "No heading"}
                   </span>
-                  {#if blocker !== null}
-                    <span class="issues-draft__blocked" data-testid="issues-draft-blocked">
-                      {blocker}
-                    </span>
-                  {/if}
                 </span>
                 <span class="badge issues-draft__badge" data-tone={statusTone(draftStatus)}>
                   {draftStatus}

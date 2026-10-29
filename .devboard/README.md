@@ -1716,8 +1716,8 @@ own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAN
 opens one session, and sends exactly `/goal-draft <repository-relative path>`. Each path has at
 most one live peer: a start for a path already running is refused with
 `This draft is being elaborated.` and starts no second peer. While a draft runs, only its own row
-and detail show the disabled start control and the `issues-draft-blocked` reason
-`This draft is being elaborated.`; every other draft stays startable. Each peer's activity
+and detail show the disabled start control, whose title is `This draft is being elaborated.`;
+every other draft stays startable. Each peer's activity
 streams only into its own run's `issues-draft-activity`, its `ask` question renders only for that
 draft, and an answer goes only to the addressed draft's peer; an answer for a draft with no
 pending question is refused without reaching any peer. Stop closes only the selected draft's peer,

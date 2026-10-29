@@ -1162,21 +1162,22 @@ kbd {
 .choice__label {
   align-items: center;
   display: flex;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   gap: 6px;
 }
 
 .choice__description {
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .choice__recommended {
   border: 1px solid var(--success);
   border-radius: 999px;
   color: var(--success);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   padding: 1px 5px;
 }
@@ -3382,15 +3383,6 @@ a.code-chip--link:focus-visible {
 
 .issues-draft__badge {
   justify-self: end;
-}
-
-.issues-draft__blocked {
-  color: var(--warning);
-  font-size: 11px;
-  line-height: 1.3;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .issues-draft-row__action {
