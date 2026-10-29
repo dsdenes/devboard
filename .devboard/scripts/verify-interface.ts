@@ -2998,7 +2998,8 @@ try {
     tableFont: string;
     freshness: boolean;
     freshnessText: string;
-    definitionLead: boolean;
+    definitionText: string;
+    definitionBelowTitle: boolean;
     dirtyBadges: number;
     evidence: number;
     confidence: number;
@@ -3054,7 +3055,13 @@ try {
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
       freshness: document.querySelector('[data-testid="discover-freshness"]') !== null,
       freshnessText: document.querySelector('[data-testid="discover-freshness"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
-      definitionLead: document.querySelector('#workspace-discover .discover-head__definition') !== null,
+      definitionText: document.querySelector('#workspace-discover .discover-head__definition')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      definitionBelowTitle: (() => {
+        const title = document.querySelector('#workspace-discover .discover-head__title');
+        const definition = document.querySelector('#workspace-discover .discover-head__definition');
+        if (title === null || definition === null) return false;
+        return definition.getBoundingClientRect().top >= title.getBoundingClientRect().bottom - 1;
+      })(),
       dirtyBadges: [...document.querySelectorAll('#workspace-discover .discover-head .badge')]
         .filter((badge) => badge.textContent.trim() === "dirty").length,
       evidence: document.querySelectorAll('[data-testid="discover-evidence"]').length,
@@ -3150,7 +3157,17 @@ try {
   check(discoverTables.stackLinks > 0, "no library chip links to its repository", discoverTables.stackLinks);
   check(discoverTables.stackHref.startsWith("https://github.com/"), "a library chip links outside its repository", discoverTables.stackHref);
   check(discoverTables.stackedSections === 0, "Discover still renders the duplicated dependency or unknown sections", discoverTables.stackedSections);
-  check(!discoverTables.definitionLead, "the Discover header still renders the definition lead", discoverTables);
+  check(
+    discoverTables.definitionText ===
+      "A fixture host with a small order domain used to verify the Discover crawl.",
+    "the Discover header does not render the project definition",
+    discoverTables.definitionText,
+  );
+  check(
+    discoverTables.definitionBelowTitle,
+    "the Discover definition does not sit below the project title",
+    discoverTables,
+  );
   check(discoverTables.staticText === 0, "Discover still renders static lead or note prose", discoverTables.staticText);
   check(discoverTables.commandHeaders === 0, "the command table still renders a header row", discoverTables.commandHeaders);
   check(discoverTables.contextHeader === "", "the bounded-context card still renders a table header", discoverTables.contextHeader);
@@ -3184,17 +3201,15 @@ try {
     suiteLeft: number;
     commandLeft: number;
     levelChips: number;
-    happyPath: string;
+    statLabels: string[];
   }>(`(() => {
     const head = document.querySelector('#workspace-discover .discover-head');
     const sheet = document.querySelector('[data-testid="discover-sheet"]');
     const rail = sheet?.querySelector('.discover-rail');
     const column = sheet?.querySelector('.discover-col');
     const testing = document.querySelector('#workspace-discover [data-field="testing"]');
-    const stats = [...(testing?.querySelectorAll('.discover-stat') ?? [])].map((stat) => ({
-      value: stat.querySelector('.discover-stat__value')?.textContent?.trim() ?? "",
-      label: stat.querySelector('.discover-stat__label')?.textContent?.trim() ?? "",
-    }));
+    const statLabels = [...(testing?.querySelectorAll('.discover-stat__label') ?? [])]
+      .map((label) => label.textContent?.trim() ?? "");
     const commandCell = testing?.querySelector('[data-testid="discover-pyramid"] tbody td code.code-chip');
     const suiteChip = document.querySelector('[data-testid="discover-suite-command"] code.code-chip');
     const commandChip = document.querySelector('[data-testid="discover-command-list"] tbody tr code.code-chip');
@@ -3215,7 +3230,7 @@ try {
       suiteLeft: Math.round(suiteChip?.getBoundingClientRect().left ?? -1),
       commandLeft: Math.round(commandChip?.getBoundingClientRect().left ?? -1),
       levelChips: testing?.querySelectorAll('[data-testid="discover-pyramid"] tbody td code.code-chip').length ?? 0,
-      happyPath: stats.find((stat) => stat.label === "happy path")?.value ?? "",
+      statLabels,
     };
   })()`);
   check(!discoverChrome.eyebrow && !discoverChrome.stale, "the sheet still renders removed masthead chrome", discoverChrome);
@@ -3251,9 +3266,12 @@ try {
     discoverChrome,
   );
   check(
-    discoverChrome.happyPath === "100%",
-    "the testing summary does not carry the happy-path share",
-    discoverChrome,
+    discoverChrome.statLabels.length === 2 &&
+      discoverChrome.statLabels.every(
+        (label) => label === "test" || label === "tests" || label === "level" || label === "levels",
+      ),
+    "the testing summary does not list exactly the test and level totals",
+    discoverChrome.statLabels,
   );
   check(
     discoverChrome.subtitle.startsWith(`${discoverChrome.rows} level`) &&

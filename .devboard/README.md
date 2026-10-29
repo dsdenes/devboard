@@ -763,9 +763,10 @@ significance sidecar and is read as legacy, with no error.
 `architecture`, `ci`, `runtime`, `dependencyMap`, and `delivery`. It has a freshness header naming
 the project, the short commit, the dirty flag, the discovery time, and the stored fingerprint. The
 Overview page is a project sheet, not a card grid. A masthead
-(`data-testid="discover-freshness"`) carries the project name and the
-discovery date. The commit, the dirty flag, and the staleness flag stay in the sheet and the state
-payload but render no header badge. Below the masthead the sheet is one bounded two-column spine:
+(`data-testid="discover-freshness"`) carries the project name, the project definition below it when
+the crawl recorded one, and the discovery date. The commit, the dirty flag, and the staleness flag
+stay in the sheet and the state payload but render no header badge. Below the masthead the sheet is
+one bounded two-column spine:
 `Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates, and
 Bounded contexts in the main column on the right. Every section carries
 `data-testid="discover-card"` and `data-field`; the commands, testing, and quality-gate panels are
@@ -800,11 +801,9 @@ that no other recorded command aliases. A command the host manifest declares as 
 as its invocation — `npm test` for `scripts.test`, `npm run <name>` for any other script — instead
 of the program the script expands to; the recorded program is the chip's tooltip. Every command,
 path, package, and boundary value uses the same inline code chip (`.code-chip`); no surface has a
-second inline-code presentation. Testing shows the test, level, and
-happy-path totals and the whole-suite command (`data-testid="discover-suite-command"`), then a
-`Level`/`Tests`/`Command` table (`data-testid="discover-pyramid"`). Happy path is the
-part of a level's count that exercises the primary success path, recorded as an exact count from
-`0` to the level's total; the summary percentage appears only when every listed level reports one.
+second inline-code presentation. Testing shows the test and level totals and the whole-suite
+command (`data-testid="discover-suite-command"`), then a
+`Level`/`Tests`/`Command` table (`data-testid="discover-pyramid"`).
 `Command` is the narrowest declared invocation for that level. Only a level that carries a test is
 listed and counted; a recorded level with no test case is omitted, so a sheet cannot claim a
 second level while its table holds none. Every listed level states an exact test count, never
@@ -1098,24 +1097,28 @@ while a clone or a Discover run is active or while the existing busy rules refus
 `cloning` (`{ "url" }` or `null`). `getDiscover` answers with the same snapshot, and a connecting
 client still receives it before its own command replies.
 
-While `remoteAvailable` is true the Overview renders a target strip as its first region, above the
-project header and the sheet or the empty state: a retained-project dropdown
-(`data-testid="discover-remote-select"`) whose options are the retained URLs, newest first, with the
-active project selected and no host option; one row per retained project with a remove control
-(`data-testid="discover-remote-remove"`, carrying the URL in `data-url`); an input
-(`data-testid="discover-remote-url"`) labelled for a GitHub repository URL with the placeholder
-`https://github.com/owner/repo`; a submit control (`data-testid="discover-remote-start"`) labelled
-`Discover from URL`; and a clear control (`data-testid="discover-remote-clear"`) only while the
-target is remote. The strip is secondary in weight yet first in reading order, so an operator sees
-the active target before anything it affects. A source checkout with nothing published still learns
-the gate: the server replays one `discoverState` on connect when `remoteAvailable` is true, even
-with no artifacts and no run. The submit control is disabled while the socket is closed, `cloning`
-is non-null, a run is active, or `discoverState.busy` is set, and its `title` names the reason; it
-is also disabled for empty or whitespace-only input. Submitting sends exactly one frame with the
-trimmed URL and starts nothing else; selecting an option sends exactly one `switchDiscoverRemote`
+While `remoteAvailable` is true the Overview renders a manual-testing target panel as its first
+region, above the project header and the sheet or the empty state. The panel header states the
+title and, with retained projects, their count. Its body separates the two scopes: a `Retained
+project` toolbar pairs its label with a dropdown (`data-testid="discover-remote-select"`) whose
+options are the retained URLs, newest first, with the active project selected and no host option;
+a bordered list carries one 28px row per retained project with the URL and a remove control
+(`data-testid="discover-remote-remove"`, carrying the URL in `data-url`), the active row taking the
+accent surface, a 2px accent edge, and an `Active` badge; a surface-raised block labelled
+`Discover another repository` holds an input (`data-testid="discover-remote-url"`) labelled for a
+GitHub repository URL with the placeholder `https://github.com/owner/repo` and a submit control
+(`data-testid="discover-remote-start"`) labelled `Discover from URL`; the panel footer carries a
+clear control (`data-testid="discover-remote-clear"`) only while the target is remote. The panel is
+secondary in weight yet first in reading order, so an operator sees the active target before
+anything it affects. A source checkout with nothing published still learns the gate: the server
+replays one `discoverState` on connect when `remoteAvailable` is true, even with no artifacts and
+no run. The submit control is disabled while the socket is closed, `cloning` is non-null, a run is
+active, or `discoverState.busy` is set, and its `title` names the reason; it is also disabled for
+empty or whitespace-only input. Submitting sends exactly one frame with the trimmed URL and starts
+nothing else; selecting an option sends exactly one `switchDiscoverRemote`
 and starts nothing else; removing sends exactly one `removeDiscoverRemote`; clearing sends exactly
-one `clearDiscoverRemote`. Rendering the strip on load, reconnect, mode switch, or page switch sends
-no frame. While cloning, the strip shows the cloning URL and the activity area shows no run; errors
+one `clearDiscoverRemote`. Rendering the panel on load, reconnect, mode switch, or page switch sends
+no frame. While cloning, the panel shows the cloning URL and the activity area shows no run; errors
 reach the Discover error and notification surfaces only.
 
 `server/discover-remote.test.ts` proves retention after a successful crawl with the checkout
@@ -1310,8 +1313,8 @@ sudo userdel --remove <user>
 Auto Scout, Watchdog, Design System, and Coach are the four instances of one background-agent
 contract. A typed registry in `server/agents/registry.ts` declares each descriptor's id, label,
 description, scope, lifecycle vocabulary, cadence field and defaults, nullable limits schema,
-start/stop commands, issue projection, and detail panel. The shared page, the shared filed-issues
-table, and the Issues sidebar are built from that registry; adding a further
+start/stop commands, issue projection, detail panel, and prompt source. The shared page, the
+shared filed-issues table, and the Issues sidebar are built from that registry; adding a further
 continuous agent means writing its engine, its adapter, and one registry entry. The shared page,
 sidebar, and issue table have no agent-id branch: a synthetic fourth descriptor projects and
 validates unchanged.
@@ -1357,27 +1360,31 @@ Directly below `agent-header`, before the alert region and `agent-main`, every b
 page renders one prompt section `data-testid="agent-prompt"`. It is a read-only view in an
 installed host and never writes on a page open, tab restore, reconnect, or reload.
 
-The Watchdog section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no
-prompt, and no other prompt test id. A prompt command for `watchdog` is refused with that same
-statement and has no effect.
+Auto Scout and Design System read the effective prompt file their worker command opens:
+`.devboard/prompts/scout-recommendations.md` and `.devboard/prompts/design-system.md`. The Watchdog
+section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no prompt. The
+Coach section contains it too, naming that Coach assembles its prompt from each cycle's findings.
+Both render no other prompt test id, and a prompt command for either is refused with that same
+descriptor statement and has no effect.
 
-When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout section renders
+When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout and Design System sections render
 `agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
 `agent-prompt-chat-log` (present only once the chat has a turn), `agent-prompt-message`,
 `agent-prompt-send`, and `agent-prompt-save`. In every other host those three controls are absent
 and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action
 requires a harness source checkout; no file changes.
 
-`agent-prompt-save` writes the editor's exact UTF-8 text to
-`.devboard/prompts/scout-recommendations.md` under the served checkout, adds nothing, strips
-nothing, and writes no other file; success shows `agent-prompt-notice` and leaves the editor on
-the saved bytes, and failure shows `agent-prompt-error` with the file unchanged. Only that
-click writes the file. A chat turn posts over the WebSocket, streams the reply into
-`agent-prompt-chat-log`, and puts a proposed complete prompt in the editor without any copy; it
-writes no file, creates no scan, files no issue, and changes no Auto Scout state. A failed turn
-shows `agent-prompt-chat-error` and leaves the editor and file untouched. The chat agent reads
-`prompts/agent-prompt-chat.md` and returns the replacement between the line-anchored
-`<prompt-file>` and `</prompt-file>` markers, so Markdown fences inside the prompt survive intact.
+`agent-prompt-save` writes the editor's exact UTF-8 text to the descriptor's prompt file under the
+served checkout, adds nothing, strips nothing, and writes no other file; success shows
+`agent-prompt-notice` and leaves the editor on the saved bytes, and failure shows
+`agent-prompt-error` with the file unchanged. The notice names the run that reads the file next:
+the next scan for Auto Scout and the next cycle for Design System. Only that click writes the file.
+A chat turn posts over the WebSocket, streams the reply into `agent-prompt-chat-log`, and puts a
+proposed complete prompt in the editor without any copy; it writes no file, creates no scan, files
+no issue, and changes no agent state. A failed turn shows `agent-prompt-chat-error` and leaves the
+editor and file untouched. The chat agent reads `prompts/agent-prompt-chat.md` and returns the
+replacement between the line-anchored `<prompt-file>` and `</prompt-file>` markers, so Markdown
+fences inside the prompt survive intact.
 
 ### Cadence and limits
 
@@ -1422,9 +1429,11 @@ newest 100 run directories.
 ### Design System
 
 Design System is the `design` descriptor. Its sidebar entry `open-issues-design` opens the shared
-`agent-page` with `data-agent="design"` and `design-activity`. While started, it audits the
-interface source `<REPO_DIR>/.devboard/client` (`.svelte`, `.css`, `.ts`, and the harness
-`index.html` entry) against the repository-relative documents `DESIGN.md` and
+`agent-page` with `data-agent="design"` and `design-activity`. Its prompt section shows
+`.devboard/prompts/design-system.md`, the file the `/design-system-audit` command reads; in a
+harness source checkout it is editable and chat-backed exactly like the Auto Scout prompt. While
+started, it audits the interface source `<REPO_DIR>/.devboard/client` (`.svelte`, `.css`, `.ts`,
+and the harness `index.html` entry) against the repository-relative documents `DESIGN.md` and
 `design/tokens.json` (overridable with `DESIGN_SOURCE_DIR`, `DESIGN_DOCUMENT`, and
 `DESIGN_TOKEN_DOCUMENT`). The documents are normative: a client value, state treatment, wording,
 spacing, or placement they do not cover is a divergence.
@@ -2869,11 +2878,12 @@ persistence, the Watchdog cap, the shared table columns, freshness without a rel
 command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and
 the footer indicator with no console error. It also proves Coach's shared cycle detail and
 persisted settings, and the prompt section: every page renders `agent-prompt` directly after
-`agent-header`; Watchdog shows `agent-prompt-absent`; an installed host is read-only and refuses
-a save with an error while its prompt file stays byte-identical; a source-checkout fixture
-renders the editor, chat, and save, one chat turn streams a reply and changes the editor with the
-file untouched, Save makes the file byte-equal to the editor and a reload puts those bytes back
-in the editor.
+`agent-header`; Auto Scout and Design System show their own prompt files; Watchdog and Coach show
+`agent-prompt-absent`; an installed host is read-only and refuses a save with an error while its
+prompt files stay byte-identical; a source-checkout fixture renders the editor, chat, and save for
+both file-backed agents, one chat turn streams a reply and changes the editor with the file
+untouched, Save makes each file byte-equal to its editor and a reload puts those bytes back in the
+editor.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

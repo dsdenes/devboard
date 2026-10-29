@@ -4,6 +4,7 @@
 |---|---|---|---|
 | Activity bar, sidebar, status bar | workspace chrome | `ActivityBar`, `Sidebar`, `StatusBar` | reuse; one page per mode, no tab strip |
 | Page identity (`h1`, stale badge) | project and freshness state | `.discover-head__title`, `.badge[data-tone]` | extend: header composition; no dirty badge |
+| Project definition | one-sentence description of the project | `.discover-head__definition`, `sheet.definition` | render below the title when the leaf is known; `data-testid="discover-definition"` |
 | Freshness meta line | commit and discovery date | `.discover-head__meta`, `freshness` from `discover.svelte` | extend: `data-testid="discover-freshness"` |
 | `Re-discover` / `Discover project` | primary action | `Button` (default), `discover.startDisabled/startTitle` | reuse |
 | `Run and verify`, `Platform`, `Delivery` | section group labels | `.discover-group__title` | extend: mirrors `.sidebar-group__title` rhythm |
