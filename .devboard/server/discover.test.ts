@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -1135,6 +1136,41 @@ describe("discover mode", () => {
       }
     },
     60000,
+  );
+
+  test(
+    "refreshes Discover on a host holding a large tracked file without blocking memory",
+    async () => {
+      const fixture = createFixture("large-host");
+      const { server, url } = startServer({ fixture });
+      const client = await connect(url);
+      try {
+        const published = await runDiscover(client);
+        expect(published.stale).toBe(false);
+
+        const big = join(fixture.root, "big.bin");
+        writeFileSync(big, "");
+        truncateSync(big, 1024 * 1024 * 1024);
+        git(fixture.root, ["add", "big.bin"]);
+
+        const rssBefore = process.memoryUsage().rss;
+        const refreshed = await discoverState(client);
+        const grown = process.memoryUsage().rss - rssBefore;
+        expect(refreshed.stale).toBe(true);
+        // Reading the whole gibibyte would allocate it; the fingerprint streams
+        // it in fixed-size chunks instead.
+        expect(grown).toBeLessThan(256 * 1024 * 1024);
+
+        // The WebSocket keeps serving commands once the fingerprint is current.
+        client.send({ type: "getGoal" });
+        const goal = await client.waitFor((message) => message.type === "goal");
+        expect(goal.text).toBe(GOAL_TEXT);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    120000,
   );
 
   test(
