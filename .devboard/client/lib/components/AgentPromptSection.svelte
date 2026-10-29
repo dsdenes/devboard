@@ -120,9 +120,6 @@
             Send
           </Button>
         </div>
-        <p class="agent-prompt__hint">
-          The chat proposes text in the editor; only Save writes the prompt file.
-        </p>
       </section>
     {/if}
   {/if}
