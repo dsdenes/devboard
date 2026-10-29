@@ -12,6 +12,7 @@
     scalarText,
     sectionEntries,
     sectionLeaf,
+    technologyName,
     unknownText,
   } from "../discover-format";
   import { connection } from "../connection.svelte";
@@ -62,6 +63,9 @@
   }
 
   const MONO_FIELDS = new Set(["artifact", "defaultBranch", "manifests"]);
+
+  /** Platform leaves that name technologies rather than facts about them. */
+  const TECHNOLOGY_FIELDS = new Set(["languages", "runtimes"]);
 
   const sheet = $derived(discover.sheet);
   const freshness = $derived(discover.freshness);
@@ -152,7 +156,9 @@
 
   const stackLeaf = $derived(sectionLeaf(sheet, "stack"));
   const stackLines = $derived(
-    stackLeaf === undefined || stackLeaf.confidence === "unknown" ? [] : leafLines(stackLeaf.value),
+    stackLeaf === undefined || stackLeaf.confidence === "unknown"
+      ? []
+      : [...new Set(leafLines(stackLeaf.value).map(technologyName))],
   );
 
   const architectureSection = $derived(sheet?.architecture);
@@ -212,6 +218,12 @@
 
   function leafText(leaf: Leaf): string {
     return leafLines(leaf.value).join(", ");
+  }
+
+  /** A fact line; a technology inventory drops the versions the crawl appended. */
+  function factText(key: string, leaf: Leaf): string {
+    if (!TECHNOLOGY_FIELDS.has(key)) return leafText(leaf);
+    return leafLines(leaf.value).map(technologyName).join(", ");
   }
 
   function boundaryValues(leaf: Leaf, kind: BoundaryGroup["kind"]): string[] {
@@ -362,7 +374,7 @@
       {#each facts as [key, leaf] (key)}
         <div class="discover-fact">
           <dt>{humanize(key)}</dt>
-          <dd class:discover-mono={MONO_FIELDS.has(key)}>{leafText(leaf)}</dd>
+          <dd class:discover-mono={MONO_FIELDS.has(key)}>{factText(key, leaf)}</dd>
         </div>
       {/each}
     </dl>

@@ -118,7 +118,7 @@ Sections and required keys:
 {
   "schemaVersion": 1,
   "definition": { "value": "Short one-sentence project definition of at most 240 characters.", "evidence": ["README.md"], "confidence": "declared" },
-  "stack": { "value": ["one technology per entry"], "evidence": ["path"], "confidence": "declared" },
+  "stack": { "value": ["one technology name per entry, no version"], "evidence": ["path"], "confidence": "declared" },
   "deployment": {
     "class": { "value": "package|container|static-site|service|cli|library|plugin|none", "evidence": ["path"], "confidence": "observed" },
     "artifact": { "value": "artifact name", "evidence": ["path"], "confidence": "observed" },
@@ -164,8 +164,8 @@ Sections and required keys:
     "artifacts": { "value": ["artifact"], "evidence": ["path"], "confidence": "observed" }
   },
   "runtime": {
-    "languages": { "value": ["language plus version"], "evidence": ["path"], "confidence": "observed" },
-    "runtimes": { "value": ["runtime and version"], "evidence": ["path"], "confidence": "declared" },
+    "languages": { "value": ["language name"], "evidence": ["path"], "confidence": "observed" },
+    "runtimes": { "value": ["runtime name"], "evidence": ["path"], "confidence": "declared" },
     "packageManagers": { "value": ["package manager"], "evidence": ["path"], "confidence": "observed" },
     "versions": { "value": ["pinned version fact"], "evidence": ["path"], "confidence": "observed" },
     "manifests": { "value": ["repo-relative manifest path"], "evidence": ["path"], "confidence": "observed" }
@@ -193,8 +193,10 @@ Section rules:
 - `definition` is exactly one sentence of at most 240 characters, ends with `.`, and describes what
   the project is for its users. It is not a copy of the README's opening paragraph.
 - `stack` is the short platform list: languages, runtimes, package managers, frameworks, and major
-  tools actually used to build or run the project. Do not list individual third-party
-  dependencies; those belong in `dependencyMap.keyDependencies`.
+  tools actually used to build or run the project. Each entry is the bare technology name, without a
+  version number or a version constraint: write `PostgreSQL`, not `PostgreSQL 15`. Pinned versions
+  belong to `runtime.versions`. Do not list individual third-party dependencies; those belong in
+  `dependencyMap.keyDependencies`.
 - `dependencyMap.routes` records one HTTP route per entry as its path, beginning with `/`, and
   optionally the method, such as `/orders` or `GET /orders/:id`. The leading slash belongs to the
   route; it is not an absolute host path.
@@ -257,7 +259,8 @@ Section rules:
 - `runtime`, `dependencyMap`, and `delivery` are mandatory cards. Report languages, runtimes,
   package managers, versions, and manifests; binaries, packages, routes, jobs, external services,
   data stores, and key dependencies; artifact target, release channels, version scheme, and
-  migration policy.
+  migration policy. `languages` and `runtimes` carry the bare name, without a version number or a
+  version constraint; every pinned version belongs to `runtime.versions`.
 
 ## External boundaries
 
@@ -473,7 +476,9 @@ different evidence between crawls.
   `GOAL.md`/`adrs/`, then source, then tests. A list value's single evidence is the file that
   declares every entry in it.
 - Copy each free-text value verbatim from its cited file and keep the shortest exact fragment that
-  states the fact. Do not paraphrase, expand a version, or merge two files into one cell.
+  states the fact. Do not paraphrase, expand a version, or merge two files into one cell. The
+  name-only entries above — `stack`, `runtime.languages`, and `runtime.runtimes` — drop the version
+  or constraint their cited file declares.
 - Derive confidence by this table and nothing else:
   - `observed` when the value appears verbatim in the cited file under a matching key or line;
   - `declared` when the cited file states the fact in prose or a task name;
