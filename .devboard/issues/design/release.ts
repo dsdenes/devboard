@@ -274,7 +274,23 @@ async function ensureWorktree(
   const remote = await git(repoDir, ["rev-parse", "--verify", "--quiet", "origin/main"]);
   const base = remote.code === 0 ? "origin/main" : "main";
   const added = await git(repoDir, ["worktree", "add", "-b", branch, directory, base]);
-  must(added, `could not create the cycle worktree from ${base}`);
+  if (added.code !== 0) {
+    // A failed add can leave a partial directory and branch behind; discard
+    // only what this attempt created, never a pre-existing worktree.
+    if (existsSync(directory)) {
+      try {
+        rmSync(directory, { recursive: true, force: true });
+      } catch {
+        // The prune and branch deletion below still run.
+      }
+    }
+    await git(repoDir, ["worktree", "prune"]);
+    await git(repoDir, ["branch", "-D", branch]);
+    throw new Error(
+      `could not create the cycle worktree from ${base}: ` +
+        (firstLine(added.stderr) || firstLine(added.stdout)),
+    );
+  }
   return { directory, branch };
 }
 
@@ -289,9 +305,10 @@ export async function releaseDocuments(input: ReleaseInput): Promise<ReleaseResu
   const waitForWorkflow = input.waitForWorkflow ?? defaultWaitForWorkflow;
   const publish = input.publish ?? defaultPublish;
   const project = originForge(input.repoDir, input.environment)?.project ?? "";
-  const worktree = await ensureWorktree(input.repoDir, input.cycleId, git);
   let pushed = false;
+  let worktree: Worktree | undefined;
   try {
+    worktree = await ensureWorktree(input.repoDir, input.cycleId, git);
     input.activity(`documentation: ${input.summary}`);
     for (const document of input.documents) {
       const target = join(worktree.directory, document.path);
@@ -457,10 +474,14 @@ export async function releaseDocuments(input: ReleaseInput): Promise<ReleaseResu
     return { ok: true, version, url, sha, branch: worktree.branch };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    if (pushed) {
+    if (pushed && worktree !== undefined) {
       // The commit stays on main; the local worktree adds nothing and the
       // branch is already merged into the pushed history.
-      await removeWorktree(input.repoDir, worktree, git);
+      try {
+        await removeWorktree(input.repoDir, worktree, git);
+      } catch {
+        // Cleanup is best effort; the pushed commit is the outcome.
+      }
     }
     return { ok: false, detail, step: pushed ? "release" : "documentation" };
   }

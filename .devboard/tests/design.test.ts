@@ -128,6 +128,21 @@ function finding(): DesignFinding {
   };
 }
 
+function editDecision(): Record<string, unknown> {
+  return {
+    findings: [],
+    documentation: {
+      decision: "edit",
+      summary: "Document the accent standard",
+      rationale: "Two interface surfaces share the same token.",
+      surfaces: [".devboard/client/App.svelte", ".devboard/client/index.html"],
+      contradiction: false,
+      evidence: [],
+      addsTokens: [],
+    },
+  };
+}
+
 describe("design audit input and answer", () => {
   test("reads the interface sources and both documents", async () => {
     const { repo, config } = await fixture("input");
@@ -492,6 +507,108 @@ describe("design worker", () => {
     await worker.waitForCycle();
     expect(released).toBe(0);
     expect(readFileSync(join(repo, "DESIGN.md"), "utf8")).toContain("Use tokens for every color");
+    await worker.stop();
+  });
+
+  test("a rejecting release settles the cycle, records the failure, and a later cycle runs", async () => {
+    const { repo, stateDir } = await fixture("release-throws");
+    const counter = { connects: 0 };
+    let released = 0;
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      cadenceMs: 60 * 60_000,
+      syncMs: 10_000,
+      manualCycles: true,
+      github: {
+        listIssues: async () => [],
+        listReleases: async () => [],
+        listOpenIssueTitles: async () => [],
+        closingCommit: async () => null,
+        resolveCommit: async () => null,
+        containingReleaseTags: async () => [],
+      },
+      fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+      release: async () => {
+        released += 1;
+        throw new Error("boom");
+      },
+      connect: () =>
+        fakePeer((directory) => {
+          writeFileSync(
+            join(directory, "draft", "DESIGN.md"),
+            `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
+          );
+          writeFileSync(join(directory, "audit.json"), JSON.stringify(editDecision()));
+        }, counter).peer as never,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.refresh();
+    await worker.beginCycle();
+    await worker.waitForCycle();
+    expect(released).toBe(1);
+    expect(worker.cyclingNow).toBe(false);
+    expect(worker.currentState.lifecycle).toBe("idle");
+    expect(worker.currentState.lastError).toContain("boom");
+
+    await worker.beginCycle();
+    await worker.waitForCycle();
+    expect(counter.connects).toBe(2);
+    await worker.stop();
+  });
+
+  test("a missing draft document fails the cycle instead of rejecting it", async () => {
+    const { repo, stateDir } = await fixture("missing-draft");
+    const counter = { connects: 0 };
+    let released = 0;
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      cadenceMs: 60 * 60_000,
+      syncMs: 10_000,
+      manualCycles: true,
+      github: {
+        listIssues: async () => [],
+        listReleases: async () => [],
+        listOpenIssueTitles: async () => [],
+        closingCommit: async () => null,
+        resolveCommit: async () => null,
+        containingReleaseTags: async () => [],
+      },
+      fileIssue: async () => ({ number: 1, url: "https://forge.test/issues/1" }),
+      release: async () => {
+        released += 1;
+        return { ok: true, version: "0.1.9", url: "u", sha: "a", branch: "b" };
+      },
+      connect: () =>
+        fakePeer((directory) => {
+          writeFileSync(
+            join(directory, "draft", "DESIGN.md"),
+            `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
+          );
+          rmSync(join(directory, "draft", "design", "tokens.json"));
+          writeFileSync(join(directory, "audit.json"), JSON.stringify(editDecision()));
+        }, counter).peer as never,
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.refresh();
+    await worker.beginCycle();
+    await worker.waitForCycle();
+    expect(released).toBe(0);
+    expect(worker.cyclingNow).toBe(false);
+    expect(worker.currentState.lifecycle).toBe("idle");
+    expect(worker.currentState.lastError).toContain("design/tokens.json");
+    const cycleId = worker.currentState.newestCycleId!;
+    const activity = readFileSync(
+      join(repo, ".devboard", ".tmp", "design", "cycles", cycleId, "activity.json"),
+      "utf8",
+    );
+    expect(activity).toContain("release failed");
+    expect(activity).toContain("design/tokens.json");
+
+    await worker.beginCycle();
+    await worker.waitForCycle();
+    expect(counter.connects).toBe(2);
     await worker.stop();
   });
 
@@ -935,5 +1052,38 @@ describe("design release planner", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.detail).toContain("DESIGN.md");
     expect(readFileSync(join(repo, config.designDocument), "utf8")).toBe("local uncommitted\n");
+  });
+
+  test("a worktree that cannot be created fails the documentation step and leaves nothing behind", async () => {
+    const { repo, bare, config } = await releaseFixture("worktree-failure");
+    const next = readDocuments(repo, config);
+    const directory = join(repo, ".worktree", "design-cycle-7");
+    const real = hookRun(repo, bare, () => undefined);
+    const result = await releaseDocuments({
+      repoDir: repo,
+      harnessDir: join(repo, ".devboard"),
+      cycleId: "cycle-7",
+      summary: "Document a standard",
+      config,
+      documents: next,
+      environment: { PATH: process.env.PATH },
+      activity: () => undefined,
+      now: () => new Date(),
+      run: async (argv, options) => {
+        if (argv.includes("worktree") && argv.includes("add")) {
+          mkdirSync(directory, { recursive: true });
+          return { code: 128, stdout: "", stderr: "fatal: could not create work tree dir" };
+        }
+        return real(argv, options);
+      },
+      waitForWorkflow: async () => ({ ok: true }),
+      publish: async () => ({ ok: true }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.step).toBe("documentation");
+      expect(result.detail).toContain("could not create the cycle worktree");
+    }
+    expect(existsSync(directory)).toBe(false);
   });
 });

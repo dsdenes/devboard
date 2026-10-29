@@ -785,114 +785,141 @@ export class DesignWorker {
       }
     };
 
-    let text: string;
+    // Every await after `active.finished = true` sits inside this guard so a
+    // thrown draft, release, or filing error still settles the cycle instead
+    // of leaving it active forever with no recorded reason.
+    let error: string | null = null;
     try {
-      text = readAuditText(active.directory);
-    } catch {
-      this.finishCycle(active, "the agent wrote no audit.json");
-      return;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      this.finishCycle(active, "audit.json is not valid JSON");
-      return;
-    }
-    let audit;
-    try {
-      audit = parseAudit(parsed, {
-        input: active.input,
-        knownTitles: [
-          ...this.state.issues.map((issue) => issue.title),
-          ...this.openTitles,
-        ],
-      });
-    } catch (error) {
-      this.finishCycle(active, detailOf(error));
-      return;
-    }
-    for (const dropped of audit.dropped) {
-      record(`dropped “${dropped.title}”: ${dropped.reason}`);
-    }
-    for (const finding of audit.findings) {
-      record(`finding “${finding.title}” (${finding.category})`);
-    }
-    if (audit.documentationError !== null) {
-      record(`documentation rejected: ${audit.documentationError}`);
-    }
-
-    const changed = draftChanged(active.directory, active.input.documents);
-    let releaseError: string | null = null;
-    let released: ReleaseResult | undefined;
-    if (changed) {
-      if (audit.documentation.decision !== "edit") {
-        record("ignored a document change without an admissible decision");
-      } else {
-        const draftDesign = readDraftDocument(active.directory, this.config.designDocument);
-        const draftTokens = readDraftDocument(active.directory, this.config.tokenDocument);
-        const missing = missingPrincipleSections(draftDesign);
-        if (missing.length > 0) {
-          releaseError = `the revised ${this.config.designDocument} lacks ${missing.join(" and ")}`;
-        } else if (!validTokenDocument(draftTokens)) {
-          releaseError = `the revised ${this.config.tokenDocument} is not a JSON object`;
-        } else {
-          const originalTokens = active.input.documents.find(
-            (document) => document.path === this.config.tokenDocument,
-          )?.text ?? "";
-          const before = tokenNames(originalTokens);
-          const after = tokenNames(draftTokens);
-          const beforeValues = tokenValues(originalTokens);
-          const afterValues = tokenValues(draftTokens);
-          const changed = new Set([
-            ...[...after].filter((name) => !before.has(name)),
-            ...[...afterValues].filter(
-              ([name, value]) => beforeValues.get(name) !== value,
-            ).map(([name]) => name),
-          ]);
-          const undocked = tokensNamedInProse(changed, draftDesign);
-          if (undocked.length > 0) {
-            releaseError =
-              `the token document changes ${undocked.join(", ")} without a prose table entry`;
-          }
-        }
-        if (releaseError === null) {
-          this.state.lifecycle = "releasing";
-          this.publish();
-          record(`documentation: ${audit.documentation.summary}`);
-          released = await this.release({
-            repoDir: this.repoDir,
-            harnessDir: resolve(this.repoDir, ".devboard"),
-            cycleId: active.cycleId,
-            summary: audit.documentation.summary,
-            config: this.config,
-            documents: [
-              { path: this.config.designDocument, text: draftDesign },
-              { path: this.config.tokenDocument, text: draftTokens },
-            ],
-            environment: this.environment,
-            activity: record,
-            now: this.clock,
-          });
-          if (!released.ok) releaseError = released.detail;
-          else {
-            this.state.release = {
-              version: released.version,
-              url: released.url,
-              at: this.clock().toISOString(),
-            };
-            record(`released ${released.version}: ${released.url}`);
-          }
-        }
-        if (releaseError !== null) record(`release failed: ${releaseError}`);
+      let text: string;
+      try {
+        text = readAuditText(active.directory);
+      } catch {
+        error = "the agent wrote no audit.json";
+        return;
       }
-    } else if (audit.documentation.decision === "edit") {
-      record("documentation edit produced no changed document");
-    }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        error = "audit.json is not valid JSON";
+        return;
+      }
+      let audit;
+      try {
+        audit = parseAudit(parsed, {
+          input: active.input,
+          knownTitles: [
+            ...this.state.issues.map((issue) => issue.title),
+            ...this.openTitles,
+          ],
+        });
+      } catch (failure) {
+        error = detailOf(failure);
+        return;
+      }
+      for (const dropped of audit.dropped) {
+        record(`dropped “${dropped.title}”: ${dropped.reason}`);
+      }
+      for (const finding of audit.findings) {
+        record(`finding “${finding.title}” (${finding.category})`);
+      }
+      if (audit.documentationError !== null) {
+        record(`documentation rejected: ${audit.documentationError}`);
+      }
 
-    const filingError = await this.fileFindings(active, audit.findings, record);
-    const error = releaseError ?? filingError;
-    this.finishCycle(active, error);
+      const changed = draftChanged(active.directory, active.input.documents);
+      let releaseError: string | null = null;
+      let released: ReleaseResult | undefined;
+      if (changed) {
+        if (audit.documentation.decision !== "edit") {
+          record("ignored a document change without an admissible decision");
+        } else {
+          const readDraft = (document: string): string | null => {
+            try {
+              return readDraftDocument(active.directory, document);
+            } catch {
+              return null;
+            }
+          };
+          const draftDesign = readDraft(this.config.designDocument);
+          const draftTokens = readDraft(this.config.tokenDocument);
+          if (draftDesign === null || draftTokens === null) {
+            const unreadable = [
+              ...(draftDesign === null ? [this.config.designDocument] : []),
+              ...(draftTokens === null ? [this.config.tokenDocument] : []),
+            ];
+            releaseError =
+              `the revised ${unreadable.join(" and ")} could not be read from the draft`;
+          } else {
+            const missing = missingPrincipleSections(draftDesign);
+            if (missing.length > 0) {
+              releaseError = `the revised ${this.config.designDocument} lacks ${missing.join(" and ")}`;
+            } else if (!validTokenDocument(draftTokens)) {
+              releaseError = `the revised ${this.config.tokenDocument} is not a JSON object`;
+            } else {
+              const originalTokens = active.input.documents.find(
+                (document) => document.path === this.config.tokenDocument,
+              )?.text ?? "";
+              const before = tokenNames(originalTokens);
+              const after = tokenNames(draftTokens);
+              const beforeValues = tokenValues(originalTokens);
+              const afterValues = tokenValues(draftTokens);
+              const changedTokens = new Set([
+                ...[...after].filter((name) => !before.has(name)),
+                ...[...afterValues].filter(
+                  ([name, value]) => beforeValues.get(name) !== value,
+                ).map(([name]) => name),
+              ]);
+              const undocked = tokensNamedInProse(changedTokens, draftDesign);
+              if (undocked.length > 0) {
+                releaseError =
+                  `the token document changes ${undocked.join(", ")} without a prose table entry`;
+              }
+            }
+          }
+          if (releaseError === null && draftDesign !== null && draftTokens !== null) {
+            this.state.lifecycle = "releasing";
+            this.publish();
+            record(`documentation: ${audit.documentation.summary}`);
+            released = await this.release({
+              repoDir: this.repoDir,
+              harnessDir: resolve(this.repoDir, ".devboard"),
+              cycleId: active.cycleId,
+              summary: audit.documentation.summary,
+              config: this.config,
+              documents: [
+                { path: this.config.designDocument, text: draftDesign },
+                { path: this.config.tokenDocument, text: draftTokens },
+              ],
+              environment: this.environment,
+              activity: record,
+              now: this.clock,
+            });
+            if (!released.ok) releaseError = released.detail;
+            else {
+              this.state.release = {
+                version: released.version,
+                url: released.url,
+                at: this.clock().toISOString(),
+              };
+              record(`released ${released.version}: ${released.url}`);
+            }
+          }
+          if (releaseError !== null) record(`release failed: ${releaseError}`);
+        }
+      } else if (audit.documentation.decision === "edit") {
+        record("documentation edit produced no changed document");
+      }
+
+      const filingError = await this.fileFindings(active, audit.findings, record);
+      error = releaseError ?? filingError;
+    } catch (failure) {
+      const detail = detailOf(failure).length > 0 ? detailOf(failure) : "the cycle failed";
+      record(`failed: ${detail}`);
+      error = detail;
+    } finally {
+      this.finishCycle(active, error);
+    }
   }
 
   private async fileFindings(
