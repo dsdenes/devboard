@@ -51,7 +51,13 @@ const RELEASE_REPO = process.env.DEVBOARD_RELEASE_REPO ?? "dsdenes/devboard";
 const RELEASE_PREFIX = "devboard-";
 const UPDATE_INTERVAL_MS = 60_000;
 const DEFAULT_PORT = 8080;
-const START_TIMEOUT_MS = 30_000;
+/** How long a freshly spawned dashboard has to answer before install fails. */
+const START_TIMEOUT_MS = (() => {
+  const value = Number(process.env.DEVBOARD_START_TIMEOUT_MS);
+  return Number.isInteger(value) && value > 0 ? value : 30_000;
+})();
+/** How long a dashboard gets to exit after SIGTERM before it is killed. */
+const STOP_GRACE_MS = 10_000;
 
 const usage = `Usage: devboard <command> [options]
 
@@ -242,7 +248,7 @@ async function stopDashboardProcesses(host) {
     }
     stopped.push(dashboard.pid);
   }
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + STOP_GRACE_MS;
   while (Date.now() < deadline && stopped.some(processRunning)) await sleep(100);
   for (const pid of stopped) {
     if (!processRunning(pid)) continue;
@@ -253,6 +259,30 @@ async function stopDashboardProcesses(host) {
     }
   }
   return stopped;
+}
+
+/**
+ * Stops the dashboard this install spawned. The pid is signalled only while
+ * `/proc` still shows the harness entry point there, so a recycled pid is
+ * never touched, and the caller does not report failure before it exited.
+ */
+async function stopSpawnedDashboard(pid, harness) {
+  if (!isDashboardFrom(pid, harness)) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  const deadline = Date.now() + STOP_GRACE_MS;
+  while (Date.now() < deadline && processRunning(pid)) await sleep(100);
+  if (!processRunning(pid) || !isDashboardFrom(pid, harness)) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    return;
+  }
+  const killed = Date.now() + 5_000;
+  while (Date.now() < killed && processRunning(pid)) await sleep(50);
 }
 
 function portFree(port) {
@@ -909,6 +939,7 @@ async function startDashboard(host, harness, port, stateDir) {
   closeSync(fd);
   child.unref();
   if (!(await waitForHttp(port))) {
+    await stopSpawnedDashboard(child.pid, harness);
     let tail = "";
     try {
       tail = readFileSync(log, "utf8").split("\n").slice(-8).join("\n");
