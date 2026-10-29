@@ -24,7 +24,7 @@ import {
 } from "../issues/scout/paths";
 import { ghCommand } from "../issues/scout/preflight";
 import { readScanFile, readSettings, type ScoutState } from "../issues/scout/state";
-import { ScoutWorker } from "../issues/scout/worker";
+import { RESOLUTION_RETRY_MS, ScoutWorker } from "../issues/scout/worker";
 import type { ScoutRecommendation } from "../issues/scout/recommendation";
 import type { AcpPeer, IssuesPeerOptions } from "../issues/worker";
 import {
@@ -247,6 +247,26 @@ class HangingGitHub extends FakeGitHub {
   override async listIssues(): Promise<ScoutGitHubIssue[]> {
     if (this.hanging) return await new Promise<ScoutGitHubIssue[]>(() => undefined);
     return await super.listIssues();
+  }
+}
+
+/** Counts every release resolution; an unknown closing commit stays null. */
+class UnresolvableGitHub extends FakeGitHub {
+  closingCalls = 0;
+
+  override async closingCommit(issueNumber: number): Promise<string | null> {
+    this.closingCalls += 1;
+    return await super.closingCommit(issueNumber);
+  }
+}
+
+/** Counts every release resolution, and never completes one. */
+class StalledResolutionGitHub extends FakeGitHub {
+  closingCalls = 0;
+
+  override async closingCommit(_issueNumber: number): Promise<string | null> {
+    this.closingCalls += 1;
+    return await new Promise<never>(() => undefined);
   }
 }
 
@@ -880,6 +900,108 @@ describe("periodic reads and state mapping", () => {
         "the reopened issue",
       );
       expect(reopened.issues.find((row) => row.number === 2)?.state).toBe("pending");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("an unresolved closed issue waits out its backoff before another attempt", async () => {
+    const github = new UnresolvableGitHub();
+    github.add({
+      number: 12,
+      title: "Closed without a commit",
+      state: "closed",
+      createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    const f = await fixture({ label: "version-backoff", github, now: startClock });
+    try {
+      const first = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the first read",
+      );
+      expect(github.closingCalls).toBe(1);
+      expect(first.issues[0]?.version).toBeNull();
+      expect(first.issues[0]?.versionAttemptAt).toBe(startClock.toISOString());
+      expect(first.issues[0]?.versionError).toBe("no closing commit was found");
+
+      await f.worker.refresh();
+      expect(github.closingCalls).toBe(1);
+
+      f.clock.now = new Date(startClock.getTime() + RESOLUTION_RETRY_MS);
+      await f.worker.refresh();
+      await waitFor(
+        () => (github.closingCalls === 2 ? true : undefined),
+        "the retry after the backoff",
+      );
+      expect(f.state().issues[0]?.versionAttemptAt).toBe(f.clock.now.toISOString());
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a second sync resolves no already-attempted closed issue and still scans", async () => {
+    const github = new UnresolvableGitHub();
+    for (let index = 1; index <= 20; index += 1) {
+      github.add({
+        number: index,
+        title: `Closed ${index}`,
+        state: "closed",
+        createdAt: `2026-10-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+      });
+    }
+    const f = await fixture({ label: "resolution-backoff-many", github, now: startClock });
+    try {
+      const first = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the first read",
+      );
+      expect(github.closingCalls).toBe(20);
+      expect(first.issues.every((row) => row.versionAttemptAt !== null)).toBe(true);
+
+      await f.worker.refresh();
+      expect(github.closingCalls).toBe(20);
+      expect(f.state().sync.state).toBe("ok");
+      await waitFor(() => (f.peers.length > 0 ? true : undefined), "the scan after the read");
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("a stalled resolution cannot hold syncing past the read deadline", async () => {
+    const github = new StalledResolutionGitHub();
+    for (let index = 1; index <= 20; index += 1) {
+      github.add({
+        number: index,
+        title: `Closed ${index}`,
+        state: "closed",
+        createdAt: `2026-10-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+      });
+    }
+    const f = await fixture({
+      label: "resolution-deadline",
+      github,
+      readTimeoutMs: 400,
+      now: startClock,
+    });
+    try {
+      const started = Date.now();
+      const first = await waitFor(
+        () => (f.state().sync.state === "ok" ? f.state() : undefined),
+        "the first read",
+      );
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(github.closingCalls).toBe(1);
+      expect(first.issues).toHaveLength(20);
+      const stalled = first.issues.filter((row) => row.versionAttemptAt !== null);
+      expect(stalled).toHaveLength(1);
+      expect(stalled[0]?.versionError).toContain("release resolution did not finish");
+
+      // `syncing` was released: the next sync runs, bounded by its own
+      // deadline, and the tick that follows starts a scan.
+      await f.worker.refresh();
+      expect(github.closingCalls).toBe(2);
+      expect(f.state().sync.state).toBe("ok");
+      await waitFor(() => (f.peers.length > 0 ? true : undefined), "the scan after the read");
     } finally {
       await f.worker.stop();
     }

@@ -527,6 +527,7 @@ describe("bridge", () => {
       lastScanStartedAt: null,
       issues: [],
       openTitles: [],
+      releaseSignature: null,
       sync: { state: "stale", at: null, error: null },
       scan: null,
       newestScanId: scan.scanId,

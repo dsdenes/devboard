@@ -2816,7 +2816,7 @@ export function createApp(options: AppOptions) {
 
   function refreshDiscoverSnapshot(): void {
     const root = targetRoot();
-    const read = readArtifacts(root, { trustGrounding: remoteTarget !== undefined });
+    const read = readArtifacts(root);
     discoverArtifacts = read.artifacts;
     discoverReadError = read.error;
     if (read.artifacts === null) {
@@ -4806,6 +4806,10 @@ export function createApp(options: AppOptions) {
         lifecyclePausedForManualRun = false;
         if (lifecycleRunning && lifecycle.paused) resumeLifecycle(target);
       }
+      // The sequence's last broadcast happened while it still owned the run, so
+      // the durable state claims an active sequence with no run. Persist the
+      // cleared flags; otherwise a restart resumes work nobody asked for.
+      persistState();
     }
   }
 
@@ -6842,7 +6846,7 @@ export function createApp(options: AppOptions) {
             } else {
               afterDiscoverMutation(
                 ws,
-                confirmGlossaryTerm(targetRoot(), term.context, term.id, remoteTarget !== undefined),
+                confirmGlossaryTerm(targetRoot(), term.context, term.id),
               );
             }
           } else if (command.type === "rejectGlossaryTerm") {
@@ -6857,7 +6861,6 @@ export function createApp(options: AppOptions) {
                   term.context,
                   term.id,
                   command.reason,
-                  remoteTarget !== undefined,
                 ),
               );
             }

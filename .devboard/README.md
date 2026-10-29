@@ -892,6 +892,11 @@ resurrects an invalidated id, never overwrites a human decision, and removes an 
 only when the new crawl no longer grounds it. A malformed or structurally invalid glossary fails
 the run atomically with one `discoverError` naming the file and rule.
 
+A published glossary is crawl evidence: its grounding is proved against the host when the crawl
+publishes it, never again on read. A deleted or renamed source file leaves the published set
+readable and stale instead of hiding every artifact and failing the next crawl on the previous
+glossary; only a staged glossary is checked against the live host.
+
 A successful run publishes exactly five skills under `.omp/skills/`: `discover-testing-strategy`,
 `discover-naming-conventions`, `discover-coding-conventions`,
 `discover-architecture-boundaries`, and `discover-glossary`. Each is a directory containing
@@ -1958,8 +1963,13 @@ blank version on the next read.
 
 While started, the worker reads every `scout` issue and every published release every 60 seconds,
 and immediately on Start; the table, states, and versions reflect a change within one interval. One
-periodic read, including every `gh` child it starts, is bounded to 30 seconds; a read that does not
-finish records a sync error and releases the worker, so the next interval reads again. A failed
+periodic read, including every `gh` child it starts and the release resolution that follows it, is
+bounded to 30 seconds; a read that does not finish records a sync error and releases the worker, so
+the next interval reads again. A closed issue whose version does not resolve is attempted at most
+once every six hours, and a newly published release retries every unresolved row at once. Each
+attempt records its time and, when it fails, the reason on the row; the rows that have waited
+longest are attempted first, and the whole resolution shares the read's deadline, so a stubborn
+issue cannot hold `syncing` and starve the remaining rows or the next scan. A failed
 read keeps the last known rows, shows the reason in `agent-sync-error`, and keeps the last success
 time in `agent-sync-at`; the reason clears on the next successful read. Filing stays blocked until
 a read succeeds. A GitHub rate limit (the `gh` text naming a primary or secondary limit, abuse

@@ -171,7 +171,11 @@ async function freePort(): Promise<number> {
   return port ?? 0;
 }
 
-async function startProcess(fixture: Fixture, port?: number): Promise<RunningServer> {
+async function startProcess(
+  fixture: Fixture,
+  port?: number,
+  agentArgs: string[] = [],
+): Promise<RunningServer> {
   const chosen = port ?? (await freePort());
   seedVerificationProvider(fixture.stateDir);
   const child = Bun.spawn({
@@ -195,6 +199,7 @@ async function startProcess(fixture: Fixture, port?: number): Promise<RunningSer
         "--no-close",
         "--question-epic=81",
         "--question-epic=82",
+        ...agentArgs,
       ].join(" "),
       PATH: `${fixture.binDir}:${process.env.PATH ?? ""}`,
       GH_TOKEN: "fake-token",
@@ -372,6 +377,18 @@ async function connect(url: string): Promise<TestClient> {
 
 function storedPath(fixture: Fixture): string {
   return stateFile(fixture.stateDir, resolve(fixture.root));
+}
+
+/** The durable state fields, or an empty record before the first write. */
+function storedState(fixture: Fixture): Record<string, unknown> {
+  try {
+    const envelope = JSON.parse(readFileSync(storedPath(fixture), "utf8")) as {
+      state?: Record<string, unknown>;
+    };
+    return envelope.state ?? {};
+  } catch {
+    return {};
+  }
 }
 
 /** The newest release version a fresh connection hears, or null before a check succeeds. */
@@ -657,6 +674,70 @@ describe("restart after SIGKILL", () => {
       }
     },
     180000,
+  );
+
+  test(
+    "a manual sequence that ends with a pending record does not resume on restart",
+    async () => {
+      const fixture = await createFixture();
+
+      let server = await startProcess(fixture, undefined, ["--no-resolve"]);
+      let client = await connect(server.url);
+      try {
+        client.send({ type: "startRun" });
+        expect(await client.waitFor((message) => message.type === "runStarted")).toMatchObject({
+          file: "0001-first.md",
+          manual: true,
+        });
+        const question = await client.waitFor(
+          (message) => message.type === "question" && typeof message.lane !== "string",
+        );
+        client.send({ type: "answer", id: question.id, value: "Alpha" });
+        expect(
+          await client.waitFor(
+            (message) => message.type === "runStopped",
+            "the manual run did not stop with its record pending",
+            20000,
+          ),
+        ).toMatchObject({ file: "0001-first.md", resolved: false });
+        // The sequence ended in memory; the durable state must agree.
+        await waitUntil(
+          () => {
+            const state = storedState(fixture);
+            return state.manualSequencing === false && state.manualRun === null;
+          },
+          "the cleared manual sequence was never persisted",
+          5000,
+        );
+      } finally {
+        client.close();
+        await kill(server.child);
+      }
+
+      const spawnsBeforeRestart = spawnPids(fixture.logPath).length;
+      server = await startProcess(fixture, undefined, ["--no-resolve"]);
+      client = await connect(server.url);
+      try {
+        // Nothing resolves the pending record until a client asks for it. The
+        // server runs in another process, so a real quiet window is the only
+        // way to observe that no peer spawned; fake timers cannot drive it.
+        const deadline = Date.now() + 1500;
+        while (Date.now() < deadline && spawnPids(fixture.logPath).length === spawnsBeforeRestart) {
+          await Bun.sleep(25);
+        }
+        expect(spawnPids(fixture.logPath).length).toBe(spawnsBeforeRestart);
+        expect(client.events.filter((message) => message.type === "runStarted")).toEqual([]);
+
+        client.send({ type: "startRun" });
+        expect(
+          await client.waitFor((message) => message.type === "runStarted"),
+        ).toMatchObject({ file: "0001-first.md", manual: true });
+      } finally {
+        client.close();
+        await kill(server.child);
+      }
+    },
+    60000,
   );
 
   test(
