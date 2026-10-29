@@ -1125,6 +1125,34 @@ function evidenceList(value: unknown, path: string): string[] {
   return [...entries].sort();
 }
 
+const ROUTE_METHOD_PATTERN = /^(?:GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|TRACE|CONNECT)\s+/;
+// A route path starts with `/`; only its host-home form is a leaked absolute
+// path. `/home` alone stays a legitimate route.
+const ROUTE_HOST_PATH_PATTERN = /^\/(?:home|Users)\/[^/]+(?:\/|$)/;
+
+/**
+ * One HTTP route, optionally prefixed with its method. Unlike a repository
+ * path, a route's leading `/` is the fact itself, so it is not an absolute
+ * host path; a home-directory absolute path still is.
+ */
+function routeText(value: unknown, path: string): string {
+  if (typeof value !== "string") invalid(path, "must be a string");
+  const text = value.trim();
+  if (text.length === 0) invalid(path, "must not be empty");
+  if (!singleLine(text)) invalid(path, "must be a single line");
+  if (text.length > CELL_MAX) invalid(path, `must be at most ${CELL_MAX} characters`);
+  if (text.includes("://")) invalid(path, "must not be a URL");
+  const route = text.replace(ROUTE_METHOD_PATTERN, "");
+  if (route.startsWith("~")) invalid(path, "must not carry a home directory");
+  if (route.startsWith("//") || route.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(route)) {
+    invalid(path, "must not carry an absolute host path");
+  }
+  if (ROUTE_HOST_PATH_PATTERN.test(route)) invalid(path, "must not carry an absolute host path");
+  if (route.split("/").includes("..")) invalid(path, "must stay inside the host");
+  if (hasSecret(text)) invalid(path, "must not carry a secret value");
+  return text;
+}
+
 function oneSentence(value: unknown, path: string): string {
   const text = textValue(value, path, DEFINITION_MAX);
   const terminators = text.match(/[.!?](?=\s|$)/g) ?? [];
@@ -1190,6 +1218,18 @@ function leafTexts(node: unknown, path: string): Leaf {
   if (record.value.length > LIST_MAX) invalid(`${path}.value`, "has too many entries");
   const values = [
     ...new Set(record.value.map((entry, index) => textValue(entry, `${path}.value[${index}]`))),
+  ].sort();
+  return { value: values, ...base };
+}
+
+function leafRoutes(node: unknown, path: string): Leaf {
+  const base = leafBase(node, path);
+  if (base.confidence === "unknown") return { value: null, ...base };
+  const record = node as Record<string, unknown>;
+  if (!Array.isArray(record.value)) invalid(`${path}.value`, "must be a list of strings");
+  if (record.value.length > LIST_MAX) invalid(`${path}.value`, "has too many entries");
+  const values = [
+    ...new Set(record.value.map((entry, index) => routeText(entry, `${path}.value[${index}]`))),
   ].sort();
   return { value: values, ...base };
 }
@@ -1543,7 +1583,7 @@ export function normalizeSheet(raw: unknown, freshness: Freshness): Sheet {
     dependencyMap: validateSectionRecord(raw, "dependencyMap", {
       binaries: leafTexts,
       packages: leafTexts,
-      routes: leafTexts,
+      routes: leafRoutes,
       jobs: leafTexts,
       externalServices: leafTexts,
       dataStores: leafTexts,

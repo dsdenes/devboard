@@ -173,7 +173,7 @@ Sections and required keys:
   "dependencyMap": {
     "binaries": { "value": ["binary"], "evidence": ["path"], "confidence": "observed" },
     "packages": { "value": ["package"], "evidence": ["path"], "confidence": "observed" },
-    "routes": { "value": ["route"], "evidence": ["path"], "confidence": "observed" },
+    "routes": { "value": ["route path such as /orders"], "evidence": ["path"], "confidence": "observed" },
     "jobs": { "value": ["job"], "evidence": ["path"], "confidence": "observed" },
     "externalServices": { "value": ["service"], "evidence": ["path"], "confidence": "observed" },
     "dataStores": { "value": ["store"], "evidence": ["path"], "confidence": "observed" },
@@ -195,6 +195,9 @@ Section rules:
 - `stack` is the short platform list: languages, runtimes, package managers, frameworks, and major
   tools actually used to build or run the project. Do not list individual third-party
   dependencies; those belong in `dependencyMap.keyDependencies`.
+- `dependencyMap.routes` records one HTTP route per entry as its path, beginning with `/`, and
+  optionally the method, such as `/orders` or `GET /orders/:id`. The leading slash belongs to the
+  route; it is not an absolute host path.
 - `deployment.class` uses the fixed enum; use `none` when the host publishes nothing, and
   `value: null` with `confidence: unknown` when the class is undetermined. Only the confidence can
   be `unknown`; the literal string `unknown` is not an enum value.
