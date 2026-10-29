@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -457,6 +457,8 @@ const RESET_STAGE_EXCLUSIONS = [
   ".devboard/node_modules",
   ".devboard/dist",
 ];
+/** The name of the pattern a reset appends for an in-repo state directory. */
+const RESET_STATE_EXCLUDE_COMMENT = "# Devboard state directory";
 const RESET_COMMIT_MESSAGE = "chore: reset implementation";
 const RESET_PUSH_ENV = {
   GIT_TERMINAL_PROMPT: "0",
@@ -1315,6 +1317,45 @@ function resetKeepSet(repoDir: string, goalFile: string): Set<string> {
     names.add(basename(goal));
   }
   return names;
+}
+
+/**
+ * The state directory relative to the repository root: `""` when it is the
+ * root itself, `undefined` when it lies outside, and a path inside otherwise.
+ * A reset never deletes its own state, so the root is refused and an inside
+ * path is preserved.
+ */
+function resetStatePath(repoDir: string, stateDir: string): string | undefined {
+  const path = relative(resolve(repoDir), resolve(stateDir));
+  if (path === "") return "";
+  if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)) return undefined;
+  return path;
+}
+
+/** Removes one reset target, unlinking a symlink instead of following it. */
+async function removeResetTarget(path: string, entry: Dirent): Promise<void> {
+  if (entry.isSymbolicLink()) await unlink(path);
+  else await rm(path, { recursive: true, force: true });
+}
+
+/**
+ * Clears one top-level entry while preserving the chain down to a nested
+ * state directory: every sibling at each level is deleted, and the state
+ * directory itself stays untouched.
+ */
+async function clearExceptResetState(target: string, keep: string[]): Promise<void> {
+  const [next, ...rest] = keep;
+  for (const entry of await readdir(target, { withFileTypes: true })) {
+    if (entry.name === next) {
+      // A symlinked ancestor is preserved as a link; its target is never
+      // entered, and the state directory lives wherever the link points.
+      if (rest.length > 0 && !entry.isSymbolicLink()) {
+        await clearExceptResetState(join(target, entry.name), rest);
+      }
+      continue;
+    }
+    await removeResetTarget(join(target, entry.name), entry);
+  }
 }
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
@@ -5825,6 +5866,34 @@ export function createApp(options: AppOptions) {
     }
   }
 
+  /**
+   * Marks an in-repo state directory ignored in this checkout, so the reset
+   * stages none of it and leaves `git status` clean while every byte stays.
+   * The exclude file is git metadata; the worktree is never touched.
+   */
+  async function excludeResetState(statePath: string) {
+    const gitPath = await runRepoGit(["rev-parse", "--git-path", "info/exclude"]);
+    if (gitPath.code !== 0) {
+      throw new Error(`could not locate the git exclude file: ${gitDetail(gitPath)}`);
+    }
+    const file = resolve(repoDir, gitPath.stdout.trim());
+    await mkdir(dirname(file), { recursive: true });
+    let existing = "";
+    try {
+      existing = await readFile(file, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const pattern = `/${statePath.split(sep).join("/")}/`;
+    const lines = existing.split(/\r?\n/);
+    if (lines.includes(pattern)) return;
+    const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
+    const comment = lines.includes(RESET_STATE_EXCLUDE_COMMENT)
+      ? ""
+      : `${RESET_STATE_EXCLUDE_COMMENT}\n`;
+    await writeFile(file, `${existing}${separator}${comment}${pattern}\n`);
+  }
+
   /** Ends a reset unsuccessfully, leaving whatever it already changed in place. */
   function failImplementationReset(message: string, commit?: string) {
     implementationReset = undefined;
@@ -5872,6 +5941,19 @@ export function createApp(options: AppOptions) {
         return;
       }
 
+      // The dashboard's own state is not implementation. An in-repo state
+      // directory survives byte-identical and is ignored locally so the reset
+      // never stages it; the repository root as STATE_DIR is refused because
+      // keeping it would keep the entire checkout.
+      const statePath = resetStatePath(repoDir, stateDir);
+      if (statePath === "") {
+        failImplementationReset(
+          "Reset refused: STATE_DIR is the repository root, which the reset would delete.",
+        );
+        return;
+      }
+      if (statePath !== undefined) await excludeResetState(statePath);
+
       // The checkout is confirmed resettable: take it over before deleting so
       // an active peer cannot race the deletion, staging, or commit.
       stopActiveWorkForReset();
@@ -5882,10 +5964,17 @@ export function createApp(options: AppOptions) {
       for (const entry of await readdir(repoDir, { withFileTypes: true })) {
         if (keep.has(entry.name) || RESET_INTERNAL_NAMES.has(entry.name)) continue;
         const target = join(repoDir, entry.name);
+        if (statePath !== undefined) {
+          if (statePath === entry.name) continue;
+          const prefix = `${entry.name}${sep}`;
+          if (statePath.startsWith(prefix)) {
+            await clearExceptResetState(target, statePath.slice(prefix.length).split(sep));
+            continue;
+          }
+        }
         // A symlink is removed as a link; its target, inside or outside the
         // repository, is never followed.
-        if (entry.isSymbolicLink()) await unlink(target);
-        else await rm(target, { recursive: true, force: true });
+        await removeResetTarget(target, entry);
       }
 
       const staged = await runRepoGit(["add", "-A"]);
@@ -5894,8 +5983,9 @@ export function createApp(options: AppOptions) {
         return;
       }
       // git add -A honours .gitignore, but an absent .gitignore would stage the
-      // internal trees, and an earlier commit may already track them. Remove
-      // them from the index; the working tree is untouched.
+      // internal trees, and an earlier commit may already track them, including
+      // the state directory. Remove them from the index; the working tree is
+      // untouched.
       const excluded = await runRepoGit([
         "rm",
         "-r",
@@ -5904,6 +5994,7 @@ export function createApp(options: AppOptions) {
         "-q",
         "--",
         ...RESET_STAGE_EXCLUSIONS.filter((name) => name !== ".git"),
+        ...(statePath === undefined ? [] : [statePath]),
       ]);
       if (excluded.code !== 0) {
         failImplementationReset(`Could not stage the reset: ${gitDetail(excluded)}`);

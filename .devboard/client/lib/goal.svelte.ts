@@ -1,4 +1,5 @@
 import { connection } from "./connection.svelte";
+import { discover } from "./discover.svelte";
 import type {
   AdrRecord,
   Lane,
@@ -139,6 +140,8 @@ export class GoalStore {
   goalDraft = $state("");
   goalDirty = $state(false);
   goalReady = $state(false);
+  /** Text of the save awaiting a `goal` echo; null when nothing is in flight. */
+  private pendingGoalSave: string | null = null;
   creationActive = $state(false);
   revisionActive = $state(false);
   revisionRequest = $state("");
@@ -273,7 +276,12 @@ export class GoalStore {
   }
 
   get goalEditingDisabled(): boolean {
-    return (this.lifecycleActive && !this.lifecycle.paused) || this.skillsPrepActive;
+    return (
+      (this.lifecycleActive && !this.lifecycle.paused) ||
+      this.skillsPrepActive ||
+      discover.active ||
+      discover.cloning !== null
+    );
   }
 
   get resetDisabled(): boolean {
@@ -317,16 +325,27 @@ export class GoalStore {
   setGoalDraft(text: string): void {
     this.goalDraft = text;
     this.goalDirty = text !== this.goalText;
+    // Editing past the sent text means the server's echo no longer describes
+    // the draft, so it must not clear the flag or replace the newer text.
+    if (this.pendingGoalSave !== null && text !== this.pendingGoalSave) {
+      this.pendingGoalSave = null;
+    }
   }
 
+  /**
+   * Sends the draft and leaves it dirty: the server refuses a save while other
+   * work runs and answers with an `error` frame instead of the confirming
+   * `goal` frame, so only that confirmation may clear the flag.
+   */
   saveGoal(): void {
     if (!connection.send({ type: "saveGoal", text: this.goalDraft })) return;
-    this.goalDirty = false;
+    this.pendingGoalSave = this.goalDraft;
   }
 
   discardDraft(): void {
     this.goalDraft = this.goalText;
     this.goalDirty = false;
+    this.pendingGoalSave = null;
   }
 
   createGoal(): void {
@@ -452,7 +471,18 @@ export class GoalStore {
     if (type === "goal" && typeof message.text === "string") {
       if (!this.revisionActive && !this.creationActive) {
         this.goalText = message.text;
-        if (!this.goalDirty) this.goalDraft = message.text;
+        if (this.pendingGoalSave !== null) {
+          // Only the echo of the sent text confirms the save. Any other frame
+          // is a reconnect snapshot, another tab, or a refused save's later
+          // state, and leaving the draft untouched keeps it unsaved.
+          if (message.text === this.pendingGoalSave) {
+            this.goalDirty = false;
+            this.goalDraft = message.text;
+            this.pendingGoalSave = null;
+          }
+        } else if (!this.goalDirty) {
+          this.goalDraft = message.text;
+        }
         this.goalReady = message.text.trim().length > 0;
       }
       return;
