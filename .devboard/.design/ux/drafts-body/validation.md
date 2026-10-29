@@ -132,8 +132,8 @@ selected
     stays, and the body remains one panel.
 - Console/network: zero console entries and zero failed requests among 10 observed requests on
   the Draft goals page in the empty state; the tab reported no exceptions.
-- Checks: `bun run check` — 0 errors, 0 warnings across 1762 files. `bun test` — 1064 pass, 0
-  fail across 81 files (6436 assertions). `bun run verify:design` — pass, including the normative
+- Checks: `bun run check` — 0 errors, 0 warnings across 1762 files. `bun test` — 1066 pass, 0
+  fail across 82 files (6441 assertions). `bun run verify:design` — pass, including the normative
   documents, page shape, and freshness gates. A first `bun test` run failed the Flow concurrent
   start test because `.devboard/.tmp/flow-tests` held state from an earlier aborted run; after
   removing that directory the same test and the full suite passed, and the same test passed in a
