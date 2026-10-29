@@ -941,14 +941,17 @@ every implementation agent in that host discovers the set with no extra configur
 
 Each skill has a page that is one full-height Monaco Markdown editor for the whole `SKILL.md`
 (`data-testid="discover-skill-text"`), with no rendered preview and no split pane. The page header
-holds only the skill's page title. The editor panel header names the skill's relative path,
-`<skill>/SKILL.md`, with the skill name emphasized and the file name muted; a second 11px line
-states the draft (`No unsaved changes`, `Unsaved changes`, or `Live file missing`). The header
-also holds `discover-skill-save`, disabled until the draft differs from the live text, and, while
-the live text differs from the generated version or the file is missing,
-`discover-skill-restore`. A `discover-skill-dirty` marker replaces the clean state line while the
-draft has unsaved changes; the page renders no state badge and no purpose line, because the
-sidebar already flags `edited` or `missing`.
+holds only the skill's page title. The editor panel header is one 30px row: the skill's relative
+path, `<skill>/SKILL.md`, with the skill name emphasized and the file name muted, sits on the
+leading edge, and the 11px draft state (`No unsaved changes`, `Unsaved changes`, or `Live file
+missing`) starts the trailing action group. `discover-skill-save` is the filled primary only
+while the draft differs from the live text and a disabled `secondary` otherwise; it stays
+disabled while the live file is missing. While the live text differs from the generated version
+or the file is missing, `discover-skill-restore` is an outline control, and it becomes the filled
+primary as `Recreate generated version` when the live file is missing. A
+`discover-skill-dirty` marker replaces the clean state word while the draft has unsaved changes;
+the page renders no state badge and no purpose line, because the sidebar already flags `edited`
+or `missing`.
 `saveDiscoverSkill` writes the submitted bytes verbatim and updates the manifest's current hash and
 edited state; it is refused with one
 `discoverError` when the name is not one of the five, the skill is missing, the frontmatter name
@@ -1532,7 +1535,9 @@ spawns nothing, writes no state, and renders `agent-error`.
 The cycle itself is unchanged: it detects and reports, never fixes, reading the previous interval
 of journal and omp evidence, filing one issue per fingerprint, and commenting on recurrences after
 24 hours. A failing `gh` call leaves the fingerprint pending for the next cycle; a fingerprint
-already `filed:<url>` is never filed again. No cycle closes an issue.
+already `filed:<url>` is never filed again. No cycle closes an issue. A fingerprint covers the
+category and the normalized evidence line only: the per-occurrence `raw-http-request` capture path
+omp appends to an error it logs is removed, so repeated occurrences of one failure file one issue.
 
 ### State-directory cleanup
 
