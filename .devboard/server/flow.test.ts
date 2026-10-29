@@ -592,6 +592,74 @@ describe("Flow Mode contract", () => {
     client.close();
   }, 30_000);
 
+  test("a goal save during the interview is refused and cannot outlive it", async () => {
+    const fixture = createFixture("goal-save-interview");
+    const interviewGoal = "# Interview goal\n\nOnly the interview may write this.\n";
+    const savedText = "# Saved during the interview\n\nThis text must never be accepted.\n";
+    // The stub receives its argv through the ACP command line, so the goal text
+    // travels in a file rather than as an argument split on whitespace.
+    const interviewGoalFile = join(fixture.root, "interview-goal.md");
+    writeFileSync(interviewGoalFile, interviewGoal);
+    // The settle delay keeps the interview's turn live after it writes goal.md:
+    // exactly the window in which a save was accepted and then discarded.
+    const testServer = startServer(fixture, {
+      stub: [
+        "--flow-goal",
+        "--flow-goal-settle=3000",
+        `--flow-goal-text-file=${interviewGoalFile}`,
+      ],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    const id = sessionIds(fixture)[0] as string;
+    const sessionDirectory = join(fixture.stateDir, "flow", journalKey(fixture.root), id);
+    const goalPath = join(sessionDirectory, "goal.md");
+    expect(readSession(fixture, id).goal).toBe(interviewGoal);
+    expect(readFileSync(goalPath, "utf8")).toBe(interviewGoal);
+
+    const writesBefore = stubLog(fixture).filter((line) =>
+      line.startsWith("flow-goal-written "),
+    ).length;
+    const mark = client.mark();
+    client.send({ type: "createFlowGoal" });
+    const question = await client.waitFor(
+      (event) => event.type === "flowQuestion" && event.target === "goal",
+      { from: mark },
+    );
+    client.send({ type: "flowAnswer", target: "goal", id: question.id, value: "Alpha" });
+    await waitUntil(
+      () =>
+        stubLog(fixture).filter((line) => line.startsWith("flow-goal-written ")).length >
+        writesBefore,
+      "the interview's goal write",
+    );
+    client.send({ type: "saveFlowGoal", text: savedText });
+    const error = await client.waitFor(
+      (event) => event.type === "flowError" && String(event.message).includes("goal interview"),
+      { from: mark },
+    );
+    expect(readSession(fixture, id).goal).toBe(interviewGoal);
+    expect(readFileSync(goalPath, "utf8")).toBe(interviewGoal);
+    // The refused save never confirms its text in a snapshot of its own.
+    expect(
+      client.events.some(
+        (event) => event.type === "flowSnapshot" && event.goal === savedText,
+      ),
+    ).toBe(false);
+
+    // When the interview finishes, its goal.md text is the only accepted goal.
+    const stopped = await client.waitFor(
+      (event) => event.type === "flowGoalStopped" && event.completed === true,
+      { from: mark },
+    );
+    expect(stopped.text).toBe(interviewGoal);
+    expect(readSession(fixture, id).goal).toBe(interviewGoal);
+    expect(readFileSync(goalPath, "utf8")).toBe(interviewGoal);
+    expect(readFileSync(join(sessionDirectory, "session.json"), "utf8")).not.toContain(savedText);
+    client.close();
+  }, 30_000);
+
   test("a stopped session's watcher never rewrites the goal an interview is writing", async () => {
     const fixture = createFixture("goal-after-stop");
     const replacement = join(fixture.root, "replacement-goal.md");

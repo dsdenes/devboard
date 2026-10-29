@@ -1339,6 +1339,12 @@ export class FlowController {
       this.#error("The Flow implementation is running. Stop it before editing the goal.");
       return;
     }
+    if (this.#goalCreation !== undefined) {
+      // The interview's goal.md is the accepted text, so a save here would be
+      // acknowledged and then replaced when the interview finishes.
+      this.#error("The Flow goal interview is active. Finish it before editing the goal.");
+      return;
+    }
     const session = this.#session;
     if (session === undefined) {
       this.#error("No Flow session exists.");
