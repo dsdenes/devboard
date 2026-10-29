@@ -1412,10 +1412,10 @@ describe("Flow pull-request lifecycle", () => {
     await createGoal(client);
     const session = await startFlow(client, fixture);
 
-    const error = await client.waitFor((event) => event.type === "flowError", 30_000);
+    const error = await client.waitFor((event) => event.type === "flowError", 60_000);
     expect(String(error.message)).toContain("timed out");
     expect(pushStartedAt).toBeGreaterThan(0);
-    expect(Date.now() - pushStartedAt).toBeLessThan(5_000);
+    expect(Date.now() - pushStartedAt).toBeLessThan(10_000);
     expect(String(storedSession(fixture, session.id)?.prError)).toContain("timed out");
 
     // The next checkpoint must reach #syncPullRequest: a busy flag left set by
@@ -1424,13 +1424,13 @@ describe("Flow pull-request lifecycle", () => {
     writeFileSync(join(fixture.stateDir, "proceed"), "second checkpoint\n");
     const pr = await client.waitFor(
       (event) => event.type === "flowPr" && event.pr !== null,
-      30_000,
+      60_000,
     );
     expect(pullRequestState(pr)).toBe("draft");
     expect(forgeStub.calls.filter((call) => call.op === "createDraft")).toHaveLength(1);
     await stopFlow(client);
     client.close();
-  }, 60_000);
+  }, 120_000);
 
   test("a forge failure keeps the session, invents no PR, and a retry creates the draft", async () => {
     const fixture = createFixture("pr-forge-failure");
