@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseAudit, readAuditInput, type DesignFinding } from "../issues/design/audit";
 import { issueBody } from "../issues/design/actions";
+import { createDesignForge } from "../issues/design/forge";
 import { preflightDesign } from "../issues/design/preflight";
 import { releaseDocuments, type RunCommand } from "../issues/design/release";
 import { capacityFor, writeSettings, type DesignIssueRow } from "../issues/design/state";
@@ -1193,5 +1194,58 @@ describe("design release planner", () => {
       expect(result.detail).toContain("could not create the cycle worktree");
     }
     expect(existsSync(directory)).toBe(false);
+  });
+});
+
+describe("design forge releases", () => {
+  test("lists every release when the server caps one response at 50", async () => {
+    const calls: string[] = [];
+    const giteaFetch = async (input: string): Promise<Response> => {
+      const url = new URL(input);
+      calls.push(`${url.pathname}${url.search}`);
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      if (page === 1) {
+        return Response.json(
+          Array.from({ length: limit }, (_, index) => ({
+            tag_name: `v0.2.${index}`,
+            published_at: "2026-10-20T00:00:00Z",
+          })),
+        );
+      }
+      if (page === 2) {
+        return Response.json(
+          Array.from({ length: 10 }, (_, index) => ({
+            tag_name: `v0.1.${index}`,
+            published_at: "2026-09-01T00:00:00Z",
+          })),
+        );
+      }
+      return Response.json([]);
+    };
+    const client = createDesignForge({
+      forge: "gitea",
+      repository: "acme/fixture",
+      repoDir: harnessRoot,
+      baseUrl: "http://gitea.test",
+      environment: {},
+      giteaFetch,
+    });
+
+    const releases = await client.listReleases();
+
+    expect(releases).toHaveLength(60);
+    expect(releases.map((release) => release.tag)).toEqual([
+      ...Array.from({ length: 50 }, (_, index) => `v0.2.${index}`),
+      ...Array.from({ length: 10 }, (_, index) => `v0.1.${index}`),
+    ]);
+    expect(releases.at(-1)).toEqual({
+      tag: "v0.1.9",
+      publishedAt: "2026-09-01T00:00:00Z",
+    });
+    expect(
+      calls.map((call) => new URL(call, "http://gitea.test").searchParams.get("page")),
+    ).toEqual(["1", "2", "3"]);
+    expect(calls.every((call) => call.includes("limit=50"))).toBe(true);
   });
 });
