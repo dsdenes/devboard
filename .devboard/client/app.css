@@ -1575,6 +1575,14 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+.discover-head__definition {
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  max-width: 72ch;
+  overflow-wrap: anywhere;
+}
+
 .discover-head__actions {
   align-items: center;
   display: flex;

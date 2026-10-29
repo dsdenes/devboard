@@ -66,6 +66,12 @@
 
   const sheet = $derived(discover.sheet);
   const freshness = $derived(discover.freshness);
+  const definition = $derived(sectionLeaf(sheet, "definition"));
+  const definitionText = $derived(
+    definition === undefined || definition.confidence === "unknown"
+      ? ""
+      : scalarText(definition.value).trim(),
+  );
   const projectPath = $derived(
     discover.remoteTarget?.url ??
       (freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : "")),
@@ -600,6 +606,15 @@
     <div class="discover-head__top">
       <div class="discover-head__identity">
         <h1 class="discover-head__title" title={projectPath}>{projectName}</h1>
+        {#if definitionText.length > 0}
+          <p
+            class="discover-head__definition"
+            data-testid="discover-definition"
+            data-field="definition"
+          >
+            {definitionText}
+          </p>
+        {/if}
       </div>
       <div class="discover-head__actions">
         {#if discover.busy !== null}

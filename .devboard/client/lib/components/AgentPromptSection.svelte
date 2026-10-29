@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { agentRegistry } from "../../../server/agents/registry";
   import { agents } from "../agents.svelte";
   import Button from "./ui/button.svelte";
   import Input from "./ui/input.svelte";
@@ -9,6 +10,7 @@
 
   let { agentId }: Props = $props();
 
+  const descriptor = $derived(agentRegistry.get(agentId));
   const prompt = $derived(agents.prompts[agentId] ?? null);
   const chat = $derived(agents.promptChat[agentId] ?? []);
   const notice = $derived(agents.promptNotice[agentId] ?? null);
@@ -57,7 +59,9 @@
     <p class="agent-prompt__hint">Loading the prompt…</p>
   {:else if prompt.absent}
     <p class="agent-prompt__absent" data-testid="agent-prompt-absent">
-      Watchdog runs no agent, so it has no prompt to show or edit.
+      {descriptor?.prompt.kind === "absent"
+        ? descriptor.prompt.message
+        : `No prompt file is available for ${agentId}.`}
     </p>
   {:else}
     <div class="agent-prompt__head">
