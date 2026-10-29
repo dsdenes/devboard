@@ -4,6 +4,7 @@ import { chmod, mkdir, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AcpActivity, AcpQuestion } from "../server/acp";
 import { ScoutBridge } from "../server/scout";
+import { agentRegistry } from "../server/agents/registry";
 import { fileScoutIssue, issueBody, type GhRunner } from "../issues/scout/actions";
 import { writeCommand, type ScoutCommand } from "../issues/scout/control";
 import {
@@ -335,6 +336,7 @@ async function fixture(options: {
   github?: FakeGitHub;
   files?: Record<string, string>;
   syncMs?: number;
+  cadenceMs?: number;
   readTimeoutMs?: number;
   timeoutMs?: number;
   limit?: { maxPerHour: number; maxPending: number };
@@ -386,6 +388,7 @@ async function fixture(options: {
     repoDir: root,
     stateDir,
     syncMs: options.syncMs ?? 900_000,
+    cadenceMs: options.cadenceMs ?? 0,
     ...(options.readTimeoutMs === undefined ? {} : { readTimeoutMs: options.readTimeoutMs }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
@@ -794,6 +797,7 @@ describe("limits", () => {
       expect(readSettings(settingsPath(f.stateDir, f.root))).toEqual({
         maxPerHour: 1,
         maxPending: 1,
+        intervalMinutes: 1,
       });
       expect(limited.notice).toContain("Limits saved");
 
@@ -1185,6 +1189,7 @@ describe("dashboard bridge", () => {
       await scan(f, 0, uniqueItems(1, 1));
       let spawned = 0;
       const bridge = new ScoutBridge({
+        descriptor: agentRegistry.require("scout"),
         repoDir: f.root,
         stateDir: f.stateDir,
         agentCommand: "stub",
@@ -1200,10 +1205,11 @@ describe("dashboard bridge", () => {
       });
       const messages: Array<Record<string, unknown>> = [];
       bridge.replay({ send: (data: string) => messages.push(JSON.parse(data)) });
-      expect(messages[0]?.type).toBe("scoutState");
-      expect((messages[0]?.issues as unknown[] | undefined)?.length).toBe(1);
-      expect(messages[0]?.limits).toEqual({ maxPerHour: 10, maxPending: 5 });
-      expect(messages[1]?.type).toBe("scoutActivity");
+      expect(messages[0]?.type).toBe("agentState");
+      const agent = messages[0]?.agent as Record<string, unknown> | undefined;
+      expect((agent?.issues as unknown[] | undefined)?.length).toBe(1);
+      expect(agent?.limits).toEqual({ maxPerHour: 10, maxPending: 5 });
+      expect(messages[1]?.type).toBe("agentActivity");
       expect(spawned).toBe(0);
       bridge.dispose();
     } finally {
@@ -1231,6 +1237,7 @@ describe("dashboard bridge", () => {
         [secondSocket, second],
       ]);
       const bridge = new ScoutBridge({
+        descriptor: agentRegistry.require("scout"),
         repoDir: f.root,
         stateDir: f.stateDir,
         agentCommand: "stub",
@@ -1247,7 +1254,7 @@ describe("dashboard bridge", () => {
       });
 
       bridge.replay(firstSocket);
-      const firstReplay = first.findLast((event) => event.type === "scoutActivity");
+      const firstReplay = first.findLast((event) => event.type === "agentActivity");
       expect((firstReplay?.entries as Array<{ text: string }>).map((entry) => entry.text)).toEqual([
         "first",
       ]);
@@ -1259,7 +1266,7 @@ describe("dashboard bridge", () => {
 
       for (const client of [first, second]) {
         const replay = client.findLast(
-          (event) => event.type === "scoutActivity" && event.replay === true,
+          (event) => event.type === "agentActivity" && event.replay === true,
         );
         expect((replay?.entries as Array<{ text: string }>).map((entry) => entry.text)).toEqual([
           "first",
@@ -1271,12 +1278,12 @@ describe("dashboard bridge", () => {
       writeFileSync(activityFile, JSON.stringify(["first", "second", "third"]));
       bridge.refresh();
       expect(first.at(-1)).toMatchObject({
-        type: "scoutActivity",
+        type: "agentActivity",
         entries: [{ text: "third", append: false }],
       });
       expect(first.at(-1)?.replay).toBeUndefined();
       expect(second.at(-1)).toMatchObject({
-        type: "scoutActivity",
+        type: "agentActivity",
         entries: [{ text: "third", append: false }],
       });
       bridge.dispose();
@@ -1291,6 +1298,7 @@ describe("dashboard bridge", () => {
       const otherState = await temporaryDirectory("scout-other-state");
       let spawned = 0;
       const bridge = new ScoutBridge({
+        descriptor: agentRegistry.require("scout"),
         repoDir: f.root,
         stateDir: otherState,
         agentCommand: "stub",
@@ -1305,11 +1313,14 @@ describe("dashboard bridge", () => {
           return undefined;
         },
       });
+      const foreign = bridge.snapshot();
+      expect(foreign.lifecycle).toBe("running");
+      expect(foreign.owned).toBe(false);
       const started = await bridge.start();
-      expect(started.ok).toBe(false);
-      if (started.ok) return;
-      expect(started.message).toContain(f.stateDir);
-      expect(started.message).toContain(otherState);
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+      expect(started.notice).toContain(f.stateDir);
+      expect(started.notice).toContain(otherState);
       expect(spawned).toBe(0);
       bridge.dispose();
     } finally {
@@ -1321,6 +1332,7 @@ describe("dashboard bridge", () => {
     const f = await fixture({ label: "version-mismatch", harnessVersion: "0.0.9" });
     try {
       const bridge = new ScoutBridge({
+        descriptor: agentRegistry.require("scout"),
         repoDir: f.root,
         stateDir: f.stateDir,
         agentCommand: "stub",

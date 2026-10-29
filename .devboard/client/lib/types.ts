@@ -144,119 +144,24 @@ export interface GoalDraftRun {
   question: RunQuestion | null;
 }
 
-export type ScoutLifecycle = "stopped" | "idle" | "scanning" | "failed";
-export type ScoutIssueState = "pending" | "implemented";
-export type ScoutSyncState = "ok" | "error" | "stale";
-
-/** One Auto Scout issue, as GitHub last reported it. */
-export interface ScoutIssueRow {
-  number: number;
-  title: string;
-  url: string;
-  createdAt: string;
-  /** An open issue is `pending`; a closed one is `implemented`. */
-  state: ScoutIssueState;
-  /** The recommendation's category, the body's `## Category`, or null. */
-  category: string | null;
-  /** The earliest published release that shipped the closing commit, or null. */
-  version: string | null;
-}
-
-export interface ScoutLimits {
-  maxPerHour: number;
-  maxPending: number;
-}
-
-export interface ScoutSync {
-  state: ScoutSyncState;
-  /** The last successful read, or null before one. */
-  at: string | null;
-  /** Why the last read failed, or null. */
-  error: string | null;
-}
-
-export interface ScoutScanRecord {
-  scanId: string;
-  startedAt: string;
-  /** How many recommendations the request asked for. */
-  requested: number;
-}
-
-/** The scout worker's published state, as the dashboard is allowed to see it. */
-export interface ScoutSnapshot {
-  present: boolean;
-  repo: string | null;
-  root: string;
-  lifecycle: ScoutLifecycle;
-  enabled: boolean;
-  attached: boolean;
-  worker: IssuesWorkerRecord | null;
-  limits: ScoutLimits;
-  issues: ScoutIssueRow[];
-  sync: ScoutSync;
-  scan: ScoutScanRecord | null;
-  newestScanId: string | null;
-  nextAttemptAt: string | null;
-  lastError: string | null;
-  notice: string | null;
-  updatedAt: string | null;
-}
-
-export interface ScoutActivityEntry {
-  text: string;
-  append: boolean;
-}
-
-export type WatchdogIssueState = "pending" | "implemented";
-export type WatchdogSyncState = "ok" | "error" | "stale";
-
-/** One issue the watchdog filed, with what GitHub last reported for it. */
-export interface WatchdogIssue {
-  url: string;
-  category: string;
-  line: string;
-  filedAt: string;
-  /** `null` until a GitHub read has answered for this issue. */
-  state: WatchdogIssueState | null;
-  /** The earliest published release that shipped the closing commit, or null. */
-  version: string | null;
-}
-
-export interface WatchdogCycleWindow {
-  start: string | null;
-  end: string | null;
-}
-
-/** One retained watchdog run directory. */
-export interface WatchdogCycle {
-  at: string;
-  window: WatchdogCycleWindow;
-  action: string;
-  findings: number;
-  /** The GitHub issues this cycle's findings map to, in finding order. */
-  issues: string[];
-  reason?: string;
-}
-
-export interface WatchdogSync {
-  state: WatchdogSyncState;
-  /** The last successful read, or null before one. */
-  at: string | null;
-  /** Why the last read failed, or null after a success. */
-  error: string | null;
-}
-
-/** `GET /api/watchdog`, as the page renders it. */
-export interface WatchdogSnapshot {
-  cycle: string | null;
-  action: string;
-  reason?: string;
-  findings: number;
-  issues: WatchdogIssue[];
-  pending: number;
-  cycles: WatchdogCycle[];
-  sync: WatchdogSync;
-}
+export type {
+  AgentActivityDetail,
+  AgentCadence,
+  AgentCycle,
+  AgentCycleWindow,
+  AgentCyclesDetail,
+  AgentDescriptor,
+  AgentDetail,
+  AgentIssueRow,
+  AgentIssueState,
+  AgentLifecycle,
+  AgentLimits,
+  AgentScope,
+  AgentSnapshot,
+  AgentSync,
+  AgentSyncState,
+  AgentTimerGate,
+} from "../../server/agents/registry";
 
 export interface SkillSummary {
   name: string;

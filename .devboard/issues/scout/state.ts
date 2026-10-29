@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { isInteger, isRecord, nullableString } from "../guards";
 import {
+  CADENCE_MAX_MINUTES,
+  CADENCE_MIN_MINUTES,
+  DEFAULT_INTERVAL_MINUTES,
   DEFAULT_MAX_PER_HOUR,
   DEFAULT_MAX_PENDING,
   LIMIT_MAX,
@@ -40,8 +43,16 @@ export interface ScoutAcpChild {
 
 /** The adjustable caps the dashboard persists and the worker enforces. */
 export interface ScoutLimits {
-  maxPerHour: number;
-  maxPending: number;
+  /** Empty means unlimited. */
+  maxPerHour: number | null;
+  /** Empty means unlimited. */
+  maxPending: number | null;
+}
+
+/** Everything the dashboard persists for a repository's worker. */
+export interface ScoutSettings extends ScoutLimits {
+  /** How many minutes must pass between scan starts. */
+  intervalMinutes: number;
 }
 
 /** One Auto Scout issue, as GitHub last reported it. */
@@ -82,6 +93,10 @@ export interface ScoutState {
   enabled: boolean;
   worker: ScoutWorkerRecord | null;
   limits: ScoutLimits;
+  /** The persisted scan cadence, in minutes. */
+  intervalMinutes: number;
+  /** The start of the newest scan, so cadence survives a restart. */
+  lastScanStartedAt: string | null;
   /** Every Auto Scout issue known from GitHub, newest creation first. */
   issues: ScoutIssueRow[];
   sync: ScoutSync;
@@ -99,8 +114,18 @@ export const DEFAULT_LIMITS: ScoutLimits = Object.freeze({
   maxPending: DEFAULT_MAX_PENDING,
 });
 
-export function isValidLimit(value: unknown): value is number {
-  return isInteger(value) && value >= LIMIT_MIN && value <= LIMIT_MAX;
+export const DEFAULT_SETTINGS: ScoutSettings = Object.freeze({
+  ...DEFAULT_LIMITS,
+  intervalMinutes: DEFAULT_INTERVAL_MINUTES,
+});
+
+/** Empty (null) is unlimited; a value is an integer from 1 through 100. */
+export function isValidLimit(value: unknown): value is number | null {
+  return value === null || (isInteger(value) && value >= LIMIT_MIN && value <= LIMIT_MAX);
+}
+
+export function isValidCadence(value: unknown): value is number {
+  return isInteger(value) && value >= CADENCE_MIN_MINUTES && value <= CADENCE_MAX_MINUTES;
 }
 
 export function isLimits(value: unknown): value is ScoutLimits {
@@ -164,6 +189,7 @@ export function emptyState(options: {
   root: string;
   lifecycle?: ScoutLifecycle;
   limit?: ScoutLimits;
+  intervalMinutes?: number;
   now?: Date;
 }): ScoutState {
   return {
@@ -174,6 +200,8 @@ export function emptyState(options: {
     enabled: false,
     worker: null,
     limits: options.limit ?? { ...DEFAULT_LIMITS },
+    intervalMinutes: options.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES,
+    lastScanStartedAt: null,
     issues: [],
     sync: { state: "stale", at: null, error: null },
     scan: null,
@@ -199,6 +227,16 @@ export function parseState(text: string): ScoutState | undefined {
   if (typeof parsed.enabled !== "boolean") return undefined;
   if (parsed.worker !== null && !isWorker(parsed.worker)) return undefined;
   if (!isLimits(parsed.limits)) return undefined;
+  const intervalMinutes =
+    parsed.intervalMinutes === undefined
+      ? DEFAULT_INTERVAL_MINUTES
+      : isValidCadence(parsed.intervalMinutes)
+        ? parsed.intervalMinutes
+        : undefined;
+  if (intervalMinutes === undefined) return undefined;
+  const lastScanStartedAt =
+    parsed.lastScanStartedAt === undefined ? null : nullableString(parsed.lastScanStartedAt) ? parsed.lastScanStartedAt : undefined;
+  if (lastScanStartedAt === undefined) return undefined;
   if (!Array.isArray(parsed.issues) || !parsed.issues.every(isIssueRow)) return undefined;
   if (!isSync(parsed.sync)) return undefined;
   if (parsed.scan !== null && !isScan(parsed.scan)) return undefined;
@@ -215,6 +253,8 @@ export function parseState(text: string): ScoutState | undefined {
     enabled: parsed.enabled,
     worker: parsed.worker as ScoutWorkerRecord | null,
     limits: parsed.limits,
+    intervalMinutes,
+    lastScanStartedAt,
     issues: parsed.issues,
     sync: parsed.sync,
     scan: parsed.scan as ScoutScanRecord | null,
@@ -259,6 +299,8 @@ export function migrateState(text: string): ScoutState | undefined {
     enabled: parsed.enabled,
     worker: parsed.worker as ScoutWorkerRecord | null,
     limits: { ...DEFAULT_LIMITS },
+    intervalMinutes: DEFAULT_INTERVAL_MINUTES,
+    lastScanStartedAt: null,
     issues: [],
     sync: { state: "stale", at: null, error: null },
     scan: parsed.scan as ScoutScanRecord | null,
@@ -334,17 +376,34 @@ export function writeAtomic(path: string, content: string): void {
 /* Persisted limits                                                    */
 /* ------------------------------------------------------------------ */
 
-export function parseSettings(text: string): ScoutLimits | undefined {
+/**
+ * Reads the persisted settings. A settings file written before cadence existed
+ * carries only the two caps and takes the default interval.
+ */
+export function parseSettings(text: string): ScoutSettings | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
     return undefined;
   }
-  return isLimits(parsed) ? { maxPerHour: parsed.maxPerHour, maxPending: parsed.maxPending } : undefined;
+  if (!isLimits(parsed)) return undefined;
+  const record = parsed as unknown as Record<string, unknown>;
+  const intervalMinutes =
+    record.intervalMinutes === undefined
+      ? DEFAULT_INTERVAL_MINUTES
+      : isValidCadence(record.intervalMinutes)
+        ? record.intervalMinutes
+        : undefined;
+  if (intervalMinutes === undefined) return undefined;
+  return {
+    maxPerHour: parsed.maxPerHour,
+    maxPending: parsed.maxPending,
+    intervalMinutes,
+  };
 }
 
-export function readSettings(path: string): ScoutLimits | undefined {
+export function readSettings(path: string): ScoutSettings | undefined {
   try {
     return parseSettings(readFileSync(path, "utf8"));
   } catch {
@@ -352,8 +411,8 @@ export function readSettings(path: string): ScoutLimits | undefined {
   }
 }
 
-export function writeSettings(path: string, limits: ScoutLimits): void {
-  writeAtomic(path, `${JSON.stringify(limits, null, 2)}\n`);
+export function writeSettings(path: string, settings: ScoutSettings): void {
+  writeAtomic(path, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
 /* ------------------------------------------------------------------ */

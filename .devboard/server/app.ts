@@ -12,6 +12,8 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { WatchdogActivity, type WatchdogActivityOptions } from "./watchdog";
+import { BackgroundAgentBridge, type AgentCommand } from "./agents/bridge";
+import { agentRegistry } from "./agents/registry";
 import {
   AcpConnection,
   agentPrompt,
@@ -137,6 +139,8 @@ export interface AppOptions {
   trackerSettle?: Partial<TrackerSettle>;
   /** Wall-clock bound for one tracker read; defaults to 30 seconds. */
   trackerTimeoutMs?: number;
+  /** Wall-clock bound for one git invocation of the reset; defaults to 60 seconds. */
+  gitTimeoutMs?: number;
   /** Delay before an implementation lane whose epic stayed open runs again. */
   laneBackoffMs?: number;
   /** How long a finished lane keeps its tab before leaving the active list. */
@@ -169,8 +173,11 @@ export interface AppOptions {
   issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "closeIssue">;
   /** Auto Scout's test seams; production uses the detached worker itself. */
   scout?: Pick<ScoutBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
-  /** Watchdog page's test seams; production reads `gh` in the background. */
-  watchdog?: Pick<WatchdogActivityOptions, "reader" | "now" | "intervalMs" | "staleAfterMs">;
+  /** Watchdog's test seams; production reads `gh` in the background. */
+  watchdog?: Pick<
+    WatchdogActivityOptions,
+    "reader" | "now" | "intervalMs" | "staleAfterMs" | "preflight" | "spawnWorker" | "systemctl"
+  >;
   /** Names one proposed-goal draft; production asks the configured ACP agent. */
   goalSlug?: (report: string) => Promise<string>;
   /** The credential store and selection; defaults to the state directory's. */
@@ -456,6 +463,8 @@ const RESET_PUSH_ENV = {
   GIT_ASKPASS: "true",
   NO_COLOR: "1",
 };
+/** Wall-clock bound for one git invocation the dashboard spawns. */
+const GIT_TIMEOUT_MS = 60_000;
 /** Largest accepted feedback body, before JSON parsing. */
 const MAX_FEEDBACK_BYTES = 64_000;
 /** Default wall-clock bound for one issue creation. */
@@ -527,10 +536,13 @@ type ClientMessage =
   | { type: "startGoalDraft"; path?: unknown }
   | { type: "stopGoalDraft"; path?: unknown }
   | { type: "answerGoalDraft"; path?: unknown; id?: unknown; value?: unknown }
-  | { type: "getScout" }
-  | { type: "startScout" }
-  | { type: "stopScout" }
-  | { type: "setScoutLimits"; maxPerHour?: unknown; maxPending?: unknown }
+  | { type: "getAgents" }
+  | { type: "getAgent"; id?: unknown }
+  | { type: "startAgent"; id?: unknown }
+  | { type: "stopAgent"; id?: unknown }
+  | { type: "setAgentLimits"; id?: unknown; maxPerHour?: unknown; maxPending?: unknown }
+  | { type: "setAgentCadence"; id?: unknown; minutes?: unknown }
+  | { type: "disableAgentTimer"; id?: unknown }
   | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
@@ -582,6 +594,20 @@ type ClientMessage =
   | { type: "setProviderEnabled"; id?: unknown; enabled?: unknown }
   | { type: "refreshProviders" };
 
+function isAgentCommand(
+  command: ClientMessage,
+): command is Extract<ClientMessage, { type: AgentCommand["type"] }> {
+  return (
+    command.type === "getAgents" ||
+    command.type === "getAgent" ||
+    command.type === "startAgent" ||
+    command.type === "stopAgent" ||
+    command.type === "setAgentLimits" ||
+    command.type === "setAgentCadence" ||
+    command.type === "disableAgentTimer"
+  );
+}
+
 function parseClientMessage(value: unknown): ClientMessage | undefined {
   if (typeof value !== "object" || value === null || !("type" in value)) return undefined;
   switch (value.type) {
@@ -631,18 +657,29 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
         id: "id" in value ? value.id : undefined,
         value: "value" in value ? value.value : undefined,
       };
-    case "getScout":
-      return { type: "getScout" };
-    case "startScout":
-      return { type: "startScout" };
-    case "stopScout":
-      return { type: "stopScout" };
-    case "setScoutLimits":
+    case "getAgents":
+      return { type: "getAgents" };
+    case "getAgent":
+      return { type: "getAgent", id: "id" in value ? value.id : undefined };
+    case "startAgent":
+      return { type: "startAgent", id: "id" in value ? value.id : undefined };
+    case "stopAgent":
+      return { type: "stopAgent", id: "id" in value ? value.id : undefined };
+    case "setAgentLimits":
       return {
-        type: "setScoutLimits",
+        type: "setAgentLimits",
+        id: "id" in value ? value.id : undefined,
         maxPerHour: "maxPerHour" in value ? value.maxPerHour : undefined,
         maxPending: "maxPending" in value ? value.maxPending : undefined,
       };
+    case "setAgentCadence":
+      return {
+        type: "setAgentCadence",
+        id: "id" in value ? value.id : undefined,
+        minutes: "minutes" in value ? value.minutes : undefined,
+      };
+    case "disableAgentTimer":
+      return { type: "disableAgentTimer", id: "id" in value ? value.id : undefined };
     case "restartServer":
       return {
         type: "restartServer",
@@ -1180,29 +1217,65 @@ interface GitResult {
   stderr: string;
 }
 
+/**
+ * One bounded `git` invocation. The child never reads stdin and is killed when
+ * it outlives its bound, so a stalled `git push` fails the caller with a
+ * timeout result instead of pinning it for the life of the process. The bound
+ * covers the output reads too: a grandchild inheriting the pipes can otherwise
+ * keep them open after the child itself is gone.
+ */
 async function runGit(
   repoDir: string,
   args: string[],
   env: Record<string, string> = {},
+  timeoutMs: number = GIT_TIMEOUT_MS,
 ): Promise<GitResult> {
-  try {
-    const child = Bun.spawn({
+  const controller = new AbortController();
+  let killChild: (() => void) | undefined;
+
+  const invocation = (async (): Promise<GitResult> => {
+    const spawned = Bun.spawn({
       cmd: ["git", "-C", repoDir, ...args],
       env: { ...process.env, ...env },
+      stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      signal: controller.signal,
     });
+    killChild = () => {
+      try {
+        spawned.kill("SIGKILL");
+      } catch {
+        // The child is already gone; the timeout result still stands.
+      }
+    };
     const [stdout, stderr] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
+      new Response(spawned.stdout).text(),
+      new Response(spawned.stderr).text(),
     ]);
-    return { code: await child.exited, stdout, stderr };
-  } catch (error) {
-    return {
+    return { code: await spawned.exited, stdout, stderr };
+  })().catch((error: unknown): GitResult => ({
+    code: -1,
+    stdout: "",
+    stderr: error instanceof Error ? error.message : String(error),
+  }));
+
+  const timeout = Promise.withResolvers<GitResult>();
+  const timer = setTimeout(() => {
+    // The abort kills the child; SIGKILL covers one that ignores it.
+    controller.abort();
+    killChild?.();
+    timeout.resolve({
       code: -1,
       stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-    };
+      stderr: `git ${args[0] ?? ""} timed out after ${timeoutMs}ms`,
+    });
+  }, timeoutMs);
+
+  try {
+    return await Promise.race([invocation, timeout.promise]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1705,6 +1778,10 @@ export function createApp(options: AppOptions) {
     1,
     options.trackerTimeoutMs ?? TRACKER_READ_TIMEOUT_MS,
   );
+  const gitTimeoutMs = Math.max(1, options.gitTimeoutMs ?? GIT_TIMEOUT_MS);
+  /** Every git call this dashboard makes shares the one configured bound. */
+  const runRepoGit = (args: string[], env: Record<string, string> = {}) =>
+    runGit(repoDir, args, env, gitTimeoutMs);
   const laneBackoffMs = Math.max(0, options.laneBackoffMs ?? LANE_BACKOFF_MS);
   const laneRetentionMs = Math.max(0, options.laneRetentionMs ?? LANE_RETENTION_MS);
   const mainPollMs = Math.max(10, options.mainPollMs ?? MAIN_POLL_MS);
@@ -1732,20 +1809,6 @@ export function createApp(options: AppOptions) {
   async function peerEnvironment(): Promise<Record<string, string | undefined>> {
     return (await providers.select()).env;
   }
-  // The Issues-mode watchdog page: local facts every request, GitHub in the
-  // background at most once per interval. It never writes watchdog state.
-  const watchdog = new WatchdogActivity({
-    watchdogDir: join(stateDir, "watchdog"),
-    repoDir,
-    ...(options.watchdog?.reader === undefined ? {} : { reader: options.watchdog.reader }),
-    ...(options.watchdog?.now === undefined ? {} : { now: options.watchdog.now }),
-    ...(options.watchdog?.intervalMs === undefined
-      ? {}
-      : { intervalMs: options.watchdog.intervalMs }),
-    ...(options.watchdog?.staleAfterMs === undefined
-      ? {}
-      : { staleAfterMs: options.watchdog.staleAfterMs }),
-  });
   // The journal records what happened for the watchdog. It is never part of a
   // run's behavior: a failed write only adds a line to stderr.
   const journal =
@@ -2035,7 +2098,10 @@ export function createApp(options: AppOptions) {
    * checkout. It owns no scan loop: starting one is detached, stopping this
    * server leaves it alive, and a replacement attaches to the same board.
    */
+  const scoutDescriptor = agentRegistry.require("scout");
+  const watchdogDescriptor = agentRegistry.require("watchdog");
   const scout = new ScoutBridge({
+    descriptor: scoutDescriptor,
     repoDir,
     stateDir,
     agentCommand,
@@ -2048,7 +2114,44 @@ export function createApp(options: AppOptions) {
     ...(options.scout?.preflight === undefined ? {} : { preflight: options.scout.preflight }),
     ...(options.scout?.spawnWorker === undefined ? {} : { spawnWorker: options.scout.spawnWorker }),
   });
-  scout.begin();
+
+  /**
+   * Watchdog reads the root-anchored worker, ledger, and run history, overlays
+   * the forge projection, and starts or stops the detached worker. Every
+   * dashboard on the root reads the same machine state.
+   */
+  const watchdog = new WatchdogActivity({
+    descriptor: watchdogDescriptor,
+    repoDir,
+    stateDir,
+    harnessDir: runningHarnessDir(),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.watchdog?.reader === undefined ? {} : { reader: options.watchdog.reader }),
+    ...(options.watchdog?.now === undefined ? {} : { now: options.watchdog.now }),
+    ...(options.watchdog?.intervalMs === undefined
+      ? {}
+      : { intervalMs: options.watchdog.intervalMs }),
+    ...(options.watchdog?.staleAfterMs === undefined
+      ? {}
+      : { staleAfterMs: options.watchdog.staleAfterMs }),
+    ...(options.watchdog?.preflight === undefined ? {} : { preflight: options.watchdog.preflight }),
+    ...(options.watchdog?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.watchdog.spawnWorker }),
+    ...(options.watchdog?.systemctl === undefined
+      ? {}
+      : { systemctl: options.watchdog.systemctl }),
+  });
+
+  /** The shared control plane both background agents answer through. */
+  const agents = new BackgroundAgentBridge({
+    registry: agentRegistry,
+    adapters: [scout, watchdog],
+    broadcast: (event) => sendAll(event),
+    log: (line) => process.stderr.write(`${line}\n`),
+  });
+  agents.begin();
 
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
@@ -4968,7 +5071,7 @@ export function createApp(options: AppOptions) {
    * or retrying epic responsive without a fixed attempt cap.
    */
   async function readMainRevision(): Promise<string | undefined> {
-    const result = await runGit(repoDir, ["rev-parse", "--verify", "main"]);
+    const result = await runRepoGit(["rev-parse", "--verify", "main"]);
     return result.code === 0 ? result.stdout.trim() : undefined;
   }
 
@@ -5687,7 +5790,7 @@ export function createApp(options: AppOptions) {
    */
   async function performImplementationReset() {
     try {
-      const top = await runGit(repoDir, ["rev-parse", "--show-toplevel"]);
+      const top = await runRepoGit(["rev-parse", "--show-toplevel"]);
       if (top.code !== 0 || resolve(top.stdout.trim()) !== resolve(repoDir)) {
         failImplementationReset(
           `Reset refused: REPO_DIR is not the repository top level. ${gitDetail(top)}`,
@@ -5695,13 +5798,13 @@ export function createApp(options: AppOptions) {
         return;
       }
 
-      const head = await runGit(repoDir, ["rev-parse", "--verify", "HEAD"]);
+      const head = await runRepoGit(["rev-parse", "--verify", "HEAD"]);
       if (head.code !== 0) {
         failImplementationReset(`Reset refused: HEAD does not name a commit. ${gitDetail(head)}`);
         return;
       }
 
-      const branch = await runGit(repoDir, ["symbolic-ref", "--short", "HEAD"]);
+      const branch = await runRepoGit(["symbolic-ref", "--short", "HEAD"]);
       if (branch.code !== 0 || branch.stdout.trim() !== "main") {
         failImplementationReset(
           `Reset refused: the repository is not on main. ${gitDetail(branch)}`,
@@ -5709,7 +5812,7 @@ export function createApp(options: AppOptions) {
         return;
       }
 
-      const origin = await runGit(repoDir, ["remote", "get-url", "origin"]);
+      const origin = await runRepoGit(["remote", "get-url", "origin"]);
       if (origin.code !== 0) {
         failImplementationReset(
           `Reset refused: the repository has no origin remote. ${gitDetail(origin)}`,
@@ -5733,7 +5836,7 @@ export function createApp(options: AppOptions) {
         else await rm(target, { recursive: true, force: true });
       }
 
-      const staged = await runGit(repoDir, ["add", "-A"]);
+      const staged = await runRepoGit(["add", "-A"]);
       if (staged.code !== 0) {
         failImplementationReset(`Could not stage the reset: ${gitDetail(staged)}`);
         return;
@@ -5741,7 +5844,7 @@ export function createApp(options: AppOptions) {
       // git add -A honours .gitignore, but an absent .gitignore would stage the
       // internal trees, and an earlier commit may already track them. Remove
       // them from the index; the working tree is untouched.
-      const excluded = await runGit(repoDir, [
+      const excluded = await runRepoGit([
         "rm",
         "-r",
         "--cached",
@@ -5757,9 +5860,9 @@ export function createApp(options: AppOptions) {
 
       // With no staged change the current HEAD already describes the reset,
       // so the operation stays idempotent.
-      const changed = await runGit(repoDir, ["diff", "--cached", "--quiet"]);
+      const changed = await runRepoGit(["diff", "--cached", "--quiet"]);
       if (changed.code !== 0) {
-        const committed = await runGit(repoDir, [
+        const committed = await runRepoGit([
           "commit",
           "--no-verify",
           "-m",
@@ -5771,7 +5874,7 @@ export function createApp(options: AppOptions) {
         }
       }
 
-      const committedHead = await runGit(repoDir, ["rev-parse", "HEAD"]);
+      const committedHead = await runRepoGit(["rev-parse", "HEAD"]);
       if (committedHead.code !== 0) {
         failImplementationReset(
           `Could not read the reset commit: ${gitDetail(committedHead)}`,
@@ -5780,7 +5883,7 @@ export function createApp(options: AppOptions) {
       }
       const commit = committedHead.stdout.trim();
 
-      const pushed = await runGit(repoDir, ["push", "origin", "main"], RESET_PUSH_ENV);
+      const pushed = await runRepoGit(["push", "origin", "main"], RESET_PUSH_ENV);
       if (pushed.code !== 0) {
         failImplementationReset(
           `Could not push the reset commit: ${gitDetail(pushed)}`,
@@ -5918,13 +6021,6 @@ export function createApp(options: AppOptions) {
         return handleGoalProposalRequest(request, url);
       }
 
-      if (url.pathname === "/api/watchdog") {
-        if (request.method !== "GET") {
-          return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
-        }
-        return Response.json(watchdog.view());
-      }
-
       if (url.pathname === "/ws") {
         if (isCrossOriginRequest(request, url)) {
           return new Response("Cross-origin WebSocket upgrades are refused.", { status: 403 });
@@ -6044,7 +6140,7 @@ export function createApp(options: AppOptions) {
         // A client needs the checkout's origin and stopped state on connect,
         // whether or not a worker has ever published for it.
         issues.replay(ws);
-        scout.replay(ws);
+        agents.replay(ws);
       },
 
       close(ws) {
@@ -6075,7 +6171,8 @@ export function createApp(options: AppOptions) {
           command.type === "getIssuesRun" ||
           command.type === "getGoalDrafts" ||
           command.type === "getGoalDraft" ||
-          command.type === "getScout" ||
+          command.type === "getAgents" ||
+          command.type === "getAgent" ||
           command.type === "getSkills" ||
           command.type === "getDiscover" ||
           command.type === "getProviders";
@@ -6224,21 +6321,8 @@ export function createApp(options: AppOptions) {
                 message: "That question is no longer waiting for an answer.",
               });
             }
-          } else if (command.type === "getScout") {
-            scout.replay(ws);
-          } else if (command.type === "startScout") {
-            const started = await scout.start();
-            if (!started.ok) {
-              send(ws, { type: "error", message: started.message });
-            } else {
-              scout.replay(ws);
-            }
-          } else if (command.type === "stopScout") {
-            const result = scout.stop();
-            if (!result.ok) send(ws, { type: "error", message: result.message });
-          } else if (command.type === "setScoutLimits") {
-            const result = scout.setLimits(command.maxPerHour, command.maxPending);
-            if (!result.ok) send(ws, { type: "error", message: result.message });
+          } else if (isAgentCommand(command)) {
+            await agents.handle(ws, command);
           } else if (command.type === "restartServer") {
             restartServer(ws, command.whenIdle === true);
           } else if (command.type === "saveGoal") {
@@ -6413,6 +6497,7 @@ export function createApp(options: AppOptions) {
     flow.dispose();
     issues.dispose();
     goalDrafts.dispose(restarting);
+    agents.dispose();
     scout.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);

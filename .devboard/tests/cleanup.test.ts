@@ -211,6 +211,10 @@ describe("sweepStateDir", () => {
     writeAt(join(stateDir, "watchdog", "state.json"), "{}", old);
     writeAt(join(stateDir, "watchdog", "latest.json"), "{}", old);
     writeAt(join(stateDir, "watchdog", "lock"), "", old);
+    writeAt(join(stateDir, "watchdog", "worker.json"), "{}", old);
+    writeAt(join(stateDir, "watchdog", "settings.json"), "{}", old);
+    writeAt(join(stateDir, "watchdog", "projection.json"), "{}", old);
+    writeAt(join(stateDir, "watchdog", "control", "0001.json"), "{}", old);
     const startedAt = "2026-10-20T10:00:00.000Z";
     const activeRun = join(stateDir, "orchestrator", "runs", "2026-10-20T10-00-00-000Z");
     writeAt(join(activeRun, "stdout.log"), "running", old);
@@ -268,6 +272,10 @@ describe("sweepStateDir", () => {
       join(stateDir, "watchdog", "state.json"),
       join(stateDir, "watchdog", "latest.json"),
       join(stateDir, "watchdog", "lock"),
+      join(stateDir, "watchdog", "worker.json"),
+      join(stateDir, "watchdog", "settings.json"),
+      join(stateDir, "watchdog", "projection.json"),
+      join(stateDir, "watchdog", "control", "0001.json"),
       join(stateDir, "orchestrator", "state.json"),
       issuesState,
       join(issuesRun, "activity.json"),

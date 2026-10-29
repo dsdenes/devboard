@@ -289,6 +289,7 @@ try {
       DEVBOARD_NPM: failingNpm,
       // An ambient harness origin must not stand in for the fixture's feed.
       DEVBOARD_GITEA_URL: "",
+      DEVBOARD_RELEASE_DIR: emptyRelease,
     }),
     "release access",
   );

@@ -11,7 +11,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmodSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import {
@@ -23,6 +24,7 @@ import {
 } from "../lib/gitea";
 import { originForge } from "../issues/repository";
 import { openJournal } from "../server/journal";
+import { readWorkerState } from "../watchdog/worker-state";
 import {
   assertTrue,
   freePort,
@@ -34,8 +36,6 @@ import {
   waitFor,
 } from "./verification";
 
-const WATCHDOG_DIR = join(harnessRoot, ".tmp", "watchdog");
-const ATTEMPTS = 3;
 const CYCLE_WAIT_MS = 120_000;
 
 const remote = originForge(repoRoot);
@@ -83,16 +83,16 @@ function filedIssues(report: Record<string, unknown>): FiledIssue[] {
 }
 
 /** Every run report written at or after `since`, newest first. */
-async function reportsSince(since: number): Promise<Record<string, unknown>[]> {
+async function reportsSince(directory: string, since: number): Promise<Record<string, unknown>[]> {
   let names: string[];
   try {
-    names = (await readdir(join(WATCHDOG_DIR, "runs"))).sort().reverse();
+    names = (await readdir(join(directory, "runs"))).sort().reverse();
   } catch {
     return [];
   }
   const reports: Record<string, unknown>[] = [];
   for (const name of names) {
-    const path = join(WATCHDOG_DIR, "runs", name, "report.json");
+    const path = join(directory, "runs", name, "report.json");
     try {
       const info = await stat(path);
       if (info.mtimeMs < since) continue;
@@ -183,6 +183,8 @@ const marker = `verify-watchdog-live-${randomUUID()}`;
 const errorLine = `Synthetic error: ENOTFOUND the fixture endpoint ${marker}`;
 const root = await makeRoot("verify-watchdog-live");
 let dashboardPid = 0;
+let socket: WebSocket | undefined;
+let watchdogDirectory = "";
 let issueUrl = "";
 let issueClosed = false;
 
@@ -193,11 +195,31 @@ try {
   }
 
   const host = await makeHost(root, "host");
+  await mkdir(join(host.directory, ".devboard"), { recursive: true });
+  const originUrl = run("git", ["-C", repoRoot, "remote", "get-url", "origin"]).stdout.trim();
+  assertTrue(originUrl.length > 0, "verify:watchdog-live: the checkout has no origin URL");
+  run("git", ["-C", host.directory, "remote", "add", "origin", originUrl]);
+  const binDir = join(root, "bin");
+  await mkdir(binDir, { recursive: true });
+  const systemctl = join(binDir, "systemctl");
+  await writeFile(
+    systemctl,
+    `#!/bin/sh
+case "$2" in
+  is-active) echo inactive ;;
+  is-enabled) echo disabled ;;
+esac
+exit 0
+`,
+  );
+  chmodSync(systemctl, 0o755);
+  watchdogDirectory = join(host.directory, ".devboard", ".tmp", "watchdog");
   const stateDir = join(root, "state");
   const port = await freePort();
   const dashboard = spawn(process.execPath, [join(harnessRoot, "server", "index.ts")], {
     env: {
       ...process.env,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
       HOST: "127.0.0.1",
       PORT: String(port),
       REPO_DIR: host.directory,
@@ -233,38 +255,46 @@ try {
     `verify:watchdog-live: the seeded journal recorded the marker at ${journal.path}`,
   );
 
+  const startedAt = Date.now();
+  socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const opened = Promise.withResolvers<void>();
+  socket.onopen = () => opened.resolve();
+  socket.onerror = () => opened.reject(new Error("verify:watchdog-live: websocket failed"));
+  await opened.promise;
+  socket.send(JSON.stringify({ type: "startAgent", id: "watchdog" }));
+  await waitFor(
+    async () => {
+      const reports = await reportsSince(watchdogDirectory, startedAt);
+      return reports.length > 0 ? reports : undefined;
+    },
+    "the dashboard-started watchdog cycle",
+    CYCLE_WAIT_MS,
+  );
+
   let report: Record<string, unknown> | undefined;
   let issues: FiledIssue[] = [];
   let failure: string | undefined;
-  for (let attempt = 0; attempt < ATTEMPTS && issues.length === 0; attempt += 1) {
-    const startedAt = Date.now();
-    const service = run("systemctl", ["--user", "start", "devboard-watchdog.service"]);
-    assertTrue(
-      service.code === 0,
-      `verify:watchdog-live: starting devboard-watchdog.service failed: ${service.stderr}`,
-    );
-    await waitFor(
-      async () => {
-        const reports = await reportsSince(startedAt);
-        for (const candidate of reports) {
-          const matching = filedIssues(candidate).filter((issue) => issue.line.includes(marker));
-          if (matching.length > 0) {
-            report = candidate;
-            issues = matching;
-            return true;
-          }
-        }
-        const failed = reports.find((candidate) => candidate.action === "failed");
-        if (failed !== undefined) {
-          failure = String(failed.reason ?? "no reason");
+  await waitFor(
+    async () => {
+      const reports = await reportsSince(watchdogDirectory, startedAt);
+      for (const candidate of reports) {
+        const matching = filedIssues(candidate).filter((issue) => issue.line.includes(marker));
+        if (matching.length > 0) {
+          report = candidate;
+          issues = matching;
           return true;
         }
-        return undefined;
-      },
-      "a cycle that files the seeded server-error",
-      CYCLE_WAIT_MS,
-    ).catch(() => undefined);
-  }
+      }
+      const failed = reports.find((candidate) => candidate.action === "failed");
+      if (failed !== undefined) {
+        failure = String(failed.reason ?? "no reason");
+        return true;
+      }
+      return undefined;
+    },
+    "a cycle that files the seeded server-error",
+    CYCLE_WAIT_MS,
+  ).catch(() => undefined);
   if (issues.length === 0 || report === undefined) {
     throw new Error(
       failure === undefined
@@ -283,7 +313,7 @@ try {
   issueUrl = issue.url;
 
   const ledger = JSON.parse(
-    await readFile(join(WATCHDOG_DIR, "state.json"), "utf8"),
+    await readFile(join(watchdogDirectory, "state.json"), "utf8"),
   ) as Record<string, unknown>;
   const findings = asRecord(ledger.findings);
   const entry = asRecord(findings?.[issue.fingerprint]);
@@ -319,6 +349,20 @@ try {
       const detail = error instanceof Error ? error.message : String(error);
       console.error(`verify:watchdog-live: could not close ${issueUrl}: ${detail}`);
     }
+  }
+  if (socket !== undefined && socket.readyState === WebSocket.OPEN) {
+    try {
+      socket.send(JSON.stringify({ type: "stopAgent", id: "watchdog" }));
+      await waitFor(
+        () =>
+          readWorkerState(watchdogDirectory)?.lifecycle === "stopped" ? true : undefined,
+        "the watchdog worker to stop",
+        15_000,
+      ).catch(() => undefined);
+    } catch {
+      // The dashboard may already be gone.
+    }
+    socket.close();
   }
   if (dashboardPid > 0) {
     try {

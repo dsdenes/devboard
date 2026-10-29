@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
@@ -15,13 +16,15 @@ import { CYCLE_HISTORY_LIMIT, readWatchdogCycles } from "../watchdog/history";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
 import { readWatchdogStatus } from "../watchdog/status";
 import { testProviderService } from "../server/fixtures/test-providers";
+import { agentRegistry } from "../server/agents/registry";
+import { writeWorkerState } from "../watchdog/worker-state";
 
 /**
- * `GET /api/watchdog` and the Issues-mode Watchdog page are read-only: they
- * report the newest cycle, the retained history, and the filed issues, and
- * never an environment value or a fabricated GitHub state. Every fixture
- * lives under `.devboard/.tmp`; nothing here contacts GitHub or spawns an
- * agent.
+ * The Watchdog adapter and the shared WebSocket transport are read-only for
+ * page loads: they report the newest cycle, the retained history, and the
+ * filed issues, and never an environment value or a fabricated GitHub state.
+ * Every fixture lives under `.devboard/.tmp`; nothing here contacts GitHub or
+ * spawns an agent.
  */
 
 const harnessRoot = resolve(import.meta.dir, "..");
@@ -339,6 +342,34 @@ function fakeReader(facts: Map<string, WatchdogFacts>): WatchdogReader & { calls
   return reader;
 }
 
+function watchdogAdapter(
+  directory: string,
+  options: {
+    reader?: WatchdogReader;
+    now?: () => number;
+    intervalMs?: number;
+    staleAfterMs?: number;
+  } = {},
+): WatchdogActivity {
+  const root = resolve(directory, "..");
+  return new WatchdogActivity({
+    descriptor: agentRegistry.require("watchdog"),
+    repoDir: root,
+    stateDir: join(root, "state"),
+    harnessDir: resolve(import.meta.dir, ".."),
+    send: () => undefined,
+    watchdogDir: directory,
+    ...(options.reader === undefined ? {} : { reader: options.reader }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.intervalMs === undefined ? {} : { intervalMs: options.intervalMs }),
+    ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
+  });
+}
+
+function issueStates(snapshot: ReturnType<WatchdogActivity["snapshot"]>): Array<string | null> {
+  return snapshot.issues.map((issue) => issue.state);
+}
+
 describe("WatchdogActivity", () => {
   test("answers from the last read, refreshes at most once per interval, and maps states", async () => {
     const directory = await watchdogDirectory();
@@ -348,37 +379,36 @@ describe("WatchdogActivity", () => {
     ]);
     const reader = fakeReader(facts);
     let clock = 1_000_000;
-    const activity = new WatchdogActivity({
-      watchdogDir: directory,
+    const activity = watchdogAdapter(directory, {
       reader,
       now: () => clock,
       intervalMs: 60_000,
       staleAfterMs: 120_000,
     });
 
-    const initial = activity.view();
+    const initial = activity.snapshot();
     expect(initial.sync.state).toBe("stale");
-    expect(initial.issues.map((issue) => issue.state)).toEqual([null, null]);
+    expect(issueStates(initial)).toEqual(["unknown", "unknown"]);
     await activity.settled();
 
-    const projected = activity.view();
+    const projected = activity.snapshot();
     expect(projected.sync.state).toBe("ok");
     expect(projected.sync.at).toBe(new Date(clock).toISOString());
     expect(projected.sync.error).toBeNull();
     expect(projected.issues).toEqual([
       {
-        url: second.url,
+        title: `[watchdog] ${second.category}: ${second.line}`,
         category: second.category,
-        line: second.line,
         filedAt: second.filedAt,
+        url: second.url,
         state: "implemented",
         version: "v1.4.0",
       },
       {
-        url: first.url,
+        title: `[watchdog] ${first.category}: ${first.line}`,
         category: first.category,
-        line: first.line,
         filedAt: first.filedAt,
+        url: first.url,
         state: "pending",
         version: null,
       },
@@ -386,13 +416,13 @@ describe("WatchdogActivity", () => {
     expect(reader.calls).toBe(1);
 
     clock += 30_000;
-    activity.view();
-    activity.view();
+    activity.snapshot();
+    activity.snapshot();
     await activity.settled();
     expect(reader.calls).toBe(1);
 
     clock += 30_000;
-    activity.view();
+    activity.snapshot();
     await activity.settled();
     expect(reader.calls).toBe(2);
   });
@@ -411,23 +441,22 @@ describe("WatchdogActivity", () => {
         ];
       },
     };
-    const activity = new WatchdogActivity({
-      watchdogDir: directory,
+    const activity = watchdogAdapter(directory, {
       reader,
       now: () => clock,
       intervalMs: 60_000,
       staleAfterMs: 120_000,
     });
-    activity.view();
+    activity.snapshot();
     await activity.settled();
     const successAt = clock;
-    expect(activity.view().sync.state).toBe("ok");
+    expect(activity.snapshot().sync.state).toBe("ok");
 
     fail = true;
     clock += 60_000;
-    activity.view();
+    activity.snapshot();
     await activity.settled();
-    const failed = activity.view();
+    const failed = activity.snapshot();
     expect(failed.sync).toEqual({
       state: "error",
       at: new Date(successAt).toISOString(),
@@ -438,14 +467,14 @@ describe("WatchdogActivity", () => {
       version: "v2.0.0",
     });
     expect(failed.issues).toHaveLength(2);
-    expect(failed.cycle).toBe("2026-10-24T12:00:00.000Z");
+    expect(failed.detail.panel).toBe("cycles");
     expect(failed.pending).toBe(1);
 
     fail = false;
     clock += 60_000;
-    activity.view();
+    activity.snapshot();
     await activity.settled();
-    const recovered = activity.view();
+    const recovered = activity.snapshot();
     expect(recovered.sync.state).toBe("ok");
     expect(recovered.sync.error).toBeNull();
   });
@@ -453,8 +482,7 @@ describe("WatchdogActivity", () => {
   test("reports stale when the last success is older than two minutes", async () => {
     const directory = await watchdogDirectory();
     let clock = 9_000_000;
-    const activity = new WatchdogActivity({
-      watchdogDir: directory,
+    const activity = watchdogAdapter(directory, {
       reader: fakeReader(
         new Map<string, WatchdogFacts>([
           [first.url, { url: first.url, state: "pending", version: null }],
@@ -465,26 +493,23 @@ describe("WatchdogActivity", () => {
       intervalMs: 60_000,
       staleAfterMs: 120_000,
     });
-    activity.view();
+    activity.snapshot();
     await activity.settled();
-    expect(activity.view().sync.state).toBe("ok");
+    expect(activity.snapshot().sync.state).toBe("ok");
 
     clock += 121_000;
-    const stale = activity.view();
+    const stale = activity.snapshot();
     expect(stale.sync.state).toBe("stale");
     expect(stale.sync.at).toBe(new Date(9_000_000).toISOString());
     expect(stale.sync.error).toBeNull();
     // The scheduled read answers the next request, not this one.
     expect(stale.issues[0]?.state).toBe("pending");
     await activity.settled();
-    expect(activity.view().sync.state).toBe("ok");
+    expect(activity.snapshot().sync.state).toBe("ok");
   });
 
-  test("serves a request without waiting for the reader", async () => {
+  test("returns the last projection without waiting for the reader", async () => {
     const directory = await watchdogDirectory();
-    const root = resolve(directory, "..");
-    await mkdir(join(root, "adrs"), { recursive: true });
-    await mkdir(join(root, "static"), { recursive: true });
     const gate = Promise.withResolvers<void>();
     let calls = 0;
     const reader: WatchdogReader = {
@@ -497,70 +522,108 @@ describe("WatchdogActivity", () => {
         ];
       },
     };
-    // The gate stays unresolved, so a response proves the request did not wait.
-    const server = createApp({
-      adrDir: join(root, "adrs"),
-      staticDir: join(root, "static"),
-      hostname: "127.0.0.1",
-      port: 0,
-      repoDir: root,
-      stateDir: root,
-      providers: testProviderService(root),
-      watchdog: { reader },
-    });
-    try {
-      const response = await fetch(`http://127.0.0.1:${server.port}/api/watchdog`);
-      expect(response.status).toBe(200);
-      const body = (await response.json()) as Record<string, unknown>;
-      expect((body.sync as Record<string, unknown>).state).toBe("stale");
-      expect(body.issues).toEqual([
-        expect.objectContaining({ url: second.url, state: null, version: null }),
-        expect.objectContaining({ url: first.url, state: null, version: null }),
-      ]);
+    const activity = watchdogAdapter(directory, { reader });
+    const initial = activity.snapshot();
+    expect(initial.sync.state).toBe("stale");
+    expect(initial.issues.map((issue) => issue.state)).toEqual(["unknown", "unknown"]);
 
-      gate.resolve();
-      await waitUntil(async () => {
-        const reply = await fetch(`http://127.0.0.1:${server.port}/api/watchdog`);
-        const value = (await reply.json()) as Record<string, unknown>;
-        return (value.sync as Record<string, unknown>).state === "ok";
-      });
-      expect(calls).toBe(1);
-      const reply = await fetch(`http://127.0.0.1:${server.port}/api/watchdog`);
-      const projected = (await reply.json()) as Record<string, unknown>;
-      expect(
-        (projected.issues as Array<Record<string, unknown>>).map((issue) => [
-          issue.url,
-          issue.state,
-          issue.version,
-        ]),
-      ).toEqual([
-        [second.url, "implemented", "v3.0.0"],
-        [first.url, "pending", null],
-      ]);
-    } finally {
-      server.stop(true);
-    }
+    gate.resolve();
+    await activity.settled();
+    expect(calls).toBe(1);
+    const projected = activity.snapshot();
+    expect(projected.issues.map((issue) => [issue.url, issue.state, issue.version])).toEqual([
+      [second.url, "implemented", "v3.0.0"],
+      [first.url, "pending", null],
+    ]);
   });
 
-  test("leaves the watchdog state directory byte-identical", async () => {
+  test("writes only the projection and leaves the ledger and runs byte-identical", async () => {
     const directory = await watchdogDirectory();
     await mkdir(join(directory, "runs", "2026-10-24T12-00-00-000Z"), { recursive: true });
     await writeFile(
       join(directory, "runs", "2026-10-24T12-00-00-000Z", "report.json"),
       report("2026-10-24T12:00:00.000Z", "filed", 1),
     );
+    writeWorkerState(directory, {
+      version: 1,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      root: resolve(directory, ".."),
+      stateDir: join(resolve(directory, ".."), "state"),
+      lifecycle: "running",
+      enabled: true,
+      harnessVersion: "test",
+      argv: [],
+      lastRunAt: null,
+      nextRunAt: null,
+      lastError: null,
+      notice: null,
+      updatedAt: new Date().toISOString(),
+    });
+    const ledgerBefore = createHash("sha256")
+      .update(await readFile(join(directory, "state.json")))
+      .digest("hex");
+    const runBefore = createHash("sha256")
+      .update(await readFile(join(directory, "runs", "2026-10-24T12-00-00-000Z", "report.json")))
+      .digest("hex");
+    const activity = watchdogAdapter(directory, {
+      reader: fakeReader(
+        new Map<string, WatchdogFacts>([
+          [first.url, { url: first.url, state: "pending", version: null }],
+          [second.url, { url: second.url, state: "implemented", version: "v1.0.0" }],
+        ]),
+      ),
+    });
+    activity.snapshot();
+    await activity.settled();
+    expect(
+      createHash("sha256").update(await readFile(join(directory, "state.json"))).digest("hex"),
+    ).toBe(ledgerBefore);
+    expect(
+      createHash("sha256")
+        .update(await readFile(join(directory, "runs", "2026-10-24T12-00-00-000Z", "report.json")))
+        .digest("hex"),
+    ).toBe(runBefore);
+    expect(existsSync(join(directory, "projection.json"))).toBe(true);
+  });
+});
+
+describe("agent transport", () => {
+  test("the removed GET endpoint is gone", async () => {
+    const directory = await watchdogDirectory();
     const root = resolve(directory, "..");
     await mkdir(join(root, "adrs"), { recursive: true });
     await mkdir(join(root, "static"), { recursive: true });
-    const before = await directoryBytes(directory);
     const server = createApp({
       adrDir: join(root, "adrs"),
       staticDir: join(root, "static"),
       hostname: "127.0.0.1",
       port: 0,
       repoDir: root,
-      stateDir: root,
-      providers: testProviderService(root),
+      stateDir: join(root, "state"),
+      providers: testProviderService(join(root, "state")),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/watchdog`);
+      expect(response.status).toBe(404);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("getAgent answers the shared snapshot over the WebSocket", async () => {
+    const directory = await watchdogDirectory();
+    const root = resolve(directory, "..");
+    await mkdir(join(root, "adrs"), { recursive: true });
+    await mkdir(join(root, "static"), { recursive: true });
+    const server = createApp({
+      adrDir: join(root, "adrs"),
+      staticDir: join(root, "static"),
+      hostname: "127.0.0.1",
+      port: 0,
+      repoDir: root,
+      stateDir: join(root, "state"),
+      providers: testProviderService(join(root, "state")),
       watchdog: {
         reader: fakeReader(
           new Map<string, WatchdogFacts>([
@@ -571,108 +634,47 @@ describe("WatchdogActivity", () => {
       },
     });
     try {
-      readWatchdogStatus(directory);
-      for (let index = 0; index < 3; index += 1) {
-        const response = await fetch(`http://127.0.0.1:${server.port}/api/watchdog`);
-        await response.json();
-      }
-    } finally {
-      server.stop(true);
-    }
-    expect(await directoryBytes(directory)).toEqual(before);
-  });
-});
-
-describe("GET /api/watchdog", () => {
-  test("returns the newest cycle, history, issues, and sync without any environment value", async () => {
-    const directory = await watchdogDirectory();
-    const root = resolve(directory, "..");
-    const stateDir = join(root, "state");
-    await mkdir(join(stateDir, "watchdog"), { recursive: true });
-    await writeFile(join(stateDir, "watchdog", "latest.json"), JSON.stringify(latestFixture()));
-    saveLedger(join(stateDir, "watchdog"), ledgerFixture());
-    const staticDir = join(root, "static");
-    await mkdir(staticDir, { recursive: true });
-    await mkdir(join(root, "adrs"), { recursive: true });
-
-    const canary = "watchdog-canary-9f4c2b";
-    process.env.DEVBOARD_WATCHDOG_CANARY = canary;
-    const server = createApp({
-      adrDir: join(root, "adrs"),
-      staticDir,
-      hostname: "127.0.0.1",
-      port: 0,
-      repoDir: root,
-      stateDir,
-      providers: testProviderService(stateDir),
-    });
-    try {
-      const response = await fetch(`http://127.0.0.1:${server.port}/api/watchdog`);
-      expect(response.status).toBe(200);
-      expect(response.headers.get("content-type")).toContain("application/json");
-      const text = await response.text();
-      expect(text.includes(canary)).toBe(false);
-      const body = JSON.parse(text) as Record<string, unknown>;
-      expect(Object.keys(body).sort()).toEqual([
-        "action",
-        "cycle",
-        "cycles",
-        "findings",
-        "issues",
-        "pending",
-        "reason",
-        "sync",
-      ]);
-      expect(body.cycle).toBe("2026-10-24T12:00:00.000Z");
-      expect(body.action).toBe("filed");
-      expect(body.findings).toBe(1);
-      expect(body.pending).toBe(1);
-      expect(body.cycles).toEqual([
-        {
-          at: "2026-10-24T12:00:00.000Z",
-          window: { start: "2026-10-24T11:50:00.000Z", end: "2026-10-24T12:00:00.000Z" },
-          action: "filed",
-          findings: 1,
-          issues: [first.url],
-          reason: "filed 1 issue(s)",
-        },
-      ]);
-      expect(body.issues).toEqual([
-        { url: second.url, category: second.category, line: second.line, filedAt: second.filedAt, state: null, version: null },
-        { url: first.url, category: first.category, line: first.line, filedAt: first.filedAt, state: null, version: null },
-      ]);
-      expect(body.sync).toEqual({ state: "stale", at: null, error: null });
-    } finally {
-      server.stop(true);
-      delete process.env.DEVBOARD_WATCHDOG_CANARY;
-    }
-  });
-
-  test("refuses a non-GET method", async () => {
-    const root = await temporaryDirectory("test-watchdog-api-method");
-    const staticDir = join(root, "static");
-    await mkdir(staticDir, { recursive: true });
-    await mkdir(join(root, "adrs"), { recursive: true });
-    const server = createApp({
-      adrDir: join(root, "adrs"),
-      staticDir,
-      hostname: "127.0.0.1",
-      port: 0,
-      repoDir: root,
-      stateDir: join(root, "state"),
-      providers: testProviderService(join(root, "state")),
-    });
-    try {
-      const response = await fetch(`http://127.0.0.1:${server.port}/api/watchdog`, {
-        method: "POST",
-        body: "{}",
+      const agent = await websocketAgent(`127.0.0.1:${server.port}`, {
+        type: "getAgent",
+        id: "watchdog",
       });
-      expect(response.status).toBe(405);
+      expect(agent.id).toBe("watchdog");
+      expect(agent.label).toBe("Watchdog");
+      expect(agent.lifecycle).toBe("stopped");
+      expect(agent.owned).toBe(false);
+      expect(agent.detail.panel).toBe("cycles");
+      expect(Array.isArray(agent.issues)).toBe(true);
     } finally {
       server.stop(true);
     }
   });
 });
+
+function websocketAgent(
+  url: string,
+  command: unknown,
+): Promise<Record<string, unknown>> {
+  const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+  const socket = new WebSocket(`ws://${url}/ws`);
+  socket.onopen = () => socket.send(JSON.stringify(command));
+  socket.onmessage = (event) => {
+    let message: Record<string, unknown>;
+    try {
+      message = JSON.parse(String(event.data)) as Record<string, unknown>;
+    } catch (error) {
+      socket.close();
+      reject(error);
+      return;
+    }
+    if (message.type !== "agentState") return;
+    const agent = message.agent as Record<string, unknown> | undefined;
+    if (agent?.id !== (command as { id?: unknown }).id) return;
+    socket.close();
+    resolve(agent);
+  };
+  socket.onerror = () => reject(new Error("websocket failed"));
+  return promise;
+}
 
 type RunnerReply = { code: number; stdout: string; stderr: string };
 

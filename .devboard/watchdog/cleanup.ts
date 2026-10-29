@@ -181,12 +181,17 @@ export function sweepStateDir(
     // worktree/PR bookkeeping Flow restore and History read. Nothing
     // recreates a swept session, so an untouched one must survive.
     join(directory, "flow"),
+    // The watchdog's command channel is operator input, not scratch.
+    join(directory, "watchdog", "control"),
     ...(options.watchdogRunDir === undefined ? [] : [resolve(options.watchdogRunDir)]),
   ];
   const protectedExact = new Set([
     join(directory, "watchdog", "state.json"),
     join(directory, "watchdog", "latest.json"),
     join(directory, "watchdog", "lock"),
+    join(directory, "watchdog", "worker.json"),
+    join(directory, "watchdog", "settings.json"),
+    join(directory, "watchdog", "projection.json"),
     join(directory, "orchestrator", "state.json"),
     join(directory, "orchestrator", "ledger.json"),
     join(directory, "orchestrator", "lock"),

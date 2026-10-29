@@ -27,6 +27,18 @@ export const HOUR_MS = 60 * 60_000;
 export const DEFAULT_MAX_PER_HOUR = 10;
 /** The default number of Auto Scout issues that may stay open. */
 export const DEFAULT_MAX_PENDING = 5;
+/** The default scan cadence, in minutes. */
+export const DEFAULT_INTERVAL_MINUTES = 1;
+/** The cadence bounds every background agent shares. */
+export const CADENCE_MIN_MINUTES = 1;
+export const CADENCE_MAX_MINUTES = 1440;
+/**
+ * The largest batch one scan may request when a limit is empty. It bounds the
+ * request document, not the filing: an empty cap removes the rolling-hour and
+ * open-issue constraints, and this is only the most findings a single prompt
+ * asks the agent to return.
+ */
+export const UNLIMITED_SCAN_BATCH = 100;
 /** Both limits accept an integer from this value through `LIMIT_MAX`. */
 export const LIMIT_MIN = 1;
 export const LIMIT_MAX = 100;

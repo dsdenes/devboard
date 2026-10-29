@@ -16,6 +16,8 @@ import {
   saveLedger,
   type LedgerEntry,
 } from "./ledger";
+import { readProjection } from "./projection";
+import { DEFAULT_WATCHDOG_SETTINGS, readWatchdogSettings, type WatchdogSettings } from "./settings";
 
 /**
  * One watchdog cycle: discover live dashboards, collect the previous ten
@@ -72,7 +74,13 @@ export interface ReportIssue {
   line: string;
 }
 
-export type CycleAction = "none" | "duplicate" | "filed" | "commented" | "failed";
+export type CycleAction =
+  | "none"
+  | "duplicate"
+  | "filed"
+  | "commented"
+  | "capped"
+  | "failed";
 
 export interface Report {
   cycle: string;
@@ -97,6 +105,10 @@ export interface CycleOptions {
   now?: Date;
   stateDir?: string;
   dryRun?: boolean;
+  /** The evidence window; a running worker passes its cadence interval. */
+  windowMs?: number;
+  /** Persisted cadence and caps; read from the state directory when omitted. */
+  settings?: WatchdogSettings;
   deps?: Partial<CycleDeps>;
 }
 
@@ -129,8 +141,9 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
   const root = resolve(options.root ?? join(import.meta.dir, "..", ".."));
   const harness = join(root, ".devboard");
   const now = options.now ?? new Date();
+  const windowMs = Math.max(60_000, options.windowMs ?? WINDOW_MS);
   const window: Window = {
-    start: new Date(now.getTime() - WINDOW_MS),
+    start: new Date(now.getTime() - windowMs),
     end: now,
   };
   // A start in the window's final five minutes is not a stall yet, and the
@@ -141,6 +154,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     end: now,
   };
   const stateDir = resolve(options.stateDir ?? join(harness, ".tmp", "watchdog"));
+  const settings = options.settings ?? readWatchdogSettings(stateDir);
   const runDir = join(stateDir, "runs", stamp(now));
   const reportPath = join(runDir, "report.json");
   const deps: CycleDeps = {
@@ -228,7 +242,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     window: {
       start: window.start.toISOString(),
       end: window.end.toISOString(),
-      minutes: WINDOW_MS / 60 / 1000,
+      minutes: windowMs / 60 / 1000,
     },
     instances: instances.map((instance) => ({
       pid: instance.pid,
@@ -320,8 +334,43 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
   let failure: string | undefined;
   let commented = 0;
 
+  // Caps: with no cap the queue is filed exactly as before. A cap counts new
+  // issues per rolling hour and open issues from the last successful
+  // projection; an unavailable projection files nothing new.
+  const capsActive = settings.maxPerHour !== null || settings.maxPending !== null;
+  const filingRoom = (): number => {
+    if (!capsActive) return Number.POSITIVE_INFINITY;
+    const hourStart = now.getTime() - 60 * 60_000;
+    let filedThisHour = 0;
+    for (const candidate of Object.values(ledger.findings)) {
+      if (!candidate.disposition.startsWith("filed:")) continue;
+      const filedAt = Date.parse(candidate.filedAt ?? "");
+      if (Number.isFinite(filedAt) && filedAt > hourStart) filedThisHour += 1;
+    }
+    const projection = readProjection(stateDir);
+    if (projection === undefined || projection.state !== "ok") {
+      report.reason = "a filing cap is set and the GitHub projection is not ok; nothing new was filed";
+      return 0;
+    }
+    const open = projection.issues.filter((issue) => issue.state === "pending").length;
+    const hourlyRoom =
+      settings.maxPerHour === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, settings.maxPerHour - filedThisHour);
+    const openRoom =
+      settings.maxPending === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, settings.maxPending - open);
+    return Math.min(hourlyRoom, openRoom);
+  };
+  let room = filingRoom();
+
   // Pending filings are retried first: a failed `gh` call never loses evidence.
   for (const fingerprint of queue) {
+    if (room <= 0) {
+      markPending(ledger, fingerprint);
+      continue;
+    }
     const entry = ledger.findings[fingerprint];
     if (entry === undefined) {
       ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
@@ -337,6 +386,7 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
     }
     const filed = await active.create(issueInput(fingerprint, entry));
     if (filed.ok) {
+      room -= 1;
       markFiled(ledger, fingerprint, filed.url, now);
       report.issues.push({
         url: filed.url,
@@ -389,6 +439,10 @@ export async function runCycle(options: CycleOptions = {}): Promise<CycleResult>
   } else if (commented > 0) {
     report.action = "commented";
     report.reason = `commented on ${commented} issue(s)`;
+  } else if (capsActive && ledger.pendingFiling.length > 0) {
+    report.action = "capped";
+    report.reason =
+      report.reason ?? `filing cap reached; ${ledger.pendingFiling.length} finding(s) stay pending`;
   } else if (findings.length > 0 || ledger.pendingFiling.length > 0) {
     report.action = "duplicate";
     report.reason = "every finding already has an issue";

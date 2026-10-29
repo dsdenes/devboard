@@ -5,7 +5,7 @@
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
   import { issues } from "../issues.svelte";
-  import { scout } from "../scout.svelte";
+  import { agents } from "../agents.svelte";
   import { statusTone } from "../status-tone";
   import { layout } from "../layout.svelte";
   import { renderSkillDocument } from "../skill-document";
@@ -317,6 +317,7 @@
 
     {:else if layout.mode === "issues"}
       <section class="sidebar-group" aria-label="Issues surfaces">
+        <div class="sidebar-group__title">Issues surfaces</div>
         <button
           type="button"
           class="sidebar-item"
@@ -330,29 +331,50 @@
             {issues.lifecycle}
           </span>
         </button>
-        <button
-          type="button"
-          class="sidebar-item"
-          aria-current={isActive("scout") ? "true" : undefined}
-          aria-label={`Auto Scout (${modeLabel})`}
-          data-command="open.issues.scout"
-          data-testid="open-issues-scout"
-          onclick={() => open("issues", "scout", "scout", "scout", "Auto Scout")}
-        >
-          <span class="sidebar-item__label">Auto Scout</span>
-          <span class="sidebar-item__meta" data-testid="scout-count">{scout.count}</span>
-        </button>
-        <button
-          type="button"
-          class="sidebar-item"
-          aria-current={isActive("watchdog") ? "true" : undefined}
-          aria-label={`Watchdog (${modeLabel})`}
-          data-command="open.issues.watchdog"
-          data-testid="open-issues-watchdog"
-          onclick={() => open("issues", "watchdog", "watchdog", "watchdog", "Watchdog")}
-        >
-          <span class="sidebar-item__label">Watchdog</span>
-        </button>
+      </section>
+
+      <section
+        class="sidebar-group"
+        aria-label="Background agents"
+        data-testid="sidebar-background-agents"
+      >
+        <div class="sidebar-group__title">Background agents</div>
+        {#each agents.descriptors as descriptor (descriptor.id)}
+          {@const snapshot = agents.snapshot(descriptor.id)}
+          <button
+            type="button"
+            class="sidebar-item"
+            aria-current={isActive(descriptor.tab.id) ? "true" : undefined}
+            aria-label={`${descriptor.label} (${modeLabel})`}
+            data-command={`open.issues.${descriptor.id}`}
+            data-testid={`open-issues-${descriptor.id}`}
+            onclick={() =>
+              open(
+                "issues",
+                descriptor.tab.id,
+                descriptor.tab.kind,
+                descriptor.tab.id,
+                descriptor.tab.title,
+              )}
+          >
+            <span class="sidebar-item__label">{descriptor.label}</span>
+            <span
+              class="badge"
+              data-tone={statusTone(snapshot?.lifecycle ?? "stopped")}
+              data-testid={`agent-state-${descriptor.id}`}
+              data-state={snapshot?.lifecycle ?? "stopped"}
+            >
+              {snapshot?.lifecycle ?? "stopped"}
+            </span>
+            <span class="sidebar-item__meta" data-testid={`agent-count-${descriptor.id}`}>
+              {agents.count(descriptor.id)}
+            </span>
+          </button>
+        {/each}
+      </section>
+
+      <section class="sidebar-group" aria-label="Issues work">
+        <div class="sidebar-group__title">Issues work</div>
         <button
           type="button"
           class="sidebar-item"

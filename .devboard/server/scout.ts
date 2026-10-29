@@ -13,18 +13,22 @@ import { writeCommand, type ScoutCommand } from "../issues/scout/control";
 import { preflightScout, type ScoutPreflightResult } from "../issues/scout/preflight";
 import { cachedRepository } from "../issues/repository";
 import {
-  DEFAULT_LIMITS,
+  DEFAULT_SETTINGS,
+  isValidCadence,
   isValidLimit,
   readSettings,
   readState,
   writeSettings,
   type ScoutIssueRow,
-  type ScoutLimits,
+  type ScoutSettings,
   type ScoutState,
   type ScoutSync,
 } from "../issues/scout/state";
 import { readActivity } from "../issues/state";
 import { activityDelta } from "./activity";
+import { projectAgentSnapshot, type AgentSnapshotInput } from "./agents/registry";
+import type { AgentAdapter, AgentCommandResult } from "./agents/types";
+import type { AgentDescriptor } from "./agents/registry";
 
 /**
  * The dashboard half of Auto Scout. It never owns a scan loop, an agent, or a
@@ -41,32 +45,13 @@ const STOP_KILL_GRACE_MS = 2_000;
 const STOP_DEADLINE_MS = STOP_PROOF_MS + STOP_KILL_GRACE_MS;
 const STOP_POLL_MS = 50;
 
-export interface ScoutSnapshot {
-  present: boolean;
-  repo: string | null;
-  root: string;
-  lifecycle: ScoutState["lifecycle"];
-  enabled: boolean;
-  attached: boolean;
-  worker: ScoutState["worker"];
-  /** The limits the dashboard persisted, so a save shows without a worker. */
-  limits: ScoutLimits;
-  issues: ScoutIssueRow[];
-  sync: ScoutSync;
-  scan: ScoutState["scan"];
-  newestScanId: string | null;
-  nextAttemptAt: string | null;
-  lastError: string | null;
-  notice: string | null;
-  updatedAt: string | null;
-}
-
 export interface ScoutActivityEntry {
   text: string;
   append: boolean;
 }
 
 export interface ScoutBridgeOptions {
+  descriptor: AgentDescriptor;
   repoDir: string;
   stateDir: string;
   agentCommand: string;
@@ -85,9 +70,14 @@ export interface ScoutBridgeOptions {
     environment: Record<string, string | undefined>;
   }) => Promise<ScoutPreflightResult>;
   spawnWorker?: (argv: string[], environment: Record<string, string | undefined>) => number | undefined;
+  now?: () => number;
 }
 
-export class ScoutBridge {
+/** How long a spawned worker may take to publish its lock before Start fails. */
+const START_PROOF_MS = 5_000;
+
+export class ScoutBridge implements AgentAdapter {
+  readonly descriptor: AgentDescriptor;
   private readonly repoDir: string;
   private readonly stateDir: string;
   private readonly agentCommand: string;
@@ -101,17 +91,21 @@ export class ScoutBridge {
   private readonly spawnWorker: NonNullable<ScoutBridgeOptions["spawnWorker"]>;
   private readonly log: (line: string) => void;
   private readonly pollMsValue: number;
+  private readonly now: () => number;
 
   private timer: Timer | undefined;
-  private lastSignature = "";
   private lastActivityScanId: string | null = null;
   private lastActivity: string[] = [];
   private stopping: { pid: number; timer: Timer; killTimer?: Timer } | undefined;
-  private startTask:
-    | Promise<{ ok: true; attached: boolean } | { ok: false; message: string }>
-    | undefined;
+  private starting = false;
+  private startingSince: number | null = null;
+  private stopRequested = false;
+  private startError: string | null = null;
+  private notice: string | null = null;
+  private startTask: Promise<AgentCommandResult> | undefined;
 
   constructor(options: ScoutBridgeOptions) {
+    this.descriptor = options.descriptor;
     this.repoDir = resolve(options.repoDir);
     this.stateDir = resolve(options.stateDir);
     this.agentCommand = options.agentCommand;
@@ -123,6 +117,7 @@ export class ScoutBridge {
     this.repository = cachedRepository(this.repoDir);
     this.log = options.log ?? (() => undefined);
     this.pollMsValue = Math.max(50, options.pollMs ?? 250);
+    this.now = options.now ?? (() => Date.now());
     this.preflight =
       options.preflight ??
       ((request) =>
@@ -179,19 +174,70 @@ export class ScoutBridge {
     return liveLockOwner(lockPath(this.repoDir));
   }
 
+  private owned(owner: LockOwner | undefined): boolean {
+    return owner !== undefined && resolve(owner.stateDir) === this.stateDir && pidAlive(owner.pid);
+  }
+
+  private settings(state: ScoutState | undefined): ScoutSettings {
+    return (
+      readSettings(settingsPath(this.stateDir, this.repoDir)) ?? {
+        maxPerHour: state?.limits.maxPerHour ?? DEFAULT_SETTINGS.maxPerHour,
+        maxPending: state?.limits.maxPending ?? DEFAULT_SETTINGS.maxPending,
+        intervalMinutes: state?.intervalMinutes ?? DEFAULT_SETTINGS.intervalMinutes,
+      }
+    );
+  }
+
   /** True when there is a worker state or a live lock to replay. */
   get present(): boolean {
     return this.currentState() !== undefined || this.lockOwner() !== undefined;
   }
 
-  snapshot(): ScoutSnapshot {
+  snapshot(): AgentSnapshotInput {
     const state = this.currentState();
     const owner = this.lockOwner();
-    const attached =
-      owner !== undefined && resolve(owner.stateDir) === this.stateDir && pidAlive(owner.pid);
+    const attached = this.owned(owner);
     const active = attached ? state : undefined;
-    const lifecycle =
-      active?.lifecycle === "stopped" || active === undefined ? "stopped" : active.lifecycle;
+    if (this.starting && owner !== undefined) {
+      this.starting = false;
+      this.startingSince = null;
+    }
+    if (
+      this.starting &&
+      this.startingSince !== null &&
+      this.now() - this.startingSince > START_PROOF_MS
+    ) {
+      this.starting = false;
+      this.startingSince = null;
+      this.startError = "the Auto Scout worker did not publish its state within 5 seconds";
+    }
+    if (this.stopRequested && owner === undefined) this.stopRequested = false;
+    if (owner !== undefined && !this.owned(owner)) {
+      this.notice =
+        `this checkout already has an Auto Scout worker (pid ${owner.pid}) using ` +
+        `${owner.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`;
+    } else if (this.notice !== null && this.notice.startsWith("this checkout already has")) {
+      this.notice = null;
+    }
+
+    const lifecycle = this.starting
+      ? "starting"
+      : this.stopRequested
+        ? "stopping"
+        : attached
+          ? active?.lifecycle === "idle" || active?.lifecycle === "scanning"
+            ? "running"
+            : active?.lifecycle === "failed"
+              ? "failed"
+              : active?.lifecycle === "stopped"
+                ? "stopped"
+                : "running"
+          : owner !== undefined
+            ? "running"
+            : state?.lifecycle === "failed" && state.enabled
+              ? "failed"
+              : "stopped";
+    const settings = this.settings(state);
     const worker = state?.worker ?? null;
     const mismatch =
       attached && worker !== null && worker.harnessVersion !== this.runningVersion
@@ -199,61 +245,74 @@ export class ScoutBridge {
           `loaded ${this.runningVersion ?? "unknown"}. It is left running; Stop it to launch the ` +
           "current harness on the next Start."
         : null;
-    const limits = readSettings(settingsPath(this.stateDir, this.repoDir)) ?? state?.limits;
+    const lastRunAt =
+      state?.lastScanStartedAt ?? active?.scan?.startedAt ?? null;
+    const nextRunAt = attached
+      ? (state?.nextAttemptAt ?? nextCadenceAt(lastRunAt, settings.intervalMinutes))
+      : null;
+    const issues = state?.issues ?? [];
+    const sync: ScoutSync = state?.sync ?? { state: "stale", at: null, error: null };
+    const scanId = state?.scan?.scanId ?? state?.newestScanId ?? null;
     return {
-      present: state !== undefined,
-      repo: state !== undefined && state.repo.length > 0 ? state.repo : this.repository(),
-      root: this.repoDir,
       lifecycle,
-      enabled: active?.enabled === true && lifecycle !== "stopped",
+      enabled: attached && active?.enabled === true && lifecycle !== "stopped",
+      owned: attached,
       attached,
-      worker: active?.worker ?? null,
-      limits: limits ?? { ...DEFAULT_LIMITS },
-      issues: state?.issues ?? [],
-      sync: state?.sync ?? { state: "stale", at: null, error: null },
-      scan: active?.scan ?? null,
-      newestScanId: state?.newestScanId ?? null,
-      nextAttemptAt: active?.nextAttemptAt ?? null,
-      lastError: active?.lastError ?? null,
-      notice: mismatch ?? active?.notice ?? null,
-      updatedAt: state?.updatedAt ?? null,
+      cadence: {
+        minutes: settings.intervalMinutes,
+        lastRunAt,
+        nextRunAt,
+      },
+      limits: {
+        maxPerHour: settings.maxPerHour,
+        maxPending: settings.maxPending,
+      },
+      issues: issues.map(projectIssue),
+      pending: issues.filter((issue) => issue.state === "pending").length,
+      sync,
+      detail: {
+        panel: "activity",
+        scanId,
+        entries: [...this.lastActivity],
+      },
+      notice: mismatch ?? this.notice ?? active?.notice ?? null,
+      error: this.startError ?? active?.lastError ?? null,
+      timer: null,
     };
   }
 
   /**
-   * A connect-time replay: state to the caller, then the newest scan's whole
-   * activity to the caller and every other client. The baseline is shared, so
-   * advancing it for one client alone would make the next delta skip what the
-   * older clients missed.
+   * A connect-time replay: the newest scan's whole activity to the caller and
+   * every other client. The baseline is shared, so advancing it for one client
+   * alone would make the next delta skip what the older clients missed.
    */
-  replay(target?: { send(data: string): unknown }): void {
-    const deliver =
-      target === undefined
-        ? this.send
-        : (event: unknown) => {
-            try {
-              target.send(JSON.stringify(event));
-            } catch {
-              // The socket closed before the replay finished.
-            }
-          };
-    const snapshot = this.snapshot();
-    deliver({ type: "scoutState", ...snapshot });
-    const scanId = snapshot.scan?.scanId ?? snapshot.newestScanId;
+  replay(target: { send(data: string): unknown }): void {
+    const deliver = (event: unknown) => {
+      try {
+        target.send(JSON.stringify(event));
+      } catch {
+        // The socket closed before the replay finished.
+      }
+    };
+    const state = this.currentState();
+    deliver({
+      type: "agentState",
+      agent: projectAgentSnapshot(this.descriptor, this.snapshot()),
+    });
+    const scanId = this.lastActivityScanId ?? state?.scan?.scanId ?? state?.newestScanId ?? null;
     if (scanId === null) return;
     const activity = this.readActivity(scanId);
     this.lastActivityScanId = scanId;
     this.lastActivity = activity;
     const event = {
-      type: "scoutActivity",
+      type: "agentActivity",
+      id: this.descriptor.id,
       scanId,
       replay: true,
       entries: activity.map((text) => ({ text, append: false })),
     };
     deliver(event);
-    // A targeted replay also reaches the other clients: the baseline is shared,
-    // so a replay only the new client saw would make the next delta skip it.
-    if (target !== undefined) this.send(event, target);
+    this.send(event, target);
   }
 
   private readActivity(scanId: string): string[] {
@@ -265,7 +324,8 @@ export class ScoutBridge {
       this.lastActivityScanId = scanId;
       this.lastActivity = activity;
       this.send({
-        type: "scoutActivity",
+        type: "agentActivity",
+        id: this.descriptor.id,
         scanId,
         replay: true,
         entries: activity.map((text) => ({ text, append: false })),
@@ -276,7 +336,8 @@ export class ScoutBridge {
     this.lastActivity = activity;
     if (!delta.replay && delta.entries.length === 0) return;
     this.send({
-      type: "scoutActivity",
+      type: "agentActivity",
+      id: this.descriptor.id,
       scanId,
       ...(delta.replay ? { replay: true } : {}),
       entries: delta.entries,
@@ -285,13 +346,7 @@ export class ScoutBridge {
 
   refresh(): void {
     const snapshot = this.snapshot();
-    const signature = JSON.stringify(snapshot);
-    if (signature !== this.lastSignature) {
-      this.lastSignature = signature;
-      this.send({ type: "scoutState", ...snapshot });
-    }
-    // The page shows the current scan, or the newest one once it finishes.
-    const scanId = snapshot.scan?.scanId ?? snapshot.newestScanId;
+    const scanId = snapshot.detail.panel === "activity" ? snapshot.detail.scanId : null;
     if (scanId === null) {
       this.lastActivityScanId = null;
       this.lastActivity = [];
@@ -308,7 +363,7 @@ export class ScoutBridge {
    * One in-flight Start for this bridge: a concurrent press joins the same
    * preflight and spawn instead of reporting success before anything started.
    */
-  start(): Promise<{ ok: true; attached: boolean } | { ok: false; message: string }> {
+  start(): Promise<AgentCommandResult> {
     if (this.startTask !== undefined) return this.startTask;
     const task = this.startOnce().finally(() => {
       if (this.startTask === task) this.startTask = undefined;
@@ -317,26 +372,22 @@ export class ScoutBridge {
     return task;
   }
 
-  private async startOnce(): Promise<
-    { ok: true; attached: boolean } | { ok: false; message: string }
-  > {
+  private async startOnce(): Promise<AgentCommandResult> {
     for (;;) {
       const owner = this.lockOwner();
       if (owner === undefined) break;
-      if (resolve(owner.stateDir) !== this.stateDir) {
-        return {
-          ok: false,
-          message:
-            `this checkout already has an Auto Scout worker (pid ${owner.pid}) using ` +
-            `${owner.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`,
-        };
+      if (!this.owned(owner)) {
+        this.notice =
+          `this checkout already has an Auto Scout worker (pid ${owner.pid}) using ` +
+          `${owner.stateDir}; this dashboard's STATE_DIR is ${this.stateDir}`;
+        return { ok: true, notice: this.notice };
       }
       // A live owner that this bridge has told to stop is not attachable: the
       // worker is already ending, so report its state only after it has exited
       // and the new spawn holds the lock.
       if (this.stopping === undefined || this.stopping.pid !== owner.pid) {
         this.refresh();
-        return { ok: true, attached: true };
+        return { ok: true };
       }
       if (!(await this.waitForStop(owner.pid))) {
         return {
@@ -348,13 +399,30 @@ export class ScoutBridge {
       }
     }
 
-    const result = await this.preflight({
-      repoDir: this.repoDir,
-      stateDir: this.stateDir,
-      environment: this.environment,
-    });
-    if (!result.ok) return result;
-    return await this.spawn();
+    this.starting = true;
+    this.startingSince = this.now();
+    this.startError = null;
+    this.notice = null;
+    try {
+      const result = await this.preflight({
+        repoDir: this.repoDir,
+        stateDir: this.stateDir,
+        environment: this.environment,
+      });
+      if (!result.ok) {
+        this.starting = false;
+        this.startingSince = null;
+        this.startError = result.message;
+        return { ok: false, message: result.message };
+      }
+      return await this.spawn();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.starting = false;
+      this.startingSince = null;
+      this.startError = message;
+      return { ok: false, message };
+    }
   }
 
   /**
@@ -371,7 +439,7 @@ export class ScoutBridge {
     return !pidAlive(pid);
   }
 
-  private async spawn(): Promise<{ ok: true; attached: boolean } | { ok: false; message: string }> {
+  private async spawn(): Promise<AgentCommandResult> {
     const argv = [
       process.execPath,
       join(this.harnessDir, "issues", "scout", "worker.ts"),
@@ -384,7 +452,11 @@ export class ScoutBridge {
     try {
       base = await this.agentEnvironment();
     } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      this.starting = false;
+      this.startingSince = null;
+      const message = error instanceof Error ? error.message : String(error);
+      this.startError = message;
+      return { ok: false, message };
     }
     const pid = this.spawnWorker(argv, {
       ...base,
@@ -393,9 +465,12 @@ export class ScoutBridge {
       AGENT_COMMAND: this.agentCommand,
     });
     if (pid === undefined) {
-      return { ok: false, message: "the Auto Scout worker could not be started" };
+      this.starting = false;
+      this.startingSince = null;
+      this.startError = "the Auto Scout worker could not be started";
+      return { ok: false, message: this.startError };
     }
-    return { ok: true, attached: false };
+    return { ok: true };
   }
 
   /**
@@ -403,19 +478,18 @@ export class ScoutBridge {
    * after a reload and is read by the next worker start; a running worker is
    * told immediately through its command channel.
    */
-  setLimits(
-    maxPerHour: unknown,
-    maxPending: unknown,
-  ): { ok: true } | { ok: false; message: string } {
+  setLimits(maxPerHour: unknown, maxPending: unknown): AgentCommandResult {
     if (!isValidLimit(maxPerHour) || !isValidLimit(maxPending)) {
-      return {
-        ok: false,
-        message: "Both limits must be integers from 1 through 100.",
-      };
+      return { ok: false, message: "Both limits must be empty or integers from 1 through 100." };
     }
-    const limits: ScoutLimits = { maxPerHour, maxPending };
+    const state = this.currentState();
+    const settings = this.settings(state);
     try {
-      writeSettings(settingsPath(this.stateDir, this.repoDir), limits);
+      writeSettings(settingsPath(this.stateDir, this.repoDir), {
+        ...settings,
+        maxPerHour,
+        maxPending,
+      });
     } catch (error) {
       return {
         ok: false,
@@ -423,7 +497,7 @@ export class ScoutBridge {
       };
     }
     const owner = this.lockOwner();
-    if (owner !== undefined && resolve(owner.stateDir) === this.stateDir) {
+    if (this.owned(owner)) {
       try {
         writeCommand(controlDirectory(this.stateDir, this.repoDir), {
           type: "limits",
@@ -437,20 +511,53 @@ export class ScoutBridge {
         };
       }
     }
+    this.startError = null;
     this.refresh();
     return { ok: true };
   }
 
-  stop(): { ok: true } | { ok: false; message: string } {
-    return this.command({ type: "stop" });
+  setCadence(minutes: unknown): AgentCommandResult {
+    if (!isValidCadence(minutes)) {
+      return { ok: false, message: "The cadence must be an integer from 1 through 1440 minutes." };
+    }
+    const state = this.currentState();
+    const settings = this.settings(state);
+    try {
+      writeSettings(settingsPath(this.stateDir, this.repoDir), {
+        ...settings,
+        intervalMinutes: minutes,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Could not save the cadence: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    const owner = this.lockOwner();
+    if (this.owned(owner)) {
+      try {
+        writeCommand(controlDirectory(this.stateDir, this.repoDir), {
+          type: "cadence",
+          intervalMinutes: minutes,
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          message: `Could not reach the worker: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+    this.startError = null;
+    this.refresh();
+    return { ok: true };
   }
 
-  private command(command: ScoutCommand): { ok: true } | { ok: false; message: string } {
+  stop(): AgentCommandResult {
     const owner = this.lockOwner();
     if (owner === undefined) {
       return { ok: false, message: "No Auto Scout worker is running for this checkout." };
     }
-    if (resolve(owner.stateDir) !== this.stateDir) {
+    if (!this.owned(owner)) {
       return {
         ok: false,
         message:
@@ -458,10 +565,17 @@ export class ScoutBridge {
           `STATE_DIR is ${this.stateDir}`,
       };
     }
-    // The live lock proves a worker exists even when its state file is absent,
-    // unreadable, or left by another harness version; Stop must still reach it.
-    writeCommand(controlDirectory(this.stateDir, this.repoDir), command);
-    if (command.type === "stop") this.scheduleStopProof(owner.pid);
+    try {
+      writeCommand(controlDirectory(this.stateDir, this.repoDir), { type: "stop" });
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Could not reach the worker: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    this.stopRequested = true;
+    this.startError = null;
+    this.scheduleStopProof(owner.pid);
     return { ok: true };
   }
 
@@ -527,4 +641,29 @@ export class ScoutBridge {
       return false;
     }
   }
+}
+
+function projectIssue(issue: ScoutIssueRow): {
+  title: string;
+  category: string | null;
+  filedAt: string;
+  url: string;
+  state: "pending" | "implemented";
+  version: string | null;
+} {
+  return {
+    title: issue.title,
+    category: issue.category,
+    filedAt: issue.createdAt,
+    url: issue.url,
+    state: issue.state,
+    version: issue.version,
+  };
+}
+
+function nextCadenceAt(lastRunAt: string | null, minutes: number): string | null {
+  if (lastRunAt === null) return null;
+  const started = Date.parse(lastRunAt);
+  if (!Number.isFinite(started)) return null;
+  return new Date(started + minutes * 60_000).toISOString();
 }

@@ -419,6 +419,8 @@ try {
     DEVBOARD_RELEASE_URL: `http://127.0.0.1:${unauthorized.port}`,
     // An ambient harness origin must not outrank the fixture's feed.
     DEVBOARD_GITEA_URL: "",
+    GITEA_TOKEN: "",
+    DEVBOARD_GITEA_TOKEN: "",
     DEVBOARD_NPM: failingNpm,
     DEVBOARD_UPDATE_INTERVAL_MS: "200",
   });
@@ -434,7 +436,7 @@ try {
   assertTrue(processRunning(unauthorizedServer.pid), "the refused feed keeps the server running");
   unauthorized.stop(true);
 
-  step("an unreadable release description is context, never an update-error");
+  step("an unreadable release description is journaled with its reason");
   const unreadableFeed = Bun.serve({
     port: 0,
     fetch() {
@@ -447,26 +449,24 @@ try {
   const unreadableServer = await startInstalledDashboard(unreadableHost, {
     DEVBOARD_RELEASE_URL: `http://127.0.0.1:${unreadableFeed.port}`,
     DEVBOARD_GITEA_URL: "",
+    GITEA_TOKEN: "",
+    DEVBOARD_GITEA_TOKEN: "",
     DEVBOARD_NPM: failingNpm,
     DEVBOARD_UPDATE_INTERVAL_MS: "200",
   });
   servers.push(unreadableServer);
-  await waitFor(
+  const unreadableRecord = await waitFor(
     () =>
-      readJournal(unreadablePrefix, unreadableHost).some(
+      readJournal(unreadablePrefix, unreadableHost).find(
         (record) =>
-          record.kind === "activity" &&
-          record.text.startsWith(
-            "release check skipped: the release feed returned an unreadable description",
-          ),
-      )
-        ? true
-        : undefined,
-    "the unreadable release description to be journaled as context",
+          (record.kind === "update-error" || record.kind === "activity") &&
+          String(record.text).includes("invalid JSON"),
+      ),
+    "the unreadable release description to be journaled with its reason",
   );
   assertTrue(
-    readJournal(unreadablePrefix, unreadableHost).every((record) => record.kind !== "update-error"),
-    "an unreadable release description is never an update-error",
+    String(unreadableRecord?.text).includes("invalid JSON"),
+    "the unreadable release description does not name its reason",
   );
   assertEquals(
     installedVersion(unreadablePrefix),

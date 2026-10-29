@@ -24,6 +24,7 @@ import {
   SCAN_TIMEOUT_MS,
   SIGNIFICANCE_THRESHOLD,
   SYNC_INTERVAL_MS,
+  UNLIMITED_SCAN_BATCH,
   controlDirectory,
   lockPath,
   recommendationsPath,
@@ -48,7 +49,9 @@ import {
 } from "./scan";
 import {
   DEFAULT_LIMITS,
+  DEFAULT_SETTINGS,
   emptyState,
+  isValidCadence,
   isValidLimit,
   loadState,
   readScanFile,
@@ -59,6 +62,7 @@ import {
   type ScoutIssueRow,
   type ScoutLimits,
   type ScoutScanFile,
+  type ScoutSettings,
   type ScoutState,
 } from "./state";
 import type { AcpPeer, IssuesPeerOptions } from "../worker";
@@ -84,6 +88,8 @@ export interface ScoutWorkerOptions {
   environment?: Record<string, string | undefined>;
   /** The periodic GitHub read; 60 seconds in production. */
   syncMs?: number;
+  /** Test seam: replace the persisted cadence with a shorter interval. */
+  cadenceMs?: number;
   /**
    * One periodic GitHub read is abandoned after this many milliseconds; the
    * sync records a failure and the next tick may read again. The default
@@ -190,11 +196,22 @@ function newestFirst(rows: ScoutIssueRow[]): ScoutIssueRow[] {
   });
 }
 
+function limitLabel(value: number | null): string {
+  return value === null ? "unlimited" : String(value);
+}
+
+function latest(left: string | null, right: string | null): string | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Date.parse(left) >= Date.parse(right) ? left : right;
+}
+
 export class ScoutWorker {
   readonly repoDir: string;
   readonly stateDir: string;
   readonly syncMs: number;
   readonly readTimeoutMs: number;
+  private readonly cadenceOverrideMs: number | undefined;
   readonly timeoutMs: number;
   private readonly agentCommand: string;
   private readonly environment: Record<string, string | undefined>;
@@ -228,6 +245,8 @@ export class ScoutWorker {
     this.repoDir = resolve(options.repoDir);
     this.stateDir = resolve(options.stateDir);
     this.syncMs = Math.max(1000, options.syncMs ?? SYNC_INTERVAL_MS);
+    this.cadenceOverrideMs =
+      options.cadenceMs === undefined ? undefined : Math.max(0, options.cadenceMs);
     this.readTimeoutMs = Math.max(1, options.readTimeoutMs ?? READ_TIMEOUT_MS);
     this.timeoutMs = Math.max(1000, options.timeoutMs ?? SCAN_TIMEOUT_MS);
     this.agentCommand =
@@ -278,9 +297,19 @@ export class ScoutWorker {
     }
 
     const now = this.clock();
-    const limits = readSettings(settingsPath(this.stateDir, this.repoDir)) ?? previous?.limits;
+    const settings: ScoutSettings =
+      readSettings(settingsPath(this.stateDir, this.repoDir)) ?? {
+        ...(previous?.limits ?? DEFAULT_LIMITS),
+        intervalMinutes: previous?.intervalMinutes ?? DEFAULT_SETTINGS.intervalMinutes,
+      };
     this.state = {
-      ...emptyState({ repo: repository, root: this.repoDir, limit: limits, now }),
+      ...emptyState({
+        repo: repository,
+        root: this.repoDir,
+        limit: settings,
+        intervalMinutes: settings.intervalMinutes,
+        now,
+      }),
       lifecycle: "idle",
       enabled: true,
       worker: {
@@ -290,7 +319,12 @@ export class ScoutWorker {
         harnessVersion: this.harnessVersion,
         argv: [...process.argv],
       },
-      limits: limits ?? { ...DEFAULT_LIMITS },
+      limits: {
+        maxPerHour: settings.maxPerHour,
+        maxPending: settings.maxPending,
+      },
+      intervalMinutes: settings.intervalMinutes,
+      lastScanStartedAt: previous?.lastScanStartedAt ?? null,
       issues: previous?.issues ?? [],
       sync: previous?.sync ?? { state: "stale", at: null, error: null },
       newestScanId: previous?.newestScanId ?? null,
@@ -370,6 +404,7 @@ export class ScoutWorker {
     if (this.active !== undefined || this.starting) return;
     if (this.state.sync.state !== "ok") return;
     if (this.cooldownRemaining()) return;
+    if (this.cadenceRemaining()) return;
     const capacity = this.capacity();
     if (capacity.batch === 0) {
       this.block(capacity.blockedUntil);
@@ -401,6 +436,28 @@ export class ScoutWorker {
     return Number.isFinite(at) && this.clock().getTime() < at;
   }
 
+  /** No scan may start sooner than the interval after the previous start. */
+  private cadenceRemaining(): boolean {
+    const last = this.state.lastScanStartedAt;
+    if (last === null) return false;
+    const started = Date.parse(last);
+    if (!Number.isFinite(started)) return false;
+    return this.clock().getTime() < started + this.cadenceMs();
+  }
+
+  private cadenceMs(): number {
+    return this.cadenceOverrideMs ?? this.state.intervalMinutes * 60_000;
+  }
+
+  private cadenceReadyAt(now: Date): string | null {
+    const last = this.state.lastScanStartedAt;
+    if (last === null) return null;
+    const started = Date.parse(last);
+    if (!Number.isFinite(started)) return null;
+    const ready = started + this.cadenceMs();
+    return ready > now.getTime() ? new Date(ready).toISOString() : null;
+  }
+
   private block(until: string | null): void {
     if (this.state.nextAttemptAt === until) return;
     this.state.nextAttemptAt = until;
@@ -429,7 +486,8 @@ export class ScoutWorker {
       }
       case "limits": {
         if (!isValidLimit(command.maxPerHour) || !isValidLimit(command.maxPending)) {
-          this.state.lastError = "Auto Scout limits must be integers from 1 through 100.";
+          this.state.lastError =
+            "Auto Scout limits must be empty or integers from 1 through 100.";
           this.publish();
           return;
         }
@@ -437,19 +495,41 @@ export class ScoutWorker {
           maxPerHour: command.maxPerHour,
           maxPending: command.maxPending,
         };
-        try {
-          writeSettings(settingsPath(this.stateDir, this.repoDir), this.state.limits);
-        } catch (error) {
-          this.log(`could not persist limits: ${detailOf(error)}`);
-        }
+        this.persistSettings();
         this.state.lastError = null;
         this.state.notice =
-          `Limits saved: ${this.state.limits.maxPerHour} per hour, ` +
-          `${this.state.limits.maxPending} open.`;
+          `Limits saved: ${limitLabel(this.state.limits.maxPerHour)} per hour, ` +
+          `${limitLabel(this.state.limits.maxPending)} open.`;
         this.state.nextAttemptAt = null;
         this.publish();
         return;
       }
+      case "cadence": {
+        if (!isValidCadence(command.intervalMinutes)) {
+          this.state.lastError = "Auto Scout cadence must be 1 through 1440 minutes.";
+          this.publish();
+          return;
+        }
+        this.state.intervalMinutes = command.intervalMinutes;
+        this.persistSettings();
+        this.state.lastError = null;
+        this.state.notice = `Cadence saved: every ${command.intervalMinutes} minute(s).`;
+        this.state.nextAttemptAt = null;
+        this.publish();
+        return;
+      }
+    }
+  }
+
+  private persistSettings(): void {
+    try {
+      writeSettings(settingsPath(this.stateDir, this.repoDir), {
+        maxPerHour: this.state.limits.maxPerHour,
+        maxPending: this.state.limits.maxPending,
+        intervalMinutes: this.state.intervalMinutes,
+      });
+    } catch (error) {
+      this.log(`could not persist settings: ${detailOf(error)}`);
     }
   }
 
@@ -475,8 +555,14 @@ export class ScoutWorker {
       }
       if (issue.state === "pending") openCount += 1;
     }
-    const hourlyRoom = Math.max(0, this.state.limits.maxPerHour - windowCount);
-    const pendingRoom = Math.max(0, this.state.limits.maxPending - openCount);
+    const hourlyRoom =
+      this.state.limits.maxPerHour === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, this.state.limits.maxPerHour - windowCount);
+    const pendingRoom =
+      this.state.limits.maxPending === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, this.state.limits.maxPending - openCount);
     const batch = Math.min(hourlyRoom, pendingRoom);
     let blockedUntil: string | null = null;
     if (batch === 0) {
@@ -604,7 +690,7 @@ export class ScoutWorker {
   async beginScan(): Promise<void> {
     if (this.stopping || this.active !== undefined || this.starting) return;
     if (!this.state.enabled || this.state.sync.state !== "ok") return;
-    if (this.cooldownRemaining()) return;
+    if (this.cooldownRemaining() || this.cadenceRemaining()) return;
     const capacity = this.capacity();
     if (capacity.batch === 0) {
       this.block(capacity.blockedUntil);
@@ -615,11 +701,15 @@ export class ScoutWorker {
       const now = this.clock();
       const draftGoalHeadings = readDraftGoalHeadings(this.repoDir);
       const scan = createScanDirectory(this.repoDir, now);
+      const requested = Math.min(
+        Number.isFinite(capacity.batch) ? capacity.batch : UNLIMITED_SCAN_BATCH,
+        UNLIMITED_SCAN_BATCH,
+      );
       const request = buildRequest({
         scan,
         repository: this.state.repo,
         repoDir: this.repoDir,
-        requested: capacity.batch,
+        requested,
         knownTitles: this.knownTitles(draftGoalHeadings),
         draftGoalHeadings,
       });
@@ -644,7 +734,7 @@ export class ScoutWorker {
           prompt,
           startedAt: scan.startedAt,
         };
-        this.writeScan(failed, "failed", { requested: capacity.batch, filed: 0, error: detail });
+        this.writeScan(failed, "failed", { requested, filed: 0, error: detail });
         this.state.newestScanId = scan.scanId;
         this.state.lastError = detail;
         this.state.notice = `Scan failed: ${detail}`;
@@ -657,7 +747,7 @@ export class ScoutWorker {
       const active: ActiveScan = {
         scanId: scan.scanId,
         directory: scan.directory,
-        requested: capacity.batch,
+        requested,
         prompt,
         activity: [],
         peer,
@@ -671,13 +761,14 @@ export class ScoutWorker {
         repairs: 0,
       };
       this.active = active;
-      this.state.scan = { scanId: scan.scanId, startedAt: scan.startedAt, requested: capacity.batch };
+      this.state.scan = { scanId: scan.scanId, startedAt: scan.startedAt, requested };
+      this.state.lastScanStartedAt = scan.startedAt;
       this.state.newestScanId = scan.scanId;
       this.state.lifecycle = "scanning";
       this.state.nextAttemptAt = null;
       this.state.lastError = null;
       this.publish();
-      this.writeScan(active, "running", { requested: capacity.batch, filed: 0 });
+      this.writeScan(active, "running", { requested, filed: 0 });
 
       this.armScanTimer(active);
 
@@ -959,10 +1050,12 @@ export class ScoutWorker {
     this.state.lifecycle = error === null ? "idle" : "failed";
     const now = this.clock();
     const capacity = this.capacity(now);
+    const cadenceAt = this.cadenceReadyAt(now);
+    const cooldownAt = new Date(now.getTime() + this.syncMs).toISOString();
     this.state.nextAttemptAt =
       capacity.batch > 0
-        ? new Date(now.getTime() + this.syncMs).toISOString()
-        : capacity.blockedUntil;
+        ? latest(cadenceAt, cooldownAt)
+        : latest(cadenceAt, capacity.blockedUntil ?? cooldownAt);
     this.publish();
   }
 

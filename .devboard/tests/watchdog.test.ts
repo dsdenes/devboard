@@ -24,6 +24,8 @@ import {
 import { analyzeEvidence, STALL_MS } from "../watchdog/findings";
 import { acquireLock } from "../watchdog/lock";
 import { emptyLedger, loadLedger } from "../watchdog/ledger";
+import { writeProjection } from "../watchdog/projection";
+import { DEFAULT_WATCHDOG_SETTINGS, type WatchdogSettings } from "../watchdog/settings";
 import {
   commentIssue,
   createIssue,
@@ -155,7 +157,13 @@ function ghStub(reply: (call: GhCall, index: number) => GhReply = () => ({})): {
 
 function cycleFor(
   root: string,
-  options: { events: EvidenceEvent[]; gh: GhRun; now?: Date; dryRun?: boolean },
+  options: {
+    events: EvidenceEvent[];
+    gh: GhRun;
+    now?: Date;
+    dryRun?: boolean;
+    settings?: WatchdogSettings;
+  },
 ): CycleOptions {
   const instance = instanceFor(root, 8080);
   const now = options.now ?? fixedNow;
@@ -174,6 +182,7 @@ function cycleFor(
     now,
     stateDir: join(root, ".devboard", ".tmp", "watchdog"),
     ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
+    ...(options.settings === undefined ? {} : { settings: options.settings }),
     deps: {
       discover: () => [instance],
       collect: () => ({ events, malformed: 0, unattributed: 0 }),
@@ -1194,5 +1203,142 @@ describe("singleton", () => {
     expect(normalizeEvidenceLine("2026-10-24T12:00:00.000Z  an error   here")).toBe(
       "an error here",
     );
+  });
+});
+
+describe("watchdog filing caps", () => {
+  const owner = (root: string) => instanceFor(root, 8080);
+  const twoFindings = (root: string): EvidenceEvent[] => [
+    event(root, 2, "first capped error", "server-error", owner(root)),
+    event(root, 1, "second capped error", "server-error", owner(root)),
+  ];
+  const okProjection = (stateDir: string): void => {
+    writeProjection(stateDir, {
+      version: 1,
+      state: "ok",
+      at: fixedNow.toISOString(),
+      error: null,
+      issues: [],
+    });
+  };
+
+  test("both empty files every finding exactly as before", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    okProjection(stateDir);
+    const { gh, calls } = ghStub();
+    const result = await runCycle(
+      cycleFor(root, {
+        events: twoFindings(root),
+        gh,
+        settings: { ...DEFAULT_WATCHDOG_SETTINGS },
+      }),
+    );
+    expect(result.report.issues).toHaveLength(2);
+    expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(2);
+    expect(loadLedger(stateDir).pendingFiling).toEqual([]);
+  });
+
+  test("an hourly cap files the room and keeps the rest pending", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    okProjection(stateDir);
+    const { gh, calls } = ghStub();
+    const first = await runCycle(
+      cycleFor(root, {
+        events: twoFindings(root),
+        gh,
+        settings: { intervalMinutes: 10, maxPerHour: 1, maxPending: null },
+      }),
+    );
+    expect(first.report.issues).toHaveLength(1);
+    expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(1);
+    const ledger = loadLedger(stateDir);
+    expect(ledger.pendingFiling).toHaveLength(1);
+
+    const second = await runCycle(
+      cycleFor(root, {
+        events: twoFindings(root),
+        gh,
+        settings: { intervalMinutes: 10, maxPerHour: 1, maxPending: null },
+      }),
+    );
+    expect(second.report.issues).toEqual([]);
+    expect(second.report.action).toBe("capped");
+    expect(loadLedger(stateDir).pendingFiling).toHaveLength(1);
+    expect(calls.filter((call) => call.argv.includes("create"))).toHaveLength(1);
+  });
+
+  test("an open cap counts the last successful projection", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    writeProjection(stateDir, {
+      version: 1,
+      state: "ok",
+      at: fixedNow.toISOString(),
+      error: null,
+      issues: [{ url: "https://github.com/acme/fixture/issues/1", state: "pending", version: null }],
+    });
+    const { gh, calls } = ghStub();
+    const result = await runCycle(
+      cycleFor(root, {
+        events: twoFindings(root),
+        gh,
+        settings: { intervalMinutes: 10, maxPerHour: null, maxPending: 1 },
+      }),
+    );
+    expect(result.report.issues).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(loadLedger(stateDir).pendingFiling).toHaveLength(2);
+  });
+
+  test("files nothing new while a cap is set and the projection is not ok", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    writeProjection(stateDir, {
+      version: 1,
+      state: "error",
+      at: null,
+      error: "gh: authentication failed",
+      issues: [],
+    });
+    const { gh, calls } = ghStub();
+    const result = await runCycle(
+      cycleFor(root, {
+        events: twoFindings(root),
+        gh,
+        settings: { intervalMinutes: 10, maxPerHour: 5, maxPending: 5 },
+      }),
+    );
+    expect(result.report.issues).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(loadLedger(stateDir).pendingFiling).toHaveLength(2);
+    expect(result.report.reason).toContain("projection is not ok");
+  });
+
+  test("never caps a recurrence comment", async () => {
+    const { root } = await fixtureRepository();
+    const stateDir = join(root, ".devboard", ".tmp", "watchdog");
+    const events = [event(root, 1, SERVER_ERROR, "server-error", owner(root))];
+    const { gh, calls } = ghStub();
+    const first = await runCycle(cycleFor(root, { events, gh }));
+    const url = first.report.issues[0]?.url as string;
+    writeProjection(stateDir, {
+      version: 1,
+      state: "ok",
+      at: fixedNow.toISOString(),
+      error: null,
+      issues: [{ url, state: "pending", version: null }],
+    });
+    const later = await runCycle(
+      cycleFor(root, {
+        events,
+        gh,
+        now: new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000),
+        settings: { intervalMinutes: 10, maxPerHour: null, maxPending: 1 },
+      }),
+    );
+    expect(later.report.action).toBe("commented");
+    expect(calls.filter((call) => call.argv.includes("comment"))).toHaveLength(1);
   });
 });

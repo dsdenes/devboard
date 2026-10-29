@@ -1,7 +1,7 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isRecord } from "../guards";
-import { isValidLimit } from "./state";
+import { isValidCadence, isValidLimit } from "./state";
 
 /**
  * The dashboard-to-scout channel. Commands are individual files created by
@@ -13,7 +13,8 @@ import { isValidLimit } from "./state";
 
 export type ScoutCommand =
   | { type: "stop" }
-  | { type: "limits"; maxPerHour: number; maxPending: number };
+  | { type: "limits"; maxPerHour: number | null; maxPending: number | null }
+  | { type: "cadence"; intervalMinutes: number };
 
 let sequence = 0;
 
@@ -46,6 +47,9 @@ export function parseCommand(text: string): ScoutCommand | undefined {
         maxPerHour: parsed.maxPerHour,
         maxPending: parsed.maxPending,
       };
+    case "cadence":
+      if (!isValidCadence(parsed.intervalMinutes)) return undefined;
+      return { type: "cadence", intervalMinutes: parsed.intervalMinutes };
     default:
       return undefined;
   }

@@ -7,6 +7,7 @@ import type { LayoutStore, WorkspaceTab } from "./layout.svelte";
 import type { ConnectionStore } from "./connection.svelte";
 import type { NotificationStore } from "./notifications.svelte";
 import { providers } from "./providers.svelte";
+import { agentRegistry } from "../../server/agents/registry";
 import type { Mode } from "./types";
 
 export interface CommandDef {
@@ -208,8 +209,17 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     ["goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" }],
     ["issues", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
     ["issues", { id: "agents", kind: "agents", resourceId: "agents", title: "Agents" }],
-    ["issues", { id: "scout", kind: "scout", resourceId: "scout", title: "Auto Scout" }],
-    ["issues", { id: "watchdog", kind: "watchdog", resourceId: "watchdog", title: "Watchdog" }],
+    ...agentRegistry.descriptors.map(
+      (descriptor): [Mode, WorkspaceTab] => [
+        "issues",
+        {
+          id: descriptor.tab.id,
+          kind: descriptor.tab.kind,
+          resourceId: descriptor.tab.id,
+          title: descriptor.tab.title,
+        },
+      ],
+    ),
     ["issues", { id: "issues", kind: "queue", resourceId: "issues", title: "Issues" }],
     ["issues", { id: "runs", kind: "runs", resourceId: "runs", title: "Runs" }],
     ["issues", { id: "drafts", kind: "drafts", resourceId: "drafts", title: "Draft goals" }],

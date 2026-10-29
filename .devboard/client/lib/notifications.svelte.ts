@@ -3,6 +3,7 @@ export type Severity = "error" | "warning" | "notice" | "success";
 /** The subsystem that raised a notification, so the card names its origin. */
 export type NotificationSource =
   | "Auto Scout"
+  | "Background agents"
   | "Connection"
   | "Discover"
   | "Flow"

@@ -4,6 +4,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { activityDelta } from "./activity";
 import { ScoutBridge } from "./scout";
+import { agentRegistry } from "./agents/registry";
 import { parseCommand } from "../issues/scout/control";
 import { acquireLock } from "../issues/lock";
 import { writeActivity } from "../issues/state";
@@ -43,6 +44,7 @@ import {
   parseSettings,
   parseState,
   readSettings,
+  readState,
   writeSettings,
   writeState,
   type ScoutLimits,
@@ -402,8 +404,8 @@ describe("state and settings", () => {
     const root = await repository();
     const path = settingsPath(join(root, ".devboard", ".tmp", "state"), root);
     const limits: ScoutLimits = { maxPerHour: 4, maxPending: 2 };
-    writeSettings(path, limits);
-    expect(readSettings(path)).toEqual(limits);
+    writeSettings(path, { ...limits, intervalMinutes: 1 });
+    expect(readSettings(path)).toEqual({ ...limits, intervalMinutes: 1 });
     expect(parseSettings('{"maxPerHour":0,"maxPending":2}')).toBeUndefined();
     expect(parseSettings('{"maxPerHour":2.5,"maxPending":2}')).toBeUndefined();
     expect(parseSettings("not json")).toBeUndefined();
@@ -521,6 +523,8 @@ describe("bridge", () => {
       enabled: true,
       worker: null,
       limits: { ...DEFAULT_LIMITS },
+      intervalMinutes: 1,
+      lastScanStartedAt: null,
       issues: [],
       sync: { state: "stale", at: null, error: null },
       scan: null,
@@ -534,6 +538,7 @@ describe("bridge", () => {
     writeActivity(scan.directory, ["a"]);
     const events: unknown[] = [];
     const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
       repoDir: root,
       stateDir,
       agentCommand: "stub",
@@ -553,17 +558,19 @@ describe("bridge", () => {
           typeof event === "object" &&
           event !== null &&
           "type" in event &&
-          event.type === "scoutActivity",
+          event.type === "agentActivity",
       );
       expect(activity).toEqual([
         {
-          type: "scoutActivity",
+          type: "agentActivity",
+          id: "scout",
           scanId: scan.scanId,
           replay: true,
           entries: [{ text: "a", append: false }],
         },
         {
-          type: "scoutActivity",
+          type: "agentActivity",
+          id: "scout",
           scanId: scan.scanId,
           entries: [
             { text: "b", append: true },
@@ -578,7 +585,7 @@ describe("bridge", () => {
             typeof event === "object" &&
             event !== null &&
             "type" in event &&
-            event.type === "scoutActivity",
+            event.type === "agentActivity",
         ),
       ).toHaveLength(2);
     } finally {
@@ -590,6 +597,7 @@ describe("bridge", () => {
     const root = await repository();
     const stateDir = join(root, ".devboard", ".tmp", "state");
     const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
       repoDir: root,
       stateDir,
       agentCommand: "stub",
@@ -604,6 +612,7 @@ describe("bridge", () => {
     expect(readSettings(settingsPath(stateDir, root))).toEqual({
       maxPerHour: 20,
       maxPending: 3,
+      intervalMinutes: 1,
     });
     expect(bridge.snapshot().limits).toEqual({ maxPerHour: 20, maxPending: 3 });
     expect(bridge.snapshot().issues).toEqual([]);
@@ -621,6 +630,7 @@ describe("bridge", () => {
     expect(readSettings(settingsPath(stateDir, root))).toEqual({
       maxPerHour: 20,
       maxPending: 3,
+      intervalMinutes: 1,
     });
     bridge.dispose();
   });
@@ -667,6 +677,7 @@ describe("bridge", () => {
       mkdirSync(dirname(statePath(stateDir, root)), { recursive: true });
       writeFileSync(statePath(stateDir, root), JSON.stringify(legacy));
       const bridge = new ScoutBridge({
+        descriptor: agentRegistry.require("scout"),
         repoDir: root,
         stateDir,
         agentCommand: "stub",
@@ -679,10 +690,10 @@ describe("bridge", () => {
       });
       const snapshot = bridge.snapshot();
       expect(snapshot.attached).toBe(true);
-      expect(snapshot.present).toBe(true);
-      expect(snapshot.lifecycle).toBe("idle");
+      expect(bridge.present).toBe(true);
+      expect(snapshot.lifecycle).toBe("running");
       expect(snapshot.enabled).toBe(true);
-      expect(snapshot.worker?.pid).toBe(process.pid);
+      expect(readState(statePath(stateDir, root))?.worker?.pid).toBe(process.pid);
       expect(snapshot.notice).toContain("Discarded 3 staged recommendations");
       expect(bridge.stop()).toEqual({ ok: true });
       const files = readdirSync(controlDirectory(stateDir, root));
@@ -709,6 +720,7 @@ describe("bridge", () => {
     if (!lock.acquired) return;
     try {
       const bridge = new ScoutBridge({
+        descriptor: agentRegistry.require("scout"),
         repoDir: root,
         stateDir,
         agentCommand: "stub",
@@ -721,7 +733,7 @@ describe("bridge", () => {
       });
       const snapshot = bridge.snapshot();
       expect(snapshot.attached).toBe(true);
-      expect(snapshot.present).toBe(false);
+      expect(bridge.present).toBe(true);
       expect(bridge.stop()).toEqual({ ok: true });
       expect(readdirSync(controlDirectory(stateDir, root))).toHaveLength(1);
       bridge.dispose();
@@ -765,6 +777,7 @@ describe("bridge", () => {
     );
     const spawned: string[][] = [];
     const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
       repoDir: root,
       stateDir,
       agentCommand: "stub",
@@ -790,7 +803,7 @@ describe("bridge", () => {
       vi.advanceTimersByTime(2000);
       await worker.exited;
       vi.advanceTimersByTime(50);
-      expect(await starting).toEqual({ ok: true, attached: false });
+      expect(await starting).toEqual({ ok: true });
       expect(spawned).toHaveLength(1);
       expect(spawned[0]!.join(" ")).toContain(join("scout", "worker.ts"));
     } finally {
@@ -815,6 +828,7 @@ describe("bridge", () => {
     if (!lock.acquired) return;
     const spawned: string[][] = [];
     const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
       repoDir: root,
       stateDir,
       agentCommand: "stub",
@@ -858,6 +872,7 @@ describe("bridge", () => {
     if (!lock.acquired) return;
     const spawned: string[][] = [];
     const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
       repoDir: root,
       stateDir,
       agentCommand: "stub",
@@ -872,7 +887,7 @@ describe("bridge", () => {
       },
     });
     try {
-      expect(await bridge.start()).toEqual({ ok: true, attached: true });
+      expect(await bridge.start()).toEqual({ ok: true });
       expect(spawned).toHaveLength(0);
     } finally {
       bridge.dispose();
@@ -886,6 +901,7 @@ describe("bridge", () => {
     const gate = Promise.withResolvers<void>();
     const spawned: string[][] = [];
     const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
       repoDir: root,
       stateDir,
       agentCommand: "stub",
@@ -908,8 +924,8 @@ describe("bridge", () => {
       const second = bridge.start();
       gate.resolve();
       expect(await Promise.all([first, second])).toEqual([
-        { ok: true, attached: false },
-        { ok: true, attached: false },
+        { ok: true },
+        { ok: true },
       ]);
       expect(spawned).toHaveLength(1);
     } finally {
@@ -919,6 +935,7 @@ describe("bridge", () => {
 
   test("the bridge exposes no decision path", () => {
     const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
       repoDir: process.cwd(),
       stateDir: join(process.cwd(), ".tmp"),
       agentCommand: "stub",

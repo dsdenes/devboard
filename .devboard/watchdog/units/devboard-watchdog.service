@@ -1,9 +1,0 @@
-[Unit]
-Description=Devboard watchdog: heal harness failures from the last ten minutes
-
-[Service]
-Type=oneshot
-WorkingDirectory=@HARNESS@
-ExecStart=@BUN@ run watchdog -- --once --root @ROOT@
-Environment=PATH=@PATH@
-TimeoutStartSec=3600
