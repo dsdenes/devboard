@@ -4,13 +4,29 @@ import type { CoachFinding } from "./findings";
 import { LEDGER_VERSION, ledgerPath } from "./paths";
 
 /**
- * The ledger remembers every fingerprint Coach has seen and the issue it owns.
- * It is written atomically after every successful filing or comment, so a hard
- * kill can never lose the fact that an issue already exists.
+ * The ledger remembers every fingerprint Coach has seen, the issue it owns,
+ * and the gate decision that kept it out. It is written atomically after every
+ * filing, rejection, or comment, so a hard kill can never lose an outcome.
  *
- * A disposition is exactly `pending` or `filed:<url>`; the pending queue holds
- * fingerprints still waiting for a successful filing or comment.
+ * A disposition is `pending`, `filed:<url>`, or `rejected`. A rejected entry
+ * carries the probabilities that rejected it and the count at that moment, so
+ * a doubled recurrence re-opens it before its cool-down ends.
  */
+
+export interface CoachDecisionRecord {
+  at: string;
+  model: string;
+  /** `file` is kept for audit; a filed entry is `filed:<url>`. */
+  outcome: "file" | "reject" | "review";
+  probabilities: Record<string, number>;
+  /** The finding's window count when the gate decided. */
+  count: number;
+  requestId?: string;
+  costUsd?: number;
+  reason?: string;
+  /** The instant a rejection may be asked again. */
+  rejectedUntil?: string;
+}
 
 export interface CoachLedgerEntry {
   category: string;
@@ -21,12 +37,13 @@ export interface CoachLedgerEntry {
   firstSeen: string;
   lastSeen: string;
   count: number;
-  disposition: "pending" | `filed:${string}`;
+  disposition: "pending" | `filed:${string}` | "rejected";
   url?: string;
   filedAt?: string;
   lastCommentAt?: string;
-  /** Why the last filing or comment failed, or absent after a success. */
+  /** Why the last filing, comment, or gate call failed, or absent after a success. */
   reason?: string;
+  decision?: CoachDecisionRecord;
 }
 
 export interface CoachLedger {
@@ -40,6 +57,42 @@ export function emptyLedger(): CoachLedger {
   return { version: LEDGER_VERSION, findings: {}, pendingFiling: [] };
 }
 
+function parseProbabilities(value: unknown): Record<string, number> | undefined {
+  if (!isRecord(value)) return undefined;
+  const probabilities: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry !== "number" || !Number.isFinite(entry) || entry < 0 || entry > 1) {
+      return undefined;
+    }
+    probabilities[key] = entry;
+  }
+  return probabilities;
+}
+
+function parseDecision(value: unknown): CoachDecisionRecord | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.at !== "string" || typeof value.model !== "string") return undefined;
+  if (value.outcome !== "file" && value.outcome !== "reject" && value.outcome !== "review") {
+    return undefined;
+  }
+  const probabilities = parseProbabilities(value.probabilities);
+  if (probabilities === undefined) return undefined;
+  const count = Number(value.count);
+  return {
+    at: value.at,
+    model: value.model,
+    outcome: value.outcome,
+    probabilities,
+    count: Number.isFinite(count) && count > 0 ? count : 1,
+    ...(typeof value.requestId === "string" ? { requestId: value.requestId } : {}),
+    ...(typeof value.costUsd === "number" && Number.isFinite(value.costUsd)
+      ? { costUsd: value.costUsd }
+      : {}),
+    ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+    ...(typeof value.rejectedUntil === "string" ? { rejectedUntil: value.rejectedUntil } : {}),
+  };
+}
+
 function parseEntry(value: unknown): CoachLedgerEntry | undefined {
   if (!isRecord(value)) return undefined;
   if (typeof value.category !== "string" || typeof value.line !== "string") return undefined;
@@ -48,6 +101,7 @@ function parseEntry(value: unknown): CoachLedgerEntry | undefined {
   const disposition = value.disposition;
   if (
     disposition !== "pending" &&
+    disposition !== "rejected" &&
     !(typeof disposition === "string" && disposition.startsWith("filed:"))
   ) {
     return undefined;
@@ -59,9 +113,14 @@ function parseEntry(value: unknown): CoachLedgerEntry | undefined {
       : typeof disposition === "string" && disposition.startsWith("filed:")
         ? disposition.slice("filed:".length)
         : undefined;
-  if (typeof disposition === "string" && disposition.startsWith("filed:") && (url === undefined || url.length === 0)) {
+  if (
+    typeof disposition === "string" &&
+    disposition.startsWith("filed:") &&
+    (url === undefined || url.length === 0)
+  ) {
     return undefined;
   }
+  const decision = parseDecision(value.decision);
   return {
     category: value.category,
     line: value.line,
@@ -74,6 +133,7 @@ function parseEntry(value: unknown): CoachLedgerEntry | undefined {
     ...(typeof value.filedAt === "string" ? { filedAt: value.filedAt } : {}),
     ...(typeof value.lastCommentAt === "string" ? { lastCommentAt: value.lastCommentAt } : {}),
     ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+    ...(decision === undefined ? {} : { decision }),
   };
 }
 
@@ -110,6 +170,31 @@ export function saveLedger(directory: string, ledger: CoachLedger): void {
 /** True when the fingerprint already owns an issue. */
 export function isFiled(entry: CoachLedgerEntry | undefined): boolean {
   return entry !== undefined && entry.disposition.startsWith("filed:");
+}
+
+/** True when the gate rejected the fingerprint and its cool-down has not ended. */
+export function isRejected(entry: CoachLedgerEntry | undefined): boolean {
+  return entry !== undefined && entry.disposition === "rejected";
+}
+
+/**
+ * Whether this cycle's evidence deserves a gate call. A filed fingerprint never
+ * does; a rejection waits for its cool-down, unless the evidence at least
+ * doubled since the rejection.
+ */
+export function needsDecision(
+  entry: CoachLedgerEntry | undefined,
+  finding: CoachFinding,
+  now: Date,
+): boolean {
+  if (entry === undefined) return true;
+  if (isFiled(entry)) return false;
+  if (entry.disposition === "pending") return true;
+  const decision = entry.decision;
+  if (decision === undefined) return true;
+  if (decision.count > 0 && finding.count >= decision.count * 2) return true;
+  const until = decision.rejectedUntil === undefined ? Number.NaN : Date.parse(decision.rejectedUntil);
+  return !Number.isFinite(until) || until <= now.getTime();
 }
 
 /**
@@ -169,4 +254,19 @@ export function markPending(ledger: CoachLedger, fingerprint: string, reason?: s
   const entry = ledger.findings[fingerprint];
   if (entry !== undefined && reason !== undefined && reason.length > 0) entry.reason = reason;
   if (!ledger.pendingFiling.includes(fingerprint)) ledger.pendingFiling.push(fingerprint);
+}
+
+/** The gate said no, or could not decide. The record is the audit trail. */
+export function markRejected(
+  ledger: CoachLedger,
+  fingerprint: string,
+  decision: CoachDecisionRecord,
+): void {
+  const entry = ledger.findings[fingerprint];
+  if (entry === undefined) return;
+  entry.disposition = "rejected";
+  entry.decision = decision;
+  if (decision.reason !== undefined) entry.reason = decision.reason;
+  else delete entry.reason;
+  ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
 }

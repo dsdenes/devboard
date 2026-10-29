@@ -24,6 +24,8 @@ export interface CoachStatus {
   findings: number;
   issues: CoachIssue[];
   pending: number;
+  /** Fingerprints the gate rejected and no issue owns. */
+  rejected: number;
   cycles: AgentCycle[];
 }
 
@@ -53,6 +55,7 @@ export function readCoachStatus(coachDir: string): CoachStatus {
       (left, right) =>
         right.filedAt.localeCompare(left.filedAt) || left.url.localeCompare(right.url),
     );
+  const entries = Object.values(ledger.findings);
   return {
     cycle: typeof latest.cycle === "string" ? latest.cycle : null,
     action: typeof latest.action === "string" ? latest.action : "none",
@@ -60,6 +63,7 @@ export function readCoachStatus(coachDir: string): CoachStatus {
     findings: Array.isArray(latest.findings) ? latest.findings.length : 0,
     issues,
     pending: ledger.pendingFiling.length,
+    rejected: entries.filter((entry) => entry.disposition === "rejected").length,
     cycles: readWatchdogCycles(
       coachDir,
       latestWatchdogCycle(latest, (fingerprint) => ledger.findings[fingerprint]?.url),

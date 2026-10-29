@@ -9,7 +9,7 @@ import type { LiveDashboard } from "../mcp/dashboard";
 import type { ForgeIssueDocument, ForgeIssues } from "../lib/forge-issues";
 import { journalFile } from "../server/journal";
 import { coachDirectory } from "../coach/paths";
-import { writeCoachSettings } from "../coach/settings";
+import { writeCoachSettings, DEFAULT_COACH_SETTINGS } from "../coach/settings";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const directories: string[] = [];
@@ -446,6 +446,7 @@ describe("MCP context tools", () => {
   test("background agents are persisted when no dashboard is live", async () => {
     const { context } = await workspace();
     await writeCoachSettings(coachDirectory(context.stateDir), {
+      ...DEFAULT_COACH_SETTINGS,
       intervalMinutes: 45,
       maxPerHour: 2,
       maxPending: null,

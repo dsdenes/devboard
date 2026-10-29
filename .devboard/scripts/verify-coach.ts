@@ -42,6 +42,23 @@ interface Report {
   }>;
   action: string;
   issues: Array<{ url: string; category: string; fingerprint: string; line: string }>;
+  decisions?: Array<{
+    fingerprint: string;
+    category: string;
+    outcome: string;
+    probabilities: Record<string, number>;
+    reason?: string;
+  }>;
+  gate?: {
+    accepted: number;
+    rejected: number;
+    review: number;
+    failed: number;
+    costUsd: number;
+    finalized: number;
+    filed: number;
+    dropped: number;
+  };
   pending: number;
   reason?: string;
 }
@@ -169,12 +186,35 @@ const stateDir = join(root, "state");
 const stub = join(root, "stub-forge");
 const marker = join(root, "peer-spawned");
 const stubAgent = join(root, "stub-agent");
+const decisionsStub = join(root, "decisions.json");
+const finalizerStub = join(root, "finalizer.json");
 await mkdir(join(repoDir, ".devboard"), { recursive: true });
 await mkdir(stateDir, { recursive: true });
 await mkdir(stub, { recursive: true });
 await writeFile(
   stubAgent,
   `#!/bin/sh\necho spawned > ${JSON.stringify(marker)}\nexit 1\n`,
+);
+await writeFile(
+  decisionsStub,
+  `${JSON.stringify({
+    answers: {
+      existing_capability: 0.02,
+      recurring_behavior: 0.97,
+      worth_filing: 0.95,
+    },
+    requestId: "stub-decision",
+    costUsd: 0.00002,
+  })}\n`,
+);
+await writeFile(
+  finalizerStub,
+  `${JSON.stringify({
+    proposal:
+      "Add the documented guardrail named in the finding and keep the recorded behavior " +
+      "out of later runs.",
+    acceptance: ["- [ ] The recorded behavior stops in the next run."],
+  })}\n`,
 );
 chmodSync(stubAgent, 0o755);
 Bun.spawnSync({
@@ -256,6 +296,8 @@ await writeFile(
 const environment = {
   ...process.env,
   DEVBOARD_COACH_FORGE_STUB: stub,
+  DEVBOARD_COACH_DECISIONS_STUB: decisionsStub,
+  DEVBOARD_COACH_FINALIZER_STUB: finalizerStub,
   AGENT_COMMAND: stubAgent,
 };
 
@@ -522,7 +564,59 @@ try {
   assertTrue(pendingReport.pending > 0, "verify:coach: the open-issue cap dropped pending");
   console.log("PASS coach-caps");
 
-  /* 6. Evidence stays byte-identical and no peer starts. */
+  /* 6. A failed decision gate files nothing and exits nonzero. */
+  const gateErrorState = join(root, "state-gate-error");
+  const gateErrorStub = join(root, "decisions-error.json");
+  const gateErrorForge = join(root, "stub-gate-error");
+  await mkdir(gateErrorForge, { recursive: true });
+  await writeFile(
+    gateErrorStub,
+    `${JSON.stringify({ answers: {}, error: "Decisions API 503: unavailable" })}\n`,
+  );
+  await cloneEvidence(stateDir, gateErrorState);
+  await mkdir(coachDirectory(gateErrorState), { recursive: true });
+  await writeFile(
+    join(coachDirectory(gateErrorState), "projection.json"),
+    `${JSON.stringify({ version: 1, state: "ok", at: instant(1), error: null, issues: [] })}\n`,
+  );
+  const gateError = run(
+    process.execPath,
+    [
+      "run",
+      "coach",
+      "--",
+      "--once",
+      "--now",
+      START.toISOString(),
+      "--root",
+      repoDir,
+      "--state-dir",
+      gateErrorState,
+      "--json",
+    ],
+    {
+      cwd: harnessRoot,
+      env: {
+        ...environment,
+        DEVBOARD_COACH_DECISIONS_STUB: gateErrorStub,
+        DEVBOARD_COACH_FORGE_STUB: gateErrorForge,
+      },
+    },
+  );
+  assertTrue(gateError.code !== 0, "verify:coach: a failed gate exited zero");
+  const gateErrorReport = JSON.parse(gateError.stdout) as Report;
+  assertTrue(
+    gateErrorReport.action === "failed",
+    `verify:coach: gate failure action ${gateErrorReport.action}`,
+  );
+  assertTrue(
+    calls(gateErrorForge).filter((call) => call.op === "create").length === 0,
+    "verify:coach: a failed gate filed an issue",
+  );
+  assertTrue(gateErrorReport.pending > 0, "verify:coach: a failed gate dropped its findings");
+  console.log("PASS coach-gate-failure");
+
+  /* 7. Evidence stays byte-identical and no peer starts. */
   assertTrue(
     (await directoryHash(join(stateDir, "providers"))) === sessionsBefore,
     "verify:coach: a cycle changed the session files",

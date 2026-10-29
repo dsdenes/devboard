@@ -11,6 +11,22 @@ import {
   type DeliveryResult,
 } from "./delivery";
 import {
+  DECISIONS_STUB_ENV,
+  readDecisionStub,
+  runGate,
+  stubRequest,
+  type GateOutcome,
+  type GateRun,
+} from "./gate";
+import { createJevClient, DECISIONS_URL_ENV, type JevRequest } from "./jev";
+import {
+  finalizeFindings,
+  readFinalizerStub,
+  FINALIZER_STUB_ENV,
+  type Finalize,
+  type FinalizeResult,
+} from "./finalize";
+import {
   analyzeEvidence,
   EVIDENCE_WINDOW_MS,
   isCoachCategory,
@@ -23,21 +39,52 @@ import {
   markCommented,
   markFiled,
   markPending,
+  markRejected,
+  needsDecision,
   recordFindings,
   saveLedger,
+  type CoachDecisionRecord,
   type CoachLedger,
 } from "./ledger";
 import { coachDirectory, latestPath, runsDirectory } from "./paths";
+import { openRouterKey } from "./providers";
 import { readCoachSettings, type CoachSettings } from "./settings";
 
 /**
- * One Coach cycle: collect the 24-hour evidence window, run the deterministic
- * detectors, and file or comment one issue per fingerprint. It never starts an
- * ACP peer, calls a model, or writes outside the Coach state directory.
+ * One Coach cycle. The deterministic detectors run first; every new finding
+ * then passes the decision gate (one typed Decisions request each), and only
+ * the survivors reach the single finalizer peer call that writes the proposal.
+ *
+ * Fail-closed: a gate failure files nothing this cycle, a finalizer failure
+ * files nothing, and every outcome is recorded in the ledger and the report.
+ * The cycle writes only `<STATE_DIR>/coach/` and the generated provider agent
+ * directory the finalizer peer needs.
  */
 
 /** How long an existing issue waits before a recurrence comments again. */
 export const COMMENT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+export interface CoachDecisionSummary {
+  fingerprint: string;
+  category: string;
+  line: string;
+  outcome: GateOutcome;
+  probabilities: Record<string, number>;
+  reason?: string;
+}
+
+export interface CoachGateSummary {
+  model: string;
+  calls: number;
+  accepted: number;
+  rejected: number;
+  review: number;
+  failed: number;
+  costUsd: number;
+  finalized: number;
+  filed: number;
+  dropped: number;
+}
 
 export interface CoachReport {
   cycle: string;
@@ -49,7 +96,9 @@ export interface CoachReport {
   malformed: number;
   journalRecords: number;
   findings: CoachFinding[];
-  action: "none" | "duplicate" | "filed" | "commented" | "capped" | "failed";
+  decisions: CoachDecisionSummary[];
+  gate: CoachGateSummary | null;
+  action: "none" | "duplicate" | "filed" | "commented" | "capped" | "rejected" | "failed";
   issues: Array<{ url: string; category: string; fingerprint: string; line: string }>;
   pending: number;
   reportPath: string;
@@ -68,6 +117,8 @@ export interface CycleOptions {
   /** Test seams. */
   collect?: (window: EvidenceWindow) => CoachCollection;
   delivery?: CoachDelivery;
+  gate?: (findings: CoachFinding[]) => Promise<GateRun>;
+  finalize?: Finalize;
   projection?: { state: "ok" | "error" | "stale"; issues: Array<{ url: string; state: "pending" | "implemented" }> };
 }
 
@@ -150,6 +201,16 @@ function renderMarkdown(report: CoachReport): string {
     `- Journal records: ${report.journalRecords}`,
     `- Findings: ${report.findings.length}`,
     `- Pending filings: ${report.pending}`,
+    ...(report.gate === null
+      ? []
+      : [
+          `- Gate: ${report.gate.model}, ${report.gate.calls} call(s), ` +
+            `${report.gate.accepted} accepted, ${report.gate.rejected} rejected, ` +
+            `${report.gate.review} review, ${report.gate.failed} failed, ` +
+            `cost ${report.gate.costUsd.toFixed(6)} USD`,
+          `- Finalizer: ${report.gate.finalized} survivor(s), ${report.gate.filed} filed, ` +
+            `${report.gate.dropped} dropped`,
+        ]),
     "",
     "## Findings",
     "",
@@ -160,6 +221,21 @@ function renderMarkdown(report: CoachReport): string {
             `- ${finding.category} \`${finding.fingerprint}\` (${finding.count}): ${finding.line}`,
         )),
     "",
+    "## Decisions",
+    "",
+    ...(report.decisions.length === 0
+      ? ["None."]
+      : report.decisions.map((decision) => {
+          const probabilities = Object.entries(decision.probabilities)
+            .map(([name, probability]) => `${name}=${probability.toFixed(2)}`)
+            .join(", ");
+          return (
+            `- ${decision.outcome} \`${decision.fingerprint}\` (${decision.category}): ` +
+            `${probabilities.length === 0 ? "no answer" : probabilities}` +
+            `${decision.reason === undefined ? "" : ` — ${decision.reason}`}`
+          );
+        })),
+    "",
     "## Issues",
     "",
     ...(report.issues.length === 0
@@ -169,6 +245,42 @@ function renderMarkdown(report: CoachReport): string {
   ].join("\n");
 }
 
+/** The production gate: stub when configured, otherwise the live Decisions API. */
+function decisionGate(options: {
+  stateDir: string;
+  settings: CoachSettings;
+  environment: Record<string, string | undefined>;
+  findings: CoachFinding[];
+}): Promise<GateRun> {
+  const stubPath = options.environment[DECISIONS_STUB_ENV];
+  let request: JevRequest;
+  try {
+    if (typeof stubPath === "string" && stubPath.length > 0) {
+      request = stubRequest(readDecisionStub(stubPath));
+    } else {
+      const key = openRouterKey(options.stateDir, options.environment);
+      if (!key.ok) {
+        return Promise.resolve({ ok: false, reason: key.reason, decisions: [], costUsd: 0 });
+      }
+      request = createJevClient({
+        apiKey: key.value.key,
+        ...(options.environment[DECISIONS_URL_ENV] === undefined
+          ? {}
+          : { url: options.environment[DECISIONS_URL_ENV] }),
+      });
+    }
+  } catch (error) {
+    return Promise.resolve({ ok: false, reason: firstLine(error), decisions: [], costUsd: 0 });
+  }
+  return runGate({
+    findings: options.findings,
+    model: options.settings.decisionModel,
+    approveAt: options.settings.approveAt,
+    rejectAt: options.settings.rejectAt,
+    request,
+  });
+}
+
 /** Runs one Coach cycle. The caller owns the singleton lock. */
 export async function runCycle(options: CycleOptions): Promise<CycleResult> {
   const root = resolve(options.root);
@@ -176,6 +288,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
   const coachDir = coachDirectory(stateDir);
   const now = options.now ?? new Date();
   const dryRun = options.dryRun === true;
+  const environment = options.environment ?? process.env;
   const window: EvidenceWindow = {
     start: new Date(now.getTime() - EVIDENCE_WINDOW_MS),
     end: now,
@@ -198,6 +311,10 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
   const ledger = loadLedger(coachDir);
   if (!dryRun) recordFindings(ledger, findings, now);
 
+  const candidates = findings.filter((finding) =>
+    needsDecision(ledger.findings[finding.fingerprint], finding, now),
+  );
+
   const runDir = join(runsDirectory(coachDir), stamp(now));
   const reportPath = join(runDir, "report.json");
   const report: CoachReport = {
@@ -210,6 +327,8 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     malformed: collection.malformed,
     journalRecords: collection.journalRecords,
     findings,
+    decisions: [],
+    gate: null,
     action: "none",
     issues: [],
     pending: ledger.pendingFiling.length,
@@ -223,7 +342,8 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
       report.action = "duplicate";
       report.reason = "every finding already has an issue";
     } else {
-      report.reason = `dry run: ${findings.length} finding(s) not filed`;
+      report.reason =
+        `dry run: ${findings.length} finding(s), ${candidates.length} awaiting the gate`;
     }
     return { report, exitCode: 0 };
   }
@@ -272,79 +392,194 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     }
   }
 
-  const queue = [
-    ...ledger.pendingFiling.filter((fingerprint) => !isFiled(ledger.findings[fingerprint])),
-    ...findings
-      .map((finding) => finding.fingerprint)
-      .filter(
-        (fingerprint) =>
-          !isFiled(ledger.findings[fingerprint]) &&
-          !ledger.pendingFiling.includes(fingerprint),
-      ),
-  ];
   let failure: string | undefined;
-  if (queue.length > 0 && room > 0) deliveryFor();
+  let rejectedThisCycle = 0;
+  const rejectedUntil = new Date(
+    now.getTime() + settings.rejectCooldownHours * 60 * 60_000,
+  ).toISOString();
+  let survivors: CoachFinding[] = [];
 
-  for (const fingerprint of queue) {
-    const entry = ledger.findings[fingerprint];
-    if (entry === undefined) {
-      ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
-      continue;
+  if (candidates.length > 0 && room <= 0) {
+    for (const finding of candidates) {
+      markPending(ledger, finding.fingerprint, "the filing cap has no room this hour");
     }
-    if (room <= 0) {
-      markPending(ledger, fingerprint);
-      continue;
-    }
-    const active = deliveryFor();
-    if (active === undefined) {
-      const reason = deliveryFailure ?? "the Coach delivery is unavailable";
-      failure ??= reason;
-      markPending(ledger, fingerprint, reason);
-      continue;
-    }
-    if (!isCoachCategory(entry.category)) {
-      const reason = `the ledger entry has an unknown category: ${entry.category}`;
-      failure ??= reason;
-      ledger.pendingFiling = ledger.pendingFiling.filter((pending) => pending !== fingerprint);
-      continue;
-    }
-    const recorded: CoachFinding = {
-      category: entry.category,
-      fingerprint,
-      line: entry.line,
-      subject: entry.subject,
-      firstAt: entry.firstSeen,
-      lastAt: entry.lastSeen,
-      count: entry.count,
-      sessions: [],
-      scopes: [],
-    };
-    const finding = findings.find((candidate) => candidate.fingerprint === fingerprint);
-    const issued = finding ?? recorded;
-    const input: CoachEvidence =
-      finding === undefined
-        ? { window: collection.window, sessions: new Map(), scopes: new Map(), repoDir: root }
-        : evidenceFor(collection, root, finding);
-    let filed: DeliveryResult;
+  } else if (candidates.length > 0) {
+    const gate = options.gate ?? ((awaiting: CoachFinding[]) =>
+      decisionGate({ stateDir, settings, environment, findings: awaiting }));
+    let outcome: GateRun;
     try {
-      filed = await active.create(coachTitle(issued), coachBody({ finding: issued, evidence: input }));
+      outcome = await gate(candidates);
     } catch (error) {
-      filed = { ok: false, reason: firstLine(error) };
+      outcome = { ok: false, reason: firstLine(error), decisions: [], costUsd: 0 };
     }
-    if (filed.ok) {
-      room -= 1;
-      markFiled(ledger, fingerprint, filed.url, now);
-      saveLedger(coachDir, ledger);
-      report.issues.push({
-        url: filed.url,
-        category: entry.category,
-        fingerprint,
-        line: entry.line,
+    report.gate = {
+      model: settings.decisionModel,
+      calls: outcome.decisions.length,
+      accepted: 0,
+      rejected: 0,
+      review: 0,
+      failed: 0,
+      costUsd: outcome.costUsd,
+      finalized: 0,
+      filed: 0,
+      dropped: 0,
+    };
+    for (const decision of outcome.decisions) {
+      const finding = decision.finding;
+      report.decisions.push({
+        fingerprint: finding.fingerprint,
+        category: finding.category,
+        line: finding.line,
+        outcome: decision.outcome,
+        probabilities: decision.probabilities,
+        ...(decision.reason === undefined ? {} : { reason: decision.reason }),
       });
-      continue;
+      if (decision.outcome === "accept") {
+        report.gate.accepted += 1;
+        survivors.push(finding);
+        continue;
+      }
+      if (decision.outcome === "error") {
+        report.gate.failed += 1;
+        markPending(ledger, finding.fingerprint, decision.reason ?? "the gate call failed");
+        continue;
+      }
+      if (decision.outcome === "review") report.gate.review += 1;
+      else report.gate.rejected += 1;
+      rejectedThisCycle += 1;
+      markRejected(ledger, finding.fingerprint, {
+        at: now.toISOString(),
+        model: decision.model,
+        outcome: decision.outcome,
+        probabilities: decision.probabilities,
+        count: finding.count,
+        rejectedUntil,
+        ...(decision.requestId === undefined ? {} : { requestId: decision.requestId }),
+        ...(decision.costUsd === undefined ? {} : { costUsd: decision.costUsd }),
+        reason:
+          decision.outcome === "review"
+            ? `ambiguous probabilities; cool-down until ${rejectedUntil}`
+            : (decision.reason ?? "the gate rejected the finding"),
+      });
     }
-    failure ??= filed.reason;
-    markPending(ledger, fingerprint, filed.reason);
+    if (!outcome.ok) {
+      failure = outcome.reason ?? "the decision gate failed";
+      for (const finding of survivors) {
+        markPending(ledger, finding.fingerprint, failure);
+      }
+      survivors = [];
+    }
+    saveLedger(coachDir, ledger);
+  }
+
+  if (failure === undefined && survivors.length > 0) {
+    const finalize =
+      options.finalize ??
+      ((finalizing: CoachFinding[]) => {
+        const stubPath = environment[FINALIZER_STUB_ENV];
+        return finalizeFindings({
+          repoDir: root,
+          stateDir,
+          survivors: finalizing,
+          environment,
+          ...(typeof stubPath === "string" && stubPath.length > 0
+            ? { run: readFinalizerStub(stubPath) }
+            : {}),
+        });
+      });
+    let recommendations: FinalizeResult | undefined;
+    try {
+      recommendations = await finalize(survivors);
+    } catch (error) {
+      failure = `the finalizer failed: ${firstLine(error)}`;
+    }
+    if (recommendations === undefined) {
+      for (const finding of survivors) {
+        markPending(ledger, finding.fingerprint, failure);
+      }
+    } else {
+      report.gate = report.gate ?? {
+        model: "",
+        calls: 0,
+        accepted: 0,
+        rejected: 0,
+        review: 0,
+        failed: 0,
+        costUsd: 0,
+        finalized: 0,
+        filed: 0,
+        dropped: 0,
+      };
+      report.gate.finalized = survivors.length;
+      for (const finding of survivors) {
+        const recommendation = recommendations.recommendations.get(finding.fingerprint);
+        if (recommendation === undefined) {
+          failure ??= `the finalizer omitted ${finding.fingerprint}`;
+          markPending(ledger, finding.fingerprint, "the finalizer omitted the finding");
+          continue;
+        }
+        if (recommendation.action === "drop") {
+          report.gate.dropped += 1;
+          rejectedThisCycle += 1;
+          markRejected(ledger, finding.fingerprint, {
+            at: now.toISOString(),
+            model: recommendations.model,
+            outcome: "reject",
+            probabilities: {},
+            count: finding.count,
+            rejectedUntil,
+            reason:
+              recommendation.duplicateOf === undefined
+                ? "the finalizer dropped the finding"
+                : `duplicate of ${recommendation.duplicateOf}`,
+          });
+          continue;
+        }
+        if (room <= 0) {
+          markPending(ledger, finding.fingerprint, "the filing cap has no room this hour");
+          continue;
+        }
+        const active = deliveryFor();
+        if (active === undefined) {
+          failure ??= deliveryFailure ?? "the Coach delivery is unavailable";
+          markPending(ledger, finding.fingerprint, failure);
+          continue;
+        }
+        const evidence = evidenceFor(collection, root, finding);
+        let filed: DeliveryResult;
+        try {
+          filed = await active.create(
+            coachTitle(finding),
+            coachBody({
+              finding,
+              evidence,
+              recommendation: {
+                proposal: recommendation.proposal,
+                acceptance: recommendation.acceptance,
+              },
+            }),
+          );
+        } catch (error) {
+          filed = { ok: false, reason: firstLine(error) };
+        }
+        if (filed.ok) {
+          room -= 1;
+          report.gate.filed += 1;
+          markFiled(ledger, finding.fingerprint, filed.url, now);
+          report.issues.push({
+            url: filed.url,
+            category: finding.category,
+            fingerprint: finding.fingerprint,
+            line: finding.line,
+          });
+          saveLedger(coachDir, ledger);
+          continue;
+        }
+        failure ??= filed.reason;
+        markPending(ledger, finding.fingerprint, filed.reason);
+      }
+    }
+    saveLedger(coachDir, ledger);
   }
 
   const filedThisCycle = new Set(report.issues.map((issue) => issue.fingerprint));
@@ -390,6 +625,9 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
   } else if (commented > 0) {
     report.action = "commented";
     report.reason = `commented on ${commented} issue(s)`;
+  } else if (rejectedThisCycle > 0) {
+    report.action = "rejected";
+    report.reason = `rejected ${rejectedThisCycle} finding(s) until ${rejectedUntil}`;
   } else if (capsActive && ledger.pendingFiling.length > 0) {
     report.action = "capped";
     report.reason =
@@ -420,4 +658,4 @@ export function describeCycle(result: CycleResult): string {
   );
 }
 
-export type { CoachLedger };
+export type { CoachLedger, CoachDecisionRecord };

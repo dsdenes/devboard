@@ -142,7 +142,7 @@ describe("background agent registry", () => {
     expect(coach.label).toBe("Coach");
     expect(coach.scope).toBe("repository");
     expect(coach.cadence.defaultMinutes).toBe(60);
-    expect(coach.limits.default).toEqual({ maxPerHour: null, maxPending: null });
+    expect(coach.limits.default).toEqual({ maxPerHour: 10, maxPending: 20 });
     expect(coach.detail.panel).toBe("cycles");
     expect(coach.tab).toEqual({ id: "coach", kind: "coach", title: "Coach" });
     for (const descriptor of DEFAULT_AGENT_DESCRIPTORS) {

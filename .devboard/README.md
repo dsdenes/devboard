@@ -1203,6 +1203,9 @@ and is retried the same way.
 |`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
 |`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
 |`DEVBOARD_OPENROUTER_USAGE_BASE_URL`|`https://openrouter.ai/api`|OpenRouter usage base; overridden by tests and offline verification.|
+|`DEVBOARD_OPENROUTER_DECISIONS_URL`|`https://openrouter.ai/api/alpha/decisions`|Coach's Decisions endpoint; overridden by tests and offline verification.|
+|`DEVBOARD_COACH_DECISIONS_STUB`|unset|JSON file answering every Coach Decisions request; verification only, never network.|
+|`DEVBOARD_COACH_FINALIZER_STUB`|unset|JSON file replacing the Coach finalizer peer; verification only, never a peer.|
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
 |`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads the newest Gitea release over the public HTTP API.|
@@ -1539,14 +1542,17 @@ System route through the same shared interface.
 ## Coach
 
 Coach is the `coach` descriptor in the shared background-agent contract: label `Coach`, scope
-`repository`, cadence default 60 minutes, and nullable limits that default to unlimited. Its page
-is the shared `agent-page` with `data-agent="coach"` and every shared core id; `agent-detail`
-renders the shared cycle history. Opening, selecting, restoring, or reloading the page starts
-nothing. Start and Stop command one detached worker per repository state directory.
+`repository`, cadence default 60 minutes, and caps that default to 10 new issues per rolling hour
+and 20 own open issues. Its page is the shared `agent-page` with `data-agent="coach"` and every
+shared core id; `agent-detail` renders the shared cycle history. Opening, selecting, restoring, or
+reloading the page starts nothing. Start and Stop command one detached worker per repository state
+directory.
 
 Coach's files live under `<STATE_DIR>/coach/`: `worker.json` (published lifecycle), `settings.json`,
 `control/`, `state.json` (the ledger), `lock`, `runs/<cycle>/report.json|report.md`, `latest.json`,
-and `projection.json` (the last successful forge projection the caps count). Start reaches
+and `projection.json` (the last successful forge projection the caps count). The finalizer also
+needs the generated per-peer directory under `<STATE_DIR>/providers/agents/`, written with the same
+shared helpers every peer uses. Start reaches
 `starting` before the worker exists and `running` once its state is readable; Stop reaches
 `stopping` and then `stopped` after the running cycle ends and before any further cycle starts. A
 stopped worker is not restarted by a dashboard restart, a page open, or a tab restore; a live
@@ -1591,11 +1597,55 @@ then line, then fingerprint. Each carries its category, fingerprint, a one-line 
 journal scopes. Two cycles over identical evidence with the same clock produce identical findings
 in identical order.
 
-Command normalization replaces the repository root, `.worktree/<name>`, UUIDs, ISO timestamps,
-7-or-more-character hex tokens, and whitespace. The fixed trivial set is `ls`, `pwd`, `cat`, `head`,
-`tail`, `wc`, `git status`, `git diff`, `git log`, `bun test`, `bun run check`, `bun run build`,
-and `bunx tsc --noEmit`. The MCP catalog's `covers` lists are the only command signatures that
-suppress a `tool-gap` finding.
+Command normalization first collapses a leading `cd <path> &&` chain to the command it guards,
+then replaces leading `NAME=value` assignments with `<env>`, the repository root,
+`.worktree/<name>`, UUIDs, ISO timestamps, 7-or-more-character hex tokens, and whitespace; a
+`git -C .` or `git -C <repo>` prefix becomes plain `git`. A signature is trivial when it equals an
+inspection prefix or continues it with a space, so `git status --short --branch` is suppressed like
+`git status`. The prefixes are `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `echo`, `printf`, `grep`,
+`rg`, `find`, `sed -n`, `git status`, `git diff`, `git log`, `git show`, `git branch`,
+`git rev-parse`, `git worktree list`, `git ls-remote`, `git remote -v`, `bun test`, `bun run check`,
+`bun run build`, and `bunx tsc --noEmit`. The MCP catalog's `covers` lists are the other command
+signatures that suppress a `tool-gap` finding.
+
+### Decision gate
+
+Every finding without an issue and without an active rejection passes one Decisions request before
+anything is filed. The request carries a bounded state — category, normalized signature, line,
+count, session count, scope count, timestamps, the MCP tool names, the `covers` list, and the
+inspection prefixes — and three typed `noul` propositions:
+
+|Question|Proposition|High probability|
+|---|---|---|
+|`existing_capability`|an existing tool, `covers` entry, or inspection prefix already provides it|rejects|
+|`recurring_behavior`|a recurring behavior, not one incidental or environment failure|files|
+|`worth_filing`|one issue would change what an implementer does next|files|
+
+The model is `decisionModel` in `settings.json`, `typesafe/jev-1.14` by default. The gate files only
+when every positive question is at or above `approveAt` (0.9) and the negative one at or below
+`rejectAt` (0.1). Any positive answer at or below `rejectAt`, or a negative answer at or above
+`approveAt`, rejects. Anything between is `review`: it is recorded, flagged in the report and the
+dashboard count, and treated exactly like a rejection. A rejected fingerprint waits
+`rejectCooldownHours` (168) before it is asked again and re-opens early when its window count at
+least doubles. Probabilities, the request id, cost, model, and the count at decision time are
+stored in the ledger.
+
+The gate sends its request to `DEVBOARD_OPENROUTER_DECISIONS_URL` with the first enabled OpenRouter
+key from the Providers store. No such key, a non-2xx answer, a missing or out-of-range probability,
+or a timeout fails the whole gate closed: nothing is filed that cycle, every undecided fingerprint
+stays pending with the reason, and the report names it.
+
+### Finalizer
+
+Only findings the gate accepted reach one ACP peer call per cycle. The peer is `AGENT_COMMAND`
+(default `omp acp`) built from every enabled OpenCode Go subscription in the operator's list order,
+pinned to `opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled. The
+coach does not probe the usage endpoint: a quota read cannot decide whether a cycle finishes. A
+peer that answers with a rejected credential rotates to the next enabled Go subscription and, when
+none is left, fails closed. It receives the survivors and the catalog and must answer one JSON
+object: for every survivor, `file` with a proposal and 1 to 5 acceptance criteria, or `drop` with
+`duplicate_of` naming another survivor that is itself filed. A missing decision, an unknown
+fingerprint, an absent proposal, invalid JSON, a refused permission, or a timeout files nothing.
 
 ### Filed issues and the ledger
 
@@ -1603,23 +1653,26 @@ The title is `[coach] <category>: <line>`, one line, at most 80 characters; no `
 applied. The body is at most 64 KiB and carries exactly one `## Finding`, `## Evidence`,
 `## Proposed change`, and `## Acceptance criteria` section. Evidence lists each contributing
 session's id, start time, relative cwd, input/output/cache tokens, total cost, and at most 2,000
-characters of normalized excerpts; journal findings list their scopes. The proposed change names a
-concrete prompt guardrail, failure-avoidance helper, or MCP tool with its intended name and
-inputs; a `tool-gap` finding always proposes a deterministic tool rather than an LLM step.
+characters of normalized excerpts; journal findings list their scopes. The proposed change and the
+acceptance criteria are the finalizer's answer; they name a stable capability or an existing
+catalog tool, never a tool named after a fingerprint or a single command string.
 
-`<STATE_DIR>/coach/state.json` records every fingerprint with `pending` or `filed:<url>` and its
-first and last sighting. It is written atomically after every successful filing or comment, so a
-hard kill never loses the fact that an issue exists. A `filed:<url>` fingerprint is never filed
-again. A recurrence at least 24 hours after the previous filing or comment comments on the
-existing issue once per interval. With a cap set, a cycle files at most that many new issues per
-rolling hour and at most that many of its own open issues, counts open state from the last
-successful projection, keeps excess fingerprints pending instead of dropping them, files nothing
-new while the project is not `ok`, and never caps comments. A failed filing or comment keeps the
-fingerprint pending and records the reason.
+`<STATE_DIR>/coach/state.json` (version 2) records every fingerprint with `pending`,
+`filed:<url>`, or `rejected`, plus the last gate decision (probabilities, model, request id, cost,
+count, cool-down). It is written atomically after every filing, rejection, or comment, so a hard
+kill never loses an outcome. A `filed:<url>` fingerprint is never filed again. A recurrence at
+least 24 hours after the previous filing or comment comments on the existing issue once per
+interval. With a cap set, a cycle files at most that many new issues per rolling hour and at most
+that many of its own open issues, counts open state from the last successful projection, keeps
+excess fingerprints pending instead of dropping them, files nothing new while the project is not
+`ok`, and never caps comments. A failed filing or comment keeps the fingerprint pending and records
+the reason.
 
-A cycle spawns no ACP peer, makes no model call, edits no prompt, wrapper, source, session file, or
-journal record, and writes only `<STATE_DIR>/coach/`. The page and worker send no command that
-starts, stops, or repairs another agent.
+A cycle makes one Decisions request per gated finding and at most one ACP peer call (the finalizer,
+and only when the gate accepted something). It edits no prompt, wrapper, source, session file, or
+journal record, and writes only `<STATE_DIR>/coach/` plus the generated provider agent directory the
+finalizer peer needs. The page and worker send no command that starts, stops, or repairs another
+agent.
 
 Run it by hand from `.devboard`:
 
@@ -1628,9 +1681,10 @@ bun run coach -- --collect --dry-run --root <checkout> --state-dir <state> --jso
 bun run coach -- --once --root <checkout> --state-dir <state> [--now <ISO>] --json
 ```
 
-`verify:coach` seeds sessions and journal records under `.devboard/.tmp`, injects a stub forge, and
-proves every category and threshold, the dry run, one issue per fingerprint, deterministic issue
-bytes, no second filing, the 24-hour recurrence comment, both caps keeping fingerprints pending,
+`verify:coach` seeds sessions and journal records under `.devboard/.tmp`, injects a stub forge, a
+stub Decisions answer, and a stub finalizer answer, and proves every category and threshold, the dry
+run, one issue per fingerprint, deterministic issue bytes, no second filing, the 24-hour recurrence
+comment, both caps keeping fingerprints pending, a failed gate filing nothing and exiting nonzero,
 byte-identical evidence, and that no ACP peer starts.
 
 ## Devboard MCP server

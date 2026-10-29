@@ -19,6 +19,12 @@ export interface AcpConnectionOptions {
   cwd: string;
   /** The exact peer environment; omitted means the server's own. */
   env?: Record<string, string | undefined>;
+  /**
+   * `allow` selects the first allow option for a permission request. `deny`
+   * cancels every request and every elicitation, for a peer that must answer
+   * from its prompt alone.
+   */
+  permissionPolicy?: "allow" | "deny";
   onActivity: (activity: AcpActivity) => void;
   /**
    * Called for every `session/update` frame, including tool progress that maps
@@ -442,6 +448,10 @@ export class AcpConnection {
         this.#handleElicitation(id, params);
         return;
       case "session/request_permission": {
+        if (this.#options.permissionPolicy === "deny") {
+          this.#respond(id, { outcome: { outcome: "cancelled" } });
+          return;
+        }
         const request = asRecord(params) ?? {};
         const options = Array.isArray(request.options) ? request.options : [];
         const option = options.find((candidate) => {
@@ -479,7 +489,9 @@ export class AcpConnection {
       this.#respond(wireId, { action: "cancel" });
       return;
     }
-
+    if (this.#options.permissionPolicy === "deny") {
+      this.#respond(wireId, { action: "cancel" });
+    }
     const schema = asRecord(request.requestedSchema);
     const properties = asRecord(schema?.properties) ?? {};
     const required = Array.isArray(schema?.required)
