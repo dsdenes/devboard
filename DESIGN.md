@@ -81,6 +81,12 @@ typography:
     fontWeight: 500
     lineHeight: 1.3
     letterSpacing: 0
+  control-small:
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+    fontSize: 11px
+    fontWeight: 500
+    lineHeight: 1.3
+    letterSpacing: 0
   label:
     fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
     fontSize: 11px
@@ -338,6 +344,7 @@ System stacks only; the interface requests no webfont.
 | `body` | 13px / 400 | 0 / 1.45 | Default prose and form text |
 | `body-small` | 12px / 400 | 0 / 1.45 | Subtitles, table cells, descriptions |
 | `control` | 12px / 500 | 0 / 1.3 | Buttons, inputs |
+| `control-small` | 11px / 500 | 0 / 1.3 | `sm` buttons, per-row Start and Close actions |
 | `label` | 11px / 600 | 0.03em / 1.3 | Table heads, metadata rows |
 | `overline` | 10px / 700 | 0.08em / 1.2 | Sidebar group heads, badges, uppercase micro-labels |
 | `mono` | 12px / 400 | 0 / 1.45 | Code, paths, terminal text |
