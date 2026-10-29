@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
+import { cpSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -3232,6 +3232,24 @@ export function createApp(options: AppOptions) {
     }
     if (!readable) {
       return cloneFailed("The repository clone produced no readable directory.");
+    }
+
+    // The checkout starts from the retained snapshot. Otherwise one agent's
+    // publication would replace the whole snapshot and drop every other slice.
+    const retained = remoteProjectDirectory(remoteRoot, target.owner, target.repo);
+    try {
+      for (const tree of ["discover", "skills"]) {
+        const from = join(retained, ".omp", tree);
+        if (!existsSync(from)) continue;
+        mkdirSync(join(staging, ".omp"), { recursive: true });
+        cpSync(from, join(staging, ".omp", tree), { recursive: true });
+      }
+    } catch (error) {
+      return cloneFailed(
+        `The retained Discover artifacts could not be copied into the checkout: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
 
     discoverCloning = null;

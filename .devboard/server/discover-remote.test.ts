@@ -432,6 +432,19 @@ async function runProject(client: TestClient): Promise<DiscoverState> {
   return discoverState(client);
 }
 
+async function runRemoteAgent(client: TestClient, agent: string): Promise<DiscoverState> {
+  const started = client.waitNext(
+    (message) => message.type === "discoverStarted" && message.agent === agent,
+  );
+  const stopped = client.waitNext(
+    (message) => message.type === "discoverStopped" && message.agent === agent,
+  );
+  client.send({ type: "discoverAgent", agent });
+  await started;
+  expect((await stopped).completed).toBe(true);
+  return discoverState(client);
+}
+
 async function switchRemote(client: TestClient, url: string): Promise<DiscoverState> {
   const reply = client.waitNext((message) => message.type === "discoverState");
   client.send({ type: "switchDiscoverRemote", url });
@@ -1102,6 +1115,58 @@ describe("discover remote target", () => {
       }
     },
     90_000,
+  );
+
+  test(
+    "publishes one agent's slice into the retained snapshot and keeps the rest byte-identical",
+    async () => {
+      const fixture = createFixture("retained-agent");
+      const clones = cloneHarness({ source: createSourceRepository("retained-agent-source") });
+      const { server, url } = startServer({ fixture, clone: clones });
+      const client = await connect(url);
+      try {
+        await runRemote(client, "https://github.com/octocat/Hello-World");
+        const retained = retainedDirectory(fixture, "octocat", "hello-world");
+        const before = treeBytes(retained);
+        const spawns = spawnCount(fixture.logPath);
+
+        const sheet = await runRemoteAgent(client, "sheet");
+        expect(sheet.target).toMatchObject({ kind: "remote", checkout: false });
+        expect(sheet.sheet).not.toBeNull();
+        expect(sheet.skills.map((skill) => skill.name)).toHaveLength(5);
+        expect(spawnCount(fixture.logPath)).toBe(spawns + 1);
+        const afterSheet = treeBytes(retained);
+        for (const [path, bytes] of before) {
+          // project.json records the retention time; the manifest and decisions
+          // are bookkeeping the server may rewrite.
+          if (path === "project.json") continue;
+          if (path === ".omp/discover/manifest.json" || path === ".omp/discover/decisions.json") {
+            continue;
+          }
+          if (path === ".omp/discover/sheet.json") continue;
+          expect(afterSheet.get(path)).toBe(bytes);
+        }
+        expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
+        expectNoCheckout(fixture);
+
+        const testing = await runRemoteAgent(client, "discover-testing-strategy");
+        expect(testing.skills.map((skill) => skill.name)).toHaveLength(5);
+        const afterTesting = treeBytes(retained);
+        for (const [path, bytes] of afterSheet) {
+          if (path === "project.json") continue;
+          if (path === ".omp/discover/manifest.json" || path === ".omp/discover/decisions.json") {
+            continue;
+          }
+          if (path === ".omp/discover/skills/discover-testing-strategy/SKILL.md") continue;
+          if (path === ".omp/skills/discover-testing-strategy/SKILL.md") continue;
+          expect(afterTesting.get(path)).toBe(bytes);
+        }
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    120_000,
   );
 
   test(
