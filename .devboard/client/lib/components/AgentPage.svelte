@@ -128,7 +128,7 @@
         <span class="badge" data-tone={sync.state === "ok" ? "success" : sync.state === "error" ? "error" : "stale"} data-testid="agent-sync" data-state={sync.state}>
           forge read {sync.state}
         </span>
-        <span class="muted agent-sync-at">
+        <span class="agent-sync-at">
           Last read
           <span class="mono" data-testid="agent-sync-at" title={sync.at ?? "never"}>
             {#if sync.at === null}
@@ -136,18 +136,6 @@
             {:else}
               <time datetime={sync.at}>{stamp(sync.at)}</time>
             {/if}
-          </span>
-        </span>
-        <span class="muted agent-run-at">
-          Last run
-          <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
-            {stamp(snapshot?.cadence.lastRunAt ?? null)}
-          </span>
-        </span>
-        <span class="muted agent-run-at">
-          Next run
-          <span class="mono" data-testid="agent-next-run" title={snapshot?.cadence.nextRunAt ?? "—"}>
-            {stamp(snapshot?.cadence.nextRunAt ?? null)}
           </span>
         </span>
       {/snippet}
@@ -177,67 +165,88 @@
             Start
           </Button>
         {/if}
+      {/snippet}
+      {#snippet footer()}
         <div class="agent-settings" role="group" aria-label="Cadence and filing limits">
-          <label class="agent-settings__field">
-            <span>Every (min)</span>
-            <Input
-              type="number"
-              min="1"
-              max="1440"
-              step="1"
-              inputmode="numeric"
-              class="w-16 text-center"
-              data-testid="agent-cadence"
-              value={cadenceText}
-              oninput={(event) => (cadenceText = event.currentTarget.value)}
-            />
-          </label>
-          <Button
-            variant="secondary"
-            data-testid="agent-save-cadence"
-            data-command={`issues.${agentId}.cadence`}
-            onclick={saveCadence}
-          >
-            Save cadence
-          </Button>
-          <label class="agent-settings__field">
-            <span>Per hour</span>
-            <Input
-              type="number"
-              min="1"
-              max="100"
-              step="1"
-              inputmode="numeric"
-              placeholder="unlimited"
-              class="w-16 text-center"
-              data-testid="agent-limit-hour"
-              value={maxPerHourText}
-              oninput={(event) => (maxPerHourText = event.currentTarget.value)}
-            />
-          </label>
-          <label class="agent-settings__field">
-            <span>Open issues</span>
-            <Input
-              type="number"
-              min="1"
-              max="100"
-              step="1"
-              inputmode="numeric"
-              placeholder="unlimited"
-              class="w-16 text-center"
-              data-testid="agent-limit-pending"
-              value={maxPendingText}
-              oninput={(event) => (maxPendingText = event.currentTarget.value)}
-            />
-          </label>
-          <Button
-            variant="secondary"
-            data-testid="agent-save-limits"
-            data-command={`issues.${agentId}.limits`}
-            onclick={saveLimits}
-          >
-            Save limits
-          </Button>
+          <div class="agent-settings__group">
+            <span class="agent-settings__title">Cadence</span>
+            <label class="agent-settings__field">
+              <span>Every</span>
+              <Input
+                type="number"
+                min="1"
+                max="1440"
+                step="1"
+                inputmode="numeric"
+                class="w-16 text-center"
+                data-testid="agent-cadence"
+                value={cadenceText}
+                oninput={(event) => (cadenceText = event.currentTarget.value)}
+              />
+              <span class="agent-settings__unit">min</span>
+            </label>
+            <span class="agent-settings__run">
+              Last run
+              <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
+                {stamp(snapshot?.cadence.lastRunAt ?? null)}
+              </span>
+            </span>
+            <span class="agent-settings__run">
+              Next run
+              <span class="mono" data-testid="agent-next-run" title={snapshot?.cadence.nextRunAt ?? "—"}>
+                {stamp(snapshot?.cadence.nextRunAt ?? null)}
+              </span>
+            </span>
+            <Button
+              variant="secondary"
+              data-testid="agent-save-cadence"
+              data-command={`issues.${agentId}.cadence`}
+              onclick={saveCadence}
+            >
+              Save cadence
+            </Button>
+          </div>
+          <div class="agent-settings__group">
+            <span class="agent-settings__title">Filing limits</span>
+            <label class="agent-settings__field">
+              <span>Per hour</span>
+              <Input
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                inputmode="numeric"
+                placeholder="unlimited"
+                class="w-20 text-center"
+                data-testid="agent-limit-hour"
+                value={maxPerHourText}
+                oninput={(event) => (maxPerHourText = event.currentTarget.value)}
+              />
+            </label>
+            <label class="agent-settings__field">
+              <span>Open issues</span>
+              <Input
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                inputmode="numeric"
+                placeholder="unlimited"
+                class="w-20 text-center"
+                data-testid="agent-limit-pending"
+                value={maxPendingText}
+                oninput={(event) => (maxPendingText = event.currentTarget.value)}
+              />
+            </label>
+            <Button
+              variant="secondary"
+              data-testid="agent-save-limits"
+              data-command={`issues.${agentId}.limits`}
+              onclick={saveLimits}
+            >
+              Save limits
+            </Button>
+          </div>
         </div>
       {/snippet}
     </PageHeader>
@@ -335,11 +344,32 @@
     margin: 0;
   }
 
+  /* Two labeled groups: the cadence that schedules a scan and the limits that
+     bound it. Each group wraps as a unit so a field never separates from its
+     save control. */
   .agent-settings {
     align-items: center;
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 6px 24px;
+    width: 100%;
+  }
+
+  .agent-settings__group {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    min-width: 0;
+  }
+
+  .agent-settings__title {
+    color: var(--muted-foreground);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
+    text-transform: uppercase;
   }
 
   .agent-settings__field {
@@ -351,8 +381,19 @@
     white-space: nowrap;
   }
 
-  .agent-sync-at,
-  .agent-run-at {
+  .agent-settings__unit,
+  .agent-settings__run {
+    color: var(--muted-foreground);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .agent-settings__run .mono {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agent-sync-at {
+    color: var(--muted-foreground);
     font-size: 11px;
     white-space: nowrap;
   }
