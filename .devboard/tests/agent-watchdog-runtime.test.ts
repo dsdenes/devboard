@@ -61,6 +61,17 @@ function readJson(path: string): Record<string, unknown> | undefined {
   }
 }
 
+/** Fingerprints a cycle report filed; discovery may also file unrelated evidence. */
+function filedFingerprints(latest: Record<string, unknown> | undefined): string[] {
+  if (!Array.isArray(latest?.issues)) return [];
+  return latest.issues
+    .filter(
+      (issue): issue is Record<string, unknown> =>
+        typeof issue === "object" && issue !== null,
+    )
+    .map((issue) => (typeof issue.fingerprint === "string" ? issue.fingerprint : ""));
+}
+
 function adapter(
   root: string,
   options: {
@@ -191,7 +202,9 @@ describe("detached watchdog worker", () => {
       );
       const latest = readJson(join(directory, "latest.json"));
       expect(latest?.action).toBe("filed");
-      expect(latest?.issues).toHaveLength(1);
+      expect(filedFingerprints(latest).filter((value) => value === fingerprint)).toEqual([
+        fingerprint,
+      ]);
       expect(existsSync(String(latest?.reportPath))).toBe(true);
       const ledger = loadLedger(directory);
       expect(ledger.findings[fingerprint]?.disposition).toBe(
@@ -254,7 +267,9 @@ describe("detached watchdog worker", () => {
       );
       const latest = readJson(join(directory, "latest.json"));
       expect(latest?.action).toBe("filed");
-      expect(latest?.issues).toHaveLength(1);
+      expect(filedFingerprints(latest).filter((value) => value === fingerprint)).toEqual([
+        fingerprint,
+      ]);
       expect(loadLedger(directory).findings[fingerprint]?.disposition).toBe(
         "filed:https://github.com/acme/fixture/issues/2",
       );
