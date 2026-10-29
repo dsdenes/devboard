@@ -3481,7 +3481,10 @@ a.code-chip--link:focus-visible {
   white-space: nowrap;
 }
 
-.issues-draft__badge {
+.issues-draft__meta {
+  align-items: center;
+  display: flex;
+  gap: 6px;
   justify-self: end;
 }
 
