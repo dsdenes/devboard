@@ -6,6 +6,7 @@ import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
 import {
   giteaJson,
+  giteaOrigin,
   giteaRepository,
   repoPath,
   type FetchLike,
@@ -122,35 +123,13 @@ export interface WatchdogGitHubReaderOptions {
   fetchImpl?: FetchLike;
 }
 
-/** Host names that all mean this machine. */
-const LOOPBACK_HOSTS: Record<string, true> = {
-  localhost: true,
-  "127.0.0.1": true,
-  "::1": true,
-  "[::1]": true,
-  "0.0.0.0": true,
-};
-
 /**
- * The scheme, host, and port of a URL, with loopback aliases folded together.
- * The watchdog ledger can hold issue URLs filed through an earlier forge, so
- * the Gitea reader must recognise only the issues its own instance serves.
+ * Whether a ledger URL belongs to the issues the Gitea reader can serve:
+ * another forge's URL is skipped instead of read by number.
  */
-function originKey(value: string): string | undefined {
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    return undefined;
-  }
-  const host = LOOPBACK_HOSTS[parsed.hostname] === true ? "loopback" : parsed.hostname;
-  const port = parsed.port !== "" ? parsed.port : parsed.protocol === "https:" ? "443" : "80";
-  return `${parsed.protocol}//${host}:${port}`;
-}
-
 function servedBy(value: string, baseUrl: string): boolean {
-  const issue = originKey(value);
-  return issue !== undefined && issue === originKey(baseUrl);
+  const issue = giteaOrigin(value);
+  return issue !== undefined && issue === giteaOrigin(baseUrl);
 }
 
 function createWatchdogGiteaReader(
