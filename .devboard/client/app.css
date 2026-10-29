@@ -1759,19 +1759,7 @@ kbd {
 }
 
 /* Manual-testing target, source checkout only. */
-.discover-remote__form {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.discover-remote__form input {
-  flex: 1 1 280px;
-  max-width: 520px;
-}
-
-.discover-remote__retained {
+.discover-remote__toolbar {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -1780,7 +1768,9 @@ kbd {
 
 .discover-remote__label {
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
 }
 
 .discover-remote__select {
@@ -1788,23 +1778,26 @@ kbd {
   border: 1px solid var(--border-strong);
   border-radius: 4px;
   color: var(--foreground);
-  flex: 1 1 280px;
-  font-size: 12px;
+  flex: 0 1 440px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
   height: 28px;
-  max-width: 520px;
-  padding: 0 6px;
+  min-width: 240px;
+  padding: 0 8px;
 }
 
 .discover-remote__select:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
 .discover-remote__list {
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
   list-style: none;
   margin: 0;
+  overflow: hidden;
   padding: 0;
 }
 
@@ -1812,13 +1805,29 @@ kbd {
   align-items: center;
   display: flex;
   gap: 8px;
-  justify-content: space-between;
-  min-height: 24px;
+  min-height: 28px;
+  padding: 2px 10px;
+}
+
+.discover-remote__item + .discover-remote__item {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.discover-remote__item:not(.discover-remote__item--active):hover {
+  background: var(--row-hover);
+}
+
+.discover-remote__item--active {
+  background: var(--accent-surface);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .discover-remote__url {
   color: var(--muted-foreground);
-  font-size: 12px;
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1826,6 +1835,44 @@ kbd {
 
 .discover-remote__item--active .discover-remote__url {
   color: var(--foreground);
+}
+
+.discover-remote__remove {
+  color: var(--muted-foreground);
+}
+
+.discover-remote__remove:hover:not(:disabled),
+.discover-remote__remove:focus-visible {
+  background: var(--error-surface);
+  color: var(--error);
+}
+
+.discover-remote__form {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+
+.discover-remote__form-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.discover-remote__form input {
+  flex: 1 1 280px;
+  max-width: 520px;
+}
+
+.discover-remote__cloning {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  margin: 0;
 }
 
 /* Filtered glossary empty state. */

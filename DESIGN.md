@@ -591,6 +591,18 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   `Unsaved changes` warning, `Live file missing` error); and a right action group holding the
   outline restore control and a primary `Save` disabled until the draft differs from the live
   text. The path truncates with a full-path `title`; the state line and actions never shrink.
+- **Discover remote target** (`.discover-remote`) — the source-checkout Overview's first
+  region: one panel whose header carries `Manual testing target` and, while projects exist, an
+  `<n> retained` count. The body separates the two scopes. A `Retained project` toolbar pairs
+  the 11px label with a 28px mono dropdown of the retained URLs. Beneath it a `border-subtle`
+  list holds one 28px row per project: mono URL on the leading edge, an `Active` accent badge on
+  the current target, and a quiet destructive `Remove` word that takes `error-surface` and
+  `error` text on hover or focus; the active row takes `accent-surface` and a 2px `accent` left
+  edge while the other rows take `row-hover`. A `surface-raised` add band labelled
+  `Discover another repository` holds the 28px URL input and the outline `Discover from URL`
+  control. `Clear remote target` sits in the panel footer, never in the add band, because
+  returning to the host is a different scope. The panel carries no filled primary, so the page
+  header keeps the only one.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page

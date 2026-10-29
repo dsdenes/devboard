@@ -1095,24 +1095,28 @@ while a clone or a Discover run is active or while the existing busy rules refus
 `cloning` (`{ "url" }` or `null`). `getDiscover` answers with the same snapshot, and a connecting
 client still receives it before its own command replies.
 
-While `remoteAvailable` is true the Overview renders a target strip as its first region, above the
-project header and the sheet or the empty state: a retained-project dropdown
-(`data-testid="discover-remote-select"`) whose options are the retained URLs, newest first, with the
-active project selected and no host option; one row per retained project with a remove control
-(`data-testid="discover-remote-remove"`, carrying the URL in `data-url`); an input
-(`data-testid="discover-remote-url"`) labelled for a GitHub repository URL with the placeholder
-`https://github.com/owner/repo`; a submit control (`data-testid="discover-remote-start"`) labelled
-`Discover from URL`; and a clear control (`data-testid="discover-remote-clear"`) only while the
-target is remote. The strip is secondary in weight yet first in reading order, so an operator sees
-the active target before anything it affects. A source checkout with nothing published still learns
-the gate: the server replays one `discoverState` on connect when `remoteAvailable` is true, even
-with no artifacts and no run. The submit control is disabled while the socket is closed, `cloning`
-is non-null, a run is active, or `discoverState.busy` is set, and its `title` names the reason; it
-is also disabled for empty or whitespace-only input. Submitting sends exactly one frame with the
-trimmed URL and starts nothing else; selecting an option sends exactly one `switchDiscoverRemote`
+While `remoteAvailable` is true the Overview renders a manual-testing target panel as its first
+region, above the project header and the sheet or the empty state. The panel header states the
+title and, with retained projects, their count. Its body separates the two scopes: a `Retained
+project` toolbar pairs its label with a dropdown (`data-testid="discover-remote-select"`) whose
+options are the retained URLs, newest first, with the active project selected and no host option;
+a bordered list carries one 28px row per retained project with the URL and a remove control
+(`data-testid="discover-remote-remove"`, carrying the URL in `data-url`), the active row taking the
+accent surface, a 2px accent edge, and an `Active` badge; a surface-raised block labelled
+`Discover another repository` holds an input (`data-testid="discover-remote-url"`) labelled for a
+GitHub repository URL with the placeholder `https://github.com/owner/repo` and a submit control
+(`data-testid="discover-remote-start"`) labelled `Discover from URL`; the panel footer carries a
+clear control (`data-testid="discover-remote-clear"`) only while the target is remote. The panel is
+secondary in weight yet first in reading order, so an operator sees the active target before
+anything it affects. A source checkout with nothing published still learns the gate: the server
+replays one `discoverState` on connect when `remoteAvailable` is true, even with no artifacts and
+no run. The submit control is disabled while the socket is closed, `cloning` is non-null, a run is
+active, or `discoverState.busy` is set, and its `title` names the reason; it is also disabled for
+empty or whitespace-only input. Submitting sends exactly one frame with the trimmed URL and starts
+nothing else; selecting an option sends exactly one `switchDiscoverRemote`
 and starts nothing else; removing sends exactly one `removeDiscoverRemote`; clearing sends exactly
-one `clearDiscoverRemote`. Rendering the strip on load, reconnect, mode switch, or page switch sends
-no frame. While cloning, the strip shows the cloning URL and the activity area shows no run; errors
+one `clearDiscoverRemote`. Rendering the panel on load, reconnect, mode switch, or page switch sends
+no frame. While cloning, the panel shows the cloning URL and the activity area shows no run; errors
 reach the Discover error and notification surfaces only.
 
 `server/discover-remote.test.ts` proves retention after a successful crawl with the checkout
