@@ -5,6 +5,7 @@
   import { flow } from "../flow.svelte";
   import { goal } from "../goal.svelte";
   import { issues } from "../issues.svelte";
+  import { queueCounts, queueSummary } from "../issues-queue";
   import { agents } from "../agents.svelte";
   import { statusTone } from "../status-tone";
   import { layout } from "../layout.svelte";
@@ -20,6 +21,7 @@
   let { openTab, focusLater }: Props = $props();
 
   const active = $derived(layout.activeTab[layout.mode]);
+  const issueQueue = $derived(queueCounts(issues.queue));
   let skillsOpen = $state(false);
   const modeLabel = $derived(
     layout.mode === "goal"
@@ -384,7 +386,7 @@
           onclick={() => open("issues", "issues", "queue", "issues", "Issues")}
         >
           <span class="sidebar-item__label">Issues</span>
-          <span class="sidebar-item__meta">{issues.pending} pending</span>
+          <span class="sidebar-item__meta">{queueSummary(issueQueue)}</span>
         </button>
         <button
           type="button"

@@ -99,6 +99,8 @@ export interface ScoutState {
   lastScanStartedAt: string | null;
   /** Every Auto Scout issue known from GitHub, newest creation first. */
   issues: ScoutIssueRow[];
+  /** Every open issue title the last successful read reported. */
+  openTitles: string[];
   sync: ScoutSync;
   scan: ScoutScanRecord | null;
   /** The newest scan, running or finished, so its activity can be replayed. */
@@ -148,6 +150,10 @@ function isIssueRow(value: unknown): value is ScoutIssueRow {
     nullableString(value.category) &&
     nullableString(value.version)
   );
+}
+
+function isOpenTitles(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
 function isSync(value: unknown): value is ScoutSync {
@@ -203,6 +209,7 @@ export function emptyState(options: {
     intervalMinutes: options.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES,
     lastScanStartedAt: null,
     issues: [],
+    openTitles: [],
     sync: { state: "stale", at: null, error: null },
     scan: null,
     newestScanId: null,
@@ -238,6 +245,8 @@ export function parseState(text: string): ScoutState | undefined {
     parsed.lastScanStartedAt === undefined ? null : nullableString(parsed.lastScanStartedAt) ? parsed.lastScanStartedAt : undefined;
   if (lastScanStartedAt === undefined) return undefined;
   if (!Array.isArray(parsed.issues) || !parsed.issues.every(isIssueRow)) return undefined;
+  const openTitles = parsed.openTitles === undefined ? [] : parsed.openTitles;
+  if (!isOpenTitles(openTitles)) return undefined;
   if (!isSync(parsed.sync)) return undefined;
   if (parsed.scan !== null && !isScan(parsed.scan)) return undefined;
   if (!nullableString(parsed.newestScanId)) return undefined;
@@ -256,6 +265,7 @@ export function parseState(text: string): ScoutState | undefined {
     intervalMinutes,
     lastScanStartedAt,
     issues: parsed.issues,
+    openTitles,
     sync: parsed.sync,
     scan: parsed.scan as ScoutScanRecord | null,
     newestScanId: parsed.newestScanId,
@@ -302,6 +312,7 @@ export function migrateState(text: string): ScoutState | undefined {
     intervalMinutes: DEFAULT_INTERVAL_MINUTES,
     lastScanStartedAt: null,
     issues: [],
+    openTitles: [],
     sync: { state: "stale", at: null, error: null },
     scan: parsed.scan as ScoutScanRecord | null,
     newestScanId: parsed.newestScanId,

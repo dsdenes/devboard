@@ -11,6 +11,7 @@ import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge"
 import {
   giteaJson,
   giteaListIssues,
+  giteaListReleases,
   repoPath,
   type FetchLike,
   type GiteaTarget,
@@ -147,21 +148,6 @@ function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
     return await giteaJson<unknown>(target, path, undefined, options.giteaFetch);
   }
 
-  function releaseList(value: unknown): ScoutRelease[] {
-    if (!Array.isArray(value)) return [];
-    const releases: ScoutRelease[] = [];
-    for (const entry of value) {
-      if (typeof entry !== "object" || entry === null) continue;
-      const record = entry as Record<string, unknown>;
-      if (typeof record.tag_name !== "string" || record.tag_name.length === 0) continue;
-      if (record.draft === true) continue;
-      const published = record.published_at;
-      if (typeof published !== "string" || published.length === 0) continue;
-      releases.push({ tag: record.tag_name, publishedAt: published });
-    }
-    return releases;
-  }
-
   return {
     async listIssues(): Promise<ScoutGitHubIssue[]> {
       const issues = await giteaListIssues(target, "all", options.giteaFetch);
@@ -183,7 +169,7 @@ function createScoutGitea(options: ScoutGitHubOptions): ScoutGitHubClient {
     },
 
     async listReleases(): Promise<ScoutRelease[]> {
-      return releaseList(await readJson(`${repoPath(target)}/releases?limit=100`));
+      return await giteaListReleases(target, options.giteaFetch);
     },
 
     async closingCommit(issueNumber: number): Promise<string | null> {

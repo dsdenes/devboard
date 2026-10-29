@@ -13,6 +13,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { ServerWebSocket } from "bun";
 import { WatchdogActivity, type WatchdogActivityOptions } from "./watchdog";
 import { BackgroundAgentBridge, type AgentCommand } from "./agents/bridge";
+import { AgentPromptController } from "./agents/prompt";
 import { agentRegistry } from "./agents/registry";
 import {
   AcpConnection,
@@ -584,6 +585,9 @@ type ClientMessage =
       maxPending?: unknown;
     }
   | { type: "disableAgentTimer"; id?: unknown }
+  | { type: "getAgentPrompt"; id?: unknown }
+  | { type: "saveAgentPrompt"; id?: unknown; text?: unknown }
+  | { type: "sendAgentPromptChat"; id?: unknown; message?: unknown; text?: unknown }
   | { type: "restartServer"; whenIdle?: unknown }
   | { type: "saveGoal"; text?: unknown }
   | { type: "startRun"; file?: unknown }
@@ -715,6 +719,21 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       };
     case "disableAgentTimer":
       return { type: "disableAgentTimer", id: "id" in value ? value.id : undefined };
+    case "getAgentPrompt":
+      return { type: "getAgentPrompt", id: "id" in value ? value.id : undefined };
+    case "saveAgentPrompt":
+      return {
+        type: "saveAgentPrompt",
+        id: "id" in value ? value.id : undefined,
+        text: "text" in value ? value.text : undefined,
+      };
+    case "sendAgentPromptChat":
+      return {
+        type: "sendAgentPromptChat",
+        id: "id" in value ? value.id : undefined,
+        message: "message" in value ? value.message : undefined,
+        text: "text" in value ? value.text : undefined,
+      };
     case "restartServer":
       return {
         type: "restartServer",
@@ -2341,6 +2360,22 @@ export function createApp(options: AppOptions) {
     log: (line) => process.stderr.write(`${line}\n`),
   });
   agents.begin();
+
+  /**
+   * The prompt half of each agent page. It reads the effective prompt file and
+   * the request the next scan would write; Save writes that one file only from
+   * a harness source checkout, and chat proposes text without writing.
+   */
+  const prompts = new AgentPromptController({
+    registry: agentRegistry,
+    repoDir,
+    stateDir,
+    agentCommand,
+    agentEnvironment: peerEnvironment,
+    harnessDir: runningHarnessDir(),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+  });
 
   /** The pids and commands a replacement needs to end this process's peers. */
   function captureChildren(): RecordedChild[] {
@@ -6518,6 +6553,7 @@ export function createApp(options: AppOptions) {
         // whether or not a worker has ever published for it.
         issues.replay(ws);
         agents.replay(ws);
+        prompts.replay(ws);
       },
 
       close(ws) {
@@ -6550,6 +6586,7 @@ export function createApp(options: AppOptions) {
           command.type === "getGoalDraft" ||
           command.type === "getAgents" ||
           command.type === "getAgent" ||
+          command.type === "getAgentPrompt" ||
           command.type === "getSkills" ||
           command.type === "getDiscover" ||
           command.type === "getProviders";
@@ -6698,6 +6735,21 @@ export function createApp(options: AppOptions) {
                 message: "That question is no longer waiting for an answer.",
               });
             }
+          } else if (command.type === "getAgentPrompt") {
+            if (typeof command.id !== "string" || command.id.length === 0) {
+              send(ws, { type: "error", message: "An agent prompt needs its agent id." });
+            } else {
+              prompts.replayOne(ws, command.id);
+            }
+          } else if (command.type === "saveAgentPrompt") {
+            prompts.save(ws, typeof command.id === "string" ? command.id : "", command.text);
+          } else if (command.type === "sendAgentPromptChat") {
+            await prompts.chat(
+              ws,
+              typeof command.id === "string" ? command.id : "",
+              command.message,
+              command.text,
+            );
           } else if (isAgentCommand(command)) {
             await agents.handle(ws, command);
           } else if (command.type === "restartServer") {
@@ -6875,6 +6927,7 @@ export function createApp(options: AppOptions) {
     issues.dispose();
     goalDrafts.dispose(restarting);
     agents.dispose();
+    prompts.dispose();
     scout.dispose();
     if (restartWhenIdleTimer !== undefined) {
       clearInterval(restartWhenIdleTimer);

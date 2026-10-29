@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 import { resolveForgeAuth } from "../lib/forge-auth.ts";
 import { giteaBaseUrl, parseForgeRemote } from "../lib/forge.ts";
 import { giteaLabels, giteaListIssues, giteaListReleases, type FetchLike } from "../lib/gitea.ts";
+import { shippedVersion } from "../lib/github-release.ts";
+import { createScoutGitHub } from "../issues/scout/github.ts";
 import { pollOpenIssues } from "../issues/tracker";
 import { closeIssue } from "../server/issue-close";
 import { fakeGiteaPull } from "../server/fixtures/fake-gitea-pull";
@@ -42,6 +44,73 @@ function repository(): string {
   git(["init", "-q"]);
   git(["remote", "add", "origin", "ssh://git@localhost:2223/acme/fixture.git"]);
   return directory;
+}
+
+function taggedRepository(tag: string): { directory: string; commit: string } {
+  const directory = repository();
+  const git = (args: string[]): string => {
+    const result = Bun.spawnSync({
+      cmd: ["git", "-C", directory, ...args],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  git([
+    "-c",
+    "user.name=Devboard Tests",
+    "-c",
+    "user.email=tests@example.invalid",
+    "commit",
+    "--allow-empty",
+    "-q",
+    "-m",
+    "shipped",
+  ]);
+  const commit = git(["rev-parse", "HEAD"]);
+  git(["tag", tag]);
+  return { directory, commit };
+}
+
+/**
+ * A Gitea transport whose release response is capped at 50 entries: page 1 is
+ * full, page 2 carries the tag under test, and page 3 is empty. When `commit`
+ * is supplied it also serves the closed issue and its timeline.
+ */
+function fakeReleasePages(tag: string, calls: string[], commit?: string): FetchLike {
+  return async (input) => {
+    const url = new URL(String(input));
+    calls.push(`${url.pathname}${url.search}`);
+    const json = (value: unknown) => Response.json(value);
+    if (url.pathname.endsWith("/releases")) {
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      if (page === 1) {
+        return json(
+          Array.from({ length: limit }, (_, index) => ({
+            tag_name: `v9.${index}.0`,
+            published_at: "2026-10-20T00:00:00Z",
+          })),
+        );
+      }
+      if (page === 2) return json([{ tag_name: tag, published_at: "2026-09-01T00:00:00Z" }]);
+      return json([]);
+    }
+    if (commit !== undefined && /\/issues\/5$/.test(url.pathname)) {
+      return json({ number: 5, state: "closed" });
+    }
+    if (commit !== undefined && url.pathname.endsWith("/issues/5/timeline")) {
+      return json([{ commit_id: commit }]);
+    }
+    return json({ message: `unexpected ${url}` });
+  };
+}
+
+function requestedReleasePages(calls: string[]): string[] {
+  return calls
+    .filter((call) => call.includes("/releases?"))
+    .map((call) => new URL(call, "http://gitea.test").searchParams.get("page") ?? "");
 }
 
 function fakeGitea(calls: Recorded[] = []): FetchLike {
@@ -286,23 +355,18 @@ describe("Gitea pagination", () => {
     );
   });
 
-  test("reads one release page with the requested bounds", async () => {
-    const calls: Recorded[] = [];
-    const releases = await giteaListReleases(
-      { baseUrl: "http://gitea.test", project: "acme/fixture" },
-      { limit: 2, page: 3 },
-      async (input, init) => {
-        calls.push({ method: init?.method ?? "GET", url: String(input) });
-        return new Response(JSON.stringify([{ tag_name: "v0.1.713" }]), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      },
-    );
-    expect(releases.map((release) => release.tag_name)).toEqual(["v0.1.713"]);
-    expect(calls[0]?.url).toBe(
-      "http://gitea.test/api/v1/repos/acme/fixture/releases?limit=2&page=3",
-    );
+  test("lists every release page until a page adds no new tag", async () => {
+    const target = { baseUrl: "http://gitea.test", project: "acme/fixture" };
+    const calls: string[] = [];
+    const releases = await giteaListReleases(target, fakeReleasePages("v0.1.713", calls));
+
+    expect(releases).toHaveLength(51);
+    expect(releases.at(-1)).toEqual({
+      tag: "v0.1.713",
+      publishedAt: "2026-09-01T00:00:00Z",
+    });
+    expect(requestedReleasePages(calls)).toEqual(["1", "2", "3"]);
+    expect(calls[0]).toContain("limit=50");
   });
 });
 
@@ -556,5 +620,40 @@ describe("Gitea watchdog activity", () => {
     expect(facts).toEqual([
       { url: "http://localhost:3001/acme/fixture/issues/5", state: "pending", version: null },
     ]);
+  });
+
+  test("reads a shipped version from a release page behind the response cap", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const calls: string[] = [];
+    const reader = createWatchdogGitHubReader({
+      repoDir: tagged.directory,
+      environment: { DEVBOARD_GITEA_URL: "http://gitea.test" },
+      run: noGh,
+      fetchImpl: fakeReleasePages("v1.0.0", calls, tagged.commit),
+    });
+    const facts = await reader.project(["http://gitea.test/acme/fixture/issues/5"]);
+
+    expect(facts).toEqual([
+      { url: "http://gitea.test/acme/fixture/issues/5", state: "implemented", version: "v1.0.0" },
+    ]);
+    expect(requestedReleasePages(calls)).toContain("2");
+  });
+
+  test("the scout reads releases behind the response cap", async () => {
+    const tagged = taggedRepository("v1.0.0");
+    const calls: string[] = [];
+    const client = createScoutGitHub({
+      repository: "acme/fixture",
+      repoDir: tagged.directory,
+      forge: "gitea",
+      baseUrl: "http://gitea.test",
+      environment: {},
+      giteaFetch: fakeReleasePages("v1.0.0", calls, tagged.commit),
+    });
+
+    const releases = await client.listReleases();
+    expect(releases.map((release) => release.tag)).toContain("v1.0.0");
+    expect(await shippedVersion({ number: 5, state: "closed" }, client, releases)).toBe("v1.0.0");
+    expect(requestedReleasePages(calls)).toContain("2");
   });
 });

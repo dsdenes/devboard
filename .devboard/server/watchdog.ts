@@ -6,6 +6,7 @@ import { findOnPath, rootProblem } from "../issues/repository";
 import { configuredGiteaToken, giteaBaseUrl, type ForgeRemote } from "../lib/forge";
 import {
   giteaJson,
+  giteaListReleases,
   giteaOrigin,
   giteaRepository,
   repoPath,
@@ -140,20 +141,6 @@ function createWatchdogGiteaReader(
   const baseUrl = giteaBaseUrl(remote, environment);
   const token = configuredGiteaToken(environment);
 
-  function releaseList(value: unknown): GitHubRelease[] {
-    if (!Array.isArray(value)) return [];
-    const releases: GitHubRelease[] = [];
-    for (const entry of value) {
-      if (typeof entry !== "object" || entry === null) continue;
-      const record = entry as Record<string, unknown>;
-      if (typeof record.tag_name !== "string" || record.tag_name.length === 0) continue;
-      if (record.draft === true) continue;
-      if (typeof record.published_at !== "string" || record.published_at.length === 0) continue;
-      releases.push({ tag: record.tag_name, publishedAt: record.published_at });
-    }
-    return releases;
-  }
-
   return {
     async project(urls: string[]): Promise<WatchdogFacts[]> {
       if (baseUrl === undefined || baseUrl.length === 0) {
@@ -185,14 +172,7 @@ function createWatchdogGiteaReader(
           facts.push({ url, state: "pending", version: null });
           continue;
         }
-        const releases = releaseList(
-          await giteaJson<unknown>(
-            target,
-            `${repoPath(target)}/releases?limit=100`,
-            undefined,
-            options.fetchImpl,
-          ),
-        );
+        const releases = await giteaListReleases(target, options.fetchImpl);
         const client = {
           async closingCommit(issueNumber: number): Promise<string | null> {
             const timeline = await giteaJson<unknown>(

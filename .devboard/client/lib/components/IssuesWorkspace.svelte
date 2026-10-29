@@ -1,5 +1,6 @@
 <script lang="ts">
   import { issues, isGoalIssue } from "../issues.svelte";
+  import { queueCounts, queueSummary } from "../issues-queue";
   import type { WorkspaceTab } from "../layout.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
@@ -39,6 +40,7 @@
                 : "overview",
   );
 
+  const queueState = $derived(queueCounts(issues.queue));
   const agents = $derived(issues.agents);
   const asking = $derived(agents.filter((agent) => agent.question !== null).length);
 
@@ -457,7 +459,13 @@
         <h1 class="issues-overview__title">Open issues</h1>
         <p class="issues-overview__repo mono" title={issues.repoLabel}>{issues.repoLabel}</p>
       </div>
-      <span class="badge" data-tone={statusTone("pending")}>{issues.pending} pending</span>
+      <span
+        class="badge"
+        data-tone={statusTone(queueState.working > 0 ? "running" : "pending")}
+        data-testid="issues-queue-summary"
+      >
+        {queueSummary(queueState)}
+      </span>
     </header>
     <div class="panel">
       <div class="panel__header">
