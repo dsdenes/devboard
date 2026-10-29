@@ -120,12 +120,25 @@ export function readStateFile(path: string): StateLoad {
 }
 
 /**
- * The sibling a staged write fills before it is renamed over its destination.
- * A per-process name keeps two writers for different files apart even when
- * they share one directory.
+ * The sibling a staged synchronous write fills before it is renamed over its
+ * destination. State writes block the event loop, so one name per process and
+ * destination is enough: two of them never overlap.
  */
 function temporarySibling(path: string): string {
   return `${path}.${process.pid}.tmp`;
+}
+
+/** Orders asynchronous staged writes so no two share a staging path. */
+let stagedWriteSequence = 0;
+
+/**
+ * A staging path unique to one asynchronous write. Two saves of the same
+ * destination can overlap, and a shared staging path would make the first
+ * rename publish the second writer's bytes and the second rename fail.
+ */
+function stagedSibling(path: string): string {
+  stagedWriteSequence += 1;
+  return `${path}.${process.pid}.${stagedWriteSequence}.tmp`;
 }
 
 /**
@@ -156,7 +169,7 @@ export function writeStateFile(path: string, text: string): void {
  */
 export async function writeFileAtomically(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const temporary = temporarySibling(path);
+  const temporary = stagedSibling(path);
   try {
     await writeFile(temporary, text, "utf8");
     await rename(temporary, path);
