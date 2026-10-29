@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 /**
  * Stages and packs the complete Devboard package. npm carries the same
@@ -32,6 +32,7 @@ const FILE_ALLOWLIST = [
   "prompts",
   "omp",
   "extensions",
+  "scripts/forge-auth.ts",
   "dist",
   "index.html",
   "vite.config.ts",
@@ -62,7 +63,9 @@ export async function stageHarness(staging: string, version: string): Promise<vo
   for (const entry of FILE_ALLOWLIST) {
     const source = join(harnessRoot, entry);
     if (!existsSync(source)) throw new Error(`release: cannot pack missing ${entry}`);
-    await cp(source, join(staging, entry), { recursive: true });
+    const target = join(staging, entry);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(source, target, { recursive: true });
   }
   const manifestPath = join(staging, "package.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));

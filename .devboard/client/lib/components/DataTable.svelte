@@ -169,9 +169,9 @@
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     color: var(--muted-foreground);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.03em;
     padding: 3px 8px;
     position: sticky;
     text-align: left;

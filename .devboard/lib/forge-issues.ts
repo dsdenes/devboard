@@ -174,6 +174,18 @@ function labelsOf(value: unknown): string[] {
   return labels;
 }
 
+/**
+ * Gitea returns issues ascending by number, while `gh issue list` serves the
+ * newest window. The shared interface therefore orders newest first before
+ * slicing, so a limit selects the same end of the window on both forges.
+ */
+function newestFirst(left: GiteaIssueDocument, right: GiteaIssueDocument): number {
+  const leftAt = Date.parse(left.createdAt);
+  const rightAt = Date.parse(right.createdAt);
+  const byCreated = Number.isFinite(leftAt) && Number.isFinite(rightAt) ? rightAt - leftAt : 0;
+  return byCreated !== 0 ? byCreated : right.number - left.number;
+}
+
 function stateOf(value: unknown): ForgeIssueState {
   return typeof value === "string" && value.toLowerCase() === "closed" ? "closed" : "open";
 }
@@ -285,6 +297,7 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
     async list(state, limit = 100) {
       if (forge === "gitea") {
         const issues = await giteaListIssues(await target("read"), state, options.fetchImpl);
+        issues.sort(newestFirst);
         return issues.slice(0, limit).map((issue) => ({
           number: issue.number,
           title: issue.title,

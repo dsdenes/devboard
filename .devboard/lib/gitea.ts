@@ -478,7 +478,7 @@ export async function giteaIssue(
   return issue;
 }
 
-/** Every issue in the requested state, pull requests excluded. */
+/** Every issue in the requested state, pull requests excluded, ascending by number. */
 export async function giteaListIssues(
   target: GiteaTarget,
   state: "open" | "closed" | "all",
