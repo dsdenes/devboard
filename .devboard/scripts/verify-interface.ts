@@ -20,6 +20,7 @@ import { fixtureRecord } from "../server/fixtures/adr-source";
 import { journalKey } from "../server/journal";
 import { saveSubscriptions } from "../server/providers";
 import { REDESIGN_INSTRUCTION as redesignInstruction, REMOVAL_INSTRUCTION as removalInstruction } from "../server/feedback";
+import { toolListPayload } from "../mcp/catalog";
 import { stateFile } from "../server/state";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { dashboardsFor, freePort, processRunning, run, waitFor } from "./verification";
@@ -160,6 +161,7 @@ const VK: Record<string, [number, string]> = {
   "1": [49, "Digit1"],
   "2": [50, "Digit2"],
   "3": [51, "Digit3"],
+  "5": [53, "Digit5"],
 };
 
 class Page {
@@ -1578,14 +1580,15 @@ try {
       })),
     };
   })()`);
-  check(activity.count === 4, "the activity bar does not present exactly four modes", activity);
+  check(activity.count === 5, "the activity bar does not present exactly five modes", activity);
   const brand = await page.eval<string>(`document.querySelector('[data-testid="activity-bar"]')?.textContent?.replace(/\\s+/g, "") ?? ""`);
-  check(brand === "GoalIssuesFlowDiscover", "the activity bar does not name its four modes", brand);
+  check(brand === "GoalIssuesFlowDiscoverDevboard", "the activity bar does not name its five modes", brand);
   const expectedModes = [
     ["mode-goal", "true", "Goal"],
     ["mode-issues", "false", "Issues"],
     ["mode-flow", "false", "Flow"],
     ["mode-discover", "false", "Discover"],
+    ["mode-devboard", "false", "Devboard"],
   ];
   for (const [index, [testid, selected, visible]] of expectedModes.entries()) {
     const entry = activity.entries[index]!;
@@ -1611,7 +1614,7 @@ try {
     });
   })()`);
   check(
-    railLabels.length === 4 && railLabels.every((label) => label.overflow <= 1 && label.inside),
+    railLabels.length === 5 && railLabels.every((label) => label.overflow <= 1 && label.inside),
     "a mode label overflows or leaves its tab",
     railLabels,
   );
@@ -2082,6 +2085,7 @@ try {
   const ids = new Set(palette.items.map((item) => item.id));
   const requiredCommands = [
     "view.mode.goal", "view.mode.issues", "view.mode.flow", "view.mode.discover",
+    "view.mode.devboard", "devboard.tab.tools",
     "issues.start", "issues.pause", "issues.resume", "issues.stop", "issues.check",
     "open.issues.overview", "open.issues.agents", "open.issues.issues", "open.issues.runs",
     "open.issues.drafts",
@@ -2199,6 +2203,289 @@ try {
   await delay(120);
   const sidebarAfterShortcut = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"]') !== null`);
   check(sidebarAfterShortcut, "Ctrl+B still hides the sidebar");
+
+  // 5b. Devboard mode: fifth tab, one sidebar entry, read-only MCP tool list.
+  const catalog = toolListPayload().tools.map(({ name, title, description }) => ({
+    name,
+    title,
+    description,
+  }));
+  const layoutBeforeDevboard = await page.eval<string>(
+    `localStorage.getItem("devboard.layout.v1") ?? ""`,
+  );
+  const framesBeforeDevboard = await page.eval<string[]>(
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion"))`,
+  );
+  await page.click('[data-testid="mode-devboard"]');
+  await page.wait(
+    `document.querySelector('[data-testid="mode-devboard"]')?.getAttribute("aria-selected") === "true"`,
+    "the Devboard mode from its tab",
+  );
+  await page.wait(
+    `document.querySelectorAll('[data-testid="mcp-tool"]').length === ${catalog.length}`,
+    "the MCP tool list",
+  );
+  const devboardTab = await page.eval<{
+    label: string;
+    ariaLabel: string;
+    title: string;
+    controls: string;
+    controlsExists: boolean;
+    selected: string;
+    width: number;
+    height: number;
+    overflow: number;
+    inside: boolean;
+  }>(`(() => {
+    const tab = document.querySelector('[data-testid="mode-devboard"]');
+    const label = tab?.querySelector('.activity-tab__label');
+    const tabRect = tab?.getBoundingClientRect();
+    const labelRect = label?.getBoundingClientRect();
+    return {
+      label: label?.textContent?.trim() ?? "",
+      ariaLabel: tab?.getAttribute("aria-label") ?? "",
+      title: tab?.getAttribute("title") ?? "",
+      controls: tab?.getAttribute("aria-controls") ?? "",
+      controlsExists: document.getElementById(tab?.getAttribute("aria-controls") ?? "") !== null,
+      selected: tab?.getAttribute("aria-selected") ?? "",
+      width: tabRect === undefined ? 0 : Math.round(tabRect.width),
+      height: tabRect === undefined ? 0 : Math.round(tabRect.height),
+      overflow: label === null || label === undefined ? 1 : label.scrollWidth - label.clientWidth,
+      inside:
+        labelRect !== undefined &&
+        tabRect !== undefined &&
+        labelRect.left >= tabRect.left - 0.5 &&
+        labelRect.right <= tabRect.right + 0.5,
+    };
+  })()`);
+  check(devboardTab.label === "Devboard", "the fifth tab does not render its label", devboardTab);
+  check(
+    devboardTab.ariaLabel.includes("Alt+5") && devboardTab.title.includes("Alt+5"),
+    "the fifth tab does not name Alt+5",
+    devboardTab,
+  );
+  check(
+    devboardTab.controls === "workspace-devboard" && devboardTab.controlsExists,
+    "the fifth tab does not control workspace-devboard",
+    devboardTab,
+  );
+  check(
+    devboardTab.selected === "true" &&
+      devboardTab.width === 64 &&
+      devboardTab.height === 52 &&
+      devboardTab.overflow <= 1 &&
+      devboardTab.inside,
+    "the fifth tab is not a selected 64×52 control with an inside label",
+    devboardTab,
+  );
+
+  const toolPage = await page.eval<{
+    workspace: boolean;
+    list: boolean;
+    count: number;
+    rows: Array<{ tool: string; name: string; title: string; description: string }>;
+    controls: number;
+    commands: number;
+  }>(`(() => {
+    const workspace = document.querySelector('[data-testid="devboard-workspace"]');
+    const list = workspace?.querySelector('[data-testid="mcp-tools-list"]') ?? null;
+    const rows = [...(list?.querySelectorAll('[data-testid="mcp-tool"]') ?? [])];
+    return {
+      workspace: workspace !== null,
+      list: list !== null,
+      count: rows.length,
+      rows: rows.map((row) => ({
+        tool: row.getAttribute("data-tool") ?? "",
+        name: row.querySelector('.devboard-tool__name')?.textContent ?? "",
+        title: row.querySelector('.devboard-tool__title')?.textContent ?? "",
+        description: row.querySelector('.devboard-tool__description')?.textContent ?? "",
+      })),
+      controls:
+        workspace === null
+          ? -1
+          : workspace.querySelectorAll('button, input, textarea, select, a, [role="button"]').length,
+      commands: workspace === null ? -1 : workspace.querySelectorAll("[data-command]").length,
+    };
+  })()`);
+  check(toolPage.workspace && toolPage.list, "the Devboard workspace or list is missing", toolPage);
+  check(toolPage.count === catalog.length, "the MCP tool rows do not match the catalog count", {
+    rendered: toolPage.count,
+    expected: catalog.length,
+  });
+  check(toolPage.controls === 0 && toolPage.commands === 0, "the MCP tool list exposes an action", toolPage);
+  const toolMismatch = catalog.findIndex((expected, index) => {
+    const row = toolPage.rows[index];
+    return (
+      row === undefined ||
+      row.tool !== expected.name ||
+      row.name !== expected.name ||
+      row.title !== expected.title ||
+      row.description !== expected.description
+    );
+  });
+  check(toolMismatch < 0, "a rendered MCP tool differs from the catalog", {
+    index: toolMismatch,
+    rendered: toolPage.rows[toolMismatch],
+    expected: catalog[toolMismatch],
+  });
+
+  const devboardSidebar = await page.eval<{
+    entries: number;
+    items: number;
+    label: string;
+    command: string;
+    toolNames: string[];
+  }>(`(() => {
+    const sidebar = document.querySelector('[data-testid="sidebar"]');
+    const entries = [...(sidebar?.querySelectorAll('[data-testid="devboard-tab"]') ?? [])];
+    const text = sidebar?.textContent ?? "";
+    return {
+      entries: entries.length,
+      items: sidebar?.querySelectorAll('.sidebar-item').length ?? 0,
+      label: entries[0]?.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
+      command: entries[0]?.getAttribute("data-command") ?? "",
+      toolNames: ${JSON.stringify(catalog.map((tool) => tool.name))}.filter((name) =>
+        text.includes(name),
+      ),
+    };
+  })()`);
+  check(
+    devboardSidebar.entries === 1 && devboardSidebar.items === 1,
+    "the Devboard sidebar does not carry exactly one entry",
+    devboardSidebar,
+  );
+  check(
+    devboardSidebar.label === "MCP tools" && devboardSidebar.command === "devboard.tab.tools",
+    "the Devboard sidebar entry is not the MCP tools entry",
+    devboardSidebar,
+  );
+  check(devboardSidebar.toolNames.length === 0, "a tool name leaked into the sidebar", devboardSidebar);
+
+  await page.key("1", 1);
+  await page.wait(
+    `document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`,
+    "Goal before Alt+5",
+  );
+  await page.key("5", 1);
+  await page.wait(
+    `document.querySelector('[data-testid="mode-devboard"]')?.getAttribute("aria-selected") === "true"`,
+    "Alt+5",
+  );
+  await page.key("1", 1);
+  await page.wait(
+    `document.querySelector('[data-testid="mode-goal"]')?.getAttribute("aria-selected") === "true"`,
+    "Goal before the Devboard palette command",
+  );
+  await page.key("k", 2);
+  await page.wait(
+    `document.querySelector('[data-testid="command-palette"]') !== null`,
+    "the palette for Devboard",
+  );
+  const devboardPalette = await page.eval<{ title: string; shortcut: string; group: string }>(`(() => {
+    const item = document.querySelector('[data-testid="command-item"][data-command="view.mode.devboard"]');
+    return {
+      title: item?.querySelector('.palette__item-title')?.textContent?.trim() ?? "",
+      shortcut: item?.querySelector('.palette__shortcut')?.textContent?.trim() ?? "",
+      group: (() => {
+        if (item === null) return "";
+        let sibling = item.previousElementSibling;
+        while (sibling !== null && !sibling.classList.contains('palette__group')) {
+          sibling = sibling.previousElementSibling;
+        }
+        return sibling?.textContent?.trim() ?? "";
+      })(),
+    };
+  })()`);
+  check(
+    devboardPalette.shortcut === "Alt+5" && devboardPalette.title === "Switch to Devboard",
+    "the palette does not list view.mode.devboard with Alt+5",
+    devboardPalette,
+  );
+  await page.key("Escape");
+  await page.wait(
+    `document.querySelector('[data-testid="command-palette"]') === null`,
+    "the palette to close after Devboard",
+  );
+  await runPalette("view.mode.devboard");
+  await page.wait(
+    `document.querySelector('[data-testid="mode-devboard"]')?.getAttribute("aria-selected") === "true"`,
+    "Devboard from the palette",
+  );
+  const framesAfterDevboard = await page.eval<string[]>(
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion"))`,
+  );
+  check(
+    JSON.stringify(framesAfterDevboard) === JSON.stringify(framesBeforeDevboard),
+    "a Devboard switch sent a WebSocket frame",
+    { framesBeforeDevboard, framesAfterDevboard },
+  );
+  check(
+    framesAfterDevboard.every((frame) => !frame.includes("tools/call")),
+    "the Devboard page called an MCP tool",
+    framesAfterDevboard,
+  );
+  await delay(150);
+  const devboardLayout = await page.eval<{ before: string; after: string }>(`(() => {
+    const before = ${JSON.stringify(layoutBeforeDevboard)};
+    let parsed = null;
+    try {
+      parsed = JSON.parse(before);
+    } catch {
+      parsed = null;
+    }
+    const stored = localStorage.getItem("devboard.layout.v1") ?? "";
+    let next = null;
+    try {
+      next = JSON.parse(stored);
+    } catch {
+      next = null;
+    }
+    return {
+      before: JSON.stringify({ tabs: parsed?.tabs ?? null, activeTab: parsed?.activeTab ?? null }),
+      after: JSON.stringify({ tabs: next?.tabs ?? null, activeTab: next?.activeTab ?? null }),
+    };
+  })()`);
+  check(
+    devboardLayout.before === devboardLayout.after &&
+      devboardLayout.after.includes('"devboard"'),
+    "a Devboard switch changed another mode's stored page",
+    devboardLayout,
+  );
+
+  await page.reload();
+  await page.wait(
+    `document.querySelector('[data-testid="mode-devboard"]')?.getAttribute("aria-selected") === "true"`,
+    "Devboard after reload",
+  );
+  await page.wait(
+    `document.querySelectorAll('[data-testid="mcp-tool"]').length === ${catalog.length}`,
+    "the MCP tool list after reload",
+  );
+  const reloadedDevboard = await page.eval<{ mode: string; rows: number; sidebar: boolean; label: string }>(`(() => ({
+    mode: ["goal", "issues", "flow", "discover", "devboard"].find(
+      (mode) => document.querySelector('[data-testid="mode-' + mode + '"]')?.getAttribute("aria-selected") === "true",
+    ) ?? "",
+    rows: document.querySelectorAll('[data-testid="mcp-tool"]').length,
+    sidebar: document.querySelector('[data-testid="sidebar"] [data-testid="devboard-tab"]') !== null,
+    label: document.querySelector('[data-testid="sidebar"] [data-testid="devboard-tab"] .sidebar-item__label')?.textContent?.trim() ?? "",
+  }))()`);
+  check(
+    reloadedDevboard.mode === "devboard" &&
+      reloadedDevboard.rows === catalog.length &&
+      reloadedDevboard.sidebar &&
+      reloadedDevboard.label === "MCP tools",
+    "a reload did not restore Devboard and its list",
+    reloadedDevboard,
+  );
+  await page.key("4", 1);
+  await page.wait(
+    `document.querySelector('[data-testid="mode-discover"]')?.getAttribute("aria-selected") === "true"`,
+    "Discover after Devboard",
+  );
+  await page.wait(
+    `document.querySelector('#discover-glossary-search') !== null`,
+    "the preserved Discover page after Devboard",
+  );
 
   // 6. Sidebar split: drag, keyboard, double-click reset, persistence.
   const sidebarWidth = async (): Promise<number> =>
