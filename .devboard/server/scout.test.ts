@@ -936,6 +936,51 @@ describe("bridge", () => {
     }
   });
 
+  test("a stalled start preflight fails at the deadline and the next Start retries", async () => {
+    const root = await temporaryDirectory("scout-bridge-preflight-deadline");
+    const stateDir = join(root, "state");
+    let calls = 0;
+    const spawned: string[][] = [];
+    const bridge = new ScoutBridge({
+      descriptor: agentRegistry.require("scout"),
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      preflightTimeoutMs: 20,
+      preflight: async () => {
+        calls += 1;
+        if (calls === 1) await new Promise<never>(() => undefined);
+        return { ok: true, repository: "acme/fixture" };
+      },
+      spawnWorker: (argv) => {
+        spawned.push(argv);
+        return 4242;
+      },
+    });
+    try {
+      const started = Date.now();
+      const first = await bridge.start();
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(first.ok).toBe(false);
+      if (!first.ok) expect(first.message).toContain("did not finish within 20 ms");
+      expect(calls).toBe(1);
+      expect(spawned).toHaveLength(0);
+
+      // The timed-out task cleared its memo: this Start runs the preflight
+      // again and spawns the worker the runner now accepts.
+      expect(await bridge.start()).toEqual({ ok: true });
+      expect(calls).toBe(2);
+      expect(spawned).toHaveLength(1);
+    } finally {
+      bridge.dispose();
+    }
+  });
+
   test("the bridge exposes no decision path", () => {
     const bridge = new ScoutBridge({
       descriptor: agentRegistry.require("scout"),
@@ -1055,6 +1100,27 @@ describe("preflight", () => {
       run: async () => ({ code: 0, stdout: "true", stderr: "" }),
     });
     expect(allow).toEqual({ ok: true, repository: "acme/fixture" });
+  });
+
+  test("a permission probe that never settles fails at the preflight deadline", async () => {
+    const root = await makeRepository({ files: sourceFiles(1), origin: "acme/fixture" });
+    const home = await temporaryDirectory("scout-home");
+    await mkdir(join(home, ".omp", "commands"), { recursive: true });
+    await writeFile(join(home, ".omp", "commands", "scout-recommendations.md"), "# command\n");
+    const bin = await pathWithTools();
+
+    const started = Date.now();
+    const result = await preflightScout({
+      repoDir: root,
+      stateDir: join(root, ".devboard", ".tmp", "state"),
+      environment: { PATH: bin, HOME: home },
+      timeoutMs: 20,
+      run: () => new Promise<never>(() => undefined),
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("did not finish within 20 ms");
   });
 });
 

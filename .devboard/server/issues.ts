@@ -9,7 +9,12 @@ import {
   runDirectory,
   statePath,
 } from "../issues/paths";
-import { preflightIssues, type PreflightResult } from "../issues/preflight";
+import {
+  ISSUES_PREFLIGHT_TIMEOUT_MS,
+  preflightIssues,
+  type PreflightResult,
+} from "../issues/preflight";
+import { DEADLINE_EXPIRED, withinDeadline } from "../lib/deadline";
 import { cachedRepository } from "../issues/repository";
 import { closeIssue as closeTrackerIssue, type CloseIssueRequest } from "./issue-close";
 import {
@@ -78,11 +83,14 @@ export interface IssuesBridgeOptions {
   log?: (line: string) => void;
   environment?: Record<string, string | undefined>;
   pollMs?: number;
+  /** Wall-clock bound for the start preflight; defaults to 20 seconds. */
+  preflightTimeoutMs?: number;
   /** Test seams: replace the start preflight and the detached spawn. */
   preflight?: (options: {
     repoDir: string;
     stateDir: string;
     environment: Record<string, string | undefined>;
+    timeoutMs: number;
   }) => Promise<PreflightResult>;
   spawnWorker?: (argv: string[], environment: Record<string, string | undefined>) => number | undefined;
   /** Test seam: replace the tracker mutation the close control performs. */
@@ -105,6 +113,7 @@ export class IssuesBridge {
   private readonly closeIssueAction: (request: CloseIssueRequest) => Promise<void>;
   private readonly log: (line: string) => void;
   private readonly pollMsValue: number;
+  private readonly preflightTimeoutMs: number;
 
   private timer: Timer | undefined;
   private lastSignature = "";
@@ -126,6 +135,10 @@ export class IssuesBridge {
     this.repository = cachedRepository(this.repoDir);
     this.log = options.log ?? (() => undefined);
     this.pollMsValue = Math.max(50, options.pollMs ?? 250);
+    this.preflightTimeoutMs = Math.max(
+      1,
+      options.preflightTimeoutMs ?? ISSUES_PREFLIGHT_TIMEOUT_MS,
+    );
     this.preflight =
       options.preflight ??
       ((request) =>
@@ -133,6 +146,7 @@ export class IssuesBridge {
           repoDir: request.repoDir,
           stateDir: request.stateDir,
           environment: request.environment,
+          timeoutMs: request.timeoutMs,
         }));
     this.spawnWorker = options.spawnWorker ?? ((argv, environment) => this.detach(argv, environment));
     this.closeIssueAction = options.closeIssue ?? ((request) => closeTrackerIssue(request));
@@ -356,11 +370,28 @@ export class IssuesBridge {
       }
     }
 
-    const result = await this.preflight({
-      repoDir: this.repoDir,
-      stateDir: this.stateDir,
-      environment: this.environment,
-    });
+    // A preflight that never settles (a stalled `gh`, credential helper, or
+    // transport) loses this race, so Start reports a bounded failure and the
+    // task memo is cleared instead of disabling Start for the server's life.
+    const result = await withinDeadline(
+      Promise.resolve(
+        this.preflight({
+          repoDir: this.repoDir,
+          stateDir: this.stateDir,
+          environment: this.environment,
+          timeoutMs: this.preflightTimeoutMs,
+        }),
+      ),
+      this.preflightTimeoutMs,
+    );
+    if (result === DEADLINE_EXPIRED) {
+      return {
+        ok: false,
+        message:
+          `the start preflight did not finish within ${this.preflightTimeoutMs} ms; ` +
+          "press Start to retry.",
+      };
+    }
     if (!result.ok) return result;
     return await this.spawn();
   }

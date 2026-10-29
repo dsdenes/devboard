@@ -1514,6 +1514,12 @@ also requires `gh api repos/<owner>/<repo> --jq .permissions.push` to return `tr
 `devboard-orchestrator` lock is refused too; the harness never stops that process. Issues mode no
 longer requires `/implement-all-issues`; that command stays usable by hand outside the mode.
 
+The whole Start preflight has a 20-second deadline. A `gh` probe or preflight that does not settle
+is abandoned at that deadline, its child is killed (`SIGTERM`, then `SIGKILL` after 200 ms), and
+Start answers `{ ok: false, message }` naming the deadline. The in-flight Start task is cleared
+from memory, so the next Start runs the preflight again and spawns the worker when it succeeds;
+no restart is needed.
+
 The worker is spawned detached in its own session from the harness package the server loaded,
 with `REPO_DIR` as its working directory. It holds `<REPO_DIR>/.devboard/.tmp/issues/lock`, which
 records its pid, argv, state directory, and harness version. A lock whose owner is gone is
@@ -1866,6 +1872,10 @@ accepted item directly as a GitHub issue in the host `origin`, in the same scan 
 dashboard command, click, approval, or draft. `approveScout`, `draftScoutGoal`, and `rejectScout`
 are not accepted commands. Stop keeps the filed rows and the limits; the next Start reads the
 forge and scans again.
+
+Auto Scout's Start preflight uses the same 20-second deadline as Issues mode: a `gh` permission
+probe that does not settle is killed at the deadline, Start answers a bounded refusal naming it,
+and the cleared task lets the next Start run the preflight again and spawn the worker.
 
 Auto Scout's persisted settings live at
 `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json` and carry `maxPerHour`, `maxPending`,
@@ -2536,7 +2546,8 @@ id, out-of-range span, uncited file, shortfall, missing score, out-of-range scor
 reason), the version-2 request, the shipped-version rules (earliest release, tie by tag,
 timeline commit, newest comment SHA, open issue, no release), settings and state migration,
 the bridge's limits and absent decision path, the Stop/limits command surface, the Start preflight
-refusals, and the activity delta.
+refusals, a stalled preflight failing at its deadline and the next Start retrying, and the activity
+delta.
 `tests/scout.test.ts` covers filing without a command, the significance score and issue body,
 duplicates against closed issues, open issues, and drafts, both caps across a restart, the
 effective batch, zero capacity, a close freeing a slot, limits applying live and surviving a
@@ -2551,7 +2562,8 @@ starting when one finishes, duplicate prevention, an issue opened mid-run, per-i
 ledger entries, one failure cooling only its issue), Check now clearing every cooldown, pause
 draining every peer, Stop closing every peer without a cooldown, per-agent questions and answer
 routing, two orphan children on a fresh start, version 1 state loading, reopened-issue eligibility,
-history pruning that keeps every running directory, preflight for both wrappers, repo-scoped state
+history pruning that keeps every running directory, preflight for both wrappers, a stalled
+permission probe and the killed `gh` child failing at the preflight deadline, repo-scoped state
 and lock isolation, atomic and damaged state, ledger migration, the activity bounds, and the
 conditional tracker. `tests/cleanup.test.ts` proves the watchdog preserves repo-scoped issues state,
 the repo-anchored lock, Auto Scout settings and state, and Flow session records that Flow restore

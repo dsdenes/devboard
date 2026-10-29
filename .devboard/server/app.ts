@@ -173,9 +173,15 @@ export interface AppOptions {
    */
   discoverClone?: RemoteCloneRunner;
   /** Issues mode's test seams; production uses the detached worker itself. */
-  issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "closeIssue">;
+  issues?: Pick<
+    IssuesBridgeOptions,
+    "pollMs" | "preflightTimeoutMs" | "preflight" | "spawnWorker" | "closeIssue"
+  >;
   /** Auto Scout's test seams; production uses the detached worker itself. */
-  scout?: Pick<ScoutBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
+  scout?: Pick<
+    ScoutBridgeOptions,
+    "pollMs" | "preflightTimeoutMs" | "preflight" | "spawnWorker"
+  >;
   /** Watchdog's test seams; production reads `gh` in the background. */
   watchdog?: Pick<
     WatchdogActivityOptions,
@@ -2254,6 +2260,9 @@ export function createApp(options: AppOptions) {
     send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.issues?.pollMs === undefined ? {} : { pollMs: options.issues.pollMs }),
+    ...(options.issues?.preflightTimeoutMs === undefined
+      ? {}
+      : { preflightTimeoutMs: options.issues.preflightTimeoutMs }),
     ...(options.issues?.preflight === undefined ? {} : { preflight: options.issues.preflight }),
     ...(options.issues?.spawnWorker === undefined ? {} : { spawnWorker: options.issues.spawnWorker }),
     ...(options.issues?.closeIssue === undefined ? {} : { closeIssue: options.issues.closeIssue }),
@@ -2293,6 +2302,9 @@ export function createApp(options: AppOptions) {
     send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
     ...(options.scout?.pollMs === undefined ? {} : { pollMs: options.scout.pollMs }),
+    ...(options.scout?.preflightTimeoutMs === undefined
+      ? {}
+      : { preflightTimeoutMs: options.scout.preflightTimeoutMs }),
     ...(options.scout?.preflight === undefined ? {} : { preflight: options.scout.preflight }),
     ...(options.scout?.spawnWorker === undefined ? {} : { spawnWorker: options.scout.spawnWorker }),
   });
