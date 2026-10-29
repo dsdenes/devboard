@@ -19,9 +19,12 @@ export const LAYOUT_KEY = "devboard.layout.v1";
 export const THEME_KEY = "devboard.theme";
 export const PANE_KEY_PREFIX = "paneforge:";
 
-const MODES: Mode[] = ["goal", "issues", "flow", "discover"];
+const MODES: Mode[] = ["goal", "issues", "flow", "discover", "devboard"];
 
 function defaultTab(mode: Mode): WorkspaceTab {
+  if (mode === "devboard") {
+    return { id: "tools", kind: "mcp-tools", resourceId: "tools", title: "MCP tools" };
+  }
   return {
     id: "overview",
     kind: "overview",
@@ -36,15 +39,28 @@ export function defaultTabs(): Record<Mode, WorkspaceTab[]> {
     issues: [defaultTab("issues")],
     flow: [defaultTab("flow")],
     discover: [defaultTab("discover")],
+    devboard: [defaultTab("devboard")],
   };
 }
 
 function defaultActive(): Record<Mode, string | null> {
-  return { goal: "overview", issues: "overview", flow: "overview", discover: "overview" };
+  return {
+    goal: "overview",
+    issues: "overview",
+    flow: "overview",
+    discover: "overview",
+    devboard: "tools",
+  };
 }
 
 function isMode(value: unknown): value is Mode {
-  return value === "goal" || value === "issues" || value === "flow" || value === "discover";
+  return (
+    value === "goal" ||
+    value === "issues" ||
+    value === "flow" ||
+    value === "discover" ||
+    value === "devboard"
+  );
 }
 
 function validTab(value: unknown): value is WorkspaceTab {
