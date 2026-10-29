@@ -9,6 +9,12 @@
     meta?: Snippet;
     /** Page-level actions. At most one filled primary action. */
     actions?: Snippet;
+    /**
+     * Optional secondary row under the identity/action row, separated by a
+     * hairline. It holds controls that configure the page's primary action, so
+     * they stay on the page surface without crowding the title or the state.
+     */
+    footer?: Snippet;
     /** Renders without the panel frame so a parent panel can own the border. */
     flat?: boolean;
     /**
@@ -26,6 +32,7 @@
     subtitle,
     meta,
     actions,
+    footer,
     flat = false,
     layout = "stacked",
     testid,
@@ -38,47 +45,49 @@
   class:page-header--bar={layout === "bar"}
   data-testid={testid}
 >
-  <div class="page-header__identity">
-    {#if eyebrow}
-      <p class="page-header__eyebrow">{eyebrow}</p>
-    {/if}
-    <div class="page-header__headline">
-      <h1 class="page-header__title" title={title}>{title}</h1>
-      {#if subtitle}
-        <p class="page-header__subtitle">{subtitle}</p>
+  <div class="page-header__row">
+    <div class="page-header__identity">
+      {#if eyebrow}
+        <p class="page-header__eyebrow">{eyebrow}</p>
       {/if}
-    </div>
-    {#if meta && layout === "stacked"}
-      <div class="page-header__meta">{@render meta()}</div>
-    {/if}
-  </div>
-  {#if layout === "bar"}
-    {#if meta || actions}
-      <div class="page-header__tail">
-        {#if meta}
-          <div class="page-header__meta">{@render meta()}</div>
-        {/if}
-        {#if actions}
-          <div class="page-header__actions">{@render actions()}</div>
+      <div class="page-header__headline">
+        <h1 class="page-header__title" title={title}>{title}</h1>
+        {#if subtitle}
+          <p class="page-header__subtitle">{subtitle}</p>
         {/if}
       </div>
+      {#if meta && layout === "stacked"}
+        <div class="page-header__meta">{@render meta()}</div>
+      {/if}
+    </div>
+    {#if layout === "bar"}
+      {#if meta || actions}
+        <div class="page-header__tail">
+          {#if meta}
+            <div class="page-header__meta">{@render meta()}</div>
+          {/if}
+          {#if actions}
+            <div class="page-header__actions">{@render actions()}</div>
+          {/if}
+        </div>
+      {/if}
+    {:else if actions}
+      <div class="page-header__actions">{@render actions()}</div>
     {/if}
-  {:else if actions}
-    <div class="page-header__actions">{@render actions()}</div>
+  </div>
+  {#if footer}
+    <div class="page-header__footer">{@render footer()}</div>
   {/if}
 </header>
 
 <style>
   .page-header {
-    align-items: flex-start;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 4px;
     display: flex;
     flex: 0 0 auto;
-    flex-wrap: wrap;
-    gap: 12px;
-    justify-content: space-between;
+    flex-direction: column;
     min-width: 0;
     padding: 10px 12px;
   }
@@ -88,6 +97,15 @@
     border: 0;
     border-radius: 0;
     padding: 0;
+  }
+
+  .page-header__row {
+    align-items: flex-start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: space-between;
+    min-width: 0;
   }
 
   .page-header__identity {
@@ -157,20 +175,30 @@
   /* The bar layout is one dense row: the title and repository on the left, then
      the state cluster and its action on the right. */
   .page-header--bar {
+    padding: 0;
+  }
+
+  .page-header--bar .page-header__row {
     align-items: center;
     flex-wrap: wrap;
     gap: 6px 16px;
     padding: 8px 12px;
   }
 
+  /* The page name never truncates: the state and action move below the
+     identity when the workspace is too narrow for all three. */
   .page-header--bar .page-header__identity {
-    min-width: 200px;
+    min-width: 300px;
   }
 
   .page-header--bar .page-header__headline {
     align-items: baseline;
     flex-direction: row;
     gap: 8px;
+  }
+
+  .page-header--bar .page-header__title {
+    flex: 0 0 auto;
   }
 
   .page-header--bar .page-header__subtitle {
@@ -193,5 +221,16 @@
   .page-header--bar .page-header__meta {
     flex-wrap: nowrap;
     margin-top: 0;
+  }
+
+  /* The footer is the secondary band: it belongs to the header surface and
+     spans its full width, so configuration never competes with the identity. */
+  .page-header__footer {
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    min-width: 0;
+    padding: 6px 12px;
   }
 </style>

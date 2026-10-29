@@ -1290,7 +1290,11 @@ lifecycle badge `agent-lifecycle`, the sync badge `agent-sync`, `agent-sync-at`,
 `agent-save-cadence`, `agent-limit-hour`, `agent-limit-pending`, `agent-save-limits`,
 `agent-issues-count`, `agent-issues`, and `agent-detail`. Alerts use one position:
 `agent-error`, `agent-sync-error`, `agent-cadence-error`, and `agent-limits-error`, each with
-`role="alert"`. Start/Stop is the only filled primary control. The sidebar has three groups in
+`role="alert"`. Start/Stop is the only filled primary control. The header row carries the page
+identity, the lifecycle badge, the sync badge with its last-read clock, and Start/Stop. Its
+settings footer carries two labeled groups: `Cadence` (the Every field, the last-run and next-run
+clocks, and Save cadence) and `Filing limits` (Per hour, Open issues, and Save limits); the groups
+wrap as units, so no field separates from its save control. The sidebar has three groups in
 order: `Issues surfaces` (Overview), `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
 `open-issues-scout` then `open-issues-watchdog`, badges `agent-state-<id>`, counts
