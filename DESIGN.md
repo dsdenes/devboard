@@ -232,6 +232,40 @@ These tokens are derived from the running interface and from the shipped stylesh
 `.devboard/.design/overview/design-system.md` as corroborating evidence. No token value was
 invented for this document.
 
+## Design principles
+
+1. **Tokens are the only color source.** Role colors are declared once in `app.css`; component
+   styles read them through `var(--token)`, so a role changes in one place.
+2. **Depth is layering and hairlines.** `background` → `surface` → `surface-raised` plus 1px
+   borders express hierarchy; the tooltip/popover `shadow-md` is the only shadow.
+3. **One primary per surface.** `primary` is the single filled action, `accent` marks links,
+   selection, and current position, and `ring` is focus only.
+4. **State is a word.** Every badge, dot, and state line pairs its color with text that states
+   the meaning, so the state survives grayscale and color blindness.
+5. **Type stays on the scale.** System stacks only; `overline` for uppercase micro-labels and
+   monospace for paths, identifiers, counts, and commands; no new size between steps.
+6. **Spacing is a grid with named exceptions.** Use the approved scale; component geometry and
+   the documented dense table and status padding are named, never improvised.
+7. **Functional shapes stay small.** Radius tops out at 6px on functional surfaces; circles are
+   reserved for status dots and avatars.
+
+## UX principles
+
+1. **Every mode is visible.** The rail names every mode; navigation never depends on hover, a
+   hidden menu, or a keyboard shortcut.
+2. **One surface, one job.** The page header owns identity and actions, a panel owns its content,
+   and status appears in the region that owns the action instead of being repeated.
+3. **The control sits with its state.** A Save sits with the draft it saves, a Stop with the run
+   it stops, and a state word with the control it qualifies.
+4. **Destructive actions name their cost.** The control names what it deletes and confirms
+   before deleting; no destructive action fires on hover or a stray click.
+5. **Feedback is immediate and local.** Saves, filings, and failures report beside the control
+   that caused them; a transient notice clears itself and keeps its history entry.
+6. **Keyboard parity.** Every mode and primary command is reachable from the command palette,
+   and focus is always a 2px `ring`.
+7. **Density stays scannable.** Prose at 12–13px, tabular mono for counts, one state word per
+   badge, and ellipsis with a full-value tooltip instead of wrapping dense rows.
+
 ## Colors
 
 Dark is the default and normative theme (`:root` in `app.css`). Light is a mirrored palette
@@ -349,7 +383,9 @@ padding on a Discover page reserves the fixed notification region (34px above th
 bar) so a page's last control can scroll clear of it; the same 56px on the Goal workspace's
 scrolling pages clears that region. The 180px Discover activity terminal, the
 104px fact-label column, the 160px Discover boundary-role column, the 200–600px sidebar bounds,
-and the 160px split minimum are component geometry, not spacing steps.
+and the 160px split minimum are component geometry, not spacing steps. The 5px vertical padding
+of table cells, the 5px 10px cycle-history row padding, and the 5px horizontal padding of
+status-bar items are documented component padding for dense rows, not layout steps.
 
 ## Elevation & Depth
 
@@ -591,18 +627,6 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   `Unsaved changes` warning, `Live file missing` error); and a right action group holding the
   outline restore control and a primary `Save` disabled until the draft differs from the live
   text. The path truncates with a full-path `title`; the state line and actions never shrink.
-- **Discover remote target** (`.discover-remote`) — the source-checkout Overview's first
-  region: one panel whose header carries `Manual testing target` and, while projects exist, an
-  `<n> retained` count. The body separates the two scopes. A `Retained project` toolbar pairs
-  the 11px label with a 28px mono dropdown of the retained URLs. Beneath it a `border-subtle`
-  list holds one 28px row per project: mono URL on the leading edge, an `Active` accent badge on
-  the current target, and a quiet destructive `Remove` word that takes `error-surface` and
-  `error` text on hover or focus; the active row takes `accent-surface` and a 2px `accent` left
-  edge while the other rows take `row-hover`. A `surface-raised` add band labelled
-  `Discover another repository` holds the 28px URL input and the outline `Discover from URL`
-  control. `Clear remote target` sits in the panel footer, never in the add band, because
-  returning to the host is a different scope. The panel carries no filled primary, so the page
-  header keeps the only one.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page
