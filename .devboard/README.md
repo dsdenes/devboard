@@ -1347,10 +1347,10 @@ statement and has no effect.
 
 When `isHarnessSourceCheckout(REPO_DIR)` is true, the Auto Scout section renders
 `agent-prompt-editor` (initialized from the file's bytes), `agent-prompt-chat` with
-`agent-prompt-chat-log`, `agent-prompt-message`, and `agent-prompt-send`, and
-`agent-prompt-save`. In every other host those three controls are absent and
-`saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action requires
-a harness source checkout; no file changes.
+`agent-prompt-chat-log` (present only once the chat has a turn), `agent-prompt-message`,
+`agent-prompt-send`, and `agent-prompt-save`. In every other host those three controls are absent
+and `saveAgentPrompt` or `sendAgentPromptChat` is refused with an error naming that the action
+requires a harness source checkout; no file changes.
 
 `agent-prompt-save` writes the editor's exact UTF-8 text to
 `.devboard/prompts/scout-recommendations.md` under the served checkout, adds nothing, strips

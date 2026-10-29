@@ -1344,13 +1344,16 @@ try {
   );
   for (const testid of [
     "agent-prompt-chat",
-    "agent-prompt-chat-log",
     "agent-prompt-message",
     "agent-prompt-send",
     "agent-prompt-save",
   ]) {
     assertTrue((await countOf(devtools, testid)) === 1, `${testid} is missing on the source page`);
   }
+  assertTrue(
+    (await countOf(devtools, "agent-prompt-chat-log")) === 0,
+    "an empty chat log is rendered before the first turn",
+  );
   assertTrue(
     (await countOf(devtools, "agent-prompt-reset")) === 0,
     "the removed Reset control is still rendered on the source page",

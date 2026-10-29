@@ -91,14 +91,16 @@
 
       <section class="agent-prompt__chat" data-testid="agent-prompt-chat" aria-label="Prompt chat">
         <h3 class="agent-prompt__subtitle">Revise with an agent</h3>
-        <div class="agent-prompt__chat-log" data-testid="agent-prompt-chat-log" role="log">
-          {#each chat as entry}
-            <div class="agent-prompt__chat-entry" data-role={entry.role}>
-              <span class="agent-prompt__chat-role">{entry.role}</span>
-              <span class="agent-prompt__chat-text">{entry.text}</span>
-            </div>
-          {/each}
-        </div>
+        {#if chat.length > 0}
+          <div class="agent-prompt__chat-log" data-testid="agent-prompt-chat-log" role="log">
+            {#each chat as entry}
+              <div class="agent-prompt__chat-entry" data-role={entry.role}>
+                <span class="agent-prompt__chat-role">{entry.role}</span>
+                <span class="agent-prompt__chat-text">{entry.text}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
         {#if chatError !== null}
           <p class="issues-error" data-testid="agent-prompt-chat-error" role="alert">
             {chatError}
