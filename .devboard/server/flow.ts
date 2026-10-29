@@ -1740,10 +1740,15 @@ export class FlowController {
       })),
       previous: session.widgets,
     };
-    writeJson(this.#path("request.json"), request);
+    // Every file this turn reads and writes belongs to the session captured at
+    // entry. A merge followed by createGoal replaces `#session` while the turn
+    // is live; `#path` would then address the replacement's directory.
+    const requestPath = join(directory, "request.json");
+    const widgetsPath = join(directory, "widgets.json");
+    writeJson(requestPath, request);
     // A stale result must never be mistaken for this run's answer.
     try {
-      writeFileSync(this.#path("widgets.json"), "");
+      writeFileSync(widgetsPath, "");
     } catch {
       // The directory is gone; the run below reports it.
     }
@@ -1810,7 +1815,18 @@ export class FlowController {
 
     const elapsed = Date.now() - started;
     const timedOut = elapsed >= this.#analystTimeoutMs - 5;
-    const answer = readJson<{ widgets?: unknown }>(this.#path("widgets.json"));
+    const answer = readJson<{ widgets?: unknown }>(widgetsPath);
+    if (this.#session !== session) {
+      // The turn outlived its session. Its answer belongs to the session it
+      // analyzed, so persisting or broadcasting it would attach stale widgets
+      // to the replacement. The pending tick, if any, now belongs to the new
+      // session and gets its own turn.
+      if (this.#analystPending) {
+        this.#analystPending = false;
+        this.#startAnalyst();
+      }
+      return;
+    }
     const raw =
       answer !== null && typeof answer === "object" && Array.isArray(answer.widgets)
         ? (answer.widgets as RawWidget[])
@@ -1828,7 +1844,7 @@ export class FlowController {
       session.accepted = session.accepted.filter((signature) =>
         session.widgets.some((widget) => widget.id === signature),
       );
-      writeJson(this.#path("widgets.json"), { widgets: this.#widgetsAsRaw(session.widgets) });
+      writeJson(widgetsPath, { widgets: this.#widgetsAsRaw(session.widgets) });
       this.#persist();
       this.#persistArtifacts();
       this.#broadcast({ type: "flowWidgets", widgets: session.widgets });
