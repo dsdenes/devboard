@@ -11,6 +11,10 @@ import { startUpdater, type Updater } from "./updates";
 import { readHarnessVersion, runningHarnessDir } from "./version";
 
 const hostname = process.env.HOST ?? "127.0.0.1";
+const allowedHosts = (process.env.DEVBOARD_ALLOWED_HOSTS ?? "")
+  .split(",")
+  .map((entry) => entry.trim())
+  .filter((entry) => entry.length > 0);
 const port = Number(process.env.PORT ?? 8080);
 const adrDir = resolve(process.env.ADRS_DIR ?? "/repo/adrs");
 const repoDir = resolve(process.env.REPO_DIR ?? dirname(adrDir));
@@ -103,6 +107,7 @@ for (let attempt = 0; ; attempt += 1) {
       staticDir,
       stateDir,
       hostname,
+      allowedHosts,
       port,
       journal,
       runningVersion,

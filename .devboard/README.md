@@ -952,9 +952,14 @@ history notes, and unknown reasons); skill bodies and descriptions are not part 
 against the same unchanged host fingerprint produce the same sheet digest and the same digest for
 every unchanged glossary, while bounded prose may differ. The fingerprint covers the host `HEAD`
 and the content of tracked and untracked non-ignored files, excluding `.devboard/`, `.worktree/`,
-`.omp/discover/`, `.omp/skills/`, VCS internals, and ignored files; the manifest stores it, and
-`stale` is true only when the current fingerprint is readable and differs. Discover caches nothing:
-every accepted start re-crawls.
+`.omp/discover/`, `.omp/skills/`, VCS internals, and ignored files. Only regular files are read:
+a symlink contributes its target string and a FIFO, device, socket, or other special entry a type
+marker, so the fingerprint never opens one; a regular file's content streams through the hash in
+fixed-size chunks, so a large file cannot exhaust memory. Each digest and the aggregate are cached
+by the file listing plus size, timestamps, and inode, so an unchanged host is not re-read and a
+reconnect or refresh costs no file reads. The manifest stores the fingerprint, and `stale` is true
+only when the current fingerprint is readable and differs. The cache holds digests only; every
+accepted start re-crawls.
 
 The crawl is read-only with respect to the host. Its tools read files and safe read-only git facts
 (`git rev-parse`, `git log`, `git branch`, `git status`, `git ls-files`) only; they never run a
@@ -1178,6 +1183,7 @@ and is retried the same way.
 |---|---|---|
 |`HOST`|`127.0.0.1`|Listen address.|
 |`PORT`|`8080`|Listen port.|
+|`DEVBOARD_ALLOWED_HOSTS`|unset|Comma-separated extra hostnames the dashboard serves in a Host header. A wildcard bind (`0.0.0.0` or `::`) serves only loopback aliases unless names are listed; a reverse proxy's public name belongs here.|
 |`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
 |`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location.|
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
@@ -1711,8 +1717,8 @@ own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAN
 opens one session, and sends exactly `/goal-draft <repository-relative path>`. Each path has at
 most one live peer: a start for a path already running is refused with
 `This draft is being elaborated.` and starts no second peer. While a draft runs, only its own row
-and detail show the disabled start control and the `issues-draft-blocked` reason
-`This draft is being elaborated.`; every other draft stays startable. Each peer's activity
+and detail show the disabled start control, whose title is `This draft is being elaborated.`;
+every other draft stays startable. Each peer's activity
 streams only into its own run's `issues-draft-activity`, its `ask` question renders only for that
 draft, and an answer goes only to the addressed draft's peer; an answer for a draft with no
 pending question is refused without reaching any peer. Stop closes only the selected draft's peer,

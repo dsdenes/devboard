@@ -363,6 +363,36 @@ describe("goal proposal drafts", () => {
     }
   });
 
+  test("refuses a request whose Host is not one of the listener's names", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const host = `evil.example:${server.port}`;
+      const response = await propose(url, proposal(), { host, origin: `http://${host}` });
+
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error: "The request host is not served by this dashboard.",
+      });
+      expect(await drafts(root)).toEqual([]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("accepts a same-origin request for its listener host", async () => {
+    const { server, root, url } = await startServer();
+
+    try {
+      const response = await propose(url, proposal(), { origin: `http://${url}` });
+
+      expect(response.status).toBe(201);
+      expect(await drafts(root)).toHaveLength(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("refuses a non-POST request", async () => {
     const { server, url } = await startServer();
 
