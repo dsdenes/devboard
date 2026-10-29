@@ -264,3 +264,89 @@ test("a refused goal save stays dirty until the server echoes the saved text", (
     connection.dispose();
   }
 });
+
+test("a snapshot replayed during a revision fills the goal and blocks saving", () => {
+  FakeSocket.instances = [];
+  installGlobals({
+    WebSocket: FakeSocket as unknown as typeof WebSocket,
+    window: fakeWindow(),
+    location: { protocol: "http:", host: "test.invalid" },
+  });
+  const store = new GoalStore();
+  connection.onMessage((message) => store.handleEvent(message as Record<string, unknown>));
+  connection.connect();
+  const socket = FakeSocket.instances[FakeSocket.instances.length - 1];
+  if (socket === undefined) throw new Error("no socket created");
+  socket.open();
+
+  try {
+    socket.deliver({ type: "goal", text: "# Existing goal" });
+    store.setGoalDraft("# Unsaved edit");
+    expect(store.goalDirty).toBe(true);
+
+    // A reload during a revision replays the started frame before the goal
+    // snapshot the server sends for getGoal.
+    socket.deliver({ type: "goalRevisionStarted" });
+    socket.deliver({ type: "goal", text: "# Existing goal" });
+
+    expect(store.goalText).toBe("# Existing goal");
+    expect(store.goalDraft).toBe("# Unsaved edit");
+    expect(store.goalEditingDisabled).toBe(true);
+
+    socket.sent.length = 0;
+    store.saveGoal();
+    expect(socket.sent).toEqual([]);
+
+    // The revision ends without new text; the unsaved draft survives and the
+    // goal is readable again.
+    socket.deliver({ type: "goalRevisionStopped", completed: false });
+    expect(store.revisionActive).toBe(false);
+    expect(store.goalEditingDisabled).toBe(false);
+    expect(store.goalDraft).toBe("# Unsaved edit");
+    expect(store.goalText).toBe("# Existing goal");
+  } finally {
+    connection.dispose();
+  }
+});
+
+test("a revision that ends without text shows the replayed goal instead of an empty buffer", () => {
+  FakeSocket.instances = [];
+  installGlobals({
+    WebSocket: FakeSocket as unknown as typeof WebSocket,
+    window: fakeWindow(),
+    location: { protocol: "http:", host: "test.invalid" },
+  });
+  const store = new GoalStore();
+  connection.onMessage((message) => store.handleEvent(message as Record<string, unknown>));
+  connection.connect();
+  const socket = FakeSocket.instances[FakeSocket.instances.length - 1];
+  if (socket === undefined) throw new Error("no socket created");
+  socket.open();
+
+  try {
+    // A fresh tab reconnects while a revision is in flight: the snapshot is
+    // the only goal it ever sees, and the draft starts empty.
+    socket.deliver({ type: "goalRevisionStarted" });
+    socket.deliver({ type: "goal", text: "# Goal" });
+
+    expect(store.goalText).toBe("# Goal");
+    expect(store.goalDraft).toBe("");
+    expect(store.goalReady).toBe(true);
+    expect(store.goalEditingDisabled).toBe(true);
+
+    socket.sent.length = 0;
+    store.saveGoal();
+    expect(socket.sent).toEqual([]);
+
+    socket.deliver({ type: "goalRevisionStopped", completed: false });
+    expect(store.goalDraft).toBe("# Goal");
+    expect(store.goalDirty).toBe(false);
+    expect(store.goalReady).toBe(true);
+
+    // A later save sends the document, never the empty buffer.
+    store.saveGoal();
+    expect(socket.sent).toEqual([JSON.stringify({ type: "saveGoal", text: "# Goal" })]);
+  } finally {
+    connection.dispose();
+  }
+});

@@ -278,6 +278,8 @@ export class GoalStore {
 
   get goalEditingDisabled(): boolean {
     return (
+      this.creationActive ||
+      this.revisionActive ||
       (this.lifecycleActive && !this.lifecycle.paused) ||
       this.skillsPrepActive ||
       discover.active ||
@@ -339,6 +341,9 @@ export class GoalStore {
    * `goal` frame, so only that confirmation may clear the flag.
    */
   saveGoal(): void {
+    // A creation or revision owns the document; sending the buffer then would
+    // race that operation and could write an empty goal over GOAL.md.
+    if (this.creationActive || this.revisionActive) return;
     if (!connection.send({ type: "saveGoal", text: this.goalDraft })) return;
     this.pendingGoalSave = this.goalDraft;
   }
@@ -470,22 +475,25 @@ export class GoalStore {
     }
 
     if (type === "goal" && typeof message.text === "string") {
-      if (!this.revisionActive && !this.creationActive) {
-        this.goalText = message.text;
-        if (this.pendingGoalSave !== null) {
-          // Only the echo of the sent text confirms the save. Any other frame
-          // is a reconnect snapshot, another tab, or a refused save's later
-          // state, and leaving the draft untouched keeps it unsaved.
-          if (message.text === this.pendingGoalSave) {
-            this.goalDirty = false;
-            this.goalDraft = message.text;
-            this.pendingGoalSave = null;
-            saveFeedback.saved("Goal saved.");
-          }
-        } else if (!this.goalDirty) {
+      this.goalText = message.text;
+      this.goalReady = message.text.trim().length > 0;
+      // The frame carries the server's document, including the snapshot sent
+      // before answering getGoal on a reconnect. Editing and saving are
+      // disabled while a creation or revision runs, so the draft is left for
+      // the operation's terminal frame to replace.
+      if (this.revisionActive || this.creationActive) return;
+      if (this.pendingGoalSave !== null) {
+        // Only the echo of the sent text confirms the save. Any other frame
+        // is a reconnect snapshot, another tab, or a refused save's later
+        // state, and leaving the draft untouched keeps it unsaved.
+        if (message.text === this.pendingGoalSave) {
+          this.goalDirty = false;
           this.goalDraft = message.text;
+          this.pendingGoalSave = null;
+          saveFeedback.saved("Goal saved.");
         }
-        this.goalReady = message.text.trim().length > 0;
+      } else if (!this.goalDirty) {
+        this.goalDraft = message.text;
       }
       return;
     }
@@ -506,6 +514,12 @@ export class GoalStore {
         this.goalDraft = message.text;
         this.goalDirty = false;
         this.goalReady = message.text.trim().length > 0;
+      } else if (!this.goalDirty) {
+        // The operation ended without new text; the snapshot replayed during
+        // it is the document now, so the editor must show it rather than the
+        // empty buffer a save would otherwise write.
+        this.goalDraft = this.goalText;
+        this.goalReady = this.goalText.trim().length > 0;
       }
       return;
     }
@@ -525,6 +539,11 @@ export class GoalStore {
         this.goalDraft = message.text;
         this.goalDirty = false;
         this.goalReady = message.text.trim().length > 0;
+      } else if (!this.goalDirty) {
+        // Same as a creation that ends without text: show the replayed
+        // document instead of an empty buffer.
+        this.goalDraft = this.goalText;
+        this.goalReady = this.goalText.trim().length > 0;
       }
       return;
     }
