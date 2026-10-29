@@ -6,6 +6,7 @@ import {
   type Exec,
   type ResolvedAuth,
 } from "../lib/forge-auth.ts";
+import { parseForgeRemote } from "../lib/forge.ts";
 
 interface Account {
   login: string;
@@ -281,6 +282,33 @@ describe("GitLab identity selection", () => {
 
     expect(auth.source).toBe("glab token");
     expect(auth.token).toBe("glpat-stored");
+  });
+
+  test("probes the subgroup project parsed from the origin remote", async () => {
+    const remote = parseForgeRemote("git@gitlab.com:group/sub/project.git", {});
+    if (remote === undefined) throw new Error("subgroup remote did not parse");
+
+    const calls: string[] = [];
+    const exec = gitlabExec({ storedAccess: 40 });
+    const auth = resolved(
+      await resolveForgeAuth(
+        async (command, args, execOptions) => {
+          calls.push([command, ...args].join(" "));
+          return exec(command, args, execOptions);
+        },
+        {
+          forge: remote.forge,
+          host: remote.host,
+          project: remote.project,
+          cwd: "/repo",
+          required: "write",
+          env: {},
+        },
+      ),
+    );
+
+    expect(auth.project).toBe("group/sub/project");
+    expect(calls).toContain("glab api --hostname gitlab.com projects/group%2Fsub%2Fproject");
   });
 });
 

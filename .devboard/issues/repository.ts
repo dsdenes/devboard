@@ -47,19 +47,15 @@ export function isLinkedWorktree(root: string): boolean {
   return absolute.stdout.length > 0 && absolute.stdout !== common.stdout;
 }
 
-const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-
-/** `owner/name` from any git remote URL form, or undefined. */
-export function repositoryFromUrl(url: string): string | undefined {
-  const trimmed = url.trim();
-  const scp = /^[A-Za-z0-9_.-]+@[^:/]+:(.+)$/.exec(trimmed);
-  const path = scp !== null ? scp[1]! : trimmed.replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/]+\//, "");
-  const segments = path.split("/").filter((segment) => segment.length > 0);
-  if (segments.length < 2) return undefined;
-  const name = segments[segments.length - 1]!.replace(/\.git$/, "");
-  const owner = segments[segments.length - 2]!;
-  const repository = `${owner}/${name}`;
-  return REPOSITORY.test(repository) ? repository : undefined;
+/**
+ * Repository path from any git remote URL form, or undefined. GitLab keeps its
+ * full namespace (`group/sub/project`); GitHub and Gitea keep `owner/name`.
+ */
+export function repositoryFromUrl(
+  url: string,
+  environment: Record<string, string | undefined> = process.env,
+): string | undefined {
+  return parseForgeRemote(url, environment)?.project;
 }
 
 /** The remote URL of `origin`, if the checkout has one. */
@@ -99,7 +95,7 @@ export function originForge(
   return remote === undefined ? undefined : parseForgeRemote(remote, environment);
 }
 
-/** The `owner/name` the checkout's origin names, or undefined. */
+/** The repository path the checkout's origin names, or undefined. */
 export function originRepository(root: string): string | undefined {
   const url = originRemoteUrl(root);
   return url === undefined ? undefined : repositoryFromUrl(url);
@@ -127,6 +123,9 @@ export function cachedRepository(
     return value;
   };
 }
+
+/** A repository path: `owner/name`, or a GitLab namespace with subgroups. */
+const REPOSITORY = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/;
 
 export function isRepositoryName(value: string): boolean {
   return REPOSITORY.test(value);

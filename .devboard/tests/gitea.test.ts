@@ -142,6 +142,11 @@ describe("Gitea forge resolution", () => {
     expect(parseForgeRemote("ssh://git@gitlab.example.com:2222/group/sub/project.git", {})).toEqual({
       forge: "gitlab",
       host: "gitlab.example.com",
+      project: "group/sub/project",
+    });
+    expect(parseForgeRemote("ssh://git@localhost:2223/group/sub/project.git", {})).toEqual({
+      forge: "gitea",
+      host: "localhost",
       project: "sub/project",
     });
   });

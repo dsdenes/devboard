@@ -15,7 +15,11 @@ export interface ForgeRemote {
   forge: Forge;
   /** Hostname only; no credentials and no port. */
   host: string;
-  /** `owner/name`, without a leading slash or a trailing `.git`. */
+  /**
+   * Repository path without a leading slash or a trailing `.git`:
+   * `owner/name` for GitHub and Gitea, `group/sub/project` for a GitLab
+   * project below a subgroup.
+   */
   project: string;
   /** HTTP origin for an HTTP(S) remote; undefined for SSH and scp forms. */
   originUrl?: string;
@@ -52,7 +56,15 @@ export function configuredGiteaToken(
   return undefined;
 }
 
-function projectFromPath(path: string): string | undefined {
+const PROJECT_SEGMENT = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * The repository path a forge addresses. GitHub and Gitea name exactly
+ * `owner/name`, so only the final two segments count. A GitLab project lives
+ * under a namespace that may carry subgroups, so every segment is the path;
+ * dropping them would point every reader at a different project.
+ */
+export function projectFromPath(path: string, forge: Forge): string | undefined {
   const segments = path
     .replace(/^\/+/, "")
     .replace(/\/+$/, "")
@@ -60,8 +72,21 @@ function projectFromPath(path: string): string | undefined {
     .split("/")
     .filter((segment) => segment.length > 0);
   if (segments.length < 2) return undefined;
-  const project = `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(project) ? project : undefined;
+  const kept = forge === "gitlab" ? segments : segments.slice(-2);
+  if (!kept.every((segment) => PROJECT_SEGMENT.test(segment))) return undefined;
+  return kept.join("/");
+}
+
+/** The forge a hostname names. An explicit `DEVBOARD_FORGE` always wins. */
+function forgeFromHost(
+  host: string,
+  environment: Record<string, string | undefined>,
+): Forge {
+  const lower = host.toLowerCase();
+  const forced = trimmed(environment.DEVBOARD_FORGE)?.toLowerCase();
+  if (forced === "github" || forced === "gitlab" || forced === "gitea") return forced;
+  if (lower === "github.com") return "github";
+  return lower.includes("gitlab") ? "gitlab" : "gitea";
 }
 
 /**
@@ -98,23 +123,14 @@ export function parseForgeRemote(
     }
   }
 
-  const project = projectFromPath(path);
-  if (host.length === 0 || project === undefined) return undefined;
-
-  const lower = host.toLowerCase();
-  const forced = trimmed(environment.DEVBOARD_FORGE)?.toLowerCase();
-  const forge: Forge =
-    forced === "github" || forced === "gitlab" || forced === "gitea"
-      ? forced
-      : lower === "github.com"
-        ? "github"
-        : lower.includes("gitlab")
-          ? "gitlab"
-          : "gitea";
+  if (host.length === 0) return undefined;
+  const forge = forgeFromHost(host, environment);
+  const project = projectFromPath(path, forge);
+  if (project === undefined) return undefined;
 
   return {
     forge,
-    host: lower,
+    host: host.toLowerCase(),
     project,
     ...(originUrl === undefined ? {} : { originUrl }),
   };
