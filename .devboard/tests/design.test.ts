@@ -7,10 +7,10 @@ import { parseAudit, readAuditInput, type DesignFinding } from "../issues/design
 import { issueBody } from "../issues/design/actions";
 import { createDesignForge } from "../issues/design/forge";
 import { preflightDesign } from "../issues/design/preflight";
-import { releaseDocuments, type RunCommand } from "../issues/design/release";
+import { releaseDocuments, type ReleaseResult, type RunCommand } from "../issues/design/release";
 import { capacityFor, writeSettings, type DesignIssueRow } from "../issues/design/state";
 import { DesignWorker } from "../issues/design/worker";
-import { designConfig, settingsPath } from "../issues/design/paths";
+import { designConfig, lockPath, settingsPath } from "../issues/design/paths";
 
 const harnessRoot = join(import.meta.dir, "..");
 const roots: string[] = [];
@@ -664,6 +664,80 @@ describe("design worker", () => {
     await worker.waitForCycle();
     expect(counter.connects).toBe(2);
     await worker.stop();
+  });
+
+  test("a stop during the release waits for it before reporting stopped", async () => {
+    const { repo, stateDir } = await fixture("stop-releasing");
+    const gate = Promise.withResolvers<ReleaseResult>();
+    const releaseStarted = Promise.withResolvers<void>();
+    const observed = { stoppedCalls: 0, lockAtStop: true, lifecycleAtStop: "" };
+    const worker = new DesignWorker({
+      repoDir: repo,
+      stateDir,
+      cadenceMs: 60 * 60_000,
+      syncMs: 10_000,
+      manualCycles: true,
+      github: {
+        listIssues: async () => [],
+        listReleases: async () => [],
+        listOpenIssueTitles: async () => [],
+        closingCommit: async () => null,
+        resolveCommit: async () => null,
+        containingReleaseTags: async () => [],
+      },
+      fileIssue: async () => ({ number: 1, url: "https://forge.test/acme/fixture/issues/1" }),
+      release: async () => {
+        releaseStarted.resolve();
+        return gate.promise;
+      },
+      connect: () =>
+        fakePeer((directory) => {
+          writeFileSync(
+            join(directory, "draft", "DESIGN.md"),
+            `${readFileSync(join(directory, "draft", "DESIGN.md"), "utf8")}\n- One accent token.\n`,
+          );
+          writeFileSync(join(directory, "audit.json"), JSON.stringify(editDecision()));
+        }, { connects: 0 }).peer as never,
+      onStopped: () => {
+        observed.stoppedCalls += 1;
+        observed.lockAtStop = existsSync(lockPath(repo));
+        observed.lifecycleAtStop = worker.currentState.lifecycle;
+      },
+    });
+    expect(worker.start("acme/fixture")).toBe(true);
+    await worker.refresh();
+    await worker.beginCycle();
+    await releaseStarted.promise;
+    expect(worker.currentState.lifecycle).toBe("releasing");
+
+    const stopping = worker.stop();
+    let settled = false;
+    void stopping.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(observed.stoppedCalls).toBe(0);
+    expect(worker.currentState.lifecycle).toBe("releasing");
+    expect(existsSync(lockPath(repo))).toBe(true);
+
+    gate.resolve({
+      ok: true,
+      version: "0.1.10",
+      url: "https://forge.test/released",
+      sha: "a",
+      branch: "b",
+    });
+    await stopping;
+    expect(observed.stoppedCalls).toBe(1);
+    expect(observed.lifecycleAtStop).toBe("stopped");
+    expect(observed.lockAtStop).toBe(false);
+    expect(worker.currentState.lifecycle).toBe("stopped");
+    expect(worker.currentState.release?.version).toBe("0.1.10");
+    expect(existsSync(lockPath(repo))).toBe(false);
+
+    await worker.stop();
+    expect(observed.stoppedCalls).toBe(1);
   });
 
   test("a missing draft document fails the cycle instead of rejecting it", async () => {

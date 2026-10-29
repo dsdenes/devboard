@@ -187,6 +187,15 @@ export class DesignWorker {
   private nextSyncAt = 0;
   private cycleDone: Promise<void> = Promise.resolve();
   private settleCycle: (() => void) | undefined;
+  /**
+   * Resolves when the running cycle has settled. Set before the release starts
+   * so a stop during `releasing` can wait for the push, the workflow, and the
+   * publish instead of exiting between them.
+   */
+  private releaseSettled: Promise<void> | undefined;
+  private settleRelease: (() => void) | undefined;
+  /** The one stop in flight, so a command and a signal share its wait. */
+  private stopDone: Promise<void> | undefined;
 
   constructor(options: DesignWorkerOptions) {
     this.repoDir = resolve(options.repoDir);
@@ -886,6 +895,9 @@ export class DesignWorker {
             }
           }
           if (releaseError === null && draftDesign !== null && draftTokens !== null) {
+            const releaseSettled = Promise.withResolvers<void>();
+            this.releaseSettled = releaseSettled.promise;
+            this.settleRelease = releaseSettled.resolve;
             this.state.lifecycle = "releasing";
             this.publish();
             record(`documentation: ${audit.documentation.summary}`);
@@ -993,6 +1005,11 @@ export class DesignWorker {
     this.cycling = false;
     this.settleCycle?.();
     this.settleCycle = undefined;
+    // The release's waiters are answered only here, after every step that
+    // follows the push has run or been skipped.
+    this.releaseSettled = undefined;
+    this.settleRelease?.();
+    this.settleRelease = undefined;
     if (this.stopping) return;
     const now = this.clock();
     this.state.lifecycle = "idle";
@@ -1007,38 +1024,49 @@ export class DesignWorker {
 
   /** Stop: end the peer, keep the rows, limits, and last release. */
   async stop(): Promise<void> {
-    if (this.stopping) return;
-    this.stopping = true;
-    const active = this.active;
-    if (active !== undefined) {
-      active.finished = true;
-      clearTimeout(active.timer);
-      active.timer = undefined;
-      this.closePeer(active);
-      appendActivityLine(active.activity, "stopped", false);
-      try {
-        writeActivity(active.directory, active.activity);
-      } catch {
-        // Activity is diagnostic.
+    if (this.stopDone !== undefined) return this.stopDone;
+    const done = Promise.withResolvers<void>();
+    this.stopDone = done.promise;
+    try {
+      this.stopping = true;
+      const active = this.active;
+      if (active !== undefined) {
+        active.finished = true;
+        clearTimeout(active.timer);
+        active.timer = undefined;
+        this.closePeer(active);
+        appendActivityLine(active.activity, "stopped", false);
+        try {
+          writeActivity(active.directory, active.activity);
+        } catch {
+          // Activity is diagnostic.
+        }
+        this.active = undefined;
       }
-      this.active = undefined;
+      this.cycling = false;
+      this.settleCycle?.();
+      this.settleCycle = undefined;
+      // A cycle whose release already pushed must finish its workflow wait,
+      // publish, and worktree cleanup before the worker reports `stopped` and
+      // exits: exiting in between leaves main with an unreleased commit.
+      const releaseSettled = this.releaseSettled;
+      if (releaseSettled !== undefined) await releaseSettled;
+      this.state.enabled = false;
+      this.state.lifecycle = "stopped";
+      this.state.nextAttemptAt = null;
+      this.state.lastError = null;
+      this.state.notice = null;
+      this.publish();
+      if (this.ticker !== undefined) {
+        clearInterval(this.ticker);
+        this.ticker = undefined;
+      }
+      this.lock?.release();
+      this.lock = undefined;
+      this.onStopped?.();
+    } finally {
+      done.resolve();
     }
-    this.cycling = false;
-    this.settleCycle?.();
-    this.settleCycle = undefined;
-    this.state.enabled = false;
-    this.state.lifecycle = "stopped";
-    this.state.nextAttemptAt = null;
-    this.state.lastError = null;
-    this.state.notice = null;
-    this.publish();
-    if (this.ticker !== undefined) {
-      clearInterval(this.ticker);
-      this.ticker = undefined;
-    }
-    this.lock?.release();
-    this.lock = undefined;
-    this.onStopped?.();
   }
 
   async shutdown(): Promise<void> {

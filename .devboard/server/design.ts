@@ -497,9 +497,19 @@ export class DesignBridge implements AgentAdapter {
 
   private scheduleStopProof(pid: number): void {
     if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
-    const timer = setTimeout(() => {
+    const prove = (): void => {
       if (!pidAlive(pid) || !this.provesWorker(pid)) {
         this.clearStopProof(pid);
+        return;
+      }
+      const proof = this.stopping;
+      if (proof === undefined || proof.pid !== pid) return;
+      if (this.currentState()?.lifecycle === "releasing") {
+        // A release that already pushed must finish its workflow wait, its
+        // publish, and its worktree cleanup. The worker is stopping and exits
+        // by itself once the release settles; never signal it in between.
+        proof.timer = setTimeout(prove, STOP_PROOF_MS);
+        proof.timer.unref?.();
         return;
       }
       try {
@@ -513,6 +523,15 @@ export class DesignBridge implements AgentAdapter {
           this.clearStopProof(pid);
           return;
         }
+        if (this.stopping !== proof) return;
+        if (this.currentState()?.lifecycle === "releasing") {
+          // The release began after the signal; wait for it instead of
+          // killing the worker between its push and its publish.
+          proof.killTimer = undefined;
+          proof.timer = setTimeout(prove, STOP_PROOF_MS);
+          proof.timer.unref?.();
+          return;
+        }
         this.clearStopProof(pid);
         try {
           process.kill(pid, "SIGKILL");
@@ -521,10 +540,9 @@ export class DesignBridge implements AgentAdapter {
         }
       }, STOP_KILL_GRACE_MS);
       killTimer.unref?.();
-      if (this.stopping !== undefined && this.stopping.pid === pid) {
-        this.stopping.killTimer = killTimer;
-      }
-    }, STOP_PROOF_MS);
+      proof.killTimer = killTimer;
+    };
+    const timer = setTimeout(prove, STOP_PROOF_MS);
     timer.unref?.();
     this.stopping = { pid, timer };
   }
