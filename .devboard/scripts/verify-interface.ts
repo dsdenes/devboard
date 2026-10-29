@@ -1751,6 +1751,11 @@ try {
     `document.querySelector('[data-testid="providers-dialog"]') !== null`,
     "the providers dialog",
   );
+  await page.wait(
+    `document.activeElement?.closest('[data-testid="providers-dialog"]') !== null`,
+    "the providers dialog to take focus",
+    2_000,
+  );
   const providers = await page.eval<{
     options: Array<{ value: string; label: string }>;
     rule: string;
