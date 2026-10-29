@@ -90,7 +90,6 @@
       </div>
 
       <section class="agent-prompt__chat" data-testid="agent-prompt-chat" aria-label="Prompt chat">
-        <h3 class="agent-prompt__subtitle">Revise with an agent</h3>
         <div class="agent-prompt__chat-log" data-testid="agent-prompt-chat-log" role="log">
           {#each chat as entry}
             <div class="agent-prompt__chat-entry" data-role={entry.role}>
@@ -162,15 +161,6 @@
   .agent-prompt__absent {
     font-size: 12px;
     margin: 0;
-  }
-
-  .agent-prompt__subtitle {
-    color: var(--muted-foreground);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    margin: 0;
-    text-transform: uppercase;
   }
 
   .agent-prompt__editor,
