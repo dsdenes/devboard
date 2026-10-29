@@ -15,6 +15,7 @@ import type { Server } from "bun";
 import { createApp } from "./app";
 import { declaredCommandAliases } from "./discover";
 import { testProviderService } from "./fixtures/test-providers";
+import type { ProviderService } from "./providers";
 
 /**
  * Discover Mode's deterministic contract. It drives the app over its WebSocket
@@ -156,6 +157,8 @@ interface StartOptions {
   fixture?: Fixture;
   stub?: string[];
   stateDir?: string;
+  /** Replaces the deterministic provider service, to defer peer preparation. */
+  providers?: ProviderService;
 }
 
 function startServer(options: StartOptions = {}): TestServer {
@@ -169,7 +172,7 @@ function startServer(options: StartOptions = {}): TestServer {
     port: 0,
     repoDir: fixture.root,
     stateDir,
-    providers: testProviderService(stateDir),
+    providers: options.providers ?? testProviderService(stateDir),
     goalFile: fixture.goalFile,
     agentCommand: command.join(" "),
     tracker: async () => undefined,
@@ -256,6 +259,33 @@ function prompts(logPath: string): string[] {
   return logLines(logPath)
     .filter((line) => line.startsWith("prompt "))
     .map((line) => line.slice("prompt ".length));
+}
+
+/**
+ * Holds the next provider selection until the test releases it. `settled`
+ * resolves before the held caller's continuation is queued, so awaiting it and
+ * one microtask turn proves that continuation has run.
+ */
+function deferNextSelection(providers: ProviderService): {
+  entered: Promise<void>;
+  release: () => void;
+  settled: Promise<void>;
+} {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const settled = Promise.withResolvers<void>();
+  const select = providers.select.bind(providers);
+  let held = true;
+  providers.select = async () => {
+    if (!held) return select();
+    held = false;
+    entered.resolve();
+    await release.promise;
+    const result = await select();
+    settled.resolve();
+    return result;
+  };
+  return { entered: entered.promise, release: release.resolve, settled: settled.promise };
 }
 
 async function waitUntil(predicate: () => boolean, label: string, timeout = 8000) {
@@ -734,6 +764,60 @@ describe("discover mode", () => {
       }
     },
     30000,
+  );
+
+  test(
+    "stopping Discover during provider selection spawns no peer",
+    async () => {
+      const fixture = createFixture("discover-stop-early");
+      const providers = testProviderService(fixture.stateDir);
+      const { server, url } = startServer({ fixture, providers });
+      const client = await connect(url);
+      const deferred = deferNextSelection(providers);
+      try {
+        client.send({ type: "discoverProject" });
+        await client.waitFor((message) => message.type === "discoverStarted");
+        await deferred.entered;
+        client.send({ type: "stopDiscover" });
+        const stopped = await client.waitFor((message) => message.type === "discoverStopped");
+        expect(stopped.completed).toBe(false);
+        deferred.release();
+        await deferred.settled;
+        await Promise.resolve();
+        expect(spawnCount(fixture.logPath)).toBe(0);
+        expect(prompts(fixture.logPath)).toHaveLength(0);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "server stop during Discover provider selection leaves no peer",
+    async () => {
+      const fixture = createFixture("discover-dispose-early");
+      const providers = testProviderService(fixture.stateDir);
+      const { server, url } = startServer({ fixture, providers });
+      const client = await connect(url);
+      const deferred = deferNextSelection(providers);
+      try {
+        client.send({ type: "discoverProject" });
+        await client.waitFor((message) => message.type === "discoverStarted");
+        await deferred.entered;
+        server.stop(true);
+        deferred.release();
+        await deferred.settled;
+        await Promise.resolve();
+        expect(spawnCount(fixture.logPath)).toBe(0);
+        expect(prompts(fixture.logPath)).toHaveLength(0);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    20000,
   );
 
   test(

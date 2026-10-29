@@ -2995,10 +2995,14 @@ export function createApp(options: AppOptions) {
 
     let agent: AcpConnection;
     try {
+      const env = await peerEnvironment();
+      // A stop or disposal during provider selection clears the run. The
+      // crawl must not start after the operator ended it.
+      if (discoverRun !== run || request !== discoverRequest) return;
       agent = new AcpConnection({
         command: agentCommand,
         cwd: root,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity: AcpActivity) {
           if (discoverRun !== run) return;
           journal.write("activity", activity.text);
@@ -3035,6 +3039,10 @@ export function createApp(options: AppOptions) {
         run,
         `Could not start the Discover agent: ${error instanceof Error ? error.message : String(error)}`,
       );
+      return;
+    }
+    if (discoverRun !== run || request !== discoverRequest) {
+      agent.close();
       return;
     }
     run.agent = agent;
@@ -4050,10 +4058,14 @@ export function createApp(options: AppOptions) {
   /** Runs a preparation peer to its outcome; also resumes a restored one. */
   async function spawnSkillsPreparation(preparation: SkillsPreparation) {
     try {
+      const env = await peerEnvironment();
+      // A reset or disposal during provider selection clears the preparation;
+      // constructing a peer now would leave it unowned.
+      if (skillsPreparation !== preparation) return;
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity) {
           if (skillsPreparation !== preparation) return;
           recordActivity(preparation.activity, activity);
@@ -4078,6 +4090,10 @@ export function createApp(options: AppOptions) {
           process.stderr.write(text);
         },
       });
+      if (skillsPreparation !== preparation) {
+        agent.close();
+        return;
+      }
       preparation.agent = agent;
 
       await agent.run(SKILLS_PROMPT);
@@ -4215,10 +4231,14 @@ export function createApp(options: AppOptions) {
     }
 
     try {
+      const env = await peerEnvironment();
+      // A newer creation or a disposal during provider selection clears the
+      // owner; no peer may be constructed for it.
+      if (goalCreation !== creation) return;
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity) {
           if (goalCreation !== creation) return;
           recordActivity(creation.activity, activity);
@@ -4243,6 +4263,10 @@ export function createApp(options: AppOptions) {
           process.stderr.write(text);
         },
       });
+      if (goalCreation !== creation) {
+        agent.close();
+        return;
+      }
       creation.agent = agent;
 
       await agent.run(GOAL_CREATION_PROMPT);
@@ -4325,10 +4349,14 @@ export function createApp(options: AppOptions) {
     }
 
     try {
+      const env = await peerEnvironment();
+      // A newer revision or a disposal during provider selection clears the
+      // owner; no peer may be constructed for it.
+      if (goalRevision !== revision) return;
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity) {
           if (goalRevision !== revision) return;
           recordActivity(revision.activity, activity);
@@ -4353,6 +4381,10 @@ export function createApp(options: AppOptions) {
           process.stderr.write(text);
         },
       });
+      if (goalRevision !== revision) {
+        agent.close();
+        return;
+      }
       revision.agent = agent;
 
       await agent.run(goalRevisionPrompt(goalFile, goalRevisionRequest));
@@ -4370,10 +4402,14 @@ export function createApp(options: AppOptions) {
 
   async function runAgent(run: ActiveRun, prompt = agentPrompt(adrDir, run.file)): Promise<boolean> {
     try {
+      const env = await peerEnvironment();
+      // A stop or reset during provider selection ends the manual run; no peer
+      // may run its prompt for an owner that is gone.
+      if (!isLiveRun(run)) return false;
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity) {
           if (!isLiveRun(run)) return;
           recordActivity(run.activity, activity);
@@ -4398,6 +4434,10 @@ export function createApp(options: AppOptions) {
           process.stderr.write(text);
         },
       });
+      if (!isLiveRun(run)) {
+        agent.close();
+        return false;
+      }
       run.agent = agent;
 
       await agent.run(prompt);
@@ -4882,10 +4922,14 @@ export function createApp(options: AppOptions) {
       action: laneAction(lane),
     });
     try {
+      const env = await peerEnvironment();
+      // A stop or disposal during provider selection clears the lane; the
+      // prompt must not run for a lane nothing can close.
+      if (!liveLanes.has(lane)) return;
       const agent = new AcpConnection({
         command: agentCommand,
         cwd: repoDir,
-        env: await peerEnvironment(),
+        env,
         onActivity(activity) {
           recordLaneActivity(lane, activity);
         },
@@ -4911,6 +4955,10 @@ export function createApp(options: AppOptions) {
           process.stderr.write(text);
         },
       });
+      if (!liveLanes.has(lane)) {
+        agent.close();
+        return;
+      }
       lane.agent = agent;
       if (lifecycle.paused) agent.pause();
       await agent.run(prompt);
