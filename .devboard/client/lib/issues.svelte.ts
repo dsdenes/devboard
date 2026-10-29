@@ -1,4 +1,5 @@
 import { connection } from "./connection.svelte";
+import { queueCounts } from "./issues-queue";
 import { notifications } from "./notifications.svelte";
 import type {
   GoalDraftDetail,
@@ -186,8 +187,14 @@ export class IssuesStore {
     return this.snapshot?.notice ?? null;
   }
 
+  /** Open issues waiting for an agent; a running issue is not pending. */
   get pending(): number {
-    return this.queue.filter((issue) => !issue.handled).length;
+    return queueCounts(this.queue).pending;
+  }
+
+  /** Open issues an agent is working right now. */
+  get working(): number {
+    return queueCounts(this.queue).working;
   }
 
   get cooldowns(): Record<string, string> {

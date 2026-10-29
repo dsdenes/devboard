@@ -103,6 +103,8 @@ export interface ScoutState {
   lastScanStartedAt: string | null;
   /** Every Auto Scout issue known from GitHub, newest creation first. */
   issues: ScoutIssueRow[];
+  /** Every open issue title the last successful read reported. */
+  openTitles: string[];
   /**
    * The releases the last successful read saw. A published release changes
    * it, which lets every unresolved row attempt resolution again at once.
@@ -175,6 +177,10 @@ function storedIssueRow(row: StoredIssueRow): ScoutIssueRow {
   };
 }
 
+function isOpenTitles(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
 function isSync(value: unknown): value is ScoutSync {
   return (
     isRecord(value) &&
@@ -228,6 +234,7 @@ export function emptyState(options: {
     intervalMinutes: options.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES,
     lastScanStartedAt: null,
     issues: [],
+    openTitles: [],
     releaseSignature: null,
     sync: { state: "stale", at: null, error: null },
     scan: null,
@@ -264,6 +271,8 @@ export function parseState(text: string): ScoutState | undefined {
     parsed.lastScanStartedAt === undefined ? null : nullableString(parsed.lastScanStartedAt) ? parsed.lastScanStartedAt : undefined;
   if (lastScanStartedAt === undefined) return undefined;
   if (!Array.isArray(parsed.issues) || !parsed.issues.every(isIssueRow)) return undefined;
+  const openTitles = parsed.openTitles === undefined ? [] : parsed.openTitles;
+  if (!isOpenTitles(openTitles)) return undefined;
   const releaseSignature =
     parsed.releaseSignature === undefined
       ? null
@@ -289,6 +298,7 @@ export function parseState(text: string): ScoutState | undefined {
     intervalMinutes,
     lastScanStartedAt,
     issues: parsed.issues.map(storedIssueRow),
+    openTitles,
     releaseSignature,
     sync: parsed.sync,
     scan: parsed.scan as ScoutScanRecord | null,
@@ -336,6 +346,7 @@ export function migrateState(text: string): ScoutState | undefined {
     intervalMinutes: DEFAULT_INTERVAL_MINUTES,
     lastScanStartedAt: null,
     issues: [],
+    openTitles: [],
     releaseSignature: null,
     sync: { state: "stale", at: null, error: null },
     scan: parsed.scan as ScoutScanRecord | null,

@@ -5,13 +5,16 @@ import { runIdentifier } from "../worker";
 import {
   CATEGORIES,
   EXCLUDED_ROOTS,
+  HOUR_MS,
   SIGNIFICANCE_THRESHOLD,
+  UNLIMITED_SCAN_BATCH,
   recommendationsPath,
   requestPath,
   scanDirectory,
   scansDirectory,
 } from "./paths";
-import { writeAtomic } from "./state";
+import { normalizeTitle } from "./recommendation";
+import { writeAtomic, type ScoutLimits } from "./state";
 
 /**
  * One scan's request: written before the prompt and read by the agent, so the
@@ -90,6 +93,138 @@ export function writeRequest(directory: string, request: ScanRequest): string {
   const path = requestPath(directory);
   writeAtomic(path, `${JSON.stringify(request, null, 2)}\n`);
   return path;
+}
+
+/** One row the capacity and title helpers read from the persisted board. */
+export interface ScanIssueFact {
+  title: string;
+  createdAt: string;
+  state: string;
+}
+
+export interface ScanCapacity {
+  /** How many issues this cycle may create. */
+  batch: number;
+  windowCount: number;
+  openCount: number;
+  hourlyRoom: number;
+  pendingRoom: number;
+  /** When zero capacity may become positive again. */
+  blockedUntil: string | null;
+}
+
+/**
+ * The effective batch: how many issues this cycle may create. The hourly
+ * window counts every Auto Scout issue created inside it, in any state, so a
+ * restart never forgets a filing. The worker and the dashboard's request
+ * preview both call this, so the preview can never contradict the request.
+ */
+export function scanCapacity(options: {
+  issues: readonly ScanIssueFact[];
+  limits: ScoutLimits;
+  now: Date;
+  syncMs: number;
+}): ScanCapacity {
+  const windowStart = options.now.getTime() - HOUR_MS;
+  let windowCount = 0;
+  let oldest = Number.POSITIVE_INFINITY;
+  let openCount = 0;
+  for (const issue of options.issues) {
+    const createdAt = Date.parse(issue.createdAt);
+    if (Number.isFinite(createdAt) && createdAt > windowStart) {
+      windowCount += 1;
+      if (createdAt < oldest) oldest = createdAt;
+    }
+    if (issue.state === "pending") openCount += 1;
+  }
+  const hourlyRoom =
+    options.limits.maxPerHour === null
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, options.limits.maxPerHour - windowCount);
+  const pendingRoom =
+    options.limits.maxPending === null
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, options.limits.maxPending - openCount);
+  const batch = Math.min(hourlyRoom, pendingRoom);
+  let blockedUntil: string | null = null;
+  if (batch === 0) {
+    const candidates: number[] = [];
+    if (pendingRoom === 0) candidates.push(options.now.getTime() + options.syncMs);
+    if (hourlyRoom === 0 && Number.isFinite(oldest)) candidates.push(oldest + HOUR_MS);
+    if (candidates.length === 0) candidates.push(options.now.getTime() + options.syncMs);
+    blockedUntil = new Date(Math.min(...candidates)).toISOString();
+  }
+  return { batch, windowCount, openCount, hourlyRoom, pendingRoom, blockedUntil };
+}
+
+/**
+ * Normalized titles the scan must not restate: Auto Scout issues in any state,
+ * every open issue, and the draft goal headings. One implementation keeps the
+ * worker's dedup and the request preview identical.
+ */
+export function knownTitlesFor(
+  issues: readonly { title: string }[],
+  openTitles: readonly string[],
+  draftGoalHeadings: readonly string[],
+): string[] {
+  const titles = new Set<string>();
+  for (const issue of issues) titles.add(normalizeTitle(issue.title));
+  for (const title of openTitles) titles.add(normalizeTitle(title));
+  for (const heading of draftGoalHeadings) titles.add(normalizeTitle(heading));
+  return [...titles].sort();
+}
+
+/**
+ * The request the next scan would write. `scanId` and `createdAt` are null
+ * because the worker assigns them when the scan directory exists; every other
+ * field is computed exactly as `buildRequest` computes it.
+ */
+export interface ScanRequestPreview {
+  version: 2;
+  scanId: null;
+  repository: string;
+  repositoryPath: string;
+  requested: number;
+  categories: string[];
+  excludedRoots: string[];
+  knownTitles: string[];
+  draftGoalHeadings: string[];
+  significanceThreshold: number;
+  createdAt: null;
+}
+
+export function previewScanRequest(options: {
+  repoDir: string;
+  repository: string;
+  issues: readonly ScanIssueFact[];
+  openTitles: readonly string[];
+  limits: ScoutLimits;
+  now: Date;
+  syncMs: number;
+}): ScanRequestPreview {
+  const capacity = scanCapacity({
+    issues: options.issues,
+    limits: options.limits,
+    now: options.now,
+    syncMs: options.syncMs,
+  });
+  const draftGoalHeadings = readDraftGoalHeadings(options.repoDir);
+  return {
+    version: 2,
+    scanId: null,
+    repository: options.repository,
+    repositoryPath: resolve(options.repoDir),
+    requested: Math.min(
+      Number.isFinite(capacity.batch) ? capacity.batch : UNLIMITED_SCAN_BATCH,
+      UNLIMITED_SCAN_BATCH,
+    ),
+    categories: [...CATEGORIES],
+    excludedRoots: [...EXCLUDED_ROOTS],
+    knownTitles: knownTitlesFor(options.issues, options.openTitles, draftGoalHeadings),
+    draftGoalHeadings,
+    significanceThreshold: SIGNIFICANCE_THRESHOLD,
+    createdAt: null,
+  };
 }
 
 export function promptFor(directory: string): string {
