@@ -25,7 +25,8 @@
     "verify:providers": "bun run scripts/verify-providers.ts",
     "verify:issues": "bun run scripts/verify-issues.ts",
     "verify:scout": "bun run scripts/verify-scout.ts",
-    "verify:agents": "bun run scripts/verify-agents.ts"
+    "verify:agents": "bun run scripts/verify-agents.ts",
+    "verify:design": "bun run scripts/verify-design.ts"
   },
   "files": [
     "package.json",

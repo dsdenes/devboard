@@ -41,6 +41,7 @@ import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { originRepository } from "../issues/repository";
 import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
 import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
+import { DesignBridge, type DesignBridgeOptions } from "./design";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import {
   DISCOVER_SKILLS,
@@ -175,6 +176,8 @@ export interface AppOptions {
   issues?: Pick<IssuesBridgeOptions, "pollMs" | "preflight" | "spawnWorker" | "closeIssue">;
   /** Auto Scout's test seams; production uses the detached worker itself. */
   scout?: Pick<ScoutBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
+  /** Design System's test seams; production uses the detached worker itself. */
+  design?: Pick<DesignBridgeOptions, "pollMs" | "preflight" | "spawnWorker">;
   /** Watchdog's test seams; production reads `gh` in the background. */
   watchdog?: Pick<
     WatchdogActivityOptions,
@@ -2243,6 +2246,7 @@ export function createApp(options: AppOptions) {
    */
   const scoutDescriptor = agentRegistry.require("scout");
   const watchdogDescriptor = agentRegistry.require("watchdog");
+  const designDescriptor = agentRegistry.require("design");
   const scout = new ScoutBridge({
     descriptor: scoutDescriptor,
     repoDir,
@@ -2287,10 +2291,32 @@ export function createApp(options: AppOptions) {
       : { systemctl: options.watchdog.systemctl }),
   });
 
-  /** The shared control plane both background agents answer through. */
+  /**
+   * Design System audits the interface source and the two design documents,
+   * files `design` issues, and releases accepted documentation to main. It
+   * also runs as a detached worker so it outlives this server.
+   */
+  const design = new DesignBridge({
+    descriptor: designDescriptor,
+    repoDir,
+    stateDir,
+    agentCommand,
+    agentEnvironment: peerEnvironment,
+    runningVersion,
+    harnessDir: runningHarnessDir(),
+    send: (event, except) => sendAll(event, except),
+    log: (line) => process.stderr.write(`${line}\n`),
+    ...(options.design?.pollMs === undefined ? {} : { pollMs: options.design.pollMs }),
+    ...(options.design?.preflight === undefined ? {} : { preflight: options.design.preflight }),
+    ...(options.design?.spawnWorker === undefined
+      ? {}
+      : { spawnWorker: options.design.spawnWorker }),
+  });
+
+  /** The shared control plane every background agent answers through. */
   const agents = new BackgroundAgentBridge({
     registry: agentRegistry,
-    adapters: [scout, watchdog],
+    adapters: [scout, watchdog, design],
     broadcast: (event) => sendAll(event),
     log: (line) => process.stderr.write(`${line}\n`),
   });

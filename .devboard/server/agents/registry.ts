@@ -556,6 +556,31 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     tab: { id: "watchdog", kind: "watchdog", title: "Watchdog" },
     timerGate: { unit: "devboard-watchdog.timer" },
   }),
+  validateAgentDescriptor({
+    id: "design",
+    label: "Design System",
+    description:
+      "Audits the interface against its documented design system and files capped issues for " +
+      "every divergence.",
+    scope: "repository",
+    lifecycle: AGENT_LIFECYCLES,
+    cadence: {
+      field: "intervalMinutes",
+      defaultMinutes: 60,
+      minMinutes: 1,
+      maxMinutes: 1440,
+    },
+    limits: {
+      maxPerHour: { min: 1, max: 100, nullable: true },
+      maxPending: { min: 1, max: 100, nullable: true },
+      default: { maxPerHour: 10, maxPending: 5 },
+    },
+    commands: SHARED_COMMANDS,
+    issues: SHARED_ISSUES,
+    sync: SHARED_SYNC,
+    detail: { panel: "activity", testId: "agent-detail" },
+    tab: { id: "design", kind: "design", title: "Design System" },
+  }),
 ]);
 
 export const agentRegistry: AgentRegistry = defineAgentRegistry(DEFAULT_AGENT_DESCRIPTORS);

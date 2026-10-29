@@ -138,6 +138,12 @@
             {/if}
           </span>
         </span>
+        <span class="agent-settings__run">
+          Last run
+          <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
+            {stamp(snapshot?.cadence.lastRunAt ?? null)}
+          </span>
+        </span>
       {/snippet}
       {#snippet actions()}
         {#if showStop}
@@ -185,12 +191,6 @@
               />
               <span class="agent-settings__unit">min</span>
             </label>
-            <span class="agent-settings__run">
-              Last run
-              <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
-                {stamp(snapshot?.cadence.lastRunAt ?? null)}
-              </span>
-            </span>
             <span class="agent-settings__run">
               Next run
               <span class="mono" data-testid="agent-next-run" title={snapshot?.cadence.nextRunAt ?? "—"}>
@@ -303,7 +303,7 @@
         {#if detail?.panel === "cycles"}
           <AgentCyclesPanel cycles={detail.cycles} />
         {:else}
-          <AgentActivityPanel lines={activity} scanId={activityScanId} />
+          <AgentActivityPanel agentId={agentId} lines={activity} scanId={activityScanId} />
         {/if}
       </div>
     </div>
