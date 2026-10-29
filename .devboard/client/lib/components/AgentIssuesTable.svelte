@@ -162,9 +162,9 @@
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     color: var(--muted-foreground);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
     padding: 5px 8px;
     position: sticky;
     text-align: left;
