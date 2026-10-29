@@ -157,8 +157,8 @@ function coachSnapshot(context: McpContext): AgentSnapshot {
       maxPending: settings.maxPending,
     },
     issues: status.issues.map((issue) => ({
-      title: `[coach] ${issue.category}: ${issue.line}`,
-      category: issue.category,
+      title: issue.title,
+      category: issue.kind,
       filedAt: issue.filedAt,
       url: issue.url,
       state:

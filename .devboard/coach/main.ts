@@ -166,11 +166,14 @@ function reportLines(report: CoachReport): string[] {
     `sessions: ${report.sessions} (selected ${report.sessionFiles}` +
       `${report.truncated ? ", truncated" : ""}, skipped ${report.skipped})`,
     `journal records: ${report.journalRecords}, malformed lines: ${report.malformed}`,
-    ...report.findings.map(
-      (finding) =>
-        `finding: ${finding.category} ${finding.fingerprint} x${finding.count} — ${finding.line}`,
+    `families: ${report.families}, selected: ${report.selected.length}, ` +
+      `omitted: ${report.omitted}, ledger reset: ${report.ledgerReset}`,
+    ...report.selected.map(
+      (family) =>
+        `family: ${family.key} (${family.kind}) score ${family.score} — ` +
+        `${family.calls} call(s), ${family.sessions} session(s), ${family.days} day(s)`,
     ),
-    ...(report.findings.length === 0 ? ["finding: none"] : []),
+    ...(report.selected.length === 0 ? ["family: none"] : []),
   ];
 }
 

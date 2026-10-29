@@ -5,43 +5,35 @@ import { settingsPath } from "./paths";
 
 /**
  * What the dashboard persists and the worker applies without a restart. The
- * deterministic detectors stay fixed; only the cadence, the filing caps, and
- * the decision gate's model and thresholds are settings.
+ * deterministic family pipeline stays fixed; only the cadence, the filing
+ * caps, the per-cycle cap, and the command allowlist are settings.
  */
 
-/** The pinned Jev model. The alias is never used: thresholds are tuned per version. */
-export const JEV_DECISION_MODEL = "typesafe/jev-1.14";
-/** Every positive question at or above this files; every negative one at or below it. */
-export const DECISION_APPROVE_AT = 0.9;
-/** Any positive question at or below this rejects; any negative one at or above it. */
-export const DECISION_REJECT_AT = 0.1;
-/** A rejected fingerprint waits this long before it is asked again. */
-export const REJECT_COOLDOWN_HOURS = 168;
+export const DEFAULT_INTERVAL_MINUTES = 60;
 export const DEFAULT_MAX_PER_HOUR = 10;
 export const DEFAULT_MAX_PENDING = 20;
+export const DEFAULT_MAX_ISSUES_PER_CYCLE = 2;
+export const MAX_ALLOWLIST_ENTRIES = 50;
+export const MAX_ALLOWLIST_ENTRY = 200;
 
 export interface CoachSettings {
   intervalMinutes: number;
+  /** Filings per rolling hour; null is unlimited. */
   maxPerHour: number | null;
+  /** Pending proposals kept; null is unlimited. */
   maxPending: number | null;
-  /** The decision model every finding is gated through. */
-  decisionModel: string;
-  /** The gate files only when every question is this confident. */
-  approveAt: number;
-  /** The gate rejects when any question is this confident the other way. */
-  rejectAt: number;
-  /** Hours a rejected fingerprint stays out of the gate. */
-  rejectCooldownHours: number;
+  /** Issues filed in one cycle, 1 through 20. */
+  maxIssuesPerCycle: number;
+  /** Command prefixes a tool proposal must match to be filed. */
+  allowlist: string[];
 }
 
 export const DEFAULT_COACH_SETTINGS: CoachSettings = Object.freeze({
-  intervalMinutes: 60,
+  intervalMinutes: DEFAULT_INTERVAL_MINUTES,
   maxPerHour: DEFAULT_MAX_PER_HOUR,
   maxPending: DEFAULT_MAX_PENDING,
-  decisionModel: JEV_DECISION_MODEL,
-  approveAt: DECISION_APPROVE_AT,
-  rejectAt: DECISION_REJECT_AT,
-  rejectCooldownHours: REJECT_COOLDOWN_HOURS,
+  maxIssuesPerCycle: DEFAULT_MAX_ISSUES_PER_CYCLE,
+  allowlist: [],
 });
 
 export function isValidCadence(value: unknown): value is number {
@@ -52,18 +44,27 @@ export function isValidLimit(value: unknown): value is number | null {
   return value === null || (isInteger(value) && value >= 1 && value <= 100);
 }
 
-export function isValidDecisionModel(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.length <= 200;
+export function isValidIssuesPerCycle(value: unknown): value is number {
+  return isInteger(value) && value >= 1 && value <= 20;
 }
 
-export function isValidThreshold(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1;
+export function isValidAllowlist(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_ALLOWLIST_ENTRIES &&
+    value.every(
+      (entry) =>
+        typeof entry === "string" &&
+        entry.trim().length > 0 &&
+        entry.length <= MAX_ALLOWLIST_ENTRY,
+    )
+  );
 }
 
-export function isValidCooldown(value: unknown): value is number {
-  return isInteger(value) && value >= 1 && value <= 8760;
-}
-
+/**
+ * Parses a settings file. A missing or unknown key falls back to its default
+ * and never rejects the file; an invalid known key falls back on its own.
+ */
 export function parseCoachSettings(text: string): CoachSettings | undefined {
   let parsed: unknown;
   try {
@@ -72,26 +73,22 @@ export function parseCoachSettings(text: string): CoachSettings | undefined {
     return undefined;
   }
   if (!isRecord(parsed)) return undefined;
-  if (!isValidCadence(parsed.intervalMinutes)) return undefined;
-  if (!isValidLimit(parsed.maxPerHour) || !isValidLimit(parsed.maxPending)) return undefined;
-  const approveAt = isValidThreshold(parsed.approveAt)
-    ? parsed.approveAt
-    : DEFAULT_COACH_SETTINGS.approveAt;
-  const rejectAt = isValidThreshold(parsed.rejectAt)
-    ? parsed.rejectAt
-    : DEFAULT_COACH_SETTINGS.rejectAt;
   return {
-    intervalMinutes: parsed.intervalMinutes,
-    maxPerHour: parsed.maxPerHour,
-    maxPending: parsed.maxPending,
-    decisionModel: isValidDecisionModel(parsed.decisionModel)
-      ? parsed.decisionModel.trim()
-      : DEFAULT_COACH_SETTINGS.decisionModel,
-    approveAt: rejectAt < approveAt ? approveAt : DEFAULT_COACH_SETTINGS.approveAt,
-    rejectAt: rejectAt < approveAt ? rejectAt : DEFAULT_COACH_SETTINGS.rejectAt,
-    rejectCooldownHours: isValidCooldown(parsed.rejectCooldownHours)
-      ? parsed.rejectCooldownHours
-      : DEFAULT_COACH_SETTINGS.rejectCooldownHours,
+    intervalMinutes: isValidCadence(parsed.intervalMinutes)
+      ? parsed.intervalMinutes
+      : DEFAULT_COACH_SETTINGS.intervalMinutes,
+    maxPerHour: isValidLimit(parsed.maxPerHour)
+      ? parsed.maxPerHour
+      : DEFAULT_COACH_SETTINGS.maxPerHour,
+    maxPending: isValidLimit(parsed.maxPending)
+      ? parsed.maxPending
+      : DEFAULT_COACH_SETTINGS.maxPending,
+    maxIssuesPerCycle: isValidIssuesPerCycle(parsed.maxIssuesPerCycle)
+      ? parsed.maxIssuesPerCycle
+      : DEFAULT_COACH_SETTINGS.maxIssuesPerCycle,
+    allowlist: isValidAllowlist(parsed.allowlist)
+      ? [...parsed.allowlist]
+      : [...DEFAULT_COACH_SETTINGS.allowlist],
   };
 }
 
@@ -100,10 +97,11 @@ export function readCoachSettings(directory: string): CoachSettings {
     return (
       parseCoachSettings(readFileSync(settingsPath(directory), "utf8")) ?? {
         ...DEFAULT_COACH_SETTINGS,
+        allowlist: [],
       }
     );
   } catch {
-    return { ...DEFAULT_COACH_SETTINGS };
+    return { ...DEFAULT_COACH_SETTINGS, allowlist: [] };
   }
 }
 

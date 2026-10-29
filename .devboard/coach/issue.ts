@@ -1,180 +1,150 @@
-import type { AgentSession } from "../lib/agent-sessions";
-import { COACH_SESSION_EXCERPT_MAX, sessionExcerpt } from "../lib/agent-sessions";
-import type { CoachFinding } from "./findings";
-import { FINDING_LINE_MAX } from "./findings";
+import { createHash } from "node:crypto";
+import type { CoachFamily } from "./families";
+import type { Proposal } from "./synthesize";
 
 /**
- * The filed artifact for one finding: one title line, one body with exactly
- * four level-two sections, and the recurrence comment. The proposal and the
- * acceptance criteria come from the finalizer; this module never invents them.
- * Nothing here performs I/O; the delivery module sends the bytes.
+ * The filed artifact for one family: one title, one deterministic body with
+ * exactly five level-two sections, and the family tag deduplication reads.
+ * Nothing here generates content: the proposal comes from synthesis and the
+ * validator, the evidence from the family builder.
  */
 
 export const ISSUE_BODY_MAX_BYTES = 64 * 1024;
-export const ISSUE_TITLE_MAX = 80;
 
-export interface CoachEvidence {
-  window: { start: string; end: string };
-  sessions: Map<string, AgentSession>;
-  /** Journal scopes that contributed, with their newest normalised excerpt. */
-  scopes: Map<string, string>;
-  repoDir: string;
+export interface CoachOpenIssue {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
 }
 
-export interface CoachEvidenceInput {
-  finding: CoachFinding;
-  evidence: CoachEvidence;
+/** The tag a filed body carries: `family:` plus the first 12 hex of SHA-256. */
+export function familyTag(key: string): string {
+  return createHash("sha256").update(key).digest("hex").slice(0, 12);
 }
 
-export interface CoachIssueInput extends CoachEvidenceInput {
-  /** The finalizer's proposal and criteria; never generated here. */
-  recommendation: { proposal: string; acceptance: string[] };
-}
-
-/** `[coach] <category>: <line>`, one line, never longer than 80 characters. */
-export function coachTitle(finding: CoachFinding): string {
-  const title = `[coach] ${finding.category}: ${finding.line.replace(/\s+/g, " ").trim()}`;
-  if (title.length <= ISSUE_TITLE_MAX) return title;
-  return `${title.slice(0, ISSUE_TITLE_MAX - 1).trimEnd()}…`;
+/** `[coach] <family key>` for a tool, `[coach] prompt: <family key>` for a prompt. */
+export function issueTitle(family: CoachFamily, action: "tool" | "prompt"): string {
+  return action === "tool" ? `[coach] ${family.key}` : `[coach] prompt: ${family.key}`;
 }
 
 /** Escapes a line that would otherwise open a new Markdown section. */
-function safeQuoteLine(line: string): string {
+function safeLine(line: string): string {
   return line.replace(/^(#{1,6})(\s)/, "\\$1$2");
 }
 
-function sessionLines(session: AgentSession, excerpt: string): string[] {
+function familySection(family: CoachFamily): string[] {
   return [
-    `- Session \`${session.id}\``,
-    `  - Start: ${session.startedAt}`,
-    `  - CWD: \`${session.relativeCwd}\``,
-    `  - Tokens: input ${session.usage.input}, output ${session.usage.output}, ` +
-      `cache read ${session.usage.cacheRead}, cache write ${session.usage.cacheWrite}, ` +
-      `total ${session.usage.totalTokens}`,
-    `  - Cost: ${session.cost}`,
-    ...(excerpt.length === 0
-      ? []
-      : ["", "```text", ...excerpt.split("\n").map(safeQuoteLine), "```"]),
+    "## Family",
+    "",
+    `- Key: \`${family.key}\``,
+    `- Kind: ${family.kind}`,
+    `- Calls: ${family.calls}`,
+    `- Sessions: ${family.sessions.length}`,
+    `- Days: ${family.days}`,
+    `- First: ${family.firstAt}`,
+    `- Last: ${family.lastAt}`,
+    `- Family: family:${familyTag(family.key)}`,
+    "",
   ];
 }
 
-function scopeLines(scope: string, excerpt: string): string[] {
-  return [
-    `- Scope \`${scope}\``,
-    ...(excerpt.length === 0
-      ? []
-      : ["", "```text", ...excerpt.split("\n").map(safeQuoteLine), "```"]),
-  ];
-}
-
-interface BodyParts {
-  finding: string[];
-  evidence: string[];
-  proposal: string[];
-  acceptance: string[];
-}
-
-function parts(input: CoachIssueInput, excerptLimit: number): BodyParts {
-  const { finding, evidence, recommendation } = input;
-  const findingLines = [
-    `- Fingerprint: \`${finding.fingerprint}\``,
-    `- Category: \`${finding.category}\``,
-    `- Count: ${finding.count}`,
-    `- First occurrence: ${finding.firstAt}`,
-    `- Last occurrence: ${finding.lastAt}`,
-    `- Window: ${evidence.window.start} .. ${evidence.window.end}`,
-  ];
-  const evidenceLines: string[] = [];
-  for (const id of finding.sessions) {
-    const session = evidence.sessions.get(id);
-    if (session === undefined) {
-      evidenceLines.push(`- Session \`${id}\` (transcript unavailable)`);
-      continue;
+function evidenceSection(family: CoachFamily): string[] {
+  const lines = ["## Evidence", "", "### Fragments", ""];
+  if (family.fragments.length === 0) {
+    lines.push("None.");
+  } else {
+    for (const fragment of family.fragments) {
+      lines.push(`- \`${fragment.text}\` ×${fragment.count}`);
     }
-    const excerpt =
-      excerptLimit <= 0
-        ? ""
-        : sessionExcerpt(session, evidence.repoDir).slice(0, excerptLimit);
-    evidenceLines.push(...sessionLines(session, excerpt));
   }
-  for (const scope of finding.scopes) {
-    const excerpt = evidence.scopes.get(scope) ?? "";
-    evidenceLines.push(...scopeLines(scope, excerpt.slice(0, excerptLimit)));
+  lines.push("", "### Excerpts", "");
+  const chosen = family.excerpts;
+  if (chosen.length === 0) {
+    lines.push("None.");
+  } else {
+    for (const excerpt of chosen) {
+      lines.push(`- \`${excerpt.command}\` (${excerpt.status}) — ${excerpt.sessionTitle}`);
+      if (excerpt.output.length > 0) {
+        lines.push("", "```text");
+        for (const line of excerpt.output.split("\n")) lines.push(safeLine(line));
+        lines.push("```");
+      }
+      lines.push("");
+    }
   }
-  if (evidenceLines.length === 0) evidenceLines.push("No contributing evidence remains.");
-  return {
-    finding: findingLines,
-    evidence: evidenceLines,
-    proposal: recommendation.proposal
-      .split("\n")
-      .map((line) => safeQuoteLine(line.trimEnd())),
-    acceptance: recommendation.acceptance.map((criterion) => {
-      const single = criterion.replace(/\s+/g, " ").trim();
-      return safeQuoteLine(single.startsWith("- [ ]") ? single : `- [ ] ${single}`);
-    }),
-  };
+  lines.push("");
+  return lines;
 }
 
-function render(partsToRender: BodyParts): string {
+function proposalSection(proposal: Proposal, allowlistEntry: string): string[] {
+  if (proposal.action === "tool" && proposal.tool !== undefined) {
+    const tool = proposal.tool;
+    return [
+      "## Proposed tool",
+      "",
+      "```json",
+      JSON.stringify(tool, null, 2),
+      "```",
+      "",
+      "Covers:",
+      "",
+      ...tool.covers.map((entry) => `- \`${entry}\``),
+      "",
+      "Add this exact entry to the Coach `allowlist` in `settings.json`:",
+      "",
+      "```json",
+      JSON.stringify(allowlistEntry),
+      "```",
+      "",
+    ];
+  }
+  if (proposal.action === "prompt" && proposal.prompt !== undefined) {
+    return [
+      "## Proposed prompt",
+      "",
+      `- Target: \`${proposal.prompt.target}\``,
+      "",
+      ...proposal.prompt.instruction.split("\n").map((line) => safeLine(line.trimEnd())),
+      "",
+    ];
+  }
+  return ["## Proposed tool", "", "None.", ""];
+}
+
+function acceptanceSection(proposal: Proposal): string[] {
   return [
-    "## Finding",
+    "## Acceptance",
     "",
-    ...partsToRender.finding,
+    ...proposal.acceptance.map((criterion) => safeLine(criterion.replace(/\s+/g, " ").trim())),
     "",
-    "## Evidence",
-    "",
-    ...partsToRender.evidence,
-    "",
-    "## Proposed change",
-    "",
-    ...partsToRender.proposal,
-    "",
-    "## Acceptance criteria",
-    "",
-    ...partsToRender.acceptance,
-    "",
-  ].join("\n");
+  ];
 }
 
-function bytes(text: string): number {
-  return Buffer.byteLength(text, "utf8");
+function rationaleSection(proposal: Proposal): string[] {
+  return [
+    "## Rationale",
+    "",
+    ...proposal.rationale.split("\n").map((line) => safeLine(line.trimEnd())),
+    "",
+  ];
 }
 
 /**
- * The issue body. Four level-two sections appear exactly once; each session's
- * excerpt is at most 2,000 characters, and the whole body stays under 64 KiB.
+ * The issue body. The five level-two sections appear exactly once and in
+ * order; the validator rejects bytes at or over 64 KiB before filing.
  */
-export function coachBody(input: CoachIssueInput): string {
-  let limit = COACH_SESSION_EXCERPT_MAX;
-  for (;;) {
-    const body = render(parts(input, limit));
-    if (bytes(body) <= ISSUE_BODY_MAX_BYTES || limit === 0) {
-      return bytes(body) <= ISSUE_BODY_MAX_BYTES
-        ? body
-        : `${body.slice(0, ISSUE_BODY_MAX_BYTES - 1)}…`;
-    }
-    limit = Math.floor(limit / 2);
-  }
-}
-
-/** A recurrence: the newest window and count, never a second filing. */
-export function coachComment(input: CoachEvidenceInput): string {
-  const body = [
-    `Another occurrence of \`${input.finding.fingerprint}\` (\`${input.finding.category}\`).`,
-    "",
-    `- Count: ${input.finding.count}`,
-    `- Last occurrence: ${input.finding.lastAt}`,
-    `- Window: ${input.evidence.window.start} .. ${input.evidence.window.end}`,
-    "",
-    "```text",
-    safeQuoteLine(input.finding.line.slice(0, FINDING_LINE_MAX)),
-    "```",
-    "",
-    "Filed by the Devboard Coach from machine-checkable evidence; it never edits",
-    "a prompt, a wrapper, or source.",
-    "",
+export function issueBody(input: {
+  family: CoachFamily;
+  proposal: Proposal;
+  allowlistEntry: string;
+}): string {
+  const { family, proposal } = input;
+  return [
+    ...familySection(family),
+    ...evidenceSection(family),
+    ...proposalSection(proposal, input.allowlistEntry),
+    ...acceptanceSection(proposal),
+    ...rationaleSection(proposal),
   ].join("\n");
-  return bytes(body) <= ISSUE_BODY_MAX_BYTES
-    ? body
-    : `${body.slice(0, ISSUE_BODY_MAX_BYTES - 1)}…`;
 }
