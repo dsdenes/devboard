@@ -898,6 +898,111 @@ describe("Flow change widgets", () => {
     expect(fallback.every((widget) => widget.category === "structure")).toBe(true);
     failingClient.close();
   }, 60_000);
+
+  test("a provider refusal while analyzing falls back instead of rejecting unobserved", async () => {
+    const fixture = createFixture("analyst-provider-refusal");
+    const events: Event[] = [];
+    const unhandled: unknown[] = [];
+    const observed = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", observed);
+    let environmentCalls = 0;
+    const controller = new FlowController({
+      repoDir: fixture.root,
+      stateDir: fixture.stateDir,
+      agentCommand: `bun ${STUB_AGENT} --flow-goal --flow-implement --flow-change`,
+      agentEnvironment: async () => {
+        environmentCalls += 1;
+        // The goal interview and the implementation are the first two peers;
+        // a lapsed subscription refuses the first analyst peer's environment.
+        if (environmentCalls === 3) throw new Error("no subscription can serve a peer");
+        return { ...process.env };
+      },
+      broadcast: (event) => events.push(event as Event),
+      forge: new StubForge({ logPath: fixture.forgeLog }),
+      forgeTarget: { forge: "github", host: "forge.test", project: "acme/fixture" },
+      watchMs: 20,
+      analystTimeoutMs: 10_000,
+    });
+    try {
+      void controller.createGoal();
+      await waitUntil(
+        () => events.some((event) => event.type === "flowQuestion"),
+        "the goal interview question",
+      );
+      const question = events.find((event) => event.type === "flowQuestion");
+      controller.answer(question?.id, "Alpha", "goal");
+      await waitUntil(
+        () => events.some((event) => event.type === "flowGoalStopped" && event.completed === true),
+        "the goal interview to finish",
+      );
+      void controller.startImplementation();
+      await waitUntil(
+        () => events.some((event) => event.type === "flowImplementationStarted"),
+        "the implementation start",
+      );
+      const worktree = [...events]
+        .reverse()
+        .find((event) => event.type === "flowImplementationStarted")?.worktree as string;
+
+      await waitUntil(
+        () => events.some((event) => event.type === "flowError"),
+        "the analyst refusal to surface",
+      );
+      const errorIndex = events.findIndex((event) => event.type === "flowError");
+      await waitUntil(
+        () => {
+          const widgetIndex = events.findIndex(
+            (event, index) => index > errorIndex && event.type === "flowWidgets",
+          );
+          if (widgetIndex < 0) return false;
+          const widgets = events[widgetIndex]?.widgets as
+            | { category: string; files: string[] }[]
+            | undefined;
+          const files = [...events.slice(0, errorIndex)]
+            .reverse()
+            .find((event) => event.type === "flowFiles")?.files as
+            | { path: string }[]
+            | undefined;
+          if (
+            files === undefined ||
+            widgets === undefined ||
+            widgets.length === 0 ||
+            files.length === 0
+          )
+            return false;
+          const covered = new Set(widgets.flatMap((widget) => widget.files));
+          return (
+            widgets.every((widget) => widget.category === "structure") &&
+            files.every((file) => covered.has(file.path))
+          );
+        },
+        "the structure fallback after the refusal",
+      );
+      const errors = events.filter((event) => event.type === "flowError");
+      expect(errors).toHaveLength(1);
+      expect(String(errors[0]?.message)).toContain("could not start");
+
+      // The single refusal is spent: the next diff change analyzes normally.
+      const recoveryMark = events.length;
+      writeFileSync(join(worktree, "src", "after-recovery.txt"), "after the recovery\n");
+      await waitUntil(
+        () =>
+          events.slice(recoveryMark).some((event) => {
+            if (event.type !== "flowWidgets") return false;
+            const widgets = event.widgets as { category: string; files: string[] }[];
+            return (
+              widgets.some((widget) => widget.category !== "structure") &&
+              widgets.some((widget) => widget.files.includes("src/after-recovery.txt"))
+            );
+          }),
+        "the second analyst widget list",
+      );
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", observed);
+      controller.dispose();
+    }
+  }, 60_000);
 });
 
 describe("Flow untracked file bounds", () => {
