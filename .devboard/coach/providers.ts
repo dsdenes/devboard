@@ -21,6 +21,18 @@ import { ProviderService } from "../server/providers/service";
 
 export type Resolved<T> = { ok: true; value: T } | { ok: false; reason: string };
 
+/**
+ * Every registered provider key, for outbound redaction. The Coach files
+ * evidence from peer sessions that received these values, so they belong to
+ * the secret set even when the worker environment never held them.
+ */
+export function registeredProviderSecrets(
+  stateDir: string,
+  environment: Record<string, string | undefined>,
+): string[] {
+  return new ProviderService({ stateDir, env: environment }).list().map((entry) => entry.key);
+}
+
 /** The first enabled OpenRouter subscription, for the decisions transport. */
 export function openRouterKey(
   stateDir: string,

@@ -356,6 +356,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     try {
       delivery = createCoachDelivery({
         repoDir: root,
+        stateDir,
         ...(options.environment === undefined ? {} : { environment: options.environment }),
       });
     } catch (error) {

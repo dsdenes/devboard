@@ -1660,6 +1660,12 @@ characters of normalized excerpts; journal findings list their scopes. The propo
 acceptance criteria are the finalizer's answer; they name a stable capability or an existing
 catalog tool, never a tool named after a fingerprint or a single command string.
 
+Every title, body, comment, and failure reason is redacted before the bytes leave the process:
+against the worker environment, against every API key registered in the Providers store, and
+against the GitHub, Gitea, GitLab, npm, OpenCode Go, and OpenRouter token shapes. Peers receive
+their keys from that store, so a transcript can echo a secret the worker never held; the registered
+values close that path.
+
 `<STATE_DIR>/coach/state.json` (version 2) records every fingerprint with `pending`,
 `filed:<url>`, or `rejected`, plus the last gate decision (probabilities, model, request id, cost,
 count, cool-down). It is written atomically after every filing, rejection, or comment, so a hard
