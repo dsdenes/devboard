@@ -892,6 +892,11 @@ resurrects an invalidated id, never overwrites a human decision, and removes an 
 only when the new crawl no longer grounds it. A malformed or structurally invalid glossary fails
 the run atomically with one `discoverError` naming the file and rule.
 
+A published glossary is crawl evidence: its grounding is proved against the host when the crawl
+publishes it, never again on read. A deleted or renamed source file leaves the published set
+readable and stale instead of hiding every artifact and failing the next crawl on the previous
+glossary; only a staged glossary is checked against the live host.
+
 A successful run publishes exactly five skills under `.omp/skills/`: `discover-testing-strategy`,
 `discover-naming-conventions`, `discover-coding-conventions`,
 `discover-architecture-boundaries`, and `discover-glossary`. Each is a directory containing

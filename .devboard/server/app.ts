@@ -2790,7 +2790,7 @@ export function createApp(options: AppOptions) {
 
   function refreshDiscoverSnapshot(): void {
     const root = targetRoot();
-    const read = readArtifacts(root, { trustGrounding: remoteTarget !== undefined });
+    const read = readArtifacts(root);
     discoverArtifacts = read.artifacts;
     discoverReadError = read.error;
     if (read.artifacts === null) {
@@ -6816,7 +6816,7 @@ export function createApp(options: AppOptions) {
             } else {
               afterDiscoverMutation(
                 ws,
-                confirmGlossaryTerm(targetRoot(), term.context, term.id, remoteTarget !== undefined),
+                confirmGlossaryTerm(targetRoot(), term.context, term.id),
               );
             }
           } else if (command.type === "rejectGlossaryTerm") {
@@ -6831,7 +6831,6 @@ export function createApp(options: AppOptions) {
                   term.context,
                   term.id,
                   command.reason,
-                  remoteTarget !== undefined,
                 ),
               );
             }

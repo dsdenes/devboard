@@ -2687,10 +2687,13 @@ interface PublishedRead {
   decisions: Decision[];
 }
 
-function readPublished(
-  repoDir: string,
-  trustGrounding = false,
-): PublishedRead | undefined {
+/**
+ * A published glossary is immutable crawl evidence: the crawl proved its
+ * grounding against the host at publish time. A later refactor must not make
+ * the published set unreadable, or a re-crawl could never read and repair it.
+ * Live-host grounding checks belong to staged glossaries only.
+ */
+function readPublished(repoDir: string): PublishedRead | undefined {
   const manifest = readManifest(repoDir);
   if (manifest === undefined) return undefined;
   const context = { repoDir, files: hostFiles(repoDir) };
@@ -2727,7 +2730,9 @@ function readPublished(
         `${relativePath} is unreadable: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    glossaries.push(parseGlossary(text, relativePath, context, { staged: false, trustGrounding }));
+    glossaries.push(
+      parseGlossary(text, relativePath, context, { staged: false, trustGrounding: true }),
+    );
   }
   const significance =
     manifest.paths.significance === undefined
@@ -3095,15 +3100,12 @@ export function dependencyRepositories(
 
 /**
  * Reads the published artifacts from disk; never writes or repairs them.
- * A retained remote snapshot carries the crawl's grounding evidence but not
- * the source tree, so its stored grounding is trusted rather than re-proved.
+ * Published grounding is crawl evidence, so a source file deleted after the
+ * crawl leaves the artifacts readable instead of hiding the whole set.
  */
-export function readArtifacts(
-  repoDir: string,
-  options: { trustGrounding?: boolean } = {},
-): ArtifactsRead {
+export function readArtifacts(repoDir: string): ArtifactsRead {
   try {
-    const published = readPublished(repoDir, options.trustGrounding === true);
+    const published = readPublished(repoDir);
     if (published === undefined) return { artifacts: null, error: null };
     const skills = DISCOVER_SKILLS.map((name) =>
       readSkillView(repoDir, published.manifest, name),
@@ -3225,19 +3227,18 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function readGlossaryFile(
-  repoDir: string,
-  context: string,
-  trustGrounding = false,
-): Glossary {
+/** An edit reads the published glossary, so its grounding is crawl evidence. */
+function readGlossaryFile(repoDir: string, context: string): Glossary {
   if (!CONTEXT_PATTERN.test(context)) invalid("context", "must be a bounded context name");
   const file = glossaryPath(repoDir, context);
   if (!existsSync(file)) invalid("context", `has no glossary at ${context}.glossary.yaml`);
   const parsed = readFileSync(file, "utf8");
-  return parseGlossary(parsed, `${context}.glossary.yaml`, {
-    repoDir,
-    files: hostFiles(repoDir),
-  }, { staged: false, trustGrounding });
+  return parseGlossary(
+    parsed,
+    `${context}.glossary.yaml`,
+    { repoDir, files: hostFiles(repoDir) },
+    { staged: false, trustGrounding: true },
+  );
 }
 
 function updateTerm(
@@ -3246,13 +3247,12 @@ function updateTerm(
   id: string,
   update: (concept: Concept) => string | null,
   decision: Omit<Decision, "context" | "id" | "date">,
-  trustGrounding = false,
 ): string | null {
   const manifest = readManifest(repoDir);
   if (manifest === undefined) return "no Discover artifacts are published";
   let glossary: Glossary;
   try {
-    glossary = readGlossaryFile(repoDir, context, trustGrounding);
+    glossary = readGlossaryFile(repoDir, context);
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
@@ -3284,7 +3284,6 @@ export function confirmGlossaryTerm(
   repoDir: string,
   context: string,
   id: string,
-  trustGrounding = false,
 ): string | null {
   return updateTerm(
     repoDir,
@@ -3298,7 +3297,6 @@ export function confirmGlossaryTerm(
       return null;
     },
     { action: "confirm", reason: null },
-    trustGrounding,
   );
 }
 
@@ -3307,7 +3305,6 @@ export function rejectGlossaryTerm(
   context: string,
   id: string,
   reason: string,
-  trustGrounding = false,
 ): string | null {
   const trimmed = typeof reason === "string" ? reason.trim() : "";
   if (trimmed.length === 0) return "a rejection requires a non-empty reason";
@@ -3327,6 +3324,5 @@ export function rejectGlossaryTerm(
       return null;
     },
     { action: "reject", reason: trimmed },
-    trustGrounding,
   );
 }
