@@ -753,6 +753,7 @@
     <div class="feedback-actions">
       <button
         type="button"
+        class="feedback-primary"
         onclick={send}
         disabled={sending || askPending || goalPending || report.trim().length === 0}
       >
@@ -778,7 +779,6 @@
       </button>
       <button
         type="button"
-        class="feedback-secondary"
         data-command="app.report.cancel"
         onclick={reset}
         disabled={sending || goalPending}
@@ -973,7 +973,7 @@
   }
 
   .feedback-drag:focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
 
@@ -1077,8 +1077,8 @@
   }
 
   .feedback-panel textarea:focus {
-    border-color: var(--accent);
-    outline: none;
+    border-color: var(--ring);
+    outline: 2px solid var(--ring);
   }
 
   .feedback-actions {
@@ -1087,10 +1087,10 @@
   }
 
   .feedback-actions button {
-    background: var(--accent);
-    border: 1px solid var(--accent);
+    background: var(--secondary);
+    border: 1px solid var(--border-strong);
     border-radius: 6px;
-    color: var(--surface);
+    color: var(--foreground);
     cursor: pointer;
     font: inherit;
     font-size: 0.85rem;
@@ -1098,15 +1098,15 @@
     padding: 0.4rem 0.8rem;
   }
 
+  .feedback-actions .feedback-primary {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: var(--primary-foreground);
+  }
+
   .feedback-actions button:disabled {
     cursor: not-allowed;
     opacity: 0.5;
-  }
-
-  .feedback-actions .feedback-secondary {
-    background: var(--surface);
-    border-color: var(--border);
-    color: var(--text);
   }
 
   .feedback-status {
