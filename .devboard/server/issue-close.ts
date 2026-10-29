@@ -11,19 +11,23 @@ import { originForge } from "../issues/repository";
 /**
  * The one tracker mutation the Issues overview offers: closing an open issue
  * the operator does not want implemented. It runs only from the dashboard, on
- * the checkout's own GitHub origin, with a write-capable account.
+ * the checkout's own forge origin, with a write-capable account.
  */
 
-export interface GhCommandOutcome {
+export interface ForgeCommandOutcome {
   code: number;
   stdout: string;
   stderr: string;
 }
 
-export type GhRunner = (
+/**
+ * Runs one forge CLI. A GitHub close passes `gh`'s argument list; a GitLab
+ * close passes the complete `glab` argv, so the dispatch is observable.
+ */
+export type ForgeRunner = (
   argv: string[],
   environment: Record<string, string | undefined>,
-) => Promise<GhCommandOutcome>;
+) => Promise<ForgeCommandOutcome>;
 
 export interface CloseIssueRequest {
   repoDir: string;
@@ -33,8 +37,8 @@ export interface CloseIssueRequest {
   environment?: Record<string, string | undefined>;
   /** Injectable forge execution; tests replace the credential probe. */
   exec?: Exec;
-  /** Injectable `gh`; defaults to the operator's binary. */
-  run?: GhRunner;
+  /** Injectable forge CLI; defaults to the operator's `gh`/`glab` binary. */
+  run?: ForgeRunner;
   /** Overrides origin forge detection; tests use it. */
   forge?: "github" | "gitlab" | "gitea";
   /** Gitea HTTP origin; defaults to configuration and the origin remote. */
@@ -69,13 +73,17 @@ const bunExec: Exec = async (commandName, args, options) => {
   }
 };
 
-async function ghCommand(
+async function spawnCommand(
   argv: string[],
   environment: Record<string, string | undefined>,
-): Promise<GhCommandOutcome> {
+): Promise<ForgeCommandOutcome> {
+  const [commandName, ...args] = argv;
+  if (commandName === undefined) {
+    return { code: 1, stdout: "", stderr: "No forge command was given." };
+  }
   try {
     const child = Bun.spawn({
-      cmd: ["gh", ...argv],
+      cmd: [commandName, ...args],
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -98,6 +106,9 @@ async function ghCommand(
   }
 }
 
+const ghCommand: ForgeRunner = async (argv, environment) =>
+  spawnCommand(["gh", ...argv], environment);
+
 function firstLine(text: string): string {
   return (
     text
@@ -118,6 +129,9 @@ export async function closeIssue(request: CloseIssueRequest): Promise<void> {
   const environment = request.environment ?? process.env;
   const remote = originForge(request.repoDir, environment);
   const forge = request.forge ?? remote?.forge ?? "github";
+  if (forge !== "github" && forge !== "gitlab" && forge !== "gitea") {
+    throw new Error(`Closing an issue is not supported on the ${String(forge)} forge.`);
+  }
   const baseUrl =
     forge === "gitea"
       ? request.baseUrl ?? giteaBaseUrl(remote, environment)
@@ -157,19 +171,29 @@ export async function closeIssue(request: CloseIssueRequest): Promise<void> {
     return;
   }
 
-  const run = request.run ?? ghCommand;
-  const result = await run(
-    [
-      "issue",
-      "close",
-      String(request.number),
-      "--repo",
-      request.repository,
-      "--reason",
-      "not planned",
-    ],
-    authEnvironment(auth, environment),
-  );
+  const run = request.run ?? (forge === "github" ? ghCommand : spawnCommand);
+  const argv =
+    forge === "github"
+      ? [
+          "issue",
+          "close",
+          String(request.number),
+          "--repo",
+          request.repository,
+          "--reason",
+          "not planned",
+        ]
+      : [
+          // The complete `glab` argv: `glab` has no issue-close reason and
+          // must never let the close fall through to `gh`.
+          "glab",
+          "issue",
+          "close",
+          String(request.number),
+          "--repo",
+          request.repository,
+        ];
+  const result = await run(argv, authEnvironment(auth, environment));
   if (result.code !== 0) {
     throw new Error(
       `Could not close issue #${request.number}: ${firstLine(result.stderr || result.stdout)}`,
