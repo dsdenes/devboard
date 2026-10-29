@@ -71,19 +71,19 @@
   --row-hover: #f6f8fa;
   --activity-bar: #f6f8fa;
   --selection-background: #b6d7ff;
-  --flow-contract-border: #0969da;
+  --flow-contract: #0969da;
   --flow-contract-surface: #eef4ff;
-  --flow-entity-border: #8250df;
+  --flow-entity: #8250df;
   --flow-entity-surface: #f6f1ff;
-  --flow-naming-border: #1a7f37;
+  --flow-naming: #1a7f37;
   --flow-naming-surface: #eaf6ed;
-  --flow-data-border: #9a6700;
+  --flow-data: #9a6700;
   --flow-data-surface: #fff8e5;
-  --flow-dependency-border: #1f7a8c;
+  --flow-dependency: #1f7a8c;
   --flow-dependency-surface: #eef8f9;
-  --flow-irreversible-border: #b42318;
+  --flow-irreversible: #b42318;
   --flow-irreversible-surface: #fdf2f1;
-  --flow-structure-border: #656d76;
+  --flow-structure: #656d76;
   --flow-structure-surface: #f0f2f4;
 }
 
@@ -96,19 +96,19 @@
 }
 
 :root[data-theme="dark"] {
-  --flow-contract-border: #58a6ff;
+  --flow-contract: #58a6ff;
   --flow-contract-surface: #16233a;
-  --flow-entity-border: #bc8cff;
+  --flow-entity: #bc8cff;
   --flow-entity-surface: #241a33;
-  --flow-naming-border: #3fb950;
+  --flow-naming: #3fb950;
   --flow-naming-surface: #16251b;
-  --flow-data-border: #e3b341;
+  --flow-data: #e3b341;
   --flow-data-surface: #2b2411;
-  --flow-dependency-border: #6cb6c8;
+  --flow-dependency: #6cb6c8;
   --flow-dependency-surface: #13292c;
-  --flow-irreversible-border: #ff7b72;
+  --flow-irreversible: #ff7b72;
   --flow-irreversible-surface: #2b1513;
-  --flow-structure-border: #9aa4ae;
+  --flow-structure: #9aa4ae;
   --flow-structure-surface: #22272c;
 }
 
@@ -1325,42 +1325,42 @@ kbd {
   box-shadow: 0 0 0 2px var(--ring);
 }
 [data-category="contract"] {
-  --flow-category-border: var(--flow-contract-border);
+  --flow-category-color: var(--flow-contract);
   --flow-category-surface: var(--flow-contract-surface);
 }
 [data-category="entity"] {
-  --flow-category-border: var(--flow-entity-border);
+  --flow-category-color: var(--flow-entity);
   --flow-category-surface: var(--flow-entity-surface);
 }
 [data-category="naming"] {
-  --flow-category-border: var(--flow-naming-border);
+  --flow-category-color: var(--flow-naming);
   --flow-category-surface: var(--flow-naming-surface);
 }
 [data-category="data"] {
-  --flow-category-border: var(--flow-data-border);
+  --flow-category-color: var(--flow-data);
   --flow-category-surface: var(--flow-data-surface);
 }
 [data-category="dependency"] {
-  --flow-category-border: var(--flow-dependency-border);
+  --flow-category-color: var(--flow-dependency);
   --flow-category-surface: var(--flow-dependency-surface);
 }
 [data-category="irreversible"] {
-  --flow-category-border: var(--flow-irreversible-border);
+  --flow-category-color: var(--flow-irreversible);
   --flow-category-surface: var(--flow-irreversible-surface);
 }
 [data-category="structure"] {
-  --flow-category-border: var(--flow-structure-border);
+  --flow-category-color: var(--flow-structure);
   --flow-category-surface: var(--flow-structure-surface);
 }
 
 .badge[data-category] {
   background: var(--flow-category-surface);
-  border-color: var(--flow-category-border);
-  color: var(--flow-category-border);
+  border-color: var(--flow-category-color);
+  color: var(--flow-category-color);
 }
 
 .flow-widget {
-  border-left: 2px solid var(--flow-category-border, var(--border));
+  border-left: 2px solid var(--flow-category-color, var(--border));
 }
 
 /* Flow overview: the goal editor and the activity console each own one page,
@@ -2310,9 +2310,45 @@ a.code-chip--link:focus-visible {
   margin: 10px 0 0;
 }
 
-.discover-diagram {
+.discover-diagram-figure {
+  margin: 0;
+  min-width: 0;
+}
+
+.discover-diagram__bar {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  min-height: 24px;
+}
+
+.discover-diagram__legend {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.3;
+  margin: 0;
+  min-width: 0;
+}
+
+.discover-diagram__canvas {
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  max-height: clamp(220px, 40vh, 400px);
   min-height: 96px;
-  overflow: visible;
+  overflow: auto;
+  padding: 8px;
+}
+
+.discover-diagram__canvas:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.discover-diagram {
+  min-height: 80px;
   width: 100%;
 }
 
@@ -2320,7 +2356,11 @@ a.code-chip--link:focus-visible {
   display: block;
   height: auto;
   margin: 0 auto;
-  max-width: 100%;
+}
+
+.discover-diagram .node rect {
+  rx: 4px;
+  ry: 4px;
 }
 
 .discover-diagram .node rect,
@@ -2329,8 +2369,16 @@ a.code-chip--link:focus-visible {
   stroke-width: 1px;
 }
 
-.discover-diagram .edgePath .path {
-  stroke-width: 1.25px;
+.discover-diagram .nodeLabel,
+.discover-diagram .nodeLabel p {
+  color: var(--foreground);
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.discover-diagram .arrowMarkerPath {
+  fill: var(--muted-foreground);
+  stroke: var(--muted-foreground);
 }
 
 .discover-diagram text {
@@ -3294,6 +3342,10 @@ a.code-chip--link:focus-visible {
   min-height: 0;
 }
 
+.issues-drafts__body[data-empty="true"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 @media (max-width: 1100px) {
   .issues-drafts__body {
     grid-template-columns: 1fr;
@@ -3439,11 +3491,40 @@ a.code-chip--link:focus-visible {
   flex: 0 0 auto;
 }
 
-.issues-drafts__empty {
-  color: var(--muted-foreground);
-  font-size: 12px;
+.issues-drafts__placeholder {
+  align-items: center;
+  display: flex;
+  justify-content: center;
   padding: 24px 16px;
   text-align: center;
+}
+
+.issues-drafts__placeholder-body {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 360px;
+}
+
+.issues-drafts__placeholder-icon {
+  color: var(--muted-foreground);
+  display: flex;
+  margin-bottom: 4px;
+}
+
+.issues-drafts__placeholder-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0;
+}
+
+.issues-drafts__placeholder-copy {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
 }
 
 .issues-activity-panel {

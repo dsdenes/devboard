@@ -1225,7 +1225,7 @@ try {
     GOAL_FILE: join(host, "GOAL.md"),
     STATIC_DIR: join(harnessRoot, "dist"),
     STATE_DIR: stateDir,
-    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=1500 --ask --ask-delay-ms=600 --goal-draft`,
+    AGENT_COMMAND: `bun ${stubAgent} --log=${agentLog} --discover --discover-delay-ms=1500 --discover-versioned-names --ask --ask-delay-ms=600 --goal-draft`,
     // Harness-owned reporting goes through the local Gitea API stub, never
     // through `gh`, and the recorded requests stay under `.tmp`.
     DEVBOARD_GITEA_URL: `http://127.0.0.1:${feedbackServer.port}`,
@@ -3008,6 +3008,8 @@ try {
     clippedCards: number;
     stackLinks: number;
     stackHref: string;
+    stackTexts: string[];
+    platformFacts: Record<string, string>;
     commandHeaders: number;
     contextHeader: string;
     contextRows: number;
@@ -3034,6 +3036,16 @@ try {
     const page = document.querySelector('#workspace-discover [data-testid="discover-panel"][data-tab="overview"]');
     const card = document.querySelector('#workspace-discover [data-field="stack"]');
     const stackLink = card === null ? null : card.querySelector('a.code-chip--link');
+    const stackTexts = card === null
+      ? []
+      : [...card.querySelectorAll('.code-chip')].map((chip) => chip.textContent.trim());
+    const platform = document.querySelector('#workspace-discover [data-field="runtime"]');
+    const platformFacts = platform === null
+      ? {}
+      : Object.fromEntries([...platform.querySelectorAll('.discover-fact')].map((fact) => [
+        fact.querySelector('dt')?.textContent?.trim() ?? "",
+        fact.querySelector('dd')?.textContent?.trim() ?? "",
+      ]));
     return {
       cards: document.querySelectorAll('#workspace-discover [data-testid="discover-card"]').length,
       commands: commands.length,
@@ -3077,6 +3089,8 @@ try {
         .filter((child) => child.scrollHeight > child.clientHeight + 1).length,
       stackLinks: card === null ? -1 : card.querySelectorAll('a.code-chip--link').length,
       stackHref: stackLink?.getAttribute("href") ?? "",
+      stackTexts,
+      platformFacts,
       commandHeaders: document.querySelectorAll('[data-testid="discover-command-list"] thead').length,
       contextHeader: document.querySelector('#workspace-discover [data-field="architecture"] th')?.textContent?.trim() ?? "",
       contextRows: document.querySelectorAll('#workspace-discover [data-testid="discover-contexts"] .discover-context').length,
@@ -3103,12 +3117,31 @@ try {
     `document.querySelector('[data-testid="discover-dependency-diagram"] svg') !== null`,
     "the dependency diagram",
   );
-  const dependencyDiagram = await page.eval<{ nodes: number; edges: number; text: string }>(`(() => {
+  const dependencyDiagram = await page.eval<{
+    nodes: number;
+    edges: number;
+    text: string;
+    labelSize: number;
+    radius: string;
+    canvasOverflow: string;
+    legend: string;
+    zoomVisible: boolean;
+    canvasScrolls: boolean;
+  }>(`(() => {
     const root = document.querySelector('[data-testid="discover-dependency-diagram"]');
+    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
+    const label = root?.querySelector('.nodeLabel p');
+    const node = root?.querySelector('g.node rect');
     return {
       nodes: root === null ? 0 : root.querySelectorAll('g.node').length,
       edges: root === null ? 0 : root.querySelectorAll('path.flowchart-link, g.edgePath').length,
       text: root?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      labelSize: label === null || label === undefined ? 0 : Number.parseFloat(getComputedStyle(label).fontSize),
+      radius: node === null || node === undefined ? "" : getComputedStyle(node).rx,
+      canvasOverflow: canvas === null ? "" : getComputedStyle(canvas).overflow,
+      legend: document.querySelector('.discover-diagram__legend')?.textContent?.trim() ?? "",
+      zoomVisible: document.querySelector('[data-testid="discover-dependency-zoom"]') !== null,
+      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
     };
   })()`);
   check(dependencyDiagram.nodes >= 2, "the dependency diagram does not draw every bounded context", dependencyDiagram);
@@ -3116,6 +3149,23 @@ try {
   check(
     dependencyDiagram.text.includes("Checkout") && dependencyDiagram.text.includes("Orders"),
     "the dependency diagram does not label its contexts",
+    dependencyDiagram,
+  );
+  check(dependencyDiagram.labelSize >= 11, "the dependency diagram labels are unreadably small", dependencyDiagram);
+  check(dependencyDiagram.radius === "4px", "the dependency diagram nodes are not on the design radius", dependencyDiagram);
+  check(
+    dependencyDiagram.canvasOverflow === "auto",
+    "the dependency diagram is not inside a scrolling canvas",
+    dependencyDiagram,
+  );
+  check(
+    dependencyDiagram.legend === "Arrows point from a context to the context it uses.",
+    "the dependency diagram does not explain its arrows",
+    dependencyDiagram,
+  );
+  check(
+    !dependencyDiagram.zoomVisible && !dependencyDiagram.canvasScrolls,
+    "a diagram that fits still offers or needs zooming",
     dependencyDiagram,
   );
   check(discoverTables.cards >= 5, "Discover sections are missing from the overview", discoverTables);
@@ -3156,6 +3206,17 @@ try {
   check(discoverTables.clippedCards === 0, "a Discover card clips its own rows", discoverTables.clippedCards);
   check(discoverTables.stackLinks > 0, "no library chip links to its repository", discoverTables.stackLinks);
   check(discoverTables.stackHref.startsWith("https://github.com/"), "a library chip links outside its repository", discoverTables.stackHref);
+  check(
+    discoverTables.stackTexts.join(",") === "Bun,TypeScript",
+    "a stack chip still carries the version the crawl recorded",
+    discoverTables.stackTexts,
+  );
+  check(
+    discoverTables.platformFacts.Languages === "TypeScript" &&
+      discoverTables.platformFacts.Runtimes === "Bun",
+    "a Platform fact still carries the version the crawl recorded",
+    discoverTables.platformFacts,
+  );
   check(discoverTables.stackedSections === 0, "Discover still renders the duplicated dependency or unknown sections", discoverTables.stackedSections);
   check(
     discoverTables.definitionText ===

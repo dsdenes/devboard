@@ -9,6 +9,7 @@ import {
   pyramidTiers,
   relativeTime,
   SIGNIFICANCE_FLOOR,
+  technologyName,
 } from "./discover-format";
 import type { Concept, Glossary, GlossarySignificance, GlossaryUsage, Leaf } from "./types";
 
@@ -216,6 +217,31 @@ describe("test levels", () => {
     expect(commandAlias(aliases, " node  --test   test/unit/*.js ")).toBe("npm run test:unit");
     expect(commandAlias(aliases, "pytest tests")).toBe("pytest tests");
     expect(commandAlias(undefined, "pytest tests")).toBe("pytest tests");
+  });
+});
+
+describe("technology names", () => {
+  test("drops a trailing version number from a stack or platform entry", () => {
+    expect(technologyName("PostgreSQL 15")).toBe("PostgreSQL");
+    expect(technologyName("PHP 8.4")).toBe("PHP");
+    expect(technologyName("Node.js 24.22.1")).toBe("Node.js");
+    expect(technologyName("Tailwind CSS v4.3.3")).toBe("Tailwind CSS");
+  });
+
+  test("drops a prerelease or build suffix with the version", () => {
+    expect(technologyName("Bun 1.2.0-beta.1")).toBe("Bun");
+    expect(technologyName("Vite 5.0.0+build.7")).toBe("Vite");
+  });
+
+  test("keeps a name whose digits are part of the name", () => {
+    expect(technologyName("Log4j")).toBe("Log4j");
+    expect(technologyName("HTTP/2")).toBe("HTTP/2");
+    expect(technologyName("Alpine Linux")).toBe("Alpine Linux");
+  });
+
+  test("trims surrounding whitespace and keeps a bare version intact", () => {
+    expect(technologyName("  Redis 7  ")).toBe("Redis");
+    expect(technologyName("15")).toBe("15");
   });
 });
 

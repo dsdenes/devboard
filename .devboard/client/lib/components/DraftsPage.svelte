@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import MousePointerClick from "lucide-svelte/icons/mouse-pointer-click";
+  import NotebookPen from "lucide-svelte/icons/notebook-pen";
   import { draftProposal } from "../draft-format";
   import { issues, markDraftsPage } from "../issues.svelte";
   import { statusTone } from "../status-tone";
@@ -13,6 +15,7 @@
    * draft path; a path whose file vanished resolves to the list.
    */
   const proposal = $derived(draftProposal(issues.draft?.text ?? ""));
+  const hasDrafts = $derived(issues.drafts.length > 0);
 
   // The header reports the selected draft's run only; another draft's run is not this draft's state.
   const run = $derived(issues.draft !== null ? issues.draftRunFor(issues.draft.path) : null);
@@ -74,7 +77,7 @@
       </p>
     </div>
   </header>
-  <div class="issues-drafts__body">
+  <div class="issues-drafts__body" data-empty={hasDrafts ? undefined : "true"}>
     <section class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Proposed goals</h2>
@@ -140,60 +143,71 @@
           </div>
         </div>
       {/if}
-      <div class="panel__body panel__body--flush">
-        <ol class="issues-drafts" data-testid="issues-draft-list">
-          {#each issues.drafts as draft (draft.path)}
-            {@const draftStatus = issues.draftState(draft.path)}
-            {@const waiting = issues.draftWaiting(draft.path)}
-            {@const blocker = issues.draftStartBlocker(draft.path)}
-            <li
-              class="issues-draft-row"
-              data-current={issues.draftPath === draft.path}
-            >
-              <button
-                type="button"
-                class="issues-draft"
-                data-testid="issues-draft"
-                data-path={draft.path}
-                data-command="issues.draft.open"
-                data-status={draftStatus}
-                data-question={waiting ? "true" : undefined}
-                aria-current={issues.draftPath === draft.path}
-                onclick={() => issues.openDraft(draft.path)}
+      {#if !hasDrafts}
+        <div class="panel__body issues-drafts__placeholder" data-testid="issues-drafts-empty">
+          <div class="issues-drafts__placeholder-body">
+            <span class="issues-drafts__placeholder-icon" aria-hidden="true">
+              <NotebookPen size={20} strokeWidth={1.5} />
+            </span>
+            <p class="issues-drafts__placeholder-title">No drafts yet</p>
+            <p class="issues-drafts__placeholder-copy">
+              Create one with New goal, or propose it from a report. Each draft becomes a goal you
+              can elaborate here.
+            </p>
+          </div>
+        </div>
+      {:else}
+        <div class="panel__body panel__body--flush">
+          <ol class="issues-drafts" data-testid="issues-draft-list">
+            {#each issues.drafts as draft (draft.path)}
+              {@const draftStatus = issues.draftState(draft.path)}
+              {@const waiting = issues.draftWaiting(draft.path)}
+              {@const blocker = issues.draftStartBlocker(draft.path)}
+              <li
+                class="issues-draft-row"
+                data-current={issues.draftPath === draft.path}
               >
-                <span class="issues-draft__text">
-                  <span class="issues-draft__name mono" title={draft.path}>{draft.name}</span>
-                  <span class="issues-draft__heading" title={draft.heading || "No heading"}>
-                    {draft.heading || "No heading"}
-                  </span>
-                </span>
-                <span class="badge issues-draft__badge" data-tone={statusTone(draftStatus)}>
-                  {draftStatus}
-                </span>
-              </button>
-              <div class="issues-draft-row__action">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  data-testid="issues-draft-row-start"
-                  data-command="issues.draft.start"
+                <button
+                  type="button"
+                  class="issues-draft"
+                  data-testid="issues-draft"
                   data-path={draft.path}
-                  aria-label={`Start ${draft.name}`}
-                  disabled={issues.draftRunning(draft.path)}
-                  title={blocker ?? "Start the elaboration agent"}
-                  onclick={() => issues.startDraft(draft.path)}
+                  data-command="issues.draft.open"
+                  data-status={draftStatus}
+                  data-question={waiting ? "true" : undefined}
+                  aria-current={issues.draftPath === draft.path}
+                  onclick={() => issues.openDraft(draft.path)}
                 >
-                  Start
-                </Button>
-              </div>
-            </li>
-          {:else}
-            <li class="issues-drafts__empty muted" data-testid="issues-drafts-empty">
-              No drafts exist.
-            </li>
-          {/each}
-        </ol>
-      </div>
+                  <span class="issues-draft__text">
+                    <span class="issues-draft__name mono" title={draft.path}>{draft.name}</span>
+                    <span class="issues-draft__heading" title={draft.heading || "No heading"}>
+                      {draft.heading || "No heading"}
+                    </span>
+                  </span>
+                  <span class="badge issues-draft__badge" data-tone={statusTone(draftStatus)}>
+                    {draftStatus}
+                  </span>
+                </button>
+                <div class="issues-draft-row__action">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid="issues-draft-row-start"
+                    data-command="issues.draft.start"
+                    data-path={draft.path}
+                    aria-label={`Start ${draft.name}`}
+                    disabled={issues.draftRunning(draft.path)}
+                    title={blocker ?? "Start the elaboration agent"}
+                    onclick={() => issues.startDraft(draft.path)}
+                  >
+                    Start
+                  </Button>
+                </div>
+              </li>
+            {/each}
+          </ol>
+        </div>
+      {/if}
     </section>
 
     {#if issues.draft !== null}
@@ -269,12 +283,18 @@
           {/if}
         </div>
       </section>
-    {:else}
+    {:else if hasDrafts}
       <section class="panel">
-        <div class="panel__body">
-          <p class="muted" data-testid="issues-drafts-selection">
-            Select a draft to read it and elaborate it.
-          </p>
+        <div class="panel__body issues-drafts__placeholder" data-testid="issues-drafts-selection">
+          <div class="issues-drafts__placeholder-body">
+            <span class="issues-drafts__placeholder-icon" aria-hidden="true">
+              <MousePointerClick size={20} strokeWidth={1.5} />
+            </span>
+            <p class="issues-drafts__placeholder-title">No draft selected</p>
+            <p class="issues-drafts__placeholder-copy">
+              Choose a draft from Proposed goals to read its proposal and elaborate it.
+            </p>
+          </div>
         </div>
       </section>
     {/if}

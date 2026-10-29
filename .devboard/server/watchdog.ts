@@ -147,6 +147,9 @@ function createWatchdogGiteaReader(
         throw new Error("the watchdog activity needs DEVBOARD_GITEA_URL for a Gitea origin");
       }
       const facts: WatchdogFacts[] = [];
+      // Releases are a per-repository read: one scan serves every closed issue
+      // of that repository, and a second repository gets its own scan.
+      const releases = new Map<string, GitHubRelease[]>();
       for (const url of urls) {
         // An issue filed through another forge cannot be read here; the row
         // stays without a state instead of failing the whole projection.
@@ -172,7 +175,11 @@ function createWatchdogGiteaReader(
           facts.push({ url, state: "pending", version: null });
           continue;
         }
-        const releases = await giteaListReleases(target, options.fetchImpl);
+        let published = releases.get(locator.repository);
+        if (published === undefined) {
+          published = await giteaListReleases(target, options.fetchImpl);
+          releases.set(locator.repository, published);
+        }
         const client = {
           async closingCommit(issueNumber: number): Promise<string | null> {
             const timeline = await giteaJson<unknown>(
@@ -214,7 +221,7 @@ function createWatchdogGiteaReader(
         const version = await shippedVersion(
           { number: locator.number, state: "closed" },
           client,
-          releases,
+          published,
         );
         facts.push({ url, state: "implemented", version });
       }

@@ -383,9 +383,10 @@ padding on a Discover page reserves the fixed notification region (34px above th
 bar) so a page's last control can scroll clear of it; the same 56px on the Goal workspace's
 scrolling pages clears that region. The 180px Discover activity terminal, the
 104px fact-label column, the 160px Discover boundary-role column, the 200–600px sidebar bounds,
-and the 160px split minimum are component geometry, not spacing steps. The 5px vertical padding
-of table cells, the 5px 10px cycle-history row padding, and the 5px horizontal padding of
-status-bar items are documented component padding for dense rows, not layout steps.
+the 160px split minimum, and the dependency canvas `clamp(220px, 40vh, 400px)` height cap are
+component geometry, not spacing steps. The 5px vertical padding of table cells, the 5px 10px
+cycle-history row padding, and the 5px horizontal padding of status-bar items are documented
+component padding for dense rows, not layout steps.
 
 ## Elevation & Depth
 
@@ -518,6 +519,17 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   it drops to `secondary` so the band's `Create draft` owns the primary. The trigger keeps
   `aria-expanded` and names the open band through `aria-controls`; the band is a
   `surface-raised` row under the header with `label` type and a right-aligned 6px action gap.
+- **Draft goals body** (`.issues-drafts__body`) — the two-panel surface under the page header:
+  the Proposed goals panel at a 240–340px track and the detail panel on the remaining track, 12px
+  apart, both filling the body height; below 1100px the tracks stack into one column. When the
+  directory holds no drafts the body drops to one full-width Proposed goals panel and renders no
+  detail column: its body centers a 20px `muted-foreground` `NotebookPen` mark (`aria-hidden`),
+  a 13px/600 `No drafts yet` title, and one 12px `muted-foreground` line naming `New goal` and
+  report proposals, in one 360px-capped stack with 24px 16px padding and a 4px rhythm. With
+  drafts but no selected row the detail column carries the same stack (`MousePointerClick`,
+  `No draft selected`, one line naming Proposed goals), so an unselected surface never reads as
+  an empty panel. Neither state adds a frame, tint, shadow, or second action; the panel header
+  keeps the only `New goal` control.
 - **Agent fleet card** (`.issues-agent`) — one card per running agent in the Agents page grid: a
   360px-minimum `surface` card with 1px `border`, 4px radius, 10px padding, and an 8px internal
   rhythm. Its head holds the mono `accent` issue-number link to the tracker and one outline
@@ -645,6 +657,16 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   outline, `muted-foreground` until hover or focus takes `error-surface`, `error` text, and an
   `error` outline). The panel keeps the standard `border`; the accent dot never carries the
   state alone, and no eyebrow restates the mode the rail and page header already name.
+- **Discover dependency graph** (`.discover-diagram__canvas` in `MermaidDiagram.svelte`) — the
+  bounded-context map sits in a 1px `border-subtle` canvas on `background` with a 4px radius and
+  8px padding; the canvas owns both scroll axes and caps at `clamp(220px, 40vh, 400px)`. One 11px
+  `muted-foreground` legend states the arrow direction. Node labels stay at 12px: a graph opens
+  fitted only while the fit holds a 0.9 scale, otherwise it opens at actual size and scrolls, so a
+  wide graph never renders microscopic text. A graph whose fit falls below the readable floor
+  carries one ghost 24px control in the bar above the canvas, labelled `Actual size` while fitted
+  and `Fit width` otherwise; a graph that fits shows no control. Nodes are `surface-raised` rounded
+  rectangles with a `border-strong` 1px outline; edges and arrowheads use `muted-foreground`. The
+  canvas is a tab stop only while it scrolls, and its focus ring is the shared 2px `ring`.
 - **Glossary filter toolbar** (`.discover-glossary-controls`) — one bounded `surface-raised`
   toolbar with 4px padding and 8px gaps: a search field up to 240px, a 26×14px switch for
   `Significant only`, a 1px `border` divider, and a 120px floor slider whose value renders in a

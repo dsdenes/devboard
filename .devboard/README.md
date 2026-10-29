@@ -237,20 +237,26 @@ source checkout; it resolves the npm version and artifact for the target host al
 
 `install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
 `.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
-package's files. It keeps `.devboard/.tmp`, copies `templates/host-AGENTS.md` to
+package's files. It keeps `.devboard/.tmp`, copies the package's `prompts/`, `extensions/`, and
+`lib/` trees to `<host>/.devboard/`, copies `templates/host-AGENTS.md` to
 `<host>/AGENTS.md` when that file is a symlink or absent (an existing regular file is untouched
 and reported as drift), adds the three ignored paths to `.gitignore`, and leaves exactly one
-dashboard running from the installed package. A reinstall keeps the version and `.tmp`; `update`
+dashboard running from the installed package. The copied trees are what the command wrappers
+open by repo-root-relative path: each command reads `.devboard/prompts/<name>.md`, each omp
+extension re-exports `.devboard/extensions/<name>.ts`, and those extensions import
+`../lib/*.ts`. The package itself stays under `.devboard/node_modules`. A reinstall keeps the
+version and `.tmp`; `update` re-copies the three trees from the newly installed package and
 never starts, stops, or restarts the dashboard. When the freshly started dashboard does not answer
 within 30 seconds, `install` stops that child before it exits nonzero, so a failed install leaves
 no dashboard behind.
 
 `doctor` checks Node 20+, Bun, npm, the git root, npm's version and artifact metadata (or the
 configured Gitea fallback and its digest), the installed package, the installed version against
-the newest version, `omp` and its authenticated probe, wrapper byte-equality, `AGENTS.md`, the
-dashboard's package and HTTP response, a non-symlinked `.devboard`, and a recorded update failure.
-Drift in a regular `AGENTS.md` is reported without failing the check; every other mismatch exits
-nonzero. Gitea is never required: with no address configured the checks consult npm only.
+the newest version, `omp` and its authenticated probe, wrapper byte-equality, byte-equality of
+the copied `prompts/`, `extensions/`, and `lib/` trees, `AGENTS.md`, the dashboard's package and
+HTTP response, a non-symlinked `.devboard`, and a recorded update failure. Drift in a regular
+`AGENTS.md` is reported without failing the check; every other mismatch exits nonzero. Gitea is
+never required: with no address configured the checks consult npm only.
 
 `--host <path>` targets another repository. `DEVBOARD_RELEASE_DIR` points the launcher and the
 server at a local directory of tarballs for offline verification and CI fixtures. `DEVBOARD_NPM`
@@ -571,8 +577,8 @@ files it covers. The seven categories are:
   file no clearer category explains.
 
 Every category has its own color token, each with a light and a dark variant:
-`--flow-contract-border` and `--flow-contract-surface` through
-`--flow-structure-border` and `--flow-structure-surface`, defined for the day theme in `:root` and
+`--flow-contract` and `--flow-contract-surface` through
+`--flow-structure` and `--flow-structure-surface`, defined for the day theme in `:root` and
 overridden in the dark theme. A widget carries `data-category="<category>"` and always renders its
 category label as text, so the color is never the only signal.
 
@@ -783,14 +789,14 @@ most 240 characters; every value and list entry is a single line of at most 160 
 `dependencyMap.routes` entry keeps its leading `/` as part of the HTTP path; that slash is not an
 absolute host path. The
 sheet covers the short platform stack (languages, runtimes, package managers, frameworks, and
-major tools, not individual dependencies), customer-facing deployment (artifact class, artifact,
-target, and pipeline sources), every environment (at least `production`, whose purpose states how
-changes reach it), exact main commands (with `unknown` for an unobserved command), branching
-strategy and model, test levels and pyramid, architecture contexts and their directed dependencies
-plus boundaries, CI provider, triggers, jobs, and quality gates, and the three mandatory sections:
-runtime inventory, entry-point and dependency map, and delivery and versioning. It never guesses,
-invents an additional environment, copies README prose, or records a configuration value; a claim
-it cannot ground is `unknown`.
+major tools by name, not individual dependencies or version numbers), customer-facing deployment
+(artifact class, artifact, target, and pipeline sources), every environment (at least `production`,
+whose purpose states how changes reach it), exact main commands (with `unknown` for an unobserved
+command), branching strategy and model, test levels and pyramid, architecture contexts and their
+directed dependencies plus boundaries, CI provider, triggers, jobs, and quality gates, and the
+three mandatory sections: runtime inventory, entry-point and dependency map, and delivery and
+versioning. It never guesses, invents an additional environment, copies README prose, or records a
+configuration value; a claim it cannot ground is `unknown`.
 
 Main commands render as a two-column `Task`/`Command` table of the observed commands, `$`-prefixed,
 with no header row, under an `N of 8 commands found` count. That count is a disclosure
@@ -826,10 +832,12 @@ with no external system shows `None detected.` in that block instead of an inven
 `unknown`.
 `Stack` renders one full-width chip band after the two columns; a chip whose package is installed
 under `node_modules/` becomes a link to the repository its manifest declares, and every other chip
-stays plain text. Environments is `unknown` here and is not listed. The delivery section, the
-deployment pipeline sources, and the runtime `versions` fact stay hidden because they repeat other
-facts. A sheet with no observed test level and a glossary with no matching term keep an explicit
-empty state.
+stays plain text. Stack chips and the Platform `languages` and `runtimes` facts name the
+technology without a version number, so a recorded `PostgreSQL 15` renders as `PostgreSQL` and a
+duplicate name collapses to one chip; the sheet's stored values stay unchanged. Environments is
+`unknown` here and is not listed. The delivery section, the deployment pipeline sources, and the
+runtime `versions` fact stay hidden. A sheet with no observed test level and a glossary with no
+matching term keep an explicit empty state.
 
 The Glossary page and `.omp/discover/glossary/` implement the UbiLang glossary format: one YAML
 document per bounded context named `<bounded-context>.glossary.yaml`, top-level `boundedContext`,
@@ -2064,7 +2072,11 @@ name names the Issues mode and the `Alt+2` shortcut, and the command palette lis
 same command id. Opening it renders `data-testid="issues-drafts"`: every regular `.md` file
 directly under `<REPO_DIR>/.devboard/goal-proposals/`, sorted by filename, each with
 `data-testid="issues-draft"` and `data-path` holding the repository-relative path, its filename,
-and its first Markdown heading. An empty directory shows `No drafts exist.`.
+and its first Markdown heading. An empty directory replaces the two-column body with one
+full-width Proposed goals panel whose centered state (`data-testid="issues-drafts-empty"`) reads
+`No drafts yet` and explains the creation paths; no empty detail column is rendered. While drafts
+exist but none is selected, the detail column carries the centered `No draft selected` state
+(`data-testid="issues-drafts-selection"`).
 
 The list header carries a `New goal` control (`data-testid="issues-draft-new"`,
 `data-command="issues.draft.new"`); the command palette lists the same id, opens the Draft goals
