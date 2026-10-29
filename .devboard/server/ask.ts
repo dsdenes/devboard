@@ -169,6 +169,8 @@ interface AskPeerOptions {
   cwd: string;
   /** The exact peer environment, resolved from the provider selection. */
   env: Record<string, string | undefined>;
+  /** `deny` cancels every permission request, for a read-only conversation. */
+  permissionPolicy: "allow" | "deny";
   /** Receives assistant message text only; thoughts and tool activity are dropped. */
   onText: (text: string) => void;
 }
@@ -181,6 +183,7 @@ interface AskPeerOptions {
 class AskPeer {
   readonly #process: Subprocess<"pipe", "pipe", "pipe">;
   readonly #cwd: string;
+  readonly #permissionPolicy: "allow" | "deny";
   readonly #onText: (text: string) => void;
   readonly #pending = new Map<string, PendingRequest>();
   #nextRequestId = 1;
@@ -192,6 +195,7 @@ class AskPeer {
     const argv = options.command.trim().split(/\s+/).filter(Boolean);
     if (argv.length === 0) throw new Error("AGENT_COMMAND is empty.");
     this.#cwd = options.cwd;
+    this.#permissionPolicy = options.permissionPolicy;
     this.#onText = options.onText;
     this.#process = Bun.spawn(argv, {
       cwd: options.cwd,
@@ -335,6 +339,10 @@ class AskPeer {
         this.#respond(id, { action: "cancel" });
         return;
       case "session/request_permission": {
+        if (this.#permissionPolicy === "deny") {
+          this.#respond(id, { outcome: { outcome: "cancelled" } });
+          return;
+        }
         const request = asRecord(params) ?? {};
         const options = Array.isArray(request.options) ? request.options : [];
         const option = options.find((candidate) => {
@@ -518,6 +526,7 @@ export class AskController {
           command: this.#options.command,
           cwd: this.#options.cwd,
           env,
+          permissionPolicy: "deny",
           onText: (text) => {
             if (conversation.closed || !conversation.busy) return;
             conversation.answer += text;
