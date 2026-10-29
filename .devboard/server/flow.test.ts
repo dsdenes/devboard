@@ -1333,6 +1333,67 @@ describe("Flow steering, decisions, and conversation", () => {
     client.close();
   }, 60_000);
 
+  test("a message queued during the opening widget turn continues that session", async () => {
+    const fixture = createFixture("conversation-in-flight");
+    const testServer = startServer(fixture, {
+      stub: ["--flow-goal", "--flow-implement", "--flow-change", "--flow-widget"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+    client.send({ type: "startFlowImplementation" });
+    await waitUntil(
+      () => {
+        const widgets = latest(client, "flowWidgets")?.widgets as { id: string }[] | undefined;
+        return Array.isArray(widgets) && widgets.length > 0;
+      },
+      "the first widget snapshot",
+    );
+    await client.waitFor((event) => event.type === "flowStopped");
+
+    const widget = (latest(client, "flowWidgets")?.widgets as { id: string }[])[0] as { id: string };
+    client.send({ type: "openFlowWidget", id: widget.id });
+    await client.waitFor((event) => event.type === "flowConversationStarted");
+    // The opening /flow-widget run is waiting for this answer, so the follow-up
+    // below is queued behind it rather than prompted on an idle conversation.
+    const question = await client.waitFor((event) => event.type === "flowConversationQuestion");
+    client.send({ type: "sendFlowConversation", text: "Follow up during the opening turn" });
+    await client.waitFor(
+      (event) =>
+        event.type === "flowConversationMessage" && event.text === "Follow up during the opening turn",
+    );
+    client.send({
+      type: "flowAnswer",
+      target: "conversation",
+      id: question.id,
+      value: "Alpha",
+    });
+    await waitForStub(fixture, (line) => line === "flow-conversation Follow up during the opening turn");
+
+    const log = stubLog(fixture);
+    const opening = log.findIndex((line) => line.startsWith("prompt /flow-widget "));
+    const queued = log.findIndex((line) => line === "flow-conversation Follow up during the opening turn");
+    expect(opening).toBeGreaterThanOrEqual(0);
+    expect(queued).toBeGreaterThan(opening);
+    // The conversation's peer announces itself with its first turn, after the
+    // session/new that opened its ACP session. Exactly that one session may be
+    // opened: the queued text must arrive as another prompt on it.
+    const announcements = log.flatMap((line, index) => (line.startsWith("spawn ") ? [index] : []));
+    const beforeOpening = announcements.filter((index) => index < opening);
+    const peer = beforeOpening.at(-1) ?? -1;
+    const previousPeer = beforeOpening.at(-2) ?? -1;
+    expect(peer).toBeGreaterThanOrEqual(0);
+    expect(previousPeer).toBeGreaterThanOrEqual(0);
+    expect(
+      log.slice(previousPeer + 1, peer).filter((line) => line === "session-new"),
+    ).toHaveLength(1);
+    expect(log.slice(peer).filter((line) => line === "session-new")).toHaveLength(0);
+
+    client.send({ type: "closeFlowWidget" });
+    await client.waitFor((event) => event.type === "flowConversationStopped");
+    client.close();
+  }, 60_000);
+
   test("closing a widget conversation during provider selection spawns no peer", async () => {
     const fixture = createFixture("conversation-close-early");
     const providers = testProviderService(fixture.stateDir);

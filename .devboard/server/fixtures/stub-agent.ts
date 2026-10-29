@@ -1818,6 +1818,7 @@ function handleMessage(message: Record<string, unknown>) {
         write({ jsonrpc: "2.0", id: message.id, result: {} });
         return;
       }
+      log("session-new");
       write({ jsonrpc: "2.0", id: message.id, result: { sessionId: "stub-session" } });
     } else if (message.method === "session/prompt") {
       const text = promptText(message.params) ?? "";
