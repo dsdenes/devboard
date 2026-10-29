@@ -9,7 +9,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { saveLedger, type Ledger } from "../watchdog/ledger";
@@ -199,15 +199,6 @@ async function promptLayout(
     beforeAlerts: boolean;
     beforeMain: boolean;
   };
-}
-
-async function requestPreview(devtools: Devtools): Promise<Record<string, unknown>> {
-  const value = await devtools.evaluate(`(() => {
-    const element = document.querySelector('[data-testid="agent-prompt-request"]');
-    if (element === null) return null;
-    try { return JSON.parse(element.textContent ?? ''); } catch { return null; }
-  })()`);
-  return (value ?? {}) as Record<string, unknown>;
 }
 
 /** Sends one prompt command over a fresh socket and returns the named frame. */
@@ -741,7 +732,7 @@ try {
   );
   console.log("PASS shared-page-shape");
 
-  /* 2b. The prompt section: full text and next request, read-only here. */
+  /* 2b. The prompt section: full text, read-only here. */
   await click(devtools, "open-issues-scout");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
@@ -768,28 +759,6 @@ try {
     installedCommand.includes("/scout-recommendations") &&
       installedCommand.includes(join(".devboard", ".tmp", "scout", "scans")),
     `the prompt command is wrong: ${installedCommand}`,
-  );
-  const installedRequest = await requestPreview(devtools);
-  assertTrue(
-    JSON.stringify(Object.keys(installedRequest)) ===
-      JSON.stringify([
-        "version",
-        "scanId",
-        "repository",
-        "repositoryPath",
-        "requested",
-        "categories",
-        "excludedRoots",
-        "knownTitles",
-        "draftGoalHeadings",
-        "significanceThreshold",
-        "createdAt",
-      ]),
-    `the request preview keys are wrong: ${JSON.stringify(installedRequest)}`,
-  );
-  assertTrue(
-    installedRequest.repositoryPath === host.directory,
-    `the request repositoryPath is ${String(installedRequest.repositoryPath)}`,
   );
   for (const testid of [
     "agent-prompt-editor",
@@ -831,7 +800,6 @@ try {
   );
   for (const testid of [
     "agent-prompt-text",
-    "agent-prompt-request",
     "agent-prompt-editor",
     "agent-prompt-chat",
     "agent-prompt-save",
@@ -1294,92 +1262,12 @@ try {
     assertTrue((await countOf(devtools, testid)) === 1, `${testid} is missing on the source page`);
   }
 
-  const seededPreview = await requestPreview(devtools);
-  assertTrue(
-    seededPreview.repositoryPath === sourceHost.directory &&
-      seededPreview.repository === "acme/fixture" &&
-      seededPreview.requested === 4 &&
-      seededPreview.scanId === null &&
-      seededPreview.createdAt === null,
-    `the seeded preview is wrong: ${JSON.stringify(seededPreview)}`,
-  );
-  assertTrue(
-    JSON.stringify(seededPreview.knownTitles) ===
-      JSON.stringify([
-        "a draft heading",
-        "existing open issue",
-        "open scout issue",
-        "shipped scout issue",
-      ]) &&
-      JSON.stringify(seededPreview.draftGoalHeadings) === JSON.stringify(["A Draft Heading"]),
-    `the seeded preview titles are wrong: ${JSON.stringify(seededPreview)}`,
-  );
-
   const sourcePromptFile = join(
     sourceHost.directory,
     ".devboard",
     "prompts",
     "scout-recommendations.md",
   );
-  const scans = join(sourceHost.directory, ".devboard", ".tmp", "scout", "scans");
-  const worker = spawn(
-    process.execPath,
-    [
-      join(harnessRoot, "issues", "scout", "worker.ts"),
-      "--repo",
-      sourceHost.directory,
-      "--state-dir",
-      sourceStateDir,
-    ],
-    {
-      cwd: sourceHost.directory,
-      env: {
-        ...process.env,
-        PATH: `${sourceBin}:${process.env.PATH ?? ""}`,
-        AGENT_COMMAND: `bun ${SOURCE_ACP}`,
-        SCOUT_STUB_STATE: ghStore,
-        PROMPT_STUB_PROPOSAL: CHAT_PROPOSAL,
-      },
-      stdio: ["ignore", "ignore", "pipe"],
-    },
-  );
-  let workerPid = worker.pid ?? 0;
-  try {
-    const requestFile = await waitFor(
-      () => {
-        try {
-          const directory = readdirSync(scans).sort()[0];
-          if (directory === undefined) return undefined;
-          const path = join(scans, directory, "request.json");
-          return existsSync(path) ? path : undefined;
-        } catch {
-          return undefined;
-        }
-      },
-      "the seeded scan request",
-      60_000,
-    );
-    const written = JSON.parse(readFileSync(requestFile, "utf8")) as Record<string, unknown>;
-    const preview = { ...seededPreview };
-    delete written.scanId;
-    delete written.createdAt;
-    delete preview.scanId;
-    delete preview.createdAt;
-    assertTrue(
-      JSON.stringify(written) === JSON.stringify(preview),
-      `the preview contradicts the written request:\n${JSON.stringify(preview)}\n${JSON.stringify(written)}`,
-    );
-  } finally {
-    if (workerPid > 0) {
-      try {
-        process.kill(workerPid, "SIGTERM");
-      } catch {
-        // It exited already.
-      }
-    }
-    workerPid = 0;
-  }
-  console.log("PASS prompt-preview");
 
   await setInput(devtools, "agent-prompt-message", "Tighten the evidence rule.");
   await click(devtools, "agent-prompt-send");

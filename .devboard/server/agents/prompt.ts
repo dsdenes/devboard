@@ -1,20 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { cachedRepository } from "../../issues/repository";
-import {
-  SYNC_INTERVAL_MS,
-  settingsPath,
-  statePath,
-} from "../../issues/scout/paths";
-import {
-  DEFAULT_SETTINGS,
-  readSettings,
-  readState,
-} from "../../issues/scout/state";
-import {
-  previewScanRequest,
-  type ScanRequestPreview,
-} from "../../issues/scout/scan";
 import { isHarnessSourceCheckout } from "../version";
 import {
   AcpConnection,
@@ -25,11 +10,10 @@ import type { AgentRegistry } from "./registry";
 
 /**
  * The prompt half of a background agent's page. Auto Scout runs one agent per
- * scan, so its page shows the command, the effective prompt file, and the
- * request the next scan would write. Watchdog runs no agent at all and says
- * so. Editing exists only where the dashboard serves the harness source
- * checkout: an installed prefix is read-only, and every prompt command from it
- * is refused without touching a file.
+ * scan, so its page shows the command and the effective prompt file. Watchdog
+ * runs no agent at all and says so. Editing exists only where the dashboard
+ * serves the harness source checkout: an installed prefix is read-only, and
+ * every prompt command from it is refused without touching a file.
  */
 
 export const SCOUT_PROMPT_FILE = "scout-recommendations.md";
@@ -47,8 +31,6 @@ export interface AgentPromptState {
   command: string | null;
   /** The effective prompt file's bytes, or null when it cannot be read. */
   text: string | null;
-  /** The request the next scan would write, with its two assigned fields null. */
-  request: ScanRequestPreview | null;
   error: string | null;
 }
 
@@ -59,7 +41,6 @@ export interface AgentPromptSocket {
 export interface AgentPromptOptions {
   registry: AgentRegistry;
   repoDir: string;
-  stateDir: string;
   agentCommand: string;
   agentEnvironment: () => Promise<Record<string, string | undefined>>;
   /** The harness that carries the chat instructions; installed or source. */
@@ -67,7 +48,6 @@ export interface AgentPromptOptions {
   /** Sends an event to every connected client. */
   send: (event: unknown, except?: AgentPromptSocket) => void;
   log?: (line: string) => void;
-  now?: () => Date;
 }
 
 /**
@@ -107,14 +87,11 @@ export function buildChatPrompt(instructions: string, base: string, message: str
 export class AgentPromptController {
   private readonly registry: AgentRegistry;
   private readonly repoDir: string;
-  private readonly stateDir: string;
   private readonly agentCommand: string;
   private readonly agentEnvironment: () => Promise<Record<string, string | undefined>>;
   private readonly harnessDir: string;
   private readonly send: (event: unknown, except?: AgentPromptSocket) => void;
   private readonly log: (line: string) => void;
-  private readonly now: () => Date;
-  private readonly repository: () => string | null;
   private peer: AcpConnection | undefined;
   private peerOpen = false;
   private emitChunk: ((chunk: string) => void) | undefined;
@@ -124,14 +101,11 @@ export class AgentPromptController {
   constructor(options: AgentPromptOptions) {
     this.registry = options.registry;
     this.repoDir = resolve(options.repoDir);
-    this.stateDir = resolve(options.stateDir);
     this.agentCommand = options.agentCommand;
     this.agentEnvironment = options.agentEnvironment;
     this.harnessDir = options.harnessDir;
     this.send = options.send;
     this.log = options.log ?? (() => undefined);
-    this.now = options.now ?? (() => new Date());
-    this.repository = cachedRepository(this.repoDir);
   }
 
   dispose(): void {
@@ -159,7 +133,6 @@ export class AgentPromptController {
         editable: false,
         command: null,
         text: null,
-        request: null,
         error: null,
       };
     }
@@ -173,14 +146,6 @@ export class AgentPromptController {
         `Could not read the Auto Scout prompt at ${path}: ` +
         `${cause instanceof Error ? cause.message : String(cause)}`;
     }
-    const state = readState(statePath(this.stateDir, this.repoDir));
-    const settings =
-      readSettings(settingsPath(this.stateDir, this.repoDir)) ?? {
-        maxPerHour: state?.limits.maxPerHour ?? DEFAULT_SETTINGS.maxPerHour,
-        maxPending: state?.limits.maxPending ?? DEFAULT_SETTINGS.maxPending,
-        intervalMinutes: state?.intervalMinutes ?? DEFAULT_SETTINGS.intervalMinutes,
-      };
-    const repository = state?.repo ?? this.repository() ?? "";
     return {
       id,
       absent: false,
@@ -195,15 +160,6 @@ export class AgentPromptController {
           SCAN_ID_PLACEHOLDER,
         )}`,
       text,
-      request: previewScanRequest({
-        repoDir: this.repoDir,
-        repository,
-        issues: state?.issues ?? [],
-        openTitles: state?.openTitles ?? [],
-        limits: { maxPerHour: settings.maxPerHour, maxPending: settings.maxPending },
-        now: this.now(),
-        syncMs: SYNC_INTERVAL_MS,
-      }),
       error,
     };
   }

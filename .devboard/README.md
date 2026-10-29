@@ -1344,14 +1344,6 @@ The Auto Scout section contains:
 - `agent-prompt-text`, the complete bytes of the effective prompt file
   `<REPO_DIR>/.devboard/prompts/scout-recommendations.md`, character for character, in a
   scrollable monospace region with no truncation, ellipsis, or reformatting.
-- `agent-prompt-request`, the request the next scan would write, as formatted JSON with the
-  `buildRequest` keys `version`, `scanId`, `repository`, `repositoryPath`, `requested`,
-  `categories`, `excludedRoots`, `knownTitles`, `draftGoalHeadings`, `significanceThreshold`, and
-  `createdAt`. `requested` comes from the persisted limits and the current board's capacity;
-  `knownTitles` merges the Auto Scout rows, every open issue title, and the draft goal headings;
-  `draftGoalHeadings` comes from `.devboard/goal-proposals/`; `repositoryPath` is the running
-  `REPO_DIR`. `scanId` and `createdAt` are `null` because the worker assigns them when the scan
-  starts; every other value equals the `request.json` that scan writes.
 
 The Watchdog section contains `agent-prompt-absent`, naming that Watchdog runs no agent and has no
 prompt, and no other prompt test id. A prompt command for `watchdog` is refused with that same
@@ -2594,13 +2586,12 @@ starting -> running and Stop -> stopping -> stopped, cadence and limit validatio
 persistence, the Watchdog cap, the shared table columns, freshness without a reload, no mutating
 command on reload, the timer-blocked state and one-click disable against a stub `systemctl`, and
 the footer indicator with no console error. It also proves the prompt section: both pages render
-`agent-prompt` directly after `agent-header`; Auto Scout shows the complete instruction text and
-the next-request JSON; Watchdog shows `agent-prompt-absent`; an installed host is read-only and
+`agent-prompt` directly after `agent-header`; Auto Scout shows the complete instruction text;
+Watchdog shows `agent-prompt-absent`; an installed host is read-only and
 refuses a save with an error while its prompt file stays byte-identical; a source-checkout fixture
 renders the editor, chat, save, and reset, one chat turn streams a reply and changes the editor
 with the file untouched, Save makes the file byte-equal to the editor and a reload renders those
-bytes, Reset restores the file bytes, and a seeded scan's `request.json` matches the preview
-except `scanId` and `createdAt`.
+bytes, and Reset restores the file bytes.
 
 `server/scout.test.ts` covers recommendation identity and the body's `## Category`, result
 validation (over-count, malformed item, multi-line title, path escape, excluded tree, duplicate

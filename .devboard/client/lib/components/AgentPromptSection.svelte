@@ -16,11 +16,6 @@
     agents.promptError[agentId] ?? (prompt?.error ?? null),
   );
   const chatError = $derived(agents.promptChatError[agentId] ?? null);
-  const requestJson = $derived(
-    prompt?.request === null || prompt?.request === undefined
-      ? ""
-      : JSON.stringify(prompt.request, null, 2),
-  );
 
   let editor = $state("");
   let lastSaved = $state<string | null>(null);
@@ -90,15 +85,6 @@
       </p>
     {/if}
     <pre class="agent-prompt__text mono" data-testid="agent-prompt-text">{prompt.text ?? ""}</pre>
-
-    <div class="agent-prompt__request">
-      <h3 class="agent-prompt__subtitle">Next request</h3>
-      <pre class="agent-prompt__text mono" data-testid="agent-prompt-request">{requestJson}</pre>
-      <p class="agent-prompt__hint">
-        <span class="mono">scanId</span> and <span class="mono">createdAt</span> are assigned when
-        the scan starts; every other value is what the next scan reads.
-      </p>
-    </div>
 
     {#if prompt.editable}
       <div class="agent-prompt__editor">
@@ -227,7 +213,6 @@
     white-space: pre;
   }
 
-  .agent-prompt__request,
   .agent-prompt__editor,
   .agent-prompt__chat {
     display: flex;

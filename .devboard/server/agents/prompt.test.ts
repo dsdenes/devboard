@@ -2,7 +2,6 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { buildRequest, createScanDirectory } from "../../issues/scout/scan";
 import { settingsPath, statePath } from "../../issues/scout/paths";
 import { emptyState, writeSettings, writeState } from "../../issues/scout/state";
 import { agentRegistry } from "./registry";
@@ -34,27 +33,17 @@ async function sourceRoot(name = "source"): Promise<string> {
     `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.1.0" }, null, 2)}\n`,
   );
   writeFileSync(join(root, ".devboard", "prompts", "scout-recommendations.md"), PROMPT);
-  mkdirSync(join(root, ".devboard", "goal-proposals"), { recursive: true });
-  writeFileSync(
-    join(root, ".devboard", "goal-proposals", "draft.md"),
-    "# A Draft Heading\n\nbody\n",
-  );
   return root;
 }
 
-function controller(
-  root: string,
-  options: { stateDir?: string; agentCommand?: string } = {},
-): AgentPromptController {
+function controller(root: string, options: { agentCommand?: string } = {}): AgentPromptController {
   return new AgentPromptController({
     registry: agentRegistry,
     repoDir: root,
-    stateDir: options.stateDir ?? join(root, ".devboard", ".tmp", "state"),
     agentCommand: options.agentCommand ?? `bun ${CHAT_STUB}`,
     agentEnvironment: async () => ({ ...process.env }),
     harnessDir: HARNESS_ROOT,
     send: () => undefined,
-    now: () => new Date("2026-10-29T12:00:00Z"),
   });
 }
 
@@ -99,7 +88,7 @@ afterAll(async () => {
 });
 
 describe("prompt snapshot", () => {
-  test("Auto Scout publishes the exact file, its invocation, and the next request", async () => {
+  test("Auto Scout publishes the exact file and its invocation", async () => {
     const root = await sourceRoot();
     seededState(root);
     const prompt = controller(root).snapshot("scout");
@@ -110,55 +99,6 @@ describe("prompt snapshot", () => {
       `/scout-recommendations ${join(root, ".devboard", ".tmp", "scout", "scans", "<scan-id>")}`,
     );
     expect(prompt?.error).toBeNull();
-    const request = prompt?.request;
-    expect(request).not.toBeNull();
-    expect(request?.scanId).toBeNull();
-    expect(request?.createdAt).toBeNull();
-    expect(request?.repository).toBe("acme/fixture");
-    expect(request?.repositoryPath).toBe(root);
-    expect(request?.requested).toBe(4);
-    expect(request?.significanceThreshold).toBe(4);
-    expect(request?.categories).toEqual([
-      "clarity",
-      "structure",
-      "naming",
-      "tests",
-      "robustness",
-      "correctness",
-    ]);
-    expect(request?.excludedRoots).toEqual([
-      ".git",
-      "node_modules",
-      "dist",
-      ".worktree",
-      ".tmp",
-      ".devboard/.tmp",
-    ]);
-    expect(request?.knownTitles).toEqual([
-      "a draft heading",
-      "existing open issue",
-      "open scout issue",
-      "shipped scout issue",
-    ]);
-    expect(request?.draftGoalHeadings).toEqual(["A Draft Heading"]);
-  });
-
-  test("the preview equals the worker's buildRequest except the assigned fields", async () => {
-    const root = await sourceRoot();
-    seededState(root);
-    const prompt = controller(root).snapshot("scout");
-    const scan = createScanDirectory(root, new Date("2026-10-29T12:00:00Z"));
-    const written = buildRequest({
-      scan,
-      repository: "acme/fixture",
-      repoDir: root,
-      requested: 4,
-      knownTitles: prompt?.request?.knownTitles ?? [],
-      draftGoalHeadings: prompt?.request?.draftGoalHeadings ?? [],
-    });
-    expect(
-      { ...written, scanId: null, createdAt: null } as unknown as Record<string, unknown>,
-    ).toEqual(prompt?.request as unknown as Record<string, unknown>);
   });
 
   test("Watchdog has no prompt at all", async () => {
@@ -170,7 +110,6 @@ describe("prompt snapshot", () => {
       editable: false,
       command: null,
       text: null,
-      request: null,
       error: null,
     });
   });

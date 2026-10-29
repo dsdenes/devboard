@@ -593,12 +593,11 @@ describe("createApp", () => {
     const scout = frames.find(
       (message) => (message as { type?: string }).type === "agentPromptState",
     ) as {
-      prompt: { absent: boolean; editable: boolean; text: string | null; request: unknown };
+      prompt: { absent: boolean; editable: boolean; text: string | null };
     };
     expect(scout.prompt.absent).toBe(false);
     expect(scout.prompt.editable).toBe(false);
     expect(scout.prompt.text).toBe("# Installed prompt\n");
-    expect(scout.prompt.request).not.toBeNull();
 
     const watchdogFrames = await collect(
       url,

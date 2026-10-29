@@ -2374,14 +2374,13 @@ export function createApp(options: AppOptions) {
   agents.begin();
 
   /**
-   * The prompt half of each agent page. It reads the effective prompt file and
-   * the request the next scan would write; Save writes that one file only from
-   * a harness source checkout, and chat proposes text without writing.
+   * The prompt half of each agent page. It reads the effective prompt file;
+   * Save writes that one file only from a harness source checkout, and chat
+   * proposes text without writing.
    */
   const prompts = new AgentPromptController({
     registry: agentRegistry,
     repoDir,
-    stateDir,
     agentCommand,
     agentEnvironment: peerEnvironment,
     harnessDir: runningHarnessDir(),

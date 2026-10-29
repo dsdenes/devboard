@@ -7,7 +7,6 @@ import {
   EXCLUDED_ROOTS,
   HOUR_MS,
   SIGNIFICANCE_THRESHOLD,
-  UNLIMITED_SCAN_BATCH,
   recommendationsPath,
   requestPath,
   scanDirectory,
@@ -159,8 +158,8 @@ export function scanCapacity(options: {
 
 /**
  * Normalized titles the scan must not restate: Auto Scout issues in any state,
- * every open issue, and the draft goal headings. One implementation keeps the
- * worker's dedup and the request preview identical.
+ * every open issue, and the draft goal headings. One implementation keeps every
+ * scan's dedup identical.
  */
 export function knownTitlesFor(
   issues: readonly { title: string }[],
@@ -172,59 +171,6 @@ export function knownTitlesFor(
   for (const title of openTitles) titles.add(normalizeTitle(title));
   for (const heading of draftGoalHeadings) titles.add(normalizeTitle(heading));
   return [...titles].sort();
-}
-
-/**
- * The request the next scan would write. `scanId` and `createdAt` are null
- * because the worker assigns them when the scan directory exists; every other
- * field is computed exactly as `buildRequest` computes it.
- */
-export interface ScanRequestPreview {
-  version: 2;
-  scanId: null;
-  repository: string;
-  repositoryPath: string;
-  requested: number;
-  categories: string[];
-  excludedRoots: string[];
-  knownTitles: string[];
-  draftGoalHeadings: string[];
-  significanceThreshold: number;
-  createdAt: null;
-}
-
-export function previewScanRequest(options: {
-  repoDir: string;
-  repository: string;
-  issues: readonly ScanIssueFact[];
-  openTitles: readonly string[];
-  limits: ScoutLimits;
-  now: Date;
-  syncMs: number;
-}): ScanRequestPreview {
-  const capacity = scanCapacity({
-    issues: options.issues,
-    limits: options.limits,
-    now: options.now,
-    syncMs: options.syncMs,
-  });
-  const draftGoalHeadings = readDraftGoalHeadings(options.repoDir);
-  return {
-    version: 2,
-    scanId: null,
-    repository: options.repository,
-    repositoryPath: resolve(options.repoDir),
-    requested: Math.min(
-      Number.isFinite(capacity.batch) ? capacity.batch : UNLIMITED_SCAN_BATCH,
-      UNLIMITED_SCAN_BATCH,
-    ),
-    categories: [...CATEGORIES],
-    excludedRoots: [...EXCLUDED_ROOTS],
-    knownTitles: knownTitlesFor(options.issues, options.openTitles, draftGoalHeadings),
-    draftGoalHeadings,
-    significanceThreshold: SIGNIFICANCE_THRESHOLD,
-    createdAt: null,
-  };
 }
 
 export function promptFor(directory: string): string {

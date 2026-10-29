@@ -164,7 +164,6 @@ export type {
 } from "../../server/agents/registry";
 
 export type { AgentPromptState } from "../../server/agents/prompt";
-export type { ScanRequestPreview } from "../../issues/scout/scan";
 
 export interface SkillSummary {
   name: string;
