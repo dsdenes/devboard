@@ -706,6 +706,30 @@ describe("discover mode", () => {
   );
 
   test(
+    "publishes routes that begin with a slash",
+    async () => {
+      const { server, fixture, url } = startServer({
+        stub: ["--discover", "--discover-sheet-routes"],
+      });
+      const client = await connect(url);
+      try {
+        const state = await runDiscover(client);
+        const sheet = state.sheet as Record<string, unknown>;
+        const dependencyMap = sheet.dependencyMap as Record<string, unknown>;
+        const routes = dependencyMap.routes as Record<string, unknown>;
+        expect(routes.value).toEqual(["/", "/api/orders", "GET /api/orders/:id"]);
+        expect(
+          existsSync(join(fixture.root, ".omp", "discover", "manifest.json")),
+        ).toBe(true);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    30000,
+  );
+
+  test(
     "rejects a value that begins with a stripped absolute host path",
     async () => {
       const { server, fixture, url } = startServer({

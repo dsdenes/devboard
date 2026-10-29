@@ -111,6 +111,31 @@ function normalize(raw: Record<string, unknown>): Record<string, unknown> {
   return normalizeSheet(raw, FRESHNESS).architecture as Record<string, unknown>;
 }
 
+function publishedRoutes(routes: Record<string, unknown>): unknown {
+  const raw = sheet();
+  (raw.dependencyMap as Record<string, unknown>).routes = routes;
+  const dependencyMap = normalizeSheet(raw, FRESHNESS).dependencyMap as Record<string, unknown>;
+  return (dependencyMap.routes as Record<string, unknown>).value;
+}
+
+describe("dependency routes", () => {
+  test("publishes route paths with their leading slash", () => {
+    expect(
+      publishedRoutes(leaf(["/api/orders", "/", "/home", "GET /api/orders/:id", "/api/orders"])),
+    ).toEqual(["/", "/api/orders", "/home", "GET /api/orders/:id"]);
+  });
+
+  test("rejects a home-directory absolute host path", () => {
+    expect(() => publishedRoutes(leaf(["/home/ds/project/src"]))).toThrow(
+      "must not carry an absolute host path",
+    );
+  });
+
+  test("rejects a URL", () => {
+    expect(() => publishedRoutes(leaf(["https://example.com/api"]))).toThrow("must not be a URL");
+  });
+});
+
 describe("architecture dependencies", () => {
   test("publishes directed edges sorted by both endpoints", () => {
     const architecture = normalize(
