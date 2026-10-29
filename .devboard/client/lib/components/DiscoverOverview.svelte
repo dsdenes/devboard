@@ -33,7 +33,6 @@
   const LEVEL_COLUMNS = [
     { id: "level", header: "Level", accessorKey: "level" },
     { id: "tests", header: "Tests", accessorKey: "tests" },
-    { id: "happyPath", header: "Happy path", accessorKey: "happyPath" },
     { id: "command", header: "Command", accessorKey: "command" },
   ];
   const QUALITY_GATE_COLUMNS = [
@@ -67,6 +66,12 @@
 
   const sheet = $derived(discover.sheet);
   const freshness = $derived(discover.freshness);
+  const definition = $derived(sectionLeaf(sheet, "definition"));
+  const definitionText = $derived(
+    definition === undefined || definition.confidence === "unknown"
+      ? ""
+      : scalarText(definition.value).trim(),
+  );
   const projectPath = $derived(
     discover.remoteTarget?.url ??
       (freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : "")),
@@ -110,12 +115,9 @@
     tiers.map((tier) => {
       const parsed = Number.parseInt(tier.tests, 10);
       const tests = Number.isFinite(parsed) ? parsed : 0;
-      const parsedHappy = Number.parseInt(tier.happyPath, 10);
-      const happyLabel = Number.isFinite(parsedHappy) ? `${parsedHappy}` : "—";
       return {
         level: humanize(tier.level),
         tests: `${tests} ${tests === 1 ? "test" : "tests"}`,
-        happyPath: happyLabel,
         command: tier.command.length > 0 ? discover.aliasFor(tier.command) : "",
         rawLevel: tier.level,
       };
@@ -588,6 +590,15 @@
     <div class="discover-head__top">
       <div class="discover-head__identity">
         <h1 class="discover-head__title" title={projectPath}>{projectName}</h1>
+        {#if definitionText.length > 0}
+          <p
+            class="discover-head__definition"
+            data-testid="discover-definition"
+            data-field="definition"
+          >
+            {definitionText}
+          </p>
+        {/if}
       </div>
       <div class="discover-head__actions">
         {#if discover.busy !== null}

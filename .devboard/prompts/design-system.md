@@ -80,6 +80,9 @@ When admissible, edit `<cycle-dir>/draft/DESIGN.md` and
 }
 ```
 
-`DESIGN.md` must keep both `## Design principles` and `## UX principles`. A token addition or
-correction appears in both the prose tables and `design/tokens.json`. Change no unrelated prose.
-When no admissible decision exists, answer `{"decision": "none"}` and leave the drafts untouched.
+`DESIGN.md` must contain both `## Design principles` and `## UX principles` in every revised
+draft. When the current document lacks either section, add it with principles drawn from the
+documented tokens and the audited surfaces; adding a missing section is a required part of the
+edit, not unrelated prose. A token addition or correction appears in both the prose tables and
+`design/tokens.json`. Change no other prose. When no admissible decision exists, answer
+`{"decision": "none"}` and leave the drafts untouched.

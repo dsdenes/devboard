@@ -13,6 +13,7 @@ import {
 
 const roots: string[] = [];
 const PROMPT = "---\ndescription: fixture\n---\n\n# Fixture prompt\n\nKeep this byte for byte.\n";
+const DESIGN_PROMPT = "---\ndescription: design fixture\n---\n\n# Design prompt\n";
 const CHAT_STUB = join(import.meta.dir, "..", "..", "tests", "fixtures", "prompt-stub-acp.ts");
 const HARNESS_ROOT = join(import.meta.dir, "..", "..");
 
@@ -33,6 +34,7 @@ async function sourceRoot(name = "source"): Promise<string> {
     `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.1.0" }, null, 2)}\n`,
   );
   writeFileSync(join(root, ".devboard", "prompts", "scout-recommendations.md"), PROMPT);
+  writeFileSync(join(root, ".devboard", "prompts", "design-system.md"), DESIGN_PROMPT);
   return root;
 }
 
@@ -98,6 +100,15 @@ describe("prompt snapshot", () => {
     expect(prompt?.error).toBeNull();
   });
 
+  test("Design System publishes its own prompt file", async () => {
+    const root = await sourceRoot();
+    const prompt = controller(root).snapshot("design");
+    expect(prompt?.absent).toBe(false);
+    expect(prompt?.editable).toBe(true);
+    expect(prompt?.text).toBe(DESIGN_PROMPT);
+    expect(prompt?.error).toBeNull();
+  });
+
   test("Watchdog has no prompt at all", async () => {
     const root = await sourceRoot();
     const prompt = controller(root).snapshot("watchdog");
@@ -128,6 +139,26 @@ describe("prompt save", () => {
       notice: "Prompt saved. The next scan reads this file.",
     });
     expect(save.snapshot("scout")?.text).toBe("one line\n");
+  });
+
+  test("Design System saves its own file and names the next cycle", async () => {
+    const root = await sourceRoot();
+    const designFile = join(root, ".devboard", "prompts", "design-system.md");
+    const scoutFile = join(root, ".devboard", "prompts", "scout-recommendations.md");
+    const frames: unknown[] = [];
+    controller(root).save(
+      { send: (data) => frames.push(JSON.parse(data)) },
+      "design",
+      "design bytes\n",
+    );
+    expect(readFileSync(designFile, "utf8")).toBe("design bytes\n");
+    expect(readFileSync(scoutFile, "utf8")).toBe(PROMPT);
+    expect(frames).toContainEqual({
+      type: "agentPromptSaved",
+      id: "design",
+      text: "design bytes\n",
+      notice: "Prompt saved. The next cycle reads this file.",
+    });
   });
 
   test("an installed prefix refuses and leaves the file byte-identical", async () => {
@@ -169,7 +200,9 @@ describe("prompt save", () => {
     const prompts = controller(root);
     prompts.save({ send: (data) => frames.push(JSON.parse(data) as Record<string, unknown>) }, "watchdog", "x");
     expect(frames[0]?.type).toBe("agentPromptError");
-    expect(String(frames[0]?.message)).toContain("runs no agent and has no prompt");
+    expect(String(frames[0]?.message)).toBe(
+      "Watchdog runs no agent, so it has no prompt to show or edit.",
+    );
     expect(existsSync(join(root, ".devboard", "prompts", "scout-recommendations.md"))).toBe(true);
     expect(readFileSync(join(root, ".devboard", "prompts", "scout-recommendations.md"), "utf8")).toBe(
       PROMPT,

@@ -3285,7 +3285,8 @@ try {
     tableFont: string;
     freshness: boolean;
     freshnessText: string;
-    definitionLead: boolean;
+    definitionText: string;
+    definitionBelowTitle: boolean;
     dirtyBadges: number;
     evidence: number;
     confidence: number;
@@ -3341,7 +3342,13 @@ try {
       tableFont: table === null ? "" : getComputedStyle(table).fontSize,
       freshness: document.querySelector('[data-testid="discover-freshness"]') !== null,
       freshnessText: document.querySelector('[data-testid="discover-freshness"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
-      definitionLead: document.querySelector('#workspace-discover .discover-head__definition') !== null,
+      definitionText: document.querySelector('#workspace-discover .discover-head__definition')?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+      definitionBelowTitle: (() => {
+        const title = document.querySelector('#workspace-discover .discover-head__title');
+        const definition = document.querySelector('#workspace-discover .discover-head__definition');
+        if (title === null || definition === null) return false;
+        return definition.getBoundingClientRect().top >= title.getBoundingClientRect().bottom - 1;
+      })(),
       dirtyBadges: [...document.querySelectorAll('#workspace-discover .discover-head .badge')]
         .filter((badge) => badge.textContent.trim() === "dirty").length,
       evidence: document.querySelectorAll('[data-testid="discover-evidence"]').length,
@@ -3437,7 +3444,17 @@ try {
   check(discoverTables.stackLinks > 0, "no library chip links to its repository", discoverTables.stackLinks);
   check(discoverTables.stackHref.startsWith("https://github.com/"), "a library chip links outside its repository", discoverTables.stackHref);
   check(discoverTables.stackedSections === 0, "Discover still renders the duplicated dependency or unknown sections", discoverTables.stackedSections);
-  check(!discoverTables.definitionLead, "the Discover header still renders the definition lead", discoverTables);
+  check(
+    discoverTables.definitionText ===
+      "A fixture host with a small order domain used to verify the Discover crawl.",
+    "the Discover header does not render the project definition",
+    discoverTables.definitionText,
+  );
+  check(
+    discoverTables.definitionBelowTitle,
+    "the Discover definition does not sit below the project title",
+    discoverTables,
+  );
   check(discoverTables.staticText === 0, "Discover still renders static lead or note prose", discoverTables.staticText);
   check(discoverTables.commandHeaders === 0, "the command table still renders a header row", discoverTables.commandHeaders);
   check(discoverTables.contextHeader === "", "the bounded-context card still renders a table header", discoverTables.contextHeader);
@@ -3513,8 +3530,8 @@ try {
     discoverChrome,
   );
   check(
-    discoverChrome.headers.join("|") === "Level|Tests|Happy path|Command",
-    "the test level table does not carry its happy-path and command columns",
+    discoverChrome.headers.join("|") === "Level|Tests|Command",
+    "the test level table does not carry its level, test count, and command columns",
     discoverChrome.headers,
   );
   check(
@@ -7779,18 +7796,25 @@ try {
   check(notification.live === "polite", "the notification region is not a live region", notification);
   const notificationFocus = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="notifications"]') === null`);
   check(notificationFocus, "a notification stole focus");
+  // The card closes itself after five seconds, so the rest of the filing flow
+  // runs on its history entry, where the same controls stay available.
+  await saveShot("notification-issue-file");
+  await page.click('[data-testid="notification-indicator"]');
+  await page.wait(
+    `document.querySelector('[data-testid="notification-history"]') !== null`,
+    "the notification history",
+  );
   startServer();
   await waitForHttp(baseUrl);
   await page.wait(`document.querySelector('[data-testid="status-connection"]')?.textContent?.trim() === "Connected"`, "reconnection", 30_000);
   await clearFeedback();
-  await saveShot("notification-issue-file");
   const notificationFile = await page.eval<{
     present: boolean;
     label: string;
     text: string;
     disabled: boolean;
   }>(`(() => {
-    const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+    const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
       (item) => item.textContent.includes("Not connected"),
     );
     const button = entry?.querySelector(".notification__file");
@@ -7811,7 +7835,7 @@ try {
   );
   const clickNotificationFile = (): Promise<unknown> =>
     page.eval(`(() => {
-      const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+      const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
         (item) => item.textContent.includes("Not connected"),
       );
       entry?.querySelector(".notification__file")?.click();
@@ -7821,7 +7845,7 @@ try {
   await setFeedbackMode("fail");
   await clickNotificationFile();
   await page.wait(
-    `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some(
+    `[...document.querySelectorAll('[data-testid="notification-history"] .notification')].some(
       (entry) =>
         entry.textContent.includes("Not connected") &&
         entry.querySelector(".notification__error")?.textContent?.includes("Issue creation failed") === true,
@@ -7830,7 +7854,7 @@ try {
     20_000,
   );
   const notificationFailure = await page.eval<{ text: string; retry: boolean }>(`(() => {
-    const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+    const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
       (item) => item.textContent.includes("Not connected"),
     );
     const retry = entry?.querySelector(".notification__file");
@@ -7850,7 +7874,7 @@ try {
   await clickNotificationFile();
   await waitForFeedbackCalls(2);
   await page.wait(
-    `[...document.querySelectorAll('[data-testid="notifications"] .notification')].some(
+    `[...document.querySelectorAll('[data-testid="notification-history"] .notification')].some(
       (entry) => entry.textContent.includes("Not connected") && entry.querySelector(".notification__link") !== null,
     )`,
     "the notification issue link",
@@ -7881,7 +7905,7 @@ try {
     feedbackRequests,
   );
   const notificationLink = await page.eval<{ text: string; href: string }>(`(() => {
-    const entry = [...document.querySelectorAll('[data-testid="notifications"] .notification')].find(
+    const entry = [...document.querySelectorAll('[data-testid="notification-history"] .notification')].find(
       (item) => item.textContent.includes("Not connected"),
     );
     const link = entry?.querySelector(".notification__link");
@@ -7896,19 +7920,17 @@ try {
     "the notification does not link to the filed issue",
     notificationLink,
   );
-  await page.click('[data-testid="notification-indicator"]');
-  await page.wait(`document.querySelector('[data-testid="notification-history"]') !== null`, "the notification history");
-  await page.key("Escape");
-  await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
   const dismiss = await page.eval<boolean>(`(() => {
     const button = document.querySelector(
-      '[data-testid="notifications"] .notification [aria-label="Dismiss notification"]',
+      '[data-testid="notification-history"] .notification [aria-label="Dismiss notification"]',
     );
     if (button === null) return false;
     button.click();
     return true;
   })()`);
-  check(dismiss, "the notification region has no dismissal control");
+  check(dismiss, "the notification history has no dismissal control");
+  await page.key("Escape");
+  await page.wait(`document.querySelector('[data-testid="notification-history"]') === null`, "the history to close");
 
   // 17. Viewport boundary.
   await devtools.send("Emulation.setDeviceMetricsOverride", {

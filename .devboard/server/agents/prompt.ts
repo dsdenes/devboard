@@ -6,24 +6,23 @@ import {
   type AcpActivity,
   type AcpQuestion,
 } from "../acp";
-import type { AgentRegistry } from "./registry";
+import type { AgentDescriptor, AgentRegistry } from "./registry";
 
 /**
- * The prompt half of a background agent's page. Auto Scout runs one agent per
- * scan, so its page shows the effective prompt file. Watchdog runs no agent at
- * all and says so. Editing exists only where the dashboard serves the harness
- * source checkout: an installed prefix is read-only, and every prompt command
- * from it is refused without touching a file.
+ * The prompt half of a background agent's page. A descriptor with a prompt
+ * file shows that effective file; a descriptor without one states its absence.
+ * Editing exists only where the dashboard serves the harness source checkout:
+ * an installed prefix is read-only, and every prompt command from it is
+ * refused without touching a file.
  */
 
-export const SCOUT_PROMPT_FILE = "scout-recommendations.md";
 export const PROMPT_CHAT_FILE = "agent-prompt-chat.md";
 const CHAT_TIMEOUT_MS = 5 * 60_000;
 
 /** One agent's prompt section, as the browser renders it. */
 export interface AgentPromptState {
   id: string;
-  /** True for an agent that runs no agent and therefore has no prompt. */
+  /** True when the descriptor declares no prompt file. */
   absent: boolean;
   editable: boolean;
   /** The effective prompt file's bytes, or null when it cannot be read. */
@@ -111,9 +110,12 @@ export class AgentPromptController {
     this.peerOpen = false;
   }
 
-  /** The prompt file the command `/scout-recommendations` opens. */
-  promptPath(): string {
-    return join(this.repoDir, ".devboard", "prompts", SCOUT_PROMPT_FILE);
+  /** The file a descriptor's prompt section reads and saves. */
+  private promptPath(descriptor: AgentDescriptor): string {
+    if (descriptor.prompt.kind !== "file") {
+      throw new Error(`${descriptor.label} has no prompt file.`);
+    }
+    return join(this.repoDir, ".devboard", "prompts", descriptor.prompt.file);
   }
 
   private chatInstructionsPath(): string {
@@ -123,7 +125,7 @@ export class AgentPromptController {
   snapshot(id: string): AgentPromptState | null {
     const descriptor = this.registry.get(id);
     if (descriptor === undefined) return null;
-    if (id !== "scout") {
+    if (descriptor.prompt.kind === "absent") {
       return {
         id,
         absent: true,
@@ -132,14 +134,14 @@ export class AgentPromptController {
         error: null,
       };
     }
-    const path = this.promptPath();
+    const path = this.promptPath(descriptor);
     let text: string | null = null;
     let error: string | null = null;
     try {
       text = readFileSync(path, "utf8");
     } catch (cause) {
       error =
-        `Could not read the Auto Scout prompt at ${path}: ` +
+        `Could not read the ${descriptor.label} prompt at ${path}: ` +
         `${cause instanceof Error ? cause.message : String(cause)}`;
     }
     return {
@@ -175,24 +177,39 @@ export class AgentPromptController {
     this.sendTo(target, { type: "agentPromptState", id, prompt });
   }
 
-  /** The one refusal every prompt command shares, or null when it may run. */
-  private refusal(id: string): string | null {
+  /**
+   * The one target every prompt command writes or chats about, or the refusal
+   * that stops it. Absent prompts and installed hosts are refused here.
+   */
+  private target(id: string):
+    | { ok: true; label: string; notice: string; path: string }
+    | { ok: false; message: string } {
     const descriptor = this.registry.get(id);
-    if (descriptor === undefined) return `Unknown background agent: ${id}.`;
-    if (id !== "scout") {
-      return `${descriptor.label} runs no agent and has no prompt.`;
+    if (descriptor === undefined) {
+      return { ok: false, message: `Unknown background agent: ${id}.` };
+    }
+    if (descriptor.prompt.kind === "absent") {
+      return { ok: false, message: descriptor.prompt.message };
     }
     if (!isHarnessSourceCheckout(this.repoDir)) {
-      return "Editing the Auto Scout prompt requires a harness source checkout.";
+      return {
+        ok: false,
+        message: `Editing the ${descriptor.label} prompt requires a harness source checkout.`,
+      };
     }
-    return null;
+    return {
+      ok: true,
+      label: descriptor.label,
+      notice: descriptor.prompt.notice,
+      path: this.promptPath(descriptor),
+    };
   }
 
   /** Writes the editor's exact bytes, and only when the operator saved. */
   save(target: AgentPromptSocket, id: string, text: unknown): void {
-    const refusal = this.refusal(id);
-    if (refusal !== null) {
-      this.sendTo(target, { type: "agentPromptError", id, message: refusal });
+    const resolved = this.target(id);
+    if (!resolved.ok) {
+      this.sendTo(target, { type: "agentPromptError", id, message: resolved.message });
       return;
     }
     if (typeof text !== "string") {
@@ -203,15 +220,14 @@ export class AgentPromptController {
       });
       return;
     }
-    const path = this.promptPath();
     try {
-      writeFileSync(path, text, "utf8");
+      writeFileSync(resolved.path, text, "utf8");
     } catch (cause) {
       this.sendTo(target, {
         type: "agentPromptError",
         id,
         message:
-          `Could not write the Auto Scout prompt: ` +
+          `Could not write the ${resolved.label} prompt: ` +
           `${cause instanceof Error ? cause.message : String(cause)}`,
       });
       return;
@@ -220,7 +236,7 @@ export class AgentPromptController {
       type: "agentPromptSaved",
       id,
       text,
-      notice: "Prompt saved. The next scan reads this file.",
+      notice: resolved.notice,
     });
     this.send({ type: "agentPromptState", id, prompt: this.snapshot(id) });
   }
@@ -243,9 +259,9 @@ export class AgentPromptController {
     message: unknown,
     text: unknown,
   ): Promise<void> {
-    const refusal = this.refusal(id);
-    if (refusal !== null) {
-      this.sendTo(target, { type: "agentPromptChatError", id, message: refusal });
+    const resolved = this.target(id);
+    if (!resolved.ok) {
+      this.sendTo(target, { type: "agentPromptChatError", id, message: resolved.message });
       return;
     }
     if (typeof message !== "string" || message.trim().length === 0) {
@@ -260,7 +276,7 @@ export class AgentPromptController {
     let base: string;
     try {
       instructions = readFileSync(this.chatInstructionsPath(), "utf8");
-      base = typeof text === "string" ? text : readFileSync(this.promptPath(), "utf8");
+      base = typeof text === "string" ? text : readFileSync(resolved.path, "utf8");
     } catch (cause) {
       this.sendTo(target, {
         type: "agentPromptChatError",

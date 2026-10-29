@@ -845,6 +845,11 @@ export class DesignWorker {
       }
 
       const changed = draftChanged(active.directory, active.input.documents);
+      // A draft that breaks the document contract is refused like an
+      // inadmissible decision: activity records it, nothing is released, and
+      // the cycle is not an operator-facing failure. Only a failed release
+      // (push, workflow, publish) is a failure.
+      let rejected: string | null = null;
       let releaseError: string | null = null;
       let released: ReleaseResult | undefined;
       if (changed) {
@@ -870,9 +875,9 @@ export class DesignWorker {
           } else {
             const missing = missingPrincipleSections(draftDesign);
             if (missing.length > 0) {
-              releaseError = `the revised ${this.config.designDocument} lacks ${missing.join(" and ")}`;
+              rejected = `the revised ${this.config.designDocument} lacks ${missing.join(" and ")}`;
             } else if (!validTokenDocument(draftTokens)) {
-              releaseError = `the revised ${this.config.tokenDocument} is not a JSON object`;
+              rejected = `the revised ${this.config.tokenDocument} is not a JSON object`;
             } else {
               const originalTokens = active.input.documents.find(
                 (document) => document.path === this.config.tokenDocument,
@@ -889,12 +894,14 @@ export class DesignWorker {
               ]);
               const undocked = tokensNamedInProse(changedTokens, draftDesign);
               if (undocked.length > 0) {
-                releaseError =
+                rejected =
                   `the token document changes ${undocked.join(", ")} without a prose table entry`;
               }
             }
           }
-          if (releaseError === null && draftDesign !== null && draftTokens !== null) {
+          if (rejected !== null) {
+            record(`documentation rejected: ${rejected}`);
+          } else if (releaseError === null && draftDesign !== null && draftTokens !== null) {
             const releaseSettled = Promise.withResolvers<void>();
             this.releaseSettled = releaseSettled.promise;
             this.settleRelease = releaseSettled.resolve;
