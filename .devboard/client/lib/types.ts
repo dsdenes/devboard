@@ -241,7 +241,7 @@ export interface FlowFile {
   deletions: number;
   diff: string;
   /** Why an untracked file's body was omitted; absent when `diff` holds it. */
-  omitted?: "binary" | "large";
+  omitted?: "binary" | "large" | "unreadable";
 }
 
 export interface FlowWidget {
