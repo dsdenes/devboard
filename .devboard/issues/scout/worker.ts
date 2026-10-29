@@ -723,6 +723,7 @@ export class ScoutWorker {
           command: this.agentCommand,
           cwd: this.repoDir,
           onActivity: (entry) => this.recordActivity(entry),
+          onSessionUpdate: () => this.notePeerUpdate(),
           onQuestion: (question) => this.answerQuestion(question),
           onStderr: (text) => this.recordStderr(text),
         });
@@ -809,9 +810,21 @@ export class ScoutWorker {
   }
 
   /**
-   * Arms the agent-phase deadline. Every activity entry restarts it, so only
-   * an agent that has gone silent is abandoned; the settle-and-file phase
-   * keeps its own fixed timer.
+   * A tool's progress frames carry no activity line, but they prove the peer
+   * is running: a long tool (a delegated subagent, a slow read) emits only
+   * these until it settles. Re-arming on them keeps the silence deadline for a
+   * peer that has truly stopped talking.
+   */
+  private notePeerUpdate(): void {
+    const active = this.active;
+    if (active === undefined || active.finished) return;
+    this.armScanTimer(active);
+  }
+
+  /**
+   * Arms the agent-phase deadline. Every activity entry and every session
+   * update restarts it, so only a peer that has stopped talking is abandoned;
+   * the settle-and-file phase keeps its own fixed timer.
    */
   private armScanTimer(active: ActiveScan): void {
     clearTimeout(active.timer);

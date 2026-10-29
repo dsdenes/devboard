@@ -136,6 +136,11 @@ class ControlledPeer implements AcpPeer {
     this.options.onActivity({ text, append } satisfies AcpActivity);
   }
 
+  /** A tool progress frame: protocol traffic that maps to no activity line. */
+  emitSessionUpdate(): void {
+    this.options.onSessionUpdate?.();
+  }
+
   ask(question: AcpQuestion): void {
     this.options.onQuestion(question);
   }
@@ -1617,6 +1622,29 @@ describe("bounded commands", () => {
       const settled = await waitSettled(f.root, peer.prompts[0]!);
       expect(settled.status).toBe("succeeded");
       expect(settled.filed).toBe(1);
+      expect(f.state().lastError).toBeNull();
+    } finally {
+      await f.worker.stop();
+    }
+  });
+
+  test("tool progress without an activity line keeps a scan alive", async () => {
+    const f = await fixture({ label: "scan-progress-liveness", timeoutMs: 1000 });
+    try {
+      const peer = await waitFor(() => f.peers[0], "the first scan peer");
+      // A long tool emits only `tool_call_update` frames: protocol traffic that
+      // the activity mapper drops. The scan must not be abandoned as silent.
+      const started = Date.now();
+      while (Date.now() - started < 1600) {
+        peer.emitSessionUpdate();
+        await Bun.sleep(200);
+      }
+      expect(f.state().lifecycle).toBe("scanning");
+
+      writeRecommendations(scanDirectoryOf(peer.prompts[0]!), scanDocument(uniqueItems(1, 1)));
+      peer.succeed();
+      const settled = await waitSettled(f.root, peer.prompts[0]!);
+      expect(settled.status).toBe("succeeded");
       expect(f.state().lastError).toBeNull();
     } finally {
       await f.worker.stop();

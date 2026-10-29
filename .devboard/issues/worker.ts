@@ -102,6 +102,8 @@ export interface IssuesPeerOptions {
   command: string;
   cwd: string;
   onActivity: (activity: AcpActivity) => void;
+  /** Every session update, including progress that maps to no activity line. */
+  onSessionUpdate?: () => void;
   onQuestion: (question: AcpQuestion) => void;
   onStderr: (text: string) => void;
 }

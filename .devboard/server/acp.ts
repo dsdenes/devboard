@@ -20,6 +20,12 @@ export interface AcpConnectionOptions {
   /** The exact peer environment; omitted means the server's own. */
   env?: Record<string, string | undefined>;
   onActivity: (activity: AcpActivity) => void;
+  /**
+   * Called for every `session/update` frame, including tool progress that maps
+   * to no visible activity line. An owner that bounds a silent turn uses it as
+   * the peer's liveness signal.
+   */
+  onSessionUpdate?: () => void;
   onQuestion: (question: AcpQuestion) => void;
   /** Receives assistant message text only; thoughts and tool activity are dropped. */
   onText?: (text: string) => void;
@@ -457,6 +463,7 @@ export class AcpConnection {
   }
 
   #handleSessionUpdate(params: unknown): void {
+    this.#options.onSessionUpdate?.();
     const next = nextActivity(asRecord(params)?.update, this.#activityStream);
     if (next === undefined) return;
     this.#activityStream = next.stream;
