@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readdir, readFile as readBytes, rm, writeFile } from "n
 import { join, resolve } from "node:path";
 import { journalFile } from "../server/journal";
 import { agentRegistry } from "../server/agents/registry";
+import { saveSubscriptions } from "../server/providers";
 import { CoachActivity, preflightCoach } from "../server/coach";
 import { coachDirectory } from "../coach/paths";
 import { readCoachSettings, writeCoachSettings, DEFAULT_COACH_SETTINGS } from "../coach/settings";
@@ -180,6 +181,27 @@ function memoryDelivery(): CoachDelivery & { created: Array<{ title: string; bod
       return { ok: true };
     },
   };
+}
+
+/** The calls the stub forge recorded for one operation. */
+async function stubCalls(
+  directory: string,
+  op: "create" | "comment",
+): Promise<Array<{ title?: string; body: string }>> {
+  const source = await readBytes(join(directory, "calls.jsonl"), "utf8");
+  return source
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .flatMap((line) => {
+      const parsed = JSON.parse(line) as { op?: string; title?: string; body?: string };
+      if (parsed.op !== op) return [];
+      return [
+        {
+          ...(typeof parsed.title === "string" ? { title: parsed.title } : {}),
+          body: typeof parsed.body === "string" ? parsed.body : "",
+        },
+      ];
+    });
 }
 
 /** A gate that accepts every finding, for tests about everything downstream. */
@@ -843,6 +865,72 @@ describe("Coach issue bytes and filing", () => {
     expect(recurrence.report.action).not.toBe("failed");
     expect(delivery.comments.length).toBeGreaterThan(0);
     expect(delivery.created.length).toBe(first.report.issues.length + 2);
+  });
+
+  test("a registered provider key echoed in evidence never reaches the forge", async () => {
+    const { root, repoDir, stateDir } = await workspace();
+    const key = "provider-store-only-key-0001";
+    const stamp = new Date().toISOString();
+    saveSubscriptions(stateDir, [
+      {
+        id: "openrouter-fixture",
+        provider: "openrouter",
+        label: "Fixture",
+        key,
+        enabled: true,
+        createdAt: stamp,
+        updatedAt: stamp,
+      },
+    ]);
+    const forge = join(root, "forge");
+    const environment = { DEVBOARD_COACH_FORGE_STUB: forge };
+    const leak = (id: string, startedAt: string): Promise<string> =>
+      writeSession(stateDir, repoDir, {
+        id,
+        startedAt,
+        calls: 1,
+        errorText: `ERROR: printed ${key}`,
+        errors: true,
+      });
+    await leak("a", instant(30));
+    await leak("b", instant(20));
+    const first = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      environment,
+      gate: acceptingGate(),
+      finalize: filingFinalizer(),
+    });
+    expect(first.report.action).toBe("filed");
+    expect(first.report.issues.length).toBeGreaterThan(0);
+    const created = await stubCalls(forge, "create");
+    expect(created.length).toBe(first.report.issues.length);
+    const assertRedacted = (text: string): void => {
+      expect(text).toContain("<redacted>");
+      expect(text).not.toContain(key);
+      expect(text).not.toContain(key.slice(0, 12));
+    };
+    for (const call of created) {
+      assertRedacted(call.title ?? "");
+      assertRedacted(call.body);
+    }
+
+    const later = new Date(NOW.getTime() + COMMENT_INTERVAL_MS + 60 * 60_000);
+    await leak("late-a", instant(30, later));
+    await leak("late-b", instant(20, later));
+    const recurrence = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: later,
+      environment,
+      gate: acceptingGate(),
+      finalize: filingFinalizer(),
+    });
+    expect(recurrence.report.action).not.toBe("failed");
+    const comments = await stubCalls(forge, "comment");
+    expect(comments.length).toBeGreaterThan(0);
+    for (const call of comments) assertRedacted(call.body);
   });
 
   test("caps keep excess fingerprints pending and never file without a projection", async () => {
