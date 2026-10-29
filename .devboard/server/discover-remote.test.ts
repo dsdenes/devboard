@@ -1492,10 +1492,11 @@ describe("discover remote target", () => {
   );
 
   test(
-    "interrupts a remote crawl on restart, removing its checkout and keeping the snapshot",
+    "resumes a remote crawl on restart, re-cloning its own project and replacing the snapshot",
     async () => {
       const fixture = createFixture("interrupted");
-      const clones = cloneHarness({ source: createSourceRepository("interrupted-source") });
+      const source = createSourceRepository("interrupted-source");
+      const clones = cloneHarness({ source });
       const first = startServer({ fixture, clone: clones });
       const client = await connect(first.url);
       try {
@@ -1505,7 +1506,7 @@ describe("discover remote target", () => {
         first.server.stop(true);
       }
       const retained = retainedDirectory(fixture, "octocat", "hello-world");
-      const published = treeBytes(retained);
+      const before = treeBytes(retained);
 
       const running = startServer({
         fixture,
@@ -1527,20 +1528,34 @@ describe("discover remote target", () => {
       }
 
       const spawnsBefore = spawnCount(fixture.logPath);
-      const replacement = startServer({ fixture, clone: cloneHarness() });
+      const resumedClones = cloneHarness({ source });
+      const replacement = startServer({
+        fixture,
+        clone: resumedClones,
+        stub: ["--discover", "--discover-delay-ms=500"],
+      });
       const restored = await connect(replacement.url);
       try {
-        const notice = restored.take((message) => message.type === "discoverError");
-        expect(String((await notice).message)).toContain("interrupted");
+        // A resumed remote run re-clones the project the stored run named, not
+        // the target that happens to be displayed.
+        const resumed = await restored.take((message) => message.type === "discoverStarted");
+        const stopped = await restored.take((message) => message.type === "discoverStopped");
+        expect(stopped.completed).toBe(true);
         const state = await discoverState(restored);
-        expect(state.interrupted).toBe(true);
+        expect(state.interrupted).toBe(false);
         expect(state.active).toBe(false);
         expect(state.target).toMatchObject({ kind: "remote", checkout: false });
         expect(state.sheet).not.toBeNull();
-        expect(treeBytes(retained)).toEqual(published);
+        expect(resumedClones.calls).toHaveLength(1);
+        expect(resumedClones.calls[0]?.argv).toContain("https://github.com/octocat/Hello-World");
+        const manifest = JSON.parse(
+          readFileSync(join(retained, ".omp", "discover", "manifest.json"), "utf8"),
+        ) as Record<string, unknown>;
+        expect(manifest.runId).toBe(resumed.runId);
+        expect(treeBytes(retained)).not.toEqual(before);
         expect(scratchEntries(fixture)).toEqual(["octocat~hello-world"]);
         expectNoCheckout(fixture);
-        expect(spawnCount(fixture.logPath)).toBe(spawnsBefore);
+        expect(spawnCount(fixture.logPath)).toBe(spawnsBefore + 1);
         expect(persistedState(fixture).discover).toBeNull();
       } finally {
         restored.close();
