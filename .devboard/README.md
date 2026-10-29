@@ -1296,14 +1296,13 @@ Start is a no-op with a notice.
 Both pages share `data-testid="agent-page"` and `data-agent`, the header `agent-header`, the
 lifecycle badge `agent-lifecycle`, the sync badge `agent-sync`, `agent-sync-at`,
 `agent-last-run`, `agent-next-run`, exactly one of `agent-start`/`agent-stop`, `agent-cadence`,
-`agent-save-cadence`, `agent-limit-hour`, `agent-limit-pending`, `agent-save-limits`,
-`agent-issues-count`, `agent-issues`, and `agent-detail`. Alerts use one position:
-`agent-error`, `agent-sync-error`, `agent-cadence-error`, and `agent-limits-error`, each with
-`role="alert"`. Start/Stop is the only filled primary control. The header row carries the page
-identity, the lifecycle badge, the sync badge with its last-read clock, and Start/Stop. Its
-settings footer carries two labeled groups: `Cadence` (the Every field, the last-run and next-run
-clocks, and Save cadence) and `Filing limits` (Per hour, Open issues, and Save limits); the groups
-wrap as units, so no field separates from its save control. The sidebar has three groups in
+`agent-limit-hour`, `agent-limit-pending`, `agent-save-settings`, `agent-issues-count`,
+`agent-issues`, and `agent-detail`. Alerts use one position: `agent-error`, `agent-sync-error`,
+and `agent-settings-error`, each with `role="alert"`. Start/Stop is the only filled primary
+control. The header row carries the page identity, the lifecycle badge, the sync badge with its
+last-read clock, and Start/Stop. Its settings footer is one unlabeled row: the Every field with
+the last-run and next-run clocks, Per hour, Open issues, and one Save control. Save validates all
+three fields and sends one settings command. The sidebar has three groups in
 order: `Issues surfaces` (Overview), `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
 `open-issues-scout` then `open-issues-watchdog`, badges `agent-state-<id>`, counts
@@ -1313,8 +1312,8 @@ order: `Issues surfaces` (Overview), `Background agents`
 
 Browser-to-backend state and controls use the WebSocket from
 `adrs/0003-browser-server-transport-and-api.md`. Commands are `getAgents`, `getAgent`,
-`startAgent`, `stopAgent`, `setAgentLimits`, `setAgentCadence`, and the timer gate's
-`disableAgentTimer`; each carries `id`. The server answers `agentsState` (both agents) and
+`startAgent`, `stopAgent`, `setAgentSettings`, and the timer gate's `disableAgentTimer`; each
+carries `id`. The server answers `agentsState` (both agents) and
 `agentState` (one), streams Auto Scout activity as `agentActivity`, and refuses an unknown id with
 an error naming it before spawning anything. `scoutState`, `scoutActivity`, `startScout`,
 `stopScout`, `setScoutLimits`, and `GET /api/watchdog` are gone. The footer indicator still reads
@@ -1322,17 +1321,18 @@ the same Watchdog snapshot through the agent store.
 
 ### Cadence and limits
 
-`agent-cadence` accepts an integer from 1 through 1440 minutes; `agent-save-cadence` persists it
-atomically and a running worker applies it without restart. Auto Scout defaults to 1 minute and
-never starts a scan sooner than the interval after the previous scan start; Watchdog defaults to
-10 minutes, starts its first cycle immediately on Start, and uses the interval as its evidence
-window. `agent-last-run` and `agent-next-run` show both.
+`agent-cadence` accepts an integer from 1 through 1440 minutes. `agent-limit-hour` and
+`agent-limit-pending` are empty (unlimited) or an integer from 1 through 100; an empty field never
+renders as `0`. One `agent-save-settings` click validates all three fields and persists them in one
+atomic settings write; a running worker applies the whole change without restart. Auto Scout
+defaults to 1 minute and never starts a scan sooner than the interval after the previous scan
+start; Watchdog defaults to 10 minutes, starts its first cycle immediately on Start, and uses the
+interval as its evidence window. `agent-last-run` and `agent-next-run` show both.
 
-`agent-limit-hour` and `agent-limit-pending` are empty (unlimited) or an integer from 1 through
-100; an empty field never renders as `0`. Auto Scout defaults to 10 per rolling hour and 5 open;
-Watchdog defaults to both empty. The persisted values survive reload and restart and apply to a
-running worker. Auto Scout keeps its rolling-hour and open-issue enforcement. Watchdog files at
-most the hourly cap of new issues and at most the pending cap of its own open issues, counts open
+Auto Scout defaults to 10 per rolling hour and 5 open; Watchdog defaults to both empty. The
+persisted values survive reload and restart and apply to a running worker. Auto Scout keeps its
+rolling-hour and open-issue enforcement. Watchdog files at most the hourly cap of new issues and
+at most the pending cap of its own open issues, counts open
 state from the last successful projection (`projection.json`), keeps excess fingerprints in
 `pendingFiling` instead of dropping them, files nothing new while a cap is set and the projection
 is not `ok`, and never caps comments. With both caps empty its cycle behaves exactly as before.
@@ -2016,8 +2016,7 @@ The client sends:
 { "type": "getAgent", "id": "scout" }
 { "type": "startAgent", "id": "scout" }
 { "type": "stopAgent", "id": "scout" }
-{ "type": "setAgentLimits", "id": "scout", "maxPerHour": 10, "maxPending": 5 }
-{ "type": "setAgentCadence", "id": "scout", "minutes": 1 }
+{ "type": "setAgentSettings", "id": "scout", "minutes": 1, "maxPerHour": 10, "maxPending": 5 }
 { "type": "disableAgentTimer", "id": "watchdog" }
 { "type": "restartServer" }
 { "type": "restartServer", "whenIdle": true }
@@ -2105,8 +2104,8 @@ The client sends:
   `agentActivity` before any reply to the client's own commands. Every command carries `id`;
   an unknown id is refused with an error naming it and spawns nothing. `startAgent` runs the
   agent's preflight and spawns or attaches; `stopAgent` writes one stop command and persists
-  `enabled: false`; `setAgentLimits` accepts `{ maxPerHour, maxPending }` where each is empty or
-  1–100 and writes `settings.json`; `setAgentCadence` accepts `{ minutes }` from 1 through 1440;
+  `enabled: false`; `setAgentSettings` accepts `{ minutes, maxPerHour, maxPending }`, requires
+  `minutes` from 1 through 1440 and each limit empty or 1–100, and writes `settings.json` once;
   `disableAgentTimer` runs the legacy `systemctl --user disable --now` only for the Watchdog
   descriptor. A changed snapshot is pushed to every connected dashboard within the bridge poll,
   so a lifecycle, cadence, limit, issue row, or state change appears without a reload. There is no

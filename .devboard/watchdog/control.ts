@@ -10,8 +10,12 @@ import { isValidCadence, isValidLimit } from "./settings";
  */
 export type WatchdogCommand =
   | { type: "stop" }
-  | { type: "limits"; maxPerHour: number | null; maxPending: number | null }
-  | { type: "cadence"; intervalMinutes: number };
+  | {
+      type: "settings";
+      intervalMinutes: number;
+      maxPerHour: number | null;
+      maxPending: number | null;
+    };
 
 let sequence = 0;
 
@@ -37,16 +41,20 @@ export function parseWatchdogCommand(text: string): WatchdogCommand | undefined 
   switch (parsed.type) {
     case "stop":
       return { type: "stop" };
-    case "limits":
-      if (!isValidLimit(parsed.maxPerHour) || !isValidLimit(parsed.maxPending)) return undefined;
+    case "settings":
+      if (
+        !isValidCadence(parsed.intervalMinutes) ||
+        !isValidLimit(parsed.maxPerHour) ||
+        !isValidLimit(parsed.maxPending)
+      ) {
+        return undefined;
+      }
       return {
-        type: "limits",
+        type: "settings",
+        intervalMinutes: parsed.intervalMinutes,
         maxPerHour: parsed.maxPerHour,
         maxPending: parsed.maxPending,
       };
-    case "cadence":
-      if (!isValidCadence(parsed.intervalMinutes)) return undefined;
-      return { type: "cadence", intervalMinutes: parsed.intervalMinutes };
     default:
       return undefined;
   }
