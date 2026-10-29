@@ -2574,11 +2574,11 @@ describe("Flow replay, base resolution, and validation edges", () => {
     const lightRoot = css.slice(0, css.indexOf("@media (prefers-color-scheme: dark)"));
     const darkRoot = css.slice(css.indexOf("@media (prefers-color-scheme: dark)"));
     const lightBorders = categories.map((category) => {
-      const match = new RegExp(`--flow-${category}-border:\\s*([^;]+);`).exec(lightRoot);
+      const match = new RegExp(`--flow-${category}:\\s*([^;]+);`).exec(lightRoot);
       return match?.[1]?.trim();
     });
     const darkBorders = categories.map((category) => {
-      const match = new RegExp(`--flow-${category}-border:\\s*([^;]+);`).exec(darkRoot);
+      const match = new RegExp(`--flow-${category}:\\s*([^;]+);`).exec(darkRoot);
       return match?.[1]?.trim();
     });
     const lightSurfaces = categories.map((category) => {

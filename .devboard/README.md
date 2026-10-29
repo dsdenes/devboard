@@ -251,20 +251,26 @@ source checkout; it resolves the npm version and artifact for the target host al
 
 `install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
 `.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
-package's files. It keeps `.devboard/.tmp`, copies `templates/host-AGENTS.md` to
+package's files. It keeps `.devboard/.tmp`, copies the package's `prompts/`, `extensions/`, and
+`lib/` trees to `<host>/.devboard/`, copies `templates/host-AGENTS.md` to
 `<host>/AGENTS.md` when that file is a symlink or absent (an existing regular file is untouched
 and reported as drift), adds the three ignored paths to `.gitignore`, and leaves exactly one
-dashboard running from the installed package. A reinstall keeps the version and `.tmp`; `update`
+dashboard running from the installed package. The copied trees are what the command wrappers
+open by repo-root-relative path: each command reads `.devboard/prompts/<name>.md`, each omp
+extension re-exports `.devboard/extensions/<name>.ts`, and those extensions import
+`../lib/*.ts`. The package itself stays under `.devboard/node_modules`. A reinstall keeps the
+version and `.tmp`; `update` re-copies the three trees from the newly installed package and
 never starts, stops, or restarts the dashboard. When the freshly started dashboard does not answer
 within 30 seconds, `install` stops that child before it exits nonzero, so a failed install leaves
 no dashboard behind.
 
 `doctor` checks Node 20+, Bun, npm, the git root, npm's version and artifact metadata (or the
 configured Gitea fallback and its digest), the installed package, the installed version against
-the newest version, `omp` and its authenticated probe, wrapper byte-equality, `AGENTS.md`, the
-dashboard's package and HTTP response, a non-symlinked `.devboard`, and a recorded update failure.
-Drift in a regular `AGENTS.md` is reported without failing the check; every other mismatch exits
-nonzero. Gitea is never required: with no address configured the checks consult npm only.
+the newest version, `omp` and its authenticated probe, wrapper byte-equality, byte-equality of
+the copied `prompts/`, `extensions/`, and `lib/` trees, `AGENTS.md`, the dashboard's package and
+HTTP response, a non-symlinked `.devboard`, and a recorded update failure. Drift in a regular
+`AGENTS.md` is reported without failing the check; every other mismatch exits nonzero. Gitea is
+never required: with no address configured the checks consult npm only.
 
 `--host <path>` targets another repository. `DEVBOARD_RELEASE_DIR` points the launcher and the
 server at a local directory of tarballs for offline verification and CI fixtures. `DEVBOARD_NPM`
@@ -587,8 +593,8 @@ files it covers. The seven categories are:
   file no clearer category explains.
 
 Every category has its own color token, each with a light and a dark variant:
-`--flow-contract-border` and `--flow-contract-surface` through
-`--flow-structure-border` and `--flow-structure-surface`, defined for the day theme in `:root` and
+`--flow-contract` and `--flow-contract-surface` through
+`--flow-structure` and `--flow-structure-surface`, defined for the day theme in `:root` and
 overridden in the dark theme. A widget carries `data-category="<category>"` and always renders its
 category label as text, so the color is never the only signal.
 
@@ -951,14 +957,17 @@ every implementation agent in that host discovers the set with no extra configur
 
 Each skill has a page that is one full-height Monaco Markdown editor for the whole `SKILL.md`
 (`data-testid="discover-skill-text"`), with no rendered preview and no split pane. The page header
-holds only the skill's page title. The editor panel header names the skill's relative path,
-`<skill>/SKILL.md`, with the skill name emphasized and the file name muted; a second 11px line
-states the draft (`No unsaved changes`, `Unsaved changes`, or `Live file missing`). The header
-also holds `discover-skill-save`, disabled until the draft differs from the live text, and, while
-the live text differs from the generated version or the file is missing,
-`discover-skill-restore`. A `discover-skill-dirty` marker replaces the clean state line while the
-draft has unsaved changes; the page renders no state badge and no purpose line, because the
-sidebar already flags `edited` or `missing`.
+holds only the skill's page title. The editor panel header is one 30px row: the skill's relative
+path, `<skill>/SKILL.md`, with the skill name emphasized and the file name muted, sits on the
+leading edge, and the 11px draft state (`No unsaved changes`, `Unsaved changes`, or `Live file
+missing`) starts the trailing action group. `discover-skill-save` is the filled primary only
+while the draft differs from the live text and a disabled `secondary` otherwise; it stays
+disabled while the live file is missing. While the live text differs from the generated version
+or the file is missing, `discover-skill-restore` is an outline control, and it becomes the filled
+primary as `Recreate generated version` when the live file is missing. A
+`discover-skill-dirty` marker replaces the clean state word while the draft has unsaved changes;
+the page renders no state badge and no purpose line, because the sidebar already flags `edited`
+or `missing`.
 `saveDiscoverSkill` writes the submitted bytes verbatim and updates the manifest's current hash and
 edited state; it is refused with one
 `discoverError` when the name is not one of the five, the skill is missing, the frontmatter name
@@ -1542,7 +1551,9 @@ spawns nothing, writes no state, and renders `agent-error`.
 The cycle itself is unchanged: it detects and reports, never fixes, reading the previous interval
 of journal and omp evidence, filing one issue per fingerprint, and commenting on recurrences after
 24 hours. A failing `gh` call leaves the fingerprint pending for the next cycle; a fingerprint
-already `filed:<url>` is never filed again. No cycle closes an issue.
+already `filed:<url>` is never filed again. No cycle closes an issue. A fingerprint covers the
+category and the normalized evidence line only: the per-occurrence `raw-http-request` capture path
+omp appends to an error it logs is removed, so repeated occurrences of one failure file one issue.
 
 ### State-directory cleanup
 
