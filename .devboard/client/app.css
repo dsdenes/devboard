@@ -3766,10 +3766,6 @@ a.code-chip--link:focus-visible {
   text-transform: uppercase;
 }
 
-.issues-draft-detail__label--warning {
-  color: var(--warning);
-}
-
 .issues-draft-detail__question {
   background: var(--warning-surface);
   border: 1px solid var(--warning);

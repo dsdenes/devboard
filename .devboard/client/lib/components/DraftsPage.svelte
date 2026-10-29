@@ -249,9 +249,6 @@
               class="issues-draft-detail__question"
               aria-label="Elaboration question"
             >
-              <h3 class="issues-draft-detail__label issues-draft-detail__label--warning">
-                Elaboration question
-              </h3>
               <IssuesQuestion
                 question={question}
                 testid="issues-draft-question"
