@@ -283,6 +283,8 @@ export class GoalDraftManager {
   private supervises = false;
   private timer: Timer | undefined;
   private lastLeaseAt = 0;
+  /** The poll failure already logged, so one stuck state directory logs once. */
+  private pollFailure: string | null = null;
 
   constructor(options: GoalDraftManagerOptions) {
     this.repoDir = resolve(options.repoDir);
@@ -316,7 +318,7 @@ export class GoalDraftManager {
       });
     this.attach();
     this.timer = setInterval(
-      () => this.refresh(),
+      () => this.poll(),
       Math.max(20, options.pollMs ?? DEFAULT_POLL_MS),
     );
     this.timer.unref?.();
@@ -487,6 +489,26 @@ export class GoalDraftManager {
         goalDraftControlDirectory(this.stateDir, this.repoDir, state.run.path!),
         { type: "interrupt" },
       );
+    }
+  }
+
+  /**
+   * One timer tick. A state write fails on a full, read-only, or
+   * permission-changed state directory; the runs already published stay in
+   * place, the failure is logged once, and the interval keeps polling so a
+   * writable directory recovers without a restart. Explicit start and stop
+   * calls keep calling refresh directly, so their caller still reports the
+   * error.
+   */
+  private poll(): void {
+    try {
+      this.refresh();
+      this.pollFailure = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === this.pollFailure) return;
+      this.pollFailure = message;
+      this.log(`goal-draft poll failed: ${message}`);
     }
   }
 

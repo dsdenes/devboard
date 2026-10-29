@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
@@ -15,10 +15,14 @@ import {
   resolveGoalDraft,
 } from "../server/goal-drafts";
 import {
+  GOAL_DRAFT_OWNER_VERSION,
+  goalDraftLeasePath,
+  goalDraftOwnerStatePath,
   readGoalDraftHandoff,
   readGoalDraftLease,
   readGoalDraftOwnerState,
   writeGoalDraftLease,
+  writeGoalDraftOwnerState,
 } from "../server/goal-draft-owner";
 
 /**
@@ -68,6 +72,7 @@ function managerFor(
   environment: () => Promise<Record<string, string | undefined>> = async () => ({
     ...process.env,
   }),
+  logLine: (line: string) => void = () => undefined,
 ): { manager: GoalDraftManager; events: unknown[] } {
   const events: unknown[] = [];
   const manager = new GoalDraftManager({
@@ -75,6 +80,7 @@ function managerFor(
     stateDir,
     command: `bun ${stubAgent} --log=${log} --goal-draft`,
     environment,
+    log: logLine,
     pollMs: 30,
     send: (event) => events.push(event),
   });
@@ -569,6 +575,92 @@ describe("elaboration", () => {
     expect((await manager.start(path)).ok).toBe(true);
     await waitFor(() => (startPids(log).length === 2 ? true : undefined), "the retry peer");
     expect(logLines(log).filter((line) => line === `goal-draft ${path}`)).toHaveLength(2);
+  });
+});
+
+describe("draft poll write failures", () => {
+  function runningState(root: string, path: string) {
+    const now = new Date().toISOString();
+    return {
+      version: GOAL_DRAFT_OWNER_VERSION,
+      run: {
+        status: "running" as const,
+        path,
+        startedAt: now,
+        finishedAt: null,
+        error: null,
+        activity: [],
+        question: null,
+      },
+      owner: null,
+      peer: null,
+      launcherPid: process.pid,
+      supervisorPid: process.pid,
+      updatedAt: now,
+    };
+  }
+
+  test("a failed owner-state write is logged once and the poller keeps polling", async () => {
+    const { root, stateDir, log } = await fixture();
+    const reported: string[] = [];
+    const path = draftPath("interrupted.md");
+    const { manager } = managerFor(root, stateDir, log, undefined, (line) =>
+      reported.push(line),
+    );
+    writeGoalDraftOwnerState(stateDir, root, path, runningState(root, path));
+    // A directory where writeJson's temporary file goes fails the write the
+    // way a full or read-only state directory does, and the stored state stays
+    // readable.
+    const blocked = `${goalDraftOwnerStatePath(stateDir, root, path)}.${process.pid}.tmp`;
+    mkdirSync(blocked);
+
+    await waitFor(() => (reported.length > 0 ? true : undefined), "the poll failure log");
+    // Several 30 ms polls must fail on the same error before the dedupe claim
+    // means anything; the poller owns real intervals and a real process table,
+    // so fake timers cannot drive it.
+    await Bun.sleep(200);
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toContain("goal-draft poll failed");
+
+    // The interval survived the failure: once the write can land again, the
+    // same poller records the interrupted run without a restart.
+    rmSync(blocked, { recursive: true, force: true });
+    await waitFor(
+      () => (manager.snapshot(path).status === "failed" ? true : undefined),
+      "the interrupted run after recovery",
+    );
+    expect(readGoalDraftOwnerState(stateDir, root, path)?.run.status).toBe("failed");
+    expect(reported).toHaveLength(1);
+  });
+
+  test("a failed lease write is logged and the supervised owner keeps running", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    const reported: string[] = [];
+    writeFileSync(join(drafts, "lease.md"), draftText("Lease", "STUB-HANG body"));
+    const { manager } = managerFor(root, stateDir, log, undefined, (line) =>
+      reported.push(line),
+    );
+    const path = draftPath("lease.md");
+    expect((await manager.start(path)).ok).toBe(true);
+    const peer = await waitFor(
+      () => readGoalDraftOwnerState(stateDir, root, path)?.peer?.pid,
+      "the peer",
+    );
+    const lease = await waitFor(() => readGoalDraftLease(stateDir, root) ?? undefined, "the lease");
+    const blocked = `${goalDraftLeasePath(stateDir, root)}.${process.pid}.tmp`;
+    mkdirSync(blocked);
+
+    await waitFor(() => (reported.length > 0 ? true : undefined), "the lease failure log");
+    expect(reported.every((line) => line.includes("goal-draft poll failed"))).toBe(true);
+    expect(alive(peer)).toBe(true);
+    expect(manager.snapshot(path).status).toBe("running");
+
+    rmSync(blocked, { recursive: true, force: true });
+    await waitFor(() => {
+      const next = readGoalDraftLease(stateDir, root);
+      return next !== null && next.updatedAt > lease.updatedAt ? true : undefined;
+    }, "the lease to renew");
+    expect(alive(peer)).toBe(true);
   });
 });
 
