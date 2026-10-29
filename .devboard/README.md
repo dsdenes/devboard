@@ -1442,14 +1442,16 @@ preflight and spawn. Different repositories get independent workers.
 
 The poll is the GitHub issues endpoint through the operator's `gh` credential every 10 seconds,
 conditional on the previous `ETag` (`If-None-Match`). A `304` is no change; `403`/`429` honor
-`Retry-After` or `X-RateLimit-Reset`. Pull requests returned by the endpoint are excluded, and
-every issue's labels are part of the poll result. Every open issue in the queue carries `handled`,
-the run id that last handled it, and `agentRunId` while an agent works it. An issue that already
-has a running agent never receives a second peer, so a poll while four peers run starts none of
-them again. An issue first seen while three peers run gets its own peer on the next poll without
-pausing, restarting, or shortening the others. A handled issue is never retriggered while it stays
-open; a closed issue leaves the ledger, so a reopened one is eligible again. A poll with no
-unhandled open issue starts no peer and publishes `idle`.
+`Retry-After` or `X-RateLimit-Reset`. Each read has a 20-second deadline: a stalled `gh` is killed,
+the poll records the timeout in `poll.error`, and the next poll runs on schedule instead of
+leaving the loop blocked on the abandoned read. Pull requests returned by the endpoint are
+excluded, and every issue's labels are part of the poll result. Every open issue in the queue
+carries `handled`, the run id that last handled it, and `agentRunId` while an agent works it. An
+issue that already has a running agent never receives a second peer, so a poll while four peers
+run starts none of them again. An issue first seen while three peers run gets its own peer on the
+next poll without pausing, restarting, or shortening the others. A handled issue is never
+retriggered while it stays open; a closed issue leaves the ledger, so a reopened one is eligible
+again. A poll with no unhandled open issue starts no peer and publishes `idle`.
 
 Session updates stream into the mode, permission requests are auto-approved by the ACP client,
 elicitation questions are answered per agent, and every peer closes when its run ends or Stop is

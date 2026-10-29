@@ -17,7 +17,14 @@ import { acquireLock, liveLockOwner } from "./lock";
 import { originForge, originRepository } from "./repository";
 import { giteaBaseUrl } from "../lib/forge";
 import { controlDirectory, lockPath, runsDirectory, statePath } from "./paths";
-import { fetchIssueState, pollOpenIssues, type IssueStateResult } from "./tracker";
+import {
+  fetchIssueState,
+  pollOpenIssues,
+  TrackerTimeoutError,
+  TRACKER_TIMEOUT_MS,
+  type IssueStateResult,
+  type PollResult,
+} from "./tracker";
 import {
   appendActivityLine,
   emptyState,
@@ -68,12 +75,9 @@ export interface WorkerOptions {
   intervalMs?: number;
   now?: () => Date;
   /** Injected for tests; defaults to the conditional `gh` tracker. */
-  listIssues?: (options: { etag: string | null }) => Promise<
-    | { kind: "issues"; issues: IssuesIssue[]; etag: string | null }
-    | { kind: "not-modified"; etag: string | null }
-    | { kind: "rate-limited"; until: string; detail: string }
-    | { kind: "error"; detail: string }
-  >;
+  listIssues?: (options: { etag: string | null }) => Promise<PollResult>;
+  /** Bounds one tracker read; defaults to `TRACKER_TIMEOUT_MS`. */
+  pollTimeoutMs?: number;
   /** Injected for tests; defaults to the real ACP client. */
   connect?: (options: IssuesPeerOptions) => AcpPeer;
   /** Injected for tests; defaults to the origin tracker's state for one issue. */
@@ -274,6 +278,7 @@ export class IssuesWorker {
   private readonly environment: Record<string, string | undefined>;
   private readonly clock: () => Date;
   private readonly listIssues: NonNullable<WorkerOptions["listIssues"]>;
+  private readonly pollTimeoutMs: number;
   private readonly connect: NonNullable<WorkerOptions["connect"]>;
   private readonly issueState: NonNullable<WorkerOptions["issueState"]>;
   private readonly harnessVersion: string | null;
@@ -302,6 +307,7 @@ export class IssuesWorker {
       DEFAULT_AGENT_COMMAND;
     this.environment = options.environment ?? process.env;
     this.clock = options.now ?? (() => new Date());
+    this.pollTimeoutMs = Math.max(1, options.pollTimeoutMs ?? TRACKER_TIMEOUT_MS);
     this.listIssues =
       options.listIssues ??
       ((request) => {
@@ -310,6 +316,7 @@ export class IssuesWorker {
           repository: this.state.repo,
           etag: request.etag,
           environment: this.environment,
+          timeoutMs: this.pollTimeoutMs,
           ...(remote === undefined ? {} : { forge: remote.forge }),
           ...(remote?.forge === "gitea"
             ? { baseUrl: giteaBaseUrl(remote, this.environment) }
@@ -637,7 +644,20 @@ export class IssuesWorker {
     this.polling = true;
     const startedAt = this.clock();
     try {
-      const result = await this.listIssues({ etag: this.state.poll.etag });
+      let result: PollResult;
+      try {
+        result = await this.readIssues(this.state.poll.etag);
+      } catch (error) {
+        if (this.stopping) return;
+        const detail = error instanceof Error ? error.message : String(error);
+        this.state.poll.lastPollAt = startedAt.toISOString();
+        this.state.poll.error = detail;
+        this.state.poll.nextPollAt = new Date(startedAt.getTime() + this.intervalMs).toISOString();
+        this.nextPollDue = Date.parse(this.state.poll.nextPollAt);
+        this.state.lastError = detail;
+        this.publish();
+        return;
+      }
       if (this.stopping) return;
       this.state.poll.lastPollAt = startedAt.toISOString();
       switch (result.kind) {
@@ -680,6 +700,26 @@ export class IssuesWorker {
       this.maybeTrigger();
     } finally {
       this.polling = false;
+    }
+  }
+
+  /**
+   * One tracker read bounded by `pollTimeoutMs`. A reader that never settles
+   * loses the race, so `poll` can release the flag and retry on a later tick.
+   */
+  private async readIssues(etag: string | null): Promise<PollResult> {
+    const read = Promise.resolve(this.listIssues({ etag }));
+    void read.catch(() => undefined);
+    const expired = Promise.withResolvers<never>();
+    void expired.promise.catch(() => undefined);
+    const timer = setTimeout(
+      () => expired.reject(new TrackerTimeoutError(this.pollTimeoutMs)),
+      this.pollTimeoutMs,
+    );
+    try {
+      return await Promise.race([read, expired.promise]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 

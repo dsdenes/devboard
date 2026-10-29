@@ -1,3 +1,4 @@
+import type { Subprocess } from "bun";
 import type { IssuesIssue } from "./state";
 import { configuredGiteaToken, type Forge } from "../lib/forge";
 import {
@@ -26,6 +27,10 @@ export interface TrackerOptions {
   /** Injected for tests; defaults to the operator's `gh`. */
   run?: (argv: string[]) => GhOutcome | Promise<GhOutcome>;
   environment?: Record<string, string | undefined>;
+  /** Whole-read deadline in milliseconds; defaults to `TRACKER_TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** Aborting kills the in-flight `gh` child and reports an error result. */
+  signal?: AbortSignal;
   /** The origin forge; defaults to GitHub for backward compatibility. */
   forge?: Forge;
   /** Gitea HTTP origin. */
@@ -44,7 +49,88 @@ const QUERY =
   ".[] | select(.pull_request == null) | " +
   "{number, title, url: .html_url, createdAt: .created_at, labels: [.labels[].name]}";
 
-async function gh(argv: string[], environment?: Record<string, string | undefined>): Promise<GhOutcome> {
+/** Default wall-clock bound for one tracker read, including the `gh` child. */
+export const TRACKER_TIMEOUT_MS = 20_000;
+
+/**
+ * A tracker read that ran past its deadline. The read left its state untouched,
+ * so the next poll may run it again.
+ */
+export class TrackerTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`the tracker did not answer within ${timeoutMs} ms`);
+    this.name = "TrackerTimeoutError";
+  }
+}
+
+/** The error an aborted read should surface; the controller carries the cause. */
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("the tracker read was aborted");
+}
+
+/** Rejects with the read's abort reason as soon as its controller aborts. */
+function whenAborted(signal: AbortSignal): Promise<never> {
+  const aborted = Promise.withResolvers<never>();
+  if (signal.aborted) {
+    aborted.reject(abortReason(signal));
+  } else {
+    signal.addEventListener("abort", () => aborted.reject(abortReason(signal)), { once: true });
+  }
+  return aborted.promise;
+}
+
+/** Kills a tracker child; a child that already exited is not an error. */
+function terminate(child: Pick<Subprocess, "kill">): void {
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // It exited between the abort and the signal.
+  }
+}
+
+interface Deadline {
+  signal: AbortSignal;
+  /** Races one read against the deadline; an abandoned read cannot reject unhandled. */
+  read<T>(work: () => Promise<T>): Promise<T>;
+  dispose(): void;
+}
+
+/**
+ * One read's deadline. The timer aborts the controller, `gh` kills its child on
+ * that signal, and an injected runner that ignores it still loses the race.
+ */
+function deadline(timeoutMs: number, signal?: AbortSignal): Deadline {
+  const bound = Math.max(1, timeoutMs);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new TrackerTimeoutError(bound)), bound);
+  const forward = () => {
+    if (signal !== undefined) controller.abort(abortReason(signal));
+  };
+  if (signal?.aborted) forward();
+  else signal?.addEventListener("abort", forward, { once: true });
+  return {
+    signal: controller.signal,
+    read<T>(work: () => Promise<T>): Promise<T> {
+      if (controller.signal.aborted) return Promise.reject(abortReason(controller.signal));
+      const started = work();
+      void started.catch(() => undefined);
+      const aborted = whenAborted(controller.signal);
+      void aborted.catch(() => undefined);
+      return Promise.race([started, aborted]);
+    },
+    dispose() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", forward);
+    },
+  };
+}
+
+async function gh(
+  argv: string[],
+  environment?: Record<string, string | undefined>,
+  signal?: AbortSignal,
+): Promise<GhOutcome> {
+  if (signal?.aborted) return { code: 1, stdout: "", stderr: abortReason(signal).message };
   try {
     const child = Bun.spawn({
       cmd: ["gh", ...argv],
@@ -59,13 +145,24 @@ async function gh(argv: string[], environment?: Record<string, string | undefine
         NO_COLOR: "1",
       },
     });
-    // Drain both pipes before the exit: a large answer must not stall the poll.
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return { code, stdout, stderr };
+    const kill = () => terminate(child);
+    signal?.addEventListener("abort", kill, { once: true });
+    try {
+      const aborted = signal === undefined ? undefined : whenAborted(signal);
+      if (aborted !== undefined) void aborted.catch(() => undefined);
+      // Drain both pipes before the exit: a large answer must not stall the poll.
+      const [stdout, stderr, code] = await Promise.race([
+        Promise.all([
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+          child.exited,
+        ]),
+        ...(aborted === undefined ? [] : [aborted]),
+      ]);
+      return { code, stdout, stderr };
+    } finally {
+      signal?.removeEventListener("abort", kill);
+    }
   } catch (error) {
     return { code: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
   }
@@ -238,19 +335,31 @@ export async function fetchIssueState(
   number: number,
 ): Promise<IssueStateResult> {
   if ((options.forge ?? "github") === "gitea") return await giteaIssueState(options, number);
-  const execute = options.run ?? ((argv: string[]) => gh(argv, options.environment));
-  const outcome = await execute([
-    "api",
-    `repos/${options.repository}/issues/${number}`,
-    "--jq",
-    ".state",
-  ]);
-  if (outcome.code !== 0) {
-    return { kind: "error", detail: firstLine(outcome.stderr) ?? `gh exited with code ${outcome.code}` };
+  const bound = deadline(options.timeoutMs ?? TRACKER_TIMEOUT_MS, options.signal);
+  const execute = options.run ?? ((argv: string[]) => gh(argv, options.environment, bound.signal));
+  try {
+    const outcome = await bound.read(() =>
+      Promise.resolve(
+        execute(["api", `repos/${options.repository}/issues/${number}`, "--jq", ".state"]),
+      ),
+    );
+    if (outcome.code !== 0) {
+      return {
+        kind: "error",
+        detail: firstLine(outcome.stderr) ?? `gh exited with code ${outcome.code}`,
+      };
+    }
+    const state = outcome.stdout.trim();
+    if (state === "open" || state === "closed") return { kind: "state", state };
+    return {
+      kind: "error",
+      detail: `the tracker returned an unexpected issue state: ${state.slice(0, 100)}`,
+    };
+  } catch (error) {
+    return { kind: "error", detail: error instanceof Error ? error.message : String(error) };
+  } finally {
+    bound.dispose();
   }
-  const state = outcome.stdout.trim();
-  if (state === "open" || state === "closed") return { kind: "state", state };
-  return { kind: "error", detail: `the tracker returned an unexpected issue state: ${state.slice(0, 100)}` };
 }
 
 async function giteaIssueState(
@@ -287,7 +396,8 @@ async function giteaIssueState(
 /** One conditional poll of the origin's open, non-pull-request issues. */
 export async function pollOpenIssues(options: TrackerOptions): Promise<PollResult> {
   if ((options.forge ?? "github") === "gitea") return await pollGiteaIssues(options);
-  const execute = options.run ?? ((argv: string[]) => gh(argv, options.environment));
+  const bound = deadline(options.timeoutMs ?? TRACKER_TIMEOUT_MS, options.signal);
+  const execute = options.run ?? ((argv: string[]) => gh(argv, options.environment, bound.signal));
   const argv = [
     "api",
     "--include",
@@ -299,38 +409,40 @@ export async function pollOpenIssues(options: TrackerOptions): Promise<PollResul
     "--jq",
     QUERY,
   ];
-  const outcome = await execute(argv);
-  const parsed = parseResponse(outcome.stdout);
-  // If-None-Match applies to the first page, so its ETag is the one to reuse.
-  const etag =
-    parsed.blocks[0]?.headers.get("etag") ?? options.etag ?? null;
-
-  const notModified = parsed.blocks.some((block) => block.status === 304);
-  if (notModified) return { kind: "not-modified", etag };
-
-  const limited = parsed.blocks.find((block) => block.status === 403 || block.status === 429);
-  if (limited !== undefined) {
-    const detail =
-      firstLine(outcome.stderr) ??
-      firstLine(limited.body.join("\n")) ??
-      `gh exited with code ${outcome.code}`;
-    return { kind: "rate-limited", until: rateLimitUntil(limited.headers, new Date()), detail };
-  }
-
-  if (outcome.code !== 0) {
-    return {
-      kind: "error",
-      detail:
-        firstLine(outcome.stderr) ??
-        firstLine(parsed.blocks.flatMap((block) => block.body).join("\n")) ??
-        `gh exited with code ${outcome.code}`,
-    };
-  }
-
-  const body = parsed.blocks.flatMap((block) => block.body);
   try {
+    const outcome = await bound.read(() => Promise.resolve(execute(argv)));
+    const parsed = parseResponse(outcome.stdout);
+    // If-None-Match applies to the first page, so its ETag is the one to reuse.
+    const etag =
+      parsed.blocks[0]?.headers.get("etag") ?? options.etag ?? null;
+
+    const notModified = parsed.blocks.some((block) => block.status === 304);
+    if (notModified) return { kind: "not-modified", etag };
+
+    const limited = parsed.blocks.find((block) => block.status === 403 || block.status === 429);
+    if (limited !== undefined) {
+      const detail =
+        firstLine(outcome.stderr) ??
+        firstLine(limited.body.join("\n")) ??
+        `gh exited with code ${outcome.code}`;
+      return { kind: "rate-limited", until: rateLimitUntil(limited.headers, new Date()), detail };
+    }
+
+    if (outcome.code !== 0) {
+      return {
+        kind: "error",
+        detail:
+          firstLine(outcome.stderr) ??
+          firstLine(parsed.blocks.flatMap((block) => block.body).join("\n")) ??
+          `gh exited with code ${outcome.code}`,
+      };
+    }
+
+    const body = parsed.blocks.flatMap((block) => block.body);
     return { kind: "issues", issues: parseLines(body), etag };
   } catch (error) {
     return { kind: "error", detail: error instanceof Error ? error.message : String(error) };
+  } finally {
+    bound.dispose();
   }
 }

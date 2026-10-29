@@ -45,6 +45,7 @@ import {
   promptFor,
   type AcpPeer,
   type IssuesPeerOptions,
+  type WorkerOptions,
 } from "../issues/worker";
 
 /**
@@ -198,6 +199,8 @@ async function fixture(options: {
   now?: () => Date;
   beforeStart?: (root: string, stateDir: string) => void;
   issueState?: (number: number) => Promise<IssueStateResult>;
+  listIssues?: WorkerOptions["listIssues"];
+  pollTimeoutMs?: number;
 }): Promise<Fixture> {
   const base = await temporaryDirectory(options.label);
   const root = options.root ?? join(base, "repo");
@@ -213,7 +216,10 @@ async function fixture(options: {
     intervalMs: 60_000,
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
     ...(options.now === undefined ? {} : { now: options.now }),
-    listIssues: async () => ({ kind: "issues", issues: [...issues], etag: "etag-1" }),
+    ...(options.pollTimeoutMs === undefined ? {} : { pollTimeoutMs: options.pollTimeoutMs }),
+    listIssues:
+      options.listIssues ??
+      (async () => ({ kind: "issues", issues: [...issues], etag: "etag-1" })),
     issueState: options.issueState ?? (async () => ({ kind: "state", state: "closed" })),
     connect: (peerOptions) => {
       const peer = new ControlledPeer(peerOptions);
@@ -309,6 +315,39 @@ describe("per-issue fleet", () => {
       await f.worker.poll();
       expect(f.peers).toHaveLength(4);
       expect(f.state().agents).toHaveLength(4);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("a tracker read that outlives its deadline records an error and polls again", async () => {
+    let now = new Date("2026-10-29T00:00:00Z");
+    let reads = 0;
+    const f = await fixture({
+      now: () => now,
+      pollTimeoutMs: 20,
+      listIssues: () => {
+        reads += 1;
+        if (reads === 1) return new Promise<never>(() => undefined);
+        return Promise.resolve({ kind: "issues", issues: [], etag: null });
+      },
+    });
+    try {
+      const failed = await waitFor(
+        () => (f.state().poll.error === null ? undefined : f.state().poll),
+        "the timed-out poll",
+      );
+      expect(failed.error).toContain("did not answer within 20 ms");
+      expect(failed.nextPollAt).toBe(new Date(now.getTime() + 60_000).toISOString());
+      expect(f.state().lastError).toBe(failed.error);
+
+      now = new Date(now.getTime() + 61_000);
+      await waitFor(() => (reads >= 2 ? true : undefined), "a poll after the deadline");
+      const recovered = await waitFor(
+        () => (f.state().poll.error === null ? f.state().poll : undefined),
+        "the recovered poll",
+      );
+      expect(recovered.lastPollAt).toBe(now.toISOString());
     } finally {
       await stop(f);
     }
@@ -1199,6 +1238,31 @@ describe("ledger", () => {
 });
 
 describe("tracker", () => {
+  test("returns an error when the tracker read outlives its deadline", async () => {
+    const started = Date.now();
+    const result = await pollOpenIssues({
+      repository: "acme/fixture",
+      timeoutMs: 20,
+      run: () => new Promise<never>(() => undefined),
+    });
+    expect(result.kind).toBe("error");
+    if (result.kind !== "error") return;
+    expect(result.detail).toContain("did not answer within 20 ms");
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  test("bounds the issue-state probe by the same deadline", async () => {
+    const state = await fetchIssueState(
+      {
+        repository: "acme/fixture",
+        timeoutMs: 20,
+        run: () => new Promise<never>(() => undefined),
+      },
+      7,
+    );
+    expect(state).toEqual({ kind: "error", detail: "the tracker did not answer within 20 ms" });
+  });
+
   test("treats a 304 as no change and keeps the etag", async () => {
     const result = await pollOpenIssues({
       repository: "acme/fixture",
