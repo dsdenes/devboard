@@ -1267,6 +1267,57 @@ describe("Coach issue bytes and filing", () => {
     ).toBe(true);
   });
 
+  test("a finalizer peer that elicits once still files the accepted findings", async () => {
+    const { repoDir, stateDir } = await workspace();
+    for (const id of ["a", "b"]) {
+      await writeSession(stateDir, repoDir, {
+        id,
+        startedAt: instant(id === "a" ? 30 : 20),
+        calls: 2,
+        command: `./scripts/${id}-denied-elicitation`,
+        errorText: "ERROR: denied elicitation",
+        errors: true,
+      });
+    }
+    const providerDir = join(stateDir, "providers");
+    await mkdir(providerDir, { recursive: true });
+    await writeFile(
+      join(providerDir, "credentials.json"),
+      `${JSON.stringify({
+        version: 1,
+        subscriptions: [
+          {
+            id: "fixture-opencode",
+            provider: "opencode-go",
+            label: "Fixture",
+            key: "sk-fixture",
+            enabled: true,
+            createdAt: NOW.toISOString(),
+            updatedAt: NOW.toISOString(),
+          },
+        ],
+      })}\n`,
+    );
+    const probe = join(stateDir, "finalizer-answer.json");
+    const peer = join(harnessRoot, "tests", "fixtures", "finalizer-elicitation-acp.ts");
+    const delivery = memoryDelivery();
+    const result = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: acceptingGate(),
+      environment: {
+        AGENT_COMMAND: `${process.execPath} ${peer}`,
+        COACH_FINALIZER_ANSWER: probe,
+        PATH: process.env.PATH ?? "",
+      },
+    });
+    expect(result.report.action).toBe("filed");
+    expect(delivery.created.length).toBeGreaterThan(0);
+    expect(JSON.parse(await readBytes(probe, "utf8"))).toEqual({ action: "cancel" });
+  });
+
   test("an invalid finalizer answer files nothing", async () => {
     const { repoDir, stateDir } = await workspace();
     for (const id of ["a", "b"]) {

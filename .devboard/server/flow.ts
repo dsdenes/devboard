@@ -2504,7 +2504,7 @@ export class FlowController {
         command: this.#agentCommand,
         cwd: this.repoDir,
         env,
-        permissionPolicy: "deny",
+        permissionPolicy: "read-only",
         onActivity: (activity: AcpActivity) => {
           if (this.#conversation !== conversation) return;
           const append = activity.append && conversation.activity.length > 0;
