@@ -175,6 +175,40 @@ async function stateOf(devtools: Devtools, testid: string): Promise<string> {
   return typeof value === "string" ? value : "";
 }
 
+/** The element's text with every byte preserved, for an exact diff. */
+async function rawText(devtools: Devtools, testid: string): Promise<string> {
+  const value = await devtools.evaluate(
+    `document.querySelector('[data-testid="${testid}"]')?.textContent ?? null`,
+  );
+  return typeof value === "string" ? value : "";
+}
+
+/** The documentation panel sits immediately above the filed issues panel. */
+async function documentationLayout(devtools: Devtools): Promise<{
+  present: boolean;
+  adjacent: boolean;
+  empty: boolean;
+  entries: number;
+}> {
+  const value = await devtools.evaluate(`(() => {
+    const panel = document.querySelector('[data-testid="agent-documentation"]');
+    const issues = document.querySelector('[data-testid="agent-issues"]');
+    const next = panel === null ? null : panel.nextElementSibling;
+    return {
+      present: panel !== null,
+      adjacent: next !== null && issues !== null && next.contains(issues),
+      empty: document.querySelector('[data-testid="agent-documentation-empty"]') !== null,
+      entries: document.querySelectorAll('[data-testid="agent-documentation-entry"]').length,
+    };
+  })()`);
+  return (value ?? { present: false, adjacent: false, empty: false, entries: 0 }) as {
+    present: boolean;
+    adjacent: boolean;
+    empty: boolean;
+    entries: number;
+  };
+}
+
 async function click(devtools: Devtools, testid: string): Promise<void> {
   await waitFor(
     async () =>
@@ -389,7 +423,10 @@ try {
     spacing: { panel: { $type: "dimension", $value: "8px" } },
   };
   const admitDesign = [
-    initialDesign,
+    initialDesign.replace(
+      "- **Panel** — a 1px `border` on `surface`.",
+      "- **Panel** — a 1px `border` on `surface` with 8px padding.",
+    ),
     "## Design principles",
     "",
     "- One accent token governs emphasis; no surface hardcodes a color.",
@@ -627,6 +664,19 @@ try {
     order,
   );
   check(await present(devtools, "design-activity"), "design-activity is missing");
+  const emptyDocumentation = await documentationLayout(devtools);
+  check(
+    emptyDocumentation.present &&
+      emptyDocumentation.adjacent &&
+      emptyDocumentation.empty &&
+      emptyDocumentation.entries === 0,
+    "the empty documentation panel is missing or misplaced",
+    emptyDocumentation,
+  );
+  check(
+    await present(devtools, "agent-issues-empty"),
+    "the filed issues empty state is missing below the documentation panel",
+  );
   console.log("PASS page-shape");
 
   const lifecycle: string[] = [];
@@ -810,6 +860,121 @@ try {
   );
   check(version.startsWith("0.1."), "the recorded version is not a release version", version);
   check(releaseUrl.includes(`v${version}`), "the release URL does not name the version", releaseUrl);
+  const releasedDocumentation = await documentationLayout(devtools);
+  check(
+    releasedDocumentation.present &&
+      releasedDocumentation.adjacent &&
+      !releasedDocumentation.empty &&
+      releasedDocumentation.entries === 1,
+    "the documentation panel did not gain exactly one entry above the issues",
+    releasedDocumentation,
+  );
+  const releasedEntryView = await devtools.evaluate(`(() => {
+    const summary = document.querySelector('[data-testid="agent-documentation-summary"]');
+    const link = document.querySelector('[data-testid="agent-documentation-version"]');
+    const files = document.querySelector('[data-testid="agent-documentation-files"]');
+    const details = document.querySelector('[data-testid="agent-documentation-entry"] details');
+    const diff = document.querySelector('[data-testid="agent-documentation-diff"]');
+    return {
+      summary: summary === null ? '' : (summary.textContent ?? '').trim(),
+      version: link === null ? '' : (link.textContent ?? '').trim(),
+      href: link instanceof HTMLAnchorElement ? link.href : '',
+      files: files === null ? '' : (files.textContent ?? '').trim(),
+      open: details instanceof HTMLDetailsElement ? details.open : true,
+      diffHidden:
+        diff === null ||
+        (typeof diff.checkVisibility === "function"
+          ? !diff.checkVisibility()
+          : diff.getBoundingClientRect().height === 0),
+    };
+  })()`);
+  const releasedEntry = releasedEntryView as Record<string, unknown>;
+  check(
+    typeof releasedEntry.summary === "string" &&
+      releasedEntry.summary.includes("Document the fixture standard"),
+    "the released entry does not show the cycle summary",
+    releasedEntry,
+  );
+  check(releasedEntry.version === version, "the entry version link text is wrong", releasedEntry);
+  check(
+    typeof releasedEntry.href === "string" &&
+      releasedEntry.href.includes(`/releases/tag/v${version}`),
+    "the entry version link does not name the release",
+    releasedEntry,
+  );
+  check(
+    releasedEntry.files === "DESIGN.md, design/tokens.json",
+    "the entry does not name both changed documents",
+    releasedEntry,
+  );
+  check(
+    releasedEntry.open === false && releasedEntry.diffHidden === true,
+    "the entry diff is not hidden until the entry is opened",
+    releasedEntry,
+  );
+  const expectedDiff = git([
+    "--git-dir",
+    bare,
+    "diff",
+    "--no-color",
+    "main^",
+    "main",
+    "--",
+    "DESIGN.md",
+    "design/tokens.json",
+  ]);
+  check(
+    expectedDiff.includes("-- **Panel** — a 1px `border` on `surface`."),
+    "the released diff does not remove the edited line",
+    expectedDiff,
+  );
+  check(
+    expectedDiff.includes("+- **Panel** — a 1px `border` on `surface` with 8px padding."),
+    "the released diff does not add the edited line",
+    expectedDiff,
+  );
+  check(
+    expectedDiff.includes("+## Design principles") && expectedDiff.includes("+## UX principles"),
+    "the released diff does not add the documented standards",
+    expectedDiff,
+  );
+  await click(devtools, "agent-documentation-summary");
+  await waitFor(
+    async () =>
+      (await rawText(devtools!, "agent-documentation-diff")) === expectedDiff.trim()
+        ? true
+        : undefined,
+    "the exact released diff in the opened entry",
+    10_000,
+  );
+  await click(devtools, "agent-documentation-summary");
+  await waitFor(
+    async () => {
+      const hidden = await devtools!.evaluate(
+        `(() => {
+          const diff = document.querySelector('[data-testid="agent-documentation-diff"]');
+          if (diff === null) return true;
+          return typeof diff.checkVisibility === "function"
+            ? !diff.checkVisibility()
+            : diff.getBoundingClientRect().height === 0;
+        })()`,
+      );
+      return hidden === true ? true : undefined;
+    },
+    "the entry diff to hide again",
+    10_000,
+  );
+  const worktreeLines = readFileSync(gitLog, "utf8")
+    .split("\n")
+    .filter((line) => line.includes("worktree add"));
+  check(
+    worktreeLines.some(
+      (line) =>
+        line.includes("-b design/") && line.includes(join(repo, ".worktree", "design-")),
+    ),
+    "the release did not use one worktree under .worktree/",
+    worktreeLines,
+  );
   check(
     (await devtools.evaluate(
       `document.querySelector('[data-testid="agent-lifecycle"]')?.dataset.state ?? ''`,
@@ -876,6 +1041,10 @@ try {
     readFileSync(publishLog, "utf8").split("\n").filter(Boolean).length === publishBeforeNoop,
     "a no-op cycle invoked the publisher",
   );
+  check(
+    (await documentationLayout(devtools)).entries === 1,
+    "a no-op cycle added a documentation history entry",
+  );
   console.log("PASS no-op");
 
   /* 7. A rejected push is integrated and retried without force. */
@@ -916,6 +1085,7 @@ try {
   /* 8. A failed publish leaves the pushed commit and surfaces agent-error. */
   await writeFile(join(stubDir, "mode"), "admit\n");
   await writeFile(join(stubDir, "publish-mode"), "fail\n");
+  const entriesBeforePublishFailure = (await documentationLayout(devtools)).entries;
   const headBeforePublishFailure = git(["rev-parse", "HEAD"]);
   await click(devtools, "agent-start");
   await waitFor(
@@ -942,6 +1112,10 @@ try {
     15_000,
   );
   await writeFile(join(stubDir, "publish-mode"), "ok\n");
+  check(
+    (await documentationLayout(devtools)).entries === entriesBeforePublishFailure,
+    "a failed release added a documentation history entry",
+  );
   console.log("PASS publish-failure");
 
   /* 9. A dirty integration checkout names its blocking paths. */

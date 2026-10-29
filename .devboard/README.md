@@ -1375,8 +1375,11 @@ the same Watchdog snapshot through the agent store.
 ### Prompt
 
 Directly below `agent-header`, before the alert region and `agent-main`, every background-agent
-page renders one prompt section `data-testid="agent-prompt"`. It is a read-only view in an
-installed host and never writes on a page open, tab restore, reconnect, or reload.
+page renders one prompt section `data-testid="agent-prompt"`. It is a `<details>` disclosure: closed
+on every page load, naming its summary `Prompt` (`agent-prompt-summary`), with all of its content
+(`agent-prompt-body`) hidden until the operator opens it. A reload, tab restore, or reconnect
+renders it closed again; opening it changes no file and no agent state. It is a read-only view in
+an installed host and never writes on a page open, tab restore, reconnect, or reload.
 
 Auto Scout and Design System read the effective prompt file their worker command opens:
 `.devboard/prompts/scout-recommendations.md` and `.devboard/prompts/design-system.md`. The Watchdog
@@ -1491,6 +1494,26 @@ recorded in activity, then the worktree and branch are removed. A cycle with no 
 decision makes no commit, push, workflow wait, or publish. A failed push, workflow, publish, or
 asset check leaves the pushed commit intact, never force-pushes, never reverts, and reports the
 failing step in `agent-error` and activity.
+
+The `/design-system-audit` prompt states this contract in its `Release` section: the agent edits
+only its cycle draft, the worker releases an admitted edit from one isolated worktree under
+`<REPO_DIR>/.worktree/`, commits only the two documents, integrates `origin/main`, pushes without
+force, waits for the release workflow, and runs `cd .devboard && bun run publish`; the agent never
+edits the main checkout and never runs git.
+
+Every successful documentation release appends one entry to the bounded `documentation` list in the
+design state file, newest first and at most 20: the cycle's one-sentence summary, the release time,
+the version, the release URL, the changed document paths, and the unified diff of the removed and
+added lines. A rejected document edit, a cycle with no admissible decision, and a failed release add
+no entry. A state file written before the list existed loads with an empty list rather than being
+quarantined. On the Design System page the `Documentation changes` panel
+(`data-testid="agent-documentation"`) renders immediately above the Filed issues panel
+(`agent-issues`); `agent-documentation-empty` states that no change has been released yet. Each
+entry (`agent-documentation-entry`) shows `agent-documentation-summary`,
+`agent-documentation-files`, `agent-documentation-at`, and the version link
+`agent-documentation-version`; opening its `agent-documentation-summary` reveals the exact
+`agent-documentation-diff` and closing it hides the diff again. The Filed issues table and its empty
+state remain below the panel on every page.
 
 Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
 the canonical source checkout lacks `.devboard/client`, either document is absent, the origin is
