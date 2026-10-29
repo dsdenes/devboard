@@ -62,6 +62,7 @@ export class FlowStore {
 
   goalDraft = $state("");
   goalDirty = $state(false);
+  private pendingGoalSave: string | null = null;
   decisionsDraft = $state("");
   decisionsDirty = $state(false);
   steeringDraft = $state("");
@@ -140,13 +141,29 @@ export class FlowStore {
     this.activity = message.activity;
     this.notice = message.notice;
     this.history = message.history;
-    if (!this.goalDirty) this.goalDraft = message.goal;
+    if (this.pendingGoalSave !== null) {
+      // Only a snapshot carrying the sent text confirms the save. A refused
+      // save publishes the persisted goal instead, and replacing the draft
+      // then would silently discard the operator's unsaved edit.
+      if (message.goal === this.pendingGoalSave) {
+        this.goalDirty = false;
+        this.goalDraft = message.goal;
+        this.pendingGoalSave = null;
+      }
+    } else if (!this.goalDirty) {
+      this.goalDraft = message.goal;
+    }
     if (!this.decisionsDirty) this.decisionsDraft = message.decisions;
   }
 
   setGoalDraft(text: string): void {
     this.goalDraft = text;
     this.goalDirty = text !== this.goal;
+    // Editing past the sent text means the server's echo no longer describes
+    // the draft, so it must not clear the flag or replace the newer text.
+    if (this.pendingGoalSave !== null && text !== this.pendingGoalSave) {
+      this.pendingGoalSave = null;
+    }
   }
 
   setDecisionsDraft(text: string): void {
@@ -154,9 +171,14 @@ export class FlowStore {
     this.decisionsDirty = text !== this.decisions;
   }
 
+  /**
+   * Sends the draft and leaves it dirty: the server refuses a goal save while
+   * the implementation runs and answers with a `flowError` frame, so only a
+   * snapshot carrying the sent text may clear the flag.
+   */
   saveGoal(): void {
     if (!connection.send({ type: "saveFlowGoal", text: this.goalDraft })) return;
-    this.goalDirty = false;
+    this.pendingGoalSave = this.goalDraft;
   }
 
   discardDecisionsDraft(): void {
@@ -285,6 +307,7 @@ export class FlowStore {
         this.goal = message.text;
         this.goalDirty = false;
         this.goalDraft = message.text;
+        this.pendingGoalSave = null;
       }
       return;
     }
