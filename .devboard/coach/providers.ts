@@ -59,7 +59,7 @@ export function openRouterKey(
  * dashboard's last selection when it still names an enabled key, then the
  * operator's list order. An enabled OpenRouter subscription supplies the
  * fallback chain's key when one exists. Reading the snapshot keeps the
- * finalizer on the subscription the status bar reports without probing usage.
+ * finalizer on the dashboard's selected subscription without probing usage.
  */
 export function openCodePeers(
   stateDir: string,

@@ -237,9 +237,9 @@ export class ProviderService {
   }
 
   /**
-   * Publishes the same decision the status bar shows so detached workers can
-   * follow it without probing usage themselves. A refusal removes the file, so
-   * no worker keeps using a key the dashboard has stopped selecting.
+   * Publishes the dashboard's decision so detached workers can follow it
+   * without probing usage themselves. A refusal removes the file, so no worker
+   * keeps using a key the dashboard has stopped selecting.
    */
   #publishSelection(): void {
     const decision = decideProvider(this.#ranked(), this.#subscriptions.length > 0);

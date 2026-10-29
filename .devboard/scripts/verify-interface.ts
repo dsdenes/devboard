@@ -1717,26 +1717,44 @@ try {
   const sidebarToggle = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar-toggle"]') !== null`);
   check(!sidebarToggle, "the sidebar still renders a hide control");
 
-  // 4b. Providers: indicator, dialog, exactly two providers, masked keys,
+  // 4b. Providers: dialog, exactly two providers, masked keys,
   // usage rows, validation, edit, enable, delete, refresh, palette entry,
   // and focus trapping.
-  await page.wait(
-    `document.querySelector('[data-testid="providers-indicator"]')?.textContent?.includes("OpenCode Go") === true`,
-    "the provider indicator to show the selection",
-  );
-  const providerIndicator = await page.eval<string>(
-    `document.querySelector('[data-testid="providers-indicator"]')?.textContent?.replace(/\\s+/g, " ").trim() ?? ""`,
-  );
+  const statusLeft = await page.eval<{ items: string[]; indicator: boolean }>(`(() => {
+    const group = document.querySelectorAll('[data-testid="status-bar"] .status-group')[0];
+    return {
+      items: group === undefined ? [] : [...group.querySelectorAll(".status-item")].map((item) => item.textContent?.replace(/\\s+/g, " ").trim() ?? ""),
+      indicator: document.querySelector('[data-testid="providers-indicator"]') !== null,
+    };
+  })()`);
   check(
-    providerIndicator.includes("OpenCode Go") && providerIndicator.includes("70%"),
-    "the indicator does not show the selection and lowest remaining percentage",
-    providerIndicator,
+    statusLeft.items.length === 2 &&
+      statusLeft.items[0]?.includes("Connected") &&
+      statusLeft.items[1]?.includes("host"),
+    "the status bar left group holds more than the connection and the project",
+    statusLeft,
   );
+  check(!statusLeft.indicator, "the status bar still renders a providers indicator", statusLeft);
 
-  await page.click('[data-testid="providers-indicator"]');
+  await page.key("k", 2);
+  await page.wait(
+    `document.querySelector('[data-testid="command-palette"]') !== null`,
+    "the palette for Providers",
+  );
+  await page.fill('[data-testid="command-palette-input"]', "Providers");
+  await page.wait(
+    `[...document.querySelectorAll('[data-testid="command-item"]')].some((item) => item.getAttribute("data-command") === "settings.providers")`,
+    "the Providers palette entry",
+  );
+  await page.key("Enter");
   await page.wait(
     `document.querySelector('[data-testid="providers-dialog"]') !== null`,
     "the providers dialog",
+  );
+  await page.wait(
+    `document.activeElement?.closest('[data-testid="providers-dialog"]') !== null`,
+    "the providers dialog to take focus",
+    2_000,
   );
   const providers = await page.eval<{
     options: Array<{ value: string; label: string }>;
@@ -3777,7 +3795,7 @@ try {
   await delay(150);
   const skillDirty = await page.eval<boolean>(`document.querySelector('[data-testid="discover-skill-text"]').getAttribute("data-dirty") === "true"`);
   check(skillDirty, "the skill editor does not mark unsaved changes");
-  const dirtyHeader = await page.eval<{ enabled: boolean; state: string }>(`(() => {
+  const dirtyHeader = await page.eval<{ enabled: boolean; state: string; primary: boolean }>(`(() => {
     const button = document.querySelector('[data-testid="discover-skill-save"]');
     return {
       enabled: button !== null && !button.disabled,
@@ -3785,11 +3803,12 @@ try {
         ?.closest('.discover-skill__header')
         ?.querySelector('[data-testid="discover-skill-dirty"]')
         ?.textContent?.trim() ?? "",
+      primary: button?.classList.contains("bg-[var(--primary)]") ?? false,
     };
   })()`);
   check(
-    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes",
-    "the skill header does not enable Save for an unsaved draft",
+    dirtyHeader.enabled && dirtyHeader.state === "Unsaved changes" && dirtyHeader.primary,
+    "the skill header does not promote Save to the filled primary for an unsaved draft",
     dirtyHeader,
   );
   const editedSkill = await page.eval<string>(`window.__devboardEditors.get("discover-skill-text").getValue()`);
@@ -3868,15 +3887,65 @@ try {
     "the restored generated skill",
     10_000,
   );
+  // A deleted live file states its own recovery and gives Recreate the only primary.
+  await rm(join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md"));
+  await page.reload();
+  await runPalette("discover.tab.testing-strategy");
+  await page.wait(
+    `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "Live file missing"`,
+    "the missing skill state",
+  );
+  const missingHeader = await page.eval<{
+    state: string;
+    saveDisabled: boolean;
+    saveSecondary: boolean;
+    restorePrimary: boolean;
+    restore: string;
+  }>(`(() => {
+    const header = document.querySelector('.discover-skill__header');
+    const save = header?.querySelector('[data-testid="discover-skill-save"]');
+    const restore = header?.querySelector('[data-testid="discover-skill-restore"]');
+    return {
+      state: header?.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() ?? "",
+      saveDisabled: save === null || save.disabled,
+      saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
+      restorePrimary: restore?.classList.contains("bg-[var(--primary)]") ?? false,
+      restore: restore?.textContent?.trim() ?? "",
+    };
+  })()`);
+  check(
+    missingHeader.state === "Live file missing" && missingHeader.saveDisabled &&
+      missingHeader.saveSecondary && missingHeader.restorePrimary &&
+      missingHeader.restore === "Recreate generated version",
+    "the missing skill header does not give the recovery control the only primary",
+    missingHeader,
+  );
+  await page.click('[data-testid="discover-skill-restore"]');
+  await waitFor(
+    async () => {
+      const text = await readFile(join(host, ".omp", "skills", "discover-testing-strategy", "SKILL.md"), "utf8").catch(() => "");
+      return text.length > 0 ? true : undefined;
+    },
+    "the recreated skill file",
+    10_000,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="discover-skill-status"]')?.textContent?.trim() === "No unsaved changes"`,
+    "the recreated skill state",
+  );
+
   const skillLayout = await page.eval<{
     preview: boolean;
     split: number;
     badge: boolean;
     editor: number;
     panel: number;
+    header: number;
+    inline: boolean;
     title: string;
     state: string;
     saveDisabled: boolean;
+    saveSecondary: boolean;
     eyebrow: boolean;
     meta: boolean;
     name: boolean;
@@ -3884,18 +3953,29 @@ try {
     const editor = document.querySelector('[data-testid="discover-skill-text"]');
     const panel = document.querySelector('[data-testid="discover-skill"]');
     const index = document.querySelector('#workspace-discover .discover-skill-page');
+    const header = panel?.querySelector('.discover-skill__header');
+    const identity = header?.querySelector('.discover-skill__identity');
+    const actions = header?.querySelector('.discover-skill__actions');
     const save = document.querySelector('[data-testid="discover-skill-save"]');
+    const center = (element) => {
+      const box = element?.getBoundingClientRect();
+      return box === undefined ? 0 : box.top + box.height / 2;
+    };
     return {
       preview: document.querySelector('[data-testid="discover-skill-preview"]') !== null,
       split: document.querySelectorAll('#workspace-discover [data-testid="discover-skill"] [data-testid="pane-handle"]').length,
       badge: document.querySelector('[data-testid="discover-skill-state"]') !== null,
       editor: editor === null ? 0 : Math.round(editor.getBoundingClientRect().height),
       panel: panel === null ? 0 : Math.round(panel.getBoundingClientRect().height),
+      header: header === null ? 0 : Math.round(header.getBoundingClientRect().height),
+      inline: identity != null && actions != null &&
+        Math.abs(center(identity) - center(actions)) <= 2,
       title: panel?.querySelector('.panel__title')?.textContent?.trim() ?? "",
       state: panel
         ?.querySelector('[data-testid="discover-skill-status"]')
         ?.textContent?.trim() ?? "",
       saveDisabled: save === null || save.disabled,
+      saveSecondary: save?.classList.contains("bg-[var(--secondary)]") ?? false,
       eyebrow: index?.querySelector('.discover-page__eyebrow') !== null,
       meta: index?.querySelector('.discover-skill__meta') !== null,
       name: panel?.querySelector('.panel__header .muted') !== null,
@@ -3909,8 +3989,14 @@ try {
     skillLayout.title,
   );
   check(
-    skillLayout.state === "No unsaved changes" && skillLayout.saveDisabled,
-    "the clean skill header does not state the draft is saved and disable Save",
+    skillLayout.state === "No unsaved changes" && skillLayout.saveDisabled &&
+      skillLayout.saveSecondary,
+    "the clean skill header does not state the draft is saved and quiet Save",
+    skillLayout,
+  );
+  check(
+    skillLayout.header === 30 && skillLayout.inline,
+    "the skill header is not one 30px row with the state and actions",
     skillLayout,
   );
   check(!skillLayout.eyebrow && !skillLayout.meta && !skillLayout.name, "the skill page still renders removed labels", skillLayout);

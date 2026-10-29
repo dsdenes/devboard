@@ -302,10 +302,16 @@ export function collectEvidence(options: CollectOptions): Collection {
   return { events, malformed, unattributed: omp.unattributed };
 }
 
-/** An evidence line without its timestamp or incidental whitespace. */
+/**
+ * An evidence line without its timestamp, its per-occurrence capture pointer,
+ * or incidental whitespace. omp appends the path of the HTTP capture it wrote
+ * for one request to an error it logs; that path names one occurrence, never
+ * the signal, so repeated occurrences of one failure keep one identity.
+ */
 export function normalizeEvidenceLine(text: string): string {
   return text
     .replace(/^\d{4}-\d{2}-\d{2}T[^\s]+/, "")
+    .replace(/\s*\braw-http-request=\S+/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }

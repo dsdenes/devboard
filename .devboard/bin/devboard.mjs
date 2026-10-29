@@ -858,6 +858,23 @@ export async function syncTree(source, destination, skip) {
   }
 }
 
+/**
+ * Trees the host-side wrappers open by repo-root-relative path. A copied
+ * command reads `.devboard/prompts/<name>.md`, a copied omp extension
+ * re-exports `.devboard/extensions/<name>.ts`, and those extensions import
+ * `../lib/*.ts`. The package itself lives under `.devboard/node_modules`, so
+ * each tree is copied into the host prefix on install and every update.
+ */
+const HOST_HARNESS_TREES = ["prompts", "extensions", "lib"];
+
+async function syncHarnessTrees(host, harness) {
+  for (const name of HOST_HARNESS_TREES) {
+    const source = join(harness, name);
+    if (!existsSync(source)) continue;
+    await syncTree(source, join(host, ".devboard", name));
+  }
+}
+
 async function syncWrappers(host, harness, skip) {
   for (const name of ["commands", "extensions"]) {
     await syncTree(join(harness, "omp", name), join(host, ".omp", name), skip);
@@ -1161,6 +1178,7 @@ async function installCommand(options) {
   }
   const harness = packageDir(prefix);
   await syncWrappers(host, harness, skip);
+  await syncHarnessTrees(host, harness);
   const agents = await syncAgents(host, harness, skip);
   const ignored = await ensureGitignore(host);
   const portOption = Number(options.port);
@@ -1243,6 +1261,7 @@ async function updateCommand(options) {
     // replaces the package and leaves local content byte-for-byte intact.
     console.log("devboard: kept the existing omp wrappers and AGENTS.md");
   }
+  await syncHarnessTrees(host, harness);
   console.log(`devboard: ${PACKAGE_NAME} ${before} -> ${resolved.version} (${resolved.via})`);
   console.log("devboard: the dashboard keeps running; reload it to restart on the new version");
 }
@@ -1255,6 +1274,28 @@ function recursiveFiles(directory, prefix = "") {
     else files.push(name);
   }
   return files.sort();
+}
+
+/** Relative paths that are missing, different, or extra in `actualRoot`. */
+function treeMismatches(expectedRoot, actualRoot) {
+  const expected = recursiveFiles(expectedRoot);
+  const actual = recursiveFiles(actualRoot);
+  const expectedSet = new Set(expected);
+  const actualSet = new Set(actual);
+  const mismatches = [];
+  for (const path of expected) {
+    if (
+      actualSet.has(path) &&
+      readFileSync(join(expectedRoot, path)).equals(readFileSync(join(actualRoot, path)))
+    ) {
+      continue;
+    }
+    mismatches.push(path);
+  }
+  for (const path of actual) {
+    if (!expectedSet.has(path)) mismatches.push(path);
+  }
+  return mismatches;
 }
 
 function wrapperMismatches(host, harness) {
@@ -1273,30 +1314,15 @@ function wrapperMismatches(host, harness) {
     }
   }
   for (const name of ["commands", "extensions"]) {
-    const expectedRoot = join(harness, "omp", name);
     const actualRoot = join(host, ".omp", name);
-    let expected;
-    let actual;
+    let mismatches;
     try {
-      expected = recursiveFiles(expectedRoot);
-      actual = recursiveFiles(actualRoot);
+      mismatches = treeMismatches(join(harness, "omp", name), actualRoot);
     } catch {
       failures.push(`.omp/${name} is missing`);
       continue;
     }
-    const expectedSet = new Set(expected);
-    const actualSet = new Set(actual);
-    for (const path of expected) {
-      const target = join(actualRoot, path);
-      if (actualSet.has(path) && readFileSync(join(expectedRoot, path)).equals(readFileSync(target))) {
-        continue;
-      }
-      const label = `.omp/${name}/${path}`;
-      if (tracked.has(target)) drift.push(label);
-      else failures.push(label);
-    }
-    for (const path of actual) {
-      if (expectedSet.has(path)) continue;
+    for (const path of mismatches) {
       const target = join(actualRoot, path);
       const label = `.omp/${name}/${path}`;
       if (tracked.has(target)) drift.push(label);
@@ -1304,6 +1330,24 @@ function wrapperMismatches(host, harness) {
     }
   }
   return { failures, drift };
+}
+
+/** The host copies of the trees the wrappers open by repo-root-relative path. */
+function harnessTreeMismatches(host, harness) {
+  const failures = [];
+  for (const name of HOST_HARNESS_TREES) {
+    const expectedRoot = join(harness, name);
+    if (!existsSync(expectedRoot)) continue;
+    let mismatches;
+    try {
+      mismatches = treeMismatches(expectedRoot, join(host, ".devboard", name));
+    } catch {
+      failures.push(`.devboard/${name} is missing`);
+      continue;
+    }
+    for (const path of mismatches) failures.push(`.devboard/${name}/${path}`);
+  }
+  return failures;
 }
 
 function readJournal(prefix, host) {
@@ -1456,6 +1500,16 @@ const CHECKS = [
         return `drift: preserved tracked paths (${drift.join(", ")})`;
       }
       return "commands, extensions, and mcp.json match the package";
+    },
+  },
+  {
+    name: "harness files",
+    run: async (host, prefix) => {
+      const failures = harnessTreeMismatches(host, packageDir(prefix));
+      if (failures.length > 0) {
+        throw new LauncherError(`does not match the installed package: ${failures.join(", ")}`);
+      }
+      return "prompts, extensions, and lib match the package";
     },
   },
   {

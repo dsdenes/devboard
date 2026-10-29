@@ -198,6 +198,62 @@ try {
     "the fresh dashboard reports its installed version",
   );
 
+  step("installing into a fresh host without a linked checkout");
+  const fresh = await makeHost(root, "fresh");
+  assertTrue(
+    !existsSync(join(fresh.directory, ".devboard")),
+    "the fresh host starts without a .devboard directory",
+  );
+  const freshInstall = launcher(["install", "--host", fresh.directory], oldEnv);
+  startedHosts.push(fresh.directory);
+  assertTrue(
+    freshInstall.code === 0,
+    `fresh install failed:\n${freshInstall.stdout}\n${freshInstall.stderr}`,
+  );
+  const freshPrefix = join(fresh.directory, ".devboard");
+  const freshHarness = installedPackage(freshPrefix);
+  for (const name of ["prompts", "extensions", "lib"]) {
+    assertTrue(
+      treesMatch(join(freshHarness, name), join(freshPrefix, name)),
+      `.devboard/${name} matches the installed package`,
+    );
+  }
+  const installedPrompt = join(freshPrefix, "prompts", "implement-issue.md");
+  assertTrue(
+    existsSync(installedPrompt) && readFileSync(installedPrompt, "utf8").length > 0,
+    ".devboard/prompts/implement-issue.md is missing or empty",
+  );
+  // The probe's specifier is the installed host's path, not a module this
+  // file can import statically: it exercises the wrapper's own resolution.
+  const extensionLoad = Bun.spawnSync({
+    cmd: [
+      "bun",
+      "-e",
+      `await import(${JSON.stringify(join(fresh.directory, ".omp", "extensions", "implement-next-epic.ts"))});`,
+    ],
+    cwd: fresh.directory,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  assertTrue(
+    extensionLoad.exitCode === 0,
+    `the installed omp extension does not load:\n${extensionLoad.stderr.toString()}`,
+  );
+  step("fresh install serves prompts, extensions, and their lib imports");
+
+  step("re-copying prompts and extensions on update");
+  await writeFile(join(freshPrefix, "prompts", "implement-issue.md"), "stale prompt\n");
+  await writeFile(join(freshPrefix, "extensions", "implement-next-epic.ts"), "stale extension\n");
+  const freshUpdate = launcher(["update", "--host", fresh.directory], newEnv);
+  assertTrue(freshUpdate.code === 0, `fresh update failed:\n${freshUpdate.stderr}`);
+  assertEquals(installedVersion(freshPrefix), NEW, "the fresh host updates");
+  for (const name of ["prompts", "extensions", "lib"]) {
+    assertTrue(
+      treesMatch(join(installedPackage(freshPrefix), name), join(freshPrefix, name)),
+      `update re-copies .devboard/${name} from the installed package`,
+    );
+  }
+
   step("reinstalling over a tracked nested wrapper");
   const nestedTracked = join(host.directory, ".omp", "commands", "custom", "deploy.md");
   await mkdir(join(host.directory, ".omp", "commands", "custom"), { recursive: true });
@@ -298,6 +354,10 @@ try {
   for (const line of doctor.stdout.trim().split("\n")) {
     assertTrue(line.startsWith("PASS "), `unexpected doctor line: ${line}`);
   }
+
+  step("doctor failing on a missing harness tree");
+  await rm(join(prefix, "prompts"), { recursive: true, force: true });
+  expectFailure(launcher(["doctor", "--host", host.directory], newEnv), "harness files");
 
   step("doctor injected failures");
   const staleHost = await makeHost(root, "stale");

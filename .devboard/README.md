@@ -169,19 +169,16 @@ context as a UI issue through `/api/feedback` at once, then replaces itself with
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context.
 
-The 26px status bar is two groups. The left group states the WebSocket connection, the
-project's own name (the last path segment, with a folder mark and the full path in its tooltip),
-and the Providers control: the selected provider with the lowest remaining percentage, or
-`No provider`, which opens the Providers dialog. The right group states the running lane count,
-the issues worker
-state with a state dot, the watchdog's last action and age, and the running and installed
-versions; each metric carries a 10px uppercase label so its meaning never rests on color. When
-`versionState.stale` is true it shows the existing reload control (`reload-devboard`), whose
-accessible name and title name both versions; reload behavior is unchanged. A mode states its
-status in its sidebar and workspace, never a second time in the status bar, except the issues
-worker, which is detached from every dashboard and reports through `issues-indicator`. The theme
-toggle and the notification indicator live in the activity bar's action group, not the status
-bar.
+The 26px status bar is two groups. The left group states the WebSocket connection and the
+project's own name (the last path segment, with a folder mark and the full path in its tooltip).
+The right group states the running lane count, the issues worker state with a state dot, the
+watchdog's last action and age, and the running and installed versions; each metric carries a
+10px uppercase label so its meaning never rests on color. When `versionState.stale` is true it
+shows the existing reload control (`reload-devboard`), whose accessible name and title name both
+versions; reload behavior is unchanged. A mode states its status in its sidebar and workspace,
+never a second time in the status bar, except the issues worker, which is detached from every
+dashboard and reports through `issues-indicator`. The theme toggle and the notification indicator
+live in the activity bar's action group, not the status bar.
 
 ### Verifying the interface
 
@@ -237,20 +234,26 @@ source checkout; it resolves the npm version and artifact for the target host al
 
 `install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
 `.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
-package's files. It keeps `.devboard/.tmp`, copies `templates/host-AGENTS.md` to
+package's files. It keeps `.devboard/.tmp`, copies the package's `prompts/`, `extensions/`, and
+`lib/` trees to `<host>/.devboard/`, copies `templates/host-AGENTS.md` to
 `<host>/AGENTS.md` when that file is a symlink or absent (an existing regular file is untouched
 and reported as drift), adds the three ignored paths to `.gitignore`, and leaves exactly one
-dashboard running from the installed package. A reinstall keeps the version and `.tmp`; `update`
+dashboard running from the installed package. The copied trees are what the command wrappers
+open by repo-root-relative path: each command reads `.devboard/prompts/<name>.md`, each omp
+extension re-exports `.devboard/extensions/<name>.ts`, and those extensions import
+`../lib/*.ts`. The package itself stays under `.devboard/node_modules`. A reinstall keeps the
+version and `.tmp`; `update` re-copies the three trees from the newly installed package and
 never starts, stops, or restarts the dashboard. When the freshly started dashboard does not answer
 within 30 seconds, `install` stops that child before it exits nonzero, so a failed install leaves
 no dashboard behind.
 
 `doctor` checks Node 20+, Bun, npm, the git root, npm's version and artifact metadata (or the
 configured Gitea fallback and its digest), the installed package, the installed version against
-the newest version, `omp` and its authenticated probe, wrapper byte-equality, `AGENTS.md`, the
-dashboard's package and HTTP response, a non-symlinked `.devboard`, and a recorded update failure.
-Drift in a regular `AGENTS.md` is reported without failing the check; every other mismatch exits
-nonzero. Gitea is never required: with no address configured the checks consult npm only.
+the newest version, `omp` and its authenticated probe, wrapper byte-equality, byte-equality of
+the copied `prompts/`, `extensions/`, and `lib/` trees, `AGENTS.md`, the dashboard's package and
+HTTP response, a non-symlinked `.devboard`, and a recorded update failure. Drift in a regular
+`AGENTS.md` is reported without failing the check; every other mismatch exits nonzero. Gitea is
+never required: with no address configured the checks consult npm only.
 
 `--host <path>` targets another repository. `DEVBOARD_RELEASE_DIR` points the launcher and the
 server at a local directory of tarballs for offline verification and CI fixtures. `DEVBOARD_NPM`
@@ -280,13 +283,11 @@ Provider authentication is a harness capability, not host settings. Exactly two 
 |OpenCode Go|`OPENCODE_API_KEY`|`opencode-go/deepseek-v4.1-flash`|
 |OpenRouter|`OPENROUTER_API_KEY`|`openrouter/deepseek/deepseek-v4.1-flash-1017`|
 
-The operator registers keys in the **Providers** dialog, reachable from the status-bar control
-(`data-testid="providers-indicator"`) and the `settings.providers` palette command. The dialog
-supports add, edit, enable/disable, delete with confirmation, refresh, and save. It shows each
-key's masked value, status (`ok`, `near limit`, `exhausted`, `invalid`, `unknown`), every quota
-window's remaining fraction, and the last check time. The status-bar control names the selected
-subscription, not only its provider, and its tooltip says the selection applies to the next
-peer; a running peer keeps the key it started with.
+The operator registers keys in the **Providers** dialog, reachable from the `settings.providers`
+palette command. The dialog supports add, edit, enable/disable, delete with confirmation, refresh,
+and save. It shows each key's masked value, status (`ok`, `near limit`, `exhausted`, `invalid`,
+`unknown`), every quota window's remaining fraction, and the last check time. A running peer keeps
+the key it started with; the next peer resolves the selection again.
 
 Credentials live in `<stateDir>/providers/credentials.json` (directory `0700`, file `0600`,
 atomic replacement). The file survives a dashboard restart and is never removed by
@@ -301,9 +302,9 @@ percent used) and `https://openrouter.ai/api/v1/key` (`limit_remaining` and `lim
 `DEVBOARD_OPENCODE_GO_USAGE_BASE_URL` and `DEVBOARD_OPENROUTER_USAGE_BASE_URL` override the base
 URLs for tests and offline verification. On-demand reads fetch a key's usage at most once per
 60 seconds unless the operator forces a refresh; while at least one dashboard is connected, the
-server forces one refresh and pushes a fresh `providersState` every 60 seconds, so the
-status-bar indicator never stays stale. With no client connected the periodic refresh makes no
-provider call, and the next client's `getProviders` refreshes first.
+server forces one refresh and pushes a fresh `providersState` every 60 seconds, so the dialog's
+usage never stays stale. With no client connected the periodic refresh makes no provider call, and
+the next client's `getProviders` refreshes first.
 
 A detached worker outlives the credential list it was started with, so every agent it starts
 resolves the provider again instead of inheriting the worker's original key. The issue worker
@@ -311,7 +312,7 @@ resolves once per issue run, Auto Scout once per scan, and Design once per cycle
 started before a key was added keeps its key, and the next run uses the current selection. Every
 refresh also writes `<stateDir>/providers/selection.json` with the selected provider, subscription
 id, label, model, and headroom; the file carries no key material. The Coach finalizer cannot probe
-usage, so it reads that snapshot and leads with the subscription the status bar reports, then falls
+usage, so it reads that snapshot and leads with the dashboard's selected subscription, then falls
 back to the operator's list order when no snapshot exists.
 
 Remaining is `1 - percent/100` for each Go window and `limit_remaining / limit` for OpenRouter,
@@ -946,14 +947,17 @@ every implementation agent in that host discovers the set with no extra configur
 
 Each skill has a page that is one full-height Monaco Markdown editor for the whole `SKILL.md`
 (`data-testid="discover-skill-text"`), with no rendered preview and no split pane. The page header
-holds only the skill's page title. The editor panel header names the skill's relative path,
-`<skill>/SKILL.md`, with the skill name emphasized and the file name muted; a second 11px line
-states the draft (`No unsaved changes`, `Unsaved changes`, or `Live file missing`). The header
-also holds `discover-skill-save`, disabled until the draft differs from the live text, and, while
-the live text differs from the generated version or the file is missing,
-`discover-skill-restore`. A `discover-skill-dirty` marker replaces the clean state line while the
-draft has unsaved changes; the page renders no state badge and no purpose line, because the
-sidebar already flags `edited` or `missing`.
+holds only the skill's page title. The editor panel header is one 30px row: the skill's relative
+path, `<skill>/SKILL.md`, with the skill name emphasized and the file name muted, sits on the
+leading edge, and the 11px draft state (`No unsaved changes`, `Unsaved changes`, or `Live file
+missing`) starts the trailing action group. `discover-skill-save` is the filled primary only
+while the draft differs from the live text and a disabled `secondary` otherwise; it stays
+disabled while the live file is missing. While the live text differs from the generated version
+or the file is missing, `discover-skill-restore` is an outline control, and it becomes the filled
+primary as `Recreate generated version` when the live file is missing. A
+`discover-skill-dirty` marker replaces the clean state word while the draft has unsaved changes;
+the page renders no state badge and no purpose line, because the sidebar already flags `edited`
+or `missing`.
 `saveDiscoverSkill` writes the submitted bytes verbatim and updates the manifest's current hash and
 edited state; it is refused with one
 `discoverError` when the name is not one of the five, the skill is missing, the frontmatter name
@@ -1537,7 +1541,9 @@ spawns nothing, writes no state, and renders `agent-error`.
 The cycle itself is unchanged: it detects and reports, never fixes, reading the previous interval
 of journal and omp evidence, filing one issue per fingerprint, and commenting on recurrences after
 24 hours. A failing `gh` call leaves the fingerprint pending for the next cycle; a fingerprint
-already `filed:<url>` is never filed again. No cycle closes an issue.
+already `filed:<url>` is never filed again. No cycle closes an issue. A fingerprint covers the
+category and the normalized evidence line only: the per-occurrence `raw-http-request` capture path
+omp appends to an error it logs is removed, so repeated occurrences of one failure file one issue.
 
 ### State-directory cleanup
 
@@ -2137,13 +2143,15 @@ refused with a visible error, and nothing outside the directory is read. The lis
 symlinks.
 
 Every draft may elaborate at the same time; there is no concurrency cap beyond the repository's
-own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND` in `REPO_DIR`,
-opens one session, and sends exactly `/goal-draft <repository-relative path>`. Each path has at
-most one live peer: a start for a path already running is refused with
-`This draft is being elaborated.` and starts no second peer. While a draft runs, only its own row
-shows the disabled start control, whose title is `This draft is being elaborated.`; every other
-draft stays startable. Each peer's activity
-streams only into its own run's `issues-draft-activity`, its `ask` question renders only for that
+own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND --no-skills` in
+`REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-relative path>`. The
+elaboration reads the repository directly and names no skill, so the flag keeps OMP from
+discovering the host's skills; their background description compression would otherwise log a
+warning the watchdog files. Each path has at most one live peer: a start for a path already
+running is refused with `This draft is being elaborated.` and starts no second peer. While a draft
+runs, only its own row shows the disabled start control, whose title is
+`This draft is being elaborated.`; every other draft stays startable. Each peer's activity streams
+only into its own run's `issues-draft-activity`, its `ask` question renders only for that
 draft, and an answer goes only to the addressed draft's peer; an answer for a draft with no
 pending question is refused without reaching any peer. Stop closes only the selected draft's peer,
 records `stopped`, keeps that draft, and leaves every other elaboration running. A successful or
@@ -2346,11 +2354,13 @@ context to `POST /api/goal-proposals`; the server writes one Markdown draft unde
 `201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
-The file name is chosen by one bounded naming turn: an ACP peer starts with `AGENT_COMMAND` in
-`REPO_DIR`, receives the operator report marked as data with a read-only instruction, and must
-answer with only a lowercase kebab-case slug, at most six hyphen-separated words, `[a-z0-9-]`, and
-at most 64 characters. A start failure, an exited peer, a question, a 15-second timeout, or an
-unusable answer falls back to the report's first non-empty line, lowercased, with every run of
+The file name is chosen by one bounded naming turn: an ACP peer starts with
+`AGENT_COMMAND --no-skills` in `REPO_DIR`, receives the operator report marked as data with a
+read-only instruction, and must answer with only a lowercase kebab-case slug, at most six
+hyphen-separated words, `[a-z0-9-]`, and at most 64 characters. A naming turn reads no skill, so
+the flag also keeps OMP's background description compression from logging a warning the watchdog
+files. A start failure, an exited peer, a question, a 15-second timeout, or an unusable answer
+falls back to the report's first non-empty line, lowercased, with every run of
 non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
 hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
 exclusive create, so the first draft is never overwritten. The body opens with
