@@ -65,6 +65,31 @@ export interface DesignRelease {
   at: string;
 }
 
+/** One released documentation change, with the exact lines it removed and added. */
+export interface DesignDocumentationEntry {
+  /** The release time, UTC ISO 8601. */
+  at: string;
+  version: string;
+  url: string;
+  /** The cycle's one-sentence summary. */
+  summary: string;
+  /** The repository-relative documents the release changed. */
+  files: string[];
+  /** The unified diff of the released documents. */
+  diff: string;
+}
+
+/** The release history is bounded so the published state stays small. */
+export const DOCUMENTATION_HISTORY_LIMIT = 20;
+
+/** Prepends one release entry and keeps the newest bounded entries. */
+export function recordDocumentationEntry(
+  history: readonly DesignDocumentationEntry[],
+  entry: DesignDocumentationEntry,
+): DesignDocumentationEntry[] {
+  return [entry, ...history].slice(0, DOCUMENTATION_HISTORY_LIMIT);
+}
+
 export interface DesignState {
   version: 1;
   repo: string;
@@ -81,6 +106,8 @@ export interface DesignState {
   /** The newest cycle, running or finished, so its activity can be replayed. */
   newestCycleId: string | null;
   release: DesignRelease | null;
+  /** Every successful documentation release, newest first, capped. */
+  documentation: DesignDocumentationEntry[];
   nextAttemptAt: string | null;
   lastError: string | null;
   notice: string | null;
@@ -201,6 +228,19 @@ function isRelease(value: unknown): value is DesignRelease {
   );
 }
 
+function isDocumentationEntry(value: unknown): value is DesignDocumentationEntry {
+  return (
+    isRecord(value) &&
+    typeof value.at === "string" &&
+    typeof value.version === "string" &&
+    typeof value.url === "string" &&
+    typeof value.summary === "string" &&
+    Array.isArray(value.files) &&
+    value.files.every((entry) => typeof entry === "string") &&
+    typeof value.diff === "string"
+  );
+}
+
 function isLifecycle(value: unknown): value is DesignLifecycle {
   return (
     value === "stopped" ||
@@ -233,6 +273,7 @@ export function emptyState(options: {
     sync: { state: "stale", at: null, error: null },
     newestCycleId: null,
     release: null,
+    documentation: [],
     nextAttemptAt: null,
     lastError: null,
     notice: null,
@@ -259,6 +300,16 @@ export function parseState(text: string): DesignState | undefined {
   if (!isSync(parsed.sync)) return undefined;
   if (!nullableString(parsed.newestCycleId)) return undefined;
   if (parsed.release !== null && !isRelease(parsed.release)) return undefined;
+  // A state file written before the release history existed carries no
+  // `documentation` key; it loads with an empty history instead of being
+  // quarantined.
+  if (
+    parsed.documentation !== undefined &&
+    (!Array.isArray(parsed.documentation) ||
+      !parsed.documentation.every(isDocumentationEntry))
+  ) {
+    return undefined;
+  }
   if (!nullableString(parsed.nextAttemptAt) || !nullableString(parsed.lastError)) return undefined;
   if (!nullableString(parsed.notice)) return undefined;
   if (typeof parsed.updatedAt !== "string") return undefined;
@@ -276,6 +327,7 @@ export function parseState(text: string): DesignState | undefined {
     sync: parsed.sync,
     newestCycleId: parsed.newestCycleId,
     release: parsed.release as DesignRelease | null,
+    documentation: (parsed.documentation ?? []) as DesignDocumentationEntry[],
     nextAttemptAt: parsed.nextAttemptAt,
     lastError: parsed.lastError,
     notice: parsed.notice,
