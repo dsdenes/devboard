@@ -242,23 +242,6 @@ export function implementedTiers(tiers: PyramidTier[]): PyramidTier[] {
   return tiers.filter((tier) => (Number.parseInt(tier.tests, 10) || 0) > 0);
 }
 
-/**
- * Happy-path and total test counts, but only when every tier reports both: a
- * partial sum would read as coverage the crawl never observed.
- */
-export function pyramidHappyPathCount(tiers: PyramidTier[]): { happy: number; tests: number } | null {
-  let happy = 0;
-  let tests = 0;
-  for (const tier of tiers) {
-    const tierHappy = Number.parseInt(tier.happyPath, 10);
-    const tierTests = Number.parseInt(tier.tests, 10);
-    if (!Number.isFinite(tierHappy) || !Number.isFinite(tierTests)) return null;
-    happy += tierHappy;
-    tests += tierTests;
-  }
-  return tests > 0 ? { happy, tests } : null;
-}
-
 export interface CommandAlias {
   command: string;
   alias: string;

@@ -797,11 +797,11 @@ that no other recorded command aliases. A command the host manifest declares as 
 as its invocation — `npm test` for `scripts.test`, `npm run <name>` for any other script — instead
 of the program the script expands to; the recorded program is the chip's tooltip. Every command,
 path, package, and boundary value uses the same inline code chip (`.code-chip`); no surface has a
-second inline-code presentation. Testing shows the test, level, and
-happy-path totals and the whole-suite command (`data-testid="discover-suite-command"`), then a
+second inline-code presentation. Testing shows the test and level totals and the whole-suite
+command (`data-testid="discover-suite-command"`), then a
 `Level`/`Tests`/`Happy path`/`Command` table (`data-testid="discover-pyramid"`). Happy path is the
 part of a level's count that exercises the primary success path, recorded as an exact count from
-`0` to the level's total; the summary percentage appears only when every listed level reports one.
+`0` to the level's total.
 `Command` is the narrowest declared invocation for that level. Only a level that carries a test is
 listed and counted; a recorded level with no test case is omitted, so a sheet cannot claim a
 second level while its table holds none. Every listed level states an exact test count, never

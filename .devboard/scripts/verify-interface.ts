@@ -3184,17 +3184,15 @@ try {
     suiteLeft: number;
     commandLeft: number;
     levelChips: number;
-    happyPath: string;
+    statLabels: string[];
   }>(`(() => {
     const head = document.querySelector('#workspace-discover .discover-head');
     const sheet = document.querySelector('[data-testid="discover-sheet"]');
     const rail = sheet?.querySelector('.discover-rail');
     const column = sheet?.querySelector('.discover-col');
     const testing = document.querySelector('#workspace-discover [data-field="testing"]');
-    const stats = [...(testing?.querySelectorAll('.discover-stat') ?? [])].map((stat) => ({
-      value: stat.querySelector('.discover-stat__value')?.textContent?.trim() ?? "",
-      label: stat.querySelector('.discover-stat__label')?.textContent?.trim() ?? "",
-    }));
+    const statLabels = [...(testing?.querySelectorAll('.discover-stat__label') ?? [])]
+      .map((label) => label.textContent?.trim() ?? "");
     const commandCell = testing?.querySelector('[data-testid="discover-pyramid"] tbody td code.code-chip');
     const suiteChip = document.querySelector('[data-testid="discover-suite-command"] code.code-chip');
     const commandChip = document.querySelector('[data-testid="discover-command-list"] tbody tr code.code-chip');
@@ -3215,7 +3213,7 @@ try {
       suiteLeft: Math.round(suiteChip?.getBoundingClientRect().left ?? -1),
       commandLeft: Math.round(commandChip?.getBoundingClientRect().left ?? -1),
       levelChips: testing?.querySelectorAll('[data-testid="discover-pyramid"] tbody td code.code-chip').length ?? 0,
-      happyPath: stats.find((stat) => stat.label === "happy path")?.value ?? "",
+      statLabels,
     };
   })()`);
   check(!discoverChrome.eyebrow && !discoverChrome.stale, "the sheet still renders removed masthead chrome", discoverChrome);
@@ -3251,9 +3249,12 @@ try {
     discoverChrome,
   );
   check(
-    discoverChrome.happyPath === "100%",
-    "the testing summary does not carry the happy-path share",
-    discoverChrome,
+    discoverChrome.statLabels.length === 2 &&
+      discoverChrome.statLabels.every(
+        (label) => label === "test" || label === "tests" || label === "level" || label === "levels",
+      ),
+    "the testing summary does not list exactly the test and level totals",
+    discoverChrome.statLabels,
   );
   check(
     discoverChrome.subtitle.startsWith(`${discoverChrome.rows} level`) &&

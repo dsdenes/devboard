@@ -6,7 +6,6 @@ import {
   filterContexts,
   glossaryHasSignificance,
   implementedTiers,
-  pyramidHappyPathCount,
   pyramidTiers,
   relativeTime,
   SIGNIFICANCE_FLOOR,
@@ -208,25 +207,12 @@ describe("test levels", () => {
     expect(implementedTiers(pyramidTiers(unknown))).toEqual([]);
   });
 
-  test("sums happy-path counts only across implemented levels", () => {
+  test("keeps happy-path counts on the listed levels", () => {
     const tiers = implementedTiers(pyramidTiers(levels));
     expect(tiers.map((tier) => [tier.level, tier.tests, tier.happyPath, tier.command])).toEqual([
       ["unit", "118", "92", "npm run test:unit"],
       ["integration", "4", "1", "node --test"],
     ]);
-    expect(pyramidHappyPathCount(tiers)).toEqual({ happy: 93, tests: 122 });
-  });
-
-  test("refuses a happy-path total when a level never reported one", () => {
-    const partial: Leaf = {
-      value: [
-        { level: "unit", tests: "10", happyPath: "6" },
-        { level: "integration", tests: "2" },
-      ],
-      evidence: ["package.json"],
-      confidence: "observed",
-    };
-    expect(pyramidHappyPathCount(implementedTiers(pyramidTiers(partial)))).toBeNull();
   });
 
   test("prefers the manifest's declaration for a recorded command", () => {

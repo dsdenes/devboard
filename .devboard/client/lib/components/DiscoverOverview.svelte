@@ -6,7 +6,6 @@
     implementedTiers,
     isLeaf,
     leafLines,
-    pyramidHappyPathCount,
     pyramidTiers,
     pyramidTestCount,
     recordItems,
@@ -105,7 +104,6 @@
   const recordedTiers = $derived(pyramidTiers(levels));
   const tiers = $derived(implementedTiers(recordedTiers));
   const testTotal = $derived(pyramidTestCount(tiers));
-  const happyPath = $derived(pyramidHappyPathCount(tiers));
   const levelRows = $derived(
     tiers.map((tier) => {
       const parsed = Number.parseInt(tier.tests, 10);
@@ -691,14 +689,6 @@
                         {tiers.length === 1 ? "level" : "levels"}
                       </span>
                     </div>
-                    {#if happyPath !== null}
-                      <div class="discover-stat">
-                        <span class="discover-stat__value">
-                          {Math.round((happyPath.happy / happyPath.tests) * 100)}%
-                        </span>
-                        <span class="discover-stat__label">happy path</span>
-                      </div>
-                    {/if}
                   </div>
                   {#if discover.testCommand.length > 0}
                     <div class="discover-command-line" data-testid="discover-suite-command">
