@@ -206,7 +206,7 @@ interface FlowSession {
   pr: FlowPr | null;
   prError: string | null;
   leftover: string | null;
-  /** True from the merge's terminal write until cleanup has finished. */
+  /** True from the merge's terminal write until a cleanup attempt finishes with no leftovers. */
   cleanupPending: boolean;
   question: FlowQuestion | null;
   pushedTip: string | null;
@@ -848,9 +848,11 @@ export class FlowController {
   }
 
   #publish(): void {
-    // A merge's snapshot is published only once its cleanup has finished, so
-    // "merged" never appears while the worktree and branches still stand.
-    if (this.#session?.cleanupPending === true) return;
+    // A merge's snapshot is held back only while its cleanup is still running,
+    // so "merged" never appears beside work the cleanup is about to remove.
+    // Once the cleanup returns a leftover, its retry stays armed but the merged
+    // state and the text naming what remains must reach the view.
+    if (this.#session?.cleanupPending === true && this.#session.leftover === null) return;
     this.#broadcast({ type: "flowSnapshot", ...this.snapshot() });
   }
 
@@ -970,7 +972,7 @@ export class FlowController {
         if (!entry.session.cleanupPending) continue;
         try {
           entry.session.leftover = await this.#cleanupAfterMerge(entry.session);
-          entry.session.cleanupPending = false;
+          entry.session.cleanupPending = entry.session.leftover !== null;
         } catch (error) {
           this.#journal?.write(
             "server-error",
@@ -2207,10 +2209,15 @@ export class FlowController {
 
     const leftover = await this.#cleanupAfterMerge(session);
     session.leftover = leftover;
-    session.cleanupPending = false;
+    // A cleanup that left something keeps the retry armed: the next restore
+    // finds the merged session still owed its worktree and branches. Only a
+    // cleanup with nothing left releases it.
+    session.cleanupPending = leftover !== null;
     this.#persist();
     if (leftover !== null) {
-      this.#error(`The merge completed, but cleanup left ${leftover}.`);
+      this.#error(
+        `The merge completed, but cleanup left ${leftover}. It will be retried at the next Flow start.`,
+      );
     }
     this.#publish();
   }
@@ -2236,7 +2243,17 @@ export class FlowController {
   async #cleanupAfterMerge(session: FlowSession): Promise<string | null> {
     const leftovers: string[] = [];
 
-    await this.#git(this.repoDir, ["fetch", "origin"]);
+    const fetched = await this.#git(this.repoDir, ["fetch", "origin"]);
+    if (fetched.code !== 0) {
+      // Without a refreshed origin/main the ancestry check would blame the
+      // branch for a stale remote view. The failed fetch is its own leftover,
+      // and the rest waits for the retry.
+      const detail = fetched.stderr.trim();
+      leftovers.push(
+        detail.length === 0 ? "git fetch origin failed" : `git fetch origin failed (${detail})`,
+      );
+      return leftovers.join("; ");
+    }
     const head = await this.#git(this.repoDir, ["symbolic-ref", "--short", "HEAD"]);
     if (head.code === 0 && head.stdout.trim() === "main") {
       const status = await this.#git(this.repoDir, ["status", "--porcelain"]);
