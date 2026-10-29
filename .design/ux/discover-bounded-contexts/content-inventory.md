@@ -19,7 +19,7 @@ Candidates come from `sheet.architecture` and from the shipped card. Journeys re
 |A12|Four-column context table|shipped layout|1|—|no|A narrow table squeezes responsibility and entry points into ellipses and wraps|
 |A13|Evidence chips per value|leaf `evidence`|2|Verify a claim|no|Not rendered by any sibling card; changing that is a page-level decision, not this widget's|
 |A14|Confidence badge on the card|leaf `confidence`|4|Weigh trust|no|The leaves disagree (observed vs inferred); one badge would misstate some of them|
-|A15|Context-to-context edges|not in schema|2|—|no|The sheet stores no edges; any drawing would be fabricated|
+|A15|Context-to-context edges|`architecture.dependencies`|2|Know which way imports point|yes|The later schema records observed edges; the dependency graph widget draws them|
 |A16|Glossary term counts per context|glossaries|1, 2|—|no|Glossary owns this; duplication would drift|
 |A17|Ordering of contexts by name|schema canonical order|1|Scan predictably|yes|Keep the crawler's canonical order; no re-sorting in the view|
 
