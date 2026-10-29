@@ -93,6 +93,27 @@ describe("poll status", () => {
     expect(pollStatus(snapshot({ lifecycle: "pausing" }), AT)).toMatchObject({ text: "Polling paused" });
   });
 
+  test("a stopped worker still reports the dashboard's own tracker sync", () => {
+    const sync = {
+      intervalMs: 30_000,
+      lastSyncAt: "2026-10-27T14:03:22.854Z",
+      error: null,
+    };
+    expect(pollStatus(snapshot({ lifecycle: "stopped", enabled: false, sync }), AT)).toMatchObject({
+      tone: "active",
+      text: "Tracker every 30s · checked 1s ago",
+    });
+    expect(
+      pollStatus(snapshot({ lifecycle: "stopped", enabled: false, sync: { ...sync, error: "HTTP 502" } }), AT),
+    ).toMatchObject({ tone: "failed", text: "Tracker sync failing · checked 1s ago" });
+    expect(
+      pollStatus(
+        snapshot({ lifecycle: "stopped", enabled: false, sync: { ...sync, lastSyncAt: null } }),
+        AT,
+      ),
+    ).toMatchObject({ tone: "idle", text: "Tracker sync starting" });
+  });
+
   test("names a failing poll without losing the last check", () => {
     const poll = snapshot().poll;
     if (poll === null) throw new Error("fixture poll missing");

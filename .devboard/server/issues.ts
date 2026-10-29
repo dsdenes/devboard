@@ -15,8 +15,13 @@ import {
   type PreflightResult,
 } from "../issues/preflight";
 import { DEADLINE_EXPIRED, withinDeadline } from "../lib/deadline";
-import { cachedRepository } from "../issues/repository";
+import { cachedRepository, topLevel } from "../issues/repository";
 import { closeIssue as closeTrackerIssue, type CloseIssueRequest } from "./issue-close";
+import {
+  TrackerSync,
+  type TrackerRead,
+  type TrackerSyncView,
+} from "./issue-sync";
 import {
   activityPath,
   parseActivity,
@@ -64,6 +69,8 @@ export interface IssuesSnapshot {
   finishedAt: string | null;
   notice: string | null;
   updatedAt: string | null;
+  /** The dashboard's own tracker reads, independent of the worker. */
+  sync: TrackerSyncView;
 }
 
 export interface ActivityEntry {
@@ -83,6 +90,12 @@ export interface IssuesBridgeOptions {
   log?: (line: string) => void;
   environment?: Record<string, string | undefined>;
   pollMs?: number;
+  /** How often a connected dashboard re-reads the origin's open issues. */
+  syncMs?: number;
+  /** Test seam: replaces the dashboard's origin read. */
+  syncRead?: TrackerRead;
+  /** Test seam: false while no client is watching, so no read runs. */
+  hasClients?: () => boolean;
   /** Wall-clock bound for the start preflight; defaults to 20 seconds. */
   preflightTimeoutMs?: number;
   /** Test seams: replace the start preflight and the detached spawn. */
@@ -114,8 +127,13 @@ export class IssuesBridge {
   private readonly log: (line: string) => void;
   private readonly pollMsValue: number;
   private readonly preflightTimeoutMs: number;
+  private readonly tracker: TrackerSync;
+  private readonly hasClients: () => boolean;
+  /** Runs already told to end because their issue left the tracker. */
+  private readonly abandoned = new Set<string>();
 
   private timer: Timer | undefined;
+  private syncTimer: Timer | undefined;
   private lastSignature = "";
   private lastActivities = new Map<string, string[]>();
   private stopping: { pid: number; timer: Timer; killTimer?: Timer } | undefined;
@@ -150,6 +168,92 @@ export class IssuesBridge {
         }));
     this.spawnWorker = options.spawnWorker ?? ((argv, environment) => this.detach(argv, environment));
     this.closeIssueAction = options.closeIssue ?? ((request) => closeTrackerIssue(request));
+    this.hasClients = options.hasClients ?? (() => true);
+    this.tracker = new TrackerSync({
+      repoDir: this.repoDir,
+      repository: () => this.currentRepository(),
+      environment: this.environment,
+      ...(options.syncMs === undefined ? {} : { intervalMs: options.syncMs }),
+      ...(options.syncRead === undefined ? {} : { read: options.syncRead }),
+    });
+  }
+
+  /**
+   * The worker's published repository first, then the checkout's origin. A
+   * directory below the checkout root inherits its parent's origin from git,
+   * which would point the Open issues view at a different project, so only the
+   * checkout root itself is read.
+   */
+  private currentRepository(): string | null {
+    const state = this.currentState();
+    if (state !== undefined && state.repo.length > 0) return state.repo;
+    if (topLevel(this.repoDir) !== resolve(this.repoDir)) return null;
+    return this.repository();
+  }
+
+  /** Reads the tracker now when a client is watching; joins an in-flight read. */
+  syncNow(): Promise<void> {
+    if (!this.hasClients()) return Promise.resolve();
+    return this.tracker
+      .sync()
+      .then((result) => {
+        if (result.fresh && result.issues !== null && result.startedAt !== null) {
+          const startedAt = Date.parse(result.startedAt);
+          if (Number.isFinite(startedAt)) {
+            this.stopClosedRuns(new Set(result.issues.map((issue) => issue.number)), startedAt);
+          }
+        }
+        this.refresh();
+      })
+      .catch((error) => {
+        // A snapshot can fail to publish while a client is closing; the next
+        // read retries and the timer must keep running.
+        this.log(
+          `issues tracker sync failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }
+
+  /**
+   * Ends every run the dashboard's fresh read no longer lists. A closed issue
+   * is a decision, so its peer stops instead of finishing unseen. A run that
+   * started after the read began was never in its answer and is left alone.
+   * Only a live worker attached to this state directory receives the command.
+   */
+  private stopClosedRuns(open: Set<number>, readStartedAt: number): void {
+    const state = this.currentState();
+    const owner = this.lockOwner();
+    if (state === undefined || owner === undefined) return;
+    if (resolve(owner.stateDir) !== this.stateDir) return;
+    if (!state.enabled || state.lifecycle === "stopped") return;
+
+    const eligible = state.agents.filter((agent) => {
+      if (open.has(agent.issueNumber)) return false;
+      const startedAt = Date.parse(agent.startedAt);
+      return Number.isFinite(startedAt) && startedAt < readStartedAt;
+    });
+    const pending = new Set<string>();
+    for (const agent of eligible) pending.add(`${agent.issueNumber}:${agent.runId}`);
+    for (const key of [...this.abandoned]) {
+      if (!pending.has(key)) this.abandoned.delete(key);
+    }
+    for (const agent of eligible) {
+      const key = `${agent.issueNumber}:${agent.runId}`;
+      if (this.abandoned.has(key)) continue;
+      this.abandoned.add(key);
+      try {
+        writeCommand(controlDirectory(this.stateDir, this.repoDir), {
+          type: "abandon",
+          number: agent.issueNumber,
+        });
+      } catch (error) {
+        this.log(
+          `could not ask the issues worker to stop #${agent.issueNumber}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   /** Starts observing the worker state; it never starts a worker itself. */
@@ -157,12 +261,20 @@ export class IssuesBridge {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => this.refresh(), this.pollMsValue);
     void this.refresh();
+    this.syncTimer = setInterval(() => {
+      void this.syncNow();
+    }, this.tracker.view.intervalMs);
+    this.syncTimer.unref?.();
   }
 
   dispose(): void {
     if (this.timer !== undefined) {
       clearInterval(this.timer);
       this.timer = undefined;
+    }
+    if (this.syncTimer !== undefined) {
+      clearInterval(this.syncTimer);
+      this.syncTimer = undefined;
     }
     if (this.stopping !== undefined) this.clearStopProof(this.stopping.pid);
   }
@@ -225,7 +337,7 @@ export class IssuesBridge {
       attached,
       worker: active?.worker ?? null,
       poll: active?.poll ?? null,
-      queue: state?.queue ?? [],
+      queue: this.queueFor(state, attached),
       runs: state?.runs ?? [],
       agents: active?.agents ?? [],
       cooldowns: active?.cooldowns ?? {},
@@ -234,7 +346,54 @@ export class IssuesBridge {
       finishedAt: active?.finishedAt ?? null,
       notice: mismatch ?? active?.notice ?? null,
       updatedAt: state?.updatedAt ?? null,
+      sync: this.tracker.view,
     };
+  }
+
+  /**
+   * The Open issues list. A live worker whose own read succeeded more recently
+   * than the dashboard's is authoritative; otherwise the dashboard's read is
+   * used, with the worker's handled and running markers merged in. Before the
+   * first dashboard read the worker's queue is the only list there is.
+   */
+  private queueFor(state: IssuesState | undefined, attached: boolean): IssuesState["queue"] {
+    const workerQueue = state?.queue ?? [];
+    const open = this.tracker.openIssues;
+    if (open === null) return workerQueue;
+    const workerPollAt = state?.poll.lastPollAt ?? null;
+    const syncedAt = this.tracker.view.lastSyncAt;
+    const workerIsNewer =
+      attached &&
+      (state?.poll.error ?? null) === null &&
+      workerPollAt !== null &&
+      syncedAt !== null &&
+      Date.parse(workerPollAt) >= Date.parse(syncedAt);
+    if (workerIsNewer) return workerQueue;
+    const markers = new Map(workerQueue.map((issue) => [issue.number, issue]));
+    const listed = new Set(open.map((issue) => issue.number));
+    const queue = open.map((issue) => {
+      const marker = markers.get(issue.number);
+      return {
+        ...issue,
+        handled: marker?.handled ?? false,
+        runId: marker?.runId ?? null,
+        agentRunId: marker?.agentRunId ?? null,
+      };
+    });
+    // A run younger than the read was never part of its answer: its issue is
+    // kept visible until a read that started after the run reports on it.
+    const readStartedAt = this.tracker.freshStartedAt;
+    const cutoff = readStartedAt === null ? null : Date.parse(readStartedAt);
+    if (attached && cutoff !== null && Number.isFinite(cutoff)) {
+      for (const agent of state?.agents ?? []) {
+        if (listed.has(agent.issueNumber)) continue;
+        const startedAt = Date.parse(agent.startedAt);
+        if (!Number.isFinite(startedAt) || startedAt < cutoff) continue;
+        const marker = markers.get(agent.issueNumber);
+        if (marker !== undefined) queue.push(marker);
+      }
+    }
+    return queue.sort((left, right) => left.number - right.number);
   }
 
   /**

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { IssuesBridge } from "./issues";
 import { acquireLock } from "../issues/lock";
 import { controlDirectory, lockPath, statePath } from "../issues/paths";
-import { emptyState, writeState } from "../issues/state";
+import { emptyState, writeState, type IssuesAgent, type IssuesIssue } from "../issues/state";
 import { createdDirectories, temporaryDirectory } from "../tests/fixtures/scout-helpers";
 
 afterAll(async () => {
@@ -393,6 +393,221 @@ describe("issues bridge commands", () => {
       expect(await subject.start()).toEqual({ ok: true, attached: false });
       expect(spawned).toHaveLength(1);
       expect(spawned[0]!.join(" ")).toContain(join("issues", "worker.ts"));
+    } finally {
+      subject.dispose();
+    }
+  });
+});
+
+function issue(number: number): IssuesIssue {
+  return {
+    number,
+    title: `Issue ${number}`,
+    url: `https://gitea.test/acme/fixture/issues/${number}`,
+    createdAt: "2026-10-29T00:00:00Z",
+    labels: [],
+  };
+}
+
+function runningAgent(number: number, runId: string): IssuesAgent {
+  return {
+    runId,
+    issueNumber: number,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    question: null,
+    acp: null,
+  };
+}
+
+async function controlCommands(stateDir: string, root: string): Promise<unknown[]> {
+  try {
+    const files = await readdir(controlDirectory(stateDir, root));
+    return await Promise.all(
+      files.sort().map(async (name) => JSON.parse(await readFile(join(controlDirectory(stateDir, root), name), "utf8"))),
+    );
+  } catch {
+    return [];
+  }
+}
+
+describe("dashboard tracker sync", () => {
+  test("a stopped worker's stale queue is replaced by the live open list", async () => {
+    const root = await temporaryDirectory("issues-sync-stopped");
+    const stateDir = join(root, "state");
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root }),
+      queue: [
+        { ...issue(1), handled: false, runId: null, agentRunId: null },
+        { ...issue(2), handled: false, runId: null, agentRunId: null },
+      ],
+    });
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => ({ kind: "issues", issues: [], etag: null }),
+    });
+    try {
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([1, 2]);
+      await subject.syncNow();
+      expect(subject.snapshot().queue).toEqual([]);
+      expect(subject.snapshot().sync.lastSyncAt).not.toBeNull();
+      expect(subject.snapshot().sync.error).toBeNull();
+      expect(await controlCommands(stateDir, root)).toEqual([]);
+    } finally {
+      subject.dispose();
+    }
+  });
+
+  test("a closed running issue receives one abandon command and leaves the queue", async () => {
+    const root = await temporaryDirectory("issues-sync-abandon");
+    const stateDir = join(root, "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    const state = {
+      ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" as const }),
+      enabled: true,
+      agents: [runningAgent(5, "run-5")],
+      queue: [
+        { ...issue(5), handled: false, runId: null, agentRunId: "run-5" },
+        { ...issue(6), handled: false, runId: null, agentRunId: null },
+      ],
+    };
+    await writeState(statePath(stateDir, root), state);
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => ({ kind: "issues", issues: [issue(6)], etag: null }),
+    });
+    try {
+      expect(subject.snapshot().attached).toBe(true);
+      await subject.syncNow();
+      const snapshot = subject.snapshot();
+      expect(snapshot.queue.map((entry) => entry.number)).toEqual([6]);
+      expect(await controlCommands(stateDir, root)).toEqual([{ type: "abandon", number: 5 }]);
+
+      // The same closure on the next read must not queue a second command.
+      await subject.syncNow();
+      expect(await controlCommands(stateDir, root)).toEqual([{ type: "abandon", number: 5 }]);
+    } finally {
+      subject.dispose();
+      lock.release();
+    }
+  });
+
+  test("a run younger than the read is neither hidden nor abandoned", async () => {
+    const root = await temporaryDirectory("issues-sync-young-run");
+    const stateDir = join(root, "state");
+    const lock = acquireLock(lockPath(root), {
+      repo: root,
+      stateDir,
+      harnessVersion: null,
+      argv: [],
+    });
+    expect(lock.acquired).toBe(true);
+    if (!lock.acquired) return;
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root, lifecycle: "running" }),
+      enabled: true,
+      agents: [{ ...runningAgent(5, "run-5"), startedAt: "2099-01-01T00:00:00.000Z" }],
+      queue: [
+        { ...issue(5), handled: false, runId: null, agentRunId: "run-5" },
+        { ...issue(6), handled: false, runId: null, agentRunId: null },
+      ],
+    });
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => ({ kind: "issues", issues: [issue(6)], etag: null }),
+    });
+    try {
+      await subject.syncNow();
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([5, 6]);
+      expect(await controlCommands(stateDir, root)).toEqual([]);
+    } finally {
+      subject.dispose();
+      lock.release();
+    }
+  });
+
+  test("a read failure keeps the worker's queue and publishes the error", async () => {
+    const root = await temporaryDirectory("issues-sync-failed");
+    const stateDir = join(root, "state");
+    await writeState(statePath(stateDir, root), {
+      ...emptyState({ repo: "acme/fixture", root }),
+      queue: [{ ...issue(1), handled: false, runId: null, agentRunId: null }],
+    });
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      syncRead: async () => ({ kind: "error", detail: "HTTP 502" }),
+    });
+    try {
+      await subject.syncNow();
+      expect(subject.snapshot().queue.map((entry) => entry.number)).toEqual([1]);
+      expect(subject.snapshot().sync.error).toBe("HTTP 502");
+    } finally {
+      subject.dispose();
+    }
+  });
+
+  test("no client means no tracker read", async () => {
+    const root = await temporaryDirectory("issues-sync-idle");
+    const stateDir = join(root, "state");
+    let calls = 0;
+    const subject = new IssuesBridge({
+      repoDir: root,
+      stateDir,
+      agentCommand: "stub",
+      agentEnvironment: async () => ({}),
+      runningVersion: "0.1.0",
+      harnessDir: join(import.meta.dir, ".."),
+      send: () => undefined,
+      pollMs: 60_000,
+      spawnWorker: () => undefined,
+      hasClients: () => false,
+      syncRead: async () => {
+        calls += 1;
+        return { kind: "issues", issues: [], etag: null };
+      },
+    });
+    try {
+      await subject.syncNow();
+      expect(calls).toBe(0);
+      expect(subject.snapshot().sync.lastSyncAt).toBeNull();
     } finally {
       subject.dispose();
     }

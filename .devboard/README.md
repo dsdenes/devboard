@@ -1204,6 +1204,7 @@ and is retried the same way.
 |`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
 |`DEVBOARD_OPENROUTER_USAGE_BASE_URL`|`https://openrouter.ai/api`|OpenRouter usage base; overridden by tests and offline verification.|
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
+|`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`|`30000`|How often a connected dashboard re-reads the origin's open issues for the Open issues list; at least 1000. Independent of the Issues worker.|
 |`DEVBOARD_UPDATE_BACKOFF_MAX_MS`|`3600000`|Ceiling for the exponential retry delay after a failed check or install.|
 |`DEVBOARD_RELEASE_DIR`|unset|Local release directory for offline verification; unset reads the newest Gitea release over the public HTTP API.|
 |`DEVBOARD_RELEASE_LOCK`|unset|Lock path shared by a runner's jobs; the release step serialises its npm publish and release creation through it. Set it when one runner executes releases concurrently.|
@@ -1779,6 +1780,19 @@ next poll without pausing, restarting, or shortening the others. A handled issue
 retriggered while it stays open; a closed issue leaves the ledger, so a reopened one is eligible
 again. A poll with no unhandled open issue starts no peer and publishes `idle`.
 
+The dashboard reads the tracker too, and that read never stops. While at least one client is
+connected it re-reads the origin's open issues every 30 seconds
+(`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`) and immediately on connect, and publishes the result in the
+snapshot's `sync` field. The Open issues list uses the fresher of that read and the worker's last
+successful poll, so closing an issue in the forge removes it from the list within thirty seconds
+even when the worker is stopped, paused, or failing. A running issue that no longer appears is
+stopped: the dashboard sends one `abandon` command for that issue, the worker records its run
+`stopped` with no handled entry and no cooldown, and the issue stays out of the queue until a
+later read confirms it. A run younger than the read was never part of its answer, so it is
+neither hidden nor stopped; the next read covers it. With no connected client the dashboard makes
+no tracker call, and the worker's own poll still ends a run the moment it sees the issue leave the
+open list.
+
 Session updates stream into the mode, permission requests are auto-approved by the ACP client,
 elicitation questions are answered per agent, and every peer closes when its run ends or Stop is
 clicked. The agents own every worktree, commit, push, issue closure, and repository mutation; the
@@ -2065,7 +2079,9 @@ failure and any created issue URL. A successful completion removes the draft fro
 the spec under `.devboard/goals/`, and the next Issues poll lists the new open issue with its
 `goal` badge.
 
-The Open issues list shows every open issue with its `goal` badge and its handled state. Every
+The Open issues list shows every open issue with its `goal` badge and its handled state, from the
+dashboard's own 30-second tracker read while it is the fresher source, so an issue closed in the
+forge disappears there without waiting for the worker. Every
 open, unhandled issue gets its own concurrent peer: non-goal issues are prompted with exactly
 `/implement-issue <number>`, goal issues with exactly `/implement-goal-issue <number>`. Each has its
 own run record, activity, and question slot. The snapshot publishes

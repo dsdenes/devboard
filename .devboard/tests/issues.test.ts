@@ -783,6 +783,74 @@ describe("lifecycle", () => {
   });
 });
 
+describe("closed issues", () => {
+  test("a poll that no longer lists a running issue stops that run", async () => {
+    let open = [issue(1), issue(2)];
+    const f = await fixture({
+      issues: open,
+      listIssues: async () => ({ kind: "issues", issues: [...open], etag: "etag-1" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two peers");
+      expect(f.peers[0]?.prompts[0]).toBe("/implement-issue 1");
+      open = [issue(2)];
+      await f.worker.poll();
+      const state = await waitFor(
+        () => (f.state().agents.length === 1 ? f.state() : undefined),
+        "one agent",
+      );
+      expect(f.peers[0]!.closed).toBe(true);
+      expect(f.peers[1]!.closed).toBe(false);
+      expect(state.notice).toContain("Issue #1 was closed on the tracker");
+      expect(state.queue.map((entry) => entry.number)).toEqual([2]);
+      expect(state.runs.map((run) => run.status).sort()).toEqual(["running", "stopped"]);
+      expect(state.cooldowns).toEqual({});
+      expect(state.agents.map((agent) => agent.issueNumber)).toEqual([2]);
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("an abandon command stops only that issue and suppresses a restart", async () => {
+    let open = [issue(1), issue(2)];
+    const f = await fixture({
+      issues: open,
+      listIssues: async () => ({ kind: "issues", issues: [...open], etag: "etag-1" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 2 ? true : undefined), "two peers");
+      writeCommand(controlDirectory(f.stateDir, f.root), { type: "abandon", number: 1 });
+      await waitFor(() => (f.state().agents.length === 1 ? true : undefined), "one agent");
+      expect(f.peers[0]!.prompts[0]).toBe("/implement-issue 1");
+      expect(f.peers[0]!.closed).toBe(true);
+      expect(f.peers[1]!.closed).toBe(false);
+      expect(f.state().runs.filter((run) => run.status === "stopped")).toHaveLength(1);
+
+      // The worker's own read still lists #1, so its queue alone would restart
+      // the dismissed issue. The suppression must hold.
+      const before = f.state().poll.lastPollAt;
+      await f.worker.poll();
+      await waitFor(
+        () => (f.state().poll.lastPollAt !== before ? true : undefined),
+        "a completed poll",
+      );
+      expect(f.peers).toHaveLength(2);
+      expect(f.state().agents.map((agent) => agent.issueNumber)).toEqual([2]);
+
+      // Once the read drops it and a later read lists it again, it is eligible.
+      open = [issue(2)];
+      await f.worker.poll();
+      await waitFor(() => (f.state().queue.length === 1 ? true : undefined), "a one-issue queue");
+      open = [issue(1), issue(2)];
+      await f.worker.poll();
+      await waitFor(() => (f.peers.length === 3 ? true : undefined), "the reopened issue's peer");
+      expect(f.peers[2]!.prompts[0]).toBe("/implement-issue 1");
+    } finally {
+      await stop(f);
+    }
+  });
+});
+
 describe("history and isolation", () => {
   test("keeps every running run directory at the concurrency cap", async () => {
     const issues = Array.from({ length: MAX_CONCURRENT_PEERS }, (_, index) => issue(index + 1));

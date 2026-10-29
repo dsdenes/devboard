@@ -94,6 +94,18 @@ export interface IssuesSnapshot {
   finishedAt: string | null;
   notice: string | null;
   updatedAt: string | null;
+  /**
+   * The dashboard's own tracker reads. Optional so a client paired with an
+   * older server still validates its snapshot.
+   */
+  sync?: IssuesSyncState;
+}
+
+/** One dashboard-owned tracker read cycle, independent of the worker. */
+export interface IssuesSyncState {
+  intervalMs: number;
+  lastSyncAt: string | null;
+  error: string | null;
 }
 
 export interface IssuesActivityEntry {

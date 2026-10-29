@@ -1,4 +1,4 @@
-import type { IssuesSnapshot } from "./types";
+import type { IssuesSnapshot, IssuesSyncState } from "./types";
 
 /**
  * The visual state of the Automation panel's poll line. The word in the text
@@ -42,6 +42,29 @@ export function pollAge(value: string, now: number): string {
 }
 
 /**
+ * The line a stopped worker leaves behind: the Open issues list is still
+ * refreshed by the dashboard's own tracker sync, so "Not polling" would be
+ * false whenever that sync has run.
+ */
+function syncStatus(sync: IssuesSyncState | undefined, now: number): PollStatus | null {
+  if (sync === undefined) return null;
+  const interval = pollInterval(sync.intervalMs);
+  const checked = sync.lastSyncAt === null ? "no check yet" : `checked ${pollAge(sync.lastSyncAt, now)}`;
+  const title = [
+    `Tracker sync every ${interval}`,
+    `last check ${sync.lastSyncAt ?? "never"}`,
+    sync.error ?? "no error",
+  ].join(" · ");
+  if (sync.error !== null) {
+    return { tone: "failed", text: `Tracker sync failing · ${checked}`, title };
+  }
+  if (sync.lastSyncAt === null) {
+    return { tone: "idle", text: "Tracker sync starting", title };
+  }
+  return { tone: "active", text: `Tracker every ${interval} · ${checked}`, title };
+}
+
+/**
  * The Automation panel subtitle. It states whether the worker is polling, how
  * often, and when it last checked; the exact timestamps stay in the tooltip so
  * a precise time is one hover away without cluttering the header.
@@ -58,6 +81,8 @@ export function pollStatus(snapshot: IssuesSnapshot | null, now: number): PollSt
   ].join(" · ");
 
   if (snapshot === null || !snapshot.present || !snapshot.enabled || snapshot.lifecycle === "stopped") {
+    const synced = syncStatus(snapshot?.sync, now);
+    if (synced !== null) return synced;
     return { tone: "idle", text: "Not polling", title: "The issues worker is stopped." };
   }
 

@@ -59,6 +59,8 @@ export const MAX_CONCURRENT_PEERS = 30;
 
 const DEFAULT_INTERVAL_MS = 10_000;
 const COOLDOWN_MS = 5 * 60_000;
+/** How long an abandon keeps its issue out of the queue. */
+const DISMISS_MS = 2 * 60_000;
 const TICK_MS = 100;
 const IMPLEMENT_ISSUE_COMMAND = "/implement-issue";
 const IMPLEMENT_GOAL_COMMAND = "/implement-goal-issue";
@@ -289,6 +291,12 @@ export class IssuesWorker {
   private state: IssuesState;
   private ledger: Ledger;
   private readonly active = new Map<number, ActiveRun>();
+  /**
+   * Issues a dashboard reported closed, with the time their dismissal ends.
+   * Skipped until this worker's own read drops them or the window passes, so
+   * a stale queue cannot restart a run the operator has already closed.
+   */
+  private readonly dismissed = new Map<number, number>();
   private runs: Array<{ run: RunFile; directory: string }> = [];
   private stopping = false;
   private polling = false;
@@ -605,6 +613,17 @@ export class IssuesWorker {
         this.publish();
         return;
       }
+      case "abandon": {
+        // The run may have ended between the dashboard's read and this command;
+        // that is not an error, so a missing run is ignored.
+        const active = this.active.get(command.number);
+        if (active === undefined) return;
+        this.abandonRun(
+          active,
+          `Issue #${command.number} was closed on the tracker; its run was stopped.`,
+        );
+        return;
+      }
       case "stop": {
         await this.stop();
         return;
@@ -635,7 +654,9 @@ export class IssuesWorker {
     if (this.state.paused) return this.running ? "pausing" : "paused";
     if (this.running) return "running";
     if (!this.state.enabled) return "stopped";
-    const unhandled = this.state.queue.filter((issue) => !issue.handled);
+    const unhandled = this.state.queue.filter(
+      (issue) => !issue.handled && !this.dismissed.has(issue.number),
+    );
     if (unhandled.length === 0) return "idle";
     return "failed";
   }
@@ -727,6 +748,12 @@ export class IssuesWorker {
 
   private applyIssues(issues: IssuesIssue[]): void {
     const open = new Set(issues.map((issue) => issue.number));
+    // A dismissal lasts until this worker's own read drops the issue or its
+    // window passes; a later reopen is then eligible again.
+    const now = this.clock().getTime();
+    for (const [number, until] of [...this.dismissed]) {
+      if (!open.has(number) || until <= now) this.dismissed.delete(number);
+    }
     const pruned = pruneLedger(this.ledger, open);
     if (pruned !== this.ledger) {
       this.ledger = pruned;
@@ -740,6 +767,7 @@ export class IssuesWorker {
       this.state.cooldowns = cooldowns;
     }
     this.state.queue = issues.map((issue) => this.queued(issue));
+    this.stopClosedRuns(open);
   }
 
   private queued(issue: IssuesIssue): QueuedIssue {
@@ -761,6 +789,8 @@ export class IssuesWorker {
     for (const issue of this.state.queue) {
       if (this.active.size >= MAX_CONCURRENT_PEERS) break;
       if (issue.handled) continue;
+      const until = this.dismissed.get(issue.number);
+      if (until !== undefined && until > this.clock().getTime()) continue;
       if (this.active.has(issue.number)) continue;
       if (this.cooldownRemaining(issue.number)) continue;
       this.begin(issue);
@@ -1035,6 +1065,35 @@ export class IssuesWorker {
     this.closePeer(active);
     active.firstLine.finish();
     this.recordFailed(active, active.firstLine.value ?? detail);
+  }
+
+  /**
+   * A poll that no longer lists a running issue means the operator closed it.
+   * Its peer ends and its run is recorded `stopped`; the issue stays unhandled
+   * and gets no cooldown, so a reopened issue is eligible on a later poll.
+   */
+  private stopClosedRuns(open: Set<number>): void {
+    for (const active of [...this.active.values()]) {
+      if (open.has(active.issue.number)) continue;
+      this.abandonRun(
+        active,
+        `Issue #${active.issue.number} was closed on the tracker; its run was stopped.`,
+      );
+    }
+  }
+
+  /** Ends one run without a verdict: no succeeded ledger entry, no cooldown. */
+  private abandonRun(active: ActiveRun, notice: string): void {
+    if (active.finished) return;
+    this.dismissed.set(active.issue.number, this.clock().getTime() + DISMISS_MS);
+    const finishedAt = this.clock().toISOString();
+    active.finished = true;
+    this.closePeer(active);
+    this.updateRun(active.runId, active.directory, "stopped", finishedAt, null, null);
+    this.forget(active);
+    this.refreshQueue();
+    this.state.notice = notice;
+    this.settle(null, null, finishedAt);
   }
 
   private closePeer(active: ActiveRun): void {

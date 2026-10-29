@@ -41,6 +41,10 @@
   );
 
   const queueState = $derived(queueCounts(issues.queue));
+  const polled = $derived(
+    (issues.snapshot?.sync?.lastSyncAt ?? null) !== null ||
+      (issues.snapshot?.poll?.lastPollAt ?? null) !== null,
+  );
   const agents = $derived(issues.agents);
   const asking = $derived(agents.filter((agent) => agent.question !== null).length);
 
@@ -512,7 +516,9 @@
               </span>
             </li>
           {:else}
-            <li class="issues-queue__empty muted">No open issues have been polled yet.</li>
+            <li class="issues-queue__empty muted">
+              {polled ? "No open issues." : "No open issues have been polled yet."}
+            </li>
           {/each}
         </ol>
       </div>

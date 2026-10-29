@@ -9,6 +9,7 @@ import { journalFile, journalKey } from "./journal";
 import { ProviderService, saveSubscriptions } from "./providers";
 import { acquireLock } from "../issues/lock";
 import { testProviderService } from "./fixtures/test-providers";
+import type { TrackerRead } from "./issue-sync";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -50,6 +51,7 @@ async function startServer(
         repository: string;
         number: number;
       }) => Promise<void>;
+      syncRead?: TrackerRead;
     };
   } = {},
 ) {
@@ -68,6 +70,9 @@ async function startServer(
     await writeFile(options.goalFile ?? join(root, "GOAL.md"), options.goalText);
   }
 
+  const syncRead: TrackerRead =
+    options.issues?.syncRead ?? (async () => ({ kind: "not-modified", etag: null }));
+
   const server = createApp({
     adrDir,
     staticDir,
@@ -83,7 +88,9 @@ async function startServer(
     restart: options.restart,
     versionState: options.versionState,
     runningVersion: options.runningVersion,
-    ...(options.issues === undefined ? {} : { issues: options.issues }),
+    ...(options.issues === undefined
+      ? { issues: { syncRead } }
+      : { issues: { ...options.issues, syncRead } }),
   });
   return { server, adrDir, root, url: `127.0.0.1:${server.port}` };
 }

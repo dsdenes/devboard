@@ -41,6 +41,7 @@ import {
 import { defaultGoalPath, readGoal, writeGoal } from "./goal";
 import { originRepository } from "../issues/repository";
 import { IssuesBridge, type IssuesBridgeOptions } from "./issues";
+import { TRACKER_SYNC_INTERVAL_MS } from "./issue-sync";
 import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
 import { CoachActivity, type CoachActivityOptions } from "./coach";
@@ -177,7 +178,7 @@ export interface AppOptions {
   /** Issues mode's test seams; production uses the detached worker itself. */
   issues?: Pick<
     IssuesBridgeOptions,
-    "pollMs" | "preflightTimeoutMs" | "preflight" | "spawnWorker" | "closeIssue"
+    "pollMs" | "preflightTimeoutMs" | "preflight" | "spawnWorker" | "closeIssue" | "syncMs" | "syncRead"
   >;
   /** Auto Scout's test seams; production uses the detached worker itself. */
   scout?: Pick<
@@ -2255,6 +2256,19 @@ export function createApp(options: AppOptions) {
   startProviderRefresh();
 
   /**
+   * The Open issues view refreshes from the forge on its own cadence, so a
+   * closure made in the browser reaches the board even while Issues
+   * automation is stopped. Thirty seconds by default; the environment can
+   * override it for a busy forge.
+   */
+  const issuesSyncEnv = Number(process.env.DEVBOARD_ISSUES_SYNC_INTERVAL_MS);
+  const issuesSyncMs =
+    options.issues?.syncMs ??
+    (Number.isFinite(issuesSyncEnv) && issuesSyncEnv > 0
+      ? Math.max(1_000, issuesSyncEnv)
+      : TRACKER_SYNC_INTERVAL_MS);
+
+  /**
    * Issues mode reads and commands the detached worker for this checkout. The
    * bridge never owns the worker: starting one is detached, stopping this
    * server leaves it alive, and a replacement attaches to the same state.
@@ -2268,7 +2282,10 @@ export function createApp(options: AppOptions) {
     harnessDir: runningHarnessDir(),
     send: (event, except) => sendAll(event, except),
     log: (line) => process.stderr.write(`${line}\n`),
+    hasClients: () => clients.size > 0,
+    syncMs: issuesSyncMs,
     ...(options.issues?.pollMs === undefined ? {} : { pollMs: options.issues.pollMs }),
+    ...(options.issues?.syncRead === undefined ? {} : { syncRead: options.issues.syncRead }),
     ...(options.issues?.preflightTimeoutMs === undefined
       ? {}
       : { preflightTimeoutMs: options.issues.preflightTimeoutMs }),
@@ -6601,6 +6618,9 @@ export function createApp(options: AppOptions) {
         // A client needs the checkout's origin and stopped state on connect,
         // whether or not a worker has ever published for it.
         issues.replay(ws);
+        // A fresh view reads the tracker immediately; the sync timer alone
+        // would leave the first thirty seconds showing a stopped worker's list.
+        void issues.syncNow();
         agents.replay(ws);
         prompts.replay(ws);
       },

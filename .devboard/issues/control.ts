@@ -14,7 +14,9 @@ export type IssuesCommand =
   | { type: "resume" }
   | { type: "stop" }
   | { type: "check" }
-  | { type: "answer"; id: number | string; value: string; runId?: string };
+  | { type: "answer"; id: number | string; value: string; runId?: string }
+  /** End one issue's run because the tracker now reports that issue closed. */
+  | { type: "abandon"; number: number };
 
 let sequence = 0;
 
@@ -57,6 +59,10 @@ function parseCommand(text: string): IssuesCommand | undefined {
         };
       }
       return undefined;
+    case "abandon":
+      return isInteger(parsed.number) && parsed.number > 0
+        ? { type: "abandon", number: parsed.number }
+        : undefined;
     default:
       return undefined;
   }
