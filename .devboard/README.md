@@ -1032,7 +1032,10 @@ A submit broadcasts `discoverState` with `cloning = { url }` before spawning any
 exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
 the retained root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`,
 `NO_COLOR=1`, and a 300-second timeout. On success the checkout becomes the crawl root and exactly
-one crawl runs against it. Publication writes into the checkout's `.omp`; when the crawl succeeds,
+one crawl runs against it. The crawl peer starts with `--no-skills`, so neither a clone's nor a
+host's `.omp/skills` are discovered or loaded; the crawl contract excludes every `.omp` path, and
+OMP's background description compression of a foreign skill would otherwise log a warning the
+watchdog files. Publication writes into the checkout's `.omp`; when the crawl succeeds,
 the two published trees are copied into `<owner>~<repo>/`, `project.json` is rewritten with the
 submitted URL and the completion time, and the checkout is removed. The active target moves to the
 new project only after its bytes are retained, so a failed clone or a failed crawl leaves the

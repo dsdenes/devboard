@@ -3157,8 +3157,12 @@ export function createApp(options: AppOptions) {
       // A stop or disposal during provider selection clears the run. The
       // crawl must not start after the operator ended it.
       if (discoverRun !== run || request !== discoverRequest) return;
+      // The crawl root may be a remote clone. OMP would load its `.omp/skills`
+      // and compress the descriptions in the background; a foreign skill logs
+      // a warning the watchdog files. The crawl contract already excludes
+      // every `.omp` path, so the peer runs without skill discovery or loading.
       agent = new AcpConnection({
-        command: agentCommand,
+        command: `${agentCommand} --no-skills`,
         cwd: root,
         env,
         onActivity(activity: AcpActivity) {
