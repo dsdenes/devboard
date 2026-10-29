@@ -6466,16 +6466,23 @@ try {
     activity: string;
     question: string;
     ordered: boolean;
+    messageTag: string;
+    messageSize: number;
   }>(`(() => {
     const panel = document.querySelector('[data-testid="issues-draft-detail"]');
     const question = document.querySelector('[data-testid="issues-draft-question"]');
     const activity = document.querySelector('[data-testid="issues-draft-activity"]');
+    const message = question?.querySelector(".issues-question__message");
     return {
       state: document.querySelector('[data-testid="issues-draft-state"]')?.textContent?.trim() ?? "",
       activity: activity?.textContent ?? "",
       question: question?.textContent ?? "",
       ordered: question !== null && activity !== null &&
         (question.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      messageTag: message?.tagName ?? "",
+      messageSize: message === null || message === undefined
+        ? 0
+        : Number.parseFloat(getComputedStyle(message).fontSize),
     };
   })()`);
   check(
@@ -6488,6 +6495,11 @@ try {
   check(
     questionDetail.question.includes("Choose an answer") && questionDetail.ordered,
     "the selected question is missing or below the activity log",
+    questionDetail,
+  );
+  check(
+    /^H[1-6]$/.test(questionDetail.messageTag) && questionDetail.messageSize > 13,
+    "the question is not a header with a larger font",
     questionDetail,
   );
   await dismissNotifications();

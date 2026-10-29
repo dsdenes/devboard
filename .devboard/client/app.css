@@ -3124,6 +3124,15 @@ a.code-chip--link:focus-visible {
   gap: 8px;
 }
 
+.issues-question__message {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .issues-answer {
   display: flex;
   gap: 6px;
