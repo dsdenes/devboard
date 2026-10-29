@@ -14,9 +14,10 @@ export const SCOUT_DIRECTORY = "scout";
 export const STATE_VERSION = 2;
 export const SCAN_VERSION = 2;
 /**
- * A scan's agent phase ends after this long without activity, and its
+ * A scan's agent phase ends after this long without a session update, and its
  * separately timed settle-and-file phase ends after this long in total. A
- * productive agent keeps resetting the first bound.
+ * productive agent keeps resetting the first bound with any protocol traffic,
+ * including the progress frames of a long tool call.
  */
 export const SCAN_TIMEOUT_MS = 15 * 60_000;
 /** The periodic GitHub read while the worker is started. */
