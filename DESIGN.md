@@ -449,6 +449,19 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   keeps both badges on the title's line instead of wrapping into a second row. Rows use 6px 10px
   padding, a `border-subtle` rule, and `row-hover` on hover; the state badge always ends on the
   row's trailing edge, and the title is the only track that yields at 1024px.
+- **Proposed goal row** (`.issues-draft-row`) — one row of the Draft goals list: a full-row open
+  control with a two-line identity column and a trailing status badge, plus a right-aligned `sm`
+  outline `Start` control. The first line is the draft file name in 12px mono with its path as the
+  tooltip; the second is the proposal heading in 12px `muted-foreground`, one line with ellipsis
+  and the full heading as its tooltip. The badge states this draft's run (`idle`, `running`,
+  `succeeded`, `failed`, `stopped`) in words and ends before the action gap; a waiting or blocked
+  draft adds one 11px `warning` line under the heading. Rows use 6px 10px padding and a
+  `border-subtle` rule; hover takes `row-hover` across the whole row, and the current row takes
+  `accent-surface`, a 2px `accent` left edge, and an `accent` file name. The open control takes an
+  inset 2px `ring` on `focus-visible`. The row's `Start` is always visible, never revealed only on
+  hover, names its draft in its accessible name, and is disabled at 45% opacity while that draft
+  runs. The `New goal` form is a `surface-raised` band under the panel header with `label` type,
+  an 8px rhythm, and a right-aligned 6px action gap.
 - **Agent fleet card** (`.issues-agent`) — one card per running agent in the Agents page grid: a
   360px-minimum `surface` card with 1px `border`, 4px radius, 10px padding, and an 8px internal
   rhythm. Its head holds the mono `accent` issue-number link to the tracker and one outline

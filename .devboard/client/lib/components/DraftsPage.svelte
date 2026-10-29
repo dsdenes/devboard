@@ -79,7 +79,9 @@
       <div class="panel__header">
         <h2 class="panel__title">Proposed goals</h2>
         <div class="issues-drafts__header-actions">
-          <span class="panel__subtitle">{issues.repoLabel}</span>
+          <span class="panel__subtitle issues-drafts__repo" title={issues.repoLabel}>
+            {issues.repoLabel}
+          </span>
           <Button
             variant="secondary"
             size="sm"
@@ -147,11 +149,13 @@
             {@const draftStatus = issues.draftState(draft.path)}
             {@const waiting = issues.draftWaiting(draft.path)}
             {@const blocker = issues.draftStartBlocker(draft.path)}
-            <li class="issues-draft-row" style="display: flex; align-items: stretch;">
+            <li
+              class="issues-draft-row"
+              data-current={issues.draftPath === draft.path}
+            >
               <button
                 type="button"
                 class="issues-draft"
-                style="flex: 1; min-width: 0;"
                 data-testid="issues-draft"
                 data-path={draft.path}
                 data-command="issues.draft.open"
@@ -160,24 +164,34 @@
                 aria-current={issues.draftPath === draft.path}
                 onclick={() => issues.openDraft(draft.path)}
               >
-                <span class="mono">{draft.name}</span>
-                <span class="issues-draft__heading">{draft.heading || "No heading"}</span>
-                <span class="badge" data-tone={statusTone(draftStatus)}>{draftStatus}</span>
-                {#if waiting}
-                  <span class="issues-draft__blocked" data-testid="issues-draft-waiting">
-                    Waiting for an answer
+                <span class="issues-draft__text">
+                  <span class="issues-draft__name mono" title={draft.path}>{draft.name}</span>
+                  <span class="issues-draft__heading" title={draft.heading || "No heading"}>
+                    {draft.heading || "No heading"}
                   </span>
-                {/if}
-                {#if blocker !== null}
-                  <span class="issues-draft__blocked" data-testid="issues-draft-blocked">{blocker}</span>
-                {/if}
+                  {#if waiting}
+                    <span class="issues-draft__blocked" data-testid="issues-draft-waiting">
+                      Waiting for an answer
+                    </span>
+                  {/if}
+                  {#if blocker !== null}
+                    <span class="issues-draft__blocked" data-testid="issues-draft-blocked">
+                      {blocker}
+                    </span>
+                  {/if}
+                </span>
+                <span class="badge issues-draft__badge" data-tone={statusTone(draftStatus)}>
+                  {draftStatus}
+                </span>
               </button>
-              <div style="display: flex; align-items: center; padding: 0 8px;">
+              <div class="issues-draft-row__action">
                 <Button
-                  variant="default"
+                  variant="outline"
+                  size="sm"
                   data-testid="issues-draft-row-start"
                   data-command="issues.draft.start"
                   data-path={draft.path}
+                  aria-label={`Start ${draft.name}`}
                   disabled={issues.draftRunning(draft.path)}
                   title={blocker ?? "Start the elaboration agent"}
                   onclick={() => issues.startDraft(draft.path)}
