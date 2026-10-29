@@ -6393,6 +6393,11 @@ try {
     `(document.querySelector('${draftRow(name)}')?.getAttribute("data-status") ?? "")`;
 
   await page.click(draftRowStart("001-question.md"));
+  await page.wait(
+    `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/001-question.md"`,
+    "the started draft's own detail",
+    8_000,
+  );
   await page.click(draftRow("002-hang.md"));
   await page.wait(
     `document.querySelector('[data-testid="issues-draft-detail"]')?.getAttribute("data-path") === ".devboard/goal-proposals/002-hang.md"`,

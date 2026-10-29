@@ -258,8 +258,13 @@ export class IssuesStore {
     writeDraftPath(null);
   }
 
+  /**
+   * Starts a draft and opens it, so the elaboration activity on screen belongs
+   * to the goal the operator just started.
+   */
   startDraft(path: string | null): void {
     if (path === null || this.draftRunning(path)) return;
+    if (this.draftPath !== path) this.openDraft(path);
     delete this.draftErrors[path];
     connection.send({ type: "startGoalDraft", path });
   }
