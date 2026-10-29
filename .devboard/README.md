@@ -952,9 +952,14 @@ history notes, and unknown reasons); skill bodies and descriptions are not part 
 against the same unchanged host fingerprint produce the same sheet digest and the same digest for
 every unchanged glossary, while bounded prose may differ. The fingerprint covers the host `HEAD`
 and the content of tracked and untracked non-ignored files, excluding `.devboard/`, `.worktree/`,
-`.omp/discover/`, `.omp/skills/`, VCS internals, and ignored files; the manifest stores it, and
-`stale` is true only when the current fingerprint is readable and differs. Discover caches nothing:
-every accepted start re-crawls.
+`.omp/discover/`, `.omp/skills/`, VCS internals, and ignored files. Only regular files are read:
+a symlink contributes its target string and a FIFO, device, socket, or other special entry a type
+marker, so the fingerprint never opens one; a regular file's content streams through the hash in
+fixed-size chunks, so a large file cannot exhaust memory. Each digest and the aggregate are cached
+by the file listing plus size, timestamps, and inode, so an unchanged host is not re-read and a
+reconnect or refresh costs no file reads. The manifest stores the fingerprint, and `stale` is true
+only when the current fingerprint is readable and differs. The cache holds digests only; every
+accepted start re-crawls.
 
 The crawl is read-only with respect to the host. Its tools read files and safe read-only git facts
 (`git rev-parse`, `git log`, `git branch`, `git status`, `git ls-files`) only; they never run a
@@ -1688,8 +1693,7 @@ the state badge for this draft's run only (absent while the run is `idle`), `iss
 (`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). Each
 row carries its own `data-status`, renders that state as text, and has its own
 `issues-draft-row-start` control. A row whose elaboration waits for an answer carries
-`data-question="true"` and renders an `issues-draft-waiting` marker, so the wait is visible without
-opening that draft; answering clears both. The body reads the proposal before the
+`data-question="true"`; answering clears it. The body reads the proposal before the
 `## Captured UI context` marker, then the activity stream in `issues-draft-activity` once a run
 exists; the captured UI context itself is not shown. A pending elaboration question
 (`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,
