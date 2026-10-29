@@ -1500,6 +1500,7 @@ async function promptTurn(params: unknown) {
   if (!announced) {
     announced = true;
     log(`spawn ${process.pid}`);
+    log(`argv ${process.argv.slice(2).join(" ")}`);
   }
   const text = promptText(params);
   const file = typeof text === "string" ? /(?:^|\s)(\S+\.md)(?:\s|$)/.exec(text)?.[1] : undefined;

@@ -459,6 +459,9 @@ describe("discover mode", () => {
         const prompt = prompts(fixture.logPath)[0] ?? "";
         expect(prompt).toMatch(/^\/discover .*\.omp\/discover\/staging\/run-/);
         expect(prompt).not.toContain(".omp/discover/staging/run- \n");
+        expect(
+          logLines(fixture.logPath).find((line) => line.startsWith("argv ")) ?? "",
+        ).toContain("--no-skills");
 
         const manifest = state.manifest as Record<string, unknown>;
         expect(manifest).not.toBeNull();

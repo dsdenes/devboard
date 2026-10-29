@@ -805,6 +805,9 @@ describe("discover remote target", () => {
         expect(spawnCount(fixture.logPath)).toBe(1);
         const prompt = prompts(fixture.logPath)[0] ?? "";
         expect(prompt).toMatch(/^\/discover \/.*\/\.staging-run-[a-z0-9-]+\/\.omp\/discover\/staging\/run-[a-z0-9-]+$/);
+        expect(
+          logLines(fixture.logPath).find((line) => line.startsWith("argv ")) ?? "",
+        ).toContain("--no-skills");
         expect(existsSync(join(retained, ".omp", "discover", "staging"))).toBe(false);
 
         // The dashboard's own host is untouched.
