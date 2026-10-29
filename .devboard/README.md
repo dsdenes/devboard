@@ -377,9 +377,13 @@ The dashboard keeps the state that drives the page in one file per host reposito
 it from a new process after a graceful stop, a launcher restart, or a `SIGKILL`. The file is
 `<stateDir>/state/<key>.json`, where `key` is the 24-hex SHA-256 prefix of the resolved
 `REPO_DIR` (the same key the journal uses) and `stateDir` is the harness state directory,
-`<harness>/.tmp` by default and overridable with `STATE_DIR`. Two repositories that share one
-harness therefore never read or overwrite each other's lifecycle, lane, pass, or foreground
-state, and a repository with no stored state starts at pass 1 with no lanes and no
+`<harness>/.tmp` by default and overridable with `STATE_DIR`. A `STATE_DIR` inside the repository
+survives an implementation reset unchanged, and the reset records its path in the checkout's
+`.git/info/exclude` so it is never staged or reported as untracked; a `STATE_DIR` equal to the
+repository root is refused because preserving the state would preserve the whole checkout. Two
+repositories that share one harness therefore never read or overwrite each other's lifecycle,
+lane, pass, or foreground state, and a repository with no stored state starts at pass 1 with no
+lanes and no
 `lifecycleState` until a run starts. The file is never committed, never copied between
 repositories, and never written outside the repository root.
 
@@ -1173,7 +1177,7 @@ and is retried the same way.
 |`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
 |`STATIC_DIR`|`dist`|Built client directory.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `server/fixtures/stub-agent.ts` is a deterministic substitute for tests and local verification.|
-|`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`.|
+|`STATE_DIR`|`<harness>/.tmp`|State and journal directory; an installed dashboard passes `<host>/.devboard/.tmp`. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
 |`DEVBOARD_OPENCODE_GO_USAGE_BASE_URL`|`https://opencode.ai/zen/go`|OpenCode Go usage base; overridden by tests and offline verification.|
 |`DEVBOARD_OPENROUTER_USAGE_BASE_URL`|`https://openrouter.ai/api`|OpenRouter usage base; overridden by tests and offline verification.|
 |`DEVBOARD_UPDATE_INTERVAL_MS`|`60000`|Automatic update check interval.|
@@ -2158,7 +2162,12 @@ The client sends:
   is accepted only while that directory is installed and no run, lifecycle, goal creation,
   revision, or preparation is active, and answers by broadcasting a fresh `skillsState`; it
   refuses an unmanaged skill, a Discover-family skill, and a name that is not in the managed set.
-- `resetImplementation` deletes and commits the implementation as described above. The server
+- `resetImplementation` deletes and commits the implementation as described above. The configured
+  state directory is not implementation: when `STATE_DIR` resolves inside `REPO_DIR`, its bytes
+  survive untouched, its path is added to `.git/info/exclude`, and `git rm --cached` removes it
+  from the staged tree, so the commit carries no path under it and `git status --porcelain` stays
+  empty. A `STATE_DIR` equal to `REPO_DIR` is refused with an `error` before anything is deleted or
+  stopped. The server
   broadcasts `implementationResetStarted` when it accepts the command, performs the reset
   itself, and broadcasts `implementationResetStopped` with `completed: true` and the 40-hex
   `commit` only after `git push origin main` succeeds; a failed push includes the local commit
@@ -2533,8 +2542,9 @@ remotes: the command and started/stopped events, tracked/untracked/ignored delet
 bytes, the `.worktree` sentinel, symlink removal without following, the exact commit subject and
 remote tree, staging exclusions without a `.gitignore`, empty-change idempotence, an absent,
 empty, or whitespace-only goal, a differently named `GOAL_FILE`, a bypassed failing pre-commit
-hook, refusal off `main`, without `origin`, outside the top level, with an unborn `HEAD`, and
-during an active run, a rejecting pre-receive hook retaining the local commit, a commit failure
+hook, refusal off `main`, without `origin`, outside the top level, with an unborn `HEAD`, with an
+in-repo `STATE_DIR`, and with `STATE_DIR` equal to the repository root, during an active run, a
+rejecting pre-receive hook retaining the local commit, a commit failure
 retaining the staged deletion, mutating-command refusal during a reset, replay to a late client,
 and the post-reset empty records, goal text, `getGoal`, and `saveGoal` behavior.
 `server/journal.test.ts` covers the dashboard journal: a real stub-agent run writes `activity`,

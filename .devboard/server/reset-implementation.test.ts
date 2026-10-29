@@ -173,6 +173,7 @@ async function startServer(
     repoDir?: string;
     adrDir?: string;
     goalFile?: string;
+    stateDir?: string;
     agentCommand?: string;
     tracker?: EpicLookup;
     trackerSettle?: { attempts: number; delayMs: number };
@@ -183,14 +184,15 @@ async function startServer(
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>reset</title>");
 
+  const stateDir = options.stateDir ?? join(host.root, "state");
   const server = createApp({
     adrDir: options.adrDir ?? join(host.host, "adrs"),
     staticDir,
     hostname: "127.0.0.1",
     port: 0,
     repoDir: options.repoDir ?? host.host,
-    stateDir: join(host.root, "state"),
-    providers: testProviderService(join(host.root, "state")),
+    stateDir,
+    providers: testProviderService(stateDir),
     goalFile: options.goalFile ?? join(host.host, "GOAL.md"),
     agentCommand: options.agentCommand,
     ...(options.tracker === undefined ? {} : { tracker: options.tracker }),
@@ -373,6 +375,136 @@ describe("resetImplementation", () => {
           "GOAL.md",
         ].join("\n"),
       );
+      client.close();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("preserves an in-repo state directory but keeps it out of the reset", async () => {
+    const host = await createHost();
+    const stateDir = join(host.host, ".state");
+    await mkdir(join(stateDir, "issues"), { recursive: true });
+    await mkdir(join(stateDir, "flow"), { recursive: true });
+    await writeFile(join(stateDir, "issues", "ledger.json"), '{"issues":[463]}\n');
+    await writeFile(join(stateDir, "flow", "session.json"), '{"sessions":[]}\n');
+    await pushBase(host);
+    const { server, url } = await startServer(host, { stateDir });
+
+    try {
+      const credentials = join(stateDir, "providers", "credentials.json");
+      const credentialsBefore = await readFile(credentials, "utf8");
+      const ledgerBefore = await readFile(join(stateDir, "issues", "ledger.json"), "utf8");
+      const flowBefore = await readFile(join(stateDir, "flow", "session.json"), "utf8");
+
+      const client = await connect(url);
+      client.send({ type: "resetImplementation" });
+      await client.waitFor("implementationResetStarted");
+      const stopped = await client.waitFor("implementationResetStopped");
+      expect(stopped).toMatchObject({
+        type: "implementationResetStopped",
+        completed: true,
+      });
+
+      expect(await readFile(credentials, "utf8")).toBe(credentialsBefore);
+      expect(await readFile(join(stateDir, "issues", "ledger.json"), "utf8")).toBe(
+        ledgerBefore,
+      );
+      expect(await readFile(join(stateDir, "flow", "session.json"), "utf8")).toBe(
+        flowBefore,
+      );
+      expect(await exists(join(host.host, "packages"))).toBe(false);
+      expect(git(host.host, ["status", "--porcelain"]).stdout).toBe("");
+      const tree = git(host.remote, ["ls-tree", "-r", "--name-only", "main"]).stdout;
+      expect(tree).toBe(
+        [
+          ".devboard/sentinel.txt",
+          ".gitignore",
+          ".omp/sentinel.txt",
+          "AGENTS.md",
+          "GOAL.md",
+        ].join("\n"),
+      );
+
+      // The exclusion is durable and local: a second reset stages nothing and
+      // reuses the first commit instead of committing the surviving state.
+      client.send({ type: "resetImplementation" });
+      await client.waitFor("implementationResetStarted");
+      const second = await client.waitFor("implementationResetStopped");
+      expect(second).toMatchObject({
+        type: "implementationResetStopped",
+        completed: true,
+        commit: stopped.commit,
+      });
+      expect(git(host.host, ["rev-list", "--count", "main"]).stdout).toBe("2");
+      expect(git(host.host, ["status", "--porcelain"]).stdout).toBe("");
+      client.close();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("preserves a state directory nested under a deleted top-level entry", async () => {
+    const host = await createHost();
+    const stateDir = join(host.host, "packages", ".state");
+    await mkdir(join(stateDir, "issues"), { recursive: true });
+    await writeFile(join(stateDir, "issues", "ledger.json"), '{"issues":[463]}\n');
+    await pushBase(host);
+    const { server, url } = await startServer(host, { stateDir });
+
+    try {
+      const ledger = join(stateDir, "issues", "ledger.json");
+      const ledgerBefore = await readFile(ledger, "utf8");
+      const credentialsBefore = await readFile(
+        join(stateDir, "providers", "credentials.json"),
+        "utf8",
+      );
+
+      const client = await connect(url);
+      client.send({ type: "resetImplementation" });
+      await client.waitFor("implementationResetStarted");
+      const stopped = await client.waitFor("implementationResetStopped");
+      expect(stopped).toMatchObject({
+        type: "implementationResetStopped",
+        completed: true,
+      });
+
+      expect(await readFile(ledger, "utf8")).toBe(ledgerBefore);
+      expect(await readFile(join(stateDir, "providers", "credentials.json"), "utf8")).toBe(
+        credentialsBefore,
+      );
+      expect(await exists(join(host.host, "packages", "code.ts"))).toBe(false);
+      expect(git(host.host, ["status", "--porcelain"]).stdout).toBe("");
+      const tree = git(host.remote, ["ls-tree", "-r", "--name-only", "main"]).stdout;
+      expect(tree).not.toContain("packages");
+      client.close();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("refuses to reset when STATE_DIR is the repository root", async () => {
+    const host = await createHost();
+    await pushBase(host);
+    const base = git(host.host, ["rev-parse", "main"]).stdout;
+    const { server, url } = await startServer(host, { stateDir: host.host });
+
+    try {
+      const client = await connect(url);
+      client.send({ type: "resetImplementation" });
+      await client.waitFor("implementationResetStarted");
+      const error = await client.waitFor("error");
+      expect(String(error.message)).toContain("STATE_DIR");
+      const stopped = await client.waitFor("implementationResetStopped");
+      expect(stopped).toEqual({ type: "implementationResetStopped", completed: false });
+      expect("commit" in stopped).toBe(false);
+      expect(await readFile(join(host.host, "packages", "code.ts"), "utf8")).toBe(
+        "implementation\n",
+      );
+      expect(await exists(join(host.host, "untracked.ts"))).toBe(true);
+      expect(git(host.host, ["rev-parse", "main"]).stdout).toBe(base);
+      expect(git(host.remote, ["rev-parse", "main"]).stdout).toBe(base);
+      expect(git(host.host, ["log", "-1", "--pretty=%s"]).stdout).toBe("base");
       client.close();
     } finally {
       server.stop(true);
