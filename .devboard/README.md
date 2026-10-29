@@ -1145,9 +1145,11 @@ a run ends. The `~` cannot occur in either URL segment, so distinct `owner/repo`
 published — `.omp/discover/` and, once a skill agent published, `.omp/skills/` — beside
 `project.json`, which records `url`,
 `owner`, `repo`, and the ISO `completedAt` time. A run's checkout is a transient
-`.staging-<run-id>` directory beside those projects; it never survives the run. While a run is live
-it owns a claim at `.runs/<checkout-name>.json` naming its process, and the claim and the `.runs/`
-directory leave with the checkout.
+`.staging-<run-id>` directory beside those projects; it never survives the run. The checkout starts
+with the retained `.omp` trees copied into it, so one agent's publication merges over the snapshot
+instead of replacing every other slice. While a run is live it owns a claim at
+`.runs/<checkout-name>.json` naming its process, and the claim and the `.runs/` directory leave with
+the checkout.
 
 A submit broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs
 exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
