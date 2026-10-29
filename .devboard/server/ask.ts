@@ -509,10 +509,15 @@ export class AskController {
     let peer: AskPeer;
     try {
       if (replacement) {
-        peer = new AskPeer({
+        const env = await this.#options.environment();
+        // A close or disconnect during provider selection discards the
+        // conversation. Constructing now would leave a peer no callback can
+        // reach, so this turn ends without a process.
+        if (!live()) return;
+        const created = new AskPeer({
           command: this.#options.command,
           cwd: this.#options.cwd,
-          env: await this.#options.environment(),
+          env,
           onText: (text) => {
             if (conversation.closed || !conversation.busy) return;
             conversation.answer += text;
@@ -523,7 +528,14 @@ export class AskController {
             });
           },
         });
-        conversation.peer = peer;
+        // The constructor spawns the child immediately; a close that lands
+        // between the guard and here must still end with no live peer.
+        if (!live()) {
+          created.close();
+          return;
+        }
+        peer = created;
+        conversation.peer = created;
       } else {
         peer = conversation.peer as AskPeer;
       }

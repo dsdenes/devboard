@@ -1290,7 +1290,11 @@ lifecycle badge `agent-lifecycle`, the sync badge `agent-sync`, `agent-sync-at`,
 `agent-save-cadence`, `agent-limit-hour`, `agent-limit-pending`, `agent-save-limits`,
 `agent-issues-count`, `agent-issues`, and `agent-detail`. Alerts use one position:
 `agent-error`, `agent-sync-error`, `agent-cadence-error`, and `agent-limits-error`, each with
-`role="alert"`. Start/Stop is the only filled primary control. The sidebar has three groups in
+`role="alert"`. Start/Stop is the only filled primary control. The header row carries the page
+identity, the lifecycle badge, the sync badge with its last-read clock, and Start/Stop. Its
+settings footer carries two labeled groups: `Cadence` (the Every field, the last-run and next-run
+clocks, and Save cadence) and `Filing limits` (Per hour, Open issues, and Save limits); the groups
+wrap as units, so no field separates from its save control. The sidebar has three groups in
 order: `Issues surfaces` (Overview), `Background agents`
 (`data-testid="sidebar-background-agents"`, heading `Background agents`, entries
 `open-issues-scout` then `open-issues-watchdog`, badges `agent-state-<id>`, counts
@@ -1684,8 +1688,7 @@ the state badge for this draft's run only (absent while the run is `idle`), `iss
 (`issues.draft.start`) and, while this draft runs, `issues-draft-stop` (`issues.draft.stop`). Each
 row carries its own `data-status`, renders that state as text, and has its own
 `issues-draft-row-start` control. A row whose elaboration waits for an answer carries
-`data-question="true"` and renders an `issues-draft-waiting` marker, so the wait is visible without
-opening that draft; answering clears both. The body reads the proposal before the
+`data-question="true"`; answering clears it. The body reads the proposal before the
 `## Captured UI context` marker, then the activity stream in `issues-draft-activity` once a run
 exists; the captured UI context itself is not shown. A pending elaboration question
 (`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,

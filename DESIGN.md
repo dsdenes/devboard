@@ -398,7 +398,20 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   native `<header>`; `flat` drops the frame when a parent panel owns it. 10px 12px padding. The
   `bar` layout is the operational variant: the eyebrow sits over one title/subtitle line and the
   meta row moves into a right-aligned cluster beside the action group, so the state and the action
-  it qualifies share a 56px band with 8px 12px padding. The stacked layout stays the default.
+  it qualifies share a 44px row with 8px 12px padding. A 300px identity floor is the page-name
+  guard: below it the meta/action cluster wraps under the identity instead of truncating the
+  title, and the subtitle ellipsizes. The stacked layout stays the default. An optional `footer`
+  snippet adds a full-width secondary band under a `border-subtle` hairline (6px 12px padding)
+  for controls that configure the primary action; it renders inside the header surface, its
+  groups wrap as units, and it never holds the filled primary.
+- **Agent settings footer** (`.agent-settings` in `AgentPage.svelte`) — the header footer shared
+  by Auto Scout and Watchdog: two `overline` groups 24px apart, each with 10px column and 6px row
+  gaps. `Cadence` holds the Every field (64px, centered, 4px from its label and the `min` unit),
+  the last-run and next-run clocks in mono tabular figures, and a secondary `Save cadence`.
+  `Filing limits` holds the Per hour and Open issues fields (80px, so the `unlimited` placeholder
+  is never clipped) with `unlimited` placeholders and a secondary `Save limits`. Both groups wrap
+  as units, so a field never separates from its save control, and the filled Start/Stop stays
+  alone in the header row above.
 - **Stage track** (`stage-track.svelte`) — five equal-width stage cells (Goal, Epics, ADRs,
   Implementation, Finished) at 11px/600, 4px gaps, 3px radius, `border-subtle` for future stages,
   `border` for complete stages, and `accent-surface` plus a 1px `accent` edge for the current
@@ -454,8 +467,8 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   outline `Start` control. The first line is the draft file name in 12px mono with its path as the
   tooltip; the second is the proposal heading in 12px `muted-foreground`, one line with ellipsis
   and the full heading as its tooltip. The badge states this draft's run (`idle`, `running`,
-  `succeeded`, `failed`, `stopped`) in words and ends before the action gap; a waiting or blocked
-  draft adds one 11px `warning` line under the heading. Rows use 6px 10px padding and a
+  `succeeded`, `failed`, `stopped`) in words and ends before the action gap; a blocked draft adds
+  one 11px `warning` line under the heading. Rows use 6px 10px padding and a
   `border-subtle` rule; hover takes `row-hover` across the whole row, and the current row takes
   `accent-surface`, a 2px `accent` left edge, and an `accent` file name. The open control takes an
   inset 2px `ring` on `focus-visible`. The row's `Start` is always visible, never revealed only on

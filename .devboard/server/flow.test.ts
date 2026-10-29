@@ -308,6 +308,33 @@ function prompts(fixture: Fixture): string[] {
   return stubLog(fixture).filter((line) => line.startsWith("prompt "));
 }
 
+/**
+ * Holds the next provider selection until the test releases it. `settled`
+ * resolves before the held caller's continuation is queued, so awaiting it and
+ * one microtask turn proves that continuation has run.
+ */
+function deferNextSelection(providers: ProviderService): {
+  entered: Promise<void>;
+  release: () => void;
+  settled: Promise<void>;
+} {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const settled = Promise.withResolvers<void>();
+  const select = providers.select.bind(providers);
+  let held = true;
+  providers.select = async () => {
+    if (!held) return select();
+    held = false;
+    entered.resolve();
+    await release.promise;
+    const result = await select();
+    settled.resolve();
+    return result;
+  };
+  return { entered: entered.promise, release: release.resolve, settled: settled.promise };
+}
+
 /** Waits for a line the spawned stub writes, instead of guessing a duration. */
 async function waitForStub(
   fixture: Fixture,
@@ -354,6 +381,24 @@ async function createGoal(client: TestClient, fixture: Fixture): Promise<void> {
     value: "Alpha",
   });
   await client.waitFor((event) => event.type === "flowGoalStopped" && event.completed === true);
+}
+
+/** Creates the goal, runs the stub implementation, and returns its widgets. */
+async function implementedWidgets(
+  client: TestClient,
+  fixture: Fixture,
+): Promise<{ id: string }[]> {
+  await createGoal(client, fixture);
+  client.send({ type: "startFlowImplementation" });
+  await waitUntil(
+    () => {
+      const widgets = latest(client, "flowWidgets")?.widgets as { id: string }[] | undefined;
+      return Array.isArray(widgets) && widgets.length > 0;
+    },
+    "the first widget snapshot",
+  );
+  await client.waitFor((event) => event.type === "flowStopped");
+  return latest(client, "flowWidgets")?.widgets as { id: string }[];
 }
 
 /** Waits until a Flow widget snapshot covers every changed file. */
@@ -1285,6 +1330,112 @@ describe("Flow steering, decisions, and conversation", () => {
 
     client.send({ type: "closeFlowWidget" });
     await client.waitFor((event) => event.type === "flowConversationStopped");
+    client.close();
+  }, 60_000);
+
+  test("closing a widget conversation during provider selection spawns no peer", async () => {
+    const fixture = createFixture("conversation-close-early");
+    const providers = testProviderService(fixture.stateDir);
+    const testServer = startServer(fixture, {
+      providers,
+      stub: ["--flow-goal", "--flow-implement", "--flow-change", "--flow-widget"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    const widgets = await implementedWidgets(client, fixture);
+    const widget = widgets[0] as { id: string };
+
+    const deferred = deferNextSelection(providers);
+    client.send({ type: "openFlowWidget", id: widget.id });
+    await client.waitFor((event) => event.type === "flowConversationStarted");
+    await deferred.entered;
+    client.send({ type: "closeFlowWidget" });
+    await client.waitFor((event) => event.type === "flowConversationStopped");
+    deferred.release();
+    await deferred.settled;
+    await Promise.resolve();
+    expect(prompts(fixture).filter((line) => line.startsWith("prompt /flow-widget "))).toHaveLength(
+      0,
+    );
+    client.close();
+  }, 60_000);
+
+  test("replacing a widget conversation during provider selection spawns only the replacement", async () => {
+    const fixture = createFixture("conversation-replace-early");
+    const providers = testProviderService(fixture.stateDir);
+    const testServer = startServer(fixture, {
+      providers,
+      stub: ["--flow-goal", "--flow-implement", "--flow-change", "--flow-widget"],
+    });
+    const client = await connect(testServer);
+    await connected(client);
+    const widgets = await implementedWidgets(client, fixture);
+    const first = widgets[0] as { id: string };
+    const second = widgets[1] as { id: string };
+    expect(second).toBeDefined();
+
+    const deferred = deferNextSelection(providers);
+    client.send({ type: "openFlowWidget", id: first.id });
+    await client.waitFor((event) => event.type === "flowConversationStarted");
+    await deferred.entered;
+    const mark = client.mark();
+    client.send({ type: "openFlowWidget", id: second.id });
+    await client.waitFor((event) => event.type === "flowConversationStarted", { from: mark });
+    await waitForStub(
+      fixture,
+      (line) => line.startsWith("prompt /flow-widget ") && line.endsWith(second.id),
+    );
+    deferred.release();
+    await deferred.settled;
+    await Promise.resolve();
+    const widgetPrompts = prompts(fixture).filter((line) =>
+      line.startsWith("prompt /flow-widget "),
+    );
+    expect(widgetPrompts).toHaveLength(1);
+    expect(widgetPrompts[0]?.endsWith(second.id)).toBe(true);
+    client.close();
+  }, 60_000);
+
+  test("stopping the implementation during provider selection spawns no peer", async () => {
+    const fixture = createFixture("implementation-stop-early");
+    const providers = testProviderService(fixture.stateDir);
+    const testServer = startServer(fixture, { providers, stub: ["--flow-goal", "--flow-implement"] });
+    const client = await connect(testServer);
+    await connected(client);
+    await createGoal(client, fixture);
+
+    const deferred = deferNextSelection(providers);
+    client.send({ type: "startFlowImplementation" });
+    await client.waitFor((event) => event.type === "flowImplementationStarted");
+    await deferred.entered;
+    client.send({ type: "stopFlowImplementation" });
+    await client.waitFor((event) => event.type === "flowStopped");
+    deferred.release();
+    await deferred.settled;
+    await Promise.resolve();
+    expect(
+      prompts(fixture).filter((line) => line.startsWith("prompt /flow-implement ")),
+    ).toHaveLength(0);
+    client.close();
+  }, 60_000);
+
+  test("disposing Flow during goal interview provider selection spawns no peer", async () => {
+    const fixture = createFixture("goal-dispose-early");
+    const providers = testProviderService(fixture.stateDir);
+    const deferred = deferNextSelection(providers);
+    const testServer = startServer(fixture, { providers, stub: ["--flow-goal"] });
+    const client = await connect(testServer);
+    await connected(client);
+
+    client.send({ type: "createFlowGoal" });
+    await client.waitFor((event) => event.type === "flowGoalStarted");
+    await deferred.entered;
+    testServer.server.stop(true);
+    deferred.release();
+    await deferred.settled;
+    await Promise.resolve();
+    expect(prompts(fixture).filter((line) => line.startsWith("prompt /flow-goal "))).toHaveLength(0);
+    expect(spawns(fixture)).toHaveLength(0);
     client.close();
   }, 60_000);
 

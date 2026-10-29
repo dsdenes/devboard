@@ -169,11 +169,6 @@
                   <span class="issues-draft__heading" title={draft.heading || "No heading"}>
                     {draft.heading || "No heading"}
                   </span>
-                  {#if waiting}
-                    <span class="issues-draft__blocked" data-testid="issues-draft-waiting">
-                      Waiting for an answer
-                    </span>
-                  {/if}
                   {#if blocker !== null}
                     <span class="issues-draft__blocked" data-testid="issues-draft-blocked">
                       {blocker}

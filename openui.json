@@ -135,8 +135,8 @@
       }
     },
     "PageHeader": {
-      "description": "Page identity block shared by every workspace page: an optional overline eyebrow, one h1 title, an optional subtitle, an optional meta row, and a right-aligned action group. It renders a native <header> landmark; the title is the page's only h1 and truncates with a title tooltip. flat removes the panel frame when a parent panel owns the border. Actions must contain at most one filled primary. Source: .devboard/client/lib/components/ui/page-header.svelte.",
-      "example": "<script>\n  import PageHeader from \"./lib/components/ui/page-header.svelte\";\n  import Button from \"./lib/components/ui/button.svelte\";\n</script>\n\n<PageHeader eyebrow=\"Plan\" title=\"Goal document\" subtitle={state}>\n  {#snippet meta()}<span class=\"muted\">GOAL.md</span>{/snippet}\n  {#snippet actions()}<Button variant=\"default\">Save goal</Button>{/snippet}\n</PageHeader>",
+      "description": "Page identity block shared by every workspace page: an optional overline eyebrow, one h1 title, an optional subtitle, an optional meta row, a right-aligned action group, and an optional footer band. layout=bar is the one-row operational variant; below a 300px identity floor the state/action cluster wraps under the identity so the page name never truncates. footer adds a full-width secondary band under a hairline for controls that configure the primary action. Actions must contain at most one filled primary. Source: .devboard/client/lib/components/ui/page-header.svelte.",
+      "example": "<PageHeader eyebrow=\"Plan\" title=\"Goal document\" layout=\"bar\">\n  {#snippet meta()}<span class=\"badge\">draft</span>{/snippet}\n  {#snippet actions()}<Button variant=\"default\">Save</Button>{/snippet}\n  {#snippet footer()}<Button variant=\"secondary\">Save cadence</Button>{/snippet}\n</PageHeader>",
       "props": {
         "eyebrow": {
           "type": "string",
@@ -158,6 +158,19 @@
         "actions": {
           "type": "snippet",
           "description": "Right-aligned action group. At most one filled primary action per page; secondary and outline follow."
+        },
+        "footer": {
+          "type": "snippet",
+          "description": "Optional secondary band under the identity/action row, separated by a 1px border-subtle hairline and padded 6px 12px. Holds controls that configure the page's primary action. It spans the header's full width; its groups wrap as units."
+        },
+        "layout": {
+          "type": "string",
+          "description": "stacked keeps identity, meta, and actions on their own lines. bar puts identity, meta, and actions on one operational row (8px 12px padding, 16px gap); a 300px identity floor moves the meta/action cluster below the identity instead of truncating the page name.",
+          "enum": [
+            "stacked",
+            "bar"
+          ],
+          "default": "stacked"
         },
         "flat": {
           "type": "boolean",
