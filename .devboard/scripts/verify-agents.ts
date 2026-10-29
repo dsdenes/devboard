@@ -17,6 +17,7 @@ import { settingsPath, statePath } from "../issues/scout/paths";
 import { emptyState, writeSettings, writeState } from "../issues/scout/state";
 import { writeProjection } from "../watchdog/projection";
 import { watchdogDirectory } from "../watchdog/paths";
+import { coachDirectory } from "../coach/paths";
 import { assertTrue, freePort, harnessRoot, makeHost, makeRoot, run, waitFor } from "./verification";
 import { seedVerificationProvider, verificationProviderUsageEnv } from "./provider-fixture";
 
@@ -636,7 +637,12 @@ try {
     Array.isArray(groups) &&
       (groups as Array<{ heading: string; ids: string[] }>)[0]?.heading === "Background agents" &&
       JSON.stringify((groups as Array<{ ids: string[] }>)[0]?.ids) ===
-        JSON.stringify(["open-issues-scout", "open-issues-watchdog", "open-issues-design"]),
+        JSON.stringify([
+          "open-issues-scout",
+          "open-issues-watchdog",
+          "open-issues-design",
+          "open-issues-coach",
+        ]),
     `the Background agents section is wrong: ${JSON.stringify(groups)}`,
   );
   const sidebarOrder = await devtools.evaluate(`(() => [
@@ -651,6 +657,7 @@ try {
     ["scout", "Auto Scout"],
     ["watchdog", "Watchdog"],
     ["design", "Design System"],
+    ["coach", "Coach"],
   ]) {
     const entry = await devtools.evaluate(`(() => {
       const button = document.querySelector('[data-testid="open-issues-${id}"]');
@@ -732,6 +739,31 @@ try {
   );
   console.log("PASS shared-page-shape");
 
+  await click(devtools, "open-issues-coach");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-page")) ? true : undefined),
+    "the Coach page",
+    10_000,
+  );
+  const coachPage = await devtools.evaluate(
+    `document.querySelector('[data-testid="agent-page"]')?.dataset.agent ?? ''`,
+  );
+  assertTrue(coachPage === "coach", `the Coach page names ${String(coachPage)}`);
+  assertTrue(await present(devtools, "agent-issues-empty"), "Coach has no empty table");
+  assertTrue(await present(devtools, "watchdog-cycles"), "Coach has no cycle history");
+  assertTrue(await present(devtools, "watchdog-cycles-empty"), "Coach has no empty history");
+  const coachCore = await coreSequence(devtools);
+  assertTrue(
+    JSON.stringify(coachCore.filter((id) => id !== "agent-stop")) ===
+      JSON.stringify(CORE_IDS.filter((id) => id !== "agent-stop")),
+    `the Coach core ids differ: ${JSON.stringify(coachCore)}`,
+  );
+  assertTrue(
+    (await text(devtools, "agent-lifecycle")).includes("stopped"),
+    "Coach does not start stopped",
+  );
+  console.log("PASS coach-page");
+
   /* 2b. The prompt section: full text, read-only here. */
   await click(devtools, "open-issues-scout");
   await waitFor(
@@ -753,12 +785,6 @@ try {
   assertTrue(
     installedText === INSTALLED_PROMPT,
     "the installed prompt text is not the file's bytes",
-  );
-  const installedCommand = await text(devtools, "agent-prompt-command");
-  assertTrue(
-    installedCommand.includes("/scout-recommendations") &&
-      installedCommand.includes(join(".devboard", ".tmp", "scout", "scans")),
-    `the prompt command is wrong: ${installedCommand}`,
   );
   for (const testid of [
     "agent-prompt-editor",
@@ -1088,6 +1114,86 @@ try {
       JSON.stringify(["Title", "Category", "Filed", "State", "Shipped"]),
     "the Auto Scout table columns differ",
   );
+  const coachDir = coachDirectory(stateDir);
+  await mkdir(coachDir, { recursive: true });
+  await writeFile(
+    join(coachDir, "state.json"),
+    JSON.stringify({
+      version: 1,
+      findings: {
+        "fingerprint-coach": {
+          category: "tool-failure",
+          line: "bash failed: Synthetic Coach finding",
+          subject: "bash\nSynthetic Coach finding",
+          firstSeen: now,
+          lastSeen: now,
+          count: 2,
+          disposition: "filed:https://github.com/acme/fixture/issues/103",
+          url: "https://github.com/acme/fixture/issues/103",
+          filedAt: now,
+        },
+      },
+      pendingFiling: [],
+    }),
+  );
+  await writeFile(
+    join(coachDir, "latest.json"),
+    JSON.stringify({
+      cycle: now,
+      window: { start: now, end: now, minutes: 1440 },
+      findings: [{}],
+      action: "filed",
+      issues: [{ url: "https://github.com/acme/fixture/issues/103" }],
+      pending: 0,
+    }),
+  );
+  await click(devtools, "open-issues-coach");
+  await waitFor(
+    async () => ((await rows(devtools!)).length === 1 ? true : undefined),
+    "the seeded Coach row without a reload",
+    60_000,
+  );
+  const coachRows = await rows(devtools);
+  assertTrue(
+    coachRows[0]?.title === "[coach] tool-failure: bash failed: Synthetic Coach finding",
+    `the Coach title is wrong: ${JSON.stringify(coachRows)}`,
+  );
+  await waitFor(
+    async () => ((await present(devtools!, "watchdog-cycle")) ? true : undefined),
+    "the Coach cycle detail",
+    10_000,
+  );
+  await setInput(devtools, "agent-cadence", "90");
+  await setInput(devtools, "agent-limit-hour", "2");
+  await click(devtools, "agent-save-settings");
+  await waitFor(
+    () => {
+      try {
+        const settings = JSON.parse(
+          readFileSync(join(coachDir, "settings.json"), "utf8"),
+        ) as Record<string, unknown>;
+        return settings.intervalMinutes === 90 && settings.maxPerHour === 2 ? true : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    "the persisted Coach settings",
+    10_000,
+  );
+  await devtools.send("Page.reload");
+  await waitFor(
+    async () =>
+      (await devtools!
+        .evaluate(
+          `document.readyState === 'complete' && document.querySelector('[data-testid="agent-cadence"]')?.value === '90'`,
+        )
+        .catch(() => false)) === true
+        ? true
+        : undefined,
+    "the reloaded Coach settings",
+    30_000,
+  );
+  console.log("PASS coach-detail");
   console.log("PASS freshness-and-table");
 
   /* 7. Watchdog cap keeps a fingerprint pending. */
@@ -1344,9 +1450,9 @@ try {
   console.log("PASS prompt-save-reset");
 
   console.log(
-    "verify:agents: the Background agents section, all three shared pages, lifecycle, cadence, " +
-      "nullable limits, the Watchdog cap, the shared table, freshness, no mutation on reload, " +
-      "the timer gate, and the footer indicator all hold",
+    "verify:agents: the Background agents section, all four shared pages, lifecycle, cadence, " +
+      "nullable limits, the Watchdog cap, the shared table, Coach detail and settings, " +
+      "freshness, no mutation on reload, the timer gate, and the footer indicator all hold",
   );
 } finally {
   for (const pid of [chromePid, dashboardPid, sourceDashboardPid]) {

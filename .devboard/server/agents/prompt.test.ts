@@ -95,9 +95,6 @@ describe("prompt snapshot", () => {
     expect(prompt?.absent).toBe(false);
     expect(prompt?.editable).toBe(true);
     expect(prompt?.text).toBe(PROMPT);
-    expect(prompt?.command).toBe(
-      `/scout-recommendations ${join(root, ".devboard", ".tmp", "scout", "scans", "<scan-id>")}`,
-    );
     expect(prompt?.error).toBeNull();
   });
 
@@ -108,7 +105,6 @@ describe("prompt snapshot", () => {
       id: "watchdog",
       absent: true,
       editable: false,
-      command: null,
       text: null,
       error: null,
     });

@@ -183,6 +183,9 @@ export function sweepStateDir(
     // worktree/PR bookkeeping Flow restore and History read. Nothing
     // recreates a swept session, so an untouched one must survive.
     join(directory, "flow"),
+    // Coach state: worker, settings, control, ledger, lock, runs, and the
+    // latest report are operator-visible history, not scratch.
+    join(directory, "coach"),
     // The watchdog's command channel is operator input, not scratch.
     join(directory, "watchdog", "control"),
     ...(options.watchdogRunDir === undefined ? [] : [resolve(options.watchdogRunDir)]),

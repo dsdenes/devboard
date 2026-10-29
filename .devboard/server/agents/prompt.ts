@@ -10,16 +10,15 @@ import type { AgentRegistry } from "./registry";
 
 /**
  * The prompt half of a background agent's page. Auto Scout runs one agent per
- * scan, so its page shows the command and the effective prompt file. Watchdog
- * runs no agent at all and says so. Editing exists only where the dashboard
- * serves the harness source checkout: an installed prefix is read-only, and
- * every prompt command from it is refused without touching a file.
+ * scan, so its page shows the effective prompt file. Watchdog runs no agent at
+ * all and says so. Editing exists only where the dashboard serves the harness
+ * source checkout: an installed prefix is read-only, and every prompt command
+ * from it is refused without touching a file.
  */
 
 export const SCOUT_PROMPT_FILE = "scout-recommendations.md";
 export const PROMPT_CHAT_FILE = "agent-prompt-chat.md";
 const CHAT_TIMEOUT_MS = 5 * 60_000;
-const SCAN_ID_PLACEHOLDER = "<scan-id>";
 
 /** One agent's prompt section, as the browser renders it. */
 export interface AgentPromptState {
@@ -27,8 +26,6 @@ export interface AgentPromptState {
   /** True for an agent that runs no agent and therefore has no prompt. */
   absent: boolean;
   editable: boolean;
-  /** The invocation the worker passes, with the scan id still unassigned. */
-  command: string | null;
   /** The effective prompt file's bytes, or null when it cannot be read. */
   text: string | null;
   error: string | null;
@@ -131,7 +128,6 @@ export class AgentPromptController {
         id,
         absent: true,
         editable: false,
-        command: null,
         text: null,
         error: null,
       };
@@ -150,15 +146,6 @@ export class AgentPromptController {
       id,
       absent: false,
       editable: isHarnessSourceCheckout(this.repoDir),
-      command:
-        `/scout-recommendations ${join(
-          this.repoDir,
-          ".devboard",
-          ".tmp",
-          "scout",
-          "scans",
-          SCAN_ID_PLACEHOLDER,
-        )}`,
       text,
       error,
     };

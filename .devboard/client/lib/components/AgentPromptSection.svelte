@@ -69,13 +69,7 @@
   {:else}
     <div class="agent-prompt__head">
       <h2 class="agent-prompt__title">Prompt</h2>
-      <span class="agent-prompt__mode">
-        {prompt.editable ? "editable from the harness source checkout" : "read-only"}
-      </span>
     </div>
-    <p class="agent-prompt__command mono" data-testid="agent-prompt-command">
-      {prompt.command}
-    </p>
     {#if error !== null}
       <p class="issues-error" data-testid="agent-prompt-error" role="alert">{error}</p>
     {/if}
@@ -88,13 +82,10 @@
 
     {#if prompt.editable}
       <div class="agent-prompt__editor">
-        <label class="agent-prompt__subtitle" for={`agent-prompt-editor-${agentId}`}>
-          Editor
-        </label>
         <textarea
-          id={`agent-prompt-editor-${agentId}`}
           class="agent-prompt__textarea mono"
           data-testid="agent-prompt-editor"
+          aria-label="Prompt editor"
           spellcheck="false"
           value={editor}
           oninput={(event) => (editor = event.currentTarget.value)}
@@ -173,7 +164,6 @@
     text-transform: uppercase;
   }
 
-  .agent-prompt__mode,
   .agent-prompt__hint {
     color: var(--muted-foreground);
     font-size: 11px;
@@ -183,12 +173,6 @@
   .agent-prompt__absent {
     font-size: 12px;
     margin: 0;
-  }
-
-  .agent-prompt__command {
-    font-size: 11px;
-    margin: 0;
-    overflow-wrap: anywhere;
   }
 
   .agent-prompt__subtitle {
