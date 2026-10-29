@@ -1693,9 +1693,11 @@ Selecting one opens `data-testid="issues-draft-detail"`: the header carries the 
 the state badge for this draft's run only (absent while the run is `idle`) and, while this draft
 runs, `issues-draft-stop` (`issues.draft.stop`). Starting an elaboration is the row's job: each
 row carries its own `data-status`, renders that state as text, and has its own
-`issues-draft-row-start` control (`issues.draft.start`), so the detail does not repeat it. A row
-whose elaboration waits for an answer carries `data-question="true"`; answering clears it. The
-body reads the proposal before the
+`issues-draft-row-start` control (`issues.draft.start`); the detail does not repeat it. Starting
+a draft from its row selects that draft before the start is sent, so `issues-draft-detail`
+switches to it and the `issues-draft-activity` stream on screen belongs to the goal just started.
+A row whose elaboration waits for an answer carries `data-question="true"`; answering clears it.
+The body reads the proposal before the
 `## Captured UI context` marker, then the activity stream in `issues-draft-activity` once a run
 exists; the captured UI context itself is not shown. A pending elaboration question
 (`issues-draft-question`) renders above the proposal, with `issues-draft-choice`,
