@@ -1536,6 +1536,44 @@ already `filed:<url>` is never filed again. No cycle closes an issue. A fingerpr
 category and the normalized evidence line only: the per-occurrence `raw-http-request` capture path
 omp appends to an error it logs is removed, so repeated occurrences of one failure file one issue.
 
+### Deduplication gate
+
+No new issue is filed until a deduplication agent has decided the whole candidate set. In every
+cycle with at least one candidate — a finding with no issue in the ledger and no open issue
+currently covering it — the watchdog makes one request to the configured agent before any forge
+create call. The request carries the repository identity and, for every candidate, its category,
+fingerprint, normalized line, first and last seen times, count, contributing instances, and the
+cycle window. It never carries an open-issue list, snapshot, or summary.
+
+The agent reads the repository's currently open issues itself through the read-only
+`devboard` MCP server (`issues_list` and `issue_get` only; no create, comment, close, label, or
+edit tool exists for it). It answers, for every candidate, `unique`, `duplicate` of an open issue
+URL, or `duplicate` of another candidate that represents the same failure. The cycle validates
+that the answer covers exactly the candidate set and that every named issue was reported open. A
+duplicate of an open issue is suppressed silently: no issue, no comment. Its ledger entry records
+`duplicate:<url>` with no `filed:` disposition, so it is never treated as filed and never takes a
+24-hour recurrence comment.
+
+Suppression is open-only. While the matched issue is open, the candidate is not sent again. Once
+that issue is closed, the next cycle that observes the same evidence sends the candidate to the
+agent again, and it is filed when the agent judges it unique. Candidates the agent marks
+duplicates of one another produce at most one issue for the group, named by its representative in
+`report.json`. Filing caps are applied after deduplication, so only unique candidates consume
+room; previously filed entries keep their dispositions and their recurrence comments.
+
+The gate fails closed. If the agent cannot be started, exits nonzero, times out, returns
+malformed output, omits a candidate, names an unknown candidate, names an issue that is not open
+in the repository, or describes a representative cycle, the cycle creates no issue and makes no
+comment, keeps every candidate pending, records the reason in `report.json`, and exits nonzero.
+The next cycle retries the same candidates through the agent.
+
+`report.json` carries a `deduplication` section with the number of candidates requested, the
+number of open issues the agent reported reading, every candidate's decision (`unique`,
+`duplicate` with `issue` and/or `representative`, or `failed` with `reason`), and the candidates
+suppressed because their matched issue is still open. The existing `action`, `reason`, `findings`,
+`issues`, and `pending` fields keep their meaning, and `/api/watchdog`, the Watchdog page, and the
+footer indicator are unchanged.
+
 ### State-directory cleanup
 
 Every cycle sweeps each covered state directory. Covered directories are the canonical checkout's
@@ -3018,7 +3056,12 @@ legacy logs), the inclusive ten-minute window, omp-log attribution and self-excl
 evidence mapping (prose never produces a finding), host-independent fingerprints, filing and
 commenting against a stub `gh`, per-filing and per-comment ledger persistence, pending retries
 after a failed call, duplicate windows, the version 1 ledger migration, and the absence of any
-commit, merge, push, or publish.
+commit, merge, push, or publish. It also covers the deduplication gate against a stub agent and a
+stub forge: one request over the whole candidate set before any create, no issue list in the
+request, the agent's own open-issue read, silent duplicate suppression with a non-filed ledger
+match, same-set duplicates producing one issue, every fail-closed case, reconsideration after the
+matched issue closes, the agent's decision rather than a string comparison, and the read-only MCP
+surface.
 `tests/watchdog-api.test.ts` covers the adapter projection, the newest-cycle history, the shared
 issue row order and fields, open/closed state mapping, the `ok`/`error`/`stale` transitions
 against a stubbed GitHub reader and clock, the never-waits contract, the removed GET endpoint,
