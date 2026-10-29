@@ -22,6 +22,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
 } from "node:fs";
 import {
   cp,
@@ -782,7 +783,17 @@ function trackedPaths(host, paths) {
   );
 }
 
-async function syncTree(source, destination, skip) {
+/** True when a tracked path lies strictly inside `path`. */
+function holdsTrackedPath(skip, path) {
+  if (skip === undefined) return false;
+  const prefix = `${path}${sep}`;
+  for (const tracked of skip) {
+    if (tracked.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+export async function syncTree(source, destination, skip) {
   await ensureFixedDirectory(destination);
   const present = new Set();
   for (const entry of await readdir(source, { withFileTypes: true })) {
@@ -791,9 +802,16 @@ async function syncTree(source, destination, skip) {
     const to = join(destination, entry.name);
     if (skip?.has(to) ?? false) continue;
     if (entry.isDirectory()) {
+      // A directory that holds tracked content still receives the package
+      // entries inside it; only replacing the directory itself would destroy
+      // that content.
+      if (holdsTrackedPath(skip, to) && !(lstatOrUndefined(to)?.isDirectory() ?? false)) {
+        continue;
+      }
       await syncTree(from, to, skip);
       continue;
     }
+    if (holdsTrackedPath(skip, to)) continue;
     const target = lstatOrUndefined(to);
     if (target?.isDirectory()) await rm(to, { recursive: true, force: true });
     else if (target?.isSymbolicLink()) await unlink(to);
@@ -802,7 +820,10 @@ async function syncTree(source, destination, skip) {
   for (const name of await readdir(destination)) {
     const to = join(destination, name);
     if (present.has(name)) continue;
+    // `trackedPaths` names files, so a directory between here and a tracked
+    // file must be kept even though the package does not ship that name.
     if (skip?.has(to) ?? false) continue;
+    if (holdsTrackedPath(skip, to)) continue;
     await rm(to, { recursive: true, force: true });
   }
 }
@@ -1486,14 +1507,27 @@ async function main() {
   return 0;
 }
 
-if (process.argv.includes("--version")) {
-  console.log(ownVersion());
-  process.exit(0);
+/** True when this file is the script the runtime was asked to execute. */
+function executedDirectly() {
+  const entry = process.argv[1];
+  if (typeof entry !== "string" || entry.length === 0) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
 }
 
-main()
-  .then((code) => process.exit(code))
-  .catch((error) => {
-    console.error(`devboard: ${firstLine(error instanceof Error ? error.message : String(error))}`);
-    process.exit(1);
-  });
+if (executedDirectly()) {
+  if (process.argv.includes("--version")) {
+    console.log(ownVersion());
+    process.exit(0);
+  }
+
+  main()
+    .then((code) => process.exit(code))
+    .catch((error) => {
+      console.error(`devboard: ${firstLine(error instanceof Error ? error.message : String(error))}`);
+      process.exit(1);
+    });
+}

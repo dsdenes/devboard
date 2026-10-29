@@ -179,12 +179,33 @@ try {
     "the fresh dashboard reports its installed version",
   );
 
+  step("reinstalling over a tracked nested wrapper");
+  const nestedTracked = join(host.directory, ".omp", "commands", "custom", "deploy.md");
+  await mkdir(join(host.directory, ".omp", "commands", "custom"), { recursive: true });
+  await writeFile(nestedTracked, "host customization\n");
+  git(["add", "-f", ".omp/commands/custom/deploy.md"]);
+  git(["commit", "-q", "-m", "track nested wrapper"]);
+
   step("reinstalling");
   const reinstalled = launcher(["install", "--host", host.directory], oldEnv);
   assertTrue(reinstalled.code === 0, `reinstall failed: ${reinstalled.stderr}`);
   assertEquals(installedVersion(prefix), OLD, "reinstall keeps the version");
   assertTrue(existsSync(join(prefix, ".tmp")), "reinstall keeps .tmp");
   assertEquals(dashboardsFor(host.directory).length, 1, "reinstall leaves one dashboard");
+  assertTrue(existsSync(nestedTracked), "reinstall preserves a tracked nested wrapper");
+  assertEquals(
+    readFileSync(nestedTracked, "utf8"),
+    "host customization\n",
+    "reinstall leaves the tracked nested wrapper byte-identical",
+  );
+  const nestedStatus = Bun.spawnSync({
+    cmd: ["git", "-C", host.directory, "status", "--short"],
+    stdout: "pipe",
+  }).stdout.toString();
+  assertTrue(
+    !nestedStatus.split("\n").some((line) => line.includes("D .omp/commands/custom/deploy.md")),
+    "reinstall reports no deletion of the tracked nested wrapper",
+  );
 
   step("updating without a restart");
   const pidBefore = Number(installState(prefix).pid);
@@ -194,6 +215,12 @@ try {
   assertEquals(installedVersion(prefix), NEW, "update installs the newer version");
   assertTrue(processRunning(pidBefore), "update does not restart the dashboard");
   assertEquals(dashboardsFor(host.directory).length, 1, "update leaves one dashboard");
+  assertTrue(existsSync(nestedTracked), "update preserves a tracked nested wrapper");
+  assertEquals(
+    readFileSync(nestedTracked, "utf8"),
+    "host customization\n",
+    "update leaves the tracked nested wrapper byte-identical",
+  );
   const stale = await readVersion(port);
   assertEquals(
     [stale.running, stale.installed, stale.latest, stale.stale],
