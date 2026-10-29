@@ -145,6 +145,8 @@ const discoverSheetStrippedHome = process.argv.includes("--discover-sheet-stripp
 const discoverSheetNoEvidence = process.argv.includes("--discover-sheet-no-evidence");
 const discoverSheetSecret = process.argv.includes("--discover-sheet-secret");
 const discoverSheetTwoSentences = process.argv.includes("--discover-sheet-two-sentences");
+/** Stages HTTP routes whose leading slash is part of the fact. */
+const discoverSheetRoutes = process.argv.includes("--discover-sheet-routes");
 /** Stages a level without `happyPath`, the shape an older prompt wrote. */
 const discoverSheetNoHappyPath = process.argv.includes("--discover-sheet-no-happy-path");
 /** Stages a happy-path count larger than the level's test count. */
@@ -1192,7 +1194,11 @@ function discoverSheet(): Record<string, unknown> {
     dependencyMap: {
       binaries: discoverLeaf([], [paths.manifest], "observed"),
       packages: discoverLeaf([], [paths.manifest], "observed"),
-      routes: discoverLeaf([], [paths.manifest], "observed"),
+      routes: discoverLeaf(
+        discoverSheetRoutes ? ["/api/orders", "/", "GET /api/orders/:id"] : [],
+        [paths.manifest],
+        "observed",
+      ),
       jobs: discoverLeaf([], [paths.manifest], "observed"),
       externalServices: discoverLeaf([], [paths.manifest], "observed"),
       dataStores: discoverLeaf([], [paths.manifest], "observed"),

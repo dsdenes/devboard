@@ -774,7 +774,9 @@ fact and a confidence of `observed`, `declared`, `inferred`, or `unknown`; `unkn
 evidence and a short reason. Confidence labels, evidence paths, the `Not observed` ledger, the
 repeated dependency map, and the static lead and note prose are not rendered; the stored facts and
 the sheet's confidence and evidence stay unchanged. The definition is exactly one sentence of at
-most 240 characters; every value and list entry is a single line of at most 160 characters. The
+most 240 characters; every value and list entry is a single line of at most 160 characters. A
+`dependencyMap.routes` entry keeps its leading `/` as part of the HTTP path; that slash is not an
+absolute host path. The
 sheet covers the short platform stack (languages, runtimes, package managers, frameworks, and
 major tools, not individual dependencies), customer-facing deployment (artifact class, artifact,
 target, and pipeline sources), every environment (at least `production`, whose purpose states how
