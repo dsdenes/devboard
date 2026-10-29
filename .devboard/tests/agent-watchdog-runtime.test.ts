@@ -150,6 +150,14 @@ describe("detached watchdog worker", () => {
       "#!/bin/sh\nsleep 4\necho https://github.com/acme/fixture/issues/1\n",
       { mode: 0o755 },
     );
+    const dedupStub = join(root, "dedup.json");
+    await writeFile(
+      dedupStub,
+      `${JSON.stringify({
+        read: { open_issues: [] },
+        decisions: [{ fingerprint: "*", action: "unique" }],
+      })}\n`,
+    );
     const fingerprint = "0123456789abcdef0123456789abcdef";
     const seenAt = new Date().toISOString();
     saveLedger(directory, {
@@ -182,7 +190,11 @@ describe("detached watchdog worker", () => {
       {
         cwd: harnessRoot,
         stdio: "ignore",
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          DEVBOARD_WATCHDOG_DEDUP_STUB: dedupStub,
+        },
       },
     );
     try {
