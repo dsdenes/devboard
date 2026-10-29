@@ -114,9 +114,11 @@ class ControlledPeer implements AcpPeer {
   private readonly resolveRun: (value: unknown) => void;
   private readonly rejectRun: (error: Error) => void;
   private readonly options: IssuesPeerOptions;
+  readonly environment: Record<string, string | undefined> | undefined;
 
   constructor(options: IssuesPeerOptions) {
     this.options = options;
+    this.environment = options.env;
     const deferred = Promise.withResolvers<unknown>();
     this.resolveRun = deferred.resolve;
     this.rejectRun = deferred.reject;
@@ -200,6 +202,7 @@ async function fixture(options: {
   beforeStart?: (root: string, stateDir: string) => void;
   issueState?: (number: number) => Promise<IssueStateResult>;
   listIssues?: WorkerOptions["listIssues"];
+  providerEnvironment?: WorkerOptions["providerEnvironment"];
   pollTimeoutMs?: number;
 }): Promise<Fixture> {
   const base = await temporaryDirectory(options.label);
@@ -217,6 +220,9 @@ async function fixture(options: {
     ...(options.harnessVersion === undefined ? {} : { harnessVersion: options.harnessVersion }),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.pollTimeoutMs === undefined ? {} : { pollTimeoutMs: options.pollTimeoutMs }),
+    ...(options.providerEnvironment === undefined
+      ? {}
+      : { providerEnvironment: options.providerEnvironment }),
     listIssues:
       options.listIssues ??
       (async () => ({ kind: "issues", issues: [...issues], etag: "etag-1" })),
@@ -265,6 +271,24 @@ describe("per-issue fleet", () => {
       expect(agents.map((agent) => agent.issueNumber).sort()).toEqual([1, 2, 3, 4]);
       expect(new Set(agents.map((agent) => agent.runId)).size).toBe(4);
       expect(f.state().lifecycle).toBe("running");
+    } finally {
+      await stop(f);
+    }
+  });
+
+  test("resolves the provider environment again for every issue run", async () => {
+    let selection = 0;
+    const f = await fixture({
+      issues: [issue(1), issue(2), issue(3)],
+      providerEnvironment: async () => ({ SELECTION: String((selection += 1)) }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 3 ? true : undefined), "three peers");
+      expect(f.peers.map((peer) => peer.environment?.SELECTION).sort()).toEqual([
+        "1",
+        "2",
+        "3",
+      ]);
     } finally {
       await stop(f);
     }
