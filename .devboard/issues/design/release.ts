@@ -57,7 +57,17 @@ export interface ReleaseInput {
 }
 
 export type ReleaseResult =
-  | { ok: true; version: string; url: string; sha: string; branch: string }
+  | {
+      ok: true;
+      version: string;
+      url: string;
+      sha: string;
+      branch: string;
+      /** The repository-relative documents the released commit changed. */
+      files: string[];
+      /** The unified diff of exactly those documents, as committed. */
+      diff: string;
+    }
   | { ok: false; detail: string; step: string };
 
 const PUSH_ATTEMPTS = 3;
@@ -340,6 +350,10 @@ export async function releaseDocuments(input: ReleaseInput): Promise<ReleaseResu
     ]);
     must(committed, "could not commit the documentation change");
     input.activity(`documentation committed on ${worktree.branch}`);
+    const releasedDiff = must(
+      await git(worktree.directory, ["diff", "--no-color", "HEAD^", "HEAD", "--", ...paths]),
+      "could not read the documentation diff",
+    );
 
     const check = await checks(worktree.directory);
     if (!check.ok) throw new Error(`the documentation check failed: ${check.detail}`);
@@ -471,7 +485,7 @@ export async function releaseDocuments(input: ReleaseInput): Promise<ReleaseResu
     const url = releaseUrl(input.repoDir, input.environment, project, tag);
     input.activity(`released ${tag}: ${url}`);
     await removeWorktree(input.repoDir, worktree, git);
-    return { ok: true, version, url, sha, branch: worktree.branch };
+    return { ok: true, version, url, sha, branch: worktree.branch, files: [...changed].sort(), diff: releasedDiff };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     if (pushed && worktree !== undefined) {

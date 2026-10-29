@@ -175,6 +175,59 @@ async function countOf(devtools: Devtools, testid: string): Promise<number> {
   return typeof value === "number" ? value : 0;
 }
 
+/** The prompt disclosure's state: one closed-by-default element per page. */
+async function promptDisclosure(devtools: Devtools): Promise<{
+  present: boolean;
+  open: boolean;
+  summary: string;
+  contentHidden: boolean;
+}> {
+  const value = await devtools.evaluate(`(() => {
+    const all = document.querySelectorAll('[data-testid="agent-prompt"]');
+    const details = all[0] ?? null;
+    const summary = document.querySelector('[data-testid="agent-prompt-summary"]');
+    const body = document.querySelector('[data-testid="agent-prompt-body"]');
+    return {
+      present: all.length === 1 && details !== null,
+      open: details !== null && details.open === true,
+      summary: summary === null ? '' : (summary.textContent ?? '').trim(),
+      contentHidden:
+        body === null
+          ? true
+          : typeof body.checkVisibility === "function"
+            ? !body.checkVisibility()
+            : body.getBoundingClientRect().height === 0,
+    };
+  })()`);
+  return (value ?? { present: false, open: false, summary: "", contentHidden: false }) as {
+    present: boolean;
+    open: boolean;
+    summary: string;
+    contentHidden: boolean;
+  };
+}
+
+async function assertPromptClosed(devtools: Devtools, page: string): Promise<void> {
+  const disclosure = await promptDisclosure(devtools);
+  assertTrue(disclosure.present, `${page} renders no single agent-prompt disclosure`);
+  assertTrue(!disclosure.open, `${page} opens its prompt on load`);
+  assertTrue(disclosure.summary === "Prompt", `${page} prompt summary is ${disclosure.summary}`);
+  assertTrue(disclosure.contentHidden, `${page} shows its prompt content while closed`);
+}
+
+async function openPrompt(devtools: Devtools, page: string): Promise<void> {
+  await click(devtools, "agent-prompt-summary");
+  const disclosure = await waitFor(
+    async () => {
+      const current = await promptDisclosure(devtools);
+      return current.open && !current.contentHidden ? current : undefined;
+    },
+    `${page} prompt to open`,
+    10_000,
+  );
+  assertTrue(disclosure.open, `${page} did not open its prompt`);
+}
+
 /** The prompt section is one node directly after the header, before alerts and main. */
 async function promptLayout(
   devtools: Devtools,
@@ -772,6 +825,13 @@ try {
     "Coach does not start stopped",
   );
   await waitFor(
+    async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
+    "the Coach prompt section",
+    10_000,
+  );
+  await assertPromptClosed(devtools, "Coach");
+  await openPrompt(devtools, "Coach");
+  await waitFor(
     async () => ((await present(devtools!, "agent-prompt-absent")) ? true : undefined),
     "the Coach prompt absence",
     10_000,
@@ -789,6 +849,7 @@ try {
     "the Auto Scout prompt section",
     10_000,
   );
+  await assertPromptClosed(devtools, "Auto Scout");
   const installedLayout = await promptLayout(devtools);
   assertTrue(
     installedLayout.one &&
@@ -797,6 +858,7 @@ try {
       installedLayout.beforeMain,
     `the installed prompt section is misplaced: ${JSON.stringify(installedLayout)}`,
   );
+  await openPrompt(devtools, "Auto Scout");
   for (const testid of [
     "agent-prompt-editor",
     "agent-prompt-chat",
@@ -825,24 +887,23 @@ try {
   );
 
   await click(devtools, "open-issues-design");
-  const designLoaded = await waitFor(
+  await waitFor(
     async () =>
       (await devtools!
         .evaluate(
           `(() => {
             const section = document.querySelector('[data-testid="agent-prompt"]');
-            const title = section?.querySelector('h2');
-            return section?.dataset.agent === "design" &&
-              title?.textContent?.trim() === "Prompt";
+            return section?.dataset.agent === "design";
           })()`,
         )
         .catch(() => false)) === true
         ? true
         : undefined,
-    "the Design System prompt file",
+    "the Design System prompt section",
     10_000,
   );
-  assertTrue(designLoaded, "the installed Design System section never loaded its prompt");
+  await assertPromptClosed(devtools, "Design System");
+  await openPrompt(devtools, "Design System");
   assertTrue(
     (await countOf(devtools, "agent-prompt-absent")) === 0,
     "the Design System prompt is declared absent",
@@ -860,6 +921,13 @@ try {
   console.log("PASS design-prompt-read-only");
 
   await click(devtools, "open-issues-watchdog");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
+    "the Watchdog prompt section",
+    10_000,
+  );
+  await assertPromptClosed(devtools, "Watchdog");
+  await openPrompt(devtools, "Watchdog");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt-absent")) ? true : undefined),
     "the Watchdog prompt absence",
@@ -1375,10 +1443,11 @@ try {
   await click(devtools, "mode-issues");
   await click(devtools, "open-issues-scout");
   await waitFor(
-    async () => ((await present(devtools!, "agent-prompt-editor")) ? true : undefined),
-    "the source prompt editor",
+    async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
+    "the source Auto Scout prompt section",
     15_000,
   );
+  await assertPromptClosed(devtools, "source Auto Scout");
   const sourceLayout = await promptLayout(devtools);
   assertTrue(
     sourceLayout.one &&
@@ -1386,6 +1455,12 @@ try {
       sourceLayout.beforeAlerts &&
       sourceLayout.beforeMain,
     `the source prompt section is misplaced: ${JSON.stringify(sourceLayout)}`,
+  );
+  await openPrompt(devtools, "source Auto Scout");
+  await waitFor(
+    async () => ((await present(devtools!, "agent-prompt-editor")) ? true : undefined),
+    "the source prompt editor",
+    15_000,
   );
   assertTrue(
     readFileSync(
@@ -1462,6 +1537,13 @@ try {
   );
   await devtools.send("Page.reload");
   await waitFor(
+    async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
+    "the restored source prompt section",
+    30_000,
+  );
+  await assertPromptClosed(devtools, "restored source Auto Scout");
+  await openPrompt(devtools, "restored source Auto Scout");
+  await waitFor(
     async () =>
       (await valueOf(devtools!, "agent-prompt-editor").catch(() => "")) === CHAT_PROPOSAL
         ? true
@@ -1475,12 +1557,17 @@ try {
   await click(devtools, "open-issues-design");
   await waitFor(
     async () =>
-      (await valueOf(devtools!, "agent-prompt-editor").catch(() => "")) === SOURCE_DESIGN_PROMPT
+      (await devtools!
+        .evaluate(
+          `document.querySelector('[data-testid="agent-prompt"]')?.dataset.agent === "design"`,
+        )
+        .catch(() => false)) === true
         ? true
         : undefined,
-    "the Design System prompt in the source editor",
+    "the source Design System prompt section",
     15_000,
   );
+  await assertPromptClosed(devtools, "source Design System");
   const designLayout = await promptLayout(devtools);
   assertTrue(
     designLayout.one &&
@@ -1488,6 +1575,15 @@ try {
       designLayout.beforeAlerts &&
       designLayout.beforeMain,
     `the source Design System prompt section is misplaced: ${JSON.stringify(designLayout)}`,
+  );
+  await openPrompt(devtools, "source Design System");
+  await waitFor(
+    async () =>
+      (await valueOf(devtools!, "agent-prompt-editor").catch(() => "")) === SOURCE_DESIGN_PROMPT
+        ? true
+        : undefined,
+    "the Design System prompt in the source editor",
+    15_000,
   );
   assertTrue(
     (await countOf(devtools, "agent-prompt-absent")) === 0,
