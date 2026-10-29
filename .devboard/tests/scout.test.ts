@@ -544,7 +544,13 @@ describe("direct filing", () => {
       expect(peer.corrections).toHaveLength(1);
       expect(f.filed).toEqual([]);
       expect(failed.lastError).toContain("server/app.ts does not exist");
-      expect(readScanFile(scanDirectory(f.root, basename(scanPath)))?.status).toBe("failed");
+      expect(peer.closed).toBe(true);
+      const failedScan = readScanFile(scanDirectory(f.root, basename(scanPath)));
+      expect(failedScan?.status).toBe("failed");
+      expect(failedScan?.error).toContain("server/app.ts does not exist");
+      // The peer closed before the record was written, so no failed scan
+      // leaves a live child for startup recovery to terminate.
+      expect(failedScan?.acp).toBeNull();
     } finally {
       await f.worker.stop();
     }
