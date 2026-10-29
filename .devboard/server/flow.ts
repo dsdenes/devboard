@@ -2526,7 +2526,9 @@ export class FlowController {
       conversation.busy = false;
       const next = conversation.queue.shift();
       if (next !== undefined && this.#conversation === conversation) {
-        void this.#pumpConversation(conversation, next);
+        // The opening run created the session; every later turn must reuse it
+        // so the queued text keeps the conversation's context and read-only rule.
+        void this.#promptConversation(conversation, next);
       }
     }
   }
