@@ -635,12 +635,16 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   muted, `Saved` success, `Unsaved changes` warning), and a right-aligned `Save` that is the
   filled primary only while the draft differs from the saved text and a neutral secondary control
   otherwise. The identity and action group are centered on the row, matching the Flow goal header.
-- **Discover skill header** (`.discover-skill__header`) — the skill editor's header: the
-  relative path `<skill>/SKILL.md` in the `panel-title` size, with the skill name in `foreground`
-  and the file name in `muted-foreground`; a second 11px draft line (`No unsaved changes` muted,
-  `Unsaved changes` warning, `Live file missing` error); and a right action group holding the
-  outline restore control and a primary `Save` disabled until the draft differs from the live
-  text. The path truncates with a full-path `title`; the state line and actions never shrink.
+- **Discover skill header** (`.discover-skill__header`) — the skill editor's header is one 30px
+  row: the relative path `<skill>/SKILL.md` in the `panel-title` size sits on the leading edge,
+  with the skill name in `foreground` and the file name in `muted-foreground`. The trailing
+  action group starts with the 11px draft state (`No unsaved changes` muted, `Unsaved changes`
+  warning, `Live file missing` error), then the controls. `Save` is the filled primary only while
+  the draft differs from the live text and a disabled `secondary` otherwise; it stays disabled
+  while the live file is missing. The restore control is `outline` while an edit can be discarded
+  and becomes the filled primary as `Recreate generated version` when the live file is missing, so
+  the surface always has at most one primary and never a disabled one as its emphasis. The path
+  truncates with a full-path `title` while the state and actions never shrink or wrap.
 - **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
   `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
   action group. Drill-in pages put a ghost back control before the heading in DOM order. Page

@@ -63,6 +63,9 @@ describe("suggestGoalSlug", () => {
       const lines = readFileSync(logPath, "utf8").split("\n").filter((line) => line.length > 0);
       expect(lines).toContain("permission cancelled");
       expect(lines.some((line) => line.startsWith("permission selected"))).toBe(false);
+      expect(lines.some((line) => line.startsWith("argv ") && line.includes("--no-skills"))).toBe(
+        true,
+      );
       expect(existsSync(probePath)).toBe(false);
     } finally {
       await rm(directory, { recursive: true, force: true });

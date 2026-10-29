@@ -941,14 +941,17 @@ every implementation agent in that host discovers the set with no extra configur
 
 Each skill has a page that is one full-height Monaco Markdown editor for the whole `SKILL.md`
 (`data-testid="discover-skill-text"`), with no rendered preview and no split pane. The page header
-holds only the skill's page title. The editor panel header names the skill's relative path,
-`<skill>/SKILL.md`, with the skill name emphasized and the file name muted; a second 11px line
-states the draft (`No unsaved changes`, `Unsaved changes`, or `Live file missing`). The header
-also holds `discover-skill-save`, disabled until the draft differs from the live text, and, while
-the live text differs from the generated version or the file is missing,
-`discover-skill-restore`. A `discover-skill-dirty` marker replaces the clean state line while the
-draft has unsaved changes; the page renders no state badge and no purpose line, because the
-sidebar already flags `edited` or `missing`.
+holds only the skill's page title. The editor panel header is one 30px row: the skill's relative
+path, `<skill>/SKILL.md`, with the skill name emphasized and the file name muted, sits on the
+leading edge, and the 11px draft state (`No unsaved changes`, `Unsaved changes`, or `Live file
+missing`) starts the trailing action group. `discover-skill-save` is the filled primary only
+while the draft differs from the live text and a disabled `secondary` otherwise; it stays
+disabled while the live file is missing. While the live text differs from the generated version
+or the file is missing, `discover-skill-restore` is an outline control, and it becomes the filled
+primary as `Recreate generated version` when the live file is missing. A
+`discover-skill-dirty` marker replaces the clean state word while the draft has unsaved changes;
+the page renders no state badge and no purpose line, because the sidebar already flags `edited`
+or `missing`.
 `saveDiscoverSkill` writes the submitted bytes verbatim and updates the manifest's current hash and
 edited state; it is refused with one
 `discoverError` when the name is not one of the five, the skill is missing, the frontmatter name
@@ -2133,13 +2136,15 @@ refused with a visible error, and nothing outside the directory is read. The lis
 symlinks.
 
 Every draft may elaborate at the same time; there is no concurrency cap beyond the repository's
-own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND` in `REPO_DIR`,
-opens one session, and sends exactly `/goal-draft <repository-relative path>`. Each path has at
-most one live peer: a start for a path already running is refused with
-`This draft is being elaborated.` and starts no second peer. While a draft runs, only its own row
-shows the disabled start control, whose title is `This draft is being elaborated.`; every other
-draft stays startable. Each peer's activity
-streams only into its own run's `issues-draft-activity`, its `ask` question renders only for that
+own draft files. Starting a draft spawns exactly one ACP peer with `AGENT_COMMAND --no-skills` in
+`REPO_DIR`, opens one session, and sends exactly `/goal-draft <repository-relative path>`. The
+elaboration reads the repository directly and names no skill, so the flag keeps OMP from
+discovering the host's skills; their background description compression would otherwise log a
+warning the watchdog files. Each path has at most one live peer: a start for a path already
+running is refused with `This draft is being elaborated.` and starts no second peer. While a draft
+runs, only its own row shows the disabled start control, whose title is
+`This draft is being elaborated.`; every other draft stays startable. Each peer's activity streams
+only into its own run's `issues-draft-activity`, its `ask` question renders only for that
 draft, and an answer goes only to the addressed draft's peer; an answer for a draft with no
 pending question is refused without reaching any peer. Stop closes only the selected draft's peer,
 records `stopped`, keeps that draft, and leaves every other elaboration running. A successful or
@@ -2342,11 +2347,13 @@ context to `POST /api/goal-proposals`; the server writes one Markdown draft unde
 `201 { "path": ".devboard/goal-proposals/<file>.md" }`. The directory is deliberately separate
 from the final goal specs in `.devboard/goals/`: a draft is unprocessed input, and this action
 never writes a goal document, `GOAL.md`, or an ADR, never files an issue, and never runs `gh`.
-The file name is chosen by one bounded naming turn: an ACP peer starts with `AGENT_COMMAND` in
-`REPO_DIR`, receives the operator report marked as data with a read-only instruction, and must
-answer with only a lowercase kebab-case slug, at most six hyphen-separated words, `[a-z0-9-]`, and
-at most 64 characters. A start failure, an exited peer, a question, a 15-second timeout, or an
-unusable answer falls back to the report's first non-empty line, lowercased, with every run of
+The file name is chosen by one bounded naming turn: an ACP peer starts with
+`AGENT_COMMAND --no-skills` in `REPO_DIR`, receives the operator report marked as data with a
+read-only instruction, and must answer with only a lowercase kebab-case slug, at most six
+hyphen-separated words, `[a-z0-9-]`, and at most 64 characters. A naming turn reads no skill, so
+the flag also keeps OMP's background description compression from logging a warning the watchdog
+files. A start failure, an exited peer, a question, a 15-second timeout, or an unusable answer
+falls back to the report's first non-empty line, lowercased, with every run of
 non-alphanumeric characters replaced by `-`, leading and trailing `-` removed, and at most six
 hyphen-separated words, falling back to `ui-goal`; an existing name earns `-2`, `-3`, … through an
 exclusive create, so the first draft is never overwritten. The body opens with
