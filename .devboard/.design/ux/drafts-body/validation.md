@@ -132,8 +132,8 @@ selected
     stays, and the body remains one panel.
 - Console/network: zero console entries and zero failed requests among 10 observed requests on
   the Draft goals page in the empty state; the tab reported no exceptions.
-- Checks: `bun run check` — 0 errors, 0 warnings across 1763 files. `bun test
-  --max-concurrency=1` — 1073 pass, 0 fail across 83 files (6469 assertions).
+- Checks: `bun run check` — 0 errors, 0 warnings across 1764 files. `bun test
+  --max-concurrency=1` — 1081 pass, 0 fail across 84 files on the integrated revision.
   `bun run verify:design` — pass, including the normative documents, page shape, and freshness
   gates. The machine was running other agents' suites at the same time; default-concurrency runs
   intermittently timed out unrelated Flow, discover-remote, and launcher tests, each of which
