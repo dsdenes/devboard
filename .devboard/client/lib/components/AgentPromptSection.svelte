@@ -44,13 +44,6 @@
     editor = proposal.text;
   });
 
-  function reset(): void {
-    agents.resetPrompt(agentId);
-    editor = prompt?.text ?? "";
-    agents.promptError[agentId] = null;
-    agents.promptNotice[agentId] = null;
-  }
-
   function send(): void {
     const text = message.trim();
     if (text.length === 0) return;
@@ -107,9 +100,6 @@
         <div class="agent-prompt__actions">
           <Button variant="secondary" data-testid="agent-prompt-save" onclick={() => agents.savePrompt(agentId, editor)}>
             Save prompt
-          </Button>
-          <Button variant="secondary" data-testid="agent-prompt-reset" onclick={reset}>
-            Reset
           </Button>
         </div>
       </div>

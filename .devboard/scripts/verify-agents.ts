@@ -820,7 +820,6 @@ try {
     "agent-prompt-editor",
     "agent-prompt-chat",
     "agent-prompt-save",
-    "agent-prompt-reset",
   ]) {
     assertTrue(
       (await countOf(devtools, testid)) === 0,
@@ -860,7 +859,6 @@ try {
     "agent-prompt-editor",
     "agent-prompt-chat",
     "agent-prompt-save",
-    "agent-prompt-reset",
   ]) {
     assertTrue(
       (await countOf(devtools, testid)) === 0,
@@ -1394,10 +1392,13 @@ try {
     "agent-prompt-message",
     "agent-prompt-send",
     "agent-prompt-save",
-    "agent-prompt-reset",
   ]) {
     assertTrue((await countOf(devtools, testid)) === 1, `${testid} is missing on the source page`);
   }
+  assertTrue(
+    (await countOf(devtools, "agent-prompt-reset")) === 0,
+    "the removed Reset control is still rendered on the source page",
+  );
 
   const seededPreview = await requestPreview(devtools);
   assertTrue(
@@ -1547,18 +1548,7 @@ try {
     "the saved prompt after a reload",
     30_000,
   );
-  await setInput(devtools, "agent-prompt-editor", "unsaved scratch text");
-  await click(devtools, "agent-prompt-reset");
-  await waitFor(
-    async () => ((await valueOf(devtools, "agent-prompt-editor")) === CHAT_PROPOSAL ? true : undefined),
-    "the reset editor",
-    15_000,
-  );
-  assertTrue(
-    readFileSync(sourcePromptFile, "utf8") === CHAT_PROPOSAL,
-    "Reset wrote the prompt file",
-  );
-  console.log("PASS prompt-save-reset");
+  console.log("PASS prompt-save");
 
   console.log(
     "verify:agents: the Background agents section, all four shared pages, lifecycle, cadence, " +
