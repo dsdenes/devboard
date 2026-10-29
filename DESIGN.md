@@ -503,14 +503,16 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   control with a two-line identity column and a trailing status badge, plus a right-aligned `sm`
   outline `Start` control. The first line is the draft file name in 12px mono with its path as the
   tooltip; the second is the proposal heading in 12px `muted-foreground`, one line with ellipsis
-  and the full heading as its tooltip. The badge states this draft's run (`idle`, `running`,
-  `succeeded`, `failed`, `stopped`) in words and ends before the action gap. Rows use 6px 10px
-  padding and a `border-subtle` rule; hover takes `row-hover` across the whole row, and the current
-  row takes `accent-surface`, a 2px `accent` left edge, and an `accent` file name. The open control
-  takes an inset 2px `ring` on `focus-visible`. The row's `Start` is always visible, never revealed
-  only on hover, names its draft in its accessible name, names a blocker as its tooltip, and is
-  disabled at 45% opacity while that draft runs. The `New goal` form is a `surface-raised` band
-  under the panel header with `label` type, an 8px rhythm, and a right-aligned 6px action gap.
+  and the full heading as its tooltip. A 6px meta group ends before the action gap: while the
+  elaboration waits for an answer it carries a `warning` `answer` badge, and the trailing badge
+  always states this draft's run (`idle`, `running`, `succeeded`, `failed`, `stopped`) in words.
+  Rows use 6px 10px padding and a `border-subtle` rule; hover takes `row-hover` across the whole
+  row, and the current row takes `accent-surface`, a 2px `accent` left edge, and an `accent` file
+  name. The open control takes an inset 2px `ring` on `focus-visible`. The row's `Start` is always
+  visible, never revealed only on hover, names its draft in its accessible name, names a blocker
+  as its tooltip, and is disabled at 45% opacity while that draft runs. The `New goal` form is a
+  `surface-raised` band under the panel header with `label` type, an 8px rhythm, and a
+  right-aligned 6px action gap.
 - **Draft goals header** (`.issues-drafts-page .panel__header`) — the Draft goals page states
   repository identity, workspace status, and draft count once, in the page header's `mono-small`
   identity line (`<owner>/<repo> · idle · 0 draft(s)`); the Proposed goals panel header carries

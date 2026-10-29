@@ -6546,9 +6546,12 @@ try {
   );
 
   // A question for an unselected draft appears on its own row within two seconds.
+  const draftAnswer = (name: string): string =>
+    `(document.querySelector('${draftRow(name)} [data-testid="issues-draft-waiting"]')?.textContent?.trim() ?? "")`;
   await page.wait(
     `${draftStatus("002-hang.md")} === "running" &&
-      document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") === "true"`,
+      document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") === "true" &&
+      ${draftAnswer("001-question.md")} === "answer"`,
     "the unselected draft's waiting state",
     2_000,
   );
@@ -6646,8 +6649,9 @@ try {
   // Answer only the question draft; its waiting state clears and the hang draft is untouched.
   await page.click('[data-testid="issues-draft-choice"]');
   await page.wait(
-    `document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") !== "true"`,
-    "the waiting state to clear after the answer",
+    `document.querySelector('${draftRow("001-question.md")}')?.getAttribute("data-question") !== "true" &&
+      ${draftAnswer("001-question.md")} === ""`,
+    "the waiting state and badge to clear after the answer",
     4_000,
   );
   await page.wait(
