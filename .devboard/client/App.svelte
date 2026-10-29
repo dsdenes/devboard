@@ -5,6 +5,7 @@
   import ActivityBar from "./lib/components/ActivityBar.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
+  import DevboardWorkspace from "./lib/components/DevboardWorkspace.svelte";
   import DiscoverWorkspace from "./lib/components/DiscoverWorkspace.svelte";
   import FeedbackOverlay from "./FeedbackOverlay.svelte";
   import FlowMode from "./FlowMode.svelte";
@@ -19,6 +20,7 @@
   import Button from "./lib/components/ui/button.svelte";
   import { buildCommands } from "./lib/commands";
   import { connection } from "./lib/connection.svelte";
+  import { devboard } from "./lib/devboard.svelte";
   import { discover } from "./lib/discover.svelte";
   import { flow } from "./lib/flow.svelte";
   import { goal } from "./lib/goal.svelte";
@@ -45,7 +47,7 @@
     cancelReport: () => void;
   }
 
-  const MODES: Mode[] = ["goal", "issues", "flow", "discover"];
+  const MODES: Mode[] = ["goal", "issues", "flow", "discover", "devboard"];
 
   let paletteOpen = $state(false);
   let paletteReturnFocus: HTMLElement | null = null;
@@ -59,6 +61,7 @@
     issues: null,
     flow: null,
     discover: null,
+    devboard: null,
   };
 
   let sidebarGroup = $state<{ setLayout: (sizes: number[]) => void }>();
@@ -238,7 +241,9 @@
               ? "flow"
               : event.key === "4"
                 ? "discover"
-                : null;
+                : event.key === "5"
+                  ? "devboard"
+                  : null;
       if (target !== null) {
         event.preventDefault();
         layout.setMode(target);
@@ -366,6 +371,7 @@
     connection.onOpen(() => {
       goal.resetActiveOperations();
       discover.resetActiveOperations();
+      devboard.request();
     });
     connection.onMessage((message) => {
       const record = message as Record<string, unknown>;
@@ -374,6 +380,7 @@
       agents.handleEvent(record);
       flow.handleEvent(record);
       discover.handleEvent(record);
+      devboard.handleEvent(record);
       providers.handleEvent(record);
       handleFlowTabEvents(record);
     });
@@ -418,8 +425,10 @@
                 openTab={(tab) => openTab("flow", tab)}
                 closeTab={(tab) => closeTab("flow", tab)}
               />
-            {:else}
+            {:else if mode === "discover"}
               <DiscoverWorkspace tab={workspaceTab("discover")} />
+            {:else}
+              <DevboardWorkspace tab={workspaceTab("devboard")} />
             {/if}
           </div>
         {/each}

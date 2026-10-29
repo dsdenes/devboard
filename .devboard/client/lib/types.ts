@@ -1,4 +1,4 @@
-export type Mode = "goal" | "issues" | "flow" | "discover";
+export type Mode = "goal" | "issues" | "flow" | "discover" | "devboard";
 export type Theme = "dark" | "light";
 
 export interface AdrRecord {

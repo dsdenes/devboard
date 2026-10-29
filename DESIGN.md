@@ -585,7 +585,7 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   state word joins its accessible name. Below a 1px divider at the rail's bottom, six 28px ghost
   icon buttons are the application actions: commands (`Ctrl+K`), notifications, theme, and the
   three UI-issue actions — `Report UI issue`, `Remove element`, `Redesign element` — each active
-  (`aria-pressed="true"`, `secondary` fill) while its selection mode is armed, and disabled while
+  (`aria-pressed="true"`, `secondary-hover` fill) while its selection mode is armed, and disabled while
   a filing runs or the report panel owns the selection. The rail never shows a brand label and
   never collapses to icons only.
 - **Issue result line** (`.feedback-result` in `FeedbackOverlay.svelte`) — a fixed

@@ -46,6 +46,7 @@
     "prompts/",
     "omp/",
     "extensions/",
+    "scripts/forge-auth.ts",
     "dist/",
     "public/",
     "index.html",

@@ -859,19 +859,30 @@ export async function syncTree(source, destination, skip) {
 }
 
 /**
- * Trees the host-side wrappers open by repo-root-relative path. A copied
+ * Paths the host-side wrappers open by repo-root-relative path. A copied
  * command reads `.devboard/prompts/<name>.md`, a copied omp extension
- * re-exports `.devboard/extensions/<name>.ts`, and those extensions import
- * `../lib/*.ts`. The package itself lives under `.devboard/node_modules`, so
- * each tree is copied into the host prefix on install and every update.
+ * re-exports `.devboard/extensions/<name>.ts`, those extensions import
+ * `../lib/*.ts`, and the shipped tracker prompts invoke
+ * `.devboard/scripts/forge-auth.ts`. The package itself lives under
+ * `.devboard/node_modules`, so each entry is copied into the host prefix on
+ * install and every update. An entry is a directory or a single file.
  */
-const HOST_HARNESS_TREES = ["prompts", "extensions", "lib"];
+export const HOST_HARNESS_PATHS = ["prompts", "extensions", "lib", "scripts/forge-auth.ts"];
 
-async function syncHarnessTrees(host, harness) {
-  for (const name of HOST_HARNESS_TREES) {
+export async function syncHarnessTrees(host, harness) {
+  for (const name of HOST_HARNESS_PATHS) {
     const source = join(harness, name);
     if (!existsSync(source)) continue;
-    await syncTree(source, join(host, ".devboard", name));
+    const target = join(host, ".devboard", name);
+    if (lstatOrUndefined(source)?.isDirectory() ?? false) {
+      await syncTree(source, target);
+      continue;
+    }
+    await ensureFixedDirectory(dirname(target));
+    const current = lstatOrUndefined(target);
+    if (current?.isDirectory()) await rm(target, { recursive: true, force: true });
+    else if (current?.isSymbolicLink()) await unlink(target);
+    await cp(source, target);
   }
 }
 
@@ -1332,15 +1343,26 @@ function wrapperMismatches(host, harness) {
   return { failures, drift };
 }
 
-/** The host copies of the trees the wrappers open by repo-root-relative path. */
+/** The host copies of the paths the wrappers open by repo-root-relative path. */
 function harnessTreeMismatches(host, harness) {
   const failures = [];
-  for (const name of HOST_HARNESS_TREES) {
-    const expectedRoot = join(harness, name);
-    if (!existsSync(expectedRoot)) continue;
+  for (const name of HOST_HARNESS_PATHS) {
+    const expected = join(harness, name);
+    if (!existsSync(expected)) continue;
+    const actual = join(host, ".devboard", name);
+    if (!(lstatOrUndefined(expected)?.isDirectory() ?? false)) {
+      try {
+        if (!readFileSync(expected).equals(readFileSync(actual))) {
+          failures.push(`.devboard/${name} differs from the installed package`);
+        }
+      } catch {
+        failures.push(`.devboard/${name} is missing`);
+      }
+      continue;
+    }
     let mismatches;
     try {
-      mismatches = treeMismatches(expectedRoot, join(host, ".devboard", name));
+      mismatches = treeMismatches(expected, actual);
     } catch {
       failures.push(`.devboard/${name} is missing`);
       continue;

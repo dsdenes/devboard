@@ -46,6 +46,7 @@ import { ScoutBridge, type ScoutBridgeOptions } from "./scout";
 import { DesignBridge, type DesignBridgeOptions } from "./design";
 import { CoachActivity, type CoachActivityOptions } from "./coach";
 import { openJournal, type Journal, type JournalKind } from "./journal";
+import { toolListPayload } from "../mcp/catalog";
 import {
   DISCOVER_SKILLS,
   artifactsStale,
@@ -175,6 +176,8 @@ export interface AppOptions {
    * default runner spawns it with the bounded environment and timeout.
    */
   discoverClone?: RemoteCloneRunner;
+  /** Test seam for the clone bound; defaults to the request's timeout. */
+  discoverCloneTimeoutMs?: number;
   /** Issues mode's test seams; production uses the detached worker itself. */
   issues?: Pick<
     IssuesBridgeOptions,
@@ -572,6 +575,7 @@ type ClientMessage =
   | { type: "getGoal" }
   | { type: "getProject" }
   | { type: "getVersion" }
+  | { type: "getMcpTools" }
   | { type: "getIssues" }
   | { type: "getIssuesRun"; runId?: unknown }
   | { type: "startIssues" }
@@ -676,6 +680,8 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
       return { type: "getProject" };
     case "getVersion":
       return { type: "getVersion" };
+    case "getMcpTools":
+      return { type: "getMcpTools" };
     case "getIssues":
       return { type: "getIssues" };
     case "getIssuesRun":
@@ -1750,16 +1756,17 @@ export function projectLabel(repoDir: string, home: string = homedir()): string 
 /**
  * The production `git clone` child. It never prompts, never colors its output,
  * and is bounded by the request's timeout; an unreadable spawn is a failure
- * like any non-zero exit.
+ * like any non-zero exit. The bound covers the output read too: a remote
+ * helper that inherits the stderr pipe keeps it open after the clone child is
+ * gone, so the read never reaches EOF and only the timer can settle the call.
+ * The child owns its process group, so the timeout reaps that helper as well
+ * instead of leaving it behind.
  */
 async function spawnClone(request: RemoteCloneRequest): Promise<RemoteCloneResult> {
   const controller = new AbortController();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, request.timeoutMs);
-  try {
+  let killChild: (() => void) | undefined;
+
+  const invocation = (async (): Promise<RemoteCloneResult> => {
     const child = Bun.spawn({
       cmd: request.argv,
       cwd: request.cwd,
@@ -1768,18 +1775,41 @@ async function spawnClone(request: RemoteCloneRequest): Promise<RemoteCloneResul
       stdout: "ignore",
       stderr: "pipe",
       signal: controller.signal,
+      detached: true,
     });
+    killChild = () => {
+      try {
+        // The child leads its own session, so its helpers share the group.
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // The group is already gone, or the platform has no process groups.
+      }
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The child is already gone; the timeout result still stands.
+      }
+    };
     const [stderr, code] = await Promise.all([
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    return { code, stderr, timedOut };
-  } catch (error) {
-    return {
-      code: -1,
-      stderr: error instanceof Error ? error.message : String(error),
-      timedOut,
-    };
+    return { code, stderr, timedOut: false };
+  })().catch((error: unknown): RemoteCloneResult => ({
+    code: -1,
+    stderr: error instanceof Error ? error.message : String(error),
+    timedOut: false,
+  }));
+
+  const timeout = Promise.withResolvers<RemoteCloneResult>();
+  const timer = setTimeout(() => {
+    controller.abort();
+    killChild?.();
+    timeout.resolve({ code: -1, stderr: "", timedOut: true });
+  }, request.timeoutMs);
+
+  try {
+    return await Promise.race([invocation, timeout.promise]);
   } finally {
     clearTimeout(timer);
   }
@@ -3042,10 +3072,11 @@ export function createApp(options: AppOptions) {
     broadcastDiscoverState();
 
     const request = remoteCloneRequest(target.url, remoteRoot, runId);
-    const requestTimeoutSeconds = Math.round(request.timeoutMs / 1000);
+    const cloneTimeoutMs = Math.max(1, options.discoverCloneTimeoutMs ?? request.timeoutMs);
+    const requestTimeoutSeconds = Math.round(cloneTimeoutMs / 1000);
     let result: RemoteCloneResult;
     try {
-      result = await cloneRunner(request);
+      result = await cloneRunner({ ...request, timeoutMs: cloneTimeoutMs });
     } catch (error) {
       result = {
         code: -1,
@@ -6653,6 +6684,7 @@ export function createApp(options: AppOptions) {
           command.type === "getGoal" ||
           command.type === "getProject" ||
           command.type === "getVersion" ||
+          command.type === "getMcpTools" ||
           command.type === "getIssues" ||
           command.type === "getIssuesRun" ||
           command.type === "getGoalDrafts" ||
@@ -6678,6 +6710,9 @@ export function createApp(options: AppOptions) {
             send(ws, { type: "project", path: project });
           } else if (command.type === "getVersion") {
             sendVersion(ws);
+          } else if (command.type === "getMcpTools") {
+            const catalog = toolListPayload();
+            send(ws, { type: "mcpTools", tools: catalog.tools });
           } else if (command.type === "getIssues") {
             issues.replay(ws);
           } else if (command.type === "getIssuesRun") {

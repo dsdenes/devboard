@@ -19,7 +19,7 @@ degrades into a clipped mobile layout.
 
 |Region|Test hook|Role|
 |---|---|---|
-|Mode rail|`activity-bar`|Three labeled mode tabs and their Lucide icons|
+|Mode rail|`activity-bar`|Five labeled mode tabs and their Lucide icons|
 |Sidebar|`sidebar`|Contextual navigation for the active mode|
 |Workspace|`workspace`|The open surface; absorbs all remaining space|
 |Status bar|`status-bar`|Connection, project name, lane count, issues state, watchdog, versions, reload|
@@ -30,14 +30,14 @@ unsaved editor text while another mode is shown.
 
 ### Mode rail
 
-The 72px rail presents exactly four modes in this order as `role="tab"` controls:
-`data-testid="mode-goal"`, `data-testid="mode-issues"`, `data-testid="mode-flow"`, and
-`data-testid="mode-discover"`. Each is a 64×52px control with a Lucide icon above a visible 10px
-uppercase label (`Goal`, `Issues`, `Flow`, `Discover`), an accessible name that also names the
-shortcut, `aria-selected`, and `aria-controls` naming its workspace panel. The labels never
-collapse to icon-only and never overflow the tab at the 1024×720 boundary. A fresh profile starts
-on Goal. Clicking a tab or pressing Alt+1, Alt+2, Alt+3, or Alt+4 changes only which mounted view
-is shown; it never sends a WebSocket frame.
+The 72px rail presents exactly five modes in this order as `role="tab"` controls:
+`data-testid="mode-goal"`, `data-testid="mode-issues"`, `data-testid="mode-flow"`,
+`data-testid="mode-discover"`, and `data-testid="mode-devboard"`. Each is a 64×52px control with a
+Lucide icon above a visible 10px uppercase label (`Goal`, `Issues`, `Flow`, `Discover`,
+`Devboard`), an accessible name that also names the shortcut, `aria-selected`, and `aria-controls`
+naming its workspace panel. The labels never collapse to icon-only and never overflow the tab at
+the 1024×720 boundary. A fresh profile starts on Goal. Clicking a tab or pressing Alt+1, Alt+2,
+Alt+3, Alt+4, or Alt+5 changes only which mounted view is shown; it never sends a WebSocket frame.
 
 The sidebar has no header: it starts with the active mode's navigation, because the rail already
 names the mode and the status bar names the project.
@@ -55,6 +55,9 @@ The width survives a reload.
 - **Flow** lists the workspace surfaces — overview, decision board, steering, and history — the
   session and PR state, widgets, changed files, checkpoints, and blockers. The overview entry
   carries the goal's `unsaved` marker. Blockers open the overview at the blocker they name.
+- **Devboard** carries exactly one entry, `data-testid="devboard-tab"` labeled `MCP tools` with
+  `data-command="devboard.tab.tools"`. It opens the read-only MCP tool list; no tool name appears
+  in the sidebar.
 - **Discover** lists the overview and glossary sections, the five skills under their own group,
   and warnings only while at least one exists. The glossary entry carries the published term
   count. A skill carries a `generated` state silently and shows `edited` or `missing` as trailing
@@ -77,8 +80,19 @@ selection is reachable again from the sidebar or the palette. Close controls ins
 to an empty page, and a dirty page closes only after the confirmation dialog restores or discards
 the draft.
 
+The Devboard page is `data-testid="devboard-workspace"` and holds
+`data-testid="mcp-tools-list"`: one compact `data-testid="mcp-tool"` row per tool the Devboard MCP
+server answers `tools/list` with, carrying `data-tool="<tool name>"` and rendering the tool's name,
+its title, and its description verbatim in catalog order. The page reads server-provided data only:
+it renders no button, input, copy control, or link, issues no `tools/call`, writes no clipboard,
+and adds no roster of its own, so adding or reordering a catalog entry changes the page on the
+next server start with no client-source edit. The catalog arrives through the dashboard's existing
+read-only `getMcpTools` command; no HTTP route or second socket is involved.
+
 A reload restores the active mode, each mode's open page, sidebar and split sizes, and theme. All
-of that state lives in `localStorage`; none of it is sent to the server.
+of that state lives in `localStorage`; none of it is sent to the server. A layout snapshot written
+before Devboard existed still restores every stored mode and page; Devboard starts on its default
+`MCP tools` page.
 
 ### Split panes
 
@@ -473,10 +487,12 @@ read-only state directory never stops the server: it keeps serving from memory a
 
 ## Flow Mode
 
-The activity bar carries four client-only modes, `Goal`, `Issues`, `Flow`, and `Discover`
-(`data-testid="mode-goal"`, `data-testid="mode-flow"`, and `data-testid="mode-discover"`).
-Switching is a view change only: it sends no WebSocket frame and
-starts, stops, pauses, or resumes no work in any mode. Goal Mode is the goal, ADR, epic,
+The activity bar carries five client-only modes, `Goal`, `Issues`, `Flow`, `Discover`, and
+`Devboard` (`data-testid="mode-goal"`, `data-testid="mode-flow"`,
+`data-testid="mode-discover"`, and `data-testid="mode-devboard"`). Switching is a view change
+only: it sends no WebSocket frame and starts, stops, pauses, or resumes no work in any mode. The
+palette lists `view.mode.devboard` with `Alt+5`, and `devboard.tab.tools` opens the mode's one
+page. Goal Mode is the goal, ADR, epic,
 lifecycle, and skills interface described above. Flow Mode is one implementation session that the
 developer steers while it works: the developer interviews for a goal, starts an implementation
 agent in an isolated worktree, reviews the changes as color-coded widgets, discusses a widget with
@@ -1053,16 +1069,18 @@ directory leave with the checkout.
 A submit broadcasts `discoverState` with `cloning = { url }` before spawning anything, then runs
 exactly one child: `git clone --depth 1 --single-branch --no-tags -- <url> .staging-<run-id>` with
 the retained root as its working directory, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true`,
-`NO_COLOR=1`, and a 300-second timeout. On success the checkout becomes the crawl root and exactly
-one crawl runs against it. The crawl peer starts with `--no-skills`, so neither a clone's nor a
-host's `.omp/skills` are discovered or loaded; the crawl contract excludes every `.omp` path, and
-OMP's background description compression of a foreign skill would otherwise log a warning the
-watchdog files. Publication writes into the checkout's `.omp`; when the crawl succeeds,
-the two published trees are copied into `<owner>~<repo>/`, `project.json` is rewritten with the
-submitted URL and the completion time, and the checkout is removed. The active target moves to the
-new project only after its bytes are retained, so a failed clone or a failed crawl leaves the
-previous target, its bytes, its entry, and its completion time untouched and reports exactly one
-`discoverError`. A second `discoverRemote`, `discoverProject`, `switchDiscoverRemote`,
+`NO_COLOR=1`, and a 300-second timeout. The timeout ends the clone even when a helper inherits
+and holds the stderr pipe: the child's process group is killed, the staging checkout is removed,
+and the next Discover command is accepted. On success the checkout becomes the crawl root and
+exactly one crawl runs against it. The crawl peer starts with `--no-skills`, so neither a
+clone's nor a host's `.omp/skills` are discovered or loaded; the crawl contract excludes every
+`.omp` path, and OMP's background description compression of a foreign skill would otherwise
+log a warning the watchdog files. Publication writes into the checkout's `.omp`; when the crawl
+succeeds, the two published trees are copied into `<owner>~<repo>/`, `project.json` is rewritten
+with the submitted URL and the completion time, and the checkout is removed. The active target
+moves to the new project only after its bytes are retained, so a failed clone or a failed crawl
+leaves the previous target, its bytes, its entry, and its completion time untouched and reports
+exactly one `discoverError`. A second `discoverRemote`, `discoverProject`, `switchDiscoverRemote`,
 `removeDiscoverRemote`, or `clearDiscoverRemote` while `cloning` is non-null is refused with one
 `discoverError`, as it is while a Discover run or other Goal/Flow work is active. A clone is never
 resumed.
