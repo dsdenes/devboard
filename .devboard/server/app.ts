@@ -4780,6 +4780,10 @@ export function createApp(options: AppOptions) {
         lifecyclePausedForManualRun = false;
         if (lifecycleRunning && lifecycle.paused) resumeLifecycle(target);
       }
+      // The sequence's last broadcast happened while it still owned the run, so
+      // the durable state claims an active sequence with no run. Persist the
+      // cleared flags; otherwise a restart resumes work nobody asked for.
+      persistState();
     }
   }
 
