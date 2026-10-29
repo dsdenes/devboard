@@ -10,7 +10,14 @@ import { preflightDesign } from "../issues/design/preflight";
 import { releaseDocuments, type ReleaseResult, type RunCommand } from "../issues/design/release";
 import { capacityFor, writeSettings, type DesignIssueRow } from "../issues/design/state";
 import { DesignWorker } from "../issues/design/worker";
-import { designConfig, lockPath, settingsPath } from "../issues/design/paths";
+import {
+  DESIGN_LABEL,
+  LABEL_COLOR,
+  LABEL_DESCRIPTION,
+  designConfig,
+  lockPath,
+  settingsPath,
+} from "../issues/design/paths";
 
 const harnessRoot = join(import.meta.dir, "..");
 const roots: string[] = [];
@@ -927,23 +934,6 @@ describe("design preflight", () => {
     expect(noWrite.ok).toBe(false);
     if (!noWrite.ok) expect(noWrite.message).toContain("cannot write");
 
-    const noLabel = await preflightDesign({
-      repoDir: repo,
-      stateDir,
-      config,
-      environment,
-      giteaFetch: ((input: RequestInfo | URL) => {
-        const path = new URL(String(input)).pathname;
-        if (path.endsWith("/repos/acme/fixture")) {
-          return new Response(JSON.stringify({ permissions: { push: true } }), { status: 200 });
-        }
-        return new Response(JSON.stringify([{ id: 1, name: "scout" }]), { status: 200 });
-      }) as never,
-      origin: { forge: "gitea", host: "forge.test", project: "acme/fixture" },
-    });
-    expect(noLabel.ok).toBe(false);
-    if (!noLabel.ok) expect(noLabel.message).toContain('"design" label');
-
     const noTools = await preflightDesign({
       repoDir: repo,
       stateDir,
@@ -954,6 +944,67 @@ describe("design preflight", () => {
     });
     expect(noTools.ok).toBe(false);
     if (!noTools.ok) expect(noTools.message).toContain("git is not on PATH");
+  });
+
+  test("creates the missing design label instead of refusing Start", async () => {
+    const { repo, stateDir, config } = await fixture("preflight-create-label");
+    const writes: Array<{ method: string; body: unknown }> = [];
+    const result = await preflightDesign({
+      repoDir: repo,
+      stateDir,
+      config,
+      environment,
+      giteaFetch: (async (input: string, init?: RequestInit) => {
+        const path = new URL(input).pathname;
+        const method = init?.method ?? "GET";
+        if (path.endsWith("/repos/acme/fixture")) {
+          return new Response(JSON.stringify({ permissions: { push: true } }), { status: 200 });
+        }
+        if (path.endsWith("/labels") && method === "POST") {
+          writes.push({ method, body: JSON.parse(String(init?.body)) });
+          return new Response(JSON.stringify({ id: 2, name: DESIGN_LABEL }), { status: 201 });
+        }
+        if (path.endsWith("/labels")) {
+          return new Response(JSON.stringify([{ id: 1, name: "scout" }]), { status: 200 });
+        }
+        return new Response("[]", { status: 200 });
+      }) as never,
+      origin: { forge: "gitea", host: "forge.test", project: "acme/fixture" },
+    });
+    expect(result).toEqual({ ok: true, repository: "acme/fixture" });
+    expect(writes).toEqual([
+      {
+        method: "POST",
+        body: { name: DESIGN_LABEL, color: LABEL_COLOR, description: LABEL_DESCRIPTION },
+      },
+    ]);
+  });
+
+  test("refuses Start when the missing design label cannot be created", async () => {
+    const { repo, stateDir, config } = await fixture("preflight-label-failure");
+    const result = await preflightDesign({
+      repoDir: repo,
+      stateDir,
+      config,
+      environment,
+      giteaFetch: (async (input: string, init?: RequestInit) => {
+        const path = new URL(input).pathname;
+        const method = init?.method ?? "GET";
+        if (path.endsWith("/repos/acme/fixture")) {
+          return new Response(JSON.stringify({ permissions: { push: true } }), { status: 200 });
+        }
+        if (path.endsWith("/labels") && method === "POST") {
+          return new Response(JSON.stringify({ message: "forbidden" }), { status: 403 });
+        }
+        if (path.endsWith("/labels")) {
+          return new Response(JSON.stringify([{ id: 1, name: "scout" }]), { status: 200 });
+        }
+        return new Response("[]", { status: 200 });
+      }) as never,
+      origin: { forge: "gitea", host: "forge.test", project: "acme/fixture" },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("could not be created");
   });
 });
 

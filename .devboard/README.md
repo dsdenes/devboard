@@ -1448,10 +1448,12 @@ failing step in `agent-error` and activity.
 
 Start preflight refuses before spawning a worker or writing state, naming the missing fact, when
 the canonical source checkout lacks `.devboard/client`, either document is absent, the origin is
-not a supported forge, the account cannot write, the exact `design` label is absent, or `git`,
-`bun`, `npm`, or the release credential is missing. Start publishes `starting` before the spawn
-and `running` once the state is readable. At most one audit and release cycle runs at a time;
-Start, a cadence change, a page open, a tab restore, or a reload never starts a second cycle.
+not a supported forge, the account cannot write, or `git`, `bun`, `npm`, or the release credential
+is missing. When the repository lacks the exact `design` label, preflight creates it with its
+documented color and description before Start proceeds; a failed creation refuses Start naming the
+forge error. Start publishes `starting` before the spawn and `running` once the state is readable.
+At most one audit and release cycle runs at a time; Start, a cadence change, a page open, a tab
+restore, or a reload never starts a second cycle.
 State lives at `<STATE_DIR>/design/<journalKey(REPO_DIR)>/`; the lock, cycles, and worktrees stay
 inside the checkout, and the worker's audit input never leaves the repository root.
 

@@ -8,19 +8,20 @@ import {
 import { configuredGiteaToken, giteaBaseUrl, type Forge } from "../../lib/forge";
 import {
   giteaCreateIssue,
-  giteaLabels,
+  giteaEnsureLabel,
   type FetchLike,
 } from "../../lib/gitea";
 import { originForge } from "../repository";
 import { ghCommand, runCommand } from "../scout/preflight";
 import { writeAtomic } from "./state";
-import { DESIGN_LABEL, workDirectory } from "./paths";
+import { DESIGN_LABEL, LABEL_COLOR, LABEL_DESCRIPTION, workDirectory } from "./paths";
 import type { DesignFinding } from "./audit";
 
 /**
  * Filing one design-system finding as one implementation issue in the host
- * origin. The exact `design` label already exists: preflight refused Start
- * otherwise, so this path never creates it.
+ * origin. The exact `design` label exists because preflight creates it when the
+ * repository lacks it; each filing path still ensures it so a label deleted
+ * while the worker runs does not discard the finding.
  */
 
 export interface GhRunner {
@@ -134,18 +135,19 @@ async function fileGiteaIssue(
   if (token === undefined) throw new Error("filing a Gitea issue needs GITEA_TOKEN");
   const target = { baseUrl, project: options.repository, token };
   try {
-    const label = (await giteaLabels(target, options.giteaFetch)).find(
-      (entry) => entry.name === DESIGN_LABEL,
+    const label = await giteaEnsureLabel(
+      target,
+      DESIGN_LABEL,
+      LABEL_COLOR,
+      LABEL_DESCRIPTION,
+      options.giteaFetch,
     );
-    if (label === undefined) {
-      throw new Error(`the repository has no exact "${DESIGN_LABEL}" label`);
-    }
     const issue = await giteaCreateIssue(
       target,
       {
         title: options.finding.title,
         body: issueBody(options.finding),
-        labels: [label.id],
+        labels: [label],
       },
       options.giteaFetch,
     );
@@ -189,6 +191,33 @@ export async function fileDesignIssue(
           : { timeoutMs: Math.max(1, options.deadline - Date.now()) }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       }));
+
+  const existing = await run([
+    "api",
+    `repos/${options.repository}/labels/${DESIGN_LABEL}`,
+  ], forgeEnvironment);
+  if (existing.code !== 0) {
+    const created = await run(
+      [
+        "label",
+        "create",
+        DESIGN_LABEL,
+        "--repo",
+        options.repository,
+        "--color",
+        LABEL_COLOR,
+        "--description",
+        LABEL_DESCRIPTION,
+        "--force",
+      ],
+      forgeEnvironment,
+    );
+    if (created.code !== 0) {
+      throw new Error(
+        `could not create the "${DESIGN_LABEL}" label: ${firstLine(created.stderr)}`,
+      );
+    }
+  }
 
   const stamp = (options.now ?? (() => new Date()))().toISOString().replace(/[:.]/g, "-");
   const bodyPath = join(
