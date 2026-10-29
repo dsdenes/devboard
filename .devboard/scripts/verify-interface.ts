@@ -6225,10 +6225,26 @@ try {
     "the state badge is not on the row's trailing edge",
     queueGeometry,
   );
+  const queueHeader = await page.eval<{ text: string; tone: string }>(`(() => {
+    const badge = document.querySelector('.issues-queue-page > .issues-overview__header > .badge');
+    return {
+      text: badge?.textContent?.trim() ?? "",
+      tone: badge?.getAttribute("data-tone") ?? "",
+    };
+  })()`);
+  check(
+    queueHeader.text === "2 pending · 3 running" && queueHeader.tone === "accent",
+    "the queue header does not separate waiting from running issues",
+    queueHeader,
+  );
   const pendingMeta = await page.eval<string>(
     `document.querySelector('[data-testid="open-issues-queue"] .sidebar-item__meta')?.textContent ?? ""`,
   );
-  check(pendingMeta.trim() === "5 pending", "the sidebar does not count every pending issue", pendingMeta);
+  check(
+    pendingMeta.trim() === "2 pending · 3 running",
+    "the sidebar does not separate waiting from running issues",
+    pendingMeta,
+  );
 
   // The sidebar no longer lists Runs; the palette still opens the tab.
   check(
