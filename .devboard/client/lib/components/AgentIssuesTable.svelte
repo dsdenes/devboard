@@ -184,20 +184,29 @@
     white-space: nowrap;
   }
 
-  th:nth-child(1) {
-    width: 40%;
-  }
+  /* Fixed tracks for category, filed, state, and version; the title takes the rest. */
   th:nth-child(2) {
-    width: 14%;
+    width: 110px;
   }
   th:nth-child(3) {
-    width: 18%;
+    width: 132px;
   }
   th:nth-child(4) {
-    width: 15%;
+    width: 86px;
   }
   th:nth-child(5) {
-    width: 13%;
+    width: 76px;
+  }
+
+  @media (max-width: 899px) {
+    th:nth-child(2),
+    td:nth-child(2),
+    th:nth-child(3),
+    td:nth-child(3),
+    th:nth-child(5),
+    td:nth-child(5) {
+      display: none;
+    }
   }
 
   .agent-issues-table__title {
