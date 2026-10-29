@@ -26,22 +26,64 @@ export function isCoachCategory(value: unknown): value is CoachCategory {
   return typeof value === "string" && (COACH_CATEGORIES as readonly string[]).includes(value);
 }
 
-/** A bash command this exact and common needs no deterministic tool. */
-export const TRIVIAL_COMMANDS = new Set([
+/**
+ * Read-only inspection every agent performs. A signature matches a prefix when
+ * it equals the prefix or continues with a space, so `git status --short` is
+ * the same behavior as `git status` and never becomes a finding.
+ */
+export const TRIVIAL_COMMANDS: readonly string[] = Object.freeze([
   "ls",
   "pwd",
   "cat",
   "head",
   "tail",
   "wc",
+  "echo",
+  "printf",
+  "grep",
+  "rg",
+  "find",
+  "sed -n",
   "git status",
   "git diff",
   "git log",
+  "git show",
+  "git branch",
+  "git rev-parse",
+  "git worktree list",
+  "git ls-remote",
+  "git remote -v",
   "bun test",
   "bun run check",
   "bun run build",
   "bunx tsc --noEmit",
 ]);
+
+/** True when a normalized signature is plain inspection, not a capability gap. */
+export function isTrivialCommand(signature: string): boolean {
+  for (const prefix of TRIVIAL_COMMANDS) {
+    if (signature === prefix || signature.startsWith(`${prefix} `)) return true;
+  }
+  return false;
+}
+
+/** `cd <path> && <command>` is the command; the directory change is noise. */
+function collapseDirectoryChange(command: string): string {
+  let value = command.trim();
+  for (;;) {
+    const match = /^\(\s*cd\s+[^()&;]+\s*&&\s*([\s\S]*)\)$/.exec(value);
+    if (match !== null && match[1] !== undefined) {
+      value = match[1].trim();
+      continue;
+    }
+    const chain = /^cd\s+\S+\s*&&\s*([\s\S]+)$/.exec(value);
+    if (chain !== null && chain[1] !== undefined) {
+      value = chain[1].trim();
+      continue;
+    }
+    return value;
+  }
+}
 
 /** The fixed evidence window: the 24 hours ending at cycle start. */
 export const EVIDENCE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -100,7 +142,9 @@ function boundLine(value: string): string {
 
 /** Replaces the repository root and the volatile tokens a command repeats. */
 export function normalizeCommandSignature(command: string, repoDir: string): string {
-  let value = command;
+  let value = collapseDirectoryChange(command);
+  value = value
+    .replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, "<env> ");
   const root = repoDir.replace(/\/+$/, "");
   if (root.length > 0) value = value.split(root).join("<repo>");
   value = value
@@ -110,6 +154,8 @@ export function normalizeCommandSignature(command: string, repoDir: string): str
     .replace(/\b[0-9a-f]{7,}\b/gi, "<hex>")
     .replace(/\s+/g, " ")
     .trim();
+  // `git -C . status` and `git -C <repo> status` are the checkout's `git status`.
+  value = value.replace(/^git -C (?:\.|<repo>|\.worktree\/<worktree>) /, "git ");
   return value;
 }
 
@@ -319,7 +365,7 @@ export function analyzeEvidence(options: AnalyzeOptions): CoachFinding[] {
       if (instant === undefined) continue;
       const signature = normalizeCommandSignature(call.command, options.repoDir);
       if (signature.length < TOOL_GAP_MIN_LENGTH) continue;
-      if (TRIVIAL_COMMANDS.has(signature)) continue;
+      if (isTrivialCommand(signature)) continue;
       if (isCovered(signature, covers)) continue;
       merge(groups, {
         category: "tool-gap",

@@ -1108,7 +1108,7 @@ try {
   await writeFile(
     join(coachDir, "state.json"),
     JSON.stringify({
-      version: 1,
+      version: 2,
       findings: {
         "fingerprint-coach": {
           category: "tool-failure",

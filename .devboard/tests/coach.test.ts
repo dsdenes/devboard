@@ -7,16 +7,27 @@ import { journalFile } from "../server/journal";
 import { agentRegistry } from "../server/agents/registry";
 import { CoachActivity, preflightCoach } from "../server/coach";
 import { coachDirectory } from "../coach/paths";
-import { readCoachSettings, writeCoachSettings } from "../coach/settings";
+import { readCoachSettings, writeCoachSettings, DEFAULT_COACH_SETTINGS } from "../coach/settings";
 import { readWorkerState, writeWorkerState } from "../coach/worker-state";
 import { loadLedger } from "../coach/ledger";
 import { readCoachStatus } from "../coach/status";
 import { runCycle, COMMENT_INTERVAL_MS } from "../coach/coordinator";
-import { analyzeEvidence, normalizeCommandSignature, isCovered } from "../coach/findings";
+import {
+  analyzeEvidence,
+  normalizeCommandSignature,
+  isCovered,
+  isTrivialCommand,
+  type CoachFinding,
+} from "../coach/findings";
 import { MCP_COVERS } from "../mcp/catalog";
 import { coachBody, coachTitle, ISSUE_BODY_MAX_BYTES } from "../coach/issue";
 import { selectSessions } from "../lib/agent-sessions";
 import type { CoachDelivery, DeliveryResult } from "../coach/delivery";
+import type { GateRun } from "../coach/gate";
+import { gateVerdict } from "../coach/gate";
+import { parseDecisionsDocument } from "../coach/jev";
+import { parseFinalizerAnswer } from "../coach/finalize";
+import type { FinalizeResult } from "../coach/finalize";
 
 const harnessRoot = resolve(import.meta.dir, "..");
 const directories: string[] = [];
@@ -123,7 +134,17 @@ async function workspace(now = NOW): Promise<{ root: string; repoDir: string; st
   const stateDir = join(root, "state");
   await mkdir(join(repoDir, ".devboard"), { recursive: true });
   await mkdir(join(repoDir, ".worktree", "task"), { recursive: true });
-  await mkdir(stateDir, { recursive: true });
+  await mkdir(coachDirectory(stateDir), { recursive: true });
+  await writeFile(
+    join(coachDirectory(stateDir), "projection.json"),
+    `${JSON.stringify({
+      version: 1,
+      state: "ok",
+      at: now.toISOString(),
+      error: null,
+      issues: [],
+    })}\n`,
+  );
   return { root, repoDir, stateDir };
 }
 
@@ -161,6 +182,64 @@ function memoryDelivery(): CoachDelivery & { created: Array<{ title: string; bod
   };
 }
 
+/** A gate that accepts every finding, for tests about everything downstream. */
+function acceptingGate(): (findings: CoachFinding[]) => Promise<GateRun> {
+  return async (findings) => ({
+    ok: true,
+    decisions: findings.map((finding) => ({
+      finding,
+      outcome: "accept" as const,
+      probabilities: {
+        existing_capability: 0.02,
+        recurring_behavior: 0.97,
+        worth_filing: 0.95,
+      },
+      model: "stub-decision",
+    })),
+    costUsd: 0,
+  });
+}
+
+/** A finalizer that files every survivor with a stable recommendation. */
+function filingFinalizer(): (survivors: CoachFinding[]) => Promise<FinalizeResult> {
+  return async (survivors) => ({
+    recommendations: new Map(
+      survivors.map((finding) => [
+        finding.fingerprint,
+        {
+          action: "file" as const,
+          proposal: "Add the documented guardrail and keep the recorded behavior out of later runs.",
+          acceptance: ["- [ ] The recorded behavior stops in the next run."],
+        },
+      ]),
+    ),
+    model: "stub-finalizer",
+    durationMs: 0,
+  });
+}
+
+/** A gate that answers one outcome for every finding. */
+function fixedGate(outcome: "reject" | "review" | "error"): (findings: CoachFinding[]) => Promise<GateRun> {
+  return async (findings) => ({
+    ok: outcome !== "error",
+    ...(outcome === "error" ? { reason: "Decisions API 503: unavailable" } : {}),
+    decisions: findings.map((finding) => {
+      const probabilities: Record<string, number> =
+        outcome === "error"
+          ? {}
+          : { existing_capability: 0.95, recurring_behavior: 0.4, worth_filing: 0.5 };
+      return {
+        finding,
+        outcome,
+        probabilities,
+        model: "stub-decision",
+        ...(outcome === "error" ? { reason: "Decisions API 503: unavailable" } : {}),
+      };
+    }),
+    costUsd: 0,
+  });
+}
+
 describe("Coach registration and lifecycle", () => {
   test("the registry declares coach with its defaults", () => {
     expect(agentRegistry.ids()).toEqual(["scout", "watchdog", "design", "coach"]);
@@ -168,7 +247,7 @@ describe("Coach registration and lifecycle", () => {
     expect(coach.label).toBe("Coach");
     expect(coach.scope).toBe("repository");
     expect(coach.cadence.defaultMinutes).toBe(60);
-    expect(coach.limits.default).toEqual({ maxPerHour: null, maxPending: null });
+    expect(coach.limits.default).toEqual({ maxPerHour: 10, maxPending: 20 });
     expect(coach.detail.panel).toBe("cycles");
     expect(coach.tab.id).toBe("coach");
   });
@@ -302,6 +381,7 @@ describe("Coach registration and lifecycle", () => {
     });
     expect(adapter.setSettings(30, 5, null).ok).toBe(true);
     expect(readCoachSettings(coachDirectory(stateDir))).toEqual({
+      ...DEFAULT_COACH_SETTINGS,
       intervalMinutes: 30,
       maxPerHour: 5,
       maxPending: null,
@@ -327,6 +407,120 @@ describe("Coach registration and lifecycle", () => {
     const result = await preflightCoach({ repoDir, environment: {} });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("GitLab");
+  });
+});
+
+describe("Coach decision gate", () => {
+  const thresholds = { approveAt: 0.9, rejectAt: 0.1 };
+
+  test("the negative question inverts the two thresholds", () => {
+    expect(
+      gateVerdict(
+        { existing_capability: 0.05, recurring_behavior: 0.95, worth_filing: 0.92 },
+        thresholds,
+      ).outcome,
+    ).toBe("accept");
+    expect(
+      gateVerdict(
+        { existing_capability: 0.95, recurring_behavior: 0.95, worth_filing: 0.92 },
+        thresholds,
+      ).outcome,
+    ).toBe("reject");
+    expect(
+      gateVerdict(
+        { existing_capability: 0.05, recurring_behavior: 0.05, worth_filing: 0.92 },
+        thresholds,
+      ).outcome,
+    ).toBe("reject");
+    expect(
+      gateVerdict(
+        { existing_capability: 0.3, recurring_behavior: 0.95, worth_filing: 0.92 },
+        thresholds,
+      ).outcome,
+    ).toBe("review");
+  });
+
+  test("a Decisions answer is validated before it can approve anything", () => {
+    const questions = {
+      existing_capability: { type: "noul" as const, instructions: "x" },
+      recurring_behavior: { type: "noul" as const, instructions: "x" },
+      worth_filing: { type: "noul" as const, instructions: "x" },
+    };
+    const document = (answers: Record<string, unknown>) => ({
+      id: "gen-dec-1",
+      model: "typesafe/jev-1.14",
+      provider: "TypeSafe",
+      usage: { cost: 0.00002, input_tokens: 100, output_tokens: 5 },
+      answers,
+    });
+    const parsed = parseDecisionsDocument(
+      document({
+        existing_capability: { type: "noul", noul: 0.05 },
+        recurring_behavior: { type: "noul", noul: 0.95 },
+        worth_filing: { type: "noul", noul: 0.92 },
+      }),
+      questions,
+    );
+    expect(parsed.answers.worth_filing).toBe(0.92);
+    expect(parsed.costUsd).toBe(0.00002);
+    expect(() =>
+      parseDecisionsDocument(
+        document({
+          existing_capability: { type: "noul", noul: 0.05 },
+          recurring_behavior: { type: "noul", noul: 1.5 },
+          worth_filing: { type: "noul", noul: 0.92 },
+        }),
+        questions,
+      ),
+    ).toThrow("did not answer");
+    expect(() =>
+      parseDecisionsDocument(document({ existing_capability: { type: "noul", noul: 0.05 } }), questions),
+    ).toThrow("did not answer");
+  });
+
+  test("the finalizer must decide every survivor and name real duplicates", () => {
+    const survivor = (fingerprint: string) =>
+      ({
+        category: "tool-gap" as const,
+        fingerprint,
+        line: `manual command repeated: ${fingerprint}`,
+        subject: fingerprint,
+        firstAt: NOW.toISOString(),
+        lastAt: NOW.toISOString(),
+        count: 3,
+        sessions: ["a", "b"],
+        scopes: [],
+      });
+    const [first, second] = [survivor("aaaaaaaaaaaaaaaa"), survivor("bbbbbbbbbbbbbbbb")];
+    expect(() => parseFinalizerAnswer('{"decisions":[]}', [first!, second!])).toThrow(
+      "did not decide",
+    );
+    expect(() =>
+      parseFinalizerAnswer(
+        JSON.stringify({
+          decisions: [
+            { fingerprint: first!.fingerprint, action: "file", proposal: "p", acceptance: ["- [ ] a"] },
+            {
+              fingerprint: second!.fingerprint,
+              action: "drop",
+              duplicate_of: "cccccccccccccccc",
+            },
+          ],
+        }),
+        [first!, second!],
+      ),
+    ).toThrow("unknown duplicate");
+    const parsed = parseFinalizerAnswer(
+      JSON.stringify({
+        decisions: [
+          { fingerprint: first!.fingerprint, action: "file", proposal: "p", acceptance: ["- [ ] a"] },
+          { fingerprint: second!.fingerprint, action: "drop", duplicate_of: first!.fingerprint },
+        ],
+      }),
+      [first!, second!],
+    );
+    expect(parsed.get(first!.fingerprint)?.action).toBe("file");
+    expect(parsed.get(second!.fingerprint)?.duplicateOf).toBe(first!.fingerprint);
   });
 });
 
@@ -468,8 +662,14 @@ describe("Coach detection", () => {
     expect(findings.filter((finding) => finding.category === "tool-gap")).toEqual([]);
     expect(isCovered("bun run verify:mcp", ["bun run verify:mcp"])).toBe(true);
     expect(normalizeCommandSignature(`cd ${repoDir}/.worktree/x && ls 1234567890`, repoDir)).toBe(
-      "cd <repo>/.worktree/<worktree> && ls <hex>",
+      "ls <hex>",
     );
+    expect(normalizeCommandSignature(`DEVBOARD_GITEA_URL=x ${repoDir}/bin/tool --run`, repoDir)).toBe(
+      "<env> <repo>/bin/tool --run",
+    );
+    expect(isTrivialCommand("git status --short --branch")).toBe(true);
+    expect(isTrivialCommand("git worktree list")).toBe(true);
+    expect(isTrivialCommand("git push origin main")).toBe(false);
   });
 });
 
@@ -513,6 +713,10 @@ describe("Coach issue bytes and filing", () => {
           scopes: new Map(),
           repoDir,
         },
+        recommendation: {
+          proposal: "Add the documented guardrail to the implementation prompt.",
+          acceptance: ["- [ ] The recorded behavior stops in the next run."],
+        },
       });
       for (const section of ["## Finding", "## Evidence", "## Proposed change", "## Acceptance criteria"]) {
         expect(body.split(section).length - 1).toBe(1);
@@ -520,6 +724,37 @@ describe("Coach issue bytes and filing", () => {
       expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(ISSUE_BODY_MAX_BYTES);
       expect(body).toContain("- [ ]");
     }
+  });
+
+  test("finalizer prose cannot open a fifth section or hide a criterion", () => {
+    const finding: CoachFinding = {
+      category: "tool-gap",
+      fingerprint: "aaaaaaaaaaaaaaaa",
+      line: "manual command repeated: ./scripts/thing --flag",
+      subject: "./scripts/thing --flag",
+      firstAt: NOW.toISOString(),
+      lastAt: NOW.toISOString(),
+      count: 3,
+      sessions: ["a", "b"],
+      scopes: [],
+    };
+    const body = coachBody({
+      finding,
+      evidence: {
+        window: { start: instant(1440), end: NOW.toISOString() },
+        sessions: new Map(),
+        scopes: new Map(),
+        repoDir: "/repo",
+      },
+      recommendation: {
+        proposal: "## Injected heading\nAdd the documented guardrail.",
+        acceptance: ["- [ ] first line\nsecond line"],
+      },
+    });
+    for (const section of ["## Finding", "## Evidence", "## Proposed change", "## Acceptance criteria"]) {
+      expect(body.split(section).length - 1).toBe(1);
+    }
+    expect(body).toContain("- [ ] first line second line");
   });
 
   test("a first cycle files once, a second files nothing, and a recurrence comments", async () => {
@@ -539,13 +774,27 @@ describe("Coach issue bytes and filing", () => {
       { kind: "question", text: "Same question?", scope: "run-b", ts: instant(20) },
     ]);
     const delivery = memoryDelivery();
-    const first = await runCycle({ root: repoDir, stateDir, now: NOW, delivery });
+    const first = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: acceptingGate(),
+      finalize: filingFinalizer(),
+    });
     expect(first.report.action).toBe("filed");
     expect(first.report.findings.map((finding) => finding.category)).toContain("repeat-question");
     expect(first.report.issues.length).toBe(delivery.created.length);
     const before = await directoryHash(join(stateDir, "providers"));
     const journalBefore = await directoryHash(join(stateDir, "journal"));
-    const second = await runCycle({ root: repoDir, stateDir, now: NOW, delivery });
+    const second = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: acceptingGate(),
+      finalize: filingFinalizer(),
+    });
     expect(second.report.action).toBe("duplicate");
     expect(delivery.created.length).toBe(first.report.issues.length);
     expect(await directoryHash(join(stateDir, "providers"))).toBe(before);
@@ -583,7 +832,14 @@ describe("Coach issue bytes and filing", () => {
       },
     ]);
     const later = new Date(NOW.getTime() + COMMENT_INTERVAL_MS + 60 * 60_000);
-    const recurrence = await runCycle({ root: repoDir, stateDir, now: later, delivery });
+    const recurrence = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: later,
+      delivery,
+      gate: acceptingGate(),
+      finalize: filingFinalizer(),
+    });
     expect(recurrence.report.action).not.toBe("failed");
     expect(delivery.comments.length).toBeGreaterThan(0);
     expect(delivery.created.length).toBe(first.report.issues.length + 2);
@@ -602,12 +858,21 @@ describe("Coach issue bytes and filing", () => {
       });
     }
     await writeCoachSettings(coachDirectory(stateDir), {
+      ...DEFAULT_COACH_SETTINGS,
       intervalMinutes: 60,
       maxPerHour: 1,
       maxPending: 1,
     });
+    await rm(join(coachDirectory(stateDir), "projection.json"), { force: true });
     const delivery = memoryDelivery();
-    const capped = await runCycle({ root: repoDir, stateDir, now: NOW, delivery });
+    const capped = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: acceptingGate(),
+      finalize: filingFinalizer(),
+    });
     expect(capped.report.action).toBe("capped");
     expect(delivery.created.length).toBe(0);
     expect(capped.report.pending).toBeGreaterThan(0);
@@ -617,7 +882,14 @@ describe("Coach issue bytes and filing", () => {
       join(coachDirectory(stateDir), "projection.json"),
       JSON.stringify({ version: 1, state: "ok", at: NOW.toISOString(), error: null, issues: [] }),
     );
-    const filed = await runCycle({ root: repoDir, stateDir, now: NOW, delivery });
+    const filed = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: acceptingGate(),
+      finalize: filingFinalizer(),
+    });
     expect(filed.report.action).toBe("filed");
     expect(delivery.created.length).toBeLessThanOrEqual(1);
     const ledger = loadLedger(coachDirectory(stateDir));
@@ -643,7 +915,14 @@ describe("Coach issue bytes and filing", () => {
       create: async () => ({ ok: false, reason: "forge rejected the issue" }),
       comment: async () => ({ ok: false, reason: "forge rejected the comment" }),
     };
-    const result = await runCycle({ root: repoDir, stateDir, now: NOW, delivery });
+    const result = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: acceptingGate(),
+      finalize: filingFinalizer(),
+    });
     expect(result.report.action).toBe("failed");
     expect(result.report.reason).toContain("forge rejected");
     const ledger = loadLedger(coachDirectory(stateDir));
@@ -655,7 +934,7 @@ describe("Coach issue bytes and filing", () => {
     expect(reasons[0]).toContain("forge rejected");
   });
 
-  test("a cycle never spawns a peer and writes only the coach directory", async () => {
+  test("a cycle with injected seams spawns no peer and writes only the coach directory", async () => {
     const { root, repoDir, stateDir } = await workspace();
     await writeSession(stateDir, repoDir, {
       id: "a",
@@ -674,17 +953,259 @@ describe("Coach issue bytes and filing", () => {
       errors: true,
     });
     const marker = join(root, "spawned");
+    const stubAgent = join(root, "stub-agent");
+    await writeFile(stubAgent, `#!/bin/sh\necho spawned > ${JSON.stringify(marker)}\nexit 1\n`);
     const delivery = memoryDelivery();
     const result = await runCycle({
       root: repoDir,
       stateDir,
       now: NOW,
       delivery,
-      environment: { AGENT_COMMAND: join(root, "stub-agent"), PATH: process.env.PATH ?? "" },
+      gate: acceptingGate(),
+      finalize: filingFinalizer(),
+      environment: { AGENT_COMMAND: stubAgent, PATH: process.env.PATH ?? "" },
     });
     expect(result.report.action).toBe("filed");
     expect(existsSync(marker)).toBe(false);
-    expect(existsSync(join(root, "stub-agent"))).toBe(false);
+    const written = await readdir(stateDir);
+    expect(written.sort()).toEqual(["coach", "providers"]);
+  });
+
+  test("a rejected finding is not filed and re-gates only after its cool-down", async () => {
+    const { repoDir, stateDir } = await workspace();
+    for (const id of ["a", "b"]) {
+      await writeSession(stateDir, repoDir, {
+        id,
+        startedAt: instant(id === "a" ? 30 : 20),
+        calls: 2,
+        command: `./scripts/${id}-rejected-command`,
+        errorText: "ERROR: rejected",
+        errors: true,
+      });
+    }
+    const delivery = memoryDelivery();
+    const first = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: fixedGate("reject"),
+      finalize: async () => {
+        throw new Error("the finalizer must not run for a rejected finding");
+      },
+    });
+    expect(first.report.action).toBe("rejected");
+    expect(delivery.created.length).toBe(0);
+    expect(first.report.gate?.rejected).toBeGreaterThan(0);
+    const ledger = loadLedger(coachDirectory(stateDir));
+    const rejected = Object.values(ledger.findings).filter(
+      (entry) => entry.disposition === "rejected",
+    );
+    expect(rejected.length).toBeGreaterThan(0);
+    expect(rejected[0]?.decision?.probabilities.existing_capability).toBe(0.95);
+    expect(rejected[0]?.decision?.rejectedUntil).toBeDefined();
+
+    // Inside the cool-down the same evidence asks the gate nothing.
+    let calls = 0;
+    const second = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: new Date(NOW.getTime() + 60 * 60_000),
+      delivery,
+      gate: async (findings) => {
+        calls += findings.length;
+        return acceptingGate()(findings);
+      },
+      finalize: filingFinalizer(),
+    });
+    expect(calls).toBe(0);
+    expect(second.report.action).toBe("duplicate");
+    expect(delivery.created.length).toBe(0);
+
+    // After the cool-down the same fingerprint is asked again.
+    const after = new Date(
+      NOW.getTime() + (DEFAULT_COACH_SETTINGS.rejectCooldownHours + 1) * 60 * 60_000,
+    );
+    for (const id of ["late-a", "late-b"]) {
+      await writeSession(stateDir, repoDir, {
+        id,
+        startedAt: instant(id === "late-a" ? 40 : 30, after),
+        calls: 2,
+        command: `./scripts/${id.replace("late-", "")}-rejected-command`,
+        errorText: "ERROR: rejected",
+        errors: true,
+      });
+    }
+    calls = 0;
+    const third = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: after,
+      delivery,
+      gate: async (findings) => {
+        calls += findings.length;
+        return fixedGate("reject")(findings);
+      },
+      finalize: filingFinalizer(),
+    });
+    expect(calls).toBeGreaterThan(0);
+    expect(third.report.action).toBe("rejected");
+  });
+
+  test("an ambiguous answer rejects the finding and flags it in the report", async () => {
+    const { repoDir, stateDir } = await workspace();
+    for (const id of ["a", "b"]) {
+      await writeSession(stateDir, repoDir, {
+        id,
+        startedAt: instant(id === "a" ? 30 : 20),
+        calls: 2,
+        command: `./scripts/${id}-review-command`,
+        errorText: "ERROR: review",
+        errors: true,
+      });
+    }
+    const delivery = memoryDelivery();
+    const result = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: fixedGate("review"),
+      finalize: filingFinalizer(),
+    });
+    expect(result.report.action).toBe("rejected");
+    expect(delivery.created.length).toBe(0);
+    expect(result.report.decisions.every((decision) => decision.outcome === "review")).toBe(true);
+    expect(result.report.gate?.review).toBeGreaterThan(0);
+    const ledger = loadLedger(coachDirectory(stateDir));
+    expect(
+      Object.values(ledger.findings).some(
+        (entry) => entry.decision?.outcome === "review" && entry.disposition === "rejected",
+      ),
+    ).toBe(true);
+  });
+
+  test("a gate failure files nothing and keeps every finding pending", async () => {
+    const { repoDir, stateDir } = await workspace();
+    for (const id of ["a", "b"]) {
+      await writeSession(stateDir, repoDir, {
+        id,
+        startedAt: instant(id === "a" ? 30 : 20),
+        calls: 2,
+        command: `./scripts/${id}-gate-failure`,
+        errorText: "ERROR: gate",
+        errors: true,
+      });
+    }
+    const delivery = memoryDelivery();
+    let finalized = 0;
+    const result = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: fixedGate("error"),
+      finalize: async (survivors) => {
+        finalized += survivors.length;
+        return filingFinalizer()(survivors);
+      },
+    });
+    expect(result.report.action).toBe("failed");
+    expect(result.report.reason).toContain("Decisions API");
+    expect(delivery.created.length).toBe(0);
+    expect(finalized).toBe(0);
+    expect(result.report.pending).toBeGreaterThan(0);
+    const ledger = loadLedger(coachDirectory(stateDir));
+    expect(ledger.pendingFiling.length).toBeGreaterThan(0);
+  });
+
+  test("the finalizer deduplicates survivors and the duplicate stays unfiled", async () => {
+    const { repoDir, stateDir } = await workspace();
+    for (const id of ["a", "b"]) {
+      await writeSession(stateDir, repoDir, {
+        id,
+        startedAt: instant(id === "a" ? 30 : 20),
+        calls: 2,
+        command: "./scripts/duplicate-command --one",
+        errorText: "ERROR: duplicate",
+        errors: true,
+      });
+      await writeSession(stateDir, repoDir, {
+        id: `${id}-two`,
+        startedAt: instant(id === "a" ? 25 : 15),
+        calls: 2,
+        command: "./scripts/duplicate-command --two",
+        errorText: "ERROR: duplicate",
+        errors: true,
+      });
+    }
+    const delivery = memoryDelivery();
+    const result = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: acceptingGate(),
+      finalize: async (survivors) => {
+        const [first, ...rest] = survivors;
+        const recommendations = new Map<
+          string,
+          { action: "file" | "drop"; proposal: string; acceptance: string[]; duplicateOf?: string }
+        >();
+        recommendations.set(first!.fingerprint, {
+          action: "file",
+          proposal: "Add one documented guardrail for the duplicated behavior.",
+          acceptance: ["- [ ] The duplicated behavior stops."],
+        });
+        for (const finding of rest) {
+          recommendations.set(finding.fingerprint, {
+            action: "drop",
+            proposal: "",
+            acceptance: [],
+            duplicateOf: first!.fingerprint,
+          });
+        }
+        return { recommendations, model: "stub-finalizer", durationMs: 0 };
+      },
+    });
+    expect(result.report.action).toBe("filed");
+    expect(delivery.created.length).toBe(1);
+    expect(result.report.gate?.dropped).toBeGreaterThan(0);
+    const ledger = loadLedger(coachDirectory(stateDir));
+    expect(
+      Object.values(ledger.findings).some(
+        (entry) => entry.decision?.reason?.startsWith("duplicate of"),
+      ),
+    ).toBe(true);
+  });
+
+  test("an invalid finalizer answer files nothing", async () => {
+    const { repoDir, stateDir } = await workspace();
+    for (const id of ["a", "b"]) {
+      await writeSession(stateDir, repoDir, {
+        id,
+        startedAt: instant(id === "a" ? 30 : 20),
+        calls: 2,
+        command: `./scripts/${id}-invalid-final`,
+        errorText: "ERROR: invalid finalizer",
+        errors: true,
+      });
+    }
+    const delivery = memoryDelivery();
+    const result = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      delivery,
+      gate: acceptingGate(),
+      finalize: async () => {
+        throw new Error("the finalizer returned invalid JSON");
+      },
+    });
+    expect(result.report.action).toBe("failed");
+    expect(result.report.reason).toContain("finalizer");
+    expect(delivery.created.length).toBe(0);
+    expect(result.report.pending).toBeGreaterThan(0);
   });
 
   test("read tools leave evidence bytes identical", async () => {

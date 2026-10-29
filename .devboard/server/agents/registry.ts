@@ -574,7 +574,7 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     limits: {
       maxPerHour: { min: 1, max: 100, nullable: true },
       maxPending: { min: 1, max: 100, nullable: true },
-      default: { maxPerHour: null, maxPending: null },
+      default: { maxPerHour: 10, maxPending: 20 },
     },
     commands: SHARED_COMMANDS,
     issues: SHARED_ISSUES,

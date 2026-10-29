@@ -9,7 +9,7 @@ import { join, resolve } from "node:path";
 
 export const COACH_DIRECTORY = "coach";
 export const WORKER_VERSION = 1;
-export const LEDGER_VERSION = 1;
+export const LEDGER_VERSION = 2;
 export const PROJECTION_VERSION = 1;
 
 export function coachDirectory(stateDir: string): string {
