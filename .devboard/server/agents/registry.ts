@@ -172,8 +172,7 @@ export interface AgentDescriptor {
   commands: {
     start: "startAgent";
     stop: "stopAgent";
-    setLimits: "setAgentLimits";
-    setCadence: "setAgentCadence";
+    setSettings: "setAgentSettings";
   };
   issues: {
     testId: "agent-issue";
@@ -284,8 +283,7 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
     !isRecord(commands) ||
     commands.start !== "startAgent" ||
     commands.stop !== "stopAgent" ||
-    commands.setLimits !== "setAgentLimits" ||
-    commands.setCadence !== "setAgentCadence"
+    commands.setSettings !== "setAgentSettings"
   ) {
     throw new AgentRegistryError(`${id}: commands must use the shared agent command surface`);
   }
@@ -494,8 +492,7 @@ export function projectAgentSnapshot(
 const SHARED_COMMANDS = {
   start: "startAgent",
   stop: "stopAgent",
-  setLimits: "setAgentLimits",
-  setCadence: "setAgentCadence",
+  setSettings: "setAgentSettings",
 } as const;
 
 const SHARED_ISSUES = {

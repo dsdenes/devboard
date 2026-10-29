@@ -39,8 +39,7 @@
   let cadenceText = $state("");
   let maxPerHourText = $state("");
   let maxPendingText = $state("");
-  let cadenceError = $state<string | null>(null);
-  let limitsError = $state<string | null>(null);
+  let settingsError = $state<string | null>(null);
   let lastSettings = $state("");
 
   // A snapshot that changes the saved settings wins over the fields; typing
@@ -57,8 +56,7 @@
     maxPerHourText = current.limits.maxPerHour === null ? "" : String(current.limits.maxPerHour);
     maxPendingText =
       current.limits.maxPending === null ? "" : String(current.limits.maxPending);
-    cadenceError = null;
-    limitsError = null;
+    settingsError = null;
   });
 
   function stamp(value: string | null): string {
@@ -74,21 +72,6 @@
     });
   }
 
-  function saveCadence(): void {
-    const trimmed = cadenceText.trim();
-    if (!/^\d+$/.test(trimmed)) {
-      cadenceError = "The cadence must be an integer from 1 through 1440 minutes.";
-      return;
-    }
-    const minutes = Number(trimmed);
-    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
-      cadenceError = "The cadence must be an integer from 1 through 1440 minutes.";
-      return;
-    }
-    cadenceError = null;
-    agents.saveCadence(agentId, minutes);
-  }
-
   /** Empty is unlimited; undefined is invalid and sends nothing. */
   function parseLimit(value: string): number | null | undefined {
     const trimmed = value.trim();
@@ -98,15 +81,26 @@
     return Number.isInteger(parsed) && parsed >= 1 && parsed <= 100 ? parsed : undefined;
   }
 
-  function saveLimits(): void {
+  function saveSettings(): void {
+    const trimmed = cadenceText.trim();
+    const minutes = Number(trimmed);
+    if (
+      !/^\d+$/.test(trimmed) ||
+      !Number.isInteger(minutes) ||
+      minutes < 1 ||
+      minutes > 1440
+    ) {
+      settingsError = "The cadence must be an integer from 1 through 1440 minutes.";
+      return;
+    }
     const perHour = parseLimit(maxPerHourText);
     const pending = parseLimit(maxPendingText);
     if (perHour === undefined || pending === undefined) {
-      limitsError = "Both limits must be empty or integers from 1 through 100.";
+      settingsError = "Both limits must be empty or integers from 1 through 100.";
       return;
     }
-    limitsError = null;
-    agents.saveLimits(agentId, perHour, pending);
+    settingsError = null;
+    agents.saveSettings(agentId, minutes, perHour, pending);
   }
 </script>
 
@@ -168,86 +162,72 @@
         {/if}
       {/snippet}
       {#snippet footer()}
-        <div class="agent-settings" role="group" aria-label="Cadence and filing limits">
-          <div class="agent-settings__group">
-            <span class="agent-settings__title">Cadence</span>
-            <label class="agent-settings__field">
-              <span>Every</span>
-              <Input
-                type="number"
-                min="1"
-                max="1440"
-                step="1"
-                inputmode="numeric"
-                class="w-16 text-center"
-                data-testid="agent-cadence"
-                value={cadenceText}
-                oninput={(event) => (cadenceText = event.currentTarget.value)}
-              />
-              <span class="agent-settings__unit">min</span>
-            </label>
-            <span class="agent-settings__run">
-              Last run
-              <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
-                {stamp(snapshot?.cadence.lastRunAt ?? null)}
-              </span>
+        <div class="agent-settings" role="group" aria-label="Agent settings">
+          <label class="agent-settings__field">
+            <span>Every</span>
+            <Input
+              type="number"
+              min="1"
+              max="1440"
+              step="1"
+              inputmode="numeric"
+              class="w-16 text-center"
+              data-testid="agent-cadence"
+              value={cadenceText}
+              oninput={(event) => (cadenceText = event.currentTarget.value)}
+            />
+            <span class="agent-settings__unit">min</span>
+          </label>
+          <span class="agent-settings__run">
+            Last run
+            <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
+              {stamp(snapshot?.cadence.lastRunAt ?? null)}
             </span>
-            <span class="agent-settings__run">
-              Next run
-              <span class="mono" data-testid="agent-next-run" title={snapshot?.cadence.nextRunAt ?? "—"}>
-                {stamp(snapshot?.cadence.nextRunAt ?? null)}
-              </span>
+          </span>
+          <span class="agent-settings__run">
+            Next run
+            <span class="mono" data-testid="agent-next-run" title={snapshot?.cadence.nextRunAt ?? "—"}>
+              {stamp(snapshot?.cadence.nextRunAt ?? null)}
             </span>
-            <Button
-              variant="secondary"
-              data-testid="agent-save-cadence"
-              data-command={`issues.${agentId}.cadence`}
-              onclick={saveCadence}
-            >
-              Save cadence
-            </Button>
-          </div>
-          <div class="agent-settings__group">
-            <span class="agent-settings__title">Filing limits</span>
-            <label class="agent-settings__field">
-              <span>Per hour</span>
-              <Input
-                type="number"
-                min="1"
-                max="100"
-                step="1"
-                inputmode="numeric"
-                placeholder="unlimited"
-                class="w-20 text-center"
-                data-testid="agent-limit-hour"
-                value={maxPerHourText}
-                oninput={(event) => (maxPerHourText = event.currentTarget.value)}
-              />
-            </label>
-            <label class="agent-settings__field">
-              <span>Open issues</span>
-              <Input
-                type="number"
-                min="1"
-                max="100"
-                step="1"
-                inputmode="numeric"
-                placeholder="unlimited"
-                class="w-20 text-center"
-                data-testid="agent-limit-pending"
-                value={maxPendingText}
-                oninput={(event) => (maxPendingText = event.currentTarget.value)}
-              />
-            </label>
-            <Button
-              variant="secondary"
-              data-testid="agent-save-limits"
-              data-command={`issues.${agentId}.limits`}
-              onclick={saveLimits}
-            >
-              Save limits
-            </Button>
-          </div>
+          </span>
+          <label class="agent-settings__field">
+            <span>Per hour</span>
+            <Input
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              inputmode="numeric"
+              placeholder="unlimited"
+              class="w-20 text-center"
+              data-testid="agent-limit-hour"
+              value={maxPerHourText}
+              oninput={(event) => (maxPerHourText = event.currentTarget.value)}
+            />
+          </label>
+          <label class="agent-settings__field">
+            <span>Open issues</span>
+            <Input
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              inputmode="numeric"
+              placeholder="unlimited"
+              class="w-20 text-center"
+              data-testid="agent-limit-pending"
+              value={maxPendingText}
+              oninput={(event) => (maxPendingText = event.currentTarget.value)}
+            />
+          </label>
+          <Button
+            variant="secondary"
+            data-testid="agent-save-settings"
+            data-command={`issues.${agentId}.settings`}
+            onclick={saveSettings}
+          >
+            Save
+          </Button>
         </div>
       {/snippet}
     </PageHeader>
@@ -274,7 +254,7 @@
       </div>
     {/if}
 
-    {#if snapshot?.error !== null || sync.error !== null || cadenceError !== null || limitsError !== null}
+    {#if snapshot?.error !== null || sync.error !== null || settingsError !== null}
       <div class="agent-page__alerts">
         {#if sync.error !== null}
           <p class="issues-error" data-testid="agent-sync-error" role="alert">{sync.error}</p>
@@ -282,11 +262,10 @@
         {#if snapshot?.error !== null && snapshot?.error !== undefined}
           <p class="issues-error" data-testid="agent-error" role="alert">{snapshot.error}</p>
         {/if}
-        {#if cadenceError !== null}
-          <p class="issues-error" data-testid="agent-cadence-error" role="alert">{cadenceError}</p>
-        {/if}
-        {#if limitsError !== null}
-          <p class="issues-error" data-testid="agent-limits-error" role="alert">{limitsError}</p>
+        {#if settingsError !== null}
+          <p class="issues-error" data-testid="agent-settings-error" role="alert">
+            {settingsError}
+          </p>
         {/if}
       </div>
     {/if}
@@ -347,32 +326,13 @@
     margin: 0;
   }
 
-  /* Two labeled groups: the cadence that schedules a scan and the limits that
-     bound it. Each group wraps as a unit so a field never separates from its
-     save control. */
+  /* One unlabeled row of fields under one Save control. */
   .agent-settings {
     align-items: center;
     display: flex;
     flex-wrap: wrap;
-    gap: 6px 24px;
+    gap: 6px 14px;
     width: 100%;
-  }
-
-  .agent-settings__group {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 10px;
-    min-width: 0;
-  }
-
-  .agent-settings__title {
-    color: var(--muted-foreground);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    line-height: 1.2;
-    text-transform: uppercase;
   }
 
   .agent-settings__field {

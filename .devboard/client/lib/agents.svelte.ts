@@ -118,12 +118,13 @@ export class AgentsStore {
     connection.send({ type: "stopAgent", id });
   }
 
-  saveLimits(id: string, maxPerHour: number | null, maxPending: number | null): void {
-    connection.send({ type: "setAgentLimits", id, maxPerHour, maxPending });
-  }
-
-  saveCadence(id: string, minutes: number): void {
-    connection.send({ type: "setAgentCadence", id, minutes });
+  saveSettings(
+    id: string,
+    minutes: number,
+    maxPerHour: number | null,
+    maxPending: number | null,
+  ): void {
+    connection.send({ type: "setAgentSettings", id, minutes, maxPerHour, maxPending });
   }
 
   disableTimer(id: string): void {

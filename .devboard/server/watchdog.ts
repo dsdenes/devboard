@@ -756,17 +756,26 @@ export class WatchdogActivity implements AgentAdapter {
     return { ok: true };
   }
 
-  setLimits(maxPerHour: unknown, maxPending: unknown): AgentCommandResult {
+  /** Saves the cadence and both caps as one settings write. */
+  setSettings(minutes: unknown, maxPerHour: unknown, maxPending: unknown): AgentCommandResult {
+    if (!isValidWatchdogCadence(minutes)) {
+      return { ok: false, message: "The cadence must be an integer from 1 through 1440 minutes." };
+    }
     if (!isValidWatchdogLimit(maxPerHour) || !isValidWatchdogLimit(maxPending)) {
       return { ok: false, message: "Both limits must be empty or integers from 1 through 100." };
     }
     const settings = readWatchdogSettings(this.watchdogDir);
     try {
-      writeWatchdogSettings(this.watchdogDir, { ...settings, maxPerHour, maxPending });
+      writeWatchdogSettings(this.watchdogDir, {
+        ...settings,
+        intervalMinutes: minutes,
+        maxPerHour,
+        maxPending,
+      });
     } catch (error) {
       return {
         ok: false,
-        message: `Could not save the limits: ${
+        message: `Could not save the settings: ${
           error instanceof Error ? error.message : String(error)
         }`,
       };
@@ -775,7 +784,8 @@ export class WatchdogActivity implements AgentAdapter {
     if (worker !== undefined && processAlive(worker.pid) && resolve(worker.stateDir) === this.stateDir) {
       try {
         writeWatchdogCommand(controlDirectory(this.watchdogDir), {
-          type: "limits",
+          type: "settings",
+          intervalMinutes: minutes,
           maxPerHour,
           maxPending,
         });
@@ -790,41 +800,6 @@ export class WatchdogActivity implements AgentAdapter {
     }
     this.startError = null;
     if (this.shouldPersistProjection()) this.persistProjection();
-    return { ok: true };
-  }
-
-  setCadence(minutes: unknown): AgentCommandResult {
-    if (!isValidWatchdogCadence(minutes)) {
-      return { ok: false, message: "The cadence must be an integer from 1 through 1440 minutes." };
-    }
-    const settings = readWatchdogSettings(this.watchdogDir);
-    try {
-      writeWatchdogSettings(this.watchdogDir, { ...settings, intervalMinutes: minutes });
-    } catch (error) {
-      return {
-        ok: false,
-        message: `Could not save the cadence: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      };
-    }
-    const worker = readWorkerState(this.watchdogDir);
-    if (worker !== undefined && processAlive(worker.pid) && resolve(worker.stateDir) === this.stateDir) {
-      try {
-        writeWatchdogCommand(controlDirectory(this.watchdogDir), {
-          type: "cadence",
-          intervalMinutes: minutes,
-        });
-      } catch (error) {
-        return {
-          ok: false,
-          message: `Could not reach the worker: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        };
-      }
-    }
-    this.startError = null;
     return { ok: true };
   }
 

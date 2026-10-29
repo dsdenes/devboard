@@ -16,8 +16,8 @@ export interface AgentAdapter {
   replay(target: { send(data: string): unknown }): void;
   start(): Promise<AgentCommandResult>;
   stop(): AgentCommandResult;
-  setLimits(maxPerHour: unknown, maxPending: unknown): AgentCommandResult;
-  setCadence(minutes: unknown): AgentCommandResult;
+  /** Saves the cadence and both caps as one settings write. */
+  setSettings(minutes: unknown, maxPerHour: unknown, maxPending: unknown): AgentCommandResult;
   /** Only the descriptor with a legacy timer gate implements this. */
   disableTimer?(): Promise<AgentCommandResult>;
 }

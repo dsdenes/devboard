@@ -474,11 +474,15 @@ export class ScoutBridge implements AgentAdapter {
   }
 
   /**
-   * Saves both caps. The settings file is the durable source, so a save shows
-   * after a reload and is read by the next worker start; a running worker is
-   * told immediately through its command channel.
+   * Saves the cadence and both caps as one settings write. The settings file is
+   * the durable source, so a save shows after a reload and is read by the next
+   * worker start; a running worker applies it immediately through its command
+   * channel.
    */
-  setLimits(maxPerHour: unknown, maxPending: unknown): AgentCommandResult {
+  setSettings(minutes: unknown, maxPerHour: unknown, maxPending: unknown): AgentCommandResult {
+    if (!isValidCadence(minutes)) {
+      return { ok: false, message: "The cadence must be an integer from 1 through 1440 minutes." };
+    }
     if (!isValidLimit(maxPerHour) || !isValidLimit(maxPending)) {
       return { ok: false, message: "Both limits must be empty or integers from 1 through 100." };
     }
@@ -487,58 +491,24 @@ export class ScoutBridge implements AgentAdapter {
     try {
       writeSettings(settingsPath(this.stateDir, this.repoDir), {
         ...settings,
+        intervalMinutes: minutes,
         maxPerHour,
         maxPending,
       });
     } catch (error) {
       return {
         ok: false,
-        message: `Could not save the limits: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Could not save the settings: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
     const owner = this.lockOwner();
     if (this.owned(owner)) {
       try {
         writeCommand(controlDirectory(this.stateDir, this.repoDir), {
-          type: "limits",
+          type: "settings",
+          intervalMinutes: minutes,
           maxPerHour,
           maxPending,
-        });
-      } catch (error) {
-        return {
-          ok: false,
-          message: `Could not reach the worker: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-    }
-    this.startError = null;
-    this.refresh();
-    return { ok: true };
-  }
-
-  setCadence(minutes: unknown): AgentCommandResult {
-    if (!isValidCadence(minutes)) {
-      return { ok: false, message: "The cadence must be an integer from 1 through 1440 minutes." };
-    }
-    const state = this.currentState();
-    const settings = this.settings(state);
-    try {
-      writeSettings(settingsPath(this.stateDir, this.repoDir), {
-        ...settings,
-        intervalMinutes: minutes,
-      });
-    } catch (error) {
-      return {
-        ok: false,
-        message: `Could not save the cadence: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
-    const owner = this.lockOwner();
-    if (this.owned(owner)) {
-      try {
-        writeCommand(controlDirectory(this.stateDir, this.repoDir), {
-          type: "cadence",
-          intervalMinutes: minutes,
         });
       } catch (error) {
         return {
