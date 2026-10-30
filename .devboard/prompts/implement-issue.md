@@ -89,7 +89,7 @@ the prerequisite in another agent's place.
 ## Landing
 
 Commit in the worktree on the run's own task branch. Verify the canonical line with one composite
-integration check before the push and once after the push; never run a bare fetch:
+integration check before the push; never run a bare fetch:
 
 ```sh
 git fetch origin main --quiet &&
@@ -98,8 +98,9 @@ git rev-list --left-right --count HEAD...origin/main &&
 git merge-base --is-ancestor <commit> origin/main
 ```
 
-Read `git status --short --branch` once alongside the check. Fetch at most twice in a session and
-at most once per turn, and fetch again only after a push, merge, or rebase happened since the
+Read `git status --short --branch` once alongside the check. Use at most one
+`git merge-base --is-ancestor` in that check and never chain per-commit ancestry probes. Fetch at
+most twice in a session, and fetch again only after a push, merge, or rebase happened since the
 previous fetch.
 
 Land it with this one sequence in the canonical checkout, on `main`:
@@ -121,25 +122,35 @@ case "$upstream" in
 esac
 ```
 
-`git rev-parse HEAD` and `git ls-remote origin refs/heads/main` must print the same SHA: the new
-local HEAD equals the SHA `ls-remote` names for `refs/heads/main`, and that equality proves the
-landing commit reached the canonical line, so ancestry follows. The block prints both commits and
-exits nonzero when they differ. The trailing check reads `git status --short --branch` and exits
-nonzero when it reports commits ahead of upstream, so the block proves both the matching SHAs and
-no unlanded local commit. Run this block once per landing attempt, and never push again after one
-succeeds: never issue another `git push origin main` and never repeat its verification, and add no
-`tail` pipe, extra `rev-parse`, `fetch`, or `PIPESTATUS` probe around it. State integration only
-from a `git merge-base --is-ancestor` exit status or the `git ls-remote` ref value; never use
-`git log`, `git status`, or `head`/`tail`-trimmed merge output as the push proof (the ahead check
-above is not one either). Use at most one `git merge-base --is-ancestor` per composite check, as
-above; never chain per-commit probes, and never re-verify a commit already proven to be the remote
-tip. If an older commit genuinely needs checking, run exactly one such probe and report its exit
-status. The landing merge is fast-forward only: never `--no-ff`, `--no-edit`, or a preparatory
-`git merge origin/main` on `main`. If the push is rejected or `main` moved before landing, fetch
-the new tip, rebase the task branch onto `origin/main` inside the worktree, rerun the invalidated
-checks, and push again through this same block.
+The block prints both commits and exits nonzero when they differ or when the branch line reports
+commits ahead of upstream. Run it once per landing attempt and never push again after one succeeds;
+add no `tail` pipe, extra `rev-parse`, `fetch`, or `PIPESTATUS` probe around it. The landing merge
+is fast-forward only: never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main` on
+`main`. If the push is rejected or `main` moved before landing, fetch the new tip, rebase the task
+branch onto `origin/main` inside the worktree, rerun the invalidated checks, and push again through
+this same block.
 
-After the proof, release from the integration checkout with the single Publish invocation below.
+### Done check
+
+After the push, run this one block as a unit from the canonical checkout and report it as run:
+
+```sh
+git fetch origin main
+git status --short --branch
+git rev-list --left-right --count HEAD...origin/main
+git ls-remote origin refs/heads/main
+```
+
+Both counts must be `0 0` after the push, and the `ls-remote` tip must equal `HEAD` before done is
+reported. `0 0` means `HEAD` and the fetched `origin/main` name the same commit, so the tip equality
+is read directly from the same block; the `git status --short --branch` line must not report commits
+ahead of or behind its upstream. The `ls-remote` equality is the authoritative push proof; never use
+`git log` or `head`/`tail`-trimmed merge output as that proof. Never replace this block with
+separate `git rev-parse`, `git merge-base`, or `git rev-list --count <sha>` probes, never chain
+per-commit ancestry probes, and never re-verify a commit already proven to be the remote tip. Run it
+once per landing attempt; a later fetch, merge, or rebase invalidates the previous result.
+
+After that proof, release from the integration checkout with the single Publish invocation below.
 
 Untracked scratch entries already present under `.devboard/` are expected status noise: they never
 justify another fetch, merge, or commit. Create no new scratch file outside `.devboard/`. Replace
