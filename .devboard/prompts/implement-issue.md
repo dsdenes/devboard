@@ -81,12 +81,20 @@ the prerequisite in another agent's place.
 
 ## Edit calls
 
-- Always pass `path` on an `edit` call; omitting it fails schema validation.
-- Make `old_string` unique in the target file. When the anchor text repeats, extend it with
-  unique surrounding lines or pass `replace_all: true`.
-- Never send `new_string` identical to `old_string`; such a call changes nothing.
-- After a `Found N occurrences` error, re-read the file and widen the anchor at the reported
-  line. Never retry the same `old_string`.
+- Before the first `edit` on a file, `read` that file and the exact line range you are changing.
+  Never edit a section you have not read in this run; if the file changed since that read, read
+  it again before acting.
+- Every `edit` call passes a `path`. Omitting it fails validation with
+  `path must be a string (was missing)`; the tool does not infer the file from the content.
+- Choose an `old_string` that occurs exactly once in the target file: quote enough surrounding
+  lines — the enclosing function signature plus its first body line, or the whole block — that
+  the anchor cannot match a second site. When one replacement must genuinely hit every
+  occurrence, pass `replace_all: true` deliberately; never guess it.
+- Never send `new_string` identical to `old_string`: that is a no-op that fails with
+  `Edits to <path> resulted in no changes being made`. State the real change instead.
+- After a `Found N occurrences` error, do not retry the same anchor: re-read the file at each
+  reported line, extend the anchor with unique context, or pass `replace_all: true` when every
+  hit belongs to the change.
 
 ## Shell calls
 
