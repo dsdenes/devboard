@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { createApp, projectLabel } from "./app";
 import { journalFile, journalKey } from "./journal";
 import { toolListPayload } from "../mcp/catalog";
+import { recordToolInvocation } from "../mcp/invocations";
 import { ProviderService, saveSubscriptions } from "./providers";
 import { acquireLock } from "../issues/lock";
 import { testProviderService } from "./fixtures/test-providers";
@@ -481,13 +482,19 @@ describe("createApp", () => {
     }
   });
 
-  test("answers getMcpTools with exactly the tools/list payload", async () => {
-    const { server, url } = await startServer();
+  test("answers getMcpTools with the tools/list payload and per-tool invocation counts", async () => {
+    const { server, root, url } = await startServer();
 
     try {
+      const stateDir = join(root, "state");
+      recordToolInvocation(stateDir, root, "journal_search");
+      recordToolInvocation(stateDir, root, "journal_search");
+      recordToolInvocation(stateDir, root, "devboard_status");
+
       expect(await exchange(url, { type: "getMcpTools" })).toEqual({
         type: "mcpTools",
         tools: toolListPayload().tools,
+        invocations: { devboard_status: 1, journal_search: 2 },
       });
     } finally {
       server.stop(true);

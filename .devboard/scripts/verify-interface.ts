@@ -21,6 +21,7 @@ import { journalKey } from "../server/journal";
 import { saveSubscriptions } from "../server/providers";
 import { REDESIGN_INSTRUCTION as redesignInstruction, REMOVAL_INSTRUCTION as removalInstruction } from "../server/feedback";
 import { toolListPayload } from "../mcp/catalog";
+import { recordToolInvocation } from "../mcp/invocations";
 import { stateFile } from "../server/state";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { dashboardsFor, freePort, processRunning, run, waitFor } from "./verification";
@@ -1114,6 +1115,15 @@ try {
   // state stays under the excluded `.devboard/` tree.
   const stateDir = join(host, ".devboard", ".tmp", "state");
   await mkdir(stateDir, { recursive: true });
+  // Two tools carry recorded calls so the page renders both a plural and a
+  // singular label, and every other catalog tool renders zero.
+  const expectedInvocations: Record<string, number> = {
+    journal_search: 2,
+    devboard_status: 1,
+  };
+  for (const [name, count] of Object.entries(expectedInvocations)) {
+    for (let call = 0; call < count; call += 1) recordToolInvocation(stateDir, host, name);
+  }
   const providerStamp = new Date().toISOString();
   saveSubscriptions(stateDir, [
     {
@@ -2209,12 +2219,13 @@ try {
     name,
     title,
     description,
+    invocations: expectedInvocations[name] ?? 0,
   }));
   const layoutBeforeDevboard = await page.eval<string>(
     `localStorage.getItem("devboard.layout.v1") ?? ""`,
   );
   const framesBeforeDevboard = await page.eval<string[]>(
-    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion"))`,
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools"))`,
   );
   await page.click('[data-testid="mode-devboard"]');
   await page.wait(
@@ -2283,7 +2294,14 @@ try {
     workspace: boolean;
     list: boolean;
     count: number;
-    rows: Array<{ tool: string; name: string; title: string; description: string }>;
+    rows: Array<{
+      tool: string;
+      name: string;
+      title: string;
+      description: string;
+      invocations: string;
+      label: string;
+    }>;
     controls: number;
     commands: number;
   }>(`(() => {
@@ -2294,12 +2312,17 @@ try {
       workspace: workspace !== null,
       list: list !== null,
       count: rows.length,
-      rows: rows.map((row) => ({
-        tool: row.getAttribute("data-tool") ?? "",
-        name: row.querySelector('.devboard-tool__name')?.textContent ?? "",
-        title: row.querySelector('.devboard-tool__title')?.textContent ?? "",
-        description: row.querySelector('.devboard-tool__description')?.textContent ?? "",
-      })),
+      rows: rows.map((row) => {
+        const stats = row.querySelector('[data-testid="mcp-tool-invocations"]');
+        return {
+          tool: row.getAttribute("data-tool") ?? "",
+          name: row.querySelector('.devboard-tool__name')?.textContent ?? "",
+          title: row.querySelector('.devboard-tool__title')?.textContent ?? "",
+          description: row.querySelector('.devboard-tool__description')?.textContent ?? "",
+          invocations: stats?.getAttribute("data-invocations") ?? "",
+          label: stats?.textContent?.trim() ?? "",
+        };
+      }),
       controls:
         workspace === null
           ? -1
@@ -2320,7 +2343,8 @@ try {
       row.tool !== expected.name ||
       row.name !== expected.name ||
       row.title !== expected.title ||
-      row.description !== expected.description
+      row.description !== expected.description ||
+      row.invocations !== String(expected.invocations)
     );
   });
   check(toolMismatch < 0, "a rendered MCP tool differs from the catalog", {
@@ -2328,6 +2352,19 @@ try {
     rendered: toolPage.rows[toolMismatch],
     expected: catalog[toolMismatch],
   });
+  const journalLabel = toolPage.rows.find((row) => row.tool === "journal_search")?.label ?? "";
+  const statusLabel = toolPage.rows.find((row) => row.tool === "devboard_status")?.label ?? "";
+  check(
+    journalLabel === "2 invocations" && statusLabel === "1 invocation",
+    "a rendered invocation count is not the server's count with its singular or plural label",
+    { journalLabel, statusLabel },
+  );
+  recordToolInvocation(stateDir, host, "journal_search");
+  await page.wait(
+    `document.querySelector('[data-testid="mcp-tool"][data-tool="journal_search"] ` +
+      `[data-testid="mcp-tool-invocations"]')?.getAttribute("data-invocations") === "3"`,
+    "the refreshed invocation count",
+  );
 
   const devboardSidebar = await page.eval<{
     entries: number;
@@ -2430,7 +2467,7 @@ try {
     "Devboard from the palette",
   );
   const framesAfterDevboard = await page.eval<string[]>(
-    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion"))`,
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools"))`,
   );
   check(
     JSON.stringify(framesAfterDevboard) === JSON.stringify(framesBeforeDevboard),

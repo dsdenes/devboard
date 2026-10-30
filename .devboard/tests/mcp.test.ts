@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { MCP_TOOLS, MCP_TOOL_NAMES } from "../mcp/catalog";
 import { GOAL_TEXT_MAX_BYTES } from "../mcp/goals";
 import { ISSUE_BODY_MAX_BYTES } from "../mcp/issues";
 import { callTool } from "../mcp/tools";
+import { toolInvocationCounts, toolInvocationFile } from "../mcp/invocations";
 import { runVerification, VERIFICATION_OUTPUT_MAX_BYTES } from "../mcp/verification";
 import { startStdio } from "../mcp/index";
 import type { McpContext } from "../mcp/context";
@@ -317,6 +318,54 @@ describe("MCP transport and catalog", () => {
     const result = reply.result as Record<string, unknown>;
     expect(result.isError).toBe(true);
     expect(String((result.content as Array<{ text: string }>)[0]?.text)).toContain("Unknown tool");
+  });
+
+  test("counts known tools/call requests and never counts an unknown tool", async () => {
+    const { context, stateDir, repoDir } = await workspace();
+
+    const replies = await stdio(context, [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "devboard_status", arguments: {} },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "devboard_status", arguments: {} },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "nope", arguments: {} },
+      }),
+    ]);
+
+    expect((replies[0]?.result as Record<string, unknown>).isError).toBeUndefined();
+    expect((replies[1]?.result as Record<string, unknown>).isError).toBeUndefined();
+    expect(toolInvocationCounts(stateDir, repoDir)).toEqual({ devboard_status: 2 });
+  });
+
+  test("a damaged counter file never fails a tools/call request", async () => {
+    const { context, stateDir, repoDir } = await workspace();
+    const counter = toolInvocationFile(stateDir, repoDir);
+    await mkdir(dirname(counter), { recursive: true });
+    await writeFile(counter, "this is not a sqlite database");
+
+    const replies = await stdio(context, [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "devboard_status", arguments: {} },
+      }),
+    ]);
+
+    expect((replies[0]?.result as Record<string, unknown>).isError).toBeUndefined();
+    expect(toolInvocationCounts(stateDir, repoDir)).toEqual({});
   });
 
   test("secret values never reach a tool response", async () => {

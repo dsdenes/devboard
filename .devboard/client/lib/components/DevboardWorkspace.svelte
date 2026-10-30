@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { agentRegistry } from "../../../server/agents/registry";
+  import { connection } from "../connection.svelte";
   import { devboard } from "../devboard.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import AgentPage from "./AgentPage.svelte";
@@ -13,6 +15,15 @@
 
   const agentDescriptor = $derived(tab === null ? undefined : agentRegistry.get(tab.kind));
   const count = $derived(devboard.tools.length);
+
+  // Counts change while a peer runs, so the page re-reads them on the same
+  // cadence as the version poll instead of waiting for a reload.
+  onMount(() => {
+    const timer = setInterval(() => {
+      if (connection.open) devboard.request();
+    }, 5000);
+    return () => clearInterval(timer);
+  });
 </script>
 
 {#if agentDescriptor !== undefined}
@@ -39,6 +50,13 @@
             <div class="devboard-tool__head">
               <code class="devboard-tool__name">{tool.name}</code>
               <span class="devboard-tool__title">{tool.title}</span>
+              <span
+                class="devboard-tool__invocations"
+                data-testid="mcp-tool-invocations"
+                data-invocations={tool.invocations}
+              >
+                {tool.invocations} {tool.invocations === 1 ? "invocation" : "invocations"}
+              </span>
             </div>
             <p class="devboard-tool__description">{tool.description}</p>
           </article>
@@ -113,5 +131,13 @@
     line-height: 1.4;
     margin: 0;
     overflow-wrap: anywhere;
+  }
+
+  .devboard-tool__invocations {
+    color: var(--muted-foreground);
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    margin-left: auto;
   }
 </style>

@@ -54,6 +54,7 @@ import { DesignBridge, type DesignBridgeOptions } from "./design";
 import { CoachActivity, type CoachActivityOptions } from "./coach";
 import { openJournal, type Journal, type JournalKind } from "./journal";
 import { toolListPayload } from "../mcp/catalog";
+import { toolInvocationCounts } from "../mcp/invocations";
 import {
   DISCOVER_SKILLS,
   artifactsStale,
@@ -7043,7 +7044,11 @@ export function createApp(options: AppOptions) {
             sendVersion(ws);
           } else if (command.type === "getMcpTools") {
             const catalog = toolListPayload();
-            send(ws, { type: "mcpTools", tools: catalog.tools });
+            send(ws, {
+              type: "mcpTools",
+              tools: catalog.tools,
+              invocations: toolInvocationCounts(stateDir, repoDir),
+            });
           } else if (command.type === "getIssues") {
             issues.replay(ws);
           } else if (command.type === "getIssuesRun") {

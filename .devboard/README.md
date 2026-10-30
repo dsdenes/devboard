@@ -84,11 +84,14 @@ the draft.
 The Devboard page is `data-testid="devboard-workspace"` and holds
 `data-testid="mcp-tools-list"`: one compact `data-testid="mcp-tool"` row per tool the Devboard MCP
 server answers `tools/list` with, carrying `data-tool="<tool name>"` and rendering the tool's name,
-its title, and its description verbatim in catalog order. The page reads server-provided data only:
-it renders no button, input, copy control, or link, issues no `tools/call`, writes no clipboard,
-and adds no roster of its own, so adding or reordering a catalog entry changes the page on the
-next server start with no client-source edit. The catalog arrives through the dashboard's existing
-read-only `getMcpTools` command; no HTTP route or second socket is involved.
+its title, its description verbatim in catalog order, and a `data-testid="mcp-tool-invocations"`
+count with `data-invocations="<count>"` and an `N invocation` or `N invocations` label. The page
+reads server-provided data only: it renders no button, input, copy control, or link, issues no
+`tools/call`, writes no clipboard, and adds no roster of its own, so adding or reordering a
+catalog entry changes the page on the next server start with no client-source edit. The catalog
+and its counts arrive through the dashboard's existing read-only `getMcpTools` command; no HTTP
+route or second socket is involved. While the socket is open the page asks for that frame every
+five seconds, so counts follow calls a peer makes without a reload.
 
 A reload restores the active mode, each mode's open page, sidebar and split sizes, and theme. All
 of that state lives in `localStorage`; none of it is sent to the server. A layout snapshot written
@@ -1966,6 +1969,14 @@ sorted by name, and answers `tools/call`. An unknown method returns JSON-RPC err
 unknown tool returns an error result without a side effect. It exits cleanly on stdin EOF and
 starts no HTTP listener.
 
+Every `tools/call` naming a catalog tool increments that tool's count in
+`<stateDir>/mcp/tool-invocations/<repository key>.db`, a SQLite table with one bounded row per
+tool name. The key is the 24-hex SHA-256 prefix of the resolved `REPO_DIR`, the same key the
+journal and dashboard state use, so peers and the dashboard of one repository share counts while
+two repositories that share a harness never mix them. The write happens when the request arrives,
+the update is atomic across peer processes, and a failed or damaged counter never fails the tool
+call; `getMcpTools` reports the table as the `invocations` map and a missing file as no counts.
+
 ### Read tools
 
 |Tool|Inputs|Bounds|
@@ -2641,6 +2652,7 @@ The client sends:
 { "type": "getGoal" }
 { "type": "getProject" }
 { "type": "getVersion" }
+{ "type": "getMcpTools" }
 { "type": "getIssues" }
 { "type": "getIssuesRun", "runId": "2026-10-27T10-00-00-000Z" }
 { "type": "startIssues" }
@@ -2690,6 +2702,9 @@ The client sends:
 - `getGoal` reads the goal document from disk and answers with its complete contents; an
   absent document answers with empty text, which shows `Create goal` and keeps the lifecycle
   start disabled.
+- `getMcpTools` answers `mcpTools` with `tools`, the exact `tools/list` payload, and
+  `invocations`, a map from tool name to how many `tools/call` requests named it for this
+  repository. A tool that was never called is absent from the map and the page renders zero.
 - `getProject` answers with the page heading label. `path` is `REPO_DIR` relative to the user's
   home directory when the repository lies inside it, and the absolute path otherwise.
 - `getVersion` answers with `versionState`: `running` is the harness package version the
