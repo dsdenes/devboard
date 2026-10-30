@@ -310,9 +310,12 @@ and save. It shows each key's masked value, status (`ok`, `near limit`, `exhaust
 the key it started with; the next peer resolves the selection again.
 
 Credentials live in `<stateDir>/providers/credentials.json` (directory `0700`, file `0600`,
-atomic replacement). The file survives a dashboard restart and is never removed by
-`bun run cleanup` or the watchdog sweep, however old it is. Generated per-peer agent directories
-live beside it under `<stateDir>/providers/agents/<selection-id>/`. No key is ever returned by a
+atomic replacement). A file whose envelope is unusable is moved aside, and a file with only some
+unusable entries is copied to `credentials.json.damaged-<timestamp>-<random>` before the loadable
+entries are rewritten, so the original bytes stay recoverable. The file survives a dashboard
+restart and is never removed by `bun run cleanup` or the watchdog sweep, however old it is.
+Generated per-peer agent directories live beside it under
+`<stateDir>/providers/agents/<selection-id>/`. No key is ever returned by a
 command or event, written to the journal or activity log, or placed in a process's argv; the
 only value the interface receives is a mask ending in at most the last four characters. The
 durable state file under `<stateDir>/state/` carries no key material.

@@ -7,7 +7,7 @@ import {
   utimesSync,
 } from "node:fs";
 import { join } from "node:path";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import {
   ELIGIBILITY_THRESHOLD,
   MODEL_ROLES,
@@ -58,6 +58,35 @@ function subscription(
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
+}
+
+/** One usable subscription beside an entry missing its required `enabled` flag. */
+function damagedCredentials(): string {
+  return `${JSON.stringify(
+    {
+      version: 1,
+      subscriptions: [
+        subscription("kept", "opencode-go", { key: "sk-kept-key-1234" }),
+        {
+          id: "lost",
+          provider: "openrouter",
+          label: "lost",
+          key: "or-lost-key-9999",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+function writeDamagedCredentials(stateDir: string): string {
+  mkdirSync(join(stateDir, "providers"), { recursive: true, mode: 0o700 });
+  const original = damagedCredentials();
+  writeFileSync(credentialsPath(stateDir), original);
+  return original;
 }
 
 interface GoWindow {
@@ -147,6 +176,51 @@ describe("credential store", () => {
     expect(maskKey("short")).toBe("••••");
     expect(readdirSync(join(stateDir, "providers")).filter((name) => name.endsWith(".tmp"))).toEqual(
       [],
+    );
+  });
+
+  test("preserves the whole file and keeps the loadable entries when one entry is malformed", () => {
+    const stateDir = temporaryRoot();
+    const original = writeDamagedCredentials(stateDir);
+
+    const loaded = loadSubscriptions(stateDir);
+    expect(loaded.subscriptions.map((entry) => entry.id)).toEqual(["kept"]);
+    expect(loaded.preserved).toBeDefined();
+    expect(readFileSync(loaded.preserved as string, "utf8")).toBe(original);
+    expect(statSync(loaded.preserved as string).mode & 0o777).toBe(0o600);
+
+    const live = readFileSync(credentialsPath(stateDir), "utf8");
+    expect(live).toContain("sk-kept-key-1234");
+    expect(live).not.toContain("or-lost-key-9999");
+
+    const again = loadSubscriptions(stateDir);
+    expect(again.subscriptions.map((entry) => entry.id)).toEqual(["kept"]);
+    expect(again.preserved).toBeUndefined();
+    expect(
+      readdirSync(join(stateDir, "providers")).filter((name) => name.includes(".damaged-")),
+    ).toHaveLength(1);
+  });
+
+  test("a later save keeps the loaded subscription and leaves the preserved file intact", () => {
+    const stateDir = temporaryRoot();
+    writeDamagedCredentials(stateDir);
+    const providers = new ProviderService({ stateDir, env: {} });
+
+    expect(providers.list().map((entry) => entry.id)).toEqual(["kept"]);
+    expect(providers.setEnabled("kept", false)).toEqual({ ok: true });
+
+    const reloaded = loadSubscriptions(stateDir);
+    expect(reloaded.subscriptions.map((entry) => entry.id)).toEqual(["kept"]);
+    expect(reloaded.subscriptions[0]?.key).toBe("sk-kept-key-1234");
+    expect(reloaded.subscriptions[0]?.enabled).toBe(false);
+    expect(reloaded.preserved).toBeUndefined();
+
+    const preserved = readdirSync(join(stateDir, "providers")).filter((name) =>
+      name.includes(".damaged-"),
+    );
+    expect(preserved).toHaveLength(1);
+    expect(readFileSync(join(stateDir, "providers", String(preserved[0])), "utf8")).toContain(
+      "or-lost-key-9999",
     );
   });
 

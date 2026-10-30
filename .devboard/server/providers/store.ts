@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  copyFileSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -37,7 +38,10 @@ interface CredentialsEnvelope {
 
 export interface LoadedCredentials {
   subscriptions: StoredSubscription[];
-  /** A path moved aside because its bytes were unusable, when that happened. */
+  /**
+   * A path holding the bytes that were read, when some of them could not be
+   * loaded. The live file keeps only the subscriptions this version accepts.
+   */
   preserved: string | undefined;
 }
 
@@ -87,8 +91,60 @@ function preserve(path: string): string | undefined {
 }
 
 /**
+ * Copies a file aside before its unusable entries are rewritten away, so the
+ * rejected bytes stay recoverable. Moves the original aside instead when the
+ * copy cannot be made.
+ */
+function preserveCopy(path: string): string | undefined {
+  const aside = `${path}.damaged-${Date.now()}-${randomBytes(4).toString("hex")}`;
+  try {
+    copyFileSync(path, aside);
+    chmodSync(aside, 0o600);
+    return aside;
+  } catch {
+    try {
+      unlinkSync(aside);
+    } catch {
+      // The copy never started or is already gone.
+    }
+    return preserve(path);
+  }
+}
+
+/** Writes the envelope atomically into a directory that already exists. */
+function writeSubscriptions(
+  directory: string,
+  path: string,
+  subscriptions: StoredSubscription[],
+): void {
+  const envelope: CredentialsEnvelope = {
+    version: CREDENTIALS_VERSION,
+    subscriptions,
+  };
+  const temporary = join(
+    directory,
+    `credentials.json.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
+  );
+  try {
+    writeFileSync(temporary, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, path);
+    chmodSync(path, 0o600);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The temporary file was never created or is already gone.
+    }
+    throw error;
+  }
+}
+
+/**
  * Reads the subscription list. A missing file is an empty list; unusable bytes
- * are moved aside so a later save never overwrites them unnoticed.
+ * are preserved aside so a later save never overwrites them unnoticed. When
+ * only some entries are unusable, the whole original is copied aside and the
+ * live file is rewritten with the entries that loaded.
  */
 export function loadSubscriptions(stateDir: string): LoadedCredentials {
   const path = credentialsPath(stateDir);
@@ -115,38 +171,34 @@ export function loadSubscriptions(stateDir: string): LoadedCredentials {
   if (envelope.version !== CREDENTIALS_VERSION || !Array.isArray(envelope.subscriptions)) {
     return { subscriptions: [], preserved: preserve(path) };
   }
-  const subscriptions = envelope.subscriptions
-    .map(storedSubscription)
-    .filter((entry): entry is StoredSubscription => entry !== undefined);
-  return { subscriptions, preserved: undefined };
+
+  const subscriptions: StoredSubscription[] = [];
+  let rejected = false;
+  for (const entry of envelope.subscriptions) {
+    const stored = storedSubscription(entry);
+    if (stored === undefined) rejected = true;
+    else subscriptions.push(stored);
+  }
+  if (!rejected) return { subscriptions, preserved: undefined };
+
+  const preserved = preserveCopy(path);
+  if (preserved === undefined) return { subscriptions, preserved: undefined };
+  try {
+    const directory = providersDirectory(stateDir);
+    ensureDirectory(directory);
+    writeSubscriptions(directory, path, subscriptions);
+  } catch {
+    // The original file is already preserved; the next save replaces it with
+    // the subscriptions that loaded.
+  }
+  return { subscriptions, preserved };
 }
 
 /** Replaces the whole credentials file atomically. */
 export function saveSubscriptions(stateDir: string, subscriptions: StoredSubscription[]): void {
   const directory = providersDirectory(stateDir);
   ensureDirectory(directory);
-  const path = credentialsPath(stateDir);
-  const envelope: CredentialsEnvelope = {
-    version: CREDENTIALS_VERSION,
-    subscriptions,
-  };
-  const temporary = join(
-    directory,
-    `credentials.json.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
-  );
-  try {
-    writeFileSync(temporary, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, path);
-    chmodSync(path, 0o600);
-  } catch (error) {
-    try {
-      unlinkSync(temporary);
-    } catch {
-      // The temporary file was never created or is already gone.
-    }
-    throw error;
-  }
+  writeSubscriptions(directory, credentialsPath(stateDir), subscriptions);
 }
 
 /** A display mask that reveals at most the last four characters. */
