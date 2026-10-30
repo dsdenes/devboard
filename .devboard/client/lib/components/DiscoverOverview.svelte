@@ -100,11 +100,6 @@
   const commandRows = $derived(commandsOpen
     ? commandRowsOf(commandsSection, discover.testCommand, { includeMissing: true })
     : foundCommandRows);
-  const recordedTestCommand = $derived.by(() => {
-    const leaf = sectionLeaf(commandsSection, "test");
-    return leaf === undefined || leaf.confidence === "unknown" ? "" : scalarText(leaf.value);
-  });
-
   const testingSection = $derived(
     typeof sheet?.testing === "object" && sheet.testing !== null ? sheet.testing : null,
   );
@@ -723,23 +718,13 @@
                     : "No recorded level carries a test."}
                 </p>
               {:else}
-                <div class="discover-test-summary">
-                  <div class="discover-stats" data-testid="discover-test-summary">
-                    <div class="discover-stat">
-                      <span class="discover-stat__value">{testTotal ?? 0}</span>
-                      <span class="discover-stat__label">
-                        {(testTotal ?? 0) === 1 ? "test" : "tests"}
-                      </span>
-                    </div>
+                <div class="discover-stats" data-testid="discover-test-summary">
+                  <div class="discover-stat">
+                    <span class="discover-stat__value">{testTotal ?? 0}</span>
+                    <span class="discover-stat__label">
+                      {(testTotal ?? 0) === 1 ? "test" : "tests"}
+                    </span>
                   </div>
-                  {#if discover.testCommand.length > 0}
-                    <div class="discover-command-line" data-testid="discover-suite-command">
-                      <span class="muted">Whole suite</span>
-                      <code class="code-chip" title={recordedTestCommand === discover.testCommand
-                        ? undefined
-                        : recordedTestCommand}>$ {discover.testCommand}</code>
-                    </div>
-                  {/if}
                 </div>
                 <DataTable
                   data-testid="discover-pyramid"

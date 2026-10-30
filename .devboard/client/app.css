@@ -2170,29 +2170,6 @@ a.code-chip--link:focus-visible {
   text-transform: uppercase;
 }
 
-.discover-page .discover-command-line {
-  margin-top: 8px;
-}
-
-.discover-command-line {
-  align-items: center;
-  display: grid;
-  font-size: 12px;
-  gap: 8px;
-  grid-template-columns: 96px minmax(0, 1fr);
-}
-
-.discover-command-line .code-chip {
-  justify-self: start;
-}
-
-.discover-test-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
 .discover-card[data-field="testing"] .table-wrap {
   margin-top: 10px;
 }

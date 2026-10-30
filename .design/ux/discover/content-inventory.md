@@ -19,7 +19,7 @@ the client types. Journey numbers refer to `brief.md`.
 | C11 | Transition notice | `discover.transition` | 1 | Know a run was replaced | no | Removed; the run tag already reports a live run and the notice only restated its end |
 | C12 | Warnings count and entry | `discover.displayedWarnings` | 2, 3 | Recognise partial or suspicious artifacts | yes | One entry, not repeated text |
 | C13 | Commands: task and exact command | `sheet.commands` | 2 | Run and test the project | yes | Primary actionable content |
-| C14 | Testing: total tests, levels, suite command | `sheet.testing`, `discover.testCommand` | 2, 6 | Choose the test level and command | yes | Required by Journey 2 and the testing skill |
+| C14 | Testing: total tests and levels | `sheet.testing` | 2, 6 | Choose the test level | yes | Required by Journey 2 and the testing skill |
 | C15 | Runtime facts | `sheet.runtime` | 2 | Choose the runtime before running | yes | Supporting detail; P2 |
 | C16 | Delivery facts: deployment, CI, branching | `sheet.deployment`, `sheet.ci`, `sheet.branching` | 2 | Know how a change reaches production | yes | One grouped card, not three sections |
 | C17 | Stack chips with repository links | `sheet.stack`, `discover.repositoryLink` | 2 | Inspect a dependency | yes | Supporting detail; P2 |
@@ -65,15 +65,16 @@ the client types. Journey numbers refer to `brief.md`.
   exception, not to repeat `generated` on every screen.
 - Warnings: sidebar count, page list, and (currently) a banner row. Winner: sidebar count and the
   warnings page. The banner row is removed.
-- Test command: `sheet.commands.test` and the "Whole suite" line in Testing. Winner: one
-  canonical command line in Testing; the command table also lists it because the table is the
-  complete command set and the suite line pairs it with the test count. The duplicate row for
-  `tryOut` equal to the test command is already suppressed.
+- Test command: `sheet.commands.test` appeared in both the command table and a "Whole suite" line
+  in Testing. Winner: the command table alone, because it is the complete command set. The
+  Testing card keeps only the test and level totals. The duplicate row for `tryOut` equal to the
+  test command is already suppressed.
 
 ## Removed candidates
 
 - C11 transition notice: restated a run's end after the run tag had already reported it.
 - C37 concept id, C38 grounding count, C44 origin: internal or non-decisional.
 - C39 recent notices: duplicate surface; the bell remains in the status bar.
+- C14 whole-suite line: the command table already lists the test command.
 - C40 warning banner, C41 busy repeat, C42 skill count: redundant copies.
 - C43 full path as the page title: unwrappable and duplicated by the sidebar.

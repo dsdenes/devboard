@@ -3634,7 +3634,6 @@ try {
     sidebarTitle: string;
     sidebarHeader: boolean;
     commandChips: number;
-    suiteChip: boolean;
     contextPathChips: number;
     sectionsHeading: number;
     sectionTabs: number;
@@ -3723,7 +3722,6 @@ try {
       sidebarTitle: document.querySelector('[data-testid="sidebar"] .sidebar__title')?.textContent?.trim() ?? "",
       sidebarHeader: document.querySelector('[data-testid="sidebar"] .sidebar__header') !== null,
       commandChips: document.querySelectorAll('[data-testid="discover-command-list"] code.code-chip').length,
-      suiteChip: document.querySelector('[data-testid="discover-suite-command"] code.code-chip') !== null,
       contextPathChips: document.querySelectorAll('#workspace-discover [data-testid="discover-contexts"] .discover-context__head code').length,
       sectionsHeading: sections === null ? -1 : sections.querySelectorAll('.sidebar-group__title').length,
       sectionTabs: sections === null ? -1 : sections.querySelectorAll('[data-testid="discover-tab"]').length,
@@ -3798,7 +3796,8 @@ try {
   check(discoverTables.cards >= 5, "Discover sections are missing from the overview", discoverTables);
   check(discoverTables.commands > 0, "the Discover command table is empty", discoverTables);
   check(discoverTables.commandText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover command row renders no values", discoverTables.commandText);
-  check(discoverTables.pyramid > 0 && discoverTables.suite, "the Discover testing tables are empty", discoverTables);
+  check(discoverTables.pyramid > 0, "the Discover testing tables are empty", discoverTables);
+  check(!discoverTables.suite, "the removed whole-suite line is still rendered", discoverTables);
   check(discoverTables.pyramidText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover pyramid row renders no values", discoverTables.pyramidText);
   check(discoverTables.pyramidText.every((text) => !text.toLowerCase().includes("unknown")), "a Discover test level still reports an unknown count", discoverTables.pyramidText);
   check(
@@ -3877,7 +3876,6 @@ try {
     "a command row is not drawn with the shared code chip",
     discoverTables,
   );
-  check(discoverTables.suiteChip, "the whole-suite command is not drawn with the shared code chip", discoverTables);
   check(discoverTables.contextPathChips === 0, "a bounded context still renders its repository path", discoverTables);
   check(discoverTables.sectionsHeading === 0, "the sidebar still renders a Sections heading", discoverTables.sectionsHeading);
   check(discoverTables.sectionTabs === 2 && discoverTables.skillTabs === 5, "the sidebar does not split sections from skills", discoverTables);
@@ -3892,10 +3890,7 @@ try {
     subtitle: string;
     rows: number;
     versions: boolean;
-    suite: string;
     levelCommand: string;
-    suiteLeft: number;
-    commandLeft: number;
     levelChips: number;
     statLabels: string[];
   }>(`(() => {
@@ -3907,8 +3902,6 @@ try {
     const statLabels = [...(testing?.querySelectorAll('.discover-stat__label') ?? [])]
       .map((label) => label.textContent?.trim() ?? "");
     const commandCell = testing?.querySelector('[data-testid="discover-pyramid"] tbody td code.code-chip');
-    const suiteChip = document.querySelector('[data-testid="discover-suite-command"] code.code-chip');
-    const commandChip = document.querySelector('[data-testid="discover-command-list"] tbody tr code.code-chip');
     return {
       eyebrow: head?.querySelector('.discover-page__eyebrow') !== null,
       stale: document.querySelector('[data-testid="discover-stale"]') !== null,
@@ -3921,10 +3914,7 @@ try {
       rows: document.querySelectorAll('[data-testid="discover-pyramid"] tbody tr').length,
       versions: [...document.querySelectorAll('#workspace-discover [data-field="runtime"] dt')]
         .some((term) => term.textContent.trim() === "Versions"),
-      suite: suiteChip?.textContent?.trim() ?? "",
       levelCommand: commandCell?.textContent?.trim() ?? "",
-      suiteLeft: Math.round(suiteChip?.getBoundingClientRect().left ?? -1),
-      commandLeft: Math.round(commandChip?.getBoundingClientRect().left ?? -1),
       levelChips: testing?.querySelectorAll('[data-testid="discover-pyramid"] tbody td code.code-chip').length ?? 0,
       statLabels,
     };
@@ -3942,11 +3932,6 @@ try {
     discoverChrome.headers,
   );
   check(
-    discoverChrome.suite === "$ npm test",
-    "the whole-suite line does not carry the runnable prompt",
-    discoverChrome,
-  );
-  check(
     discoverChrome.levelCommand === "$ npm run test:unit",
     "a test level does not show the declared command that runs it",
     discoverChrome,
@@ -3954,11 +3939,6 @@ try {
   check(
     discoverChrome.levelChips === discoverChrome.rows && discoverChrome.rows > 0,
     "a test level command is not drawn with the shared code chip",
-    discoverChrome,
-  );
-  check(
-    discoverChrome.suiteLeft === discoverChrome.commandLeft,
-    "the suite command does not start on the commands' own column",
     discoverChrome,
   );
   check(

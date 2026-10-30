@@ -10,7 +10,7 @@
 | `Run and verify`, `Platform`, `Delivery` | section group labels | `.discover-group__title` | extend: mirrors `.sidebar-group__title` rhythm |
 | Commands panel | task and command table | `.panel`, `.panel__header`, `DataTable` | reuse; no header row, `$` prefix in the command cell |
 | Test pyramid | level shape | `PyramidChart` | extend: `compact` prop (220×132, 9.5px labels) |
-| Test stats and whole-suite line | totals and command | `.discover-stats`, `.discover-stat`, `.discover-command-line` | reuse classes, restyled inline |
+| Test stats | test total | `.discover-stats`, `.discover-stat` | reuse classes, restyled inline |
 | Level table | level, count, paths, fixtures | `DataTable` | reuse, columns Level/Tests/Paths & fixtures |
 | Runtime / Deployment / CI / Branching facts | label/value facts | `.discover-facts`, `.discover-fact` | extend: compact definition list, comma-separated values |
 | Stack band | declared stack entries | `.discover-band`, `.discover-chips`, `.discover-chip` | extend: full-width chip band; installed packages link to their repository |

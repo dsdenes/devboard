@@ -18,7 +18,7 @@ Scores follow the skill formula:
 | C11 | Transition notice | 2 | 2 | 2 | 4 | 1 | 44 | P2 | Removed; the run tag already reports a live run |
 | C12 | Warnings count and entry | 4 | 3 | 3 | 5 | 4 | 75 | P1 | Sidebar entry only, with count |
 | C13 | Commands table | 5 | 5 | 5 | 5 | 3 | 96 | P0 | First card in the main column |
-| C14 | Testing summary, levels, suite command | 5 | 4 | 4 | 5 | 3 | 88 | P0 | Second card in the main column |
+| C14 | Testing summary and levels | 5 | 4 | 4 | 5 | 3 | 88 | P0 | Second card in the main column; the whole-suite line is removed |
 | C15 | Runtime facts | 3 | 2 | 3 | 4 | 2 | 56 | P2 | Rail, inside the platform card |
 | C16 | Delivery facts: deployment, CI, branching | 3 | 3 | 3 | 5 | 3 | 66 | P1 | Rail, one grouped card |
 | C17 | Stack chips | 3 | 1 | 3 | 4 | 1 | 49 | P2 | Rail, one chip band |
@@ -53,9 +53,8 @@ Scores follow the skill formula:
   quiet default and is not repeated in navigation.
 - **Warnings** (C12, C29): one sidebar entry with a count, one page with full text. The banner row
   that repeated the count above the sheet is removed.
-- **Test command** (C14): the command table is the complete command set; the Testing card pairs
-  the same test command with the test count and levels. The table suppresses a `tryOut` row that
-  repeats the test command.
+- **Test command** (C14): the command table is the complete command set; it suppresses a `tryOut`
+  row that repeats the test command. The Testing card states only the test and level totals.
 - **Bounded-context count**: dropped (C46 scored P3). The card lists the contexts; a count adds a
   number to scan, not a decision.
 
@@ -65,6 +64,7 @@ Scores follow the skill formula:
 - C39 notifications in the Discover sidebar: duplicate of the status-bar bell.
 - C40 warning banner, C41 busy repeat, C42 skill count, C43 raw path title: redundant copies.
 - C46 bounded-context count: P3.
+- C14's whole-suite line: the command table already lists the test command.
 
 ## Notes
 
