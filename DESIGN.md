@@ -224,9 +224,10 @@ components:
 ## Overview
 
 Devboard is the local browser interface for one repository's goal, ADR records, Flow
-implementation session, and Discover artifacts. It is a desktop operator console: one
-full-viewport shell with a labeled mode rail, a contextual sidebar, one workspace, and a status
-bar. Every mode is a client-side view over the WebSocket contract owned by the server.
+implementation session, Discover artifacts, and the read-only MCP tool catalog. It is a desktop
+operator console: one full-viewport shell with a labeled mode rail, a contextual sidebar, one
+workspace, and a status bar. Every mode is a client-side view over the WebSocket contract owned
+by the server.
 
 The visual intent is GitHub-dark material: flat surfaces, hairline borders, high information
 density, and no decorative weight. Depth comes from surface steps and borders, not shadows. Color
@@ -583,18 +584,19 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   version columns so the issue title keeps enough width to identify the finding; the title still
   carries the category.
 - **Mode rail** (`.activity-bar`) — the shared application menu: 72px vertical rail, `activity-bar`
-  fill, 1px `border` on its right edge. The four `role="tab"` controls sit in a `role="tablist"`
-  group, each 64×52px with 6px vertical and 4px horizontal padding: an 18px icon over a 10px
-  `overline` label, 4px apart. Resting color is `muted-foreground`; hover and the selected tab use
-  `secondary`, a `border-strong` outline, and `foreground` text; the selected tab carries a 2px
-  `accent` bar on its left edge, outside the tab box. A 6px state dot (accent running, warning
-  attention/stale, `border-strong` idle) sits at the tab's top-right with no text; the mode's
-  state word joins its accessible name. Below a 1px divider at the rail's bottom, six 28px ghost
-  icon buttons are the application actions: commands (`Ctrl+K`), notifications, theme, and the
-  three UI-issue actions — `Report UI issue`, `Remove element`, `Redesign element` — each active
-  (`aria-pressed="true"`, `secondary-hover` fill) while its selection mode is armed, and disabled while
-  a filing runs or the report panel owns the selection. The rail never shows a brand label and
-  never collapses to icons only.
+  fill, 1px `border` on its right edge. The five `role="tab"` controls — Goal, Issues, Flow,
+  Discover, and Devboard — sit in a `role="tablist"` group, each 64×52px with 6px vertical and
+  4px horizontal padding: an 18px icon over a 10px `overline` label, 4px apart. Resting color is
+  `muted-foreground`; hover and the selected tab use `secondary`, a `border-strong` outline, and
+  `foreground` text; the selected tab carries a 2px `accent` bar on its left edge, outside the tab
+  box. A 6px state dot (accent running, warning attention/stale, `border-strong` idle) sits at the
+  tab's top-right with no text; the mode's state word joins its accessible name. The Devboard tab
+  opens the read-only MCP tool catalog page and carries no state dot. Below a 1px divider at the
+  rail's bottom, six 28px ghost icon buttons are the application actions: commands (`Ctrl+K`),
+  notifications, theme, and the three UI-issue actions — `Report UI issue`, `Remove element`,
+  `Redesign element` — each active (`aria-pressed="true"`, `secondary-hover` fill) while its
+  selection mode is armed, and disabled while a filing runs or the report panel owns the
+  selection. The rail never shows a brand label and never collapses to icons only.
 - **Issue result line** (`.feedback-result` in `FeedbackOverlay.svelte`) — a fixed
   `surface-raised` line 40px above the status bar, centered, with 1px `border-strong`, 4px radius,
   6px 8px padding, 12px text, and, when the request produced one, the issue URL as an `accent`
