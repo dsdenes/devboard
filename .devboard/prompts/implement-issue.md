@@ -180,9 +180,9 @@ the prerequisite in another agent's place.
 
 ## Edit calls
 
-- Before the first `edit` on a file, `read` that file and the exact line range you are changing.
-  Never edit a section you have not read in this run; if the file changed since that read, read
-  it again before acting.
+- Before an `edit` on a file, confirm the path exists with `read` — a missing file reports
+  `File not found` — and `read` the exact line range you are changing. Never edit a section you
+  have not read in this run; if the file changed since that read, read it again before acting.
 - Every `edit` call passes a `path`. Omitting it fails validation with
   `path must be a string (was missing)`; the tool does not infer the file from the content.
 - Choose an `old_string` that occurs exactly once in the target file: quote enough surrounding
@@ -191,9 +191,14 @@ the prerequisite in another agent's place.
   occurrence, pass `replace_all: true` deliberately; never guess it.
 - Never send `new_string` identical to `old_string`: that is a no-op that fails with
   `Edits to <path> resulted in no changes being made`. State the real change instead.
-- After a `Found N occurrences` error, do not retry the same anchor: re-read the file at each
-  reported line, extend the anchor with unique context, or pass `replace_all: true` when every
-  hit belongs to the change.
+- Retry a failed `edit` only with different input. After `Found N occurrences`, re-read the file
+  at each reported line, extend the anchor with unique context, or pass `replace_all: true` when
+  every hit belongs to the change. After `resulted in no changes being made` or `File not found`,
+  re-read the target or its path, state the real change, and retry with a different anchor. Never
+  repeat an `edit` whose path, anchor, and replacement are unchanged.
+- Never leave temporary instrumentation in an edited file. Diagnostic `MARK` lines, probe logging,
+  and staging comments belong in a scratch file or a reverted edit; remove every one before the
+  work lands and never commit it.
 
 ## Shell calls
 
