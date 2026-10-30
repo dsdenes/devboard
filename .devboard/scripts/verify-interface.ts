@@ -2617,6 +2617,7 @@ try {
     pending: string;
     tabStrips: number;
     eyebrow: boolean;
+    headers: string[];
   }>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="record"]')];
     const table = document.querySelector('[data-testid="adr-table"]');
@@ -2635,10 +2636,18 @@ try {
       pending: document.querySelector('[data-testid="pending-summary"]')?.textContent?.trim() ?? "",
       tabStrips: document.querySelectorAll('[data-testid="workspace-tabs"]').length,
       eyebrow: document.querySelector('[data-testid="adrs-header"] .page-header__eyebrow') !== null,
+      headers: [...document.querySelectorAll('[data-testid="adr-table"] thead th')].map(
+        (cell) => cell.textContent?.trim() ?? "",
+      ),
     };
   })()`);
   check(adr.rows === 8, "the fixture does not render eight ADR rows", adr);
   check(!adr.eyebrow, "the ADRs header still carries its Plan eyebrow", adr);
+  check(
+    adr.headers.join("|") === "Title|Document status|Implementation|File|Decision summary|Action",
+    "the ADR table does not render its declared column labels",
+    adr.headers,
+  );
   const stateText = await page.eval<string>(`document.querySelector('[data-testid="record"] td:nth-child(3)')?.textContent?.trim() ?? ""`);
   check(stateText === "Resolved" || stateText === "Pending", "the ADR state is conveyed by color alone", stateText);
   const tableTones = await page.eval<Array<{ file: string; text: string; tone: string }>>(`(() => {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createTable } from "@tanstack/svelte-table";
+  import { createTable, FlexRender } from "@tanstack/svelte-table";
   import { tableFeatures } from "@tanstack/table-core";
   import { goal } from "../goal.svelte";
   import { recordStatusTone } from "../record-status";
@@ -48,7 +48,7 @@
       {#each table.getHeaderGroups() as group (group.id)}
         <tr>
           {#each group.headers as header (header.id)}
-            <th scope="col">{header.column.id}</th>
+            <th scope="col"><FlexRender {header} /></th>
           {/each}
         </tr>
       {/each}
