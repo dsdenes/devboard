@@ -935,11 +935,10 @@ second inline-code presentation. Testing shows the test total, then a
 `Command` is the narrowest declared invocation for that level. Only a level that carries a test is
 listed and counted; a recorded level with no test case is omitted, so a sheet cannot claim a
 second level while its table holds none. Every listed level states an exact test count, never
-`count unknown`. No pyramid graphic is drawn. Quality gates render as a `Quality gate`/`What it
-checks` table (`data-testid="discover-quality-gates"`): one row per required CI gate, its name, and
-one short line saying what it verifies. A gate recorded without a check states `No check was
-recorded.`, and the gates are not repeated among the Delivery facts. Runtime, deployment, CI, and
-branching use compact `dt`/`dd` facts whose list values are comma-separated.
+`count unknown`. No pyramid graphic is drawn. Quality gates render as a headerless single-column
+table (`data-testid="discover-quality-gates"`): each row names a required CI gate, and the gates
+are not repeated among the Delivery facts. Runtime, deployment, CI, and branching use compact
+`dt`/`dd` facts whose list values are comma-separated.
 Architecture renders as two cards. `Bounded contexts` shows context rows with the name,
 responsibility, and entry points, followed by shared-kernel chips, the dependency direction, and a
 rendered Mermaid dependency graph. `External boundaries` is its own card

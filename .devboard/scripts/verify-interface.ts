@@ -3801,8 +3801,8 @@ try {
   check(discoverTables.pyramidText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover pyramid row renders no values", discoverTables.pyramidText);
   check(discoverTables.pyramidText.every((text) => !text.toLowerCase().includes("unknown")), "a Discover test level still reports an unknown count", discoverTables.pyramidText);
   check(
-    discoverTables.qualityGateHeaders.join("|") === "Quality gate",
-    "the quality gate table does not carry its single gate column",
+    discoverTables.qualityGateHeaders.length === 0,
+    "the quality gate table still renders column headers",
     discoverTables.qualityGateHeaders,
   );
   check(

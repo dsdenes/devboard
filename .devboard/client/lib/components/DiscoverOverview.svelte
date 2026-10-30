@@ -761,6 +761,7 @@
                   rows={qualityGateRows}
                   rowAttrs={(row) => ({ "data-gate": String(row.gate ?? "") })}
                   cell={qualityGateCell}
+                  hideHeader
                   columnWidths={QUALITY_GATE_WIDTHS}
                   full
                   wrap
