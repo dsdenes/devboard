@@ -6218,7 +6218,15 @@ export function createApp(options: AppOptions) {
     lifecycle = { ...lifecycle, paused: false };
     for (const resolve of resumeWaiters.splice(0)) resolve();
     if (finished) {
-      if (wasPaused) publishLifecycle();
+      if (wasPaused) {
+        publishLifecycle();
+      } else {
+        // The finished stage was broadcast while this process still owned the
+        // run, so the durable state claims an active run until it is written
+        // again. Persist the cleared flags; otherwise a restart resumes work
+        // nobody asked for.
+        persistState();
+      }
     } else {
       lifecycle = { stage: "goal", pass: lifecycle.pass, work: null, paused: false };
       publishLifecycle();
