@@ -140,9 +140,13 @@ async function main(): Promise<void> {
       case "stop":
         requestStop();
         return;
-      case "settings":
+      case "settings": {
+        // Read-modify-write against the file. The in-memory copy can predate a
+        // dashboard save made since the last read, so writing it back would
+        // replace the operator's allowlist and maxIssuesPerCycle with stale
+        // values. Only the three cadence keys come from the command.
         settings = {
-          ...settings,
+          ...readCoachSettings(coachDir),
           intervalMinutes: command.intervalMinutes,
           maxPerHour: command.maxPerHour,
           maxPending: command.maxPending,
@@ -152,6 +156,7 @@ async function main(): Promise<void> {
         notice = `Settings saved: every ${command.intervalMinutes} minute(s).`;
         publish("running", true);
         return;
+      }
     }
   };
 

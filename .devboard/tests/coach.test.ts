@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -8,7 +9,8 @@ import { saveSubscriptions, writeSelectionSnapshot } from "../server/providers";
 import { OPENCODE_GO_MODEL } from "../server/providers/catalog";
 import { openCodePeers } from "../coach/providers";
 import { CoachActivity, preflightCoach } from "../server/coach";
-import { coachDirectory } from "../coach/paths";
+import { coachDirectory, controlDirectory, workerStatePath } from "../coach/paths";
+import { writeCoachCommand } from "../coach/control";
 import {
   DEFAULT_COACH_SETTINGS,
   isValidAllowlist,
@@ -77,6 +79,20 @@ async function workspace(): Promise<{ root: string; repoDir: string; stateDir: s
   await mkdir(join(repoDir, ".devboard"), { recursive: true });
   await mkdir(coachDirectory(stateDir), { recursive: true });
   return { root, repoDir, stateDir };
+}
+
+async function waitFor<T>(
+  read: () => T | undefined,
+  description: string,
+  timeoutMs = 20_000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = read();
+    if (value !== undefined && value !== null) return value;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${description}`);
+    await Bun.sleep(50);
+  }
 }
 
 interface CallSeed {
@@ -361,6 +377,68 @@ describe("Coach registration and lifecycle", () => {
     expect(adapter.setSettings(30, 101, 5).ok).toBe(false);
     adapter.dispose();
   });
+
+  test("a settings command keeps a dashboard save the worker has not read back", async () => {
+    // Integration: the real detached worker process is the subject, so the
+    // test polls its published state instead of controlling a clock.
+    const { repoDir, stateDir } = await workspace();
+    const coachDir = coachDirectory(stateDir);
+    await writeCoachSettings(coachDir, { ...DEFAULT_COACH_SETTINGS, allowlist: [] });
+    const child = spawn(
+      process.execPath,
+      [join(harnessRoot, "coach", "worker.ts"), "--root", repoDir, "--state-dir", stateDir],
+      { cwd: repoDir, stdio: "ignore" },
+    );
+    try {
+      await waitFor(
+        () => {
+          const state = readWorkerState(coachDir);
+          const afterCycle =
+            state?.lastRunAt !== null && state?.notice === "no family in the window";
+          return afterCycle ? state : undefined;
+        },
+        "the worker to finish its first cycle",
+      );
+      // The dashboard rewrites the file after the worker's last read; the
+      // command that follows must not persist the worker's older copy.
+      await writeCoachSettings(coachDir, {
+        ...DEFAULT_COACH_SETTINGS,
+        allowlist: ["bun ", "git "],
+        maxIssuesPerCycle: 7,
+      });
+      writeCoachCommand(controlDirectory(coachDir), {
+        type: "settings",
+        intervalMinutes: 30,
+        maxPerHour: 5,
+        maxPending: null,
+      });
+      const saved = await waitFor(
+        () => {
+          const current = readCoachSettings(coachDir);
+          return current.intervalMinutes === 30 && current.maxPerHour === 5 &&
+            current.maxPending === null
+            ? current
+            : undefined;
+        },
+        "the settings command to reach the file",
+      );
+      expect(saved).toEqual({
+        ...DEFAULT_COACH_SETTINGS,
+        intervalMinutes: 30,
+        maxPerHour: 5,
+        maxPending: null,
+        maxIssuesPerCycle: 7,
+        allowlist: ["bun ", "git "],
+      });
+      writeCoachCommand(controlDirectory(coachDir), { type: "stop" });
+      await waitFor(
+        () => (readWorkerState(coachDir)?.lifecycle === "stopped" ? true : undefined),
+        "the worker to stop",
+      );
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    }
+  }, 30_000);
 
   test("preflight names a GitLab origin as unsupported", async () => {
     const { repoDir } = await workspace();
