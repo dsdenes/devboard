@@ -27,6 +27,7 @@ import {
 import { preflightScout, scoutCommandPaths, stateInsideRepository } from "../issues/scout/preflight";
 import {
   categoryFromBody,
+  checkEvidencePath,
   normalizeTitle,
   parseScanResult,
   recommendationId,
@@ -246,6 +247,52 @@ describe("scan result validation", () => {
       repoDir: root,
     });
     expect(empty.ok && empty.shortfall).toBeNull();
+  });
+});
+
+describe("evidence path containment", () => {
+  async function linkedCheckout(): Promise<{ root: string; linked: string }> {
+    const root = await temporaryDirectory("scout-checkout");
+    await mkdir(join(root, "src"), { recursive: true });
+    await writeFile(join(root, "src", "module.ts"), "one\ntwo\nthree\n");
+    const linked = join(await temporaryDirectory("scout-link"), "checkout");
+    await symlink(root, linked);
+    return { root, linked };
+  }
+
+  test("a checkout reached through a symlink accepts its own files", async () => {
+    const { linked } = await linkedCheckout();
+    expect(checkEvidencePath(linked, "src/module.ts", "2")).toEqual({
+      ok: true,
+      path: "src/module.ts",
+    });
+  });
+
+  test("a scan against a symlinked checkout passes validation", async () => {
+    const root = await repository();
+    const linked = join(await temporaryDirectory("scout-link"), "checkout");
+    await symlink(root, linked);
+    const result = parseScanResult(scanDocument(items(2)), { requested, repoDir: linked });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toHaveLength(2);
+  });
+
+  test("a symlinked root still refuses a path containing ..", async () => {
+    const { linked } = await linkedCheckout();
+    const refusal = checkEvidencePath(linked, "../outside.ts", "1");
+    expect(refusal.ok).toBe(false);
+    expect(refusal.detail).toContain("escapes the repository");
+  });
+
+  test("a symlink whose real target leaves the root is still refused", async () => {
+    const { root } = await linkedCheckout();
+    const outside = await temporaryDirectory("scout-outside");
+    await writeFile(join(outside, "secret.ts"), "one\n");
+    await symlink(join(outside, "secret.ts"), join(root, "outside.ts"));
+    const refusal = checkEvidencePath(root, "outside.ts", "1");
+    expect(refusal.ok).toBe(false);
+    expect(refusal.detail).toContain("escapes the repository");
   });
 });
 

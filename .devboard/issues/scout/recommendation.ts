@@ -152,7 +152,9 @@ export function checkEvidencePath(repoDir: string, rawPath: string, lines: strin
   } catch {
     return { ok: false, path, detail: `${repoDir} is not readable` };
   }
-  const absolute = resolve(repoDir, path);
+  // Both sides of the containment check use the canonical root: a repository
+  // reached through a symlink would otherwise reject every cited path.
+  const absolute = resolve(root, path);
   if (absolute !== root && !absolute.startsWith(`${root}${sep}`)) {
     return { ok: false, path, detail: `${path} escapes the repository` };
   }
