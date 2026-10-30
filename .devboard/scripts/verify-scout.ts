@@ -675,7 +675,7 @@ try {
   /* ---------------------------------------------------------------- */
   await setInput(devtools, "agent-limit-hour", "10");
   await setInput(devtools, "agent-limit-pending", "2");
-  await click(devtools, "agent-save-settings");
+  await click(devtools, "agent-save-limits");
   await waitFor(
     () => {
       const saved = readSettings(settingsPath(fixture.stateDir, fixture.repo));
@@ -817,7 +817,7 @@ try {
   /* 4. An invalid save shows the error and sends nothing              */
   /* ---------------------------------------------------------------- */
   await setInput(devtools, "agent-limit-hour", "0");
-  await click(devtools, "agent-save-settings");
+  await click(devtools, "agent-save-limits");
   const limitsError = await waitFor(
     async () => {
       const value = await text(devtools, "agent-settings-error");
@@ -843,7 +843,7 @@ try {
   /* ---------------------------------------------------------------- */
   await setInput(devtools, "agent-limit-hour", "3");
   await setInput(devtools, "agent-limit-pending", "1");
-  await click(devtools, "agent-save-settings");
+  await click(devtools, "agent-save-limits");
   await waitFor(
     () => {
       const saved = readSettings(settingsPath(fixture.stateDir, fixture.repo));

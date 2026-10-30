@@ -313,14 +313,15 @@ const CORE_IDS = [
   "agent-header",
   "agent-lifecycle",
   "agent-sync-at",
-  "agent-last-run",
   "agent-start",
   "agent-stop",
   "agent-cadence",
+  "agent-last-run",
   "agent-next-run",
+  "agent-save-cadence",
   "agent-limit-hour",
   "agent-limit-pending",
-  "agent-save-settings",
+  "agent-save-limits",
   "agent-issues-count",
   "agent-issues",
   "agent-detail",
@@ -949,13 +950,78 @@ try {
   }
   console.log("PASS prompt-read-only");
 
-  /* 3. Cadence and limits: one Save validates both, then persists them. */
-  const settingsButton = await devtools.evaluate(
-    `document.querySelectorAll('[data-testid="agent-save-settings"]').length`,
+  /* 3. Cadence and limits: two labelled groups, each ending in its own Save. */
+  const band = await devtools.evaluate(`(() => {
+    const container = document.querySelector('.agent-settings');
+    if (container === null) return null;
+    const probe = document.createElement('span');
+    probe.style.backgroundColor = 'var(--secondary)';
+    document.body.append(probe);
+    const secondary = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const group = (label) => {
+      const element = [...container.querySelectorAll('[role="group"]')]
+        .find((candidate) => candidate.getAttribute('aria-label') === label) ?? null;
+      if (element === null) return null;
+      const save = element.lastElementChild;
+      const style = getComputedStyle(element);
+      return {
+        title: element.querySelector('.agent-settings__title')?.textContent?.trim() ?? '',
+        columnGap: style.columnGap,
+        rowGap: style.rowGap,
+        save: save?.getAttribute('data-testid') ?? '',
+        saveLabel: (save?.textContent ?? '').trim(),
+        saveBackground: save === null ? '' : getComputedStyle(save).backgroundColor,
+      };
+    };
+    const style = getComputedStyle(container);
+    return {
+      outer: container.getAttribute('aria-label') ?? '',
+      columnGap: style.columnGap,
+      rowGap: style.rowGap,
+      secondary,
+      cadence: group('Cadence'),
+      limits: group('Filing limits'),
+    };
+  })()`);
+  const bandRecord = band as {
+    outer: string;
+    columnGap: string;
+    rowGap: string;
+    secondary: string;
+    cadence: Record<string, string> | null;
+    limits: Record<string, string> | null;
+  } | null;
+  assertTrue(
+    bandRecord?.outer === "Cadence and filing limits",
+    `the settings band is unnamed: ${JSON.stringify(bandRecord)}`,
   );
-  assertTrue(settingsButton === 1, `the page renders ${String(settingsButton)} save buttons`);
+  assertTrue(
+    bandRecord?.columnGap === "24px" && bandRecord?.rowGap === "24px",
+    `the settings groups are not 24px apart: ${JSON.stringify(bandRecord)}`,
+  );
+  for (const [label, expected, save, saveLabel] of [
+    ["cadence", "Cadence", "agent-save-cadence", "Save cadence"],
+    ["limits", "Filing limits", "agent-save-limits", "Save limits"],
+  ] as const) {
+    const group = bandRecord?.[label];
+    assertTrue(group?.title === expected, `the ${label} group title is ${String(group?.title)}`);
+    assertTrue(
+      group?.columnGap === "10px" && group?.rowGap === "6px",
+      `the ${label} group gaps are ${String(group?.columnGap)} / ${String(group?.rowGap)}`,
+    );
+    assertTrue(
+      group?.save === save && group?.saveLabel === saveLabel,
+      `the ${label} group does not end in ${save}: ${JSON.stringify(group)}`,
+    );
+    assertTrue(
+      group?.saveBackground === bandRecord?.secondary,
+      `the ${label} save is not the secondary variant: ${String(group?.saveBackground)}`,
+    );
+  }
+
   await setInput(devtools, "agent-cadence", "0");
-  await click(devtools, "agent-save-settings");
+  await click(devtools, "agent-save-cadence");
   const cadenceError = await waitFor(
     async () => {
       const value = await text(devtools!, "agent-settings-error");
@@ -967,7 +1033,7 @@ try {
   assertTrue(cadenceError.includes("1 through 1440"), "the cadence error is wrong");
   await setInput(devtools, "agent-cadence", "30");
   await setInput(devtools, "agent-limit-hour", "0");
-  await click(devtools, "agent-save-settings");
+  await click(devtools, "agent-save-limits");
   const limitsError = await waitFor(
     async () => {
       const value = await text(devtools!, "agent-settings-error");
@@ -980,7 +1046,7 @@ try {
 
   await setInput(devtools, "agent-limit-hour", "");
   await setInput(devtools, "agent-limit-pending", "");
-  await click(devtools, "agent-save-settings");
+  await click(devtools, "agent-save-limits");
   await waitFor(
     () => {
       try {
@@ -1278,7 +1344,7 @@ try {
   );
   await setInput(devtools, "agent-cadence", "90");
   await setInput(devtools, "agent-limit-hour", "2");
-  await click(devtools, "agent-save-settings");
+  await click(devtools, "agent-save-cadence");
   await waitFor(
     () => {
       try {
@@ -1339,7 +1405,7 @@ try {
     issues: [],
   });
   await setInput(devtools, "agent-limit-hour", "1");
-  await click(devtools, "agent-save-settings");
+  await click(devtools, "agent-save-limits");
   await waitFor(
     () => {
       try {
