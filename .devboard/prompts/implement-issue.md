@@ -148,20 +148,22 @@ the prerequisite in another agent's place.
 
 ## Landing
 
-Commit in the worktree on the run's own task branch. Before landing, fetch the canonical
-integration line once and rebase the task branch onto `origin/main`; a rebase that reports the
-branch is up to date is the normal case, and the fast-forward merge below is itself the
-up-to-date gate, so no ahead/behind probe runs before the push.
-
-Rebase the task branch onto `origin/main` when the fetched tip has moved, and rerun the checks the
-rebase invalidates. Then land it with this one sequence from the canonical checkout, on `main`;
-the first merge fast-forwards `main` to the fetched tip before the branch merge:
+Commit in the worktree on the run's own task branch. When `main` has moved since the branch was
+cut, rebase the task branch onto `origin/main` inside the worktree and rerun the checks the rebase
+invalidates before landing; a rebase that reports the branch is up to date is the normal case.
+Then land it with this one canonical sequence from the canonical checkout, on `main`:
 
 ```sh
+git fetch origin main
 git merge --ff-only origin/main
 git merge --ff-only <task-branch>
 git push origin main
 ```
+
+The fetch names the tip, the first merge fast-forwards `main` to it, the second adds the task
+branch, and the push publishes both. Run the sequence once per landing attempt: no `&&` chain
+between its lines, no `tail` pipe, and no `PIPESTATUS` probe. Never create a pull request or merge
+request.
 
 Prove the push with this one verification block, run once in the canonical checkout and read
 as-is:
@@ -209,14 +211,24 @@ conflict or a code failure: run `git fetch origin main` and rerun the block once
 twice in a session, and fetch again only after a push, merge, or rebase happened since the
 previous fetch.
 
+`Diverging branches can't be fast-forwarded` or "Not possible to fast-forward" is a diagnosis,
+not an instruction to repeat the merge. Never rerun the same `--ff-only` command, and never fall
+back to `--no-ff` silently. Name which side is ahead with exactly one
+`git rev-list --left-right --count HEAD...origin/main` after the refused merge: the left count is
+the commits only `HEAD` has and the right count is the commits only `origin/main` has. Never
+chain that probe with `&&`. Integrate `origin/main` into the task branch — rebase it inside the
+worktree onto `origin/main` and rerun the checks the rebase invalidates — then rerun the sequence
+from its first line.
+
+A `CONFLICT (content)` is resolved in the merge that raised it: edit the conflicted files, stage
+them, commit the result, and rerun the checks the conflict invalidates. `git merge --abort`
+followed by an unchanged retry is not acceptable; only an integration that removes the conflict
+may follow an abort.
+
 A rejected push is ground truth: fetch the new tip, rebase the task branch onto `origin/main`
-inside the worktree, rerun the invalidated checks, and retry the same push unchanged. If
-`git merge --ff-only <task-branch>` reports "Not possible to fast-forward", never rerun it: the
-branch does not contain `main`'s tip. Fetch the new tip, rebase the task branch onto `origin/main`
-inside the worktree, rerun the invalidated checks, and rerun the landing sequence. The landing
+inside the worktree, rerun the invalidated checks, and retry the same push unchanged. The landing
 merge is fast-forward only: never `--no-ff`, `--no-edit`, or a non-fast-forward
-`git merge origin/main` on `main`. Run the sequence once per landing attempt and add no `tail`
-pipe, `fetch`, or `PIPESTATUS` probe around it. Push before publish, never after.
+`git merge origin/main` on `main`. Push before publish, never after.
 
 After that block, release from the integration checkout with the single Publish invocation below.
 
