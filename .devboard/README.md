@@ -2720,9 +2720,10 @@ The client sends:
 { "type": "ask", "conversationId": "…", "question": "What does this label mean?", "context": { … } }
 { "type": "closeAsk", "conversationId": "…" }
 { "type": "getProviders" }
-{ "type": "saveProvider", "id": "…", "provider": "opencode-go", "label": "Work", "key": "…" }
-{ "type": "deleteProvider", "id": "…" }
-{ "type": "setProviderEnabled", "id": "…", "enabled": false }
+{ "type": "saveProvider", "requestId": 7, "id": "…", "provider": "opencode-go",
+  "label": "Work", "key": "…" }
+{ "type": "deleteProvider", "requestId": 8, "id": "…" }
+{ "type": "setProviderEnabled", "requestId": 9, "id": "…", "enabled": false }
 { "type": "refreshProviders" }
 ```
 
@@ -2749,8 +2750,12 @@ The client sends:
   while an unreachable endpoint or 5xx saves the subscription with status `unknown`. Editing a
   label without a key never revalidates. `deleteProvider` and `setProviderEnabled` persist the
   store without touching a running peer. `refreshProviders` bypasses the 60-second usage cache.
-  Every mutation broadcasts a fresh `providersState`; failures answer `providerError`. While at
-  least one client is connected, the server forces a refresh and broadcasts a fresh
+  Every save, delete, and enable carries a `requestId` the server echoes in a `providerChanged`
+  acknowledgement sent before the mutation broadcasts a fresh `providersState`; a refusal answers
+  `providerError` with the same `requestId`, and a change with no id is refused, so a client can
+  always tell its own answer apart. A `providersState` never confirms a change: it also answers
+  `getProviders`, `refreshProviders`, another client's mutation, and the periodic refresh. While
+  at least one client is connected, the server forces a refresh and broadcasts a fresh
   `providersState` every 60 seconds; an idle server makes no provider call.
 - `getIssues` answers with `issuesState`, the worker snapshot plus `present` and `attached`:
   lifecycle, enabled, paused, repository, poll times, queue entries with `labels`, `handled`,

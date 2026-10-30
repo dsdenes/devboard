@@ -129,6 +129,9 @@ export function statusText(status: ProviderKeyStatus): string {
   }
 }
 
+/** What a tracked provider change asks the server to do. */
+type ProviderChangeKind = "save" | "delete" | "enable";
+
 /**
  * The Providers dialog and status-bar control. The server owns the
  * credentials, selection, and usage; this store only mirrors the masked view.
@@ -142,8 +145,16 @@ export class ProviderStore {
   error = $state<string | null>(null);
   busy = $state(false);
   loaded = $state(false);
-  /** A save awaiting the state frame that confirms it. */
-  private pendingSave = false;
+  /** The answer to the latest save: its request id and whether it was applied. */
+  saveResult = $state<{ requestId: number; ok: boolean } | null>(null);
+  /**
+   * Change requests the server has not answered yet, by kind. Every save,
+   * delete, and enable carries a client-generated id the server echoes in its
+   * own acknowledgement, so a state broadcast never settles someone else's
+   * request and only that request's answer clears the busy state.
+   */
+  private pending = new Map<number, ProviderChangeKind>();
+  private nextRequestId = 1;
 
   get indicatorLabel(): string {
     const selection = this.selection;
@@ -161,35 +172,74 @@ export class ProviderStore {
     )} remaining. ${this.rule}.`;
   }
 
+  /**
+   * Reconciles operations a reconnect may have lost: a change frame answered
+   * while the socket was down never arrives, so nothing may stay busy.
+   */
+  resetActiveOperations(): void {
+    this.pending.clear();
+    this.busy = false;
+    this.saveResult = null;
+  }
+
   request(): void {
     connection.send({ type: "getProviders" });
   }
 
   refresh(): void {
-    this.busy = true;
     connection.send({ type: "refreshProviders" });
   }
 
+  /** Saves and returns the request id whose answer settles it, or null when unsent. */
   save(input: {
     id?: string;
     provider: ProviderId;
     label: string;
     key?: string;
-  }): void {
-    this.error = null;
-    this.busy = true;
-    if (connection.send({ type: "saveProvider", ...input })) this.pendingSave = true;
+  }): number | null {
+    this.saveResult = null;
+    return this.#change("save", (requestId) => ({ type: "saveProvider", requestId, ...input }));
   }
 
-  remove(id: string): void {
-    this.error = null;
-    this.busy = true;
-    connection.send({ type: "deleteProvider", id });
+  remove(id: string): number | null {
+    return this.#change("delete", (requestId) => ({ type: "deleteProvider", requestId, id }));
   }
 
-  setEnabled(id: string, enabled: boolean): void {
+  setEnabled(id: string, enabled: boolean): number | null {
+    return this.#change("enable", (requestId) => ({
+      type: "setProviderEnabled",
+      requestId,
+      id,
+      enabled,
+    }));
+  }
+
+  /**
+   * Sends one change under a fresh id. A socket that refuses the send leaves
+   * the store idle instead of busy, because no answer can ever arrive.
+   */
+  #change(
+    kind: ProviderChangeKind,
+    command: (requestId: number) => Record<string, unknown>,
+  ): number | null {
+    this.error = null;
+    const requestId = this.nextRequestId;
+    if (!connection.send(command(requestId))) return null;
+    this.nextRequestId += 1;
+    this.pending.set(requestId, kind);
     this.busy = true;
-    connection.send({ type: "setProviderEnabled", id, enabled });
+    return requestId;
+  }
+
+  /** Settles one answered change; a stale id changes nothing. */
+  #settle(requestId: number | null, ok: boolean): ProviderChangeKind | null {
+    if (requestId === null) return null;
+    const kind = this.pending.get(requestId);
+    if (kind === undefined) return null;
+    this.pending.delete(requestId);
+    this.busy = this.pending.size > 0;
+    if (kind === "save") this.saveResult = { requestId, ok };
+    return kind;
   }
 
   openDialog(): void {
@@ -215,19 +265,20 @@ export class ProviderStore {
       this.refusal = string(message.refusal) ?? (this.selection === null ? "No provider" : null);
       this.rule = string(message.rule) ?? this.rule;
       this.loaded = true;
-      this.busy = false;
       this.error = null;
-      if (this.pendingSave) {
-        this.pendingSave = false;
-        saveFeedback.saved("Provider saved.");
-      }
+      // A broadcast says what the server holds now, never that a change of
+      // ours was applied: only the acknowledgement for its own id settles it.
       return true;
+    }
+    if (message.type === "providerChanged") {
+      const kind = this.#settle(numberOrNull(message.requestId), true);
+      if (kind === "save") saveFeedback.saved("Provider saved.");
+      return kind !== null;
     }
     if (message.type === "providerError") {
       const text = string(message.message) ?? "The provider change failed.";
       this.error = text;
-      this.busy = false;
-      this.pendingSave = false;
+      this.#settle(numberOrNull(message.requestId), false);
       notifications.push("Providers", "error", text);
       return true;
     }

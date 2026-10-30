@@ -1085,13 +1085,24 @@ const PROVIDER_GO_EDGE_KEY = "sk-go-verify-interface-edge-1111cafe";
 const PROVIDER_OR_KEY = "sk-or-verify-interface-0000beef";
 const PROVIDER_OR_SECOND_KEY = "sk-or-verify-interface-second-2222f00d";
 const PROVIDER_INVALID_KEY = "sk-verify-interface-invalid-3333dead";
+/** Refused slowly, so another client's state frame lands during the save. */
+const PROVIDER_SLOW_INVALID_KEY = "sk-verify-interface-slow-invalid-4444f00d";
 
-const providerBehaviors = new Map<string, { status?: number; go?: number[]; or?: { limit: number | null; remaining: number } }>();
+const providerBehaviors = new Map<
+  string,
+  {
+    status?: number;
+    delayMs?: number;
+    go?: number[];
+    or?: { limit: number | null; remaining: number };
+  }
+>();
 providerBehaviors.set(PROVIDER_GO_KEY, { go: [10, 20, 30] });
 providerBehaviors.set(PROVIDER_GO_EDGE_KEY, { go: [99, 99, 99] });
 providerBehaviors.set(PROVIDER_OR_KEY, { or: { limit: 100, remaining: 40 } });
 providerBehaviors.set(PROVIDER_OR_SECOND_KEY, { or: { limit: 100, remaining: 0 } });
 providerBehaviors.set(PROVIDER_INVALID_KEY, { status: 401 });
+providerBehaviors.set(PROVIDER_SLOW_INVALID_KEY, { status: 401, delayMs: 400 });
 
 const runId = `verify-interface-${Date.now()}`;
 const root = join(harnessRoot, ".tmp", runId);
@@ -1157,10 +1168,11 @@ try {
   providerUsage = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(request) {
+    fetch: async (request) => {
       const url = new URL(request.url);
       const token = (request.headers.get("authorization") ?? "").replace(/^Bearer /, "");
       const behavior = providerBehaviors.get(token);
+      if (behavior?.delayMs !== undefined) await Bun.sleep(behavior.delayMs);
       if (behavior?.status !== undefined) {
         return new Response(JSON.stringify({ error: { message: "rejected" } }), {
           status: behavior.status,
@@ -1895,6 +1907,43 @@ try {
     errorPaint.background === errorPaint.surface && errorPaint.border === errorPaint.error,
     "the provider error band does not pair the error surface with the error border",
     errorPaint,
+  );
+
+  // While the server validates a new key, another client's state frame answers
+  // no save: it must not announce success or clear the typed key.
+  await page.fill('[data-testid="provider-key-input"]', PROVIDER_SLOW_INVALID_KEY);
+  await page.click('[data-testid="provider-save"]');
+  await page.eval(`(async () => {
+    const socket = new WebSocket("ws://" + location.host + "/ws");
+    const { promise, resolve } = Promise.withResolvers();
+    socket.onopen = () => socket.send(JSON.stringify({ type: "getProviders" }));
+    socket.onmessage = (event) => {
+      if (JSON.parse(event.data).type !== "providersState") return;
+      socket.close();
+      resolve(null);
+    };
+    await promise;
+  })()`);
+  const duringSave = await page.eval<{ feedback: string | null; key: string }>(`(() => ({
+    feedback: document.querySelector('[data-testid="save-feedback"]')?.textContent?.trim() ?? null,
+    key: document.querySelector('[data-testid="provider-key-input"]').value,
+  }))()`);
+  check(
+    duringSave.feedback === null && duringSave.key === PROVIDER_SLOW_INVALID_KEY,
+    "a state frame announced a provider save the server had not applied",
+    duringSave,
+  );
+  await page.wait(
+    `document.querySelector('[data-testid="provider-error"]')?.textContent?.includes("401") === true`,
+    "the slow invalid-key error",
+  );
+  const refusedKey = await page.eval<string>(
+    `document.querySelector('[data-testid="provider-key-input"]').value`,
+  );
+  check(
+    refusedKey === PROVIDER_SLOW_INVALID_KEY,
+    "a refused provider save discarded the typed key",
+    refusedKey,
   );
 
   // Add a second OpenRouter key: exhausted usage is saved but displayed as such.

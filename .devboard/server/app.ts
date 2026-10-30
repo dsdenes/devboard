@@ -94,7 +94,12 @@ import {
   type RetainedRemoteProject,
 } from "./discover";
 import { readRecords, type AdrRecord } from "./records";
-import { ProviderService, ProviderUnavailableError, USAGE_TTL_MS } from "./providers";
+import {
+  ProviderService,
+  ProviderUnavailableError,
+  USAGE_TTL_MS,
+  type SaveProviderResult,
+} from "./providers";
 import {
   appendActivity,
   preserveStateFile,
@@ -667,10 +672,24 @@ type ClientMessage =
   | { type: "ask"; conversationId?: unknown; question?: unknown; context?: unknown }
   | { type: "closeAsk"; conversationId?: unknown }
   | { type: "getProviders" }
-  | { type: "saveProvider"; id?: unknown; provider?: unknown; label?: unknown; key?: unknown }
-  | { type: "deleteProvider"; id?: unknown }
-  | { type: "setProviderEnabled"; id?: unknown; enabled?: unknown }
+  | {
+      type: "saveProvider";
+      requestId?: unknown;
+      id?: unknown;
+      provider?: unknown;
+      label?: unknown;
+      key?: unknown;
+    }
+  | { type: "deleteProvider"; requestId?: unknown; id?: unknown }
+  | { type: "setProviderEnabled"; requestId?: unknown; id?: unknown; enabled?: unknown }
   | { type: "refreshProviders" };
+
+const PROVIDER_CHANGE_NEEDS_ID = "A provider change needs its request id.";
+
+/** A client-generated change id the server echoes back to settle that request. */
+function isProviderRequestId(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
 
 function isAgentCommand(
   command: ClientMessage,
@@ -933,16 +952,22 @@ function parseClientMessage(value: unknown): ClientMessage | undefined {
     case "saveProvider":
       return {
         type: "saveProvider",
+        requestId: "requestId" in value ? value.requestId : undefined,
         id: "id" in value ? value.id : undefined,
         provider: "provider" in value ? value.provider : undefined,
         label: "label" in value ? value.label : undefined,
         key: "key" in value ? value.key : undefined,
       };
     case "deleteProvider":
-      return { type: "deleteProvider", id: "id" in value ? value.id : undefined };
+      return {
+        type: "deleteProvider",
+        requestId: "requestId" in value ? value.requestId : undefined,
+        id: "id" in value ? value.id : undefined,
+      };
     case "setProviderEnabled":
       return {
         type: "setProviderEnabled",
+        requestId: "requestId" in value ? value.requestId : undefined,
         id: "id" in value ? value.id : undefined,
         enabled: "enabled" in value ? value.enabled : undefined,
       };
@@ -2346,6 +2371,30 @@ export function createApp(options: AppOptions) {
   async function publishProviders(force = false): Promise<void> {
     await providers.refresh(force);
     broadcast({ type: "providersState", ...providers.view() });
+  }
+
+  /**
+   * Applies one provider change and answers it under the id the client sent,
+   * before the masked state is pushed. The state frame is shared with every
+   * client and a periodic refresh carries no request, so neither can ever
+   * confirm that this client's change was the one applied.
+   */
+  async function settleProviderChange(
+    ws: { send(data: string): unknown },
+    requestId: unknown,
+    change: () => SaveProviderResult | Promise<SaveProviderResult>,
+  ): Promise<void> {
+    if (!isProviderRequestId(requestId)) {
+      send(ws, { type: "providerError", message: PROVIDER_CHANGE_NEEDS_ID });
+      return;
+    }
+    const result = await change();
+    if (!result.ok) {
+      send(ws, { type: "providerError", requestId, message: result.message });
+      return;
+    }
+    send(ws, { type: "providerChanged", requestId });
+    await publishProviders(false);
   }
 
   /**
@@ -7336,35 +7385,38 @@ export function createApp(options: AppOptions) {
           } else if (command.type === "refreshProviders") {
             await publishProviders(true);
           } else if (command.type === "saveProvider") {
-            const saved = await providers.save({
-              id: typeof command.id === "string" ? command.id : undefined,
-              provider: command.provider,
-              label: command.label,
-              key: command.key,
-            });
-            if (!saved.ok) {
-              send(ws, { type: "providerError", message: saved.message });
-            } else {
-              await publishProviders(false);
-            }
+            await settleProviderChange(ws, command.requestId, () =>
+              providers.save({
+                id: typeof command.id === "string" ? command.id : undefined,
+                provider: command.provider,
+                label: command.label,
+                key: command.key,
+              }),
+            );
           } else if (command.type === "deleteProvider") {
-            if (typeof command.id !== "string") {
-              send(ws, { type: "providerError", message: "A delete needs the subscription id." });
-            } else {
-              const removed = providers.remove(command.id);
-              if (!removed.ok) send(ws, { type: "providerError", message: removed.message });
-              else await publishProviders(false);
-            }
-          } else if (command.type === "setProviderEnabled") {
-            if (typeof command.id !== "string" || typeof command.enabled !== "boolean") {
+            const id = typeof command.id === "string" ? command.id : undefined;
+            if (id === undefined) {
               send(ws, {
                 type: "providerError",
+                requestId: command.requestId,
+                message: "A delete needs the subscription id.",
+              });
+            } else {
+              await settleProviderChange(ws, command.requestId, () => providers.remove(id));
+            }
+          } else if (command.type === "setProviderEnabled") {
+            const id = typeof command.id === "string" ? command.id : undefined;
+            const enabled = typeof command.enabled === "boolean" ? command.enabled : undefined;
+            if (id === undefined || enabled === undefined) {
+              send(ws, {
+                type: "providerError",
+                requestId: command.requestId,
                 message: "Enabling a subscription needs its id and a boolean.",
               });
             } else {
-              const changed = providers.setEnabled(command.id, command.enabled);
-              if (!changed.ok) send(ws, { type: "providerError", message: changed.message });
-              else await publishProviders(false);
+              await settleProviderChange(ws, command.requestId, () =>
+                providers.setEnabled(id, enabled),
+              );
             }
           }
         } catch (error) {

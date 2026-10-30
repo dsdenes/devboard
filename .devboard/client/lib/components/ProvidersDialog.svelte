@@ -11,7 +11,8 @@
   let key = $state("");
   let editing = $state<ProviderSubscription | null>(null);
   let pendingDelete = $state<string | null>(null);
-  let saving = $state(false);
+  /** The save request this form is waiting on, by id. */
+  let saving = $state<number | null>(null);
 
   function resetForm(): void {
     editing = null;
@@ -29,8 +30,7 @@
 
   function save(): void {
     if (editing === null && key.trim().length === 0) return;
-    saving = true;
-    providers.save({
+    saving = providers.save({
       ...(editing === null ? {} : { id: editing.id }),
       provider,
       label: label.trim().length === 0 ? providersProviderName(provider) : label.trim(),
@@ -56,11 +56,14 @@
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
   }
 
-  // A save or delete finishes with a fresh masked state and no error.
+  // Only this save's own answer closes it out: an unrelated state frame leaves
+  // the wait (and the typed key) alone, and a refusal keeps the draft for a retry.
   $effect(() => {
-    if (!saving || providers.busy) return;
-    saving = false;
-    if (providers.error === null) resetForm();
+    const requestId = saving;
+    const result = providers.saveResult;
+    if (requestId === null || result === null || result.requestId !== requestId) return;
+    saving = null;
+    if (result.ok) resetForm();
   });
 </script>
 

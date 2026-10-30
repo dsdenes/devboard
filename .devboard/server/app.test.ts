@@ -745,6 +745,55 @@ describe("createApp", () => {
       server.stop(true);
     }
   });
+
+  test("a provider change is answered under the request id that sent it", async () => {
+    const { server, url } = await startServer();
+
+    try {
+      const socket = new WebSocket(`ws://${url}/ws`);
+      const opened = Promise.withResolvers<void>();
+      const ackSeen = Promise.withResolvers<void>();
+      const refusalSeen = Promise.withResolvers<void>();
+      const frames: Record<string, unknown>[] = [];
+      socket.onopen = () => opened.resolve();
+      socket.onmessage = (event) => {
+        const message = JSON.parse(String(event.data)) as Record<string, unknown>;
+        frames.push(message);
+        if (message.type === "providerChanged") ackSeen.resolve();
+        if (message.type === "providerError") refusalSeen.resolve();
+      };
+      await opened.promise;
+
+      socket.send(
+        JSON.stringify({
+          type: "saveProvider",
+          requestId: 41,
+          provider: "opencode-go",
+          label: "Second",
+          key: "sk-second-test-key",
+        }),
+      );
+      // A change with no id is refused instead of applied unacknowledged: no
+      // client could tell its answer from someone else's state frame.
+      socket.send(JSON.stringify({ type: "deleteProvider", id: "test-opencode-go" }));
+      await Promise.race([ackSeen.promise, Bun.sleep(2_000)]);
+      await Promise.race([refusalSeen.promise, Bun.sleep(2_000)]);
+      socket.close();
+
+      const ack = frames.find((frame) => frame.type === "providerChanged");
+      expect(ack).toEqual({ type: "providerChanged", requestId: 41 });
+      const ackIndex = frames.indexOf(ack as Record<string, unknown>);
+      expect(ackIndex).toBeGreaterThanOrEqual(0);
+      // The masked state follows the acknowledgement that names the request.
+      expect(frames.slice(ackIndex).some((frame) => frame.type === "providersState")).toBe(true);
+      const refusal = frames.find((frame) => frame.type === "providerError");
+      expect(String(refusal?.message)).toContain("request id");
+      // The id-less delete neither applied nor answered as a change.
+      expect(frames.filter((frame) => frame.type === "providerChanged")).toHaveLength(1);
+    } finally {
+      server.stop(true);
+    }
+  });
 });
 
 /** One issues state document as the worker writes it, scoped to `repoDir`. */

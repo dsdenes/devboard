@@ -371,6 +371,7 @@
     connection.onOpen(() => {
       goal.resetActiveOperations();
       discover.resetActiveOperations();
+      providers.resetActiveOperations();
       devboard.request();
       providers.request();
     });

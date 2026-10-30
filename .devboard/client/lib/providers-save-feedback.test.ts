@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { ConnectionStore, connection } from "./connection.svelte";
+import { connection } from "./connection.svelte";
 import { ProviderStore } from "./providers.svelte";
 import { saveFeedback } from "./save-feedback.svelte";
 
@@ -74,31 +74,100 @@ afterEach(() => {
   restoreGlobals();
 });
 
-test("a provider save confirms only on the state frame that follows it", () => {
+/** A store attached to one open fake socket. */
+function connected(): { store: ProviderStore; socket: FakeSocket } {
   installGlobals();
   const store = new ProviderStore();
   connection.connect();
   const socket = FakeSocket.instances[0];
   if (socket === undefined) throw new Error("no socket created");
   socket.open();
+  return { store, socket };
+}
 
-  store.save({ provider: "openrouter", label: "Work", key: "sk-test" });
+test("a stale state frame neither confirms a save nor clears its wait", () => {
+  const { store, socket } = connected();
+
+  const requestId = store.save({ provider: "openrouter", label: "Work", key: "sk-test" });
+  if (requestId === null) throw new Error("the save was not sent");
   expect(socket.sent).toContain(
     JSON.stringify({
       type: "saveProvider",
+      requestId,
       provider: "openrouter",
       label: "Work",
       key: "sk-test",
     }),
   );
-  expect(saveFeedback.text).toBeNull();
+  expect(store.busy).toBe(true);
 
-  // A refusal leaves the failure to its own alert and shows no confirmation.
-  store.handleEvent({ type: "providerError", message: "The key is invalid." });
-  expect(saveFeedback.text).toBeNull();
-
-  store.save({ provider: "openrouter", label: "Work", key: "sk-test" });
+  // The periodic refresh, a getProviders reply, and another client's change all
+  // arrive as a plain broadcast: none of them answers this save.
   store.handleEvent({ type: "providersState", subscriptions: [], selection: null });
+  expect(saveFeedback.text).toBeNull();
+  expect(store.saveResult).toBeNull();
+  expect(store.busy).toBe(true);
+
+  expect(store.handleEvent({ type: "providerChanged", requestId })).toBe(true);
   expect(saveFeedback.text).toBe("Provider saved.");
+  expect(store.saveResult).toEqual({ requestId, ok: true });
+  expect(store.busy).toBe(false);
+
+  // The same acknowledgement never settles a second time.
+  expect(store.handleEvent({ type: "providerChanged", requestId })).toBe(false);
 });
 
+test("a refused save keeps its own error and never announces success", () => {
+  const { store } = connected();
+
+  const requestId = store.save({ provider: "openrouter", label: "Work", key: "sk-test" });
+  if (requestId === null) throw new Error("the save was not sent");
+  store.handleEvent({ type: "providersState", subscriptions: [], selection: null });
+  store.handleEvent({ type: "providerError", requestId, message: "The key is invalid." });
+
+  expect(store.error).toBe("The key is invalid.");
+  expect(saveFeedback.text).toBeNull();
+  expect(store.saveResult).toEqual({ requestId, ok: false });
+  expect(store.busy).toBe(false);
+});
+
+test("one save's answer leaves another request waiting", () => {
+  const { store } = connected();
+
+  const first = store.save({ provider: "openrouter", label: "Work", key: "sk-one" });
+  const second = store.save({ provider: "openrouter", label: "Home", key: "sk-two" });
+  if (first === null || second === null) throw new Error("a save was not sent");
+  expect(first).not.toBe(second);
+
+  store.handleEvent({ type: "providerChanged", requestId: second });
+  expect(store.busy).toBe(true);
+  expect(store.saveResult).toEqual({ requestId: second, ok: true });
+
+  store.handleEvent({ type: "providerChanged", requestId: first });
+  expect(store.busy).toBe(false);
+});
+
+test("a change on a closed socket leaves the store idle", () => {
+  installGlobals();
+  const store = new ProviderStore();
+  connection.connect();
+  const socket = FakeSocket.instances[0];
+  if (socket === undefined) throw new Error("no socket created");
+
+  expect(store.save({ provider: "openrouter", label: "Work", key: "sk-test" })).toBeNull();
+  expect(store.remove("subscription")).toBeNull();
+  expect(store.setEnabled("subscription", false)).toBeNull();
+  expect(store.busy).toBe(false);
+  expect(socket.sent).toEqual([]);
+});
+
+test("a reconnect drops a change the lost socket can never answer", () => {
+  const { store } = connected();
+
+  store.save({ provider: "openrouter", label: "Work", key: "sk-test" });
+  expect(store.busy).toBe(true);
+
+  store.resetActiveOperations();
+  expect(store.busy).toBe(false);
+  expect(store.saveResult).toBeNull();
+});
