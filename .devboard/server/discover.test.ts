@@ -782,8 +782,14 @@ describe("discover mode", () => {
         expect(started.agent).toBe("sheet");
         const staging = join(fixture.root, ".omp", "discover", "staging", String(started.runId));
         await waitUntil(() => existsSync(staging), "staging directory exists");
-        await waitUntil(() => spawnCount(fixture.logPath) === 1, "peer announced");
-        expect(prompts(fixture.logPath)[0] ?? "").toBe(`/discover-sheet ${staging}`);
+        // The peer writes its spawn and its first prompt in one synchronous
+        // block but as two appends: waiting on the spawn alone can read the
+        // pair half-written, so wait for the prompt line the assertion needs.
+        await waitUntil(
+          () => spawnCount(fixture.logPath) === 1 && prompts(fixture.logPath).length === 1,
+          "peer announced with its prompt",
+        );
+        expect(prompts(fixture.logPath)[0]).toBe(`/discover-sheet ${staging}`);
 
         // A second start is refused with one error and spawns nothing.
         client.send({ type: "discoverAgent", agent: "sheet" });
@@ -1981,7 +1987,15 @@ describe("discovery agents", () => {
             "staging",
             String(started.runId),
           );
-          await waitUntil(() => spawnCount(fixture.logPath) === spawns + 1, "one new peer");
+          // The spawn and prompt lines are separate appends: waiting on the
+          // spawn count alone can read the prompt half-written, so wait for
+          // the prompt line this iteration asserts.
+          await waitUntil(
+            () =>
+              spawnCount(fixture.logPath) === spawns + 1 &&
+              prompts(fixture.logPath).length === spawns + 1,
+            "one new peer with its prompt",
+          );
           expect(prompts(fixture.logPath)[spawns]).toBe(`${agent.command} ${staging}`);
           const stopped = await client.waitFor(
             (message) => message.type === "discoverStopped" && message.agent === agent.id,
