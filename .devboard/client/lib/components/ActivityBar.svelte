@@ -42,7 +42,7 @@
   }: Props = $props();
 
   const tooltipClass =
-    "z-50 rounded-sm border border-[var(--border-strong)] bg-[var(--surface-raised)] px-2 py-1 text-[12px] text-[var(--foreground)] shadow-md";
+    "z-50 rounded-[6px] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-2 py-1 text-[12px] text-[var(--foreground)] shadow-md";
 
   type ModeState = "running" | "attention" | "idle" | "stale" | null;
 
