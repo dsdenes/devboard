@@ -233,6 +233,10 @@ the server's address when the backend runs elsewhere, for example
 its status bar stays on `Connecting`: Vite answers the `/ws` upgrade itself and the backend never
 sees the socket.
 
+The dev server ignores the generated trees (`.tmp`, `.test-tmp`, `dist`, `coverage`). A busy
+checkout writes hundreds of thousands of files under `.tmp`; watching them reloads the page for
+every agent write and eventually exhausts the dev server's heap.
+
 ## Stack
 
 - Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`. Each run

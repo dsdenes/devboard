@@ -17,9 +17,25 @@ const backendProxy = {
   "/api": { target: backend },
 };
 
+/**
+ * The harness writes generated state under `.tmp` (hundreds of thousands of
+ * files on a busy checkout). Watching it reloads the page for every agent
+ * write and exhausts the dev server's heap, so generated trees never reach
+ * the watcher. Vite's own ignore defaults are repeated because this list
+ * replaces them.
+ */
+const watchIgnored = [
+  "**/.git/**",
+  "**/node_modules/**",
+  "**/.tmp/**",
+  "**/.test-tmp/**",
+  "**/dist/**",
+  "**/coverage/**",
+];
+
 export default defineConfig({
   plugins: [tailwindcss(), svelte()],
-  server: { proxy: backendProxy },
+  server: { proxy: backendProxy, watch: { ignored: watchIgnored } },
   preview: { proxy: backendProxy },
   build: {
     outDir: "dist",
