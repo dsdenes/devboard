@@ -216,6 +216,23 @@ pages, splits, palette, shortcuts, theme and first paint, layout persistence and
 notifications, status bar, preserved test hooks, and the absence of exceptions, console errors,
 failed requests, and overflow. It writes screenshots under `.devboard/.tmp/interface/`.
 
+### Developing the client
+
+The Bun server serves the built client and owns the WebSocket, so no dev server runs during
+normal use. For client work with Vite HMR, start the server first, then Vite in another shell:
+
+```bash
+cd .devboard
+bun run start   # backend, http://127.0.0.1:8080 by default
+bun run dev     # client with HMR, http://127.0.0.1:5173 by default
+```
+
+Vite proxies `/ws` and `/api` to `DEVBOARD_BACKEND` (default `http://127.0.0.1:8080`). Set it to
+the server's address when the backend runs elsewhere, for example
+`DEVBOARD_BACKEND=http://127.0.0.1:9000 bun run dev`. Without that proxy the interface loads but
+its status bar stays on `Connecting`: Vite answers the `/ws` upgrade itself and the backend never
+sees the socket.
+
 ## Stack
 
 - Backend: TypeScript on Bun, serving the built client and one WebSocket at `/ws`. Each run

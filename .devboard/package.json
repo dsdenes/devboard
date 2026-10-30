@@ -5,6 +5,7 @@
   "description": "Devboard harness: ADR dashboard server, client, prompts, wrappers, and installer.",
   "scripts": {
     "build": "vite build",
+    "dev": "vite",
     "start": "bun run server/index.ts",
     "publish": "bun run scripts/publish.ts",
     "release": "bun run scripts/release.ts",
