@@ -566,7 +566,44 @@ describe("Coach families", () => {
     expect(families.map((family) => family.key).sort()).toEqual(["edit", "git push origin HEAD:main"]);
     const push = families.find((family) => family.key === "git push origin HEAD:main")!;
     expect(push.calls).toBe(4);
-    expect(push.fragments.some((fragment) => fragment.text.startsWith("retry"))).toBe(true);
+    expect(push.fragments.some((fragment) => fragment.text === "retry ×3")).toBe(true);
+  });
+
+  test("a failure in one command never makes another command's calls a retry", () => {
+    const families = familiesOf([
+      sessionOf({
+        id: "a",
+        startedAt: instant(60),
+        calls: [
+          { command: "bun run publish", isError: true, text: "EXIT:1" },
+          { command: "git push origin task-7" },
+          { command: "git push origin task-7" },
+          { command: "git push origin task-7" },
+        ],
+      }),
+    ]);
+    const push = families.find((family) => family.key === "git push origin task-7")!;
+    expect(push.calls).toBe(3);
+    expect(push.fragments.some((fragment) => fragment.text.startsWith("retry"))).toBe(false);
+    expect(push.excerpts.every((excerpt) => excerpt.status === "ok")).toBe(true);
+  });
+
+  test("a success after a failure of the same command does not count as a retry", () => {
+    const families = familiesOf([
+      sessionOf({
+        id: "a",
+        startedAt: instant(60),
+        calls: [
+          { command: "git push origin task-7", isError: true, text: "rejected" },
+          { command: "git push origin task-7" },
+          { command: "git push origin task-7" },
+          { command: "git push origin task-7" },
+        ],
+      }),
+    ]);
+    const push = families.find((family) => family.key === "git push origin task-7")!;
+    expect(push.fragments.some((fragment) => fragment.text.startsWith("retry"))).toBe(false);
+    expect(push.calls).toBe(4);
   });
 
   test("journal questions and run failures need two scopes", () => {

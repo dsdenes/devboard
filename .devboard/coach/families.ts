@@ -330,23 +330,39 @@ function resultFor(
   );
 }
 
+/** One call's identity: its tool name plus the exact arguments it carried. */
+function callIdentity(call: SessionToolCall): string {
+  return `${call.name}\n${call.argumentsText}`;
+}
+
 /** Retry weight: one identity repeated at least three times after errors. */
 function retryWeights(
   session: AgentSession,
   start: number,
   end: number,
 ): Map<string, { count: number; at: number }> {
+  const callsById = new Map<string, SessionToolCall>();
+  const callsByIndex = new Map<number, SessionToolCall>();
+  for (const call of session.calls) {
+    if (call.id !== null) callsById.set(call.id, call);
+    callsByIndex.set(call.index, call);
+  }
   const events: Array<{ index: number; error: boolean; identity: string }> = [];
   for (const call of session.calls) {
-    events.push({
-      index: call.index,
-      error: false,
-      identity: `${call.name}\n${call.argumentsText}`,
-    });
+    events.push({ index: call.index, error: false, identity: callIdentity(call) });
   }
   for (const result of session.results) {
     if (!result.isError) continue;
-    events.push({ index: result.index, error: true, identity: result.toolName });
+    // A failure belongs to the call that reported it, so it carries the same
+    // identity as that call. A result with no matching call keeps the tool
+    // name alone. Keying failures by the bare tool name marked every later
+    // call of the tool as after-error.
+    const origin = result.toolCallId === null ? undefined : callsById.get(result.toolCallId);
+    events.push({
+      index: result.index,
+      error: true,
+      identity: origin === undefined ? result.toolName : callIdentity(origin),
+    });
   }
   events.sort((left, right) => left.index - right.index);
   const errored = new Set<string>();
@@ -358,10 +374,14 @@ function retryWeights(
     }
     const entry = totals.get(event.identity) ?? { count: 0, afterError: 0, times: [] };
     entry.count += 1;
-    if (errored.has(event.identity.split("\n")[0] ?? "")) entry.afterError += 1;
-    const call = session.calls.find((candidate) => candidate.index === event.index);
+    if (errored.has(event.identity)) entry.afterError += 1;
+    const call = callsByIndex.get(event.index);
     const instant = instantOf(call?.timestamp, session.startedAt);
     if (instant >= start && instant <= end) entry.times.push(instant);
+    // A success ends this identity's error streak: the retry worked, so later
+    // calls of it are not retries of the earlier failure.
+    const outcome = call === undefined ? undefined : resultFor(session, call);
+    if (outcome !== undefined && !outcome.isError) errored.delete(event.identity);
     totals.set(event.identity, entry);
   }
   const weights = new Map<string, { count: number; at: number }>();
