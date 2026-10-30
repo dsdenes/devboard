@@ -61,12 +61,14 @@ context, but you never edit, comment on, close, or reopen another issue.
   other environment or credential-file sweep: never enumerate the process environment or hunt
   for credential files, and `.devboard/prompts/forge-auth.md` holds that rule in full. Never
   read or grep `.devboard/scripts/forge-auth.ts` to rediscover its resolution order; read that
-  file only when the run changes it. `DEVBOARD_GITEA_URL` is supplied by the host at run time,
-  so never hardcode it or fall back to a guessed base such as `http://localhost:2223`: the
-  check reads the real value, and a wrong guess only costs a round trip. Never pipe `env` or
-  `printenv` into `grep` (an `env | grep` probe) for `gitea`, `forge`, `github`, `gitlab`, or
-  `token`: the tool shell carries an exported `MATCH` variable holding a token-bearing grep
-  match (`MATCH='GITEA_TOKEN=…'`), so an echoed `MATCH=` line re-leaks the value. Emit a
+  file only when the run changes it. `DEVBOARD_GITEA_URL` is supplied by the host at run time:
+  use it exactly as supplied, verbatim, with no derived or default port, so never hardcode it
+  or fall back to a guessed base such as `http://localhost:2223`. Verify access only through
+  the `check --json` call above; never probe a forge endpoint such as `/api/v1/version` to
+  confirm the base URL or the credential. Never pipe `env` or `printenv` into `grep` (an
+  `env | grep` probe) for `gitea`, `forge`, `github`, `gitlab`, or `token`: the tool shell
+  carries an exported `MATCH` variable holding a token-bearing grep match
+  (`MATCH='GITEA_TOKEN=…'`), so an echoed `MATCH=` line re-leaks the value. Emit a
   credential only as `<set>` or `<redacted>`, never as a value or a prefix of one; when a
   variable must be checked, print only a boolean, `[ -n "$GITEA_TOKEN" ] && echo set`. A
   diagnostic line that must name a variable rather than discover configuration strips every
