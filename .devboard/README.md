@@ -256,8 +256,10 @@ dashboard running from the installed package. The copied trees are what the comm
 open by repo-root-relative path: each command reads `.devboard/prompts/<name>.md`, each omp
 extension re-exports `.devboard/extensions/<name>.ts`, and those extensions import
 `../lib/*.ts`. The package itself stays under `.devboard/node_modules`. A reinstall keeps the
-version and `.tmp`; `update` re-copies the three trees from the newly installed package and
-never starts, stops, or restarts the dashboard. When the freshly started dashboard does not answer
+version and `.tmp`; `update` re-copies the wrappers and the three trees from the installed
+package and never starts, stops, or restarts the dashboard. It does so even when the prefix
+already holds the newest version, so a host left on an earlier release's copies repairs itself
+without a reinstall. When the freshly started dashboard does not answer
 within 30 seconds, `install` stops that child before it exits nonzero, so a failed install leaves
 no dashboard behind.
 
@@ -1323,7 +1325,11 @@ propagation wait (default 1800 seconds).
 
 Installed dashboards update themselves: each checks the newest npm version at startup and every
 60,000 ms (`DEVBOARD_UPDATE_INTERVAL_MS` overrides it), installs the npm artifact through a
-staging prefix, and keeps serving its loaded code. The server copies its client bundle from the
+staging prefix, and keeps serving its loaded code. After the package is in place it runs the
+same wrapper and harness-tree sync `install` runs, with the same git-tracked wrapper paths left
+untouched, so `.omp/commands`, `.omp/extensions`, `.omp/mcp.json`, and
+`.devboard/{prompts,extensions,lib,scripts/forge-auth.ts}` match the installed package before
+the check reports the install. The server copies its client bundle from the
 installed package into `<stateDir>/serving/<pid>-<version>` at startup and serves that copy, so
 replacing the package changes only what a restart loads; an open page keeps requesting the bytes
 it started with. If npm cannot serve the artifact and
