@@ -7,6 +7,7 @@
   --background: #0d1117;
   --surface: #161b22;
   --surface-raised: #1c2128;
+  --overlay: rgb(0 0 0 / 0.55);
   --foreground: #e6edf3;
   --text: var(--foreground);
   --muted-foreground: #8b949e;
@@ -45,6 +46,7 @@
   --background: #ffffff;
   --surface: #f6f8fa;
   --surface-raised: #ffffff;
+  --overlay: rgb(0 0 0 / 0.55);
   --foreground: #1f2328;
   --text: var(--foreground);
   --muted-foreground: #57606a;
@@ -896,7 +898,7 @@ kbd {
 }
 
 .dialog-overlay {
-  background: rgb(0 0 0 / 0.55);
+  background: var(--overlay);
   inset: 0;
   position: fixed;
   z-index: 100;
