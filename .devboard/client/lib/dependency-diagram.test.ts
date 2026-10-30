@@ -1,10 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  DIAGRAM_MIN_READABLE_SCALE,
-  dependencyChart,
-  dependencyEdges,
-  diagramMode,
-} from "./dependency-diagram";
+import { dependencyChart, dependencyEdges } from "./dependency-diagram";
 
 describe("dependency edges", () => {
   test("reads directed records and sorts them by both endpoints", () => {
@@ -91,25 +86,5 @@ describe("dependency chart", () => {
     expect(dependencyChart(["Orders"], [])).toBeNull();
     expect(dependencyChart([], [])).toBeNull();
     expect(dependencyChart(["  "], [])).toBeNull();
-  });
-});
-
-describe("diagram mode", () => {
-  test("fits while the labels stay readable", () => {
-    expect(diagramMode(1000, 1000, null)).toBe("fit");
-    expect(diagramMode(1000, 900, null)).toBe("fit");
-  });
-
-  test("opens at actual size rather than shrinking labels below the floor", () => {
-    expect(DIAGRAM_MIN_READABLE_SCALE).toBe(0.9);
-    expect(diagramMode(8677, 744, null)).toBe("actual");
-    expect(diagramMode(1000, 899, null)).toBe("actual");
-  });
-
-  test("keeps an explicit choice and handles unmeasured sizes", () => {
-    expect(diagramMode(8677, 744, "fit")).toBe("fit");
-    expect(diagramMode(200, 1000, "actual")).toBe("actual");
-    expect(diagramMode(0, 744, null)).toBe("fit");
-    expect(diagramMode(1000, 0, null)).toBe("fit");
   });
 });

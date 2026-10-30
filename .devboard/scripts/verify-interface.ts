@@ -3722,13 +3722,15 @@ try {
     text: string;
     labelSize: number;
     radius: string;
-    canvasOverflow: string;
     legend: string;
     zoomVisible: boolean;
-    canvasScrolls: boolean;
+    canvasPresent: boolean;
+    svgWidth: number;
+    rootWidth: number;
+    scrolls: boolean;
   }>(`(() => {
     const root = document.querySelector('[data-testid="discover-dependency-diagram"]');
-    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
+    const svg = root?.querySelector('svg');
     const label = root?.querySelector('.nodeLabel p');
     const node = root?.querySelector('g.node rect');
     return {
@@ -3737,10 +3739,12 @@ try {
       text: root?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
       labelSize: label === null || label === undefined ? 0 : Number.parseFloat(getComputedStyle(label).fontSize),
       radius: node === null || node === undefined ? "" : getComputedStyle(node).rx,
-      canvasOverflow: canvas === null ? "" : getComputedStyle(canvas).overflow,
       legend: document.querySelector('.discover-diagram__legend')?.textContent?.trim() ?? "",
       zoomVisible: document.querySelector('[data-testid="discover-dependency-zoom"]') !== null,
-      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
+      canvasPresent: document.querySelector('[data-testid="discover-dependency-canvas"]') !== null,
+      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
+      rootWidth: root === null ? 0 : root.clientWidth,
+      scrolls: root === null ? false : root.scrollWidth > root.clientWidth + 1,
     };
   })()`);
   check(dependencyDiagram.nodes >= 2, "the dependency diagram does not draw every bounded context", dependencyDiagram);
@@ -3753,18 +3757,23 @@ try {
   check(dependencyDiagram.labelSize >= 11, "the dependency diagram labels are unreadably small", dependencyDiagram);
   check(dependencyDiagram.radius === "4px", "the dependency diagram nodes are not on the design radius", dependencyDiagram);
   check(
-    dependencyDiagram.canvasOverflow === "auto",
-    "the dependency diagram is not inside a scrolling canvas",
-    dependencyDiagram,
-  );
-  check(
     dependencyDiagram.legend === "Arrows point from a context to the context it uses.",
     "the dependency diagram does not explain its arrows",
     dependencyDiagram,
   );
   check(
-    !dependencyDiagram.zoomVisible && !dependencyDiagram.canvasScrolls,
-    "a diagram that fits still offers or needs zooming",
+    !dependencyDiagram.zoomVisible && !dependencyDiagram.canvasPresent,
+    "the dependency diagram still offers a movable view",
+    dependencyDiagram,
+  );
+  check(
+    dependencyDiagram.svgWidth > 0 && dependencyDiagram.svgWidth <= dependencyDiagram.rootWidth + 1,
+    "the dependency diagram overflows its panel",
+    dependencyDiagram,
+  );
+  check(
+    !dependencyDiagram.scrolls,
+    "the dependency diagram still scrolls inside its panel",
     dependencyDiagram,
   );
   check(discoverTables.cards >= 5, "Discover sections are missing from the overview", discoverTables);
