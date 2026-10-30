@@ -145,6 +145,21 @@ Untracked scratch entries already present under `.devboard/` are expected status
 justify another fetch, merge, or commit. Create no new scratch file outside `.devboard/`. Replace
 `origin` and `main` when the repository names another canonical remote or branch.
 
+## CI waits
+
+Never wait on a Gitea Actions run with a shell polling loop. Any command that combines
+`for i in $(seq 1 60)` (or any other retry, `sleep`, or background loop) with a `/actions/runs/`
+request is forbidden: each iteration spends a turn, the harness backgrounds the loop as `bg_N`,
+and its own output says not to poll. Never leave such a loop running in the background.
+
+The forge rule above already requires run reads through the `devboard` MCP tools, never `curl`.
+Read a run at most once, parse `status`, `conclusion`, and `run_attempt` from that one read, and
+report what it says. When `status` is `completed`, report the conclusion and continue; when it is
+not, end the turn and wait for the completion follow-up, or re-check at most once in a later turn.
+The same rule covers commit-status and list-runs reads.
+
+`bun run publish` owns the release workflow wait, so landing never inspects a run by hand.
+
 ## Publish
 
 Publishing is part of the task. Run it exactly once per change, from the integration checkout, in
