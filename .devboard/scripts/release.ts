@@ -285,6 +285,10 @@ await withReleaseLock(async () => {
         `Devboard ${version}\n\n` +
         `npm: ${PACKAGE_NAME}@${version}\n` +
         `Fallback: the attached tarball and its .sha256`,
+      // The tag names the commit this release packed, never whatever `main`
+      // points at when the record is created; a concurrent push must not move
+      // the release to another commit.
+      targetCommitish: head.stdout,
     });
     if (created.id === undefined) fail("the created release has no identifier");
     await giteaUploadAsset(target, created.id, names[0] ?? "", await readFile(tarball));

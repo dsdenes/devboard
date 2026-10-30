@@ -322,6 +322,8 @@ export interface CreateReleaseInput {
   tag: string;
   title: string;
   notes: string;
+  /** The commit the tag names; defaults to `main` for a caller without one. */
+  targetCommitish?: string;
 }
 
 export async function giteaCreateRelease(
@@ -336,7 +338,7 @@ export async function giteaCreateRelease(
       method: "POST",
       body: JSON.stringify({
         tag_name: input.tag,
-        target_commitish: "main",
+        target_commitish: input.targetCommitish ?? "main",
         name: input.title,
         body: input.notes,
         draft: false,

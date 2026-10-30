@@ -7,6 +7,7 @@ import { createForgeIssues } from "../lib/forge-issues.ts";
 import {
   giteaClosingCommit,
   closingCommitFromGiteaTimeline,
+  giteaCreateRelease,
   giteaLabels,
   giteaListIssues,
   giteaListReleases,
@@ -514,6 +515,48 @@ describe("Gitea pagination", () => {
     });
     expect(requestedReleasePages(calls)).toEqual(["1", "2", "3"]);
     expect(calls[0]).toContain("limit=50");
+  });
+});
+
+describe("Gitea release creation", () => {
+  test("tags the released commit, never whatever main points at", async () => {
+    const calls: Recorded[] = [];
+    const fetchImpl: FetchLike = async (input, init) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url: String(input),
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      return Response.json({ id: 7, tag_name: "v1.0.0" }, { status: 201 });
+    };
+    const commit = "a".repeat(40);
+    await giteaCreateRelease(
+      { baseUrl: "http://gitea.test", project: "acme/fixture" },
+      { tag: "v1.0.0", title: "Devboard 1.0.0", notes: "notes", targetCommitish: commit },
+      fetchImpl,
+    );
+    expect(JSON.parse(calls[0]?.body ?? "")).toMatchObject({
+      tag_name: "v1.0.0",
+      target_commitish: commit,
+    });
+  });
+
+  test("defaults the target to main when the caller names no commit", async () => {
+    const calls: Recorded[] = [];
+    const fetchImpl: FetchLike = async (input, init) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url: String(input),
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      return Response.json({ id: 7, tag_name: "v1.0.0" }, { status: 201 });
+    };
+    await giteaCreateRelease(
+      { baseUrl: "http://gitea.test", project: "acme/fixture" },
+      { tag: "v1.0.0", title: "Devboard 1.0.0", notes: "notes" },
+      fetchImpl,
+    );
+    expect(JSON.parse(calls[0]?.body ?? "")).toMatchObject({ target_commitish: "main" });
   });
 });
 
