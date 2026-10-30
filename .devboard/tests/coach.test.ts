@@ -33,6 +33,7 @@ import {
   issueBody,
   issueTitle,
   ISSUE_BODY_MAX_BYTES,
+  ISSUE_TITLE_MAX_BYTES,
 } from "../coach/issue";
 import {
   parseSynthesisAnswer,
@@ -1422,6 +1423,70 @@ for await (const chunk of Bun.stdin.stream()) {
       { title: "[coach] bun run publish", body: "## Family\n\nstored bytes\n" },
     ]);
   });
+
+  test("an overlong queued title is bounded and does not block later filing", async () => {
+    const { repoDir, stateDir } = await workspace();
+    const delivery = memoryDelivery();
+    const now = new Date().toISOString();
+    const longKey = `bun run ${"z".repeat(380)}`;
+    saveLedger(coachDirectory(stateDir), {
+      version: 3,
+      families: {
+        [longKey]: {
+          firstSeen: now,
+          lastSeen: now,
+          calls: 3,
+          sessions: 2,
+          kind: "command",
+          lastAction: "capped",
+        },
+      },
+      pendingFiling: [
+        {
+          family: longKey,
+          kind: "command",
+          title: `[coach] ${longKey}`,
+          body: "## Family\n\nstored bytes\n",
+          score: 6,
+          createdAt: now,
+        },
+      ],
+    });
+    const result = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      collect: () =>
+        collectionOf([
+          sessionOf({ id: "long", startedAt: instant(60), calls: [{ command: longKey }] }),
+          sessionOf({
+            id: "short",
+            startedAt: instant(30),
+            calls: [{ command: "bun run publish" }],
+          }),
+        ]),
+      delivery,
+      synthesize: synthesisFor((family) =>
+        family.key === longKey
+          ? {
+              family: family.key,
+              action: "none",
+              rationale: "The queued proposal already covers it.",
+              acceptance: ["- [ ] Nothing else is filed for the long family."],
+            }
+          : toolProposal(family),
+      ),
+      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+    });
+    expect(result.report.action).toBe("filed");
+    expect(delivery.created).toHaveLength(2);
+    const queued = delivery.created[0]!;
+    expect(queued.body).toBe("## Family\n\nstored bytes\n");
+    expect(Buffer.byteLength(queued.title, "utf8")).toBeLessThanOrEqual(ISSUE_TITLE_MAX_BYTES);
+    expect(queued.title).toContain(familyTag(longKey));
+    expect(delivery.created[1]?.title).toBe("[coach] bun run publish");
+    expect(loadLedger(coachDirectory(stateDir)).ledger.pendingFiling).toEqual([]);
+  });
 });
 
 describe("Coach settings compatibility", () => {
@@ -1464,6 +1529,45 @@ describe("Coach settings compatibility", () => {
 });
 
 describe("Coach prompt contract details", () => {
+  test("issueTitle bounds a 300- and a 400-character family key to the forge limit", () => {
+    const longCommand = "z".repeat(400);
+    const longQuestion = `Why ${"z".repeat(400)}`;
+    const families = familiesOf(
+      [
+        sessionOf({ id: "long-a", startedAt: instant(60), calls: [{ command: longCommand }] }),
+        sessionOf({ id: "long-b", startedAt: instant(50), calls: [{ command: longCommand }] }),
+      ],
+      [
+        { kind: "question", text: longQuestion, scope: "run-a", ts: instant(40) },
+        { kind: "question", text: longQuestion, scope: "run-b", ts: instant(30) },
+      ],
+    );
+    const commandFamily = families.find((family) => family.kind === "command");
+    const journalFamily = families.find((family) => family.kind === "question");
+    expect(commandFamily?.key.length).toBe(400);
+    expect(journalFamily?.key.length).toBe(300);
+    for (const family of [commandFamily, journalFamily]) {
+      if (family === undefined) throw new Error("expected a long-key family");
+      for (const action of ["tool", "prompt"] as const) {
+        const title = issueTitle(family, action);
+        expect(Buffer.byteLength(title, "utf8")).toBeLessThanOrEqual(ISSUE_TITLE_MAX_BYTES);
+        expect(Buffer.from(title, "utf8").toString("utf8")).toBe(title);
+        expect(title).toContain(familyTag(family.key));
+      }
+      // The full key survives in the body and the tag deduplication reads.
+      const proposal: Proposal = {
+        family: family.key,
+        action: "prompt",
+        prompt: { instruction: "Instruction.", target: "scout" },
+        rationale: "Because.",
+        acceptance: ["- [ ] It holds."],
+      };
+      const body = issueBody({ family, proposal, allowlistEntry: "" });
+      expect(body).toContain(family.key);
+      expect(body).toContain(`family:${familyTag(family.key)}`);
+    }
+  });
+
   test("issueTitle and issueBody use the family key and tag", () => {
     const family = familiesOf([
       sessionOf({

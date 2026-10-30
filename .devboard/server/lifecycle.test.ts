@@ -7,6 +7,7 @@ import type { Server } from "bun";
 import { createApp } from "./app";
 import type { EpicLookup, OpenEpic } from "./tracker";
 import { testProviderService } from "./fixtures/test-providers";
+import { readStateFile, stateFile } from "./state";
 
 const temporaryDirectories: string[] = [];
 const STUB_AGENT = join(import.meta.dir, "fixtures", "stub-agent.ts");
@@ -63,9 +64,10 @@ async function startServer(
     laneBackoffMs?: number;
     mainPollMs?: number;
     installedSkills?: "managed" | "unmanaged" | "none";
+    root?: string;
   } = {},
 ): Promise<TestServer> {
-  const root = await temporaryDirectory();
+  const root = options.root ?? (await temporaryDirectory());
   const adrDir = join(root, "adrs");
   const staticDir = join(root, "static");
   const goalFile = join(root, "GOAL.md");
@@ -198,6 +200,13 @@ function prompts(logPath: string): string[] {
 
 function lifecycleStates(client: TestClient): Record<string, unknown>[] {
   return client.events.filter((message) => message.type === "lifecycleState");
+}
+
+/** Yields one event-loop turn so queued startup continuations can run. */
+async function settle(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setImmediate(resolve);
+  await promise;
 }
 
 async function waitUntil(
@@ -415,6 +424,82 @@ describe("lifecycle runs", () => {
       } finally {
         client.close();
         server.stop(true);
+      }
+    },
+    20000,
+  );
+
+  test(
+    "persists a finished run as inactive and does not resume it on restart",
+    async () => {
+      const epic: OpenEpic = {
+        number: 77,
+        title: "Not started",
+        url: "https://example.test/issues/77",
+      };
+      let lookups = 0;
+      const tracker: EpicLookup = async () => {
+        lookups += 1;
+        // The first run reads an empty tracker twice and finishes. A restart
+        // that resumes the run would read it a third time and see the epic.
+        return lookups >= 3 ? epic : undefined;
+      };
+      const first = await startServer(
+        { "0001-done.md": fixtureRecord("0001-done.md", "Done") },
+        { tracker },
+      );
+      const client = await connect(first.url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "finished",
+        );
+        expect(spawnCount(first.logPath)).toBe(1);
+        expect(prompts(first.logPath)).toEqual(["/epic-next"]);
+
+        const path = stateFile(join(first.root, "state"), first.root);
+        await waitUntil(
+          () => {
+            const loaded = readStateFile(path);
+            if (loaded.kind !== "loaded") return false;
+            const value = loaded.value;
+            return (
+              typeof value === "object" &&
+              value !== null &&
+              "lifecycleRunning" in value &&
+              value.lifecycleRunning === false
+            );
+          },
+          "the end of the finished run was not persisted",
+        );
+        const loaded = readStateFile(path);
+        if (loaded.kind !== "loaded") throw new Error("the saved state could not be read");
+        const stored = loaded.value;
+        if (typeof stored !== "object" || stored === null) {
+          throw new Error("the saved state is not an object");
+        }
+        expect(stored).toMatchObject({ lifecycleRunning: false });
+      } finally {
+        client.close();
+        await first.server.stop(true);
+      }
+
+      const restarted = await startServer({}, { root: first.root, tracker });
+      const restartedClient = await connect(restarted.url);
+      try {
+        // Restored work starts from a queued continuation after the listener
+        // binds; yielding to the event loop runs it before these checks.
+        await settle();
+        expect(lookups).toBe(2);
+        expect(spawnCount(restarted.logPath)).toBe(1);
+        expect(prompts(restarted.logPath)).toEqual(["/epic-next"]);
+        expect(restartedClient.events.filter((message) => message.type === "runStarted")).toEqual(
+          [],
+        );
+      } finally {
+        restartedClient.close();
+        await restarted.server.stop(true);
       }
     },
     20000,

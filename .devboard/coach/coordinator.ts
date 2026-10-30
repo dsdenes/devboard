@@ -13,6 +13,7 @@ import {
   type FamilyKind,
 } from "./families";
 import {
+  boundTitle,
   familyTag,
   issueTitle,
   type CoachOpenIssue,
@@ -439,7 +440,11 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     });
   };
 
-  /* Pending proposals file before new synthesis, with their original bytes. */
+  /*
+   * Pending proposals file before new synthesis. Their body keeps its stored
+   * bytes; the title is bounded, so an entry queued before the bound existed
+   * cannot stall the queue on a forge rejection.
+   */
   const queue = ledger.pendingFiling
     .slice()
     .sort(
@@ -448,7 +453,8 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     );
   for (const pending of queue) {
     if (failure !== undefined) break;
-    const duplicate = duplicateOf(openIssues, pending.title, pending.family);
+    const title = boundTitle(pending.title, pending.family);
+    const duplicate = duplicateOf(openIssues, title, pending.family);
     if (duplicate !== undefined) {
       report.duplicates.push({ family: pending.family, url: duplicate.url });
       report.validations.push({
@@ -479,7 +485,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     }
     let filed: DeliveryResult;
     try {
-      filed = await active.create(pending.title, pending.body);
+      filed = await active.create(title, pending.body);
     } catch (error) {
       filed = { ok: false, reason: firstLine(error) };
     }
@@ -498,7 +504,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     handled.add(pending.family);
     recordFiling({
       family: pending.family,
-      title: pending.title,
+      title,
       kind: pending.kind,
       url: filed.url,
     });
