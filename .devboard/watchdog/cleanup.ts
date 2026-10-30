@@ -189,6 +189,12 @@ export function sweepStateDir(
     // Coach state: worker, settings, control, ledger, lock, runs, and the
     // latest report are operator-visible history, not scratch.
     join(directory, "coach"),
+    // Goal-draft owner state: run records, activity, the pending question, its
+    // control directory, the lease, and the reload handoff. An elaboration
+    // waiting on an operator answer is still running however long it waits, and
+    // a finished draft's status is the only record of its outcome; nothing
+    // recreates either.
+    join(directory, "goal-drafts"),
     // The watchdog's command channel is operator input, not scratch.
     join(directory, "watchdog", "control"),
     ...(options.watchdogRunDir === undefined ? [] : [resolve(options.watchdogRunDir)]),

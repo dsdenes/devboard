@@ -1816,6 +1816,9 @@ than seven days are deleted; these are never deleted at any age:
 - `.tmp/issues/` and `.tmp/flow/` in full.
 - `.tmp/coach/` in full: worker, settings, control, ledger, lock, runs, latest report, and the
   forge projection its caps count.
+- `.tmp/goal-drafts/` in full: every draft's owner run record, activity, pending question,
+  control directory, lease, and reload handoff. An elaboration waiting on an operator answer is
+  still running however long it waits, and a finished draft's status is its only record.
 - `.tmp/scout/<24-hex>/`, every repository's Auto Scout settings, worker state, and control
   commands, so a stopped worker keeps its caps and cadence.
 - the run directory of the cycle performing the sweep, and a live `devboard-<pid>.lock`.

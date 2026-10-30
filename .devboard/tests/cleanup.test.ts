@@ -33,6 +33,16 @@ import { ScoutWorker } from "../issues/scout/worker";
 import { DesignBridge } from "../server/design";
 import { agentRegistry } from "../server/agents/registry";
 import {
+  GOAL_DRAFT_OWNER_VERSION,
+  goalDraftControlDirectory,
+  goalDraftHandoffPath,
+  goalDraftLeasePath,
+  goalDraftRunDirectory,
+  goalDraftStateDirectory,
+  writeGoalDraftOwnerState,
+} from "../server/goal-draft-owner";
+import { GoalDraftManager } from "../server/goal-drafts";
+import {
   CLEANUP_RETENTION_MS,
   coveredStateDirs,
   runCleanup,
@@ -312,6 +322,119 @@ describe("sweepStateDir", () => {
     expect(removed).not.toContain(join(stateDir, "journal"));
     expect(removed).not.toContain(currentRun);
     expect(removed).not.toContain(join(stateDir, "issues"));
+  });
+
+  test("keeps goal-draft owner state, activity, questions, control, lease, and handoff", async () => {
+    const base = await temporaryDirectory();
+    const repoDir = join(base, "repo");
+    const stateDir = join(base, ".tmp");
+    await mkdir(repoDir, { recursive: true });
+    const waiting = ".devboard/goal-proposals/waiting.md";
+    const startedAt = new Date(realNow - 9 * DAY).toISOString();
+    writeGoalDraftOwnerState(stateDir, repoDir, waiting, {
+      version: GOAL_DRAFT_OWNER_VERSION,
+      run: {
+        status: "running",
+        path: waiting,
+        startedAt,
+        finishedAt: null,
+        error: null,
+        activity: ["read the draft", "asked which repository to target"],
+        question: {
+          id: 1,
+          message: "Which repository should the goal target?",
+          options: [{ label: "this repository", recommended: true }],
+        },
+      },
+      owner: { pid: process.pid, argv: ["bun", "goal-draft-owner"], cwd: repoDir },
+      peer: null,
+      launcherPid: process.pid,
+      supervisorPid: process.pid,
+      updatedAt: startedAt,
+    });
+    const stateJson = join(goalDraftRunDirectory(stateDir, repoDir, waiting), "state.json");
+    const control = join(goalDraftControlDirectory(stateDir, repoDir, waiting), "0001.json");
+    writeAt(control, JSON.stringify({ type: "answer", id: 1, value: "this repository" }), old);
+    const lease = goalDraftLeasePath(stateDir, repoDir);
+    writeAt(lease, JSON.stringify({ pid: process.pid, updatedAt: realNow }), old);
+    const handoff = goalDraftHandoffPath(stateDir, repoDir);
+    writeAt(handoff, JSON.stringify({ at: realNow, pid: process.pid }), old);
+    const goalDrafts = goalDraftStateDirectory(stateDir, repoDir);
+    const runDirectory = goalDraftRunDirectory(stateDir, repoDir, waiting);
+    for (const path of [
+      stateJson,
+      join(runDirectory, "control"),
+      runDirectory,
+      join(goalDrafts, "runs"),
+      goalDrafts,
+      join(stateDir, "goal-drafts"),
+    ]) {
+      utimesSync(path, old, old);
+    }
+
+    const dry = sweepStateDir(stateDir, { now: sweepNow, dryRun: true });
+    const candidates = dry.candidates.map((candidate) => candidate.path);
+    expect(candidates.filter((path) => path.startsWith(goalDrafts))).toEqual([]);
+
+    const report = sweepStateDir(stateDir, { now: sweepNow, dryRun: false });
+    const removed = report.removed.map((candidate) => candidate.path);
+    expect(removed.filter((path) => path.startsWith(goalDrafts))).toEqual([]);
+    expect(existsSync(stateJson)).toBe(true);
+    expect(existsSync(control)).toBe(true);
+    expect(existsSync(lease)).toBe(true);
+    expect(existsSync(handoff)).toBe(true);
+  });
+
+  test("attach still loads a finished goal-draft run after a sweep", async () => {
+    const base = await temporaryDirectory();
+    const repoDir = join(base, "repo");
+    const stateDir = join(base, ".tmp");
+    await mkdir(repoDir, { recursive: true });
+    const finished = ".devboard/goal-proposals/finished.md";
+    const finishedAt = new Date(realNow - 9 * DAY).toISOString();
+    writeGoalDraftOwnerState(stateDir, repoDir, finished, {
+      version: GOAL_DRAFT_OWNER_VERSION,
+      run: {
+        status: "succeeded",
+        path: finished,
+        startedAt: finishedAt,
+        finishedAt,
+        error: null,
+        activity: ["wrote the spec", "opened the issue"],
+        question: null,
+      },
+      owner: null,
+      peer: null,
+      launcherPid: null,
+      supervisorPid: null,
+      updatedAt: finishedAt,
+    });
+    const stateJson = join(goalDraftRunDirectory(stateDir, repoDir, finished), "state.json");
+    utimesSync(stateJson, old, old);
+    const goalDrafts = goalDraftStateDirectory(stateDir, repoDir);
+    utimesSync(join(goalDraftRunDirectory(stateDir, repoDir, finished)), old, old);
+    utimesSync(join(goalDrafts, "runs"), old, old);
+    utimesSync(goalDrafts, old, old);
+    utimesSync(join(stateDir, "goal-drafts"), old, old);
+
+    sweepStateDir(stateDir, { now: sweepNow, dryRun: false });
+    expect(existsSync(stateJson)).toBe(true);
+
+    const manager = new GoalDraftManager({
+      repoDir,
+      stateDir,
+      command: "bun --version",
+      environment: async () => ({}),
+      pollMs: 30,
+      send: () => undefined,
+    });
+    try {
+      const run = manager.snapshot(finished);
+      expect(run.status).toBe("succeeded");
+      expect(run.activity).toEqual(["wrote the spec", "opened the issue"]);
+    } finally {
+      manager.dispose();
+    }
   });
 
   test("keeps a live dashboard's static snapshot and sweeps a dead one", async () => {
