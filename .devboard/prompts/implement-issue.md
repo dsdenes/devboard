@@ -52,13 +52,33 @@ the prerequisite in another agent's place.
   request, never force-push, and never rewrite published history.
 - When a push is rejected, fetch, integrate the new tip, resolve the conflicts, rerun the
   invalidated checks, and push again, with bounded retry. Never bypass the rejection.
-- Close the issue only after verifying that the pushed revision is on the canonical integration
-  line and the required checks pass. Comment on that same issue with the revision and the
-  verification evidence.
+- Close the issue only after the completion gate below passes and the required checks pass.
+  Comment on that same issue with the revision and the verification evidence.
 - A proven duplicate, invalid, or already-fixed issue is closed with that evidence and without
   committing unrelated work.
 - On success, remove only the worktree and branch you created. On failure or block, leave your
   worktree in place and report its path.
+
+## Completion gate
+
+Prove the push once, as the last step, and run no other ancestry probe. `git ls-remote <remote>
+refs/heads/main` must name `git rev-parse HEAD`; equal tips prove the integration commit landed,
+and ancestry follows. This gate prints both commits and exits nonzero when they differ:
+
+```sh
+remote=origin
+local_commit=$(git rev-parse HEAD)
+remote_tip=$(git ls-remote "$remote" refs/heads/main | cut -f1)
+if [ "$local_commit" != "$remote_tip" ]; then
+  printf 'push not verified: local %s remote %s\n' "$local_commit" "$remote_tip" >&2
+  exit 1
+fi
+```
+
+Replace `origin` and `main` when the repository names another canonical remote or branch. Never
+chain per-commit `git merge-base --is-ancestor <sha> origin/main` probes, and never re-verify a
+commit already proven to be the remote tip. If an older commit genuinely needs checking, run
+exactly one `git merge-base --is-ancestor <sha> origin/main` and report its exit status.
 
 ## Reporting
 
