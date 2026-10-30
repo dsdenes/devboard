@@ -37,9 +37,16 @@ context, but you never edit, comment on, close, or reopen another issue.
   status is authoritative and `--json` carries the selected identity: zero means write access,
   nonzero means stop and report that line. Never append `echo "exit=$?"`/`EXIT:$?` and never pipe
   the output through `head`/`tail`. On a checkout whose origin is GitHub or GitLab, replace only
-  `--forge gitea` with `--forge github` or `--forge gitlab`. Never enumerate the process
-  environment or hunt for credential files: `.devboard/prompts/forge-auth.md` holds that rule in
-  full.
+  `--forge gitea` with `--forge github` or `--forge gitlab`. That JSON line, plus the resolution
+  fields `devboard_status` returns, is the only supported way to learn the forge host, project, or
+  credential state: both report presence and resolution without exposing a value, so an
+  environment sweep answers nothing they do not. Never enumerate the process environment or hunt
+  for credential files: `.devboard/prompts/forge-auth.md` holds that rule in full. In particular,
+  never pipe `env` or `printenv` through `grep` for `gitea`, `forge`, `github`, `gitlab`, or
+  `token`, and never treat `sed`-based masking as redaction: the tool shell carries an exported
+  `MATCH` variable holding a token-bearing grep match (`MATCH='GITEA_TOKEN=…'`), so a later sweep
+  reprints the token on a line no substitution rewrote. When a variable must be checked, print
+  only a boolean, `[ -n "$GITEA_TOKEN" ] && echo set`, and never its value or a prefix of it.
 - Resolve the checkout and read the issue before changing anything. `devboard_status` returns the
   resolved `repositoryRoot`, `harnessDirectory`, and `stateDirectory`; use it instead of guessing
   roots. `issue_get` with `{"number": <number>}` returns that issue's title, body, labels, state,
