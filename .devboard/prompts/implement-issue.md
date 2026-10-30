@@ -86,6 +86,21 @@ context, but you never edit, comment on, close, or reopen another issue.
   mutation. Release and workflow verification goes through `bun run publish` as specified below,
   never through a forge API.
 
+## Fetch budget
+
+The budget covers the whole session, not only the push block. Read the canonical remote tip once
+and answer every later question about it from that fetch.
+
+- One spelling: `git fetch origin`, or `git fetch origin <canonical-branch>` when the question
+  names a branch. Never add `--prune`, `--quiet`, `--tags`, or `--all`, and never fetch another
+  remote, unless a deleted ref, a tag, or that other remote is itself the question.
+- One fetch answers every later question about that tip in the same turn. A further fetch needs a
+  push, merge, or rebase since the previous one, and a session fetches at most twice before the
+  push block.
+- A ref that looks missing earns a fetch only after `git rev-parse --verify --quiet <ref>` printed
+  nothing.
+- Never fetch to learn CI, release, or dashboard state: the publish run and the forge report it.
+
 ## Dependencies
 
 The package root that owns the lockfile is `.devboard/`: `<worktree>/.devboard` inside your worktree
@@ -262,7 +277,8 @@ for the same question. Guard any optional branch that may not exist yet with
 ref. Use `git merge-base --is-ancestor <sha> origin/main` only to confirm one named commit landed:
 exit 0 means it is an ancestor, 1 means it is not, and any other status, such as 128 with
 `fatal: Not a valid object name`, means a ref is missing or the command itself failed, never that
-the commit is unrelated. When a ref looks missing, fetch `origin main` and read the same sync call
+the commit is unrelated. When a ref looks missing, prove it absent with `git rev-parse --verify
+--quiet <ref>` first, then fetch `origin main` under the fetch budget and read the same sync call
 again before concluding anything.
 
 Then land it with this one canonical sequence from the canonical checkout, on `main`:
@@ -307,9 +323,10 @@ status or rev-list polling pass in the same session — no second `git status --
 `git rev-list`, `git ls-remote`, `git log`, or `git merge-base` readback to reconfirm output it
 already printed. Never pipe `git push` into `tail`, `head`, or any other consumer: the `tail -3`,
 `tail -4`, `tail -5`, `tail -8`, and `tail -10` variants discard the rejection text and the exit
-status. Never use `git log` or a trimmed merge output as the push proof. Fetch at most twice in a
-session before the push block, and fetch again only after a push, merge, or rebase happened since
-the previous fetch.
+status. Never use `git log` or a trimmed merge output as the push proof. The fetch budget above
+governs the push block too: the landing fetch, the pre-push probe, and the sync check's fetch
+answer every question about that tip, and a further fetch needs a push, merge, or rebase since the
+previous one.
 
 Equal tips prove the landing commit is the canonical tip. `0 0` together with `ANCESTOR_EXIT:0`
 is the complete done check: `git rev-list --left-right --count HEAD...origin/main` proves both
