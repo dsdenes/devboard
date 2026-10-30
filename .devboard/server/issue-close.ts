@@ -1,7 +1,12 @@
 import {
   authEnvironment,
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  ForgeTimeoutError,
   isAuthFailure,
   resolveForgeAuth,
+  spawnExec,
+  stringEnvironment,
+  withForgeDeadline,
   type Exec,
 } from "../lib/forge-auth";
 import { giteaBaseUrl } from "../lib/forge";
@@ -45,69 +50,48 @@ export interface CloseIssueRequest {
   baseUrl?: string;
   /** Injectable transport for the Gitea API. */
   giteaFetch?: FetchLike;
+  /**
+   * Bound on the credential probe and on one forge command; defaults to
+   * `DEFAULT_COMMAND_TIMEOUT_MS`. A close past its deadline fails with a
+   * retryable message instead of leaving the operator's control pending.
+   */
+  timeoutMs?: number;
 }
 
-const bunExec: Exec = async (commandName, args, options) => {
-  try {
-    const child = Bun.spawn({
-      cmd: [commandName, ...args],
-      cwd: options.cwd,
-      env: options.env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return { stdout, stderr, code };
-  } catch (error) {
-    return {
-      stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-      code: -1,
-      killed: false,
-    };
-  }
-};
+/** The forge CLI environment: no prompt, no update check, no color. */
+const FORGE_CLI_ENV = {
+  GH_PROMPT_DISABLED: "1",
+  GH_NO_UPDATE_NOTIFIER: "1",
+  GIT_TERMINAL_PROMPT: "0",
+  NO_COLOR: "1",
+} as const;
 
+/**
+ * Runs one forge CLI through the shared bounded `spawnExec`. A `gh`/`glab`
+ * that never exits is killed at the deadline, so the close action reports a
+ * retryable failure instead of staying pending.
+ */
 async function spawnCommand(
   argv: string[],
   environment: Record<string, string | undefined>,
+  timeoutMs: number,
+  operation: string,
 ): Promise<ForgeCommandOutcome> {
   const [commandName, ...args] = argv;
   if (commandName === undefined) {
     return { code: 1, stdout: "", stderr: "No forge command was given." };
   }
-  try {
-    const child = Bun.spawn({
-      cmd: [commandName, ...args],
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      env: {
-        ...environment,
-        GH_PROMPT_DISABLED: "1",
-        GH_NO_UPDATE_NOTIFIER: "1",
-        GIT_TERMINAL_PROMPT: "0",
-        NO_COLOR: "1",
-      },
-    });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return { code, stdout, stderr };
-  } catch (error) {
-    return { code: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+  const result = await spawnExec(commandName, args, {
+    env: { ...stringEnvironment(environment), ...FORGE_CLI_ENV },
+    timeout: timeoutMs,
+  });
+  // `code: -1` with `killed` is the deadline, not the child's own exit:
+  // report it as the same retryable timeout the caller-level bound throws.
+  if (result.killed === true && result.code === -1) {
+    throw new ForgeTimeoutError(`${operation} timed out after ${timeoutMs} ms; retry the request.`);
   }
+  return { code: result.code, stdout: result.stdout, stderr: result.stderr };
 }
-
-const ghCommand: ForgeRunner = async (argv, environment) =>
-  spawnCommand(["gh", ...argv], environment);
 
 function firstLine(text: string): string {
   return (
@@ -127,6 +111,7 @@ export async function closeIssue(request: CloseIssueRequest): Promise<void> {
     throw new Error("Closing an issue needs a positive issue number.");
   }
   const environment = request.environment ?? process.env;
+  const timeoutMs = Math.max(1, request.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
   const remote = originForge(request.repoDir, environment);
   const forge = request.forge ?? remote?.forge ?? "github";
   if (forge !== "github" && forge !== "gitlab" && forge !== "gitea") {
@@ -139,16 +124,21 @@ export async function closeIssue(request: CloseIssueRequest): Promise<void> {
   if (forge === "gitea" && (baseUrl === undefined || baseUrl.length === 0)) {
     throw new Error("Closing a Gitea issue needs DEVBOARD_GITEA_URL.");
   }
-  const auth = await resolveForgeAuth(request.exec ?? bunExec, {
-    forge,
-    host: remote?.host ?? "github.com",
-    project: request.repository,
-    cwd: request.repoDir,
-    required: "write",
-    env: environment,
-    ...(baseUrl === undefined ? {} : { baseUrl }),
-    ...(request.giteaFetch === undefined ? {} : { giteaFetch: request.giteaFetch }),
-  });
+  const auth = await withForgeDeadline(
+    resolveForgeAuth(request.exec ?? spawnExec, {
+      forge,
+      host: remote?.host ?? "github.com",
+      project: request.repository,
+      cwd: request.repoDir,
+      required: "write",
+      env: environment,
+      deadline: Date.now() + timeoutMs,
+      ...(baseUrl === undefined ? {} : { baseUrl }),
+      ...(request.giteaFetch === undefined ? {} : { giteaFetch: request.giteaFetch }),
+    }),
+    timeoutMs,
+    "resolving the forge credential",
+  );
   if (isAuthFailure(auth)) throw new Error(auth.error.split("\n")[0] ?? auth.error);
 
   if (forge === "gitea") {
@@ -171,7 +161,15 @@ export async function closeIssue(request: CloseIssueRequest): Promise<void> {
     return;
   }
 
-  const run = request.run ?? (forge === "github" ? ghCommand : spawnCommand);
+  const run =
+    request.run ??
+    ((argv: string[], environment: Record<string, string | undefined>) =>
+      spawnCommand(
+        forge === "github" ? ["gh", ...argv] : argv,
+        environment,
+        timeoutMs,
+        `closing issue #${request.number}`,
+      ));
   const argv =
     forge === "github"
       ? [
@@ -193,7 +191,11 @@ export async function closeIssue(request: CloseIssueRequest): Promise<void> {
           "--repo",
           request.repository,
         ];
-  const result = await run(argv, authEnvironment(auth, environment));
+  const result = await withForgeDeadline(
+    run(argv, authEnvironment(auth, environment)),
+    timeoutMs,
+    `closing issue #${request.number}`,
+  );
   if (result.code !== 0) {
     throw new Error(
       `Could not close issue #${request.number}: ${firstLine(result.stderr || result.stdout)}`,

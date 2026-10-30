@@ -2032,7 +2032,9 @@ from those headers and parses only the matching file, so one read does not cost 
   as the issue body, reads the issue back, verifies the label and byte equality, and only then
   removes the named draft. A failure names the step and keeps the draft.
 - `issue_close` closes one issue through the repository's forge as `completed` or `not planned` and
-  returns the resulting state.
+  returns the resulting state. Every issue read and this close share one bounded forge client: a
+  credential probe or forge command that outlives its deadline (60 seconds by default) fails the
+  call with a retryable timeout message instead of leaving it pending.
 - `verification_run` runs only `test`, `check`, `build`, `typecheck`, or a `verify:<name>` present
   in `.devboard/package.json`, with `.devboard` as cwd, an optional bounded list of existing test
   paths, a 900-second deadline, and at most 16 KiB of captured output. The deadline covers the
@@ -2310,8 +2312,10 @@ count is not repeated in that header because the Automation panel states it.
 Each row also carries `data-testid="issues-close-issue"` with `data-issue`; it closes that issue on
 the tracker as `not planned`, so an issue the operator does not want implemented leaves the next
 poll without stopping the agent already working it. A refused or failed closure leaves the issue
-open and reports the reason as an error notification; a successful one reports
-`Closed issue #<number>.` and disables the control until the queue drops the issue.
+open and reports the reason as an error notification; a stalled credential probe or `gh`/`glab`
+close fails at its 60-second deadline with that timeout as the reason instead of leaving the
+control pending; a successful one reports `Closed issue #<number>.` and disables the control until
+the queue drops the issue.
 The right column renders only the selected agent's output in
 `data-testid="issues-overview-output"` with `data-run`, its stream in
 `data-testid="issues-overview-activity"`, and its question in

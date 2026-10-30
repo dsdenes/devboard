@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { Exec } from "../lib/forge-auth.ts";
+import { ForgeTimeoutError, type Exec } from "../lib/forge-auth.ts";
 import { createForgeIssues, type ForgeRunner } from "../lib/forge-issues.ts";
 import type { FetchLike } from "../lib/gitea.ts";
 import { listIssues } from "../mcp/issues";
@@ -207,5 +207,38 @@ describe("forge issue listing across states", () => {
       "closed",
       "open",
     ]);
+  });
+});
+
+describe("forge issue deadlines", () => {
+  const TIMEOUT_MS = 25;
+
+  test("rejects a read whose credential probe never settles", async () => {
+    const forge = createForgeIssues({
+      repoDir: repository("https://github.com/acme/fixture.git"),
+      environment: {},
+      exec: () => new Promise(() => {}),
+      run: async () => ({ code: 0, stdout: "[]", stderr: "" }),
+      timeoutMs: TIMEOUT_MS,
+    });
+
+    const started = Date.now();
+    await expect(forge.get(1)).rejects.toBeInstanceOf(ForgeTimeoutError);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  test("rejects a list whose forge command never settles", async () => {
+    const stub = github(corpus(1));
+    const forge = createForgeIssues({
+      repoDir: repository("https://github.com/acme/fixture.git"),
+      environment: {},
+      exec: stub.exec,
+      run: () => new Promise(() => {}),
+      timeoutMs: TIMEOUT_MS,
+    });
+
+    const started = Date.now();
+    await expect(forge.list("open")).rejects.toBeInstanceOf(ForgeTimeoutError);
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });

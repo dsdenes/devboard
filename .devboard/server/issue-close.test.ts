@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { Exec } from "../lib/forge-auth";
+import { ForgeTimeoutError, type Exec } from "../lib/forge-auth";
 import { closeIssue, type ForgeRunner } from "./issue-close";
 
 const authExec: Exec = async (command, args) => {
@@ -146,6 +146,36 @@ describe("closing an issue", () => {
       }),
     ).rejects.toThrow();
     expect(ran).toBe(false);
+  });
+
+  test("fails a close whose forge command never settles", async () => {
+    const started = Date.now();
+    await expect(
+      closeIssue({
+        repoDir: "/repo",
+        repository: "acme/fixture",
+        number: 42,
+        environment: { HOME: "/home/acme", PATH: "/usr/bin" },
+        exec: authExec,
+        run: () => new Promise(() => {}),
+        timeoutMs: 25,
+      }),
+    ).rejects.toBeInstanceOf(ForgeTimeoutError);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  test("fails a close whose credential probe never settles", async () => {
+    await expect(
+      closeIssue({
+        repoDir: "/repo",
+        repository: "acme/fixture",
+        number: 42,
+        environment: { HOME: "/home/acme", PATH: "/usr/bin" },
+        exec: () => new Promise(() => {}),
+        run: async () => ({ code: 0, stdout: "", stderr: "" }),
+        timeoutMs: 25,
+      }),
+    ).rejects.toBeInstanceOf(ForgeTimeoutError);
   });
 });
 

@@ -13,7 +13,7 @@
  * as arguments, and never included in an error message.
  */
 
-import type { Subprocess } from "bun";
+import { DEADLINE_EXPIRED, withinDeadline } from "./deadline";
 
 export interface ExecResult {
   stdout: string;
@@ -23,11 +23,14 @@ export interface ExecResult {
 }
 
 export interface ExecOptions {
-  cwd: string;
+  /** Defaults to the caller's directory when omitted. */
+  cwd?: string;
   env?: Record<string, string>;
   timeout?: number;
   /** Aborting kills the child; the probe then counts as failed. */
   signal?: AbortSignal;
+  /** Written to the child's stdin, which is otherwise ignored. */
+  stdin?: string;
 }
 
 /** Runs one command with an explicit environment; never throws for exit status. */
@@ -40,8 +43,30 @@ export type Exec = (
 /** Default bound on one CLI child, used wherever a caller names none. */
 export const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
 
+/**
+ * One forge child or credential probe that outlived its deadline. The caller
+ * reports the message and retries the operation; nothing was written.
+ */
+export class ForgeTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ForgeTimeoutError";
+  }
+}
+
+/**
+ * The handles a bounded child exposes. Bun's `Subprocess` satisfies it, so a
+ * child spawned with or without stdin is terminated the same way.
+ */
+interface BoundedChild {
+  readonly stdout: ReadableStream<Uint8Array<ArrayBuffer>>;
+  readonly stderr: ReadableStream<Uint8Array<ArrayBuffer>>;
+  readonly exited: Promise<number>;
+  kill(exitCode?: number | NodeJS.Signals): void;
+}
+
 /** Kills a child; one that already exited is not an error. */
-function terminate(child: Pick<Subprocess<"ignore", "pipe", "pipe">, "kill">): void {
+function terminate(child: Pick<BoundedChild, "kill">): void {
   try {
     child.kill("SIGKILL");
   } catch {
@@ -50,21 +75,40 @@ function terminate(child: Pick<Subprocess<"ignore", "pipe", "pipe">, "kill">): v
 }
 
 /**
- * The production `Exec`. `timeout` and `signal` kill the child and settle at
- * once with a killed result: it never waits for pipes that a stalled peer or
- * an inherited grandchild could hold open after the child is gone.
+ * Awaits one forge operation under a deadline. A promise that never settles —
+ * a stalled child or credential helper — rejects with `ForgeTimeoutError`
+ * instead of leaving its caller pending for the life of the process.
+ */
+export async function withForgeDeadline<T>(
+  pending: Promise<T>,
+  timeoutMs: number,
+  operation: string,
+): Promise<T> {
+  const bound = Math.max(1, timeoutMs);
+  const settled = await withinDeadline(pending, bound);
+  if (settled === DEADLINE_EXPIRED) {
+    throw new ForgeTimeoutError(`${operation} timed out after ${bound} ms; retry the request.`);
+  }
+  return settled;
+}
+
+/**
+ * The one bounded `Exec` for the harness. It writes `stdin` when given, and
+ * `timeout` and `signal` kill the child and settle at once with a killed
+ * result: it never waits for pipes that a stalled peer or an inherited
+ * grandchild could hold open after the child is gone.
  */
 export const spawnExec: Exec = async (command, args, options) => {
   if (options.signal?.aborted) {
     return { stdout: "", stderr: "the command was aborted.", code: -1, killed: true };
   }
-  let child: Subprocess<"ignore", "pipe", "pipe">;
+  let child: BoundedChild;
   try {
     child = Bun.spawn({
       cmd: [command, ...args],
       cwd: options.cwd,
       env: options.env,
-      stdin: "ignore",
+      stdin: options.stdin === undefined ? "ignore" : Buffer.from(options.stdin),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -232,7 +276,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function stringEnvironment(
+/** The string-valued view of an environment, for a child's `env`. */
+export function stringEnvironment(
   source: Record<string, string | undefined> | undefined,
 ): Record<string, string> {
   const environment: Record<string, string> = {};

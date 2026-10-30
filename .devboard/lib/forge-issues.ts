@@ -2,8 +2,13 @@ import { giteaBaseUrl } from "./forge";
 import type { FetchLike } from "./gitea";
 import {
   authEnvironment,
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  ForgeTimeoutError,
   isAuthFailure,
   resolveForgeAuth,
+  spawnExec,
+  stringEnvironment,
+  withForgeDeadline,
   type Exec,
   type ResolvedAuth,
 } from "./forge-auth";
@@ -90,6 +95,12 @@ export interface ForgeIssuesOptions {
   exec?: Exec;
   /** Test seam: replaces the forge CLI. */
   run?: ForgeRunner;
+  /**
+   * Bound on one credential probe and one forge command. A `gh` that never
+   * exits rejects the call instead of leaving it pending; defaults to
+   * `DEFAULT_COMMAND_TIMEOUT_MS`.
+   */
+  timeoutMs?: number;
 }
 
 export class ForgeIssueError extends Error {
@@ -99,57 +110,36 @@ export class ForgeIssueError extends Error {
   }
 }
 
-const bunExec: Exec = async (commandName, args, options) => {
-  try {
-    const child = Bun.spawn({
-      cmd: [commandName, ...args],
-      cwd: options.cwd,
-      env: options.env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return { stdout, stderr, code, killed: false };
-  } catch (error) {
-    return {
-      stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-      code: -1,
-      killed: false,
-    };
-  }
-};
+/** The forge CLI environment: no prompt, no update check, no color. */
+const GH_CLI_ENV = {
+  GH_PROMPT_DISABLED: "1",
+  GH_NO_UPDATE_NOTIFIER: "1",
+  GIT_TERMINAL_PROMPT: "0",
+  NO_COLOR: "1",
+} as const;
 
-const ghRunner: ForgeRunner = async (argv, stdin, environment) => {
-  try {
-    const child = Bun.spawn({
-      cmd: ["gh", ...argv],
-      stdin: Buffer.from(stdin),
-      stdout: "pipe",
-      stderr: "pipe",
-      env: {
-        ...environment,
-        GH_PROMPT_DISABLED: "1",
-        GH_NO_UPDATE_NOTIFIER: "1",
-        GIT_TERMINAL_PROMPT: "0",
-        NO_COLOR: "1",
-      },
+/**
+ * The default forge CLI runner. It shares the bounded `spawnExec` with the
+ * credential probe, so a stalled `gh` is killed at the client's bound instead
+ * of holding the pipe read and the exit wait open forever.
+ */
+function ghRunner(timeoutMs: number): ForgeRunner {
+  return async (argv, stdin, environment) => {
+    const result = await spawnExec("gh", argv, {
+      env: { ...stringEnvironment(environment), ...GH_CLI_ENV },
+      timeout: timeoutMs,
+      ...(stdin.length === 0 ? {} : { stdin }),
     });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return { code, stdout, stderr };
-  } catch (error) {
-    return { code: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
-  }
-};
+    // `code: -1` with `killed` is the deadline, not the child's own exit:
+    // report it as the same retryable timeout the caller-level bound throws.
+    if (result.killed === true && result.code === -1) {
+      throw new ForgeTimeoutError(
+        `the forge command timed out after ${timeoutMs} ms; retry the request.`,
+      );
+    }
+    return { code: result.code, stdout: result.stdout, stderr: result.stderr };
+  };
+}
 
 function firstLine(text: string): string {
   return (
@@ -244,31 +234,45 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
     throw new ForgeIssueError(`Issue tools support a GitHub or Gitea origin, not ${remote.host}`);
   }
   const forge = remote.forge;
-  const run = options.run ?? ghRunner;
+  const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
+  const exec = options.exec ?? spawnExec;
+  const run = options.run ?? ghRunner(timeoutMs);
   const authCache = new Map<"read" | "write", Promise<ResolvedAuth>>();
 
   const auth = (required: "read" | "write"): Promise<ResolvedAuth> => {
     const cached = authCache.get(required);
     if (cached !== undefined) return cached;
     const pending = (async () => {
-      const outcome = await resolveForgeAuth(options.exec ?? bunExec, {
-        forge,
-        host: remote.host,
-        project: remote.project,
-        cwd: options.repoDir,
-        required,
-        env: environment,
-        ...(forge === "gitea"
-          ? { baseUrl: giteaBaseUrl(remote, environment) ?? "" }
-          : {}),
-        ...(options.fetchImpl === undefined ? {} : { giteaFetch: options.fetchImpl }),
-      });
+      const outcome = await withForgeDeadline(
+        resolveForgeAuth(exec, {
+          forge,
+          host: remote.host,
+          project: remote.project,
+          cwd: options.repoDir,
+          required,
+          env: environment,
+          deadline: Date.now() + timeoutMs,
+          ...(forge === "gitea"
+            ? { baseUrl: giteaBaseUrl(remote, environment) ?? "" }
+            : {}),
+          ...(options.fetchImpl === undefined ? {} : { giteaFetch: options.fetchImpl }),
+        }),
+        timeoutMs,
+        "resolving the forge credential",
+      );
       if (isAuthFailure(outcome)) {
         throw new ForgeIssueError(firstLine(outcome.error));
       }
       return outcome;
     })();
     authCache.set(required, pending);
+    // A probe that outlived its deadline is not a credential fact: drop it so
+    // the next call probes again instead of replaying the same failure.
+    pending.catch((error: unknown) => {
+      if (error instanceof ForgeTimeoutError && authCache.get(required) === pending) {
+        authCache.delete(required);
+      }
+    });
     return pending;
   };
 
@@ -278,7 +282,11 @@ export function createForgeIssues(options: ForgeIssuesOptions): ForgeIssues {
     stdin = "",
   ): Promise<ForgeCommandOutcome> => {
     const resolved = await auth(required);
-    return run(argv, stdin, authEnvironment(resolved, environment));
+    return await withForgeDeadline(
+      run(argv, stdin, authEnvironment(resolved, environment)),
+      timeoutMs,
+      "the forge command",
+    );
   };
 
   const target = async (required: "read" | "write"): Promise<GiteaTarget> => {
