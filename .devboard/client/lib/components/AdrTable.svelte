@@ -145,7 +145,7 @@
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.03em;
-    padding: 2px 8px;
+    padding: 5px 8px;
     position: sticky;
     text-align: left;
     text-transform: uppercase;
