@@ -989,7 +989,9 @@ describe("closed issues", () => {
     } finally {
       await stop(f);
     }
-  });
+    // Two real stub peers, three polls, and a third peer spawn: under the
+    // suite's own parallel file load this exceeds Bun's 5 s default bound.
+  }, 20_000);
 });
 
 describe("history and isolation", () => {
