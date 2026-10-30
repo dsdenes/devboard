@@ -370,19 +370,33 @@ export function readState(path: string): IssuesState | undefined {
   }
 }
 
-/** Reads and moves an unusable file aside, preserved. */
-export function loadState(path: string): IssuesState | undefined {
-  if (!existsSync(path)) return undefined;
+/** One read of a state file: the parsed state and the exact bytes it read. */
+export interface StateLoad {
+  state: IssuesState | undefined;
+  text: string | undefined;
+}
+
+/**
+ * Reads and moves an unusable file aside, preserved, returning the bytes
+ * alongside the parse so a caller can still recover records the schema no
+ * longer understands from a file that was just quarantined.
+ */
+export function loadStateWithText(path: string): StateLoad {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch {
-    return undefined;
+    return { state: undefined, text: undefined };
   }
   const state = parseState(text);
-  if (state !== undefined) return state;
+  if (state !== undefined) return { state, text };
   quarantine(path);
-  return undefined;
+  return { state: undefined, text };
+}
+
+/** Reads and moves an unusable file aside, preserved. */
+export function loadState(path: string): IssuesState | undefined {
+  return loadStateWithText(path).state;
 }
 
 export function quarantine(path: string): string | undefined {
