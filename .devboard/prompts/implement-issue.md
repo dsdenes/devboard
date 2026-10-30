@@ -29,26 +29,36 @@ context, but you never edit, comment on, close, or reopen another issue.
   bun .devboard/scripts/forge-auth.ts check --required write --json
   ```
 
-  This is the only pre-write auth gate and the only auth invocation of the run. The check infers
-  the forge, host, project, and identity from the `origin` remote and `DEVBOARD_GITEA_URL`, so
-  never pass `--host`, `--project`, or `--forge` on that call; never derive those values with
-  `sed`, `git remote get-url`, or any other shell substitution. Read the JSON line and proceed
-  only when the exit status is 0 and `canWrite` is `true`. Any other outcome — a nonzero exit, or
-  an exit 0 without `canWrite: true` — stops the run: report the printed reason verbatim, and
-  when the result is JSON, its `error` and `permission` fields verbatim. Do not retry against
-  another host. Never prefix the call with `cd <path>`, never append `echo $?`,
+  This is the only pre-write auth gate and the only auth invocation of the run. The canonical
+  form infers the forge, host, project, and identity from the `origin` remote and
+  `DEVBOARD_GITEA_URL`, so never pass `--host`, `--project`, or `--url` on that call; never
+  derive those values with `sed`, `git remote get-url`, or any other shell substitution. Pass
+  the forge explicitly only when the `origin` remote cannot name it and the target is the
+  configured Gitea:
+
+  ```sh
+  bun .devboard/scripts/forge-auth.ts check --forge gitea --required write --json
+  ```
+
+  Read the JSON line and proceed only when the exit status is 0 and `canWrite` is `true`. Any
+  other outcome — a nonzero exit, or an exit 0 without `canWrite: true` — stops the run: report
+  the script's message verbatim, and when the result is JSON, its `error` and `permission`
+  fields verbatim. Never retry across `localhost`, `localhost:2223`, `localhost:3001`, `origin`,
+  `ds@localhost:2223`, `gitea`, `127.0.0.1`, a bare IP, or a bare port, and never re-derive the
+  host with `git remote get-url origin | sed` or any other shell substitution. Never prefix the
+  call with `cd <path>`, never append `echo $?`,
   `echo "exit=$?"`, `echo "EXIT:$?"`, or any other exit-status echo, never append `2>&1 | head`,
   `2>&1 | tail`, or any other consumer, and never append `env | grep` or a `printenv` sweep. The
   credentialed target is `DEVBOARD_GITEA_URL` with `GITEA_TOKEN`; a host is a label only, so
   never pass `origin`, `github.com`, `localhost`, `localhost:3000`, `localhost:2223`,
-  `127.0.0.1`, a bare IP, or a bare port, and never retry by cycling such literals. Do not rerun
-  the check in the same session. That JSON line, plus the resolution fields `devboard_status`
-  returns, is the only supported way to learn the forge host, project, or credential state: both
-  report presence and resolution without exposing a value, so an environment sweep answers
-  nothing they do not. Forge and registry configuration MUST be resolved through
-  `bun .devboard/scripts/forge-auth.ts check` and MUST NOT be discovered with an `env | grep`
-  probe, `cat .env`, `cat ~/.npmrc`, or any other environment or credential-file sweep: never
-  enumerate the process environment or hunt for credential files, and
+  `localhost:3001`, `127.0.0.1`, `ds@localhost:2223`, `gitea`, a bare IP, or a bare port as
+  `--host`. Do not rerun the check in the same session. That JSON line, plus the resolution
+  fields `devboard_status` returns, is the only supported way to learn the forge host, project,
+  or credential state: both report presence and resolution without exposing a value, so an
+  environment sweep answers nothing they do not. Forge and registry configuration MUST be
+  resolved through `bun .devboard/scripts/forge-auth.ts check` and MUST NOT be discovered with
+  an `env | grep` probe, `cat .env`, `cat ~/.npmrc`, or any other environment or credential-file
+  sweep: never enumerate the process environment or hunt for credential files, and
   `.devboard/prompts/forge-auth.md` holds that rule in full. `DEVBOARD_GITEA_URL` is supplied by
   the host at run time, so never hardcode it or fall back to a guessed base such as
   `http://localhost:2223`: the check reads the real value, and a wrong guess only costs a round
