@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { statusTone } from "./status-tone";
+import { statusTone, verificationTone } from "./status-tone";
 
 describe("status tone", () => {
   test("marks active work as accent", () => {
@@ -36,5 +36,30 @@ describe("status tone", () => {
     expect(statusTone("pending")).toBe("pending");
     expect(statusTone("stale")).toBe("stale");
     expect(statusTone("deferred")).toBeUndefined();
+  });
+});
+
+describe("verification tone", () => {
+  test("marks a passing verification as success", () => {
+    expect(verificationTone("passed")).toBe("success");
+  });
+
+  test("marks a failing verification as error", () => {
+    expect(verificationTone("failed")).toBe("error");
+  });
+
+  test("keeps a verification that never ran out of the success color", () => {
+    expect(verificationTone("not-run")).toBe("warning");
+    expect(verificationTone("not-run")).not.toBe("success");
+  });
+
+  test("normalizes the verification word", () => {
+    expect(verificationTone(" Passed ")).toBe("success");
+    expect(verificationTone("NOT-RUN")).toBe("warning");
+  });
+
+  test("keeps an unknown verification status neutral", () => {
+    expect(verificationTone("deferred")).toBeUndefined();
+    expect(verificationTone("")).toBeUndefined();
   });
 });
