@@ -164,17 +164,22 @@ git merge-base --is-ancestor HEAD origin/main; echo "ancestor=$?"
 local_commit=$(git rev-parse HEAD)
 remote_tip=$(git ls-remote origin refs/heads/main | cut -f1)
 printf 'local %s remote %s\n' "$local_commit" "$remote_tip"
+if [ "$local_commit" != "$remote_tip" ]; then
+  printf 'push not verified: local %s remote %s\n' "$local_commit" "$remote_tip" >&2
+  exit 1
+fi
 git status --short --branch
 ```
 
-Equal tips prove the landing commit is the canonical tip. When they differ because another push
-landed after this one, the fetched refs decide: `ancestor=0`, a zero left count, and a
-`## main...origin/main` line with no `ahead` marker still prove the commit is contained, so fetch
-once more and rerun the block instead of treating the difference as a failed push. The block
-prints both commits; never use `git log` or a `head`/`tail`-trimmed merge output as the push
-proof. Run the block once per verification point and never repeat it to reconfirm output it
-already printed; it is the only post-push readback, and this prompt excludes any other
-`git ls-remote`, `git log`, and a second `git status` readback.
+Equal tips prove the landing commit is the canonical tip. The gate prints both commits and exits
+nonzero when they differ, so a difference is a failed push: fetch the new tip, rebase the task
+branch onto `origin/main` inside the worktree, rerun the invalidated checks, and push again. Never
+use `git log` or a `head`/`tail`-trimmed merge output as the push proof. Run the block once per
+verification point and never repeat it to reconfirm output it already printed; it is the only
+post-push readback, and this prompt excludes any other `git ls-remote`, `git log`, and a second
+`git status` readback. Never chain per-commit `git merge-base --is-ancestor <sha> origin/main`
+probes, and never re-verify a commit already proven to be the remote tip; if an older commit
+genuinely needs checking, run exactly one such probe and report its exit status.
 
 Never chain these ref probes with `&&`: when a ref is absent the chain stops at the failing probe
 and hides the rest, and a nonzero exit from the block is evidence to read, not a reason to rerun
