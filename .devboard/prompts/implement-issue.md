@@ -155,6 +155,29 @@ the prerequisite in another agent's place.
 Commit in the worktree on the run's own task branch. When `main` has moved since the branch was
 cut, rebase the task branch onto `origin/main` inside the worktree and rerun the checks the rebase
 invalidates before landing; a rebase that reports the branch is up to date is the normal case.
+
+Read the worktree's sync state with the task branch's `HEAD` in one combined probe, run in the
+worktree after the fetch required before landing:
+
+```sh
+git rev-parse --verify HEAD
+git rev-parse --verify origin/main
+git rev-parse --short HEAD
+git rev-parse --short origin/main
+git rev-list --left-right --count HEAD...origin/main
+git merge-base --is-ancestor HEAD origin/main; echo "ancestor=$?"
+```
+
+`git rev-list --left-right --count A...B` prints `<A-only> <B-only>` in ref order: the left number
+counts the commits only `HEAD` has and the right number counts the commits only `origin/main`
+has. `git merge-base --is-ancestor A B` exits 0 when A is an ancestor of B and 1 when it is not;
+any other exit status, such as 128 with `fatal: Not a valid object name`, means a ref is missing or
+the command itself failed, never that the commit is unrelated. A missing ref also makes
+`git rev-parse --verify <ref>` print `fatal: Needed a single revision`; when either appears,
+verify each ref on its own with `git rev-parse --verify HEAD` or
+`git rev-parse --verify origin/main`, fetch `origin main`, and read the probe again before
+concluding anything.
+
 Then land it with this one canonical sequence from the canonical checkout, on `main`:
 
 ```sh
@@ -174,11 +197,8 @@ as-is:
 
 ```sh
 git fetch origin main
+git rev-parse --verify HEAD
 git rev-parse --verify origin/main
-git rev-parse --short HEAD
-git rev-parse --short origin/main
-git rev-list --left-right --count HEAD...origin/main
-git merge-base --is-ancestor HEAD origin/main; echo "ancestor=$?"
 local_commit=$(git rev-parse HEAD)
 remote_tip=$(git ls-remote origin refs/heads/main | cut -f1)
 printf 'local %s remote %s\n' "$local_commit" "$remote_tip"
@@ -198,12 +218,13 @@ verification point and never repeat it to reconfirm output it already printed; i
 post-push readback, and this prompt excludes any other `git ls-remote`, `git log`, and a second
 `git status` readback.
 
-The block's `git merge-base --is-ancestor HEAD origin/main` is the task's only ancestry check, run
-after its `git fetch origin main`. Read its exit status as the answer: 0 means the commit is
-contained in `origin/main`, 1 means it is missing, and any other status means the command itself
-failed and must be reported. Never wrap it in a loop over candidate commits or SHAs, never repeat
-it for a second ref or a commit already proven to be the remote tip, and run no separate ancestry
-probe while preparing, landing, or publishing.
+The post-push block proves the remote tip with `git ls-remote <remote> refs/heads/main` (`origin`
+here) instead of re-deriving sync state: equal local and remote commits prove the landing commit
+is the canonical tip, so never repeat `git rev-list --left-right --count` or
+`git merge-base --is-ancestor` after the push and never confirm the remote tip with rev-list. The
+combined probe above is the task's only ancestry check while preparing, landing, and publishing.
+Never wrap it in a loop over candidate commits or SHAs, and never repeat it for a second ref or a
+commit the remote-tip read already proved.
 
 Never chain these ref probes with `&&`: when a ref is absent the chain stops at the failing probe
 and hides the rest, and a nonzero exit from the block is evidence to read, not a reason to rerun
