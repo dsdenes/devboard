@@ -137,19 +137,27 @@ Land it with this one sequence in the canonical checkout, on `main`:
 ```sh
 git merge --ff-only <task-branch>
 git push origin main
-git status --short --branch
+local_commit=$(git rev-parse HEAD)
+remote_tip=$(git ls-remote origin refs/heads/main | cut -f1)
+if [ "$local_commit" != "$remote_tip" ]; then
+  printf 'push not verified: local %s remote %s\n' "$local_commit" "$remote_tip" >&2
+  exit 1
+fi
 ```
 
-`git status --short --branch` is the only post-push readback—the push is verified when its
-`## main...origin/main` line carries no `ahead` marker—and this prompt excludes
-`git ls-remote origin refs/heads/main`, `git rev-parse HEAD`, and a second `git status` readback
-after the push; never chain them. A rejected push is ground truth: fetch the new tip, rebase the
-task branch onto `origin/main` inside the worktree, rerun the invalidated checks, and retry the
-same push unchanged. The landing merge is fast-forward only: never `--no-ff`, `--no-edit`, or a
-preparatory `git merge origin/main` on `main`. Run the sequence once per landing attempt and add no
-`tail` pipe, `fetch`, or `PIPESTATUS` probe around it. Push before publish, never after.
+`git ls-remote` must name the same commit as the new local HEAD; equal tips prove the landing
+commit reached the canonical line, and ancestry follows. The gate prints both commits and exits
+nonzero when they differ. Do not use `git log` or a `head`/`tail`-trimmed merge output as the push
+proof. Never chain per-commit `git merge-base --is-ancestor <sha> origin/main` probes, and never
+re-verify a commit already proven to be the remote tip; if an older commit genuinely needs
+checking, run exactly one such probe and report its exit status. A rejected push is ground truth:
+fetch the new tip, rebase the task branch onto `origin/main` inside the worktree, rerun the
+invalidated checks, and retry the same push unchanged. The landing merge is fast-forward only:
+never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main` on `main`. Run the sequence
+once per landing attempt and add no `tail` pipe, `fetch`, or `PIPESTATUS` probe around it. Push
+before publish, never after.
 
-After that readback, release from the integration checkout with the single Publish invocation below.
+After that gate, release from the integration checkout with the single Publish invocation below.
 
 Untracked scratch entries already present under `.devboard/` are expected status noise: they never
 justify another fetch, merge, or commit. Create no new scratch file outside `.devboard/`. Replace
