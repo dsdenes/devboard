@@ -414,6 +414,23 @@ export function highestReleaseVersion(versions: Iterable<string>): string | unde
 }
 
 /**
+ * The earliest release version among tags that contain a commit; malformed
+ * tags are ignored. A concurrent landing can ship a commit inside a later
+ * commit's release before its own workflow finishes, so the first release
+ * that includes the change is the one that carries it.
+ */
+export function lowestReleaseVersion(versions: Iterable<string>): string | undefined {
+  let lowest: string | undefined;
+  for (const version of versions) {
+    if (compareReleaseVersions(version, version) === undefined) continue;
+    if (lowest === undefined || (compareReleaseVersions(version, lowest) ?? 0) < 0) {
+      lowest = version;
+    }
+  }
+  return lowest;
+}
+
+/**
  * The dist-tag one release publishes under. `latest` only moves forward, so a
  * version at or below the newest published one publishes under a side tag.
  */

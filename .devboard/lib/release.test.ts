@@ -24,6 +24,7 @@ import {
   isReleaseRateLimited,
   isReleaseUnreachable,
   latestRelease,
+  lowestReleaseVersion,
   npmInstallError,
   parseReleaseDescription,
   publishTagFor,
@@ -521,6 +522,12 @@ describe("release ordering", () => {
     expect(highestReleaseVersion(["0.1.704", "0.1.713", "0.1.9"])).toBe("0.1.713");
     expect(highestReleaseVersion(["v0.1.713", "0.1.6", "", "0.1"])).toBe("0.1.6");
     expect(highestReleaseVersion([])).toBeUndefined();
+  });
+
+  test("picks the earliest release that contains a change", () => {
+    expect(lowestReleaseVersion(["1.0.4", "1.0.1", "1.0.10", "1.0.2"])).toBe("1.0.1");
+    expect(lowestReleaseVersion(["v1.0.1", "1.0", ""])).toBeUndefined();
+    expect(lowestReleaseVersion([])).toBeUndefined();
   });
 
   test("publishes a lower version under the side tag instead of moving latest back", () => {

@@ -12,6 +12,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "n
 import { join, resolve } from "node:path";
 import { configuredGiteaToken, configuredGiteaUrl, parseForgeRemote } from "../lib/forge";
 import { releaseVersionAt } from "../lib/commit-gate";
+import { lowestReleaseVersion } from "../lib/release";
 import {
   giteaReleaseByTag,
   giteaWorkflowRuns,
@@ -263,9 +264,21 @@ if (concluded !== "success") {
 console.log(`publish: release workflow ${workflow.id} succeeded`);
 
 // The workflow's release step tags the published commit. Read the tag it
-// created instead of recomputing a count locally: no release for this commit
-// means the release did not happen and publish must fail.
+// created instead of recomputing a count locally: no release that reaches this
+// commit means the release did not happen and publish must fail. Concurrent
+// landings can publish a later commit first, so that release's tag contains
+// this commit instead of naming it; either proves the change shipped.
+function releaseVersionsContaining(commit: string): string[] {
+  const result = git(["tag", "--contains", commit]);
+  if (result.code !== 0) return [];
+  return result.stdout
+    .split("\n")
+    .map((line) => /^v([0-9]+\.[0-9]+\.[0-9]+)$/.exec(line.trim())?.[1])
+    .filter((value): value is string => value !== undefined);
+}
+
 let version: string | undefined;
+let containing = false;
 let tagProblem: string | undefined;
 const tagDeadline = Date.now() + waitTimeoutMs;
 while (Date.now() < tagDeadline) {
@@ -275,6 +288,11 @@ while (Date.now() < tagDeadline) {
   } else {
     tagProblem = undefined;
     version = releaseVersionAt(repoRoot, published);
+    containing = false;
+    if (version === undefined) {
+      version = lowestReleaseVersion(releaseVersionsContaining(published));
+      containing = version !== undefined;
+    }
     if (version !== undefined) break;
   }
   await Bun.sleep(5000);
@@ -286,7 +304,11 @@ if (version === undefined) {
   );
 }
 const tag = `v${version}`;
-console.log(`publish: release ${tag} names ${published.slice(0, 7)}`);
+console.log(
+  containing
+    ? `publish: release ${tag} includes ${published.slice(0, 7)}`
+    : `publish: release ${tag} names ${published.slice(0, 7)}`,
+);
 
 let releaseOk = false;
 let packageOk = false;
