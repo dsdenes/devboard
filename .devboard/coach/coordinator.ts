@@ -41,7 +41,7 @@ import {
   type SynthesisResult,
   type Synthesize,
 } from "./synthesize";
-import { validateProposal } from "./validate";
+import { toolNameTaken, validateProposal } from "./validate";
 
 /**
  * One Coach cycle, in order: collect, families, triage, synthesize, validate,
@@ -422,10 +422,16 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     title: string;
     kind: FamilyKind;
     url: string;
+    body: string;
   }): void => {
     cycleFiled += 1;
     if (room !== Number.POSITIVE_INFINITY) room -= 1;
-    report.issues.push(entry);
+    report.issues.push({
+      family: entry.family,
+      title: entry.title,
+      kind: entry.kind,
+      url: entry.url,
+    });
     report.validations.push({ family: entry.family, outcome: "filed" });
     markFamily(ledger, entry.family, "filed", {
       at: now,
@@ -435,7 +441,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
     openIssues.push({
       number: openIssues.length + 1,
       title: entry.title,
-      body: "",
+      body: entry.body,
       url: entry.url,
     });
   };
@@ -507,6 +513,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
       title,
       kind: pending.kind,
       url: filed.url,
+      body: pending.body,
     });
   }
 
@@ -647,6 +654,17 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
 
     for (const candidate of candidates) {
       if (failure !== undefined) break;
+      const proposed = candidate.proposal.action === "tool" ? candidate.proposal.tool : undefined;
+      if (proposed !== undefined && toolNameTaken(proposed, openIssues)) {
+        report.validations.push({
+          family: candidate.family.key,
+          outcome: "invalid",
+          rule: "tool-name-duplicate",
+          reason: `${proposed.name} is already proposed by a filed or open issue`,
+        });
+        markFamily(ledger, candidate.family.key, "invalid", { at: now });
+        continue;
+      }
       if (cycleFiled >= settings.maxIssuesPerCycle || room <= 0) {
         const dropped = enqueuePending(
           ledger,
@@ -710,6 +728,7 @@ export async function runCycle(options: CycleOptions): Promise<CycleResult> {
         title: candidate.title,
         kind: candidate.family.kind,
         url: filed.url,
+        body: candidate.body,
       });
     }
   }

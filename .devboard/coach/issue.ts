@@ -144,6 +144,34 @@ function proposalSection(proposal: Proposal, allowlistEntry: string): string[] {
   return ["## Proposed tool", "", "None.", ""];
 }
 
+/**
+ * The tool name an open issue's `## Proposed tool` block declares, or
+ * `undefined` when the body has no such section or no JSON object with a
+ * string `name`. A filed tool proposal carries its name only in this block,
+ * never in the `[coach] <family>` title, so the duplicate rule reads it here.
+ */
+export function proposedToolName(body: string): string | undefined {
+  const heading = /^## Proposed tool\s*$/m.exec(body);
+  if (heading === null) return undefined;
+  const rest = body.slice(heading.index + heading[0].length);
+  const next = /^## /m.exec(rest);
+  const section = next === null ? rest : rest.slice(0, next.index);
+  const fence = /^```json\s*$/m.exec(section);
+  if (fence === null) return undefined;
+  const start = fence.index + fence[0].length;
+  const close = section.indexOf("```", start);
+  if (close < 0) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(section.slice(start, close));
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+  const name = (parsed as Record<string, unknown>)["name"];
+  return typeof name === "string" ? name : undefined;
+}
+
 function acceptanceSection(proposal: Proposal): string[] {
   return [
     "## Acceptance",

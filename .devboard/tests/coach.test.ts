@@ -36,6 +36,7 @@ import {
   issueTitle,
   ISSUE_BODY_MAX_BYTES,
   ISSUE_TITLE_MAX_BYTES,
+  proposedToolName,
 } from "../coach/issue";
 import {
   parseSynthesisAnswer,
@@ -763,7 +764,46 @@ describe("Coach validator", () => {
     if (result.ok) {
       expect(result.allowlistEntry).toBe("bun ");
       expect(result.body).toContain("## Proposed tool");
+      expect(proposedToolName(result.body)).toBe(toolProposal(family).tool!.name);
     }
+  });
+
+  test("the duplicate rule reads the proposed tool name from an issue body, not its title", () => {
+    const existing: CoachOpenIssue[] = [
+      {
+        number: 9,
+        title: "[coach] bun run publish",
+        body: [
+          "## Proposed tool",
+          "",
+          "```json",
+          JSON.stringify({ name: "publish_docs", title: "Publish docs" }, null, 2),
+          "```",
+          "",
+        ].join("\n"),
+        url: "https://forge.test/acme/fixture/issues/9",
+      },
+    ];
+    expect(
+      ruleOf(
+        toolProposal(family, 1, {
+          tool: { ...toolProposal(family).tool!, name: "publish_docs" },
+        }),
+        { openIssues: existing },
+      ),
+    ).toBe("tool-name-duplicate");
+    expect(
+      ruleOf(
+        toolProposal(family, 1, {
+          tool: {
+            ...toolProposal(family).tool!,
+            name: "publish",
+            inputSchema: { type: "object" },
+          },
+        }),
+        { openIssues: existing },
+      ),
+    ).toBe("input-schema");
   });
 
   test("rejects every named rule", () => {
@@ -975,6 +1015,28 @@ describe("Coach cycle", () => {
     });
     expect(result.report.duplicates.length).toBeGreaterThan(0);
     expect(delivery.created.some((entry) => entry.title === issueTitle(family, "tool"))).toBe(false);
+  });
+
+  test("two families proposing one tool name file it once and record the duplicate", async () => {
+    const { repoDir, stateDir } = await workspace();
+    const collection = collectionOf(threeFamilies());
+    const selected = buildFamilies({ ...collection, repoDir }).selected;
+    const delivery = memoryDelivery();
+    const result = await runCycle({
+      root: repoDir,
+      stateDir,
+      now: NOW,
+      collect: () => collection,
+      delivery,
+      synthesize: synthesisFor((entry) => toolProposal(entry, 1)),
+      settings: { ...DEFAULT_COACH_SETTINGS, maxIssuesPerCycle: 20, allowlist: ["bun "] },
+    });
+    expect(delivery.created).toHaveLength(1);
+    expect(delivery.created[0]?.body).toContain('"name": "coach_tool_1"');
+    expect(
+      result.report.validations.filter((entry) => entry.rule === "tool-name-duplicate"),
+    ).toHaveLength(selected.length - 1);
+    expect(result.report.validations.filter((entry) => entry.outcome === "filed")).toHaveLength(1);
   });
 
   test("none is recorded with its rationale and files nothing", async () => {

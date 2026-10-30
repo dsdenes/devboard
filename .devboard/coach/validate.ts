@@ -1,6 +1,6 @@
 import { MCP_TOOL_NAMES } from "../mcp/catalog";
 import type { CoachFamily } from "./families";
-import { ISSUE_BODY_MAX_BYTES, issueBody, type CoachOpenIssue } from "./issue";
+import { ISSUE_BODY_MAX_BYTES, issueBody, proposedToolName, type CoachOpenIssue } from "./issue";
 import type { CoachSettings } from "./settings";
 import type { Proposal, ProposedTool } from "./synthesize";
 
@@ -34,9 +34,15 @@ export function allowlistEntryFor(key: string, allowlist: readonly string[]): st
   });
 }
 
-function toolNameTaken(tool: ProposedTool, openIssues: CoachOpenIssue[]): boolean {
+/**
+ * True when the tool name is in the live catalog or already declared by an
+ * open issue body. Exported because a cycle validates every candidate before
+ * it files any, so filing re-checks a candidate against the issues an earlier
+ * candidate of the same cycle filed.
+ */
+export function toolNameTaken(tool: ProposedTool, openIssues: CoachOpenIssue[]): boolean {
   if (MCP_TOOL_NAMES.includes(tool.name)) return true;
-  return openIssues.some((issue) => issue.title.includes(tool.name));
+  return openIssues.some((issue) => proposedToolName(issue.body) === tool.name);
 }
 
 function schemaValid(tool: ProposedTool): boolean {

@@ -1905,7 +1905,8 @@ to 5 lines, each starting `- [ ] `. A missing field, an extra field, or a wrong 
 proposal invalid.
 
 A deterministic validator, not a model, then rejects a proposal when its family differs from the
-request; the tool name exists in `MCP_TOOLS` or in an open Coach issue title; a `covers` entry is
+request; the tool name exists in `MCP_TOOLS` or in the `## Proposed tool` JSON block of an open
+issue body, compared as an exact name (a title never carries it); a `covers` entry is
 neither the family key nor a prefix of it or of a fragment (a trailing `*` is allowed); no `covers`
 entry matches the family key; the schema lacks `type: "object"`, `additionalProperties: false`, or
 `properties`; an acceptance line is malformed; the rendered body reaches 64 KiB; or a `tool`
@@ -1926,7 +1927,9 @@ OpenRouter token shapes.
 
 Before filing, the cycle reads the repository's open issues. A family is skipped when an open issue
 has the exact computed title or its body contains `family:<tag>`; the skip is recorded as
-`duplicate` with the existing URL. There is no suppression, no cooldown, and no recurrence comment.
+`duplicate` with the existing URL. A tool proposal whose name an earlier filing of the same cycle
+already declared is rejected with `tool-name-duplicate`, and a filed issue joins the same list with
+its own body. There is no suppression, no cooldown, and no recurrence comment.
 
 `maxIssuesPerCycle` (1 to 20, default 2) caps filings per cycle, highest score first, and
 `maxPerHour` caps filings per rolling hour. A validated proposal that exceeds a cap is stored in
