@@ -33,7 +33,7 @@ import {
   appendActivityLine,
   emptyState,
   listRunDirectories,
-  loadState,
+  loadStateWithText,
   parseRunFile,
   readActivity,
   runFilePath,
@@ -234,14 +234,19 @@ export function promptFor(issue: IssuesIssue): string {
   return `${command} ${issue.number}`;
 }
 
-/** Reads the previous state file's recorded ACP children and run ids verbatim. */
-function previousRecords(path: string): {
+/**
+ * Collects the previous state document's recorded ACP children and run ids
+ * verbatim. It reads the bytes a load already read, so an unparseable file
+ * that load quarantined still yields its records.
+ */
+function previousRecords(text: string | undefined): {
   children: IssuesAcpChild[];
   runIds: string[];
 } {
+  if (text === undefined) return { children: [], runIds: [] };
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = JSON.parse(text);
   } catch {
     return { children: [], runIds: [] };
   }
@@ -398,8 +403,8 @@ export class IssuesWorker {
     this.lock = lockResult;
 
     const path = statePath(this.stateDir, this.repoDir);
-    const previous = loadState(path);
-    const records = previousRecords(path);
+    const loaded = loadStateWithText(path);
+    const records = previousRecords(loaded.text);
     this.ledger = loadLedger(this.stateDir, this.repoDir);
     let migrationError: string | null = null;
     const migrated = migrateLegacyLedger({
@@ -460,7 +465,6 @@ export class IssuesWorker {
       updatedAt: now.toISOString(),
     };
     if (migrationError !== null) this.state.lastError = migrationError;
-    void previous;
     this.nextPollDue = now.getTime();
     this.publish();
     this.startTicker();
