@@ -15,7 +15,6 @@
 <div class="mode-body" data-testid="devboard-workspace">
   <PageHeader
     title={tab?.title ?? "MCP tools"}
-    subtitle="Read-only catalog the Devboard MCP server answers tools/list with."
     layout="bar"
     testid="devboard-header"
   >
