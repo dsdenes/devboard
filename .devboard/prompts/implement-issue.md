@@ -117,47 +117,60 @@ the prerequisite in another agent's place.
 
 ## Landing
 
-Commit in the worktree on the run's own task branch. Verify the canonical line with one composite
-integration check before the push; never run a bare fetch:
-
-```sh
-git fetch origin main --quiet &&
-git rev-parse --short HEAD origin/main &&
-git rev-list --left-right --count HEAD...origin/main &&
-git merge-base --is-ancestor <commit> origin/main
-```
-
-Read `git status --short --branch` once alongside the check. Use at most one
-`git merge-base --is-ancestor` in that check and never chain per-commit ancestry probes. Fetch at
-most twice in a session, and fetch again only after a push, merge, or rebase happened since the
-previous fetch.
+Commit in the worktree on the run's own task branch. Before landing, fetch the canonical
+integration line once and rebase the task branch onto `origin/main`; a rebase that reports the
+branch is up to date is the normal case, and the fast-forward merge below is itself the
+up-to-date gate, so no ahead/behind probe runs before the push.
 
 Land it with this one sequence in the canonical checkout, on `main`:
 
 ```sh
 git merge --ff-only <task-branch>
 git push origin main
-local_commit=$(git rev-parse HEAD)
-remote_tip=$(git ls-remote origin refs/heads/main | cut -f1)
-if [ "$local_commit" != "$remote_tip" ]; then
-  printf 'push not verified: local %s remote %s\n' "$local_commit" "$remote_tip" >&2
-  exit 1
-fi
 ```
 
-`git ls-remote` must name the same commit as the new local HEAD; equal tips prove the landing
-commit reached the canonical line, and ancestry follows. The gate prints both commits and exits
-nonzero when they differ. Do not use `git log` or a `head`/`tail`-trimmed merge output as the push
-proof. Never chain per-commit `git merge-base --is-ancestor <sha> origin/main` probes, and never
-re-verify a commit already proven to be the remote tip; if an older commit genuinely needs
-checking, run exactly one such probe and report its exit status. A rejected push is ground truth:
-fetch the new tip, rebase the task branch onto `origin/main` inside the worktree, rerun the
-invalidated checks, and retry the same push unchanged. The landing merge is fast-forward only:
-never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main` on `main`. Run the sequence
-once per landing attempt and add no `tail` pipe, `fetch`, or `PIPESTATUS` probe around it. Push
-before publish, never after.
+Prove the push with this one verification block, run once in the canonical checkout and read
+as-is:
 
-After that gate, release from the integration checkout with the single Publish invocation below.
+```sh
+git fetch origin main
+git rev-parse --verify origin/main
+git rev-parse --short HEAD
+git rev-parse --short origin/main
+git rev-list --left-right --count HEAD...origin/main
+git merge-base --is-ancestor HEAD origin/main; echo "ancestor=$?"
+local_commit=$(git rev-parse HEAD)
+remote_tip=$(git ls-remote origin refs/heads/main | cut -f1)
+printf 'local %s remote %s\n' "$local_commit" "$remote_tip"
+git status --short --branch
+```
+
+Equal tips prove the landing commit is the canonical tip. When they differ because another push
+landed after this one, the fetched refs decide: `ancestor=0`, a zero left count, and a
+`## main...origin/main` line with no `ahead` marker still prove the commit is contained, so fetch
+once more and rerun the block instead of treating the difference as a failed push. The block
+prints both commits; never use `git log` or a `head`/`tail`-trimmed merge output as the push
+proof. Run the block once per verification point and never repeat it to reconfirm output it
+already printed; it is the only post-push readback, and this prompt excludes any other
+`git ls-remote`, `git log`, and a second `git status` readback.
+
+Never chain these ref probes with `&&`: when a ref is absent the chain stops at the failing probe
+and hides the rest, and a nonzero exit from the block is evidence to read, not a reason to rerun
+it. `--verify` and `--short` each accept exactly one revision, so probe `HEAD` and `origin/main`
+separately and never pass both to one `--short` call; that misuse prints
+`fatal: Needed a single revision` even when every ref resolves. The same message from
+`git rev-parse --verify origin/main` means the local `origin/main` ref is unresolved, not a merge
+conflict or a code failure: run `git fetch origin main` and rerun the block once. Fetch at most
+twice in a session, and fetch again only after a push, merge, or rebase happened since the
+previous fetch.
+
+A rejected push is ground truth: fetch the new tip, rebase the task branch onto `origin/main`
+inside the worktree, rerun the invalidated checks, and retry the same push unchanged. The landing
+merge is fast-forward only: never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main`
+on `main`. Run the sequence once per landing attempt and add no `tail` pipe, `fetch`, or
+`PIPESTATUS` probe around it. Push before publish, never after.
+
+After that block, release from the integration checkout with the single Publish invocation below.
 
 Untracked scratch entries already present under `.devboard/` are expected status noise: they never
 justify another fetch, merge, or commit. Create no new scratch file outside `.devboard/`. Replace

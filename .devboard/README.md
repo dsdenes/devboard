@@ -2161,11 +2161,16 @@ non-interactive: no `question` tool, no confirmation, no interactive editor, no 
 fetches the canonical integration line, integrates concurrent changes, resolves every conflict
 itself, reruns every check the integration invalidates, and publishes directly to that line with
 bounded retry when a push is rejected; it never creates a pull request or merge request and never
-force-pushes. It lands with one fast-forward sequence that proves the push: the
-`git ls-remote <remote> refs/heads/main` tip must equal `git rev-parse HEAD`, the check exits
-nonzero and prints both commits when they differ, and it forbids chained per-commit
-`git merge-base --is-ancestor` probes. It closes the issue only after that gate passes and the
-required checks pass, and comments on that issue with the revision and the verification evidence.
+force-pushes. It lands with one fast-forward merge and one push, then proves the push with a
+single verification block read once: `git fetch origin main`,
+`git rev-parse --verify origin/main`, `git rev-parse --short HEAD`,
+`git rev-parse --short origin/main`, `git rev-list --left-right --count HEAD...origin/main`,
+`git merge-base --is-ancestor HEAD origin/main`, and `git status --short --branch`. It never
+chains those ref probes with `&&`, never passes two revisions to `--short` or `--verify`, never
+repeats the block to reconfirm printed output, and forbids `git ls-remote` and a second
+`git status` readback. It closes the issue only after the block reports `ancestor=0` with no
+`ahead` marker and the required checks pass, and puts the revision and the verification evidence
+in the final response.
 A proven duplicate, invalid, or already-fixed issue is closed with evidence and without committing
 unrelated work. A successful agent removes only the worktree and branch it created; a failed or
 blocked agent leaves its worktree in place and reports its path.
