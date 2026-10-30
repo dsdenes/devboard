@@ -2711,7 +2711,11 @@ export class FlowController {
     const session = this.#session;
     const trimmed = text.trim();
     if (session === undefined || trimmed.length === 0) return;
-    if (session.blockers.some((blocker) => !blocker.dismissed && blocker.text === trimmed)) return;
+    // A marker text is admitted at most once per session. Rescanning the
+    // activity that produced it, or the agent printing it again, must never
+    // resurrect a blocker the developer already dismissed: the dismissed entry
+    // is a tombstone, not a reason to append a fresh id.
+    if (session.blockers.some((blocker) => blocker.text === trimmed)) return;
     const blocker: FlowBlocker = {
       id: `blocker-${randomUUID().replace(/-/g, "").slice(0, 12)}`,
       timestamp: nowIso(this.#now),

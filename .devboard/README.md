@@ -576,7 +576,7 @@ never committed and never written into the host.
 |`verification.json`|Latest test, lint, or build result: command, status, timestamp, output.|
 |`changes.json`|The current changed files with status, insertion and deletion counts, and diffs.|
 |`accepted.json`|The widget signatures the developer accepted.|
-|`blockers.jsonl`|Every `DEVBOARD-BLOCKED:` line an implementation printed.|
+|`blockers.jsonl`|One JSON line per distinct `DEVBOARD-BLOCKED:` marker text an implementation printed.|
 |`session.json`|Machine state: ids, status, worktree, branch, base, widgets, checkpoints, PR.|
 |`request.json`|Analyst input: goal, decisions, changed files and diffs, previous widgets.|
 |`widgets.json`|The change analyst's complete widget list.|

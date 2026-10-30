@@ -827,7 +827,7 @@
 <style>
   .feedback-result {
     align-items: flex-start;
-    animation: feedback-toast-in 160ms ease-out;
+    animation: feedback-toast-in 120ms ease-out;
     background: var(--surface-raised);
     border: 1px solid var(--border-strong);
     border-left: 3px solid var(--success);
@@ -938,7 +938,7 @@
   .feedback-panel {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 4px;
     color: var(--text);
     display: flex;
     flex-direction: column;
