@@ -938,7 +938,7 @@
   .feedback-panel {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 4px;
     color: var(--text);
     display: flex;
     flex-direction: column;

@@ -5134,11 +5134,18 @@ try {
   await page.wait(`document.querySelector('.feedback-hint') !== null`, "the issue reporter picking mode for the drag");
   await page.click('[data-testid="status-bar"]');
   await page.wait(`document.querySelector('.feedback-panel') !== null`, "the report panel");
-  const panelChrome = await page.eval<{ title: string; placeholder: string; buttons: string[]; selector: string }>(`(() => ({
+  const panelChrome = await page.eval<{
+    title: string;
+    placeholder: string;
+    buttons: string[];
+    selector: string;
+    radius: string;
+  }>(`(() => ({
     title: document.querySelector('.feedback-drag')?.textContent?.trim() ?? "",
     placeholder: document.querySelector('.feedback-panel textarea')?.getAttribute("placeholder") ?? "",
     buttons: [...document.querySelectorAll('.feedback-actions button')].map((button) => button.textContent.trim()),
     selector: document.querySelector('.feedback-selector')?.textContent?.trim() ?? "",
+    radius: getComputedStyle(document.querySelector('.feedback-panel')).borderRadius,
   }))()`);
   check(panelChrome.title === "Report a UI issue", "the report panel title changed", panelChrome);
   check(panelChrome.placeholder === "What is wrong with this element?", "the report panel placeholder changed", panelChrome);
@@ -5148,6 +5155,12 @@ try {
     panelChrome,
   );
   check(panelChrome.selector.length > 0, "the report panel shows no selector", panelChrome);
+  const panelRadius = Number.parseFloat(panelChrome.radius);
+  check(
+    Number.isFinite(panelRadius) && panelRadius > 0 && panelRadius <= 6,
+    "the report panel exceeds the 6px functional radius",
+    panelChrome,
+  );
   const composing = await issueState();
   check(
     composing.disabled.join(",") === "false,true,true",
