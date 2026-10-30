@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { MCP_TOOLS, MCP_TOOL_NAMES } from "../mcp/catalog";
 import { GOAL_TEXT_MAX_BYTES } from "../mcp/goals";
@@ -739,6 +739,41 @@ describe("MCP work and control tools", () => {
     expect(result.truncated).toBe(true);
     expect(result.output.endsWith("\n[output truncated]")).toBe(true);
     expect(Buffer.byteLength(result.output, "utf8")).toBeLessThan(VERIFICATION_OUTPUT_MAX_BYTES + 64);
+  }, 30_000);
+
+  test("verification_run reports truncation when only one pipe overflows", async () => {
+    await mkdir(join(harnessRoot, ".tmp"), { recursive: true });
+    const dir = await mkdtemp(join(harnessRoot, ".tmp", "verification-one-pipe-"));
+    directories.push(dir);
+    await writeFile(join(dir, "package.json"), JSON.stringify({ scripts: {} }));
+    const bin = join(dir, "bin");
+    await mkdir(bin, { recursive: true });
+    // `bun run` and `bun test` both write to stderr, so a stdout-only child is
+    // staged through the typecheck fallback's PATH lookup.
+    const shim = join(bin, "bunx");
+    const context: McpContext = {
+      repoDir: dir,
+      harnessDir: dir,
+      stateDir: join(dir, "state"),
+      environment: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+    };
+
+    await writeFile(
+      shim,
+      "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 400 ]; do\n  printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n'\n" +
+        "  i=$((i + 1))\ndone\n",
+    );
+    await chmod(shim, 0o755);
+    const loud = await runVerification(context, "typecheck", undefined, { outputMaxBytes: 100 });
+    expect(loud.exitCode).toBe(0);
+    expect(loud.truncated).toBe(true);
+    expect(loud.output.endsWith("\n[output truncated]")).toBe(true);
+
+    await writeFile(shim, "#!/bin/sh\nprintf 'ok\\n'\n");
+    const quiet = await runVerification(context, "typecheck", undefined, { outputMaxBytes: 100 });
+    expect(quiet.exitCode).toBe(0);
+    expect(quiet.truncated).toBe(false);
+    expect(quiet.output).toBe("ok\n");
   }, 30_000);
 
   test("every control tool delegates to the one live dashboard", async () => {

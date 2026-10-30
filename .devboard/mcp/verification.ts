@@ -77,9 +77,12 @@ function capture(
   stdout: Uint8Array,
   stderr: Uint8Array,
   maxBytes: number = VERIFICATION_OUTPUT_MAX_BYTES,
+  overflowed = false,
 ): { output: string; truncated: boolean } {
   const combined = `${Buffer.from(stdout).toString("utf8")}${Buffer.from(stderr).toString("utf8")}`;
-  if (Buffer.byteLength(combined, "utf8") <= maxBytes) {
+  // A pipe that discarded bytes can leave exactly `maxBytes` retained, so the
+  // retained length alone cannot prove the output is complete.
+  if (!overflowed && Buffer.byteLength(combined, "utf8") <= maxBytes) {
     return { output: combined, truncated: false };
   }
   const buffer = Buffer.from(combined, "utf8");
@@ -93,12 +96,16 @@ function capture(
 interface PipeBuffer {
   chunks: Uint8Array[];
   bytes: number;
+  /** True once the pipe discarded a byte, even when the retained length is the bound. */
+  overflowed: boolean;
 }
 
 /**
  * Reads one pipe into `sink`, keeping at most `limit` bytes. The rest is
  * drained so a chatty check never blocks on a full pipe, but never stored:
- * the capture bound is also the memory bound. A descendant that inherits the
+ * the capture bound is also the memory bound. Discarding anything is recorded
+ * on the sink so the result reports truncation even when the retained bytes
+ * alone fit the bound. A descendant that inherits the
  * pipe can hold it open after the child dies, so the caller races this read
  * against the deadline instead of waiting for EOF.
  */
@@ -114,8 +121,12 @@ async function readCapped(
       if (done) return;
       if (value === undefined || value.byteLength === 0) continue;
       const room = limit - sink.bytes;
-      if (room <= 0) continue;
+      if (room <= 0) {
+        sink.overflowed = true;
+        continue;
+      }
       const kept = value.byteLength <= room ? value : value.subarray(0, room);
+      if (kept.byteLength !== value.byteLength) sink.overflowed = true;
       sink.chunks.push(kept);
       sink.bytes += kept.byteLength;
     }
@@ -129,6 +140,7 @@ interface VerificationSettlement {
   stderr: Uint8Array;
   exitCode: number | null;
   timedOut: boolean;
+  overflowed: boolean;
   failure?: string;
 }
 
@@ -183,8 +195,8 @@ export async function runVerification(
 
   const controller = new AbortController();
   let killChild: (() => void) | undefined;
-  const stdout: PipeBuffer = { chunks: [], bytes: 0 };
-  const stderr: PipeBuffer = { chunks: [], bytes: 0 };
+  const stdout: PipeBuffer = { chunks: [], bytes: 0, overflowed: false };
+  const stderr: PipeBuffer = { chunks: [], bytes: 0, overflowed: false };
 
   const invocation = (async (): Promise<VerificationSettlement> => {
     const child = Bun.spawn({
@@ -225,6 +237,7 @@ export async function runVerification(
       stderr: new Uint8Array(Buffer.concat(stderr.chunks)),
       exitCode,
       timedOut: false,
+      overflowed: stdout.overflowed || stderr.overflowed,
     };
   })().catch(
     (error: unknown): VerificationSettlement => ({
@@ -232,6 +245,7 @@ export async function runVerification(
       stderr: new Uint8Array(Buffer.concat(stderr.chunks)),
       exitCode: -1,
       timedOut: false,
+      overflowed: stdout.overflowed || stderr.overflowed,
       failure: error instanceof Error ? error.message : String(error),
     }),
   );
@@ -247,13 +261,14 @@ export async function runVerification(
       stderr: new Uint8Array(Buffer.concat(stderr.chunks)),
       exitCode: null,
       timedOut: true,
+      overflowed: stdout.overflowed || stderr.overflowed,
     });
   }, timeoutMs);
 
   try {
     const settled = await Promise.race([invocation, timeout.promise]);
     if (settled.failure !== undefined) throw new Error(settled.failure);
-    const captured = capture(settled.stdout, settled.stderr, outputMaxBytes);
+    const captured = capture(settled.stdout, settled.stderr, outputMaxBytes, settled.overflowed);
     return {
       check,
       exitCode: settled.timedOut ? null : settled.exitCode,
