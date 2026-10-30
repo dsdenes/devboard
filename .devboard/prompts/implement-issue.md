@@ -69,16 +69,23 @@ canonical checkout, on `main`:
 ```sh
 git merge --ff-only <task-branch>
 git push origin main
-git rev-parse HEAD
-git ls-remote origin refs/heads/main
+local_commit=$(git rev-parse HEAD)
+remote_tip=$(git ls-remote origin refs/heads/main | cut -f1)
+if [ "$local_commit" != "$remote_tip" ]; then
+  printf 'push not verified: local %s remote %s\n' "$local_commit" "$remote_tip" >&2
+  exit 1
+fi
 ```
 
-`git ls-remote` must name the same commit as `git rev-parse HEAD`; equal tips prove the landing
-commit reached the canonical line, and ancestry follows. Do not use `git log`, `git status`, or
-`head`/`tail`-trimmed merge output as the push proof. The landing merge is fast-forward only:
-never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main` on `main`. If `main` moved
-before landing, fetch and rebase the task branch onto `origin/main` inside the worktree, rerun the
-invalidated checks, and repeat the sequence.
+`git ls-remote` must name the same commit as the new local HEAD; equal tips prove the landing
+commit reached the canonical line, and ancestry follows. The check prints both commits and exits
+nonzero when they differ. Do not use `git log`, `git status`, or `head`/`tail`-trimmed merge output
+as the push proof. Never chain per-commit `git merge-base --is-ancestor <sha> origin/main` probes,
+and never re-verify a commit already proven to be the remote tip; if an older commit genuinely
+needs checking, run exactly one such probe and report its exit status. The landing merge is
+fast-forward only: never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main` on
+`main`. If `main` moved before landing, fetch and rebase the task branch onto `origin/main` inside
+the worktree, rerun the invalidated checks, and repeat the sequence.
 
 After the proof, release from the integration checkout with the single Publish invocation below.
 
