@@ -224,7 +224,7 @@
 
   .agent-prompt__chat-role {
     color: var(--muted-foreground);
-    font-size: 9px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
