@@ -1,0 +1,64 @@
+---
+description: Resolve the forge host, project, and token scope through forge-auth.ts, never by enumerating the environment or reading credential files.
+---
+
+# Forge identity
+
+`bun .devboard/scripts/forge-auth.ts check` is the single authority for the forge host, the
+project path, the base URL, and the token scope a run may use. It reads `DEVBOARD_GITEA_URL`,
+`GITEA_TOKEN`, and the `origin` remote itself, so no other file or command has to locate them.
+
+Run it once from the checkout root before the first tracker read or write:
+
+```sh
+bun .devboard/scripts/forge-auth.ts check --forge <forge> --required <read|write> --json
+```
+
+- `<forge>` is `github`, `gitlab`, or `gitea`.
+
+- With no `--host` and no `--project`, the wrapper targets the `origin` remote; on Gitea it takes
+  the HTTP origin from `DEVBOARD_GITEA_URL`. Use that form whenever the target is this checkout's
+  own repository, and pass nothing the wrapper can resolve.
+- Pass an explicit target only when the target repository is not this checkout's `origin`:
+  `bun .devboard/scripts/forge-auth.ts check --host <host> --project <owner>/<repo> --required <read|write> --json`.
+- `--forge` is optional when the host name decides it. Pass it when the wrapper would otherwise
+  probe a forge the run never uses.
+- The exit status is the verdict: zero selects a credential that satisfies `--required`, nonzero
+  reports that none does. Never treat stderr as optional and never retry another flag set to make
+  a failure pass.
+
+The JSON result carries `forge`, `host`, `project`, `login`, `source`, `active`, `permission`, and
+`canWrite`. Those fields are the run's entire knowledge of the forge: no further probe is needed.
+
+When a prompt needs the token inside a child process, it names
+`bun .devboard/scripts/forge-auth.ts exec ... -- <command>`; the wrapper injects the selected
+token into that child's environment only, never into an argument, a log line, or a reply.
+
+## Forbidden
+
+Never enumerate the process environment or hunt for credential files to discover forge
+configuration. In particular, do not:
+
+- run `env`, `printenv`, or `set`, or pipe any of them through `grep` for `gitea`, `forge`,
+  `token`, `github`, or `gitlab`;
+- read `.env`, `.devboard/.env`, `.devboard/config.json`, `.devboard/.issue-*.json`, `~/.npmrc`,
+  or any other configuration or scratch file looking for a token, a base URL, or a repository
+  path the wrapper resolves;
+- scan `git config` remotes, credential helpers, or environment dumps for forge secrets, and do
+  not re-derive the host or project with `sed`, `awk`, or `grep` when the wrapper's own target
+  inference answers the same question;
+- probe a credential the check did not select: no hand-built API call, no direct `gh` or `glab`
+  login check, no token from one forge tested against another host.
+
+## Masking
+
+No captured output may contain a token value. When a prompt must show that a variable exists,
+render it as `<set>`; when it must show a redacted value, use `<redacted>`. Never echo a token,
+never interpolate one into a URL or a command whose output could print it, and never widen a
+prefix of the value "to prove" it is present.
+
+## No credentials
+
+When the check exits nonzero, report its message and the forge it names, then stop probing. Do
+not retry with another host, project, forge, or account, and do not search for the credential by
+hand. A run that needs write access and has none halts instead of reading configuration.

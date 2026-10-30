@@ -37,7 +37,9 @@ context, but you never edit, comment on, close, or reopen another issue.
   status is authoritative and `--json` carries the selected identity: zero means write access,
   nonzero means stop and report that line. Never append `echo "exit=$?"`/`EXIT:$?` and never pipe
   the output through `head`/`tail`. On a checkout whose origin is GitHub or GitLab, replace only
-  `--forge gitea` with `--forge github` or `--forge gitlab`.
+  `--forge gitea` with `--forge github` or `--forge gitlab`. Never enumerate the process
+  environment or hunt for credential files: `.devboard/prompts/forge-auth.md` holds that rule in
+  full.
 - Resolve the checkout and read the issue before changing anything. `devboard_status` returns the
   resolved `repositoryRoot`, `harnessDirectory`, and `stateDirectory`; use it instead of guessing
   roots. `issue_get` with `{"number": <number>}` returns that issue's title, body, labels, state,

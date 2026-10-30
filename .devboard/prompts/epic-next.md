@@ -149,6 +149,9 @@ pull request, and the remainder goes to Non-goals.
    account, then any other write-capable account). An ambient `GH_TOKEN`/`GITHUB_TOKEN` is used
    only when it is valid and has access; it never shadows a usable account just because it is
    exported. The wrapper never changes the global active account and never prompts.
+   Never enumerate the process environment or hunt for credential files; the wrapper is the only
+   authority for host, project, and token scope, and `.devboard/prompts/forge-auth.md` states that
+   rule in full.
    Exit non-zero → halt, quoting the wrapper's message. Never switch the active account by hand,
    never retry another login, and never proceed with a read-only account: every later write
    would be refused.

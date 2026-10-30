@@ -32,7 +32,9 @@ blocker is reported.
 - Every tracker command goes through the harness forge-auth wrapper:
   `bun <REPO_DIR>/.devboard/scripts/forge-auth.ts exec --host <host> --project <owner/repo> --required write -- <gh|glab args>`.
   It selects the authenticated account with write access; never call `gh` directly. On Gitea,
-  resolve the identity with `check` and use the API with `GITEA_TOKEN`.
+  resolve the identity with `check` and use the API with `GITEA_TOKEN`. Never enumerate the
+  process environment or hunt for credential files: `.devboard/prompts/forge-auth.md` holds that
+  rule in full.
 
 ## Phase 1 — Research before questions
 
