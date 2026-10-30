@@ -495,6 +495,33 @@ describe("per-issue fleet", () => {
     }
   });
 
+  test("clears a still-open error when a later poll drops that issue", async () => {
+    const f = await fixture({
+      issues: [issue(1)],
+      issueState: async () => ({ kind: "state", state: "open" }),
+    });
+    try {
+      await waitFor(() => (f.peers.length === 1 ? true : undefined), "the peer");
+      f.peers[0]!.succeed();
+      const failed = await waitFor(
+        () =>
+          f.state().runs.find((run) => run.issueNumbers.includes(1) && run.status === "failed")
+            ? f.state()
+            : undefined,
+        "the failed run",
+      );
+      expect(failed.lastError).toContain("issue #1 is still open");
+      f.issues.length = 0;
+      await f.worker.poll();
+      const closed = f.state();
+      expect(closed.lastError).toBeNull();
+      expect(closed.queue).toEqual([]);
+      expect(closed.runs.find((run) => run.issueNumbers.includes(1))?.status).toBe("failed");
+    } finally {
+      await stop(f);
+    }
+  });
+
   test("a failed issue-state lookup fails the run without handling it", async () => {
     const f = await fixture({
       issues: [issue(1)],

@@ -783,7 +783,31 @@ export class IssuesWorker {
       this.state.cooldowns = cooldowns;
     }
     this.state.queue = issues.map((issue) => this.queued(issue));
+    this.clearResolvedError(open);
     this.stopClosedRuns(open);
+  }
+
+  /** The issue a verification error names, when the worker wrote the message. */
+  private errorIssue(message: string): number | null {
+    const match =
+      /^the agent finished but issue #(\d+) is still open(?:;|$)/.exec(message) ??
+      /^could not verify issue #(\d+):/.exec(message);
+    if (match === null) return null;
+    const number = Number(match[1]);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+  }
+
+  /**
+   * A verification error names its issue. A later poll that drops that issue
+   * proves the line false, so it must not stay the worker's current error: the
+   * Overview would keep claiming an issue is open after it closed.
+   */
+  private clearResolvedError(open: Set<number>): void {
+    const message = this.state.lastError;
+    if (message === null) return;
+    const number = this.errorIssue(message);
+    if (number === null || open.has(number)) return;
+    this.state.lastError = null;
   }
 
   private queued(issue: IssuesIssue): QueuedIssue {

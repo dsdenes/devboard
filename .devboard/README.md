@@ -2197,8 +2197,9 @@ open and unhandled, and writes only its own cooldown. A clean ACP turn is not pr
 refused slash command still ends the turn normally, so before a run can succeed the worker asks the
 tracker for that issue's state. Only an issue the tracker now reports closed finishes as
 `succeeded`, records only its issue as handled, and does not touch another issue; one that is still
-open, or whose state cannot be read, finishes as `failed` with a cooldown and stays unhandled. The
-five-minute
+open, or whose state cannot be read, finishes as `failed` with a cooldown and stays unhandled. A
+verification error names its issue; when a later poll no longer lists that issue, the error
+clears, so the Overview never keeps claiming a closed issue is open. The five-minute
 cooldown remains: an issue in cooldown is retried when it expires, and other issues keep running
 and start normally.
 
