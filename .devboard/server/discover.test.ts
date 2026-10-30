@@ -14,7 +14,14 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp } from "./app";
-import { declaredCommandAliases } from "./discover";
+import {
+  type ArtifactsRead,
+  confirmGlossaryTerm,
+  declaredCommandAliases,
+  DiscoverValidationError,
+  readArtifacts,
+  rejectGlossaryTerm,
+} from "./discover";
 import { readStateFile, stateFile } from "./state";
 import { testProviderService } from "./fixtures/test-providers";
 import type { ProviderService } from "./providers";
@@ -1698,6 +1705,79 @@ describe("discover mode", () => {
       }
     },
     30000,
+  );
+
+  test(
+    "rejects a crafted manifest before reading or writing outside .omp/",
+    async () => {
+      const { server, fixture, url } = startServer();
+      const client = await connect(url);
+      try {
+        await runDiscover(client);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+
+      const manifestPath = join(fixture.root, ".omp", "discover", "manifest.json");
+      const original = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+        paths: Record<string, unknown>;
+      };
+      const sentinelName = `sentinel-${process.pid}-${Math.random().toString(16).slice(2, 8)}.json`;
+      const sentinel = join(fixture.root, "..", sentinelName);
+      const sentinelBytes = "bytes that must never be overwritten\n";
+      writeFileSync(sentinel, sentinelBytes);
+      cleanup.push(() => rmSync(sentinel, { force: true }));
+
+      const craft = (mutate: (paths: Record<string, unknown>) => void): void => {
+        const manifest = JSON.parse(JSON.stringify(original)) as {
+          paths: Record<string, unknown>;
+        };
+        mutate(manifest.paths);
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      };
+      const escape = `../${sentinelName}`;
+      const rejects = (read: ArtifactsRead): void => {
+        expect(read.artifacts).toBeNull();
+        expect(String(read.error)).toContain("manifest.json.paths.");
+      };
+
+      // A normal confirm or reject would rewrite decisions.json; the crafted
+      // decision path must fail before either touches the sentinel.
+      for (const field of ["manifest", "decisions"] as const) {
+        craft((paths) => {
+          paths[field] = escape;
+        });
+        expect(() =>
+          confirmGlossaryTerm(fixture.root, "orders", "order-total"),
+        ).toThrow(DiscoverValidationError);
+        expect(() =>
+          rejectGlossaryTerm(fixture.root, "orders", "order-total", "crafted"),
+        ).toThrow(DiscoverValidationError);
+        expect(readFileSync(sentinel, "utf8")).toBe(sentinelBytes);
+      }
+
+      // Every read-side path field is checked before any file is opened.
+      const escapes: Array<[string, (paths: Record<string, unknown>) => void]> = [
+        ["sheet", (paths) => (paths.sheet = escape)],
+        ["significance", (paths) => (paths.significance = escape)],
+        ["glossaries", (paths) => (paths.glossaries = [escape])],
+        ["baselines", (paths) => ((paths.baselines as Record<string, string>)["discover-glossary"] = escape)],
+        ["live", (paths) => ((paths.live as Record<string, string>)["discover-glossary"] = escape)],
+      ];
+      for (const [, mutate] of escapes) {
+        craft(mutate);
+        rejects(readArtifacts(fixture.root));
+        expect(readFileSync(sentinel, "utf8")).toBe(sentinelBytes);
+      }
+
+      // Restoring the publication proves the same manifest still loads.
+      writeFileSync(manifestPath, `${JSON.stringify(original, null, 2)}\n`);
+      const valid = readArtifacts(fixture.root);
+      expect(valid.error).toBeNull();
+      expect(valid.artifacts?.glossaries).toHaveLength(1);
+    },
+    60000,
   );
 
   test(
