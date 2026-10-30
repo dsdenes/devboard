@@ -3783,16 +3783,16 @@ try {
   check(discoverTables.pyramidText.every((text) => text.replace(/[|\s]/g, "").length > 0), "a Discover pyramid row renders no values", discoverTables.pyramidText);
   check(discoverTables.pyramidText.every((text) => !text.toLowerCase().includes("unknown")), "a Discover test level still reports an unknown count", discoverTables.pyramidText);
   check(
-    discoverTables.qualityGateHeaders.join("|") === "Quality gate|What it checks",
-    "the quality gate table does not carry its gate and check columns",
+    discoverTables.qualityGateHeaders.join("|") === "Quality gate",
+    "the quality gate table does not carry its single gate column",
     discoverTables.qualityGateHeaders,
   );
   check(
     discoverTables.qualityGateRows.length > 0 &&
       discoverTables.qualityGateRows.every((cells) =>
-        cells[0]?.trim().length > 0 && cells[1]?.trim().length > 0
+        cells.length === 1 && cells[0]?.trim().length > 0
       ),
-    "a quality gate row renders no name or check",
+    "a quality gate row does not render exactly one name",
     discoverTables.qualityGateRows,
   );
   check(

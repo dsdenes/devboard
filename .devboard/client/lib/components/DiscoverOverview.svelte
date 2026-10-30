@@ -37,7 +37,6 @@
   ];
   const QUALITY_GATE_COLUMNS = [
     { id: "gate", header: "Quality gate", accessorKey: "gate" },
-    { id: "checks", header: "What it checks", accessorKey: "checks" },
   ];
   const QUALITY_GATE_WIDTHS = { gate: "220px" };
   /** The architecture leaves that share the Bounded contexts card. */
@@ -131,7 +130,6 @@
     recordItems(qualityGatesLeaf)
       .map((record) => ({
         gate: scalarText(record.name).trim(),
-        checks: scalarText(record.checks).trim(),
       }))
       .filter((row) => row.gate.length > 0),
   );
@@ -430,14 +428,8 @@
   {/if}
 {/snippet}
 
-{#snippet qualityGateCell(row: Record<string, unknown>, columnId: string)}
-  {#if columnId === "gate"}
-    <span class="discover-quality-gate__name">{String(row.gate ?? "")}</span>
-  {:else if String(row.checks ?? "").length > 0}
-    <span class="discover-quality-gate__checks">{String(row.checks)}</span>
-  {:else}
-    <span class="muted">No check was recorded.</span>
-  {/if}
+{#snippet qualityGateCell(row: Record<string, unknown>)}
+  <span class="discover-quality-gate__name">{String(row.gate ?? "")}</span>
 {/snippet}
 
 {#snippet commandCell(row: Record<string, unknown>, columnId: string)}

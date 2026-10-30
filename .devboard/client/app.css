@@ -2217,10 +2217,6 @@ a.code-chip--link:focus-visible {
   font-weight: 550;
 }
 
-.discover-quality-gate__checks {
-  color: var(--muted-foreground);
-}
-
 .discover-card[data-field="architecture"] {
   min-width: 0;
 }
