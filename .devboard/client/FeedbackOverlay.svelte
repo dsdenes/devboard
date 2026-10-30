@@ -853,6 +853,10 @@
     color: var(--error);
   }
 
+  .feedback-result--error .feedback-result__text {
+    color: var(--error);
+  }
+
   .feedback-result__body {
     display: flex;
     flex-direction: column;

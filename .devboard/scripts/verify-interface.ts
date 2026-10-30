@@ -6028,15 +6028,28 @@ try {
   }
   const redesignRequests = feedbackRequests.filter((entry) => entry.action === "redesign");
   check(redesignRequests.length === 2, "the issue actions did not send two redesign requests", feedbackRequests);
-  const redesignStatus = await page.eval<{ text: string; href: string }>(`(() => {
+  const redesignStatus = await page.eval<{ text: string; href: string; color: string; foreground: string }>(`(() => {
     const status = document.querySelector('.feedback-result');
+    const probe = document.createElement("span");
+    probe.style.cssText = "position:absolute;color:var(--foreground)";
+    document.body.append(probe);
+    const foreground = getComputedStyle(probe).color;
+    probe.remove();
+    const message = status?.querySelector(".feedback-result__text");
     return {
       text: (status?.textContent ?? "").split("\\n").map((value) => value.trim()).filter((value) => value.length > 0).join(" "),
       href: status?.querySelector("a")?.getAttribute("href") ?? "",
+      color: message === null || message === undefined ? "" : getComputedStyle(message).color,
+      foreground,
     };
   })()`);
   check(redesignStatus.text.startsWith("Redesign issue filed."), "the redesign success text is wrong", redesignStatus);
   check(redesignStatus.href === stubIssueUrl, "the redesign success carries no stub issue URL", redesignStatus);
+  check(
+    redesignStatus.color === redesignStatus.foreground,
+    "the successful filing's message text does not use the foreground color",
+    redesignStatus,
+  );
   check((await issueState()).pressed.join(",") === "false,false,true", "a filed redesign did not stay armed");
 
   // A delayed filing disables every action and a double-click files once.
@@ -6075,15 +6088,25 @@ try {
     hint: string;
     pressed: string[];
     disabled: boolean[];
+    color: string;
+    errorColor: string;
   }>(`(() => {
     const alert = document.querySelector('.feedback-result[role="alert"]');
     const ids = ["activity-report", "activity-remove", "activity-redesign"];
+    const probe = document.createElement("span");
+    probe.style.cssText = "position:absolute;color:var(--error)";
+    document.body.append(probe);
+    const errorColor = getComputedStyle(probe).color;
+    probe.remove();
+    const message = alert?.querySelector(".feedback-result__text");
     return {
       text: (alert?.textContent ?? "").split("\\n").map((value) => value.trim()).filter((value) => value.length > 0).join(" "),
       link: alert?.querySelector("a") !== null,
       hint: document.querySelector('.feedback-hint')?.textContent ?? "",
       pressed: ids.map((id) => document.querySelector('[data-testid="' + id + '"]')?.getAttribute("aria-pressed") ?? ""),
       disabled: ids.map((id) => document.querySelector('[data-testid="' + id + '"]')?.disabled === true),
+      color: message === null || message === undefined ? "" : getComputedStyle(message).color,
+      errorColor,
     };
   })()`);
   check(
@@ -6096,6 +6119,11 @@ try {
   check(failure.hint.includes("to redesign"), "a failed redesign left the mode", failure);
   check(failure.pressed.join(",") === "false,false,true", "a failed redesign lost its pressed state", failure);
   check(failure.disabled.every((value) => !value), "a failed redesign left the actions disabled", failure);
+  check(
+    failure.color === failure.errorColor,
+    "the failed filing's message text does not use the error color",
+    failure,
+  );
   await setFeedbackMode("ok");
   await page.key("Escape");
   await page.wait(`document.querySelector('.feedback-hint') === null`, "Escape to cancel the shortcut mode");
