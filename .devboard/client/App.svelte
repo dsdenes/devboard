@@ -531,7 +531,9 @@
   oncancel={cancelDiscard}
 />
 
-<NotificationRegion feedbackenabled={connection.feedbackEnabled} />
+<Tooltip.Provider>
+  <NotificationRegion feedbackenabled={connection.feedbackEnabled} />
+</Tooltip.Provider>
 
 <ProvidersDialog />
 

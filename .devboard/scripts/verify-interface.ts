@@ -294,6 +294,17 @@ class Page {
     await delay(60);
   }
 
+  async hover(selector: string, index = 0): Promise<void> {
+    const point = await this.rect(selector, index);
+    if (point === null) throw new Error(`verify:interface: cannot hover ${selector}[${index}]`);
+    await this.devtools.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: point.x,
+      y: point.y,
+    });
+    await delay(80);
+  }
+
   async doubleClick(selector: string, index = 0): Promise<void> {
     const point = await this.rect(selector, index);
     if (point === null) throw new Error(`verify:interface: cannot double-click ${selector}`);
@@ -1301,6 +1312,7 @@ try {
       "--disable-component-update",
       "--disable-sync",
       "--metrics-recording-only",
+      "--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4",
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${profile}`,
       "--window-size=1440,900",
@@ -8362,6 +8374,76 @@ try {
   check(notification.live === "polite", "the notification region is not a live region", notification);
   const notificationFocus = await page.eval<boolean>(`document.activeElement?.closest('[data-testid="notifications"]') === null`);
   check(notificationFocus, "a notification stole focus");
+  const dismissControl = await page.eval<{
+    width: number;
+    height: number;
+    background: string;
+    color: string;
+    foreground: string;
+    label: string;
+    title: string;
+    command: string;
+    id: string;
+  }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;color:var(--foreground)";
+    document.body.append(probe);
+    const foreground = getComputedStyle(probe).color;
+    probe.remove();
+    const button = document.querySelector('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+    const rect = button?.getBoundingClientRect();
+    const style = button === null ? null : getComputedStyle(button);
+    return {
+      width: rect?.width ?? 0,
+      height: rect?.height ?? 0,
+      background: style?.backgroundColor ?? "",
+      color: style?.color ?? "",
+      foreground,
+      label: button?.getAttribute("aria-label") ?? "",
+      title: button?.getAttribute("title") ?? "",
+      command: button?.getAttribute("data-command") ?? "",
+      id: button?.closest(".notification")?.getAttribute("data-notification-id") ?? "",
+    };
+  })()`);
+  check(
+    dismissControl.width === 28 &&
+      dismissControl.height === 28 &&
+      dismissControl.background === "rgba(0, 0, 0, 0)" &&
+      dismissControl.color === dismissControl.foreground,
+    "the notification dismiss control is not a 28px ghost icon button",
+    dismissControl,
+  );
+  check(
+    dismissControl.label === "Dismiss notification" &&
+      dismissControl.title === "Dismiss notification" &&
+      dismissControl.command === "app.notifications.dismiss" &&
+      dismissControl.id.length > 0,
+    "the notification dismiss control lost its accessible name or command",
+    dismissControl,
+  );
+  await page.hover('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+  const dismissHover = await page.eval<{ background: string; expected: string }>(`(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;background:var(--secondary-hover)";
+    document.body.append(probe);
+    const expected = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const button = document.querySelector('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+    return {
+      background: button === null ? "" : getComputedStyle(button).backgroundColor,
+      expected,
+    };
+  })()`);
+  check(
+    dismissHover.background === dismissHover.expected,
+    "the notification dismiss control does not take the secondary-hover fill on hover",
+    dismissHover,
+  );
+  await page.click('[data-testid="notifications"] [data-command="app.notifications.dismiss"]');
+  await page.wait(
+    `document.querySelector('[data-testid="notifications"] .notification[data-notification-id="${dismissControl.id}"]') === null`,
+    "the dismissed notification",
+  );
   // The card closes itself after five seconds, so the rest of the filing flow
   // runs on its history entry, where the same controls stay available.
   await saveShot("notification-issue-file");

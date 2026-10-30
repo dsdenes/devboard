@@ -4,6 +4,7 @@
   import { notificationReport } from "../notification-issue";
   import { notifications, type AppNotification } from "../notifications.svelte";
   import Button from "./ui/button.svelte";
+  import IconButton from "./ui/icon-button.svelte";
 
   interface Props {
     feedbackenabled: boolean;
@@ -107,16 +108,14 @@
         {filing === item.id ? "Filing…" : "File issue"}
       </Button>
     {/if}
-    <button
-      type="button"
-      class="workspace-tab__close"
-      aria-label="Dismiss notification"
-      title="Dismiss notification"
-      data-command="app.notifications.dismiss"
+    <IconButton
+      label="Dismiss notification"
+      command="app.notifications.dismiss"
+      class="hover:bg-[var(--secondary-hover)] focus-visible:bg-[var(--secondary-hover)]"
       onclick={() => notifications.dismiss(item.id)}
     >
       <X size={12} aria-hidden="true" />
-    </button>
+    </IconButton>
   </div>
 {/snippet}
 
