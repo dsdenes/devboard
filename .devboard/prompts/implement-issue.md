@@ -77,8 +77,21 @@ the prerequisite in another agent's place.
 
 ## Landing
 
-Commit in the worktree on the run's own task branch. Land it with this one sequence in the
-canonical checkout, on `main`:
+Commit in the worktree on the run's own task branch. Verify the canonical line with one composite
+integration check before the push and once after the push; never run a bare fetch:
+
+```sh
+git fetch origin main --quiet &&
+git rev-parse --short HEAD origin/main &&
+git rev-list --left-right --count HEAD...origin/main &&
+git merge-base --is-ancestor <commit> origin/main
+```
+
+Read `git status --short --branch` once alongside the check. Fetch at most twice in a session and
+at most once per turn, and fetch again only after a push, merge, or rebase happened since the
+previous fetch.
+
+Land it with this one sequence in the canonical checkout, on `main`:
 
 ```sh
 git merge --ff-only <task-branch>
@@ -93,20 +106,20 @@ fi
 
 `git ls-remote` must name the same commit as the new local HEAD; equal tips prove the landing
 commit reached the canonical line, and ancestry follows. The check prints both commits and exits
-nonzero when they differ. Do not use `git log`, `git status`, or `head`/`tail`-trimmed merge output
-as the push proof. Never chain per-commit `git merge-base --is-ancestor <sha> origin/main` probes,
-and never re-verify a commit already proven to be the remote tip; if an older commit genuinely
-needs checking, run exactly one such probe and report its exit status. The landing merge is
-fast-forward only: never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main` on
-`main`. If `main` moved before landing, fetch and rebase the task branch onto `origin/main` inside
-the worktree, rerun the invalidated checks, and repeat the sequence.
+nonzero when they differ. State integration only from a `git merge-base --is-ancestor` exit status
+or the `git ls-remote` ref value; never use `git log`, `git status`, or `head`/`tail`-trimmed merge
+output as the push proof. Use at most one `git merge-base --is-ancestor` per composite check, as
+above; never chain per-commit probes, and never re-verify a commit already proven to be the remote
+tip. If an older commit genuinely needs checking, run exactly one such probe and report its exit
+status. The landing merge is fast-forward only: never `--no-ff`, `--no-edit`, or a preparatory
+`git merge origin/main` on `main`. If `main` moved before landing, rebase the task branch onto
+`origin/main` inside the worktree, rerun the invalidated checks, and repeat the sequence.
 
 After the proof, release from the integration checkout with the single Publish invocation below.
 
-Fetch at most once before landing and once after a rejected push. Untracked
-`.devboard/.issue-*.json` entries are expected status noise: they never justify another fetch,
-merge, or commit. Replace `origin` and `main` when the repository names another canonical remote
-or branch.
+Untracked `.devboard/.issue-*.json` entries are expected status noise: they never justify another
+fetch, merge, or commit. Replace `origin` and `main` when the repository names another canonical
+remote or branch.
 
 ## Publish
 
