@@ -30,6 +30,20 @@ you never edit, comment on, close, or reopen another issue.
   On Gitea, send API writes with `curl -H "Authorization: token $GITEA_TOKEN"`. Never call `gh`
   for a mutation directly.
 
+## Dependencies
+
+The package root that owns the lockfile is `.devboard/`: `<worktree>/.devboard` inside your worktree
+and `<REPO_DIR>/.devboard` in the canonical checkout. The repository root has no `package.json`, so
+running `bun install` there fails with "Bun could not find a package.json file to install from".
+
+- Run `bun install --frozen-lockfile` only from a `.devboard/` package root, never from the
+  repository root.
+- Skip the install when that package root already has `node_modules` and `bun.lock` has not changed
+  since that install. Installing is a precondition, not a verification step.
+- Never pipe the install into `tail` and never chain it with `bun run build`, `bunx tsc --noEmit`,
+  or `bun test` in one shell line. Run it once, check its exit status, then run the build,
+  typecheck, and tests as separate commands.
+
 ## Prerequisites
 
 If the issue declares an open prerequisite — a `depends on` or `blocked by` line, or a task-list
