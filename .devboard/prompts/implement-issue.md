@@ -263,18 +263,26 @@ justify another fetch, merge, or commit. Create no new scratch file outside `.de
 
 ## CI waits
 
-Never wait on a Gitea Actions run with a shell polling loop. Any command that combines
-`for i in $(seq 1 60)` (or any other retry, `sleep`, or background loop) with a `/actions/runs/`
-request is forbidden: each iteration spends a turn, the harness backgrounds the loop as `bg_N`,
-and its own output says not to poll. Never leave such a loop running in the background.
+Waiting for CI is `cd .devboard && bun run publish`, never a hand-built shell loop. Publish
+fetches, rebuilds, waits for the `devboard-release.yml` run of `HEAD`, verifies the npm package and
+the Gitea release assets, and exits nonzero when they are missing, so it is the whole wait: run it
+once as the Publish section specifies and read its recorded exit code.
+
+Never write the loop it replaces: `for i in $(seq 1 60); do curl ... /actions/runs/... ; sleep
+...; done`, any bounded retry over `sleep`, or any backgrounded poll of the Gitea API. Twenty calls
+across thirteen sessions took that shape: each iteration spends a turn, the harness backgrounds the
+loop as `bg_N`, and its own output says not to poll. The named payload shapes are forbidden too:
+`/actions/runs/<id>` for run `status`, `conclusion`, and `run_attempt`; `/commits/<sha>/status` for
+`state`; a statuses read; and a "count busy runs" read over `/actions/runs?limit=N`.
 
 The forge rule above already requires run reads through the `devboard` MCP tools, never `curl`.
+When a wait genuinely cannot use `bun run publish` — a non-release run or a local `verify`
+process — start exactly one long-lived background watcher whose whole lifetime is that wait, with
+`async: true` and `timeout: 0`, and then end the turn. Never re-invoke or re-check the wait from a
+foreground turn: no `sleep`, `ps`, `pgrep`, `kill -0`, `top`, log tailing, or a second wait command.
 Read a run at most once, parse `status`, `conclusion`, and `run_attempt` from that one read, and
 report what it says. When `status` is `completed`, report the conclusion and continue; when it is
-not, end the turn and wait for the completion follow-up, or re-check at most once in a later turn.
-The same rule covers commit-status and list-runs reads.
-
-`bun run publish` owns the release workflow wait, so landing never inspects a run by hand.
+not, the watcher's completion follow-up is the answer, so end the turn.
 
 ## Publish
 
