@@ -1163,6 +1163,82 @@ describe("lifecycle pause and resume", () => {
   );
 
   test(
+    "honors a resume sent while the manual sequence finishes",
+    async () => {
+      const epic: OpenEpic = {
+        number: 33,
+        title: "Resume while finishing",
+        url: "https://example.test/issues/33",
+      };
+      let lookups = 0;
+      const { server, logPath, url } = await startServer(
+        { "0001-first.md": PENDING_ONE },
+        {
+          agentArguments: "--delay-ms=900 --questions=0",
+          tracker: async () => {
+            lookups += 1;
+            return lookups === 1 ? epic : undefined;
+          },
+        },
+      );
+      const client = await connect(url);
+
+      try {
+        client.send({ type: "startLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.stage === "implementation",
+        );
+        await waitUntil(() => spawnCount(logPath) === 1, "the lifecycle peer did not spawn");
+
+        client.send({ type: "pauseLifecycle" });
+        await client.waitFor(
+          (message) => message.type === "lifecycleState" && message.paused === true,
+        );
+        const pausedIndex = client.events.length;
+
+        client.send({ type: "startRun", file: "adrs/0001-first.md" });
+        await waitForAt(
+          client,
+          pausedIndex,
+          (message) =>
+            message.type === "runStopped" &&
+            message.file === "0001-first.md" &&
+            message.resolved === true,
+          "the manual record did not resolve",
+          10000,
+        );
+
+        // The sequence is still closing out its record, so a resume sent now
+        // must survive instead of being refused and lost.
+        const resumeIndex = client.events.length;
+        client.send({ type: "resumeLifecycle" });
+        expect(
+          await waitForAt(
+            client,
+            resumeIndex,
+            (message) => message.type === "lifecycleState" && message.paused === false,
+            "the resume sent as the sequence finished was lost",
+            resumeDeadlineMs,
+          ),
+        ).toMatchObject({
+          stage: "implementation",
+          pass: 1,
+          work: { kind: "epic", id: "33", url: "https://example.test/issues/33" },
+        });
+        expect(
+          client.events
+            .slice(resumeIndex)
+            .filter((message) => message.type === "error"),
+        ).toEqual([]);
+      } finally {
+        client.close();
+        server.stop(true);
+      }
+    },
+    40000,
+  );
+
+  test(
     "resumes the lifecycle after a manual ADR run that interrupted it",
     async () => {
       const epic: OpenEpic = {

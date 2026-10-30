@@ -2253,6 +2253,13 @@ export function createApp(options: AppOptions) {
    */
   let manualRun: ActiveRun | undefined;
   let manualSequencing = false;
+  /**
+   * A lifecycle resume sent as the manual sequence finishes. The sequence
+   * clears its flag only after its last record and its closing reads, so
+   * refusing there would lose a resume the caller does not repeat; it runs
+   * once the sequence ends instead.
+   */
+  let resumeAfterManualSequence = false;
   /** Invalidates an in-flight manual start when a reset takes over. */
   let manualStartRequest = 0;
   let goalRevision: GoalRevision | undefined;
@@ -5259,6 +5266,8 @@ export function createApp(options: AppOptions) {
       // A creation or reset clears the sequence to take the checkout over.
       const interrupted = !manualSequencing;
       manualSequencing = false;
+      const queuedResume = resumeAfterManualSequence;
+      resumeAfterManualSequence = false;
       if (interrupted) {
         lifecyclePausedForManualRun = false;
       } else if (lifecyclePausedForManualRun) {
@@ -5267,6 +5276,8 @@ export function createApp(options: AppOptions) {
         // instead of waiting for a resume the interface no longer offers.
         lifecyclePausedForManualRun = false;
         if (lifecycleRunning && lifecycle.paused) resumeLifecycle(target);
+      } else if (queuedResume && lifecycleRunning && lifecycle.paused) {
+        resumeLifecycle(target);
       }
       // The sequence's last broadcast happened while it still owned the run, so
       // the durable state claims an active sequence with no run. Persist the
@@ -6009,8 +6020,16 @@ export function createApp(options: AppOptions) {
       return;
     }
 
-    if (manualRun !== undefined || manualSequencing) {
+    if (manualRun !== undefined) {
       send(ws, { type: "error", message: "A manual ADR run is active." });
+      return;
+    }
+
+    if (manualSequencing) {
+      // The sequence still owns the checkout between records and while it
+      // closes out, so run the resume when it finishes rather than refusing a
+      // request the caller has no reason to send twice.
+      resumeAfterManualSequence = true;
       return;
     }
 
