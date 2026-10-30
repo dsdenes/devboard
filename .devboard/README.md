@@ -1541,11 +1541,13 @@ fences inside the prompt survive intact.
 `agent-limit-pending` are empty (unlimited) or an integer from 1 through 100; an empty field never
 renders as `0`. One `agent-save-cadence` or `agent-save-limits` click validates all three fields
 and persists them in one atomic settings write; a running worker applies the whole change without
-restart. Auto Scout defaults to 1 minute and never starts a scan sooner than the interval after
-the previous scan start; Watchdog defaults to 10 minutes, starts its first cycle immediately on
-Start, and uses the interval as its evidence window; Design System defaults to 60 minutes and
-never starts a cycle sooner than that interval after the previous cycle start. `agent-last-run`
-and `agent-next-run` show both.
+restart. The worker merges a cadence command into the settings it reads at apply time and writes
+only `intervalMinutes`, `maxPerHour`, and `maxPending`, so a save made after its last read keeps
+the allowlist and the per-cycle cap. Auto Scout defaults to 1 minute and never starts a scan
+sooner than the interval after the previous scan start; Watchdog defaults to 10 minutes, starts
+its first cycle immediately on Start, and uses the interval as its evidence window; Design
+System defaults to 60 minutes and never starts a cycle sooner than that interval after the
+previous cycle start. `agent-last-run` and `agent-next-run` show both.
 
 Auto Scout and Design System default to 10 per rolling hour and 5 open; Watchdog defaults to both
 empty. The persisted values survive reload and restart and apply to a running worker. Auto Scout
@@ -2127,11 +2129,14 @@ non-interactive: no `question` tool, no confirmation, no interactive editor, no 
 fetches the canonical integration line, integrates concurrent changes, resolves every conflict
 itself, reruns every check the integration invalidates, and publishes directly to that line with
 bounded retry when a push is rejected; it never creates a pull request or merge request and never
-force-pushes. It closes the issue only after verifying the pushed revision is on the canonical
-line and the required checks pass, and comments on that issue with the revision and the
-verification evidence. A proven duplicate, invalid, or already-fixed issue is closed with evidence
-and without committing unrelated work. A successful agent removes only the worktree and branch it
-created; a failed or blocked agent leaves its worktree in place and reports its path.
+force-pushes. It proves the push once, as the last step, with a single completion gate: the
+`git ls-remote <remote> refs/heads/main` tip must equal `git rev-parse HEAD`, the gate exits
+nonzero and prints both commits when they differ, and it forbids chained per-commit
+`git merge-base --is-ancestor` probes. It closes the issue only after that gate passes and the
+required checks pass, and comments on that issue with the revision and the verification evidence.
+A proven duplicate, invalid, or already-fixed issue is closed with evidence and without committing
+unrelated work. A successful agent removes only the worktree and branch it created; a failed or
+blocked agent leaves its worktree in place and reports its path.
 
 The `goal` label keeps its goal-mode implementation contract: every goal-labeled issue runs
 `/implement-goal-issue <number>` concurrently with the rest. The command follows the origin's
