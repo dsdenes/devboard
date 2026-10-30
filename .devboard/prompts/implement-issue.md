@@ -88,6 +88,16 @@ the prerequisite in another agent's place.
 - After a `Found N occurrences` error, re-read the file and widen the anchor at the reported
   line. Never retry the same `old_string`.
 
+## Shell calls
+
+- Never emit a bare `true`, a `cd <repo> && true` prefix, or an `&& true`/`; true` suffix. Each call
+  must answer the question it was made for, and its output must be read; an exit-status placeholder
+  is not a diagnostic.
+- `|| true` is permitted only where an absent match is the expected result, such as a `grep` or `ls`
+  probe whose empty output you then read; never use it to hide a failure whose exit status matters.
+- Keep a worktree, branch, stash, or remote-tip probe in one command and accept its nonzero exit as
+  the answer. Do not pad it with a guard tail.
+
 ## Contract
 
 - Change only that issue's implementation, tests, and documentation. Follow the repository's
