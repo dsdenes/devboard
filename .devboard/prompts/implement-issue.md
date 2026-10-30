@@ -183,15 +183,21 @@ fi
 git status --short --branch
 ```
 
-Equal tips prove the landing commit is the canonical tip. The gate prints both commits and exits
-nonzero when they differ, so a difference is a failed push: fetch the new tip, rebase the task
-branch onto `origin/main` inside the worktree, rerun the invalidated checks, and push again. Never
-use `git log` or a `head`/`tail`-trimmed merge output as the push proof. Run the block once per
+Equal tips prove the landing commit is the canonical tip, and `git status --short --branch` must
+report no commits ahead of or behind the upstream. The gate prints both commits and exits nonzero
+when they differ, so a difference is a failed push: fetch the new tip, rebase the task branch onto
+`origin/main` inside the worktree, rerun the invalidated checks, and push again. Never use
+`git log` or a `head`/`tail`-trimmed merge output as the push proof. Run the block once per
 verification point and never repeat it to reconfirm output it already printed; it is the only
 post-push readback, and this prompt excludes any other `git ls-remote`, `git log`, and a second
-`git status` readback. Never chain per-commit `git merge-base --is-ancestor <sha> origin/main`
-probes, and never re-verify a commit already proven to be the remote tip; if an older commit
-genuinely needs checking, run exactly one such probe and report its exit status.
+`git status` readback.
+
+The block's `git merge-base --is-ancestor HEAD origin/main` is the task's only ancestry check, run
+after its `git fetch origin main`. Read its exit status as the answer: 0 means the commit is
+contained in `origin/main`, 1 means it is missing, and any other status means the command itself
+failed and must be reported. Never wrap it in a loop over candidate commits or SHAs, never repeat
+it for a second ref or a commit already proven to be the remote tip, and run no separate ancestry
+probe while preparing, landing, or publishing.
 
 Never chain these ref probes with `&&`: when a ref is absent the chain stops at the failing probe
 and hides the rest, and a nonzero exit from the block is evidence to read, not a reason to rerun
