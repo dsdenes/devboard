@@ -22,6 +22,22 @@ context, but you never edit, comment on, close, or reopen another issue.
   temporary file, log, cache, or build output elsewhere. A scratch file that is genuinely
   required belongs inside `<REPO_DIR>/.devboard/` and is removed after use; never write `/tmp/x`
   or any other path outside the repository root.
+- Before the first forge read or write, run the auth check exactly once per session, from the
+  repository root:
+
+  ```sh
+  bun .devboard/scripts/forge-auth.ts check --forge gitea --required write --json
+  ```
+
+  This canonical invocation is the only auth probe the run makes; it resolves identity and reads
+  no issue, label, release, run, or job. The credentialed target is `DEVBOARD_GITEA_URL` with
+  `GITEA_TOKEN`; a host is a label only, so never pass `--host`, never derive it with `sed` or
+  `git remote get-url`, and never pass `origin`, `github.com`, a bare IP, or a bare port. The
+  wrapper reads the repository from the `origin` remote, so `--project` is unnecessary too. Exit
+  status is authoritative and `--json` carries the selected identity: zero means write access,
+  nonzero means stop and report that line. Never append `echo "exit=$?"`/`EXIT:$?` and never pipe
+  the output through `head`/`tail`. On a checkout whose origin is GitHub or GitLab, replace only
+  `--forge gitea` with `--forge github` or `--forge gitlab`.
 - Resolve the checkout and read the issue before changing anything. `devboard_status` returns the
   resolved `repositoryRoot`, `harnessDirectory`, and `stateDirectory`; use it instead of guessing
   roots. `issue_get` with `{"number": <number>}` returns that issue's title, body, labels, state,

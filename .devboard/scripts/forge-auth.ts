@@ -18,14 +18,16 @@ import {
   type Forge,
   type RequiredAccess,
 } from "../lib/forge-auth.ts";
+import { configuredGiteaUrl, parseForgeRemote } from "../lib/forge.ts";
 
 const USAGE = `Usage:
-  forge-auth check --host <host> --project <owner/repo> [options]
-  forge-auth exec  --host <host> --project <owner/repo> [options] -- <gh|glab> <args...>
+  forge-auth check [--host <host>] [--project <owner/repo>] [options]
+  forge-auth exec  [--host <host>] [--project <owner/repo>] [options] -- <gh|glab> <args...>
 
 Options:
-  --host <host>        forge hostname, e.g. github.com
-  --project <path>     repository path, e.g. owner/repo or group/sub/project
+  --host <host>        forge hostname, e.g. github.com; defaults to the Gitea URL's
+                       host for --forge gitea, otherwise the origin remote's host
+  --project <path>     repository path; defaults to the origin remote's path
   --forge <name>       github, gitlab, or gitea; inferred from the host when omitted
   --required <access>  read or write; default read
   --cwd <path>         working directory; default the current directory
@@ -54,6 +56,43 @@ interface Parsed {
 function fail(message: string, status = 2): never {
   process.stderr.write(`forge-auth: ${message}\n\n${USAGE}`);
   process.exit(status);
+}
+
+interface OriginTarget {
+  host: string;
+  project: string;
+}
+
+/** The origin remote's forge target, for callers that omit --host or --project. */
+function originTarget(cwd: string): OriginTarget | undefined {
+  let remote: string;
+  try {
+    const result = Bun.spawnSync({
+      cmd: ["git", "remote", "get-url", "origin"],
+      cwd,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    if (result.exitCode !== 0) return undefined;
+    remote = result.stdout.toString().trim();
+  } catch {
+    return undefined;
+  }
+  const parsed = parseForgeRemote(remote, process.env);
+  if (parsed === undefined) return undefined;
+  return { host: parsed.host, project: parsed.project };
+}
+
+/** The host label of the configured Gitea HTTP origin, if any. */
+function configuredGiteaHost(): string | undefined {
+  const url = configuredGiteaUrl(process.env);
+  if (url === undefined) return undefined;
+  try {
+    return new URL(url).host;
+  } catch {
+    return undefined;
+  }
 }
 
 function parse(args: string[]): Parsed {
@@ -130,8 +169,18 @@ function parse(args: string[]): Parsed {
     }
   }
 
-  if (host === undefined || host.trim().length === 0) fail("--host is required");
-  if (project === undefined || project.trim().length === 0) fail("--project is required");
+  const origin =
+    host === undefined || project === undefined ? originTarget(cwd) : undefined;
+  const inferredHost =
+    forge === "gitea" ? configuredGiteaHost() ?? origin?.host : origin?.host;
+  if (host === undefined || host.trim().length === 0) host = inferredHost;
+  if (project === undefined || project.trim().length === 0) project = origin?.project;
+  if (host === undefined || host.trim().length === 0) {
+    fail("--host is required when neither DEVBOARD_GITEA_URL nor the origin remote names one");
+  }
+  if (project === undefined || project.trim().length === 0) {
+    fail("--project is required when the origin remote does not name a repository");
+  }
   if (action === "exec" && command.length === 0) {
     fail("exec requires a command after --");
   }

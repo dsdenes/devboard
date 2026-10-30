@@ -2136,11 +2136,16 @@ missing, non-numeric, or multi-token argument before changing anything. It fetch
 one issue and never fetches, surveys, or builds a dependency graph for the rest of the backlog.
 It creates and works in one worktree under `<REPO_DIR>/.worktree/` named for the issue, never in
 the canonical checkout and never in another agent's worktree, and writes nothing outside
-`<REPO_DIR>`. It changes only that issue's implementation, tests, and documentation; it may read
-other issues and code but never edits, comments on, closes, or reopens another issue. When the
-issue declares an open prerequisite (`depends on`, `blocked by`, or a task-list issue reference),
-it writes `blocked: #<prerequisite>` as the first stderr line, exits nonzero, leaves the issue open
-and unhandled, and never implements the prerequisite in another agent's place. It is
+`<REPO_DIR>`. Before the first tracker read or write it runs one canonical auth check,
+`bun .devboard/scripts/forge-auth.ts check --forge gitea --required write --json`, from the
+repository root: the wrapper takes the target from `DEVBOARD_GITEA_URL`, `GITEA_TOKEN`, and the
+`origin` remote, so no host or project is passed, the exit status and JSON are read directly, and
+no other auth probe runs in the session. It changes only that issue's implementation, tests, and
+documentation; it may read other issues and code but never edits, comments on, closes, or reopens
+another issue. When the issue declares an open prerequisite (`depends on`, `blocked by`, or a
+task-list issue reference), it writes `blocked: #<prerequisite>` as the first stderr line, exits
+nonzero, leaves the issue open and unhandled, and never implements the prerequisite in another
+agent's place. It is
 non-interactive: no `question` tool, no confirmation, no interactive editor, no login prompt. It
 fetches the canonical integration line, integrates concurrent changes, resolves every conflict
 itself, reruns every check the integration invalidates, and publishes directly to that line with
