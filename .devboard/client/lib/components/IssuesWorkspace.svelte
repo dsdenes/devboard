@@ -361,7 +361,7 @@
         </span>
         {#if asking > 0}
           <span class="badge" data-tone="warning" data-testid="issues-agents-asking">
-            {asking} {asking === 1 ? "needs an answer" : "need an answer"}
+            {asking} {asking === 1 ? "needs an answer" : "need answers"}
           </span>
         {/if}
       {/snippet}

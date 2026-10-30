@@ -2285,7 +2285,7 @@ The tab is `{ id: "agents", kind: "agents", resourceId: "agents", title: "Agents
 restored after a reload. The page renders `data-testid="issues-agents-page"` with a page header
 `data-testid="issues-agents-header"` that carries the repository, the running count
 `data-testid="issues-agents-count"`, and, when any agent is blocked, a warning badge
-`data-testid="issues-agents-asking"` naming how many need an answer. With no active agent it
+`data-testid="issues-agents-asking"` with the aggregate `<n> need answers`. With no active agent it
 renders `data-testid="issues-agents-empty"` and an `Open Overview` control
 `data-testid="issues-agents-overview"` instead of the grid.
 

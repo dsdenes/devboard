@@ -6803,7 +6803,7 @@ try {
     eyebrow: document.querySelector('[data-testid="issues-agents-header"] .page-header__eyebrow')?.textContent?.trim() ?? "",
   }))()`);
   check(
-    agentsHeader.count === "3 running" && agentsHeader.asking === "3 need an answer",
+    agentsHeader.count === "3 running" && agentsHeader.asking === "3 need answers",
     "the Agents header does not count the fleet and its questions",
     agentsHeader,
   );
@@ -6980,7 +6980,7 @@ try {
   check(
     await page.eval<string>(
       `document.querySelector('[data-testid="issues-agents-asking"]')?.textContent?.trim() ?? ""`,
-    ) === "2 need an answer",
+    ) === "2 need answers",
     "the Agents header did not follow the remaining questions",
   );
   check(
