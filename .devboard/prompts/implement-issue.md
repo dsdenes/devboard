@@ -84,9 +84,40 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
   or `bun test` in one shell line. It prints one summary line on success and the full error on
   failure; truncation hides lockfile errors. Run it once, check its exit status, then run the build,
   typecheck, and tests as separate commands.
-- `verification_run` runs an allowlisted check from the canonical `.devboard/`, so it is for the
-  integration checkout after landing. In the worktree, run the same check from
-  `<worktree>/.devboard/` so the changed revision is what executes.
+- `verification_run` runs an allowlisted check from the `.devboard/` that `devboard_status` reports
+  as `harnessDirectory`. Use it for `bun run verify:interface`, as *Interface verification* below
+  requires. When it resolves the canonical package root while you work in a worktree, run that
+  same check from `<worktree>/.devboard/` so the changed revision is what executes.
+
+## Interface verification
+
+`bun run verify:interface` builds the client, starts a source dashboard, drives headless Chrome,
+and throws the whole assertion message plus its JSON evidence object on the first failure. A lost
+assertion therefore costs a full rerun, so interface verification has its own rule.
+
+Run it through `verification_run` with `{"check": "verify:interface"}`. The tool executes the
+`verify:interface` script from `.devboard/package.json` with the resolved `harnessDirectory` as its
+working directory, kills the check's whole process group at its 900-second bound, and returns
+`check`, `exitCode`, `output`, and `truncated` in one result.
+
+- Read `repositoryRoot` and `harnessDirectory` from `devboard_status` first. When
+  `harnessDirectory` is the `.devboard/` you changed, the tool verifies the changed revision and is
+  the only way to run the check.
+- When `devboard_status` reports the canonical `<REPO_DIR>/.devboard` while you work in a worktree,
+  `verification_run` would verify the pre-change revision. Run `bun run verify:interface` once, in
+  the foreground, from `<worktree>/.devboard` instead.
+- Never background `verify:interface`, never kill or restart it, and never pipe it through `tail`,
+  `head`, `grep`, or another consumer. A backgrounded job ends the turn without its verdict, a
+  killed job loses the assertion, and a pipe keeps only the lines the filter matched.
+- Never redirect the check into a log (`> .tmp/verify-interface.log 2>&1`, `2>&1 | tee`) and never
+  take a verdict from a log an earlier run wrote. The verdict belongs to the turn that started it.
+- `truncated: true` means the 16 KiB capture bound cut the run and `output` holds only its
+  beginning: `exitCode` is still the verdict, and a truncated result is never a pass. A result
+  ending `[timed out after 900000 ms]` is a failed verification, not a reason to background the
+  check.
+- On failure, read the complete `verify:interface: <assertion>: <evidence>` line before editing:
+  the assertion names the control, and the evidence object carries the measured and expected
+  values it compared. A partial read hides which side mismatched.
 
 ## Prerequisites
 
