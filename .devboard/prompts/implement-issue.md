@@ -56,14 +56,19 @@ context, but you never edit, comment on, close, or reopen another issue.
 ## Dependencies
 
 The package root that owns the lockfile is `.devboard/`: `<worktree>/.devboard` inside your worktree
-and `<REPO_DIR>/.devboard` in the canonical checkout. The repository root has no `package.json`, so
-running `bun install` there fails with "Bun could not find a package.json file to install from".
+and `<REPO_DIR>/.devboard` in the canonical checkout. Run every harness `bun`/`bunx` command with
+that package root as the working directory — `cd .devboard && bun install --frozen-lockfile`,
+`cd .devboard && bun run build`, `cd .devboard && bun test`, and
+`cd .devboard && bunx tsc --noEmit`. The repository root has no `package.json`, so a root-level
+`bun install --frozen-lockfile` exits nonzero with "Bun could not find a package.json file to
+install from", and a root-level `bun run build` fails with `error: Script not found "build"`.
 
-- Run every install as `cd .devboard && bun install --frozen-lockfile`, from the repo root or, in a
-  worktree, from the worktree root. Never run `bun install` from the repository root itself.
-- Skip the install when that package root already has `node_modules` and `bun.lock` has not changed
-  since that install. Run it at most once per session: installing is a precondition, never a
-  verification step, and it never repeats before each build, typecheck, or test.
+- Run the install only from the package root: `cd .devboard && bun install --frozen-lockfile` in the
+  repo root, or the same command from the worktree root. Never run `bun install` from the repository
+  root itself.
+- Skip the install when the package root (`.devboard/`) already has `node_modules` and `bun.lock`
+  has not changed since that install. Run it at most once per session: installing is a precondition,
+  never a verification step, and it never repeats before each build, typecheck, or test.
 - Never pipe the install into `tail` and never chain it with `bun run build`, `bunx tsc --noEmit`,
   or `bun test` in one shell line. It prints one summary line on success and the full error on
   failure; truncation hides lockfile errors. Run it once, check its exit status, then run the build,
@@ -249,8 +254,9 @@ cd .devboard && bun run publish --wait-timeout 1800 \
 - When the log reports `the release workflow concluded failure`, publish is never re-invoked as a
   retry. Open that workflow run for the named commit, read its failing step, and fix the cause in a
   new commit; when the run's log is not reachable through the exposed tools, reproduce the
-  workflow's own steps locally (`bun install --frozen-lockfile`, `bun run build`, `bun test`,
-  `bunx tsc --noEmit`) and fix the step that fails. Land the fix and report the failing step, the
+  workflow's own steps locally from the package root (`bun install --frozen-lockfile`,
+  `bun run build`, `bun test`, `bunx tsc --noEmit`, each with `.devboard` as the working directory)
+  and fix the step that fails. Land the fix and report the failing step, the
   fix commit, and the recorded exit code. Publishing the fixed revision belongs to the next task,
   never to this one.
 - Never re-run publish in the same session to see its output, to confirm success, or with a
