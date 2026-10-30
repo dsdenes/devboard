@@ -29,7 +29,7 @@ import {
   type AcpQuestion,
   type AcpQuestionOption,
 } from "./acp";
-import { AskController } from "./ask";
+import { ASK_TURN_TIMEOUT_MS, AskController } from "./ask";
 import {
   FeedbackDeliveryError,
   FeedbackRequestError,
@@ -150,6 +150,8 @@ export interface AppOptions {
   repoDir?: string;
   goalFile?: string;
   agentCommand?: string;
+  /** Wall-clock bound for one Ask turn; defaults to 120 seconds. */
+  askTurnTimeoutMs?: number;
   tracker?: EpicLookup;
   trackerSettle?: Partial<TrackerSettle>;
   /** Wall-clock bound for one tracker read; defaults to 30 seconds. */
@@ -2027,6 +2029,7 @@ export function createApp(options: AppOptions) {
     command: agentCommand,
     cwd: repoDir,
     environment: peerEnvironment,
+    turnTimeoutMs: Math.max(1, options.askTurnTimeoutMs ?? ASK_TURN_TIMEOUT_MS),
   });
   const tracker = options.tracker ?? findOpenEpics;
   const trackerSettle: TrackerSettle = {

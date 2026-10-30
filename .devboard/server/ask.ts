@@ -15,6 +15,12 @@ import { nextActivity, type ActivityStream } from "./acp";
 
 const MAX_CONVERSATION_ID = 200;
 const MAX_QUESTION = 4000;
+/**
+ * Wall-clock bound for one conversation turn. A peer that accepts a prompt and
+ * stops producing output, or a provider selection that never resolves, must not
+ * hold the conversation busy for the rest of the page's life.
+ */
+export const ASK_TURN_TIMEOUT_MS = 120_000;
 /** Bounds shared with the client's capture; a larger value is refused. */
 const ASK_CONTEXT_LIMITS = {
   route: 2000,
@@ -111,6 +117,11 @@ function contextLines(context: AskContext): string[] {
   return (Object.keys(ASK_CONTEXT_LIMITS) as AskContextField[]).map(
     (name) => `${name}: ${context[name]}`,
   );
+}
+
+/** The deadline in the ask error; milliseconds below one second stay exact. */
+function timeoutLabel(timeoutMs: number): string {
+  return timeoutMs % 1000 === 0 ? `${timeoutMs / 1000} seconds` : `${timeoutMs}ms`;
 }
 
 /** The prompt's invariant instruction block, repeated on every turn. */
@@ -433,6 +444,8 @@ export interface AskControllerOptions {
   cwd: string;
   /** Resolves the selected provider's environment; throws when none is eligible. */
   environment: () => Promise<Record<string, string | undefined>>;
+  /** Wall-clock bound for one turn; defaults to `ASK_TURN_TIMEOUT_MS`. */
+  turnTimeoutMs?: number;
 }
 
 /**
@@ -442,9 +455,11 @@ export interface AskControllerOptions {
 export class AskController {
   readonly #options: AskControllerOptions;
   readonly #conversations = new Map<string, Conversation>();
+  readonly #turnTimeoutMs: number;
 
   constructor(options: AskControllerOptions) {
     this.#options = options;
+    this.#turnTimeoutMs = Math.max(1, options.turnTimeoutMs ?? ASK_TURN_TIMEOUT_MS);
   }
 
   async ask(socket: AskSocket, message: { conversationId?: unknown; question?: unknown; context?: unknown }): Promise<void> {
@@ -496,7 +511,31 @@ export class AskController {
     conversation.transcript.push({ role: "developer", text: request.question });
 
     const live = (): boolean => !conversation.closed && conversation.turn === turn;
+    let deadline: Timer | undefined;
+    const clearDeadline = (): void => {
+      if (deadline === undefined) return;
+      clearTimeout(deadline);
+      deadline = undefined;
+    };
+    // The turn starts with the provider selection, so a peer that accepts the
+    // prompt and stops producing output cannot hold the conversation busy: the
+    // deadline invalidates the turn, drops the peer, and reports the timeout.
+    deadline = setTimeout(() => {
+      deadline = undefined;
+      if (!live()) return;
+      conversation.turn += 1;
+      conversation.busy = false;
+      conversation.answer = "";
+      conversation.peer?.close();
+      conversation.peer = undefined;
+      this.#send(conversation.socket, {
+        type: "askError",
+        conversationId: conversation.id,
+        message: `The ask agent did not answer within ${timeoutLabel(this.#turnTimeoutMs)}.`,
+      });
+    }, this.#turnTimeoutMs);
     const fail = (error: unknown): void => {
+      clearDeadline();
       if (!live()) return;
       conversation.busy = false;
       // A peer that never opened a session cannot answer a follow-up, yet its
@@ -518,17 +557,22 @@ export class AskController {
     try {
       if (replacement) {
         const env = await this.#options.environment();
-        // A close or disconnect during provider selection discards the
-        // conversation. Constructing now would leave a peer no callback can
+        // A close, disconnect, or deadline during provider selection discards
+        // the conversation. Constructing now would leave a peer no callback can
         // reach, so this turn ends without a process.
-        if (!live()) return;
+        if (!live()) {
+          clearDeadline();
+          return;
+        }
         const created = new AskPeer({
           command: this.#options.command,
           cwd: this.#options.cwd,
           env,
           permissionPolicy: "deny",
           onText: (text) => {
-            if (conversation.closed || !conversation.busy) return;
+            // A late chunk of a replaced or timed-out peer belongs to no
+            // visible answer, even when a later ask made the conversation busy.
+            if (conversation.closed || conversation.peer !== created || !conversation.busy) return;
             conversation.answer += text;
             this.#send(conversation.socket, {
               type: "askChunk",
@@ -541,6 +585,7 @@ export class AskController {
         // between the guard and here must still end with no live peer.
         if (!live()) {
           created.close();
+          clearDeadline();
           return;
         }
         peer = created;
@@ -556,6 +601,7 @@ export class AskController {
     const turnPromise = replacement ? peer.run(prompt) : peer.prompt(prompt);
     void turnPromise.then(
       () => {
+        clearDeadline();
         if (!live()) return;
         conversation.busy = false;
         if (conversation.answer.trim().length > 0) {

@@ -180,6 +180,8 @@ const ask = process.argv.includes("--ask");
 const askDelayMs = Number(argument("ask-delay-ms") ?? 0);
 const askFail = process.argv.includes("--ask-fail");
 const askExit = process.argv.includes("--ask-exit");
+/** Accepts the first Ask prompt and never answers it; later peers answer. */
+const askStall = process.argv.includes("--ask-stall");
 /** Refuses the ACP initialize of the first Ask peer; later peers succeed. */
 const askRefuseInitialize = process.argv.includes("--ask-refuse-initialize");
 /** Answers the first session/new without a session id; later peers succeed. */
@@ -1652,6 +1654,12 @@ async function promptTurn(params: unknown) {
     const question = /(?:^|\n)Question: ([^\n]*)/.exec(text)?.[1] ?? "";
     log(`ask-prompt ${askTurns} ${question}`);
     log(`ask-text ${askTurns} ${JSON.stringify(text)}`);
+    if (askStall && firstAskHandshake("stall")) {
+      log("ask-stall");
+      // Accept the prompt and never settle: the client's deadline must end the
+      // turn and kill this process.
+      await new Promise(() => {});
+    }
     await probePermission();
     // Thoughts and tool activity precede the answer; the panel must drop them.
     write({
