@@ -831,14 +831,14 @@
     background: var(--surface-raised);
     border: 1px solid var(--border-strong);
     border-left: 3px solid var(--success);
-    border-radius: 6px;
+    border-radius: 4px;
     bottom: 40px;
     color: var(--text);
     display: flex;
     gap: 8px;
     left: 50%;
     max-width: min(460px, calc(100vw - 32px));
-    padding: 10px 12px;
+    padding: 6px 8px;
     position: fixed;
     transform: translateX(-50%);
     z-index: 2147483647;

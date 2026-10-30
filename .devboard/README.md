@@ -1542,11 +1542,13 @@ fences inside the prompt survive intact.
 `agent-limit-pending` are empty (unlimited) or an integer from 1 through 100; an empty field never
 renders as `0`. One `agent-save-cadence` or `agent-save-limits` click validates all three fields
 and persists them in one atomic settings write; a running worker applies the whole change without
-restart. Auto Scout defaults to 1 minute and never starts a scan sooner than the interval after
-the previous scan start; Watchdog defaults to 10 minutes, starts its first cycle immediately on
-Start, and uses the interval as its evidence window; Design System defaults to 60 minutes and
-never starts a cycle sooner than that interval after the previous cycle start. `agent-last-run`
-and `agent-next-run` show both.
+restart. The worker merges a cadence command into the settings it reads at apply time and writes
+only `intervalMinutes`, `maxPerHour`, and `maxPending`, so a save made after its last read keeps
+the allowlist and the per-cycle cap. Auto Scout defaults to 1 minute and never starts a scan
+sooner than the interval after the previous scan start; Watchdog defaults to 10 minutes, starts
+its first cycle immediately on Start, and uses the interval as its evidence window; Design
+System defaults to 60 minutes and never starts a cycle sooner than that interval after the
+previous cycle start. `agent-last-run` and `agent-next-run` show both.
 
 Auto Scout and Design System default to 10 per rolling hour and 5 open; Watchdog defaults to both
 empty. The persisted values survive reload and restart and apply to a running worker. Auto Scout
