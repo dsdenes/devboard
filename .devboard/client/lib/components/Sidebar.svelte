@@ -605,6 +605,34 @@
         {/each}
       </section>
     {:else if layout.mode === "discover"}
+      <section class="sidebar-group" aria-label="Discover sections">
+        {#each SECTION_TABS as tab (tab.id)}
+          <button
+            type="button"
+            class="sidebar-item"
+            aria-current={isActive(tab.id)}
+            role="tab"
+            aria-selected={isActive(tab.id)}
+            data-testid="discover-tab"
+            data-tab={tab.id}
+            data-command={`discover.tab.${tab.id}`}
+            onclick={() => open("discover", tab.id, tab.id, tab.id, tab.label)}
+          >
+            <span class="sidebar-item__label">{tab.label}</span>
+            {#if tab.id === "overview" && discover.active}
+              <span class="badge" data-tone={statusTone("running")} data-testid="discover-running">
+                running
+              </span>
+            {/if}
+            {#if tab.id === "glossary"}
+              <span class="sidebar-item__meta">
+                {termCount} {termCount === 1 ? "term" : "terms"}
+              </span>
+            {/if}
+          </button>
+        {/each}
+      </section>
+
       <section
         class="sidebar-group"
         aria-label="Discovery"
@@ -649,34 +677,6 @@
         >
           <span class="sidebar-item__label">Run all</span>
         </button>
-      </section>
-
-      <section class="sidebar-group" aria-label="Discover sections">
-        {#each SECTION_TABS as tab (tab.id)}
-          <button
-            type="button"
-            class="sidebar-item"
-            aria-current={isActive(tab.id)}
-            role="tab"
-            aria-selected={isActive(tab.id)}
-            data-testid="discover-tab"
-            data-tab={tab.id}
-            data-command={`discover.tab.${tab.id}`}
-            onclick={() => open("discover", tab.id, tab.id, tab.id, tab.label)}
-          >
-            <span class="sidebar-item__label">{tab.label}</span>
-            {#if tab.id === "overview" && discover.active}
-              <span class="badge" data-tone={statusTone("running")} data-testid="discover-running">
-                running
-              </span>
-            {/if}
-            {#if tab.id === "glossary"}
-              <span class="sidebar-item__meta">
-                {termCount} {termCount === 1 ? "term" : "terms"}
-              </span>
-            {/if}
-          </button>
-        {/each}
       </section>
 
       {#if discover.hasArtifacts}
