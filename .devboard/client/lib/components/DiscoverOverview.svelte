@@ -730,12 +730,6 @@
                         {(testTotal ?? 0) === 1 ? "test" : "tests"}
                       </span>
                     </div>
-                    <div class="discover-stat">
-                      <span class="discover-stat__value">{tiers.length}</span>
-                      <span class="discover-stat__label">
-                        {tiers.length === 1 ? "level" : "levels"}
-                      </span>
-                    </div>
                   </div>
                   {#if discover.testCommand.length > 0}
                     <div class="discover-command-line" data-testid="discover-suite-command">

@@ -3935,11 +3935,9 @@ try {
     discoverChrome,
   );
   check(
-    discoverChrome.statLabels.length === 2 &&
-      discoverChrome.statLabels.every(
-        (label) => label === "test" || label === "tests" || label === "level" || label === "levels",
-      ),
-    "the testing summary does not list exactly the test and level totals",
+    discoverChrome.statLabels.length === 1 &&
+      (discoverChrome.statLabels[0] === "test" || discoverChrome.statLabels[0] === "tests"),
+    "the testing summary does not list exactly the test total",
     discoverChrome.statLabels,
   );
   check(

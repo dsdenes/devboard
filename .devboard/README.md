@@ -930,7 +930,7 @@ that no other recorded command aliases. A command the host manifest declares as 
 as its invocation — `npm test` for `scripts.test`, `npm run <name>` for any other script — instead
 of the program the script expands to; the recorded program is the chip's tooltip. Every command,
 path, package, and boundary value uses the same inline code chip (`.code-chip`); no surface has a
-second inline-code presentation. Testing shows the test and level totals and the whole-suite
+second inline-code presentation. Testing shows the test total and the whole-suite
 command (`data-testid="discover-suite-command"`), then a
 `Level`/`Tests`/`Command` table (`data-testid="discover-pyramid"`).
 `Command` is the narrowest declared invocation for that level. Only a level that carries a test is
