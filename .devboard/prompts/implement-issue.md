@@ -98,7 +98,8 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
 - `verification_run` runs an allowlisted check from the `.devboard/` that `devboard_status` reports
   as `harnessDirectory`. Use it for `bun run verify:interface`, as *Interface verification* below
   requires. When it resolves the canonical package root while you work in a worktree, run that
-  same check from `<worktree>/.devboard/` so the changed revision is what executes.
+  same check from `<worktree>/.devboard/` so the changed revision is what executes; that is the
+  only allowed shell invocation of the check.
 
 ## Interface verification
 
@@ -113,10 +114,12 @@ working directory, kills the check's whole process group at its 900-second bound
 
 - Read `repositoryRoot` and `harnessDirectory` from `devboard_status` first. When
   `harnessDirectory` is the `.devboard/` you changed, the tool verifies the changed revision and is
-  the only way to run the check.
-- When `devboard_status` reports the canonical `<REPO_DIR>/.devboard` while you work in a worktree,
-  `verification_run` would verify the pre-change revision. Run `bun run verify:interface` once, in
-  the foreground, from `<worktree>/.devboard` instead.
+  the only way to run the check: never invoke `bun run verify:interface` from a shell in that case,
+  because the tool result is the whole verdict and the shell form only repeats the same run.
+- Only when `devboard_status` reports the canonical `<REPO_DIR>/.devboard` while you work in a
+  worktree does the tool verify the pre-change revision. Then run `bun run verify:interface` once,
+  in the foreground, from `<worktree>/.devboard`, and say in the final response that the tool's
+  resolved `harnessDirectory` was the canonical root. Every other direct invocation is forbidden.
 - Never background `verify:interface`, never kill or restart it, and never pipe it through `tail`,
   `head`, `grep`, or another consumer. A backgrounded job ends the turn without its verdict, a
   killed job loses the assertion, and a pipe keeps only the lines the filter matched.
@@ -131,6 +134,10 @@ working directory, kills the check's whole process group at its 900-second bound
   the assertion names the control, and the evidence object carries the measured and expected
   values it compared. A partial read hides which side mismatched. Report that exact line and the
   result's `exitCode` in the final response instead of re-running the check or paraphrasing it.
+- When `verification_run` itself errors, report the tool's error text verbatim together with the
+  `exitCode` and `output` it returned, and never answer it with `bun run verify:interface` from a
+  shell, a retry in another directory, or a redirected log. A tool error is evidence to report,
+  not a reason to rerun the same check.
 
 ## Prerequisites
 
