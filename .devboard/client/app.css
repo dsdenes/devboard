@@ -2225,6 +2225,10 @@ a.code-chip--link:focus-visible {
   min-width: 0;
 }
 
+.discover-boundary-systems .discover-chips {
+  margin-top: 0;
+}
+
 .discover-contexts {
   display: flex;
   flex-direction: column;

@@ -786,9 +786,10 @@ bar and the status bar report it. While a run exists, the active agent's card ca
 above its activity: a status dot, the agent label and `run in progress`, the age, the latest
 activity line, and Stop. A queued question region follows on that card while a question waits.
 The sheet follows: Platform, Delivery, and Stack in a bounded rail on the left, Commands and
-Testing in the main column on the right, and Bounded contexts below them. The manual-testing strip
-is the last region of the page, so a source checkout never pushes it above the project identity. An
-error, an interrupted-run notice, and a stop notice render above the page in one notice stack.
+Testing in the main column on the right, and Bounded contexts with External boundaries below them.
+The manual-testing strip is the last region of the page, so a source checkout never pushes it above
+the project identity. An error, an interrupted-run notice, and a stop notice render above the page
+in one notice stack.
 
 The Glossary row is a plain section link: it has no disclosure control and no nested submenu, so
 individual terms are never repeated as sidebar menu items. A term opens from its row on the
@@ -895,8 +896,8 @@ Overview page is a project sheet, not a card grid. A masthead
 the crawl recorded one, and the discovery date. The commit, the dirty flag, and the staleness flag
 stay in the sheet and the state payload but render no header badge. Below the masthead the sheet is
 one bounded two-column spine:
-`Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates, and
-Bounded contexts in the main column on the right. Every section carries
+`Platform`, `Delivery`, and `Stack` in a left rail, and Commands, Testing, Quality gates,
+Bounded contexts, and External boundaries in the main column on the right. Every section carries
 `data-testid="discover-card"` and `data-field`; the commands, testing, and quality-gate panels are
 raised surfaces and the remaining sections are flat, separated by hairlines. Below 1240px viewport
 the columns collapse into one in reading order.
@@ -940,17 +941,20 @@ checks` table (`data-testid="discover-quality-gates"`): one row per required CI 
 one short line saying what it verifies. A gate recorded without a check states `No check was
 recorded.`, and the gates are not repeated among the Delivery facts. Runtime, deployment, CI, and
 branching use compact `dt`/`dd` facts whose list values are comma-separated.
-Architecture renders under the heading `Bounded contexts` as context rows showing the name,
-responsibility, and entry points, followed by external-boundary and shared-kernel chips and a
-rendered Mermaid dependency graph. The repository path of a bounded context is not rendered. The
-graph draws one node per bounded context and one arrow for every `architecture.dependencies` edge,
-pointing from the context that depends to the context it reaches; it is drawn with `flowchart LR`
+Architecture renders as two cards. `Bounded contexts` shows context rows with the name,
+responsibility, and entry points, followed by shared-kernel chips, the dependency direction, and a
+rendered Mermaid dependency graph. `External boundaries` is its own card
+(`data-field="external-boundaries"`) carrying the external-system chips; a leaf recorded `unknown`
+states its reason there, and a missing leaf says no external boundary was recorded. The repository
+path of a bounded context is not rendered. The graph draws one node per bounded context and one
+arrow for every `architecture.dependencies` edge, pointing from the context that depends to the
+context it reaches; it is drawn with `flowchart LR`
 through Mermaid at render time, and a sheet without recorded edges draws no graph.
 External boundaries name only external systems — a remote API or service, a message broker, a
 database, or an identity provider the host integrates with across its own process and artifact.
 Language and runtime built-ins describe internal architecture, so `node:child_process`,
 `node:worker_threads`, and other concurrency primitives are never boundaries; a host that integrates
-with no external system shows `None detected.` in that block instead of an invented entry or
+with no external system shows `None detected.` in that card instead of an invented entry or
 `unknown`.
 `Stack` renders one full-width chip band after the two columns; a chip whose package is installed
 under `node_modules/` becomes a link to the repository its manifest declares, and every other chip

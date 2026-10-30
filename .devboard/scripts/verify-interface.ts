@@ -3696,7 +3696,7 @@ try {
       contextRoles: [...document.querySelectorAll('#workspace-discover .discover-boundary dt')]
         .map((term) => term.textContent.trim()),
       externalBoundaries: (() => {
-        const block = document.querySelector('#workspace-discover [data-field="architecture"] [data-role="externalBoundaries"] dd');
+        const block = document.querySelector('#workspace-discover [data-field="external-boundaries"] [data-role="externalBoundaries"]');
         return block === null ? null : block.textContent.replace(/\s+/g, " ").trim();
       })(),
       stackedSections: document.querySelectorAll('#workspace-discover [data-field="unknowns"], #workspace-discover [data-field="dependencyMap"]').length,

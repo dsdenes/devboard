@@ -40,9 +40,9 @@
     { id: "checks", header: "What it checks", accessorKey: "checks" },
   ];
   const QUALITY_GATE_WIDTHS = { gate: "220px" };
+  /** The architecture leaves that share the Bounded contexts card. */
   const BOUNDARY_GROUPS = [
     { key: "sharedKernels", label: "Shared kernels", kind: "chips" },
-    { key: "externalBoundaries", label: "External boundaries", kind: "chips" },
     { key: "dependencyDirection", label: "Dependency direction", kind: "sentence" },
   ] as const;
 
@@ -198,6 +198,14 @@
     }
     return rows;
   });
+  const externalBoundariesLeaf = $derived(
+    sectionLeaf(architectureSection, "externalBoundaries"),
+  );
+  const externalBoundaryValues = $derived(
+    externalBoundariesLeaf === undefined || externalBoundariesLeaf.confidence === "unknown"
+      ? []
+      : boundaryValues(externalBoundariesLeaf, "chips"),
+  );
   const unknownBoundaryGroups = $derived.by(() => {
     const labels: string[] = [];
     const reasons = new Set<string>();
@@ -851,6 +859,31 @@
                   Not observed: {unknownBoundaryGroups.labels.join(", ")}.
                   {unknownBoundaryGroups.reasons.join(" ")}
                 </p>
+              {/if}
+            </div>
+          </section>
+
+          <section
+            class="panel discover-card"
+            data-testid="discover-card"
+            data-field="external-boundaries"
+          >
+            <div class="panel__header">
+              <h2 class="panel__title">External boundaries</h2>
+            </div>
+            <div class="panel__body">
+              {#if externalBoundariesLeaf === undefined}
+                <p class="empty">No external boundary was recorded.</p>
+              {:else if externalBoundariesLeaf.confidence === "unknown"}
+                <p class="empty">{unknownText(externalBoundariesLeaf)}</p>
+              {:else}
+                <div
+                  class="discover-boundary-systems"
+                  data-role="externalBoundaries"
+                  data-testid="discover-external-boundaries"
+                >
+                  {@render plainChips(externalBoundaryValues)}
+                </div>
               {/if}
             </div>
           </section>
