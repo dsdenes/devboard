@@ -45,64 +45,51 @@ the prerequisite in another agent's place.
   no login prompt, and no waiting for an operator. Decide from the repository evidence.
 - Complete the work: no stubs, placeholders, disabled checks, or unfinished branches of behavior.
 - Verify the changed surface by running it, then run the checks the change could break.
-- Establish the canonical integration line (`main` unless the repository names another) with the
-  integration check below before integrating. Integrate concurrent changes, resolve every
-  conflict yourself, and rerun every check the integration invalidates.
-- Publish directly to that canonical integration line. Never create a pull request or merge
-  request, never force-push, and never rewrite published history.
-- When a push is rejected, fetch, integrate the new tip, resolve the conflicts, rerun the
-  invalidated checks, and push again, with bounded retry. Never bypass the rejection.
-- Close the issue only after the completion gate below passes and the required checks pass.
-  Comment on that same issue with the revision and the verification evidence.
+- Before landing, fetch the canonical integration line (`main` unless the repository names another)
+  and rebase the run's task branch onto `origin/main` inside the worktree when it has moved.
+  Resolve every conflict yourself and rerun every check the integration invalidates. The task
+  branch is unpublished until it lands, so rebasing it is safe.
+- Land through the one sequence below. Never create a pull request or merge request, never
+  force-push, and never rewrite published history.
+- When a push is rejected, fetch the new tip, rebase the task branch onto it inside the worktree,
+  rerun the invalidated checks, and repeat the landing sequence once per rejection. Never bypass
+  the rejection.
+- Close the issue only after the landing sequence below proves the push and the required checks
+  pass. Comment on that same issue with the revision and the verification evidence.
 - A proven duplicate, invalid, or already-fixed issue is closed with that evidence and without
   committing unrelated work.
 - On success, remove only the worktree and branch you created. On failure or block, leave your
   worktree in place and report its path.
 
-## Integration checks
+## Landing
 
-Verifying integration is one composite command, never a bare fetch. Run it once before the push
-and once after the push:
-
-```sh
-git fetch origin main --quiet &&
-git rev-parse --short HEAD origin/main &&
-git rev-list --left-right --count HEAD...origin/main &&
-git merge-base --is-ancestor <commit> origin/main
-```
-
-Read `git status --short --branch` once alongside the check. Fetch at most twice in a session and
-at most once per turn, and fetch again only after a push, merge, or rebase happened since the
-previous fetch. Untracked `.devboard/.issue-*.json` entries in `git status` are expected status
-noise: they never justify another fetch, a merge, or a commit.
-
-State integration only from a `git merge-base --is-ancestor` exit status or the
-`git ls-remote <remote> refs/heads/main` ref value. Never claim a commit is integrated from
-`git log --oneline origin/main` alone. Replace the last two terms of the composite command with
-`git ls-remote origin refs/heads/main` when the remote tip itself is the claim.
-
-## Completion gate
-
-The post-push integration check is the last ancestry check. Run it once, then prove the push once
-with `git ls-remote`, and run no other fetch or ancestry probe afterward. `git ls-remote <remote>
-refs/heads/main` must name `git rev-parse HEAD`; equal tips prove the integration commit landed,
-and ancestry follows. This gate prints both commits and exits nonzero when they differ:
+Commit in the worktree on the run's own task branch. Land it with this one sequence in the
+canonical checkout, on `main`:
 
 ```sh
-remote=origin
-local_commit=$(git rev-parse HEAD)
-remote_tip=$(git ls-remote "$remote" refs/heads/main | cut -f1)
-if [ "$local_commit" != "$remote_tip" ]; then
-  printf 'push not verified: local %s remote %s\n' "$local_commit" "$remote_tip" >&2
-  exit 1
-fi
+git merge --ff-only <task-branch>
+git push origin main
+git rev-parse HEAD
+git ls-remote origin refs/heads/main
 ```
 
-Replace `origin` and `main` when the repository names another canonical remote or branch. Use at
-most one `git merge-base --is-ancestor` per check, as the composite check above shows, and never
-re-verify a commit already proven to be the remote tip. If an older commit genuinely needs
-checking, run exactly one `git merge-base --is-ancestor <sha> origin/main` and report its exit
-status.
+`git ls-remote` must name the same commit as `git rev-parse HEAD`; equal tips prove the landing
+commit reached the canonical line, and ancestry follows. Do not use `git log`, `git status`, or
+`head`/`tail`-trimmed merge output as the push proof. The landing merge is fast-forward only:
+never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main` on `main`. If `main` moved
+before landing, fetch and rebase the task branch onto `origin/main` inside the worktree, rerun the
+invalidated checks, and repeat the sequence.
+
+After the proof, release from the integration checkout:
+
+```sh
+cd .devboard && bun run publish
+```
+
+Fetch at most once before landing and once after a rejected push. Untracked
+`.devboard/.issue-*.json` entries are expected status noise: they never justify another fetch,
+merge, or commit. Replace `origin` and `main` when the repository names another canonical remote
+or branch.
 
 ## Publish
 
