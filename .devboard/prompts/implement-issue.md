@@ -31,24 +31,24 @@ context, but you never edit, comment on, close, or reopen another issue.
 
   This is the only pre-write auth gate and the only auth invocation of the run. The canonical
   form infers the forge, host, project, and identity from the `origin` remote and
-  `DEVBOARD_GITEA_URL`, so never pass `--host`, `--project`, or `--url` on that call; never
-  derive those values with `sed`, `git remote get-url`, or any other shell substitution. Pass
-  the forge explicitly only when the `origin` remote cannot name it and the target is the
-  configured Gitea:
+  `DEVBOARD_GITEA_URL`, so this check has exactly one spelling: the `--host`, `--project`,
+  `--forge`, and `--url` overrides are forbidden on it, and their values must never be derived
+  with `sed`, `git remote get-url`, or any other shell substitution. When the `origin` remote
+  cannot name the forge, stop and report that as the blocker instead of guessing a `--forge`
+  override.
 
-  ```sh
-  bun .devboard/scripts/forge-auth.ts check --forge gitea --required write --json
-  ```
-
-  Read the JSON line and proceed only when the exit status is 0 and `canWrite` is `true`. Any
-  other outcome — a nonzero exit, or an exit 0 without `canWrite: true` — stops the run: report
-  the script's message verbatim, and when the result is JSON, its `error` and `permission`
-  fields verbatim. Never retry across `localhost`, `localhost:2223`, `localhost:3001`, `origin`,
-  `ds@localhost:2223`, `gitea`, `127.0.0.1`, a bare IP, or a bare port, and never re-derive the
-  host with `git remote get-url origin | sed` or any other shell substitution. Never prefix the
-  call with `cd <path>`, never append `echo $?`,
-  `echo "exit=$?"`, `echo "EXIT:$?"`, or any other exit-status echo, never append `2>&1 | head`,
-  `2>&1 | tail`, or any other consumer, and never append `env | grep` or a `printenv` sweep. The
+  Read the JSON line and proceed only when the exit status is 0 and `canWrite` is `true`. A
+  successful result is reused for the rest of the session: never run the check a second time,
+  and never re-run it to confirm a result already read. Only a nonzero exit, or an exit 0
+  without `canWrite: true`, stops the run, and only that failure justifies one `--help`
+  inspection or the blocker report: report the script's message verbatim, and when the result
+  is JSON, its `error` and `permission` fields verbatim. Never retry across `localhost`,
+  `localhost:2223`, `localhost:3001`, `origin`, `ds@localhost:2223`, `gitea`, `127.0.0.1`, a bare
+  IP, or a bare port, and never re-derive the host with `git remote get-url origin | sed` or any
+  other shell substitution. Never prefix this check with `cd <path>` — set the tool's working
+  directory instead — never append `echo $?`, `echo "exit=$?"`, `echo "EXIT:$?"`, or any other
+  exit-status echo, never append `2>&1 | head`, `2>&1 | tail`, or any other consumer, and never
+  append `env | grep` or a `printenv` sweep. The
   credentialed target is `DEVBOARD_GITEA_URL` with `GITEA_TOKEN`; a host is a label only, so
   never pass `origin`, `github.com`, `localhost`, `localhost:3000`, `localhost:2223`,
   `localhost:3001`, `127.0.0.1`, `ds@localhost:2223`, `gitea`, a bare IP, or a bare port as
