@@ -28,9 +28,11 @@ import {
   readActivity,
   trimActivityLines,
   writeActivity,
+  writeRunFile,
   writeState,
   type IssuesIssue,
   type IssuesState,
+  type RunFile,
 } from "../issues/state";
 import {
   fetchIssueState,
@@ -89,6 +91,25 @@ function goalIssue(number: number, title = `Goal ${number}`): IssuesIssue {
   return issue(number, title, ["goal"]);
 }
 
+/** A finished run record only the previous state document can still name. */
+function finishedRun(runId: string, root: string): RunFile {
+  return {
+    version: 1,
+    runId,
+    repo: "acme/fixture",
+    status: "succeeded",
+    argv: ["omp", "acp"],
+    cwd: root,
+    startedAt: new Date(0).toISOString(),
+    finishedAt: new Date(1).toISOString(),
+    exitCode: 0,
+    issues: [],
+    firstStderrLine: null,
+    workerPid: 1,
+    harnessVersion: "0.1.test",
+  };
+}
+
 async function waitFor<T>(
   read: () => T | undefined,
   description: string,
@@ -101,6 +122,32 @@ async function waitFor<T>(
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${description}`);
     await Bun.sleep(20);
   }
+}
+
+/** A live process plus the exact identity `recordedChildAlive` compares. */
+async function recordedProcess() {
+  const child = Bun.spawn({
+    cmd: [process.execPath, "-e", "setTimeout(() => undefined, 60_000)"],
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const pid = child.pid;
+  expect(pid).toBeGreaterThan(0);
+  const identity = await waitFor(
+    () => {
+      try {
+        const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\u0000").filter(Boolean);
+        const cwd = readlinkSync(`/proc/${pid}/cwd`);
+        return argv.length > 0 ? { pid, argv, cwd } : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    "a child identity",
+    2000,
+  );
+  return { child, identity };
 }
 
 class ControlledPeer implements AcpPeer {
@@ -900,32 +947,12 @@ describe("history and isolation", () => {
     const stateDir = join(base, "state");
     await mkdir(root, { recursive: true });
     await mkdir(stateDir, { recursive: true });
-    const children = [0, 1].map(() =>
-      Bun.spawn({
-        cmd: [process.execPath, "-e", "setTimeout(() => undefined, 60_000)"],
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-      }),
-    );
-    const identities = [];
-    for (const child of children) {
-      const pid = child.pid;
-      expect(pid).toBeGreaterThan(0);
-      const identity = await waitFor(
-        () => {
-          try {
-            const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\u0000").filter(Boolean);
-            const cwd = readlinkSync(`/proc/${pid}/cwd`);
-            return argv.length > 0 ? { pid, argv, cwd } : undefined;
-          } catch {
-            return undefined;
-          }
-        },
-        "a child identity",
-        2000,
-      );
-      identities.push(identity);
+    const processes = await Promise.all([recordedProcess(), recordedProcess()]);
+    const children = processes.map((entry) => entry.child);
+    const identities = processes.map((entry) => entry.identity);
+    const runIds = identities.map((_, index) => `orphan-${index}`);
+    for (const runId of runIds) {
+      writeRunFile(runDirectory(stateDir, root, runId), finishedRun(runId, root));
     }
     const path = statePath(stateDir, root);
     const stale = emptyState({ repo: "acme/fixture", root, intervalMs: 60_000 });
@@ -934,7 +961,7 @@ describe("history and isolation", () => {
       enabled: true,
       lifecycle: "running",
       agents: identities.map((identity, index) => ({
-        runId: `orphan-${index}`,
+        runId: runIds[index]!,
         issueNumber: index + 1,
         startedAt: new Date(0).toISOString(),
         question: null,
@@ -967,6 +994,13 @@ describe("history and isolation", () => {
         expect(outcome).toBe("exited");
       }
       expect(worker.currentState.agents).toEqual([]);
+      for (const runId of runIds) {
+        expect(worker.currentState.runs.find((run) => run.runId === runId)?.status).toBe("stopped");
+        expect(
+          parseRunFile(readFileSync(join(runDirectory(stateDir, root, runId), "run.json"), "utf8"))
+            ?.status,
+        ).toBe("stopped");
+      }
     } finally {
       await worker.stop();
       for (const child of children) {
@@ -975,6 +1009,76 @@ describe("history and isolation", () => {
         } catch {
           // Already terminated by the worker.
         }
+      }
+    }
+  });
+
+  test("an unparseable state file still terminates recorded children and closes recorded runs", async () => {
+    const base = await temporaryDirectory("quarantined-orphans");
+    const root = join(base, "repo");
+    const stateDir = join(base, "state");
+    await mkdir(root, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    const { child, identity } = await recordedProcess();
+    const runId = "quarantined-run";
+    writeRunFile(runDirectory(stateDir, root, runId), finishedRun(runId, root));
+    const path = statePath(stateDir, root);
+    await mkdir(dirname(path), { recursive: true });
+    // Valid JSON the current schema rejects: the file is quarantined, but the
+    // child and run it records must still be recovered.
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 999,
+        repo: "acme/fixture",
+        root,
+        enabled: true,
+        lifecycle: "running",
+        agents: [
+          {
+            runId,
+            issueNumber: 1,
+            startedAt: new Date(0).toISOString(),
+            question: null,
+            acp: identity,
+          },
+        ],
+      }),
+    );
+    expect(parseState(readFileSync(path, "utf8"))).toBeUndefined();
+    expect(recordedChildAlive(identity)).toBe(true);
+
+    const worker = new IssuesWorker({
+      repoDir: root,
+      stateDir,
+      intervalMs: 60_000,
+      harnessVersion: "0.1.test",
+      listIssues: async () => ({ kind: "issues", issues: [], etag: null }),
+      connect: () => {
+        throw new Error("must not connect");
+      },
+    });
+    workers.push(worker);
+    try {
+      expect(worker.start("acme/fixture")).toBe(true);
+      // The exit is a real process signal, so the bound is real time.
+      const outcome = await Promise.race([
+        child.exited.then(() => "exited" as const),
+        Bun.sleep(3000).then(() => "timeout" as const),
+      ]);
+      expect(outcome).toBe("exited");
+      expect(worker.currentState.runs.find((run) => run.runId === runId)?.status).toBe("stopped");
+      expect(
+        parseRunFile(readFileSync(join(runDirectory(stateDir, root, runId), "run.json"), "utf8"))
+          ?.status,
+      ).toBe("stopped");
+      expect(readdirSync(dirname(path)).some((name) => name.includes(".invalid-"))).toBe(true);
+    } finally {
+      await worker.stop();
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        // Already terminated by the worker.
       }
     }
   });
