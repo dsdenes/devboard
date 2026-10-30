@@ -2131,7 +2131,10 @@ describe("Flow session lifecycle", () => {
     const started = await client.waitFor((event) => event.type === "flowImplementationStarted");
     const sessionId = started.sessionId as string;
     const directory = join(fixture.stateDir, "flow", journalKey(fixture.root), sessionId);
-    await waitUntil(() => promptCount(fixture, directory) === 1, "the first implementation prompt");
+    await waitUntil(
+      () => promptCount(fixture, directory) === 1 && implementationPids().length === 1,
+      "the first implementation prompt and its spawn",
+    );
     const firstPid = implementationPids()[0] ?? "";
     expect(firstPid).not.toBe("");
 
@@ -2163,8 +2166,8 @@ describe("Flow session lifecycle", () => {
     );
     expect(resumed.worktree).toBe(started.worktree);
     await waitUntil(
-      () => promptCount(fixture, directory) === 2,
-      "one implementation prompt from the overlapping starts",
+      () => promptCount(fixture, directory) === 2 && implementationPids().length === 2,
+      "one implementation prompt and spawn from the overlapping starts",
     );
     // The refused frame must not spawn later either.
     await Bun.sleep(200);
