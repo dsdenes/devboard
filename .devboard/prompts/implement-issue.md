@@ -41,12 +41,14 @@ The package root that owns the lockfile is `.devboard/`: `<worktree>/.devboard` 
 and `<REPO_DIR>/.devboard` in the canonical checkout. The repository root has no `package.json`, so
 running `bun install` there fails with "Bun could not find a package.json file to install from".
 
-- Run `bun install --frozen-lockfile` only from a `.devboard/` package root, never from the
-  repository root.
+- Run every install as `cd .devboard && bun install --frozen-lockfile`, from the repo root or, in a
+  worktree, from the worktree root. Never run `bun install` from the repository root itself.
 - Skip the install when that package root already has `node_modules` and `bun.lock` has not changed
-  since that install. Installing is a precondition, not a verification step.
+  since that install. Run it at most once per session: installing is a precondition, never a
+  verification step, and it never repeats before each build, typecheck, or test.
 - Never pipe the install into `tail` and never chain it with `bun run build`, `bunx tsc --noEmit`,
-  or `bun test` in one shell line. Run it once, check its exit status, then run the build,
+  or `bun test` in one shell line. It prints one summary line on success and the full error on
+  failure; truncation hides lockfile errors. Run it once, check its exit status, then run the build,
   typecheck, and tests as separate commands.
 - `verification_run` runs an allowlisted check from the canonical `.devboard/`, so it is for the
   integration checkout after landing. In the worktree, run the same check from
