@@ -35,7 +35,7 @@
         </span>
         <p class="agent-issues__empty-title">No issues filed yet</p>
         <p class="agent-issues__empty-copy">
-          {agentLabel} files significant findings here after each run.
+          {agentLabel} files significant findings here after each scan.
         </p>
       </div>
     </div>
