@@ -776,6 +776,55 @@ describe("MCP work and control tools", () => {
     expect(quiet.output).toBe("ok\n");
   }, 30_000);
 
+  test("verification_run writes the complete output to its log", async () => {
+    await mkdir(join(harnessRoot, ".tmp"), { recursive: true });
+    const dir = await mkdtemp(join(harnessRoot, ".tmp", "verification-log-"));
+    directories.push(dir);
+    const script = "bun -e \"for (let i = 0; i < 400; i += 1) console.log('x'.repeat(200));\"";
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ scripts: { "verify:chatty": script } }),
+    );
+    const context: McpContext = {
+      repoDir: dir,
+      harnessDir: dir,
+      stateDir: join(dir, "state"),
+      environment: process.env,
+    };
+
+    const result = await runVerification(context, "verify:chatty", undefined);
+
+    expect(result.truncated).toBe(true);
+    expect(result.log).toBe("state/verify-chatty.log");
+    const logged = await readFile(join(context.stateDir, "verify-chatty.log"), "utf8");
+    expect(logged.split("\n").filter((line) => line === "x".repeat(200)).length).toBe(400);
+    expect(Buffer.byteLength(logged, "utf8")).toBeGreaterThan(VERIFICATION_OUTPUT_MAX_BYTES);
+  }, 30_000);
+
+  test("verification_run truncates a log an earlier run wrote", async () => {
+    await mkdir(join(harnessRoot, ".tmp"), { recursive: true });
+    const dir = await mkdtemp(join(harnessRoot, ".tmp", "verification-log-stale-"));
+    directories.push(dir);
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ scripts: { "verify:brief": "bun -e \"console.log('fresh')\"" } }),
+    );
+    const context: McpContext = {
+      repoDir: dir,
+      harnessDir: dir,
+      stateDir: join(dir, "state"),
+      environment: process.env,
+    };
+    await mkdir(context.stateDir, { recursive: true });
+    await writeFile(join(context.stateDir, "verify-brief.log"), "stale\n");
+
+    await runVerification(context, "verify:brief", undefined);
+
+    const logged = await readFile(join(context.stateDir, "verify-brief.log"), "utf8");
+    expect(logged.includes("fresh")).toBe(true);
+    expect(logged.includes("stale")).toBe(false);
+  }, 30_000);
+
   test("every control tool delegates to the one live dashboard", async () => {
     const { context } = await workspace();
     const stub = stubDashboard(context.repoDir, context.stateDir);

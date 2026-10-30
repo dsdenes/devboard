@@ -285,7 +285,8 @@ const TOOLS: readonly McpToolDefinition[] = [
     title: "Run a verification check",
     description:
       "Runs one allowlisted check from `.devboard/package.json` with a 900-second " +
-      "timeout and at most 16 KiB of captured output.",
+      "timeout and at most 16 KiB of captured output. The check's complete output is " +
+      "written to `<stateDir>/<check>.log` and that path is returned as `log`.",
     inputSchema: object(
       {
         check: STRING,

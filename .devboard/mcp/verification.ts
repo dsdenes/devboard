@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { resolveContained } from "./context";
 import type { McpContext } from "./context";
 
@@ -71,6 +71,13 @@ export interface VerificationResult {
   exitCode: number | null;
   output: string;
   truncated: boolean;
+  /** Repository-relative path of the file holding the check's complete output. */
+  log: string;
+}
+
+/** The log file one check writes; the check name decides the file name. */
+export function verificationLogPath(context: McpContext, check: string): string {
+  return join(context.stateDir, `${check.replace(/[^A-Za-z0-9_.-]+/g, "-")}.log`);
 }
 
 function capture(
@@ -113,6 +120,7 @@ async function readCapped(
   stream: ReadableStream<Uint8Array>,
   limit: number,
   sink: PipeBuffer,
+  log: LogSink,
 ): Promise<void> {
   const reader = stream.getReader();
   try {
@@ -120,6 +128,7 @@ async function readCapped(
       const { done, value } = await reader.read();
       if (done) return;
       if (value === undefined || value.byteLength === 0) continue;
+      log.write(value);
       const room = limit - sink.bytes;
       if (room <= 0) {
         sink.overflowed = true;
@@ -133,6 +142,42 @@ async function readCapped(
   } catch {
     // A reset pipe keeps whatever was already read; the bound still holds.
   }
+}
+
+/**
+ * The complete-output file, written chunk by chunk so the 16 KiB capture bound
+ * never shortens what the log holds. A closed descriptor (the deadline settled
+ * first) drops the rest instead of failing the run.
+ */
+interface LogSink {
+  write(chunk: Uint8Array): void;
+  close(): void;
+}
+
+function openLog(path: string): LogSink {
+  mkdirSync(dirname(path), { recursive: true });
+  rmSync(path, { force: true });
+  const descriptor = openSync(path, "w");
+  let open = true;
+  return {
+    write(chunk: Uint8Array): void {
+      if (!open) return;
+      try {
+        writeSync(descriptor, chunk);
+      } catch {
+        // The file is already the best evidence this run has.
+      }
+    },
+    close(): void {
+      if (!open) return;
+      open = false;
+      try {
+        closeSync(descriptor);
+      } catch {
+        // The descriptor is already gone.
+      }
+    },
+  };
 }
 
 interface VerificationSettlement {
@@ -193,6 +238,10 @@ export async function runVerification(
   const cwd = resolve(context.harnessDir);
   if (!existsSync(cwd)) throw new Error(`${cwd} does not exist.`);
 
+  const logPath = verificationLogPath(context, check);
+  const log = openLog(logPath);
+  const logRelative = relative(context.repoDir, logPath).split(sep).join("/");
+
   const controller = new AbortController();
   let killChild: (() => void) | undefined;
   const stdout: PipeBuffer = { chunks: [], bytes: 0, overflowed: false };
@@ -229,8 +278,8 @@ export async function runVerification(
     };
     const [exitCode] = await Promise.all([
       child.exited,
-      readCapped(child.stdout, outputMaxBytes, stdout),
-      readCapped(child.stderr, outputMaxBytes, stderr),
+      readCapped(child.stdout, outputMaxBytes, stdout, log),
+      readCapped(child.stderr, outputMaxBytes, stderr, log),
     ]);
     return {
       stdout: new Uint8Array(Buffer.concat(stdout.chunks)),
@@ -276,8 +325,10 @@ export async function runVerification(
         ? `${captured.output}\n[timed out after ${timeoutMs} ms]`
         : captured.output,
       truncated: captured.truncated,
+      log: logRelative,
     };
   } finally {
     clearTimeout(timer);
+    log.close();
   }
 }

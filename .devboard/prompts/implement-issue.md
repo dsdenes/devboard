@@ -128,7 +128,7 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
   `bun run build`; never chain it to an unrelated command, and never re-run it to re-inspect output
   a consumer truncated. Run it once, then run build, typecheck, and tests as separate commands.
 - `verification_run` runs an allowlisted check from the `.devboard/` that `devboard_status` reports
-  as `harnessDirectory`. Use it for `bun run verify:interface`, as *Interface verification* below
+  as `harnessDirectory`. Use it for interface verification, as *Interface verification* below
   requires. When it resolves the canonical package root while you work in a worktree, run that
   same check from `<worktree>/.devboard/` so the changed revision is what executes; that is the
   only allowed shell invocation of the check.
@@ -139,37 +139,53 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
 and throws the whole assertion message plus its JSON evidence object on the first failure. A lost
 assertion therefore costs a full rerun, so interface verification has its own rule.
 
-Run it through `verification_run` with `{"check": "verify:interface"}`. The tool executes the
-`verify:interface` script from `.devboard/package.json` with the resolved `harnessDirectory` as its
-working directory, kills the check's whole process group at its 900-second bound, and returns
-`check`, `exitCode`, `output`, and `truncated` in one result.
+Interface verification has exactly one entry point: the `verification_run` MCP tool with
+`{"check": "verify:interface"}`. The tool executes the `verify:interface` script from
+`.devboard/package.json` with the resolved `harnessDirectory` as its working directory, kills the
+check's whole process group at its 900-second bound, and returns `check`, `exitCode`, `output`,
+`truncated`, and `log` in one result. A bare `bun run verify:interface`, a `tail`/`head`/`grep`
+pipe, and a log an earlier run wrote are never a verdict.
 
 - Read `repositoryRoot` and `harnessDirectory` from `devboard_status` first. When
   `harnessDirectory` is the `.devboard/` you changed, the tool verifies the changed revision and is
   the only way to run the check: never invoke `bun run verify:interface` from a shell in that case,
   because the tool result is the whole verdict and the shell form only repeats the same run.
 - Only when `devboard_status` reports the canonical `<REPO_DIR>/.devboard` while you work in a
-  worktree does the tool verify the pre-change revision. Then run `bun run verify:interface` once,
-  in the foreground, from `<worktree>/.devboard`, and say in the final response that the tool's
-  resolved `harnessDirectory` was the canonical root. Every other direct invocation is forbidden.
-- Never background `verify:interface`, never kill or restart it, and never pipe it through `tail`,
-  `head`, `grep`, or another consumer. A backgrounded job ends the turn without its verdict, a
-  killed job loses the assertion, and a pipe keeps only the lines the filter matched.
-- Never redirect verification output to `.tmp/verify-interface-*.log` or `.verify-interface.log` and
-  then `tail` it, never pipe it through `2>&1 | tee`, and never take a verdict from a log an earlier
-  run wrote. The verdict belongs to the turn that started the check.
-- `truncated: true` means the 16 KiB capture bound cut the run and `output` holds only its
-  beginning: `exitCode` is still the verdict, and a truncated result is never a pass. A result
+  worktree does the tool verify the pre-change revision. Then run the changed revision once, in the
+  foreground, from `<worktree>/.devboard`, redirecting its complete output to
+  `.tmp/verify-interface.log` — `bun run verify:interface > .tmp/verify-interface.log 2>&1` — and
+  read that file whole. Its exit status is the verdict, so never append a status echo. Say in the
+  final response that the tool's resolved `harnessDirectory` was the canonical root. Every other
+  direct invocation is forbidden.
+- The complete output of every interface verification lives at `.devboard`'s
+  `.tmp/verify-interface.log`: the tool writes that file itself and returns its path in `log`, and
+  the worktree fallback redirects there. Read the file whole on failure — never `tail`, `head`,
+  `grep`, or `2>&1 | tee` it — so the failing check message and its evidence JSON survive instead of
+  a fixed number of trailing lines. Never take a verdict from a log an earlier run wrote: the tool
+  truncates the file before the check starts and the fallback redirect truncates it too.
+- Never background `verify:interface`, never kill or restart it. A backgrounded job ends the turn
+  without its verdict, and a killed job loses the assertion.
+- `truncated: true` means the 16 KiB bound cut the returned `output`; the `log` file still holds the
+  complete output. `exitCode` is still the verdict, and a truncated result is never a pass. A result
   ending `[timed out after 900000 ms]` is a failed verification, not a reason to background the
   check.
-- On failure, read the complete `verify:interface: <assertion>: <evidence>` line before editing:
-  the assertion names the control, and the evidence object carries the measured and expected
-  values it compared. A partial read hides which side mismatched. Report that exact line and the
-  result's `exitCode` in the final response instead of re-running the check or paraphrasing it.
+- On failure, read the complete `verify:interface: <assertion>: <evidence>` line from the log before
+  editing: the assertion names the control, and the evidence object carries the measured and
+  expected values it compared. A partial read hides which side mismatched.
+- Reproduce a failure once at the base revision before you touch code, and classify it. In a
+  worktree session whose tool run used the canonical `.devboard/`, that tool result is the base run
+  and the fallback shell run is the changed revision; when both print the same assertion and
+  evidence, the defect is a pre-existing baseline failure — do not fix it in this run, record its
+  exact message, and continue. When no base run is available, say so and classify from the diff,
+  never by stashing, reverting, or rewriting the task worktree.
+- Never run an identical failing `verify:interface` invocation more than twice: once for the
+  changed revision and once for the base revision.
+- Report the exact assertion line, its evidence JSON, and the `exitCode` in the final response.
+  Never answer a failure with a bare exit code, a paraphrase, or a re-run.
 - When `verification_run` itself errors, report the tool's error text verbatim together with the
-  `exitCode` and `output` it returned, and never answer it with `bun run verify:interface` from a
-  shell, a retry in another directory, or a redirected log. A tool error is evidence to report,
-  not a reason to rerun the same check.
+  `exitCode`, `output`, and `log` it returned, and never answer it with `bun run verify:interface`
+  from a shell, a retry in another directory, or a redirected log. A tool error is evidence to
+  report, not a reason to rerun the same check.
 
 ## Prerequisites
 
