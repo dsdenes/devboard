@@ -114,10 +114,11 @@ install from", and a root-level `bun run build` fails with `error: Script not fo
 - Run `bun install --frozen-lockfile` only from the package root that owns the lockfile: the tool's
   `cwd` is `.devboard/` in the canonical checkout, or `<worktree>/.devboard/` in a task worktree.
   Never run it from the repository root, and never prefix it with `cd <path> &&` because the
-  working directory was not already correct — set `cwd` instead.
+  working directory was not already correct — set `cwd` instead. Always pass `--frozen-lockfile`:
+  never a plain `bun install`, which may rewrite `bun.lock`.
 - Skip the install when the package root (`.devboard/`) already has `node_modules` and `bun.lock`
   has not changed since that install. Run it at most once per session: installing is a precondition,
-  never a verification step, and it never repeats before each build, typecheck, or test.
+  never a verification step, and it never repeats before each build, check, test, or verify step.
 - Let the install's output through whole: never pipe it to `tail`, `head`, or any other consumer,
   and never append an `echo "EXIT:$?"` or `echo "..._EXIT:$?"` status probe. It prints one summary
   line on success and the full error on failure, and a nonzero exit already reports the failure.
