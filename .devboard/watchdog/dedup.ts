@@ -78,9 +78,12 @@ function promptPath(): string {
 /** The complete prompt: the role, the repository, and the candidate set. */
 export function dedupPrompt(request: DedupRequest): string {
   const template = readFileSync(promptPath(), "utf8");
+  // Replacement functions insert the text literally. A string replacement
+  // would interpret `$&`, `$'`, and `` $` `` inside a repository name or a
+  // captured log line as substitution patterns and corrupt the prompt.
   return template
-    .replace("{{repository}}", request.repository)
-    .replace("{{candidates}}", JSON.stringify(request.candidates, null, 2));
+    .replace("{{repository}}", () => request.repository)
+    .replace("{{candidates}}", () => JSON.stringify(request.candidates, null, 2));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
