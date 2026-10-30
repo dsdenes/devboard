@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { isRecord } from "../issues/guards";
 
@@ -431,21 +431,171 @@ export function parseSessionTranscript(
   };
 }
 
-function readTranscript(
-  path: string,
-  options: { stateDir: string; repoDir: string },
-): ParsedTranscript {
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    return { session: undefined, malformed: 0 };
+/** One transcript file with the metadata a selection needs before parsing. */
+export interface SessionFileMeta {
+  path: string;
+  size: number;
+  mtimeMs: number;
+}
+
+/** The `session` record a transcript carries as its header. */
+export interface SessionHeader {
+  id: string;
+  cwd: string;
+  startedAt: string;
+}
+
+/**
+ * The file seam the reader goes through. Tests replace it to observe how many
+ * transcripts are stat-ed, header-scanned, and fully parsed; the default reads
+ * the state directory.
+ */
+export interface SessionReader {
+  /** Every `.jsonl` transcript under the providers agent tree, with metadata. */
+  list(stateDir: string): SessionFileMeta[];
+  /** The header record only, without reading the transcript body. */
+  readHeader(meta: SessionFileMeta): SessionHeader | undefined;
+  /** The whole transcript, or undefined when it cannot be read. */
+  readText(meta: SessionFileMeta): string | undefined;
+}
+
+/** How much of a transcript the header scan reads before giving up. */
+const HEADER_SCAN_BYTES = 64 * 1024;
+const headerScanBuffer = Buffer.allocUnsafe(HEADER_SCAN_BYTES);
+
+function parseSessionHeaderText(text: string): SessionHeader | undefined {
+  for (const line of text.split("\n")) {
+    if (line.trim().length === 0) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isRecord(record) || record.type !== "session") continue;
+    if (typeof record.id !== "string" || record.id.length === 0) return undefined;
+    if (typeof record.cwd !== "string" || record.cwd.length === 0) return undefined;
+    if (parseSessionInstant(record.timestamp) === undefined) return undefined;
+    return {
+      id: record.id,
+      cwd: record.cwd,
+      startedAt: new Date(parseSessionInstant(record.timestamp)!).toISOString(),
+    };
   }
-  return parseSessionTranscript(text, path, options);
+  return undefined;
+}
+
+export const defaultSessionReader: SessionReader = {
+  list(stateDir) {
+    const files: SessionFileMeta[] = [];
+    for (const path of listSessionPaths(stateDir)) {
+      let stat;
+      try {
+        stat = statSync(path);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      files.push({ path, size: stat.size, mtimeMs: stat.mtimeMs });
+    }
+    return files.sort((left, right) => left.path.localeCompare(right.path));
+  },
+  readHeader(meta) {
+    let descriptor: number;
+    try {
+      descriptor = openSync(meta.path, "r");
+    } catch {
+      return undefined;
+    }
+    try {
+      const read = readSync(descriptor, headerScanBuffer, 0, HEADER_SCAN_BYTES, 0);
+      return parseSessionHeaderText(headerScanBuffer.toString("utf8", 0, read));
+    } catch {
+      return undefined;
+    } finally {
+      closeSync(descriptor);
+    }
+  },
+  readText(meta) {
+    try {
+      return readFileSync(meta.path, "utf8");
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+interface CachedHeader {
+  size: number;
+  mtimeMs: number;
+  header: SessionHeader | undefined;
+}
+
+interface CachedTranscript {
+  size: number;
+  mtimeMs: number;
+  parsed: ParsedTranscript;
+}
+
+/** Header cache: bounded, keyed by path and invalidated by size plus mtime. */
+const HEADER_CACHE_MAX = 4_096;
+const headerCache = new Map<string, CachedHeader>();
+/** Fully parsed transcripts: bounded, keyed by path and state/repo resolution. */
+const TRANSCRIPT_CACHE_MAX = 64;
+const transcriptCache = new Map<string, CachedTranscript>();
+
+function headerFor(meta: SessionFileMeta, reader: SessionReader): SessionHeader | undefined {
+  const cached = headerCache.get(meta.path);
+  if (cached !== undefined && cached.size === meta.size && cached.mtimeMs === meta.mtimeMs) {
+    headerCache.delete(meta.path);
+    headerCache.set(meta.path, cached);
+    return cached.header;
+  }
+  const header = reader.readHeader(meta);
+  headerCache.delete(meta.path);
+  headerCache.set(meta.path, { size: meta.size, mtimeMs: meta.mtimeMs, header });
+  if (headerCache.size > HEADER_CACHE_MAX) {
+    const oldest = headerCache.keys().next();
+    if (oldest.done !== true) headerCache.delete(oldest.value);
+  }
+  return header;
+}
+
+function readTranscript(
+  meta: SessionFileMeta,
+  options: { stateDir: string; repoDir: string },
+  reader: SessionReader,
+): ParsedTranscript {
+  const key = `${meta.path}\0${options.stateDir}\0${options.repoDir}`;
+  const cached = transcriptCache.get(key);
+  if (cached !== undefined && cached.size === meta.size && cached.mtimeMs === meta.mtimeMs) {
+    transcriptCache.delete(key);
+    transcriptCache.set(key, cached);
+    return cached.parsed;
+  }
+  const text = reader.readText(meta);
+  const parsed: ParsedTranscript =
+    text === undefined
+      ? { session: undefined, malformed: 0 }
+      : parseSessionTranscript(text, meta.path, options);
+  transcriptCache.delete(key);
+  transcriptCache.set(key, { size: meta.size, mtimeMs: meta.mtimeMs, parsed });
+  if (transcriptCache.size > TRANSCRIPT_CACHE_MAX) {
+    const oldest = transcriptCache.keys().next();
+    if (oldest.done !== true) transcriptCache.delete(oldest.value);
+  }
+  return parsed;
 }
 
 /** Every `.jsonl` transcript under the providers agent sessions tree. */
-export function listSessionFiles(stateDir: string): string[] {
+export function listSessionFiles(
+  stateDir: string,
+  reader: SessionReader = defaultSessionReader,
+): string[] {
+  return reader.list(stateDir).map((meta) => meta.path);
+}
+
+function listSessionPaths(stateDir: string): string[] {
   const root = join(resolve(stateDir), "providers", "agents");
   const files: string[] = [];
   let agents: string[];
@@ -490,53 +640,69 @@ export interface SelectSessionsOptions {
   repoDir: string;
   /** Newest files kept; 1,000 by default. */
   maxFiles?: number;
+  /** Skip transcripts last written before this epoch instant. */
+  mtimeSince?: number;
+  /** Test seam; the default reads the state directory. */
+  reader?: SessionReader;
 }
 
 /**
  * Every transcript whose session cwd is this repository (or a worktree under
- * it), newest 1,000 selected files, deduplicated by session id.
+ * it), newest 1,000 selected files, deduplicated by session id. Selection reads
+ * file metadata and headers only; at most `maxFiles` transcripts are parsed.
  */
 export function selectSessions(options: SelectSessionsOptions): SessionSelection {
   const stateDir = resolve(options.stateDir);
   const repoDir = resolve(options.repoDir);
   const maxFiles = Math.max(1, options.maxFiles ?? SESSION_MAX_FILES);
-  const selected: AgentSession[] = [];
+  const reader = options.reader ?? defaultSessionReader;
+  const since = options.mtimeSince;
+  const entries = reader
+    .list(stateDir)
+    .filter((meta) => since === undefined || meta.mtimeMs >= since);
   let skipped = 0;
+  // One session id is one transcript: a resumed session copies its header.
+  const byId = new Map<string, { meta: SessionFileMeta; header: SessionHeader }>();
+  for (const meta of entries) {
+    const header = headerFor(meta, reader);
+    if (header === undefined) {
+      skipped += 1;
+      continue;
+    }
+    if (!isRepositoryWorkingDirectory(repoDir, header.cwd)) continue;
+    const existing = byId.get(header.id);
+    if (
+      existing === undefined ||
+      header.startedAt > existing.header.startedAt ||
+      (header.startedAt === existing.header.startedAt && meta.path > existing.meta.path)
+    ) {
+      byId.set(header.id, { meta, header });
+    }
+  }
+  const ordered = [...byId.values()].sort(
+    (left, right) =>
+      right.header.startedAt.localeCompare(left.header.startedAt) ||
+      left.meta.path.localeCompare(right.meta.path),
+  );
+  const kept = ordered.slice(0, maxFiles);
+  const sessions: AgentSession[] = [];
   let malformed = 0;
-  for (const path of listSessionFiles(stateDir)) {
-    const parsed = readTranscript(path, { stateDir, repoDir });
+  for (const entry of kept) {
+    const parsed = readTranscript(entry.meta, { stateDir, repoDir }, reader);
     malformed += parsed.malformed;
     if (parsed.session === undefined) {
       skipped += 1;
       continue;
     }
-    if (!isRepositoryWorkingDirectory(repoDir, parsed.session.cwd)) continue;
-    selected.push(parsed.session);
+    sessions.push(parsed.session);
   }
-  // One session id is one transcript: a resumed session copies its header.
-  const byId = new Map<string, AgentSession>();
-  for (const session of selected) {
-    const existing = byId.get(session.id);
-    if (
-      existing === undefined ||
-      session.startedAt > existing.startedAt ||
-      (session.startedAt === existing.startedAt && session.path > existing.path)
-    ) {
-      byId.set(session.id, session);
-    }
-  }
-  const ordered = [...byId.values()].sort(
-    (left, right) =>
-      right.startedAt.localeCompare(left.startedAt) || left.path.localeCompare(right.path),
-  );
-  const kept = ordered.slice(0, maxFiles);
   return {
-    sessions: kept.sort(
+    sessions: sessions.sort(
       (left, right) =>
         left.startedAt.localeCompare(right.startedAt) || left.path.localeCompare(right.path),
     ),
     selected: ordered.length,
-    omitted: Math.max(0, ordered.length - kept.length),
+    omitted: ordered.length - kept.length,
     truncated: ordered.length > kept.length,
     skipped,
     malformed,
@@ -635,9 +801,26 @@ export function readSessionMessages(options: {
   id: string;
   offset?: number;
   limit?: number;
+  reader?: SessionReader;
 }): ReadSessionPage | undefined {
-  const selection = selectSessions(options);
-  const session = selection.sessions.find((entry) => entry.id === options.id);
+  const stateDir = resolve(options.stateDir);
+  const repoDir = resolve(options.repoDir);
+  const reader = options.reader ?? defaultSessionReader;
+  let match: { meta: SessionFileMeta; header: SessionHeader } | undefined;
+  for (const meta of reader.list(stateDir)) {
+    const header = headerFor(meta, reader);
+    if (header === undefined || header.id !== options.id) continue;
+    if (!isRepositoryWorkingDirectory(repoDir, header.cwd)) continue;
+    if (
+      match === undefined ||
+      header.startedAt > match.header.startedAt ||
+      (header.startedAt === match.header.startedAt && meta.path > match.meta.path)
+    ) {
+      match = { meta, header };
+    }
+  }
+  if (match === undefined) return undefined;
+  const session = readTranscript(match.meta, { stateDir, repoDir }, reader).session;
   if (session === undefined) return undefined;
   const limit = Math.min(
     SESSION_READ_MAX_LIMIT,
@@ -683,6 +866,7 @@ export function searchSessions(options: {
   repoDir: string;
   query: string;
   limit?: number;
+  reader?: SessionReader;
 }): SessionSearchPage {
   const query = options.query.toLowerCase();
   const cap = Math.min(

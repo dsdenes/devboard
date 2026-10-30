@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   SESSION_RESPONSE_MAX_BYTES,
+  defaultSessionReader,
   firstNormalizedLine,
   listSessions,
   normalizeSessionLine,
@@ -10,6 +11,7 @@ import {
   searchSessions,
   selectSessions,
   toolFailureFingerprint,
+  type SessionReader,
 } from "../lib/agent-sessions";
 
 const harnessRoot = resolve(import.meta.dir, "..");
@@ -287,5 +289,167 @@ describe("ACP session reader", () => {
       ),
     );
     expect(toolFailureFingerprint("bash", text)).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  test("parses at most maxFiles transcripts, not the whole corpus", async () => {
+    const { repoDir, stateDir } = await fixture();
+    const total = 1_000;
+    for (let index = 0; index < total; index += 1) {
+      await seed(stateDir, {
+        id: `s${String(index).padStart(4, "0")}`,
+        cwd: repoDir,
+        startedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      });
+    }
+    const parsed: string[] = [];
+    let headers = 0;
+    const reader: SessionReader = {
+      list: (directory) => defaultSessionReader.list(directory),
+      readHeader: (meta) => {
+        headers += 1;
+        return defaultSessionReader.readHeader(meta);
+      },
+      readText: (meta) => {
+        parsed.push(meta.path);
+        return defaultSessionReader.readText(meta);
+      },
+    };
+    const selected = selectSessions({ stateDir, repoDir, maxFiles: 10, reader });
+    expect(parsed).toHaveLength(10);
+    expect(headers).toBe(total);
+    expect(selected.sessions).toHaveLength(10);
+    expect(selected.sessions.at(-1)?.id).toBe("s0999");
+    expect(selected.selected).toBe(total);
+    expect(selected.omitted).toBe(total - 10);
+    expect(selected.truncated).toBe(true);
+  });
+
+  test("reads one session by header without parsing the rest of the corpus", async () => {
+    const { repoDir, stateDir } = await fixture();
+    for (let index = 0; index < 40; index += 1) {
+      await seed(stateDir, {
+        id: `noise-${index}`,
+        cwd: repoDir,
+        startedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+        messages: 2,
+      });
+    }
+    const target = await seed(stateDir, {
+      id: "target",
+      cwd: repoDir,
+      startedAt: "2026-01-02T00:00:00.000Z",
+      messages: 3,
+    });
+    const parsed: string[] = [];
+    let headers = 0;
+    const reader: SessionReader = {
+      list: (directory) => defaultSessionReader.list(directory),
+      readHeader: (meta) => {
+        headers += 1;
+        return defaultSessionReader.readHeader(meta);
+      },
+      readText: (meta) => {
+        parsed.push(meta.path);
+        return defaultSessionReader.readText(meta);
+      },
+    };
+    const page = readSessionMessages({ stateDir, repoDir, id: "target", reader });
+    expect(page?.id).toBe("target");
+    expect(page?.messages).toHaveLength(6);
+    expect(parsed).toEqual([target]);
+    expect(headers).toBe(41);
+    expect(readSessionMessages({ stateDir, repoDir, id: "absent", reader })).toBeUndefined();
+  });
+
+  test("skips transcripts last written before the mtime bound", async () => {
+    const { repoDir, stateDir } = await fixture();
+    const stale = await seed(stateDir, {
+      id: "stale",
+      cwd: repoDir,
+      startedAt: "2026-01-01T10:00:00.000Z",
+    });
+    await seed(stateDir, { id: "fresh", cwd: repoDir, startedAt: "2026-01-02T10:00:00.000Z" });
+    const longAgo = new Date("2000-01-01T00:00:00.000Z");
+    await utimes(stale, longAgo, longAgo);
+    const selected = selectSessions({
+      stateDir,
+      repoDir,
+      mtimeSince: Date.now() - 60_000,
+    });
+    expect(selected.sessions.map((session) => session.id)).toEqual(["fresh"]);
+    expect(selected.selected).toBe(1);
+  });
+
+  test("one session read does not scale with total corpus bytes", async () => {
+    const corpus = await fixture();
+    const single = await fixture();
+    const decoder = (repoDir: string) =>
+      [
+        JSON.stringify({
+          type: "session",
+          id: "match",
+          timestamp: "2026-01-01T10:00:00.000Z",
+          cwd: repoDir,
+        }),
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-01-01T10:00:00.000Z",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "x".repeat(1_000_000) }],
+          },
+        }),
+      ].join("\n");
+    const corpusBucket = join(
+      corpus.stateDir,
+      "providers",
+      "agents",
+      "fixture",
+      "sessions",
+      "bucket",
+    );
+    const singleBucket = join(
+      single.stateDir,
+      "providers",
+      "agents",
+      "fixture",
+      "sessions",
+      "bucket",
+    );
+    const decoyBody = `${JSON.stringify({ type: "note", text: "y".repeat(1_000_000) })}\n`;
+    let corpusBytes = 0;
+    const matching = decoder(corpus.repoDir);
+    await writeFile(join(corpusBucket, "match.jsonl"), matching);
+    corpusBytes += Buffer.byteLength(matching);
+    for (let index = 0; index < 120; index += 1) {
+      const header = `${JSON.stringify({
+        type: "session",
+        id: `decoy-${index}`,
+        timestamp: "2026-01-01T10:00:00.000Z",
+        cwd: corpus.repoDir,
+      })}\n`;
+      await writeFile(join(corpusBucket, `decoy-${index}.jsonl`), header + decoyBody);
+      corpusBytes += Buffer.byteLength(header) + Buffer.byteLength(decoyBody);
+    }
+    expect(corpusBytes).toBeGreaterThanOrEqual(100 * 1024 * 1024);
+    await writeFile(join(singleBucket, "match.jsonl"), decoder(single.repoDir));
+
+    const corpusStart = performance.now();
+    const corpusPage = readSessionMessages({
+      stateDir: corpus.stateDir,
+      repoDir: corpus.repoDir,
+      id: "match",
+    });
+    const corpusElapsed = performance.now() - corpusStart;
+    const singleStart = performance.now();
+    const singlePage = readSessionMessages({
+      stateDir: single.stateDir,
+      repoDir: single.repoDir,
+      id: "match",
+    });
+    const singleElapsed = performance.now() - singleStart;
+    expect(corpusPage?.messages).toHaveLength(1);
+    expect(singlePage?.messages).toHaveLength(1);
+    expect(corpusElapsed).toBeLessThan(singleElapsed * 2 + 250);
   });
 });
