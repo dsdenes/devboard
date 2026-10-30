@@ -66,7 +66,9 @@
   let sidebarGroup = $state<{ setLayout: (sizes: number[]) => void }>();
   let sidebarSizes = $state<number[]>([]);
 
-  const availableWidth = $derived(Math.max(600, viewport.width - 64));
+  // The panes share the group width minus the 5px `.pane-handle` between them.
+  const SIDEBAR_HANDLE_WIDTH = 5;
+  const availableWidth = $derived(Math.max(600, viewport.width - 72 - SIDEBAR_HANDLE_WIDTH));
   const sidebarMinPercent = $derived((200 / availableWidth) * 100);
   const sidebarMaxPercent = $derived((600 / availableWidth) * 100);
   const sidebarDefaultPercent = $derived((300 / availableWidth) * 100);
@@ -506,7 +508,7 @@
             ondblclick={() =>
               sidebarGroup?.setLayout([sidebarDefaultPercent, 100 - sidebarDefaultPercent])}
           />
-          <Pane minSize={40} class="pane-fill">
+          <Pane class="pane-fill">
             {@render workspaceArea()}
           </Pane>
         </PaneGroup>

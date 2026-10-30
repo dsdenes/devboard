@@ -2691,6 +2691,39 @@ try {
   const sidebarAfterReload = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"]') !== null`);
   check(sidebarAfterReload, "the sidebar disappeared on reload");
 
+  // 6b. The sidebar's default and bounds follow the 72px rail at the floor.
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1024,
+    height: 720,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(
+    `innerWidth === 1024 && innerHeight === 720`,
+    "the 1024×720 viewport for the sidebar bounds",
+  );
+  await page.doubleClick('[data-testid="pane-handle"]');
+  const floorDefaultWidth = await sidebarWidth();
+  check(floorDefaultWidth === 300, `the sidebar default is ${floorDefaultWidth}px at 1024×720`, floorDefaultWidth);
+  const maximumSeparator = await page.rect('[data-testid="pane-handle"]');
+  check(maximumSeparator !== null, "the sidebar separator is missing at 1024×720");
+  await page.drag(maximumSeparator!, 320);
+  const floorMaximumWidth = await sidebarWidth();
+  check(floorMaximumWidth === 600, `the sidebar maximum is ${floorMaximumWidth}px at 1024×720`, floorMaximumWidth);
+  const minimumSeparator = await page.rect('[data-testid="pane-handle"]');
+  check(minimumSeparator !== null, "the sidebar separator is missing at its maximum");
+  await page.drag(minimumSeparator!, -500);
+  const floorMinimumWidth = await sidebarWidth();
+  check(floorMinimumWidth === 200, `the sidebar minimum is ${floorMinimumWidth}px at 1024×720`, floorMinimumWidth);
+  await devtools.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.wait(`innerWidth === 1440 && innerHeight === 900`, "the desktop viewport after the sidebar bounds");
+  await page.doubleClick('[data-testid="pane-handle"]');
+
   // 7. Theme toggle, persistence, and first paint on reload.
   const themeBefore = await page.eval<string>(`document.documentElement.dataset.theme`);
   check(themeBefore === "dark", "the theme was not dark before toggling", themeBefore);
