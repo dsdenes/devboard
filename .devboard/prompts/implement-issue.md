@@ -23,30 +23,34 @@ context, but you never edit, comment on, close, or reopen another issue.
   required belongs inside `<REPO_DIR>/.devboard/` and is removed after use; never write `/tmp/x`
   or any other path outside the repository root.
 - Before the first forge read or write, run the auth check exactly once per session, from the
-  repository root:
+  repository root, and run it verbatim:
 
   ```sh
-  bun .devboard/scripts/forge-auth.ts check --forge gitea --required write --json
+  bun .devboard/scripts/forge-auth.ts check --required write --json
   ```
 
-  This canonical invocation is the only auth probe the run makes; it resolves identity and reads
-  no issue, label, release, run, or job. The credentialed target is `DEVBOARD_GITEA_URL` with
-  `GITEA_TOKEN`; a host is a label only, so never pass `--host`, never derive it with `sed` or
-  `git remote get-url`, and never pass `origin`, `github.com`, a bare IP, or a bare port. The
-  wrapper reads the repository from the `origin` remote, so `--project` is unnecessary too. Exit
-  status is authoritative and `--json` carries the selected identity: zero means write access,
-  nonzero means stop and report that line. Never append `echo "exit=$?"`/`EXIT:$?` and never pipe
-  the output through `head`/`tail`. On a checkout whose origin is GitHub or GitLab, replace only
-  `--forge gitea` with `--forge github` or `--forge gitlab`. That JSON line, plus the resolution
-  fields `devboard_status` returns, is the only supported way to learn the forge host, project, or
+  This single canonical preflight is the only auth probe and the only auth invocation of the run.
+  It resolves the forge, host, project, and identity from the environment and the `origin` remote,
+  so never pass `--host` or `--project`, and never derive either with `sed`, `git remote get-url`,
+  or any other shell substitution. Never prefix it with `cd <path>`, never append `echo $?`,
+  `echo "EXIT:$?"`, or `echo "exit=$?"`, and never pipe the output through `head`, `tail`, or any
+  other consumer. The credentialed target is `DEVBOARD_GITEA_URL` with `GITEA_TOKEN`; a host is a
+  label only, so never pass `origin`, `github.com`, a bare IP, or a bare port. Exit status is
+  authoritative and `--json` carries the selected identity: zero means write access. On a nonzero
+  exit, stop and report the printed reason; when the origin is Gitea, name `--forge gitea` as the
+  only permitted adjustment. Never retry by cycling host literals such as
+  `localhost:2223`, `localhost:3001`, `127.0.0.1`, `origin`, or `ds@localhost:2223`, and do not
+  rerun the check in the same session. That JSON line, plus the resolution fields
+  `devboard_status` returns, is the only supported way to learn the forge host, project, or
   credential state: both report presence and resolution without exposing a value, so an
   environment sweep answers nothing they do not. Never enumerate the process environment or hunt
   for credential files: `.devboard/prompts/forge-auth.md` holds that rule in full. In particular,
-  never pipe `env` or `printenv` through `grep` for `gitea`, `forge`, `github`, `gitlab`, or
-  `token`, and never treat `sed`-based masking as redaction: the tool shell carries an exported
-  `MATCH` variable holding a token-bearing grep match (`MATCH='GITEA_TOKEN=…'`), so a later sweep
-  reprints the token on a line no substitution rewrote. When a variable must be checked, print
-  only a boolean, `[ -n "$GITEA_TOKEN" ] && echo set`, and never its value or a prefix of it.
+  never pipe `env` or `printenv` into `grep` (an `env | grep` probe) for `gitea`, `forge`,
+  `github`, `gitlab`, or `token`, and never treat `sed`-based masking as redaction: the tool shell
+  carries an exported `MATCH` variable holding a token-bearing grep match
+  (`MATCH='GITEA_TOKEN=…'`), so a later sweep reprints the token on a line no substitution
+  rewrote. When a variable must be checked, print only a boolean,
+  `[ -n "$GITEA_TOKEN" ] && echo set`, and never its value or a prefix of it.
 - Resolve the checkout and read the issue before changing anything. `devboard_status` returns the
   resolved `repositoryRoot`, `harnessDirectory`, and `stateDirectory`; use it instead of guessing
   roots. `issue_get` with `{"number": <number>}` returns that issue's title, body, labels, state,
