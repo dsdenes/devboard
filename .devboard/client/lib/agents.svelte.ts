@@ -160,6 +160,11 @@ export class AgentsStore {
     connection.send({ type: "saveAgentPrompt", id, text });
   }
 
+  /** A chat proposal is applied once, then dropped so a remount never replays it. */
+  consumePromptProposal(id: string): void {
+    this.promptProposal[id] = null;
+  }
+
   sendPromptChat(id: string, message: string, text: string): void {
     this.promptChatError[id] = null;
     const entries = this.promptChat[id] ?? [];

@@ -39,6 +39,7 @@
     const proposal = agents.promptProposal[agentId];
     if (proposal === null || proposal === undefined) return;
     editor = proposal.text;
+    agents.consumePromptProposal(agentId);
   });
 
   function send(): void {
