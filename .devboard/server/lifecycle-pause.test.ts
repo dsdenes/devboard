@@ -1030,7 +1030,8 @@ describe("lifecycle pause and resume", () => {
         );
         const pausedIndex = client.events.length;
 
-        client.send({ type: "startRun", file: "0001-first.md" });
+        // A control tool names the record by its repository-relative path.
+        client.send({ type: "startRun", file: "adrs/0001-first.md" });
         expect(
           await waitForAt(
             client,

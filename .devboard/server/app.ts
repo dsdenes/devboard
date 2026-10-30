@@ -5050,7 +5050,9 @@ export function createApp(options: AppOptions) {
     }
 
     const request = ++manualStartRequest;
-    let selected = typeof file === "string" ? file : undefined;
+    // The interface names a record by its basename; a control tool names it by
+    // its repository-relative `adrs/*.md` path. Both select the same record.
+    let selected = typeof file === "string" ? basename(file) : undefined;
 
     // A manual start takes the single agent slot from an advancing lifecycle.
     // Validate the record first so a start that cannot run leaves the

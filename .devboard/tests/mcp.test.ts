@@ -163,7 +163,11 @@ interface StubDashboard {
   seen: unknown[];
 }
 
-function stubDashboard(repoDir: string, stateDir: string): StubDashboard {
+function stubDashboard(
+  repoDir: string,
+  stateDir: string,
+  options: { lifecycle?: "idle" | "paused" } = {},
+): StubDashboard {
   const seen: unknown[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -175,6 +179,9 @@ function stubDashboard(repoDir: string, stateDir: string): StubDashboard {
     websocket: {
       open(ws) {
         ws.send(JSON.stringify({ type: "agentsState", agents: [] }));
+        if (options.lifecycle === "paused") {
+          ws.send(JSON.stringify({ type: "lifecycleState", stage: "paused", pass: 2, paused: true }));
+        }
       },
       message(ws, raw) {
         const command = JSON.parse(String(raw)) as Record<string, unknown>;
@@ -208,8 +215,20 @@ function stubDashboard(repoDir: string, stateDir: string): StubDashboard {
           case "pauseLifecycle":
           case "resumeLifecycle":
           case "stopLifecycle":
-          case "startRun":
             ws.send(JSON.stringify({ type: "lifecycleState", stage: "paused", pass: 2, paused: true }));
+            return;
+          case "startRun":
+            // The manual sequence starts the record and announces the run; it
+            // publishes no lifecycle state unless it paused the lifecycle.
+            ws.send(
+              JSON.stringify({
+                type: "runStarted",
+                file: String(command.file),
+                title: "ADR",
+                action: "resolving",
+                manual: true,
+              }),
+            );
             return;
           case "saveGoal":
             ws.send(JSON.stringify({ type: "goal", text: String(command.text) }));
@@ -700,10 +719,13 @@ describe("MCP work and control tools", () => {
     ) as { action: string; issues: Record<string, unknown> };
     expect(issues.issues.lifecycle).toBe("idle");
 
+    const startedAt = performance.now();
     const lifecycle = valueOf(
       await callTool(live, "lifecycle_control", { action: "start_run", file: "adrs/one.md" }),
     ) as { event: Record<string, unknown>; goal: string };
-    expect(lifecycle.event.stage).toBe("paused");
+    expect(lifecycle.event.type).toBe("runStarted");
+    expect(lifecycle.event.file).toBe("adrs/one.md");
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
     expect(lifecycle.goal).toBe("# Goal\n");
 
     const goal = valueOf(
@@ -729,6 +751,28 @@ describe("MCP work and control tools", () => {
       action: "start",
     });
     expect(unknownAgent.error).toContain("Unknown background agent");
+  });
+
+  test("start_run answers a paused lifecycle on runStarted and other actions on lifecycleState", async () => {
+    const { context } = await workspace();
+    // The dashboard replays the paused lifecycle on connect and starts a
+    // manual run without publishing another lifecycle state.
+    const stub = stubDashboard(context.repoDir, context.stateDir, { lifecycle: "paused" });
+    const live = { ...context, dashboards: [stub.dashboard] };
+    await writeFile(join(context.repoDir, "adrs", "one.md"), "# ADR\n");
+    for (const action of ["start", "pause", "resume", "stop"]) {
+      const lifecycle = valueOf(
+        await callTool(live, "lifecycle_control", { action }),
+      ) as { event: Record<string, unknown> };
+      expect(lifecycle.event.type).toBe("lifecycleState");
+    }
+    const startedAt = performance.now();
+    const run = valueOf(
+      await callTool(live, "lifecycle_control", { action: "start_run", file: "adrs/one.md" }),
+    ) as { event: Record<string, unknown> };
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
+    expect(run.event.type).toBe("runStarted");
+    expect(run.event.manual).toBe(true);
   });
 
   test("control refuses zero and more than one dashboard, naming the ports", async () => {

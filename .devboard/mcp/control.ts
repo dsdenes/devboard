@@ -144,6 +144,20 @@ const LIFECYCLE_ACTIONS = {
   stop: "stopLifecycle",
 } as const;
 
+/**
+ * The reply each lifecycle action actually produces. A manual start pauses an
+ * advancing lifecycle first, which publishes `lifecycleState`, then starts the
+ * record and publishes `runStarted`; with an idle or paused lifecycle only
+ * `runStarted` follows.
+ */
+const LIFECYCLE_REPLIES: Record<string, string[]> = {
+  start: ["lifecycleState"],
+  pause: ["lifecycleState"],
+  resume: ["lifecycleState"],
+  stop: ["lifecycleState"],
+  start_run: ["lifecycleState", "runStarted"],
+};
+
 export async function lifecycleControl(
   context: McpContext,
   options: { action?: unknown; file?: unknown },
@@ -162,16 +176,24 @@ export async function lifecycleControl(
   } else {
     throw new Error("action must be start, pause, resume, stop, or start_run.");
   }
+  const accepted = new Set(LIFECYCLE_REPLIES[options.action] ?? []);
   const dashboard = selectDashboard(context.repoDir, { dashboards: context.dashboards });
   const reply = await dashboardCommand(
     dashboard,
     command,
-    (candidate) => candidate.type === "lifecycleState",
+    (candidate) =>
+      typeof candidate.type === "string" &&
+      accepted.has(candidate.type) &&
+      // A lane's runStarted belongs to other work; only the manual sequence's
+      // own start answers a start_run.
+      (candidate.type !== "runStarted" || candidate.manual === true),
   );
   return {
     action: options.action,
     goal: goalText(context).goal,
-    event: stripType(reply),
+    // The type names which frame answered, so a start_run caller can tell
+    // `runStarted` from the `lifecycleState` published while pausing.
+    event: { ...reply },
   };
 }
 
