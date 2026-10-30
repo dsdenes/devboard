@@ -80,11 +80,7 @@ never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main` on `main`
 before landing, fetch and rebase the task branch onto `origin/main` inside the worktree, rerun the
 invalidated checks, and repeat the sequence.
 
-After the proof, release from the integration checkout:
-
-```sh
-cd .devboard && bun run publish
-```
+After the proof, release from the integration checkout with the single Publish invocation below.
 
 Fetch at most once before landing and once after a rejected push. Untracked
 `.devboard/.issue-*.json` entries are expected status noise: they never justify another fetch,
@@ -102,7 +98,7 @@ cd .devboard && bun run publish --wait-timeout 1800 2>&1 | tail -60; echo "EXIT:
 
 - Use this invocation verbatim: no absolute `cd` path, no other `tail -N` size, and no
   `.tmp/*.log` redirection. Publish already verifies `main`, the release workflow, the npm
-  package, the release assets, and the mirror; the completion gate alone owns the push proof, so
+  package, the release assets, and the mirror; the landing proof already owns the push proof, so
   add no `git ls-remote` or `git status` probe around the publish run.
 - Publish is long-running. If the command is backgrounded, do other work or end the turn and wait
   for its completion follow-up. Never abort, kill, or re-invoke it while a run is pending, and
