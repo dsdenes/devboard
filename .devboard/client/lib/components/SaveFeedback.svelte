@@ -33,7 +33,7 @@
      of the Save control itself. */
   .save-feedback {
     align-items: flex-start;
-    animation: save-feedback-in 160ms ease-out;
+    animation: save-feedback-in 120ms ease-out;
     background: var(--surface-raised);
     border: 1px solid var(--border-strong);
     border-left: 3px solid var(--success);
