@@ -225,25 +225,35 @@ Push and prove the push with this one block, run verbatim once after the sequenc
 canonical checkout and read as-is:
 
 ```sh
-git fetch origin -q && git status --short --branch && git push origin main; echo "PUSH_EXIT:$?"; printf 'local  %s\nremote %s\n' "$(git rev-parse HEAD)" "$(git ls-remote origin refs/heads/main | cut -f1)"
+git fetch origin -q && git status --short --branch && git push origin main; echo "PUSH_EXIT:$?"; printf 'local  %s\nremote %s\n' "$(git rev-parse HEAD)" "$(git ls-remote origin refs/heads/main | cut -f1)"; git rev-list --left-right --count origin/main...HEAD
 ```
 
-It is one push invocation, its exit status on the `PUSH_EXIT:` line, and the local and remote
-commits printed by the same command. The push is verified only when `PUSH_EXIT:0` prints and the
-two SHAs are identical; `git status --short --branch` must show no ahead/behind marker. Never pipe
+It is one push invocation, its exit status on the `PUSH_EXIT:` line, the local and remote commits,
+and the post-push count printed by the same command. The push is verified only when `PUSH_EXIT:0`
+prints, the two SHAs are identical, and `git rev-list --left-right --count origin/main...HEAD`
+prints two zero counts; `git status --short --branch` must show no ahead/behind marker. Never pipe
 `git push` into `tail`, `head`, or any other consumer: the `tail -3`, `tail -4`, `tail -5`,
 `tail -8`, and `tail -10` variants discard the rejection text and the exit status. Never use
 `git log` or a trimmed merge output as the push proof, and run the block once per landing
 attempt: it is the only post-push readback, and this prompt excludes any other `git ls-remote`,
 `git log`, and a second `git status` readback.
 
-Equal tips prove the landing commit is the canonical tip, so the `ls-remote` in the block replaces
-every post-push sync probe: never repeat `git rev-list --left-right --count` or
-`git merge-base --is-ancestor` after the push and never confirm the remote tip with rev-list. The
+Equal tips prove the landing commit is the canonical tip. The block is the complete done check:
+`git ls-remote origin refs/heads/main` proves the remote tip, and
+`git rev-list --left-right --count origin/main...HEAD` proves both sides are even. Read it once and
+move on: never follow it with a per-commit re-check, a `git log` dump, or a Gitea
+actions-endpoint query in the same breath, and never re-verify an integrated commit with
+`git merge-base --is-ancestor <full-sha> …` — the count already answers whether the work landed.
+When a different ancestry question genuinely arises, answer it with one `git branch --contains
+<sha>` or one `git merge-base --is-ancestor HEAD origin/main` and stop. The
 block's `&&` chain is deliberate — the status read must succeed before the push runs — so never
 split it into separate commands, drop the leading fetch, reorder it, or rerun it to reconfirm
 output it already printed; a nonzero exit from it is evidence to read. Fetch at most twice in a
 session, and fetch again only after a push, merge, or rebase happened since the previous fetch.
+
+Never delete the worktree until the remote tip equals the integrated commit; `git ls-remote
+origin refs/heads/main` is that proof, and a worktree whose branch is unproven on the remote stays
+in place. A local-only merge or a deleted worktree before that equality is a failed task.
 
 `Diverging branches can't be fast-forwarded` or "Not possible to fast-forward" is a diagnosis,
 not an instruction to repeat the merge. Never rerun the same `--ff-only` command, and never fall
