@@ -241,20 +241,24 @@ invalidates before landing; a rebase that reports the branch is up to date is th
 Read the worktree's sync state with one `git status --short --branch` call, run in the worktree
 after the fetch required before landing. That call reports the branch, its upstream, and the
 ahead/behind counts in that order, and those counts are the divergence proof. Add
-`git log --oneline -3` only when commit subjects are needed, and `git rev-parse --short HEAD
-origin/main` only when hashes are needed, in the same call:
+`git log --oneline -3` only when commit subjects are needed, and one
+`git rev-parse --short=12 <rev>` per revision only when a short hash is needed, in the same call:
 
 ```sh
 git status --short --branch
 ```
 
+One revision per `git rev-parse --short=12` call: `git rev-parse --short=12 HEAD origin/main`
+exits 128 with `fatal: Needed a single revision`, so invoke the command once for each revision
+whose hash is needed and never pass several revisions to one `--short` call.
+
 An unpublished task branch has no upstream, so its status line carries no counts: add exactly one
 `git rev-list --left-right --count HEAD...origin/main` to that same call, which prints
 `<HEAD-only> <origin/main-only>` in ref order, and read it as the divergence proof. Never chain a
-bare `git rev-parse --short <branch>` with a following `git rev-list --left-right --count` for the
-same question. Guard any optional branch that may not exist yet with
+bare `git rev-parse --short=12 <branch>` with a following `git rev-list --left-right --count`
+for the same question. Guard any optional branch that may not exist yet with
 `git rev-parse --verify --quiet <branch>`, which prints nothing instead of exiting 128 with
-`fatal: Needed a single revision`; never use a bare `git rev-parse --short <branch>` for such a
+`fatal: Needed a single revision`; never use a bare `git rev-parse --short=12 <branch>` for such a
 ref. Use `git merge-base --is-ancestor <sha> origin/main` only to confirm one named commit landed:
 exit 0 means it is an ancestor, 1 means it is not, and any other status, such as 128 with
 `fatal: Not a valid object name`, means a ref is missing or the command itself failed, never that
@@ -286,39 +290,41 @@ task branch onto `origin/main` inside the worktree, rerun the checks the rebase 
 repeat the landing sequence, and run the probe again. Never push a behind branch, and never answer
 a behind result with a bare retry.
 
-Push and prove the push with this one block, run verbatim once after the probe, in the canonical
-checkout and read as-is:
+Push, then prove the push with this one canonical sync check, run verbatim once after the push, in
+the canonical checkout and read as-is:
 
 ```sh
-git push origin main; echo "PUSH_EXIT:$?"; git status --short --branch; printf 'local  %s\nremote %s\n' "$(git rev-parse HEAD)" "$(git ls-remote origin refs/heads/main | cut -f1)"; git rev-list --left-right --count origin/main...HEAD
+git push origin main; echo "PUSH_EXIT:$?"
+git fetch origin && git rev-list --left-right --count HEAD...origin/main
+git merge-base --is-ancestor HEAD origin/main; echo "ANCESTOR_EXIT:$?"
 ```
 
-It is one push invocation: its exit status on the `PUSH_EXIT:` line, the post-push branch state,
-the local and remote commits, and the post-push count all come from that command. The push is
-verified only when `PUSH_EXIT:0` prints, `git status --short --branch` reports no ahead/behind
-marker, the two SHAs are identical, and `git rev-list --left-right --count origin/main...HEAD`
-prints two zero counts. Never pipe `git push` into `tail`, `head`, or any other consumer: the
-`tail -3`, `tail -4`, `tail -5`, `tail -8`, and `tail -10` variants discard the rejection text and
-the exit status. Never use `git log` or a trimmed merge output as the push proof, and run the
-block once per landing attempt: it is the only post-push readback, and this prompt excludes any
-other `git ls-remote`, `git log`, and a second `git status` readback.
+The first line is the only push invocation. The push is verified only when `PUSH_EXIT:0` prints,
+the count is `0 0`, and `ANCESTOR_EXIT:0` prints: `0 0` means neither side has a commit the other
+lacks, so the remote tip is the integrated commit, and the ancestor check confirms that commit
+landed on it. Run this check once per landing attempt and stop. After it passes, never repeat a
+status or rev-list polling pass in the same session — no second `git status --short --branch`,
+`git rev-list`, `git ls-remote`, `git log`, or `git merge-base` readback to reconfirm output it
+already printed. Never pipe `git push` into `tail`, `head`, or any other consumer: the `tail -3`,
+`tail -4`, `tail -5`, `tail -8`, and `tail -10` variants discard the rejection text and the exit
+status. Never use `git log` or a trimmed merge output as the push proof. Fetch at most twice in a
+session before the push block, and fetch again only after a push, merge, or rebase happened since
+the previous fetch.
 
-Equal tips prove the landing commit is the canonical tip. The block is the complete done check:
-`git ls-remote origin refs/heads/main` proves the remote tip, and
-`git rev-list --left-right --count origin/main...HEAD` proves both sides are even. Read it once and
-move on: never follow it with a per-commit re-check, a `git log` dump, or a Gitea
-actions-endpoint query in the same breath, and never re-verify an integrated commit with
-`git merge-base --is-ancestor <full-sha> …` — the count already answers whether the work landed.
-When a different ancestry question genuinely arises, answer it with one `git branch --contains
-<sha>` or one `git merge-base --is-ancestor <sha> origin/main` to confirm that one commit landed,
-and stop. Never split the block into separate commands, drop its push, reorder it, or rerun it to
-reconfirm output it already printed; a nonzero exit from it is evidence to read. Fetch at most
-twice in a session before the push block, and fetch again only after a push, merge, or rebase
-happened since the previous fetch.
+Equal tips prove the landing commit is the canonical tip. `0 0` together with `ANCESTOR_EXIT:0`
+is the complete done check: `git rev-list --left-right --count HEAD...origin/main` proves both
+sides are even, and `git merge-base --is-ancestor HEAD origin/main` confirms the tip landed. Read
+the check once and move on: never follow it with a per-commit re-check, a `git log` dump, or a
+Gitea actions-endpoint query in the same breath. When a different ancestry question genuinely
+arises, answer it with one `git branch --contains <sha>` or one `git merge-base --is-ancestor <sha>
+origin/main` to confirm that one commit landed, and stop. Never split the check into separate
+calls, drop its push, reorder it, or rerun it to reconfirm output it already printed; a nonzero
+`PUSH_EXIT`, a nonzero count, or a nonzero `ANCESTOR_EXIT` is evidence to read.
 
-Never delete the worktree until the remote tip equals the integrated commit; `git ls-remote
-origin refs/heads/main` is that proof, and a worktree whose branch is unproven on the remote stays
-in place. A local-only merge or a deleted worktree before that equality is a failed task.
+Never delete the worktree until the canonical sync check printed `0 0` with `ANCESTOR_EXIT:0`;
+that is the proof the remote tip equals the integrated commit, and a worktree whose branch is
+unproven on the remote stays in place. A local-only merge or a deleted worktree before that
+equality is a failed task.
 
 `Diverging branches can't be fast-forwarded` or "Not possible to fast-forward" is a diagnosis,
 not an instruction to repeat the merge. Never rerun the same `--ff-only` command, and never fall
@@ -334,13 +340,13 @@ them, commit the result, and rerun the checks the conflict invalidates. `git mer
 followed by an unchanged retry is not acceptable; only an integration that removes the conflict
 may follow an abort.
 
-A nonzero `PUSH_EXIT` or differing local and remote commits is a rejected or unproven push: report
-the rejection lines the block printed as-is, fetch the new tip, rebase the task branch onto
-`origin/main` inside the worktree, rerun the invalidated checks, and repeat the same block
-unchanged. Never re-push blind, never substitute a different ad-hoc verification command, and never
-report done from a bare `git push` line. The landing merge is fast-forward only: never `--no-ff`,
-`--no-edit`, or a non-fast-forward `git merge origin/main` on `main`. Push before publish, never
-after.
+A nonzero `PUSH_EXIT`, a nonzero count, or a nonzero `ANCESTOR_EXIT` is a rejected or unproven
+push: report the rejection lines the check printed as-is, fetch the new tip, rebase the task
+branch onto `origin/main` inside the worktree, rerun the invalidated checks, and repeat the same
+check unchanged. Never re-push blind, never substitute a different ad-hoc verification command,
+and never report done from a bare `git push` line. The landing merge is fast-forward only: never
+`--no-ff`, `--no-edit`, or a non-fast-forward `git merge origin/main` on `main`. Push before
+publish, never after.
 
 After that block, release from the integration checkout with the single Publish invocation below.
 
