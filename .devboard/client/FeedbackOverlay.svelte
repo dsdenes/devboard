@@ -927,7 +927,7 @@
     font-size: 12px;
     font-weight: 600;
     left: 50%;
-    padding: 0.45rem 1rem;
+    padding: 6px 16px;
     pointer-events: none;
     position: fixed;
     top: 1rem;
@@ -942,8 +942,8 @@
     color: var(--text);
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
-    padding: 0.9rem;
+    gap: 10px;
+    padding: 14px;
     position: fixed;
     z-index: 2147483647;
   }
@@ -964,7 +964,7 @@
     display: flex;
     flex: 1;
     font: inherit;
-    gap: 0.4rem;
+    gap: 6px;
     min-width: 0;
     padding: 0;
     text-align: left;
@@ -988,7 +988,7 @@
     cursor: pointer;
     font-size: 12px;
     line-height: 1;
-    padding: 0 0.2rem;
+    padding: 0 2px;
   }
 
   .feedback-close:hover {
@@ -1009,12 +1009,12 @@
     border-radius: 6px;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 8px;
     list-style: none;
     margin: 0;
     max-height: 180px;
     overflow-y: auto;
-    padding: 0.5rem;
+    padding: 8px;
   }
 
   .feedback-message {
@@ -1050,7 +1050,7 @@
     font-size: 12px;
     margin: 0;
     overflow-wrap: anywhere;
-    padding: 0.4rem 0.55rem;
+    padding: 6px 8px;
     white-space: pre-wrap;
   }
 
@@ -1071,7 +1071,7 @@
     color: var(--text);
     font: inherit;
     font-size: 12px;
-    padding: 0.5rem;
+    padding: 8px;
     resize: vertical;
     width: 100%;
   }
@@ -1083,7 +1083,7 @@
 
   .feedback-actions {
     display: flex;
-    gap: 0.5rem;
+    gap: 8px;
   }
 
   .feedback-actions button {
@@ -1095,7 +1095,7 @@
     font: inherit;
     font-size: 12px;
     font-weight: 600;
-    padding: 0.4rem 0.8rem;
+    padding: 6px 12px;
   }
 
   .feedback-actions .feedback-primary {
