@@ -579,6 +579,49 @@ export function closingCommitFromGiteaTimeline(timeline: unknown): string | null
   return null;
 }
 
+/** Stable identity for a paged entry, so a repeated page adds nothing. */
+function pagedEntryKey(entry: unknown): string {
+  if (typeof entry === "object" && entry !== null) {
+    const id = (entry as Record<string, unknown>).id;
+    if (typeof id === "number" || typeof id === "string") return `id:${id}`;
+  }
+  return `entry:${JSON.stringify(entry)}`;
+}
+
+/**
+ * Every entry of an ascending Gitea issue collection, in server order. The
+ * server caps one response, so this pages until a page adds no new entry; a
+ * server that ignores `page` repeats the first response and therefore stops
+ * the loop instead of looping to `GITEA_MAX_PAGES`.
+ */
+async function giteaPagedEntries(
+  target: GiteaTarget,
+  path: string,
+  fetchImpl: FetchLike,
+): Promise<unknown[]> {
+  const entries: unknown[] = [];
+  const seen = new Set<string>();
+  for (let page = 1; page <= GITEA_MAX_PAGES; page += 1) {
+    const document = await giteaJson<unknown>(
+      target,
+      `${path}?limit=${GITEA_PAGE_SIZE}&page=${page}`,
+      undefined,
+      fetchImpl,
+    );
+    if (!Array.isArray(document) || document.length === 0) break;
+    let added = 0;
+    for (const entry of document) {
+      const key = pagedEntryKey(entry);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push(entry);
+      added += 1;
+    }
+    if (added === 0) break;
+  }
+  return entries;
+}
+
 /**
  * The commit that closed a Gitea issue. The timeline's closing entry wins;
  * comments are the fallback only when no close entry carries a commit, and a
@@ -589,21 +632,18 @@ export async function giteaClosingCommit(
   number: number,
   fetchImpl: FetchLike = fetch,
 ): Promise<string | null> {
-  const timeline = await giteaJson<unknown>(
+  const timeline = await giteaPagedEntries(
     target,
     `${repoPath(target)}/issues/${number}/timeline`,
-    undefined,
     fetchImpl,
   );
   const closing = closingCommitFromGiteaTimeline(timeline);
   if (closing !== null) return closing;
-  const comments = await giteaJson<unknown>(
+  const comments = await giteaPagedEntries(
     target,
     `${repoPath(target)}/issues/${number}/comments`,
-    undefined,
     fetchImpl,
   );
-  if (!Array.isArray(comments)) return null;
   const bodies: string[] = [];
   for (const entry of comments) {
     if (typeof entry !== "object" || entry === null) continue;

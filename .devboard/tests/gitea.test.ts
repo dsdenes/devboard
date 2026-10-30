@@ -894,6 +894,70 @@ describe("Gitea closing commit", () => {
     ).toBe(commentCommit);
   });
 
+  test("pages the timeline until the closing entry", async () => {
+    const calls: string[] = [];
+    const firstPage = Array.from({ length: 50 }, (_, index) => ({
+      id: index + 1,
+      type: "comment",
+      commit_id: "b".repeat(40),
+    }));
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (url.pathname.endsWith("/issues/10/timeline")) {
+        const page = url.searchParams.get("page");
+        if (page === "1") return Response.json(firstPage);
+        if (page === "2") return Response.json([{ id: 51, type: "close", commit_id: closed }]);
+        return Response.json([]);
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+
+    expect(
+      await giteaClosingCommit(
+        { baseUrl: "http://gitea.test", project: "acme/fixture" },
+        10,
+        fetchImpl,
+      ),
+    ).toBe(closed);
+
+    const timelineCalls = calls.filter((call) => call.includes("/issues/10/timeline?"));
+    const params = timelineCalls.map(
+      (call) => new URL(call, "http://gitea.test").searchParams,
+    );
+    expect(params.map((query) => query.get("page"))).toEqual(["1", "2", "3"]);
+    expect(params.map((query) => query.get("limit"))).toEqual(["50", "50", "50"]);
+  });
+
+  test("stops after a page that adds no new entry", async () => {
+    const calls: string[] = [];
+    const repeated = [
+      { id: 1, type: "comment", commit_id: "b".repeat(40) },
+      { id: 2, type: "commit_ref", commit_id: "b".repeat(40) },
+    ];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (
+        url.pathname.endsWith("/issues/11/timeline") ||
+        url.pathname.endsWith("/issues/11/comments")
+      ) {
+        return Response.json(repeated);
+      }
+      return Response.json({ message: `unexpected ${url}` });
+    };
+
+    expect(
+      await giteaClosingCommit(
+        { baseUrl: "http://gitea.test", project: "acme/fixture" },
+        11,
+        fetchImpl,
+      ),
+    ).toBeNull();
+    expect(calls.filter((call) => call.includes("/issues/11/timeline?")).length).toBe(2);
+    expect(calls.filter((call) => call.includes("/issues/11/comments?")).length).toBe(2);
+  });
+
   test("never returns a commit named only by non-closing entries", async () => {
     const referenced = "b".repeat(40);
     const fetchImpl: FetchLike = async (input) => {
