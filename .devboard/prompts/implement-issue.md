@@ -114,10 +114,11 @@ the prerequisite in another agent's place.
   no login prompt, and no waiting for an operator. Decide from the repository evidence.
 - Complete the work: no stubs, placeholders, disabled checks, or unfinished branches of behavior.
 - Verify the changed surface by running it, then run the checks the change could break.
-- Before landing, fetch the canonical integration line (`main` unless the repository names another)
-  and rebase the run's task branch onto `origin/main` inside the worktree when it has moved.
-  Resolve every conflict yourself and rerun every check the integration invalidates. The task
-  branch is unpublished until it lands, so rebasing it is safe.
+- Before landing, fetch the canonical integration line (`main` unless the repository names another),
+  fast-forward `main` to it, and rebase the run's task branch onto it inside the worktree when it
+  has moved. Resolve every conflict yourself and rerun every check the integration invalidates. The
+  task branch is unpublished until it lands, so rebasing it is safe. Never answer "Not possible to
+  fast-forward" by repeating the same `git merge --ff-only <task-branch>`.
 - Land through the one sequence below. Never create a pull request or merge request, never
   force-push, and never rewrite published history.
 - When a push is rejected, fetch the new tip, rebase the task branch onto it inside the worktree,
@@ -140,9 +141,12 @@ integration line once and rebase the task branch onto `origin/main`; a rebase th
 branch is up to date is the normal case, and the fast-forward merge below is itself the
 up-to-date gate, so no ahead/behind probe runs before the push.
 
-Land it with this one sequence in the canonical checkout, on `main`:
+Rebase the task branch onto `origin/main` when the fetched tip has moved, and rerun the checks the
+rebase invalidates. Then land it with this one sequence from the canonical checkout, on `main`;
+the first merge fast-forwards `main` to the fetched tip before the branch merge:
 
 ```sh
+git merge --ff-only origin/main
 git merge --ff-only <task-branch>
 git push origin main
 ```
@@ -183,10 +187,13 @@ twice in a session, and fetch again only after a push, merge, or rebase happened
 previous fetch.
 
 A rejected push is ground truth: fetch the new tip, rebase the task branch onto `origin/main`
-inside the worktree, rerun the invalidated checks, and retry the same push unchanged. The landing
-merge is fast-forward only: never `--no-ff`, `--no-edit`, or a preparatory `git merge origin/main`
-on `main`. Run the sequence once per landing attempt and add no `tail` pipe, `fetch`, or
-`PIPESTATUS` probe around it. Push before publish, never after.
+inside the worktree, rerun the invalidated checks, and retry the same push unchanged. If
+`git merge --ff-only <task-branch>` reports "Not possible to fast-forward", never rerun it: the
+branch does not contain `main`'s tip. Fetch the new tip, rebase the task branch onto `origin/main`
+inside the worktree, rerun the invalidated checks, and rerun the landing sequence. The landing
+merge is fast-forward only: never `--no-ff`, `--no-edit`, or a non-fast-forward
+`git merge origin/main` on `main`. Run the sequence once per landing attempt and add no `tail`
+pipe, `fetch`, or `PIPESTATUS` probe around it. Push before publish, never after.
 
 After that block, release from the integration checkout with the single Publish invocation below.
 
