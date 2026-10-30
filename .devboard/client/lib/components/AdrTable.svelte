@@ -66,6 +66,7 @@
           tabindex="0"
           onclick={() => activate(record)}
           onkeydown={(event) => {
+            if (event.target !== event.currentTarget) return;
             if (event.key === "Enter" || event.key === " ") {
               event.preventDefault();
               activate(record);
