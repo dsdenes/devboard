@@ -10,6 +10,11 @@ import type { Proposal } from "./synthesize";
  */
 
 export const ISSUE_BODY_MAX_BYTES = 64 * 1024;
+/**
+ * The forge title limit: GitHub accepts 256 characters, Gitea 255. The lower
+ * bound applies so one title is valid on every forge the Coach can file to.
+ */
+export const ISSUE_TITLE_MAX_BYTES = 255;
 
 export interface CoachOpenIssue {
   number: number;
@@ -25,7 +30,34 @@ export function familyTag(key: string): string {
 
 /** `[coach] <family key>` for a tool, `[coach] prompt: <family key>` for a prompt. */
 export function issueTitle(family: CoachFamily, action: "tool" | "prompt"): string {
-  return action === "tool" ? `[coach] ${family.key}` : `[coach] prompt: ${family.key}`;
+  const prefix = action === "tool" ? "[coach] " : "[coach] prompt: ";
+  return boundTitle(`${prefix}${family.key}`, family.key);
+}
+
+/** Cuts a value to at most `max` UTF-8 bytes without splitting a code point. */
+function clipBytes(value: string, max: number): string {
+  if (Buffer.byteLength(value, "utf8") <= max) return value;
+  let kept = "";
+  let bytes = 0;
+  for (const character of value) {
+    const size = Buffer.byteLength(character, "utf8");
+    if (bytes + size > max) break;
+    kept += character;
+    bytes += size;
+  }
+  return kept;
+}
+
+/**
+ * Bounds a title to the forge limit. A cut title ends with the family tag so
+ * two long keys that share a prefix never collapse into one title and read as
+ * a duplicate of each other. The full key stays in the body's family tag.
+ */
+export function boundTitle(title: string, family: string): string {
+  if (Buffer.byteLength(title, "utf8") <= ISSUE_TITLE_MAX_BYTES) return title;
+  const suffix = ` …${familyTag(family)}`;
+  const room = ISSUE_TITLE_MAX_BYTES - Buffer.byteLength(suffix, "utf8");
+  return `${clipBytes(title, room).trimEnd()}${suffix}`;
 }
 
 /** Escapes a line that would otherwise open a new Markdown section. */
