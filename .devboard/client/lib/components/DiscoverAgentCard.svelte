@@ -186,7 +186,6 @@
     <section class="panel discover-agent__activity" aria-label="Agent activity">
       <div class="panel__header">
         <h2 class="panel__title">Activity</h2>
-        <span class="panel__subtitle">{activity.length} lines</span>
       </div>
       <div
         class="panel__body discover-agent__activity-log"

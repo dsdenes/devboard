@@ -638,23 +638,34 @@ export function isRepositoryWorkingDirectory(repoDir: string, cwd: string): bool
 export interface SelectSessionsOptions {
   stateDir: string;
   repoDir: string;
-  /** Newest files kept; 1,000 by default. */
+  /** Newest matching files kept; 1,000 by default. */
   maxFiles?: number;
+  /** Matching sessions skipped before the newest-file cap; list paging. */
+  skip?: number;
+  /** Header predicate applied before the newest-file cap. */
+  filter?: (header: SessionHeader) => boolean;
   /** Skip transcripts last written before this epoch instant. */
   mtimeSince?: number;
   /** Test seam; the default reads the state directory. */
   reader?: SessionReader;
 }
 
-/**
- * Every transcript whose session cwd is this repository (or a worktree under
- * it), newest 1,000 selected files, deduplicated by session id. Selection reads
- * file metadata and headers only; at most `maxFiles` transcripts are parsed.
- */
-export function selectSessions(options: SelectSessionsOptions): SessionSelection {
+interface SelectedTranscript {
+  meta: SessionFileMeta;
+  header: SessionHeader;
+}
+
+interface TranscriptHeaders {
+  /** Every repository transcript, newest first, one per session id. */
+  ordered: SelectedTranscript[];
+  /** Files with no usable session header. */
+  skipped: number;
+}
+
+/** The repository's transcript headers in newest-first order, deduplicated. */
+function transcriptHeaders(options: SelectSessionsOptions): TranscriptHeaders {
   const stateDir = resolve(options.stateDir);
   const repoDir = resolve(options.repoDir);
-  const maxFiles = Math.max(1, options.maxFiles ?? SESSION_MAX_FILES);
   const reader = options.reader ?? defaultSessionReader;
   const since = options.mtimeSince;
   const entries = reader
@@ -662,7 +673,7 @@ export function selectSessions(options: SelectSessionsOptions): SessionSelection
     .filter((meta) => since === undefined || meta.mtimeMs >= since);
   let skipped = 0;
   // One session id is one transcript: a resumed session copies its header.
-  const byId = new Map<string, { meta: SessionFileMeta; header: SessionHeader }>();
+  const byId = new Map<string, SelectedTranscript>();
   for (const meta of entries) {
     const header = headerFor(meta, reader);
     if (header === undefined) {
@@ -684,11 +695,26 @@ export function selectSessions(options: SelectSessionsOptions): SessionSelection
       right.header.startedAt.localeCompare(left.header.startedAt) ||
       left.meta.path.localeCompare(right.meta.path),
   );
-  const kept = ordered.slice(0, maxFiles);
+  return { ordered, skipped };
+}
+
+interface ParsedSelection {
+  sessions: AgentSession[];
+  /** Selected transcripts with no usable session record. */
+  skipped: number;
+  malformed: number;
+}
+
+function parseTranscripts(
+  entries: SelectedTranscript[],
+  options: { stateDir: string; repoDir: string },
+  reader: SessionReader,
+): ParsedSelection {
   const sessions: AgentSession[] = [];
+  let skipped = 0;
   let malformed = 0;
-  for (const entry of kept) {
-    const parsed = readTranscript(entry.meta, { stateDir, repoDir }, reader);
+  for (const entry of entries) {
+    const parsed = readTranscript(entry.meta, options, reader);
     malformed += parsed.malformed;
     if (parsed.session === undefined) {
       skipped += 1;
@@ -696,16 +722,40 @@ export function selectSessions(options: SelectSessionsOptions): SessionSelection
     }
     sessions.push(parsed.session);
   }
+  return { sessions, skipped, malformed };
+}
+
+/**
+ * Every transcript whose session cwd is this repository (or a worktree under
+ * it), deduplicated by session id and ordered newest first. The optional header
+ * filter and skip are applied before the newest-file cap, so a filtered query
+ * reaches older matches instead of losing them to the cap. Selection reads file
+ * metadata and headers only; at most `maxFiles` transcripts are parsed.
+ */
+export function selectSessions(options: SelectSessionsOptions): SessionSelection {
+  const maxFiles = Math.max(1, options.maxFiles ?? SESSION_MAX_FILES);
+  const reader = options.reader ?? defaultSessionReader;
+  const headers = transcriptHeaders(options);
+  const filter = options.filter;
+  const matching =
+    filter === undefined ? headers.ordered : headers.ordered.filter((entry) => filter(entry.header));
+  const skip = Math.max(0, options.skip ?? 0);
+  const kept = matching.slice(skip, skip + maxFiles);
+  const parsed = parseTranscripts(
+    kept,
+    { stateDir: resolve(options.stateDir), repoDir: resolve(options.repoDir) },
+    reader,
+  );
   return {
-    sessions: sessions.sort(
+    sessions: parsed.sessions.sort(
       (left, right) =>
         left.startedAt.localeCompare(right.startedAt) || left.path.localeCompare(right.path),
     ),
-    selected: ordered.length,
-    omitted: ordered.length - kept.length,
-    truncated: ordered.length > kept.length,
-    skipped,
-    malformed,
+    selected: matching.length,
+    omitted: matching.length - kept.length,
+    truncated: matching.length > kept.length,
+    skipped: headers.skipped + parsed.skipped,
+    malformed: parsed.malformed,
   };
 }
 
@@ -746,7 +796,9 @@ function summary(session: AgentSession): SessionSummary {
 
 /**
  * The MCP listing: newest first, bounded. `since` and `until` bound the session
- * start; `cwd` matches the recorded working directory after resolution.
+ * start; `cwd` matches the recorded working directory after resolution. The
+ * filters run on headers before the newest-file cap, and `offset` skips
+ * matching sessions before that cap so paging reaches older matches.
  */
 export function listSessions(options: ListSessionsOptions): SessionListPage {
   const limit = Math.min(
@@ -760,28 +812,36 @@ export function listSessions(options: ListSessionsOptions): SessionListPage {
     typeof options.cwd === "string" && options.cwd.length > 0
       ? resolve(options.repoDir, options.cwd)
       : undefined;
-  const selection = selectSessions(options);
+  const filter =
+    since === undefined && until === undefined && cwd === undefined
+      ? undefined
+      : (header: SessionHeader): boolean => {
+          const started = parseSessionInstant(header.startedAt);
+          if (started === undefined) return false;
+          if (since !== undefined && started < since) return false;
+          if (until !== undefined && started > until) return false;
+          if (cwd !== undefined && resolve(header.cwd) !== cwd) return false;
+          return true;
+        };
+  const selection = selectSessions({
+    ...options,
+    skip: offset,
+    ...(filter === undefined ? {} : { filter }),
+  });
   const rows = selection.sessions
-    .filter((session) => {
-      const started = parseSessionInstant(session.startedAt);
-      if (started === undefined) return false;
-      if (since !== undefined && started < since) return false;
-      if (until !== undefined && started > until) return false;
-      if (cwd !== undefined && resolve(session.cwd) !== cwd) return false;
-      return true;
-    })
     .sort(
       (left, right) =>
         right.startedAt.localeCompare(left.startedAt) || left.path.localeCompare(right.path),
     )
     .map(summary);
-  const page = rows.slice(offset, offset + limit);
+  const page = rows.slice(0, limit);
   const next = offset + page.length;
+  const truncated = next < selection.selected;
   return {
     sessions: page,
-    total: rows.length,
-    truncated: next < rows.length,
-    nextOffset: next < rows.length ? next : null,
+    total: selection.selected,
+    truncated,
+    nextOffset: truncated ? next : null,
   };
 }
 
@@ -860,12 +920,17 @@ export interface SessionSearchPage {
   truncated: boolean;
 }
 
-/** Case-insensitive substring matches across message text, newest session first. */
+/**
+ * Case-insensitive substring matches across message text, newest session first.
+ * The scan walks every repository transcript in newest-first batches, so a
+ * match older than the newest `maxFiles` files is still found.
+ */
 export function searchSessions(options: {
   stateDir: string;
   repoDir: string;
   query: string;
   limit?: number;
+  maxFiles?: number;
   reader?: SessionReader;
 }): SessionSearchPage {
   const query = options.query.toLowerCase();
@@ -873,29 +938,38 @@ export function searchSessions(options: {
     SESSION_SEARCH_MAX_MATCHES,
     Math.max(1, options.limit ?? SESSION_SEARCH_MAX_MATCHES),
   );
-  const selection = selectSessions(options);
-  const ordered = [...selection.sessions].sort(
-    (left, right) =>
-      right.startedAt.localeCompare(left.startedAt) || left.path.localeCompare(right.path),
-  );
+  const maxFiles = Math.max(1, options.maxFiles ?? SESSION_MAX_FILES);
+  const reader = options.reader ?? defaultSessionReader;
+  const headers = transcriptHeaders(options);
   const matches: SessionSearchMatch[] = [];
-  for (const session of ordered) {
-    for (const message of session.messages) {
-      const at = message.text.toLowerCase().indexOf(query);
-      if (at < 0) continue;
-      const start = Math.max(0, at - 60);
-      const snippet = message.text
-        .slice(start, start + SESSION_SEARCH_SNIPPET_MAX)
-        .replace(/\s+/g, " ")
-        .trim();
-      matches.push({
-        sessionId: session.id,
-        index: message.index,
-        role: message.role,
-        snippet: snippet.slice(0, SESSION_SEARCH_SNIPPET_MAX),
-      });
-      if (matches.length > cap) {
-        return { matches: matches.slice(0, cap), truncated: true };
+  for (let start = 0; start < headers.ordered.length; start += maxFiles) {
+    const parsed = parseTranscripts(
+      headers.ordered.slice(start, start + maxFiles),
+      { stateDir: resolve(options.stateDir), repoDir: resolve(options.repoDir) },
+      reader,
+    );
+    parsed.sessions.sort(
+      (left, right) =>
+        right.startedAt.localeCompare(left.startedAt) || left.path.localeCompare(right.path),
+    );
+    for (const session of parsed.sessions) {
+      for (const message of session.messages) {
+        const at = message.text.toLowerCase().indexOf(query);
+        if (at < 0) continue;
+        const snippetStart = Math.max(0, at - 60);
+        const snippet = message.text
+          .slice(snippetStart, snippetStart + SESSION_SEARCH_SNIPPET_MAX)
+          .replace(/\s+/g, " ")
+          .trim();
+        matches.push({
+          sessionId: session.id,
+          index: message.index,
+          role: message.role,
+          snippet: snippet.slice(0, SESSION_SEARCH_SNIPPET_MAX),
+        });
+        if (matches.length > cap) {
+          return { matches: matches.slice(0, cap), truncated: true };
+        }
       }
     }
   }
