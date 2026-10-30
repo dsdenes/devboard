@@ -254,8 +254,12 @@ source checkout; it resolves the npm version and artifact for the target host al
 
 `install` writes a real npm prefix at `<host>/.devboard`, replacing `.devboard`,
 `.omp/commands`, and `.omp/extensions` symlinks with real directories that hold the installed
-package's files. It keeps `.devboard/.tmp`, copies the package's `prompts/`, `extensions/`, and
-`lib/` trees to `<host>/.devboard/`, copies `templates/host-AGENTS.md` to
+package's files. It keeps `.devboard/.tmp`: when the old `.devboard` was a symlink, every
+non-disposable child of its `.tmp` — `state`, `journal`, `providers`, `issues`, `flow`, `coach`,
+`scout`, `design`, `watchdog`, `orchestrator`, `mcp`, and `install.json` — is copied across
+byte-identically before the symlink is replaced; only `serving/`, `updates/`, and
+`dashboard.log` are scratch the new prefix recreates. It copies the package's `prompts/`,
+`extensions/`, and `lib/` trees to `<host>/.devboard/`, copies `templates/host-AGENTS.md` to
 `<host>/AGENTS.md` when that file is a symlink or absent (an existing regular file is untouched
 and reported as drift), adds the three ignored paths to `.gitignore`, and leaves exactly one
 dashboard running from the installed package. The copied trees are what the command wrappers

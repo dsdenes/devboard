@@ -8,9 +8,9 @@
  * into a real host.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { chmod, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { createReleaseDirectory } from "./harness-package";
 import { MCP_TOOL_NAMES } from "../mcp/catalog";
 import {
@@ -197,6 +197,61 @@ try {
     [OLD, OLD, false],
     "the fresh dashboard reports its installed version",
   );
+
+  step("carrying the whole .tmp across a symlinked prefix");
+  const shared = join(root, "shared-harness");
+  const seeded: Array<[string, string]> = [
+    ["providers/credentials.json", `${JSON.stringify({ version: 1, subscriptions: [] })}\n`],
+    ["flow/repo/session/session.json", `${JSON.stringify({ id: "session" })}\n`],
+    ["coach/settings.json", `${JSON.stringify({ cadenceMinutes: 5 })}\n`],
+    ["scout/0123456789abcdef01234567/state.json", `${JSON.stringify({ enabled: true })}\n`],
+    ["watchdog/settings.json", `${JSON.stringify({ intervalSeconds: 60 })}\n`],
+    ["state/host.json", `${JSON.stringify({ host: "carry" })}\n`],
+    ["journal/0123456789abcdef01234567.jsonl", `${JSON.stringify({ event: "started" })}\n`],
+  ];
+  for (const [path, text] of seeded) {
+    await mkdir(dirname(join(shared, ".tmp", path)), { recursive: true });
+    await writeFile(join(shared, ".tmp", path), text);
+  }
+  await writeFile(join(shared, ".tmp", "install.json"), `${JSON.stringify({ version: OLD })}\n`);
+  await mkdir(join(shared, ".tmp", "serving", "snapshot"), { recursive: true });
+  await writeFile(join(shared, ".tmp", "serving", "snapshot", "index.html"), "old snapshot\n");
+  await mkdir(join(shared, ".tmp", "updates", "download-old"), { recursive: true });
+  await writeFile(join(shared, ".tmp", "updates", "download-old", "old.tgz"), "old download\n");
+  await writeFile(join(shared, ".tmp", "dashboard.log"), "old log\n");
+  const carryHost = await makeHost(root, "carry");
+  await symlink(shared, join(carryHost.directory, ".devboard"));
+  const carried = launcher(["install", "--host", carryHost.directory], oldEnv);
+  startedHosts.push(carryHost.directory);
+  assertTrue(carried.code === 0, `carried install failed:\n${carried.stdout}\n${carried.stderr}`);
+  const carryPrefix = join(carryHost.directory, ".devboard");
+  assertTrue(!isSymlink(carryPrefix), "a carried .devboard is a real directory");
+  for (const [path, text] of seeded) {
+    const target = join(carryPrefix, ".tmp", path);
+    assertTrue(existsSync(target), `carried .tmp/${path} is missing`);
+    assertEquals(readFileSync(target, "utf8"), text, `carried .tmp/${path} is byte-identical`);
+  }
+  assertEquals(
+    installState(carryPrefix).host,
+    carryHost.directory,
+    "install writes its own state beside the carried trees",
+  );
+  for (const path of ["serving/snapshot/index.html", "updates/download-old"]) {
+    assertTrue(
+      !existsSync(join(carryPrefix, ".tmp", path)),
+      `disposable .tmp/${path} is not carried`,
+    );
+  }
+  assertTrue(
+    !readFileSync(join(carryPrefix, ".tmp", "dashboard.log"), "utf8").includes("old log"),
+    "the old dashboard log is not carried",
+  );
+  assertEquals(
+    readdirSync(carryHost.directory).filter((name) => name.startsWith(".devboard-install-")),
+    [],
+    "install removes its staging directory",
+  );
+  step("carried provider keys, flow, coach, scout, watchdog, state, and journal");
 
   step("installing into a fresh host without a linked checkout");
   const fresh = await makeHost(root, "fresh");

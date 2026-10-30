@@ -25,13 +25,17 @@ import {
   realpathSync,
 } from "node:fs";
 import {
+  chmod,
+  copyFile,
   cp,
+  lstat,
   mkdir,
-  readFile,
   readdir,
+  readlink,
   realpath,
   rename,
   rm,
+  symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -39,9 +43,9 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { syncHarnessTrees, syncWrappers } from "../lib/host-sync.mjs";
+import { HOST_HARNESS_PATHS, syncHarnessTrees, syncWrappers } from "../lib/host-sync.mjs";
 
 // The sync helpers moved to lib/host-sync.mjs so the dashboard updater runs the
 // same code; they stay re-exported here for the launcher's tests.
@@ -756,35 +760,66 @@ function journalKey(repoDir) {
   return createHash("sha256").update(repoDir).digest("hex").slice(0, 24);
 }
 
-async function captureTemporaryState(prefix, host) {
-  const captured = [];
-  const stateDir = join(prefix, ".tmp");
-  const state = join(stateDir, "state");
-  if (existsSync(state)) {
-    for (const name of await readdir(state)) {
-      const path = join(state, name);
-      if (existsSync(path)) captured.push({ path: join("state", name), data: await readFile(path) });
-    }
+/**
+ * `.tmp` children the next install recreates from scratch: a serving snapshot
+ * of the replaced release, update downloads and their backups, and the
+ * dashboard log. Everything else is operator data the cleanup protects.
+ */
+const DISPOSABLE_TEMP_ENTRIES = new Set(["serving", "updates", "dashboard.log"]);
+
+/**
+ * Copies one staged `.tmp` child. `cp` refuses a destination below its source,
+ * which is what a host living under the shared state directory makes of the
+ * stage, so the walk prunes the stage itself. Symlinks stay links, modes are
+ * preserved, and a FIFO or socket is never opened.
+ */
+async function copyTemporaryEntry(source, destination, outsideStage) {
+  if (!outsideStage(source)) return;
+  const info = await lstat(source);
+  if (info.isSymbolicLink()) {
+    await symlink(await readlink(source), destination);
+    return;
   }
-  const journal = join(stateDir, "journal");
-  const key = journalKey(resolve(host));
-  if (existsSync(journal)) {
-    for (const name of await readdir(journal)) {
-      if (!name.startsWith(key)) continue;
-      const path = join(journal, name);
-      if (existsSync(path)) captured.push({ path: join("journal", name), data: await readFile(path) });
+  if (info.isDirectory()) {
+    await mkdir(destination, { recursive: true });
+    for (const name of await readdir(source)) {
+      await copyTemporaryEntry(join(source, name), join(destination, name), outsideStage);
     }
+    await chmod(destination, info.mode & 0o7777);
+    return;
   }
-  const install = join(stateDir, "install.json");
-  if (existsSync(install)) captured.push({ path: "install.json", data: await readFile(install) });
-  return captured;
+  if (!info.isFile()) return;
+  await copyFile(source, destination);
+  await chmod(destination, info.mode & 0o7777);
 }
 
-async function restoreTemporaryState(prefix, captured) {
-  for (const entry of captured) {
-    const path = join(prefix, ".tmp", entry.path);
-    await mkdir(resolve(path, ".."), { recursive: true });
-    await writeFile(path, entry.data);
+/**
+ * Stages every non-disposable child of the symlinked prefix's `.tmp` before the
+ * prefix is replaced. Providers, issues, flow, coach, scout, design, watchdog,
+ * orchestrator, mcp, state, journal, and `install.json` are unrecreatable
+ * operator data, so the replacement carries them; a fresh prefix would
+ * otherwise start without provider keys and without any history.
+ */
+async function captureTemporaryState(prefix, stage) {
+  const stateDir = join(prefix, ".tmp");
+  if (!existsSync(stateDir)) return [];
+  const source = await realpath(stateDir);
+  const staged = await realpath(stage);
+  const outsideStage = (path) => path !== staged && !path.startsWith(`${staged}${sep}`);
+  const carried = [];
+  for (const name of (await readdir(source)).sort()) {
+    if (DISPOSABLE_TEMP_ENTRIES.has(name)) continue;
+    await copyTemporaryEntry(join(source, name), join(staged, name), outsideStage);
+    carried.push(name);
+  }
+  return carried;
+}
+
+async function restoreTemporaryState(prefix, stage, carried) {
+  const stateDir = join(prefix, ".tmp");
+  await mkdir(stateDir, { recursive: true });
+  for (const name of carried) {
+    await rename(join(stage, name), join(stateDir, name));
   }
 }
 
@@ -1072,11 +1107,24 @@ async function installCommand(options) {
       `${host} tracks files under .devboard; refusing to replace a tracked harness tree`,
     );
   }
-  const captured = (lstatOrUndefined(prefix)?.isSymbolicLink() ?? false)
-    ? await captureTemporaryState(prefix, host)
-    : [];
-  await replacePathWithDirectory(prefix);
-  if (captured.length > 0) await restoreTemporaryState(prefix, captured);
+  const linked = lstatOrUndefined(prefix)?.isSymbolicLink() ?? false;
+  const stage = linked ? join(host, `.devboard-install-${randomUUID()}`) : undefined;
+  let carried = [];
+  if (stage !== undefined) {
+    try {
+      await mkdir(stage, { recursive: true });
+      carried = await captureTemporaryState(prefix, stage);
+    } catch (error) {
+      await rm(stage, { recursive: true, force: true });
+      throw error;
+    }
+  }
+  try {
+    await replacePathWithDirectory(prefix);
+    if (carried.length > 0) await restoreTemporaryState(prefix, stage, carried);
+  } finally {
+    if (stage !== undefined) await rm(stage, { recursive: true, force: true });
+  }
   await ensureFixedDirectory(join(prefix, ".tmp"));
 
   let version;
