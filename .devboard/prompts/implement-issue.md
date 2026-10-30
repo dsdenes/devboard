@@ -219,16 +219,20 @@ the prerequisite in another agent's place.
 ## Shell calls
 
 - Every shell call must carry a substantive command. A bare `true`, a `cd <root> && true` prefix, or
-  an `&& true`/`; true` suffix with no other effect is never a valid call: it burns a round trip,
-  records no evidence, and hides whether the step it stood for ran. Each call must answer the
-  question it was made for, and its output must be read; an exit-status placeholder is not a
-  diagnostic.
+  a `|| true`/`; true`/`&& true` tail is never a valid call: it burns a round trip, records no
+  evidence, and turns a real failure into a passing result. Each call must answer the question it
+  was made for, and its output must be read; an exit-status placeholder is not a diagnostic.
+- Never neutralize a probe's exit status. `|| true`, `; true`, `&& true`, and `true` as a command's
+  only effect are forbidden: they hide a missing worktree, an empty match, or a failed fetch behind
+  a zero exit. Run the probe alone and read its nonzero status and stderr; a command whose failure
+  matters must be allowed to fail.
+- A probe whose target may legitimately be absent must print an explicit empty-result marker, never
+  silent output. Append `|| echo none` to the probe
+  (`git worktree list | grep -E 'issue-807' || echo none`); for a command that exits 0 on an empty
+  result, such as `git branch --list`, print `none` when its output is empty. The `none` or `absent`
+  marker separates "the target is absent" from "the command failed".
 - To confirm the working directory, run `pwd` or `git rev-parse --show-toplevel`; to confirm a path
   exists, run `ls <path>`. Never stand in for either with `cd <root> && true`.
-- `|| true` and `; true` are permitted only when the exit status is genuinely irrelevant and you
-  state the reason. When the failure itself is the answer, run the probe bare and read its nonzero
-  status instead of masking it with `|| true`. An absent match on a `grep` or `ls` probe is the
-  expected result, so its empty output needs no suffix.
 - Keep a worktree, branch, stash, or remote-tip probe in one command and accept its nonzero exit as
   the answer. Do not pad it with a guard tail.
 
