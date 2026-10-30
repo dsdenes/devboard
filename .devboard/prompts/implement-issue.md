@@ -350,7 +350,7 @@ Waiting for CI has exactly two sanctioned forms, and nothing else. The first is 
 for the `devboard-release.yml` run of `HEAD`: `bun run publish --wait-timeout N` blocks on that run
 for up to `N` seconds (1800 by default), then verifies the npm package and the Gitea release
 assets, so its recorded exit code is the whole wait. Run it once as the Publish section specifies,
-with its default bound and with `timeout: 0` on the tool call.
+with its `--wait-timeout 1800` bound and with `timeout: 0` on the tool call.
 
 The second is one long-lived background watcher whose whole lifetime is that wait — a non-release
 run or a local `verify` process that publish does not cover — started with `async: true` and
@@ -374,13 +374,14 @@ the watcher's completion follow-up is the answer, so end the turn.
 
 ## Publish
 
-Publishing is part of the task. Invoke `bun run publish` at most once per task, from the repository
+Publishing is part of the task. Invoke `bun run publish` at most once per issue, from the repository
 root in the integration checkout, and only after the change is merged to `main` and pushed — never
 from a worktree and never before the push. Run it as a background job that keeps the whole log and
 the exit code:
 
 ```bash
-cd .devboard && bun run publish > .tmp/publish-issue-<number>.log 2>&1; echo "EXIT:$?" >> .tmp/publish-issue-<number>.log
+cd .devboard && bun run publish --wait-timeout 1800 \
+  > .tmp/publish-<number>.log 2>&1; echo "EXIT:$?" >> .tmp/publish-<number>.log
 ```
 
 - Start this command with `async: true` and `timeout: 0`, so it has no tool deadline and keeps its
@@ -390,18 +391,20 @@ cd .devboard && bun run publish > .tmp/publish-issue-<number>.log 2>&1; echo "EX
   and its recorded log, and never re-issue the command.
 - Use this invocation verbatim and from the repository root: no absolute `cd` path such as
   `/home/...`, no `tail`/`head`/`tee` pipe or any other output consumer, no `--wait-timeout`
-  override, and no second log file. The redirected log is the full output and its final line is
-  the exit code. Publish already verifies `main`, the release workflow, the npm package, the
-  release assets, and the mirror; the push block already owns the push proof, so add no
-  `git ls-remote` or `git status` probe around the publish run. Read no release or workflow state
-  through `curl`, `gh`, or `glab`; publish prints the verification result.
+  value other than `1800`, and no second log file. The redirected log is the full output and its
+  final line is the exit code. Publish already verifies `main`, the release workflow, the npm
+  package, the release assets, and the mirror; the push block already owns the push proof, so add
+  no `git ls-remote` or `git status` probe around the publish run. Read no release or workflow
+  state through `curl`, `gh`, or `glab`; publish prints the verification result.
 - Publish is long-running. While it runs, do other work or end the turn and wait for its
   completion follow-up. Never abort, kill, or re-invoke it while a run is pending, and never poll
   for it.
 - An aborted, timed-out, or truncated publish call is inspected through the still-running job and
   its recorded log, never re-issued.
-- A nonzero exit is never followed by an immediate identical re-run. Read the log, name the failing
-  step, and fix the cause in a new commit. When the log reports
+- A nonzero exit is never followed by an immediate identical re-run, and no second `bun run publish`
+  starts for the same issue after the release workflow concluded failure until the failing step is
+  diagnosed, fixed, committed, and pushed. Read the log, name the failing step, and fix the cause
+  in a new commit. When the log reports
   `the release workflow concluded failure`, open that workflow run for the named commit and read
   its failing step; when the run's log is not reachable through the exposed tools, reproduce the
   workflow's own steps locally from the package root (`bun install --frozen-lockfile`,
