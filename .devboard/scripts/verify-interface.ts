@@ -3795,13 +3795,18 @@ try {
     labelSize: number;
     radius: string;
     legend: string;
-    zoomVisible: boolean;
+    controlVisible: boolean;
+    controlLabel: string;
     canvasPresent: boolean;
+    canvasOverflow: string;
     svgWidth: number;
-    rootWidth: number;
+    svgNaturalWidth: number;
+    canvasWidth: number;
     scrolls: boolean;
   }>(`(() => {
     const root = document.querySelector('[data-testid="discover-dependency-diagram"]');
+    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
+    const control = document.querySelector('[data-testid="discover-dependency-size"]');
     const svg = root?.querySelector('svg');
     const label = root?.querySelector('.nodeLabel p');
     const node = root?.querySelector('g.node rect');
@@ -3812,11 +3817,14 @@ try {
       labelSize: label === null || label === undefined ? 0 : Number.parseFloat(getComputedStyle(label).fontSize),
       radius: node === null || node === undefined ? "" : getComputedStyle(node).rx,
       legend: document.querySelector('.discover-diagram__legend')?.textContent?.trim() ?? "",
-      zoomVisible: document.querySelector('[data-testid="discover-dependency-zoom"]') !== null,
-      canvasPresent: document.querySelector('[data-testid="discover-dependency-canvas"]') !== null,
+      controlVisible: control !== null,
+      controlLabel: control?.textContent?.trim() ?? "",
+      canvasPresent: canvas !== null,
+      canvasOverflow: canvas === null ? "" : getComputedStyle(canvas).overflow,
       svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
-      rootWidth: root === null ? 0 : root.clientWidth,
-      scrolls: root === null ? false : root.scrollWidth > root.clientWidth + 1,
+      svgNaturalWidth: svg?.viewBox?.baseVal?.width ?? 0,
+      canvasWidth: canvas?.clientWidth ?? 0,
+      scrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
     };
   })()`);
   check(dependencyDiagram.nodes >= 2, "the dependency diagram does not draw every bounded context", dependencyDiagram);
@@ -3826,7 +3834,7 @@ try {
     "the dependency diagram does not label its contexts",
     dependencyDiagram,
   );
-  check(dependencyDiagram.labelSize >= 11, "the dependency diagram labels are unreadably small", dependencyDiagram);
+  check(dependencyDiagram.labelSize >= 12, "the dependency diagram labels render below 12px", dependencyDiagram);
   check(dependencyDiagram.radius === "4px", "the dependency diagram nodes are not on the design radius", dependencyDiagram);
   check(
     dependencyDiagram.legend === "Arrows point from a context to the context it uses.",
@@ -3834,19 +3842,147 @@ try {
     dependencyDiagram,
   );
   check(
-    !dependencyDiagram.zoomVisible && !dependencyDiagram.canvasPresent,
-    "the dependency diagram still offers a movable view",
+    dependencyDiagram.canvasPresent && dependencyDiagram.canvasOverflow === "auto",
+    "the dependency diagram is not inside a scrolling canvas",
     dependencyDiagram,
   );
   check(
-    dependencyDiagram.svgWidth > 0 && dependencyDiagram.svgWidth <= dependencyDiagram.rootWidth + 1,
-    "the dependency diagram overflows its panel",
+    !dependencyDiagram.controlVisible &&
+      dependencyDiagram.svgWidth > 0 &&
+      dependencyDiagram.svgWidth <= dependencyDiagram.canvasWidth + 1 &&
+      !dependencyDiagram.scrolls,
+    "a dependency diagram that fits readably offers a size control or scrolls",
     dependencyDiagram,
   );
+
+  // Narrow the real canvas to put the two-context graph below the readable
+  // floor: the graph must open at actual size with one 24px Fit width control.
+  await page.eval(`(() => {
+    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
+    if (canvas === null) return false;
+    canvas.style.width = '160px';
+    canvas.style.maxWidth = '160px';
+    return true;
+  })()`);
+  await page.wait(
+    `document.querySelector('[data-testid="discover-dependency-size"]') !== null`,
+    "the dependency diagram size control at a narrow canvas",
+  );
+  const narrowDependencyDiagram = await page.eval<{
+    controlLabel: string;
+    controlHeight: number;
+    canvasWidth: number;
+    canvasScrolls: boolean;
+    canvasFocusable: boolean;
+    svgWidth: number;
+    naturalWidth: number;
+    labelSize: number;
+  }>(`(() => {
+    const root = document.querySelector('[data-testid="discover-dependency-diagram"]');
+    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
+    const control = document.querySelector('[data-testid="discover-dependency-size"]');
+    const svg = root?.querySelector('svg');
+    const label = root?.querySelector('.nodeLabel p');
+    return {
+      controlLabel: control?.textContent?.trim() ?? "",
+      controlHeight: control === null ? 0 : control.getBoundingClientRect().height,
+      canvasWidth: canvas?.clientWidth ?? 0,
+      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
+      canvasFocusable: canvas?.tabIndex === 0,
+      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
+      naturalWidth: svg?.viewBox?.baseVal?.width ?? 0,
+      labelSize: label === null || label === undefined ? 0 : Number.parseFloat(getComputedStyle(label).fontSize),
+    };
+  })()`);
   check(
-    !dependencyDiagram.scrolls,
-    "the dependency diagram still scrolls inside its panel",
-    dependencyDiagram,
+    narrowDependencyDiagram.controlLabel === "Fit width" && Math.round(narrowDependencyDiagram.controlHeight) === 24,
+    "a graph below the readable floor does not carry one 24px Fit width control",
+    narrowDependencyDiagram,
+  );
+  check(
+    narrowDependencyDiagram.naturalWidth > 0 &&
+      narrowDependencyDiagram.svgWidth >= narrowDependencyDiagram.naturalWidth - 1 &&
+      narrowDependencyDiagram.svgWidth > narrowDependencyDiagram.canvasWidth + 1 &&
+      narrowDependencyDiagram.canvasScrolls &&
+      narrowDependencyDiagram.canvasFocusable,
+    "the wide dependency diagram is not drawn at actual size in a scrolling canvas",
+    narrowDependencyDiagram,
+  );
+  check(
+    narrowDependencyDiagram.labelSize >= 12,
+    "the dependency diagram labels render below 12px at actual size",
+    narrowDependencyDiagram,
+  );
+  await page.eval(`(() => {
+    const control = document.querySelector('[data-testid="discover-dependency-size"]');
+    if (control === null) return false;
+    control.click();
+    return true;
+  })()`);
+  await page.wait(
+    `document.querySelector('[data-testid="discover-dependency-size"]')?.textContent?.trim() === "Actual size"`,
+    "the dependency diagram Actual size control after fitting",
+  );
+  const fittedDependencyDiagram = await page.eval<{
+    controlLabel: string;
+    canvasWidth: number;
+    canvasScrolls: boolean;
+    canvasFocusable: boolean;
+    svgWidth: number;
+  }>(`(() => {
+    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
+    const control = document.querySelector('[data-testid="discover-dependency-size"]');
+    const svg = document.querySelector('[data-testid="discover-dependency-diagram"] svg');
+    return {
+      controlLabel: control?.textContent?.trim() ?? "",
+      canvasWidth: canvas?.clientWidth ?? 0,
+      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
+      canvasFocusable: canvas?.tabIndex === 0,
+      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
+    };
+  })()`);
+  check(
+    fittedDependencyDiagram.controlLabel === "Actual size" &&
+      fittedDependencyDiagram.svgWidth > 0 &&
+      fittedDependencyDiagram.svgWidth <= fittedDependencyDiagram.canvasWidth + 1 &&
+      !fittedDependencyDiagram.canvasScrolls &&
+      !fittedDependencyDiagram.canvasFocusable,
+    "the fitted dependency diagram does not fill its canvas without scrolling",
+    fittedDependencyDiagram,
+  );
+  await page.eval(`(() => {
+    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
+    if (canvas === null) return false;
+    canvas.style.width = '';
+    canvas.style.maxWidth = '';
+    return true;
+  })()`);
+  await page.wait(
+    `document.querySelector('[data-testid="discover-dependency-size"]') === null`,
+    "the dependency diagram without a size control at full width",
+  );
+  const restoredDependencyDiagram = await page.eval<{
+    controlVisible: boolean;
+    canvasWidth: number;
+    canvasScrolls: boolean;
+    svgWidth: number;
+  }>(`(() => {
+    const canvas = document.querySelector('[data-testid="discover-dependency-canvas"]');
+    const svg = document.querySelector('[data-testid="discover-dependency-diagram"] svg');
+    return {
+      controlVisible: document.querySelector('[data-testid="discover-dependency-size"]') !== null,
+      canvasWidth: canvas?.clientWidth ?? 0,
+      canvasScrolls: canvas === null ? false : canvas.scrollWidth > canvas.clientWidth + 1,
+      svgWidth: svg === null || svg === undefined ? 0 : svg.getBoundingClientRect().width,
+    };
+  })()`);
+  check(
+    !restoredDependencyDiagram.controlVisible &&
+      restoredDependencyDiagram.svgWidth > 0 &&
+      restoredDependencyDiagram.svgWidth <= restoredDependencyDiagram.canvasWidth + 1 &&
+      !restoredDependencyDiagram.canvasScrolls,
+    "the fitted dependency diagram does not return to its full-width canvas",
+    restoredDependencyDiagram,
   );
   check(discoverTables.cards >= 5, "Discover sections are missing from the overview", discoverTables);
   check(discoverTables.commands > 0, "the Discover command table is empty", discoverTables);
