@@ -22,35 +22,36 @@ context, but you never edit, comment on, close, or reopen another issue.
   temporary file, log, cache, or build output elsewhere. A scratch file that is genuinely
   required belongs inside `<REPO_DIR>/.devboard/` and is removed after use; never write `/tmp/x`
   or any other path outside the repository root.
-- Before the first forge read or write, run the auth check exactly once per session, from the
-  repository root, and run it verbatim:
+- Before the first forge read or write, gate the run exactly once per session with the canonical,
+  argument-free auth check, run verbatim from the repository root:
 
   ```sh
   bun .devboard/scripts/forge-auth.ts check --required write --json
   ```
 
-  This single canonical preflight is the only auth probe and the only auth invocation of the run.
-  It resolves the forge, host, project, and identity from the environment and the `origin` remote,
-  so never pass `--host` or `--project`, and never derive either with `sed`, `git remote get-url`,
-  or any other shell substitution. Never prefix it with `cd <path>`, never append `echo $?`,
-  `echo "EXIT:$?"`, or `echo "exit=$?"`, and never pipe the output through `head`, `tail`, or any
-  other consumer. The credentialed target is `DEVBOARD_GITEA_URL` with `GITEA_TOKEN`; a host is a
-  label only, so never pass `origin`, `github.com`, a bare IP, or a bare port. Exit status is
-  authoritative and `--json` carries the selected identity: zero means write access. On a nonzero
-  exit, stop and report the printed reason; when the origin is Gitea, name `--forge gitea` as the
-  only permitted adjustment. Never retry by cycling host literals such as
-  `localhost:2223`, `localhost:3001`, `127.0.0.1`, `origin`, or `ds@localhost:2223`, and do not
-  rerun the check in the same session. That JSON line, plus the resolution fields
-  `devboard_status` returns, is the only supported way to learn the forge host, project, or
-  credential state: both report presence and resolution without exposing a value, so an
-  environment sweep answers nothing they do not. Never enumerate the process environment or hunt
-  for credential files: `.devboard/prompts/forge-auth.md` holds that rule in full. In particular,
-  never pipe `env` or `printenv` into `grep` (an `env | grep` probe) for `gitea`, `forge`,
-  `github`, `gitlab`, or `token`, and never treat `sed`-based masking as redaction: the tool shell
-  carries an exported `MATCH` variable holding a token-bearing grep match
-  (`MATCH='GITEA_TOKEN=…'`), so a later sweep reprints the token on a line no substitution
-  rewrote. When a variable must be checked, print only a boolean,
-  `[ -n "$GITEA_TOKEN" ] && echo set`, and never its value or a prefix of it.
+  This is the only pre-write auth gate and the only auth invocation of the run. The check infers
+  the forge, host, project, and identity from the `origin` remote and `DEVBOARD_GITEA_URL`, so
+  never pass `--host`, `--project`, or `--forge` on that call; never derive those values with
+  `sed`, `git remote get-url`, or any other shell substitution. Read the JSON line and proceed
+  only when the exit status is 0 and `canWrite` is `true`. Any other outcome — a nonzero exit, or
+  an exit 0 without `canWrite: true` — stops the run: report the printed reason verbatim, and
+  when the result is JSON, its `error` and `permission` fields verbatim. Do not retry against
+  another host. Never prefix the call with `cd <path>`, never append `echo $?`,
+  `echo "exit=$?"`, `echo "EXIT:$?"`, or any other exit-status echo, never append `2>&1 | head`,
+  `2>&1 | tail`, or any other consumer, and never append `env | grep` or a `printenv` sweep. The
+  credentialed target is `DEVBOARD_GITEA_URL` with `GITEA_TOKEN`; a host is a label only, so
+  never pass `origin`, `github.com`, `localhost`, `localhost:3000`, `localhost:2223`,
+  `127.0.0.1`, a bare IP, or a bare port, and never retry by cycling such literals. Do not rerun
+  the check in the same session. That JSON line, plus the resolution fields `devboard_status`
+  returns, is the only supported way to learn the forge host, project, or credential state: both
+  report presence and resolution without exposing a value, so an environment sweep answers
+  nothing they do not. Never enumerate the process environment or hunt for credential files:
+  `.devboard/prompts/forge-auth.md` holds that rule in full. In particular, never pipe `env` or
+  `printenv` into `grep` (an `env | grep` probe) for `gitea`, `forge`, `github`, `gitlab`, or
+  `token`, and never treat `sed`-based masking as redaction: the tool shell carries an exported
+  `MATCH` variable holding a token-bearing grep match (`MATCH='GITEA_TOKEN=…'`), so a later sweep
+  reprints the token on a line no substitution rewrote. When a variable must be checked, print
+  only a boolean, `[ -n "$GITEA_TOKEN" ] && echo set`, and never its value or a prefix of it.
 - Resolve the checkout and read the issue before changing anything. `devboard_status` returns the
   resolved `repositoryRoot`, `harnessDirectory`, and `stateDirectory`; use it instead of guessing
   roots. `issue_get` with `{"number": <number>}` returns that issue's title, body, labels, state,
