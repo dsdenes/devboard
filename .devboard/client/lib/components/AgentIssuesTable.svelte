@@ -184,7 +184,8 @@
     white-space: nowrap;
   }
 
-  /* Fixed tracks for category, filed, state, and version; the title takes the rest. */
+  /* Fixed tracks for category, filed, state, and version; the title takes the rest.
+     The state track fits its longest badge ("implemented", ~90px) plus cell padding. */
   th:nth-child(2) {
     width: 110px;
   }
@@ -192,7 +193,7 @@
     width: 132px;
   }
   th:nth-child(4) {
-    width: 86px;
+    width: 112px;
   }
   th:nth-child(5) {
     width: 76px;
