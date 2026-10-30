@@ -709,8 +709,9 @@ The Discover sidebar opens a **Discovery** group with exactly six entries
 `discover-architecture-boundaries`, and `discover-glossary`), labelled `Data Sheet`,
 `Testing Strategy`, `Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and
 `Glossary Agent`. Selecting one opens its card (`data-testid="discover-agent"` with the same
-`data-agent`). The group header carries the Run all control
-(`data-testid="discover-run-all"`), and each entry shows its own `running` badge or `failed` badge.
+`data-agent`). Each entry shows its own `running` badge or `failed` badge. The Discovery group
+carries no run control: the Overview page owns Run all, and no other page or sidebar entry starts
+it.
 The same sidebar opens the established pages for `Overview` and `Glossary` without a group
 heading. Once Discover artifacts are published it also lists the five skills `Testing Strategy`,
 `Naming Conventions`, `Coding Conventions`, `Architecture & Boundaries`, and `Glossary` under
@@ -782,11 +783,11 @@ Glossary page.
 
 With no published artifacts the Overview page shows the header's first-run explanation and a
 `Discover project` button (`data-testid="discover-start"`); with artifacts it shows `Re-discover`.
-The button runs all six agents, exactly like `discover-run-all`. Both are disabled when the socket
-is not open, while any discovery agent or Run all is active, or while Goal or Flow work is active,
-and the title names the reason. A start never happens on page load, reconnect, mode switch, or page
-switch. A start requires no `GOAL.md`, no prepared skill, a clean tree, or a forge account; it is
-accepted on a host with a dirty tree and no goal document.
+The button is the only Run all control in the interface and runs all six agents. It is disabled
+when the socket is not open, while any discovery agent or Run all is active, or while Goal or Flow
+work is active, and the title names the reason. A start never happens on page load, reconnect, mode
+switch, or page switch. A start requires no `GOAL.md`, no prepared skill, a clean tree, or a forge
+account; it is accepted on a host with a dirty tree and no goal document.
 
 **One at a time.** A card's Start sends `discoverAgent { agent }`. The server starts exactly one ACP
 peer whose working directory is the active target root, whose prompt is exactly

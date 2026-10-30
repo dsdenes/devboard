@@ -433,6 +433,23 @@ async function openCard(devtools: Devtools, agent: string): Promise<void> {
   );
 }
 
+/** Opens the Overview page, which owns the single Run all control. */
+async function openOverview(devtools: Devtools): Promise<void> {
+  const clicked = await devtools.evaluate(`(() => {
+    const button = document.querySelector('[data-testid="discover-tab"][data-tab="overview"]');
+    if (button === null) return false;
+    button.click();
+    return true;
+  })()`);
+  assertTrue(clicked === true, "the Overview sidebar entry is missing");
+  await waitFor(
+    async () =>
+      (await attribute(devtools, "discover-panel", "data-tab")) === "overview" ? true : undefined,
+    "the Overview panel",
+    15_000,
+  );
+}
+
 /** Selects Discover on a freshly loaded dashboard. */
 async function openDiscoverMode(devtools: Devtools, description: string): Promise<void> {
   await waitFor(
@@ -613,7 +630,16 @@ try {
   console.log("PASS per-agent-prompts");
 
   /* 3. Run all runs the six in the fixed order and publishes each slice. */
-  await click(devtools, "discover-run-all");
+  check(
+    (await countOf(devtools, "discover-run-all")) === 0,
+    "the sidebar still carries a Run all control",
+  );
+  await openOverview(devtools);
+  check(
+    (await countOf(devtools, "discover-start")) === 1,
+    "the Overview page does not carry the Run all control",
+  );
+  await click(devtools, "discover-start");
   await waitFor(
     async () =>
       (await devtools.evaluate(`(() => {
@@ -758,8 +784,9 @@ try {
     "a second trigger while one runs was not refused",
     refused,
   );
+  await openOverview(devtools);
   const runAllDisabled = await devtools.evaluate(
-    `document.querySelector('[data-testid="discover-run-all"]')?.disabled === true`,
+    `document.querySelector('[data-testid="discover-start"]')?.disabled === true`,
   );
   check(runAllDisabled === true, "Run all is enabled while an agent runs");
   console.log("PASS one-at-a-time");
@@ -776,7 +803,8 @@ try {
   pids.push(halt.process.pid ?? 0);
   await devtools.send("Page.navigate", { url: `http://127.0.0.1:${halt.port}/` });
   await openDiscoverMode(devtools, "the halt dashboard");
-  await click(devtools, "discover-run-all");
+  await openOverview(devtools);
+  await click(devtools, "discover-start");
   await waitStatus(devtools, "discover-naming-conventions", "failed");
   const haltedPrompts = logPrompts(haltLog).map((prompt) => prompt.split(" ")[0]);
   check(

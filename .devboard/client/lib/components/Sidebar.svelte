@@ -626,17 +626,6 @@
             {/if}
           </button>
         {/each}
-        <button
-          type="button"
-          class="sidebar-item"
-          data-command="discover.runAll"
-          data-testid="discover-run-all"
-          disabled={discover.runAllDisabled}
-          title={discover.runAllTitle}
-          onclick={() => discover.runAll()}
-        >
-          <span class="sidebar-item__label">Run all</span>
-        </button>
       </section>
 
       {#if discover.hasArtifacts}
