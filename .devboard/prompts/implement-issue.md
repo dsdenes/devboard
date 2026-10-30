@@ -196,11 +196,16 @@ the prerequisite in another agent's place.
 
 ## Landing
 
-A pre-push hook may reject a push whose added commits do not follow the repository's
-commit-message convention, naming each offending subject and the rule it broke. Reword those
-commits before landing — `git commit --amend` for the tip, an interactive rebase for earlier
-commits — and retry the push. Never pass `--no-verify` and never edit or remove an installed
-hook.
+Every commit subject MUST be a Conventional Commit, `<type>[(<scope>)][!]: <description>`, with
+`<type>` one of `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`,
+`chore`, `revert`. `prompt` is not an allowed type: `prompt:` and `prompt(implement-issue):` are
+rejected by the pre-push commit gate, which names each offending `<sha> <subject>` and the rule it
+broke and adds no ref. Reword a rejected commit before landing — `git commit --amend` for the tip,
+an interactive rebase for earlier commits — and retry the push. Never pass `--no-verify` and never
+edit or remove an installed hook. Surface a commit-gate rejection and a
+`! [rejected] … (non-fast-forward)` rejection unmodified: report their exact lines and resolve the
+cause they name before retrying, and never trim the rejection with `tail`, `head`, `grep`, or any
+other consumer.
 
 Commit in the worktree on the run's own task branch. When `main` has moved since the branch was
 cut, rebase the task branch onto `origin/main` inside the worktree and rerun the checks the rebase
@@ -241,22 +246,35 @@ The fetch names the tip, the first merge fast-forwards `main` to it, and the sec
 branch. Run the sequence once per landing attempt: no `&&` chain between its lines, no `tail`
 pipe, and no `PIPESTATUS` probe. Never create a pull request or merge request.
 
-Push and prove the push with this one block, run verbatim once after the sequence, in the
-canonical checkout and read as-is:
+Before pushing, read the behind state against the tip the fetch named with this one pre-push
+probe, run in the canonical checkout and read as-is:
 
 ```sh
-git fetch origin -q && git status --short --branch && git push origin main; echo "PUSH_EXIT:$?"; printf 'local  %s\nremote %s\n' "$(git rev-parse HEAD)" "$(git ls-remote origin refs/heads/main | cut -f1)"; git rev-list --left-right --count origin/main...HEAD
+git fetch origin && git status --short --branch && git rev-list --left-right --count HEAD...origin/main
 ```
 
-It is one push invocation, its exit status on the `PUSH_EXIT:` line, the local and remote commits,
-and the post-push count printed by the same command. The push is verified only when `PUSH_EXIT:0`
-prints, the two SHAs are identical, and `git rev-list --left-right --count origin/main...HEAD`
-prints two zero counts; `git status --short --branch` must show no ahead/behind marker. Never pipe
-`git push` into `tail`, `head`, or any other consumer: the `tail -3`, `tail -4`, `tail -5`,
-`tail -8`, and `tail -10` variants discard the rejection text and the exit status. Never use
-`git log` or a trimmed merge output as the push proof, and run the block once per landing
-attempt: it is the only post-push readback, and this prompt excludes any other `git ls-remote`,
-`git log`, and a second `git status` readback.
+It prints `<HEAD-only> <origin/main-only>`. Push only when the second count is `0`: a nonzero
+second count means `main` is behind the fetched tip, so integrate instead of pushing — rebase the
+task branch onto `origin/main` inside the worktree, rerun the checks the rebase invalidates,
+repeat the landing sequence, and run the probe again. Never push a behind branch, and never answer
+a behind result with a bare retry.
+
+Push and prove the push with this one block, run verbatim once after the probe, in the canonical
+checkout and read as-is:
+
+```sh
+git push origin main; echo "PUSH_EXIT:$?"; git status --short --branch; printf 'local  %s\nremote %s\n' "$(git rev-parse HEAD)" "$(git ls-remote origin refs/heads/main | cut -f1)"; git rev-list --left-right --count origin/main...HEAD
+```
+
+It is one push invocation: its exit status on the `PUSH_EXIT:` line, the post-push branch state,
+the local and remote commits, and the post-push count all come from that command. The push is
+verified only when `PUSH_EXIT:0` prints, `git status --short --branch` reports no ahead/behind
+marker, the two SHAs are identical, and `git rev-list --left-right --count origin/main...HEAD`
+prints two zero counts. Never pipe `git push` into `tail`, `head`, or any other consumer: the
+`tail -3`, `tail -4`, `tail -5`, `tail -8`, and `tail -10` variants discard the rejection text and
+the exit status. Never use `git log` or a trimmed merge output as the push proof, and run the
+block once per landing attempt: it is the only post-push readback, and this prompt excludes any
+other `git ls-remote`, `git log`, and a second `git status` readback.
 
 Equal tips prove the landing commit is the canonical tip. The block is the complete done check:
 `git ls-remote origin refs/heads/main` proves the remote tip, and
@@ -266,11 +284,10 @@ actions-endpoint query in the same breath, and never re-verify an integrated com
 `git merge-base --is-ancestor <full-sha> …` — the count already answers whether the work landed.
 When a different ancestry question genuinely arises, answer it with one `git branch --contains
 <sha>` or one `git merge-base --is-ancestor <sha> origin/main` to confirm that one commit landed,
-and stop. The
-block's `&&` chain is deliberate — the status read must succeed before the push runs — so never
-split it into separate commands, drop the leading fetch, reorder it, or rerun it to reconfirm
-output it already printed; a nonzero exit from it is evidence to read. Fetch at most twice in a
-session, and fetch again only after a push, merge, or rebase happened since the previous fetch.
+and stop. Never split the block into separate commands, drop its push, reorder it, or rerun it to
+reconfirm output it already printed; a nonzero exit from it is evidence to read. Fetch at most
+twice in a session before the push block, and fetch again only after a push, merge, or rebase
+happened since the previous fetch.
 
 Never delete the worktree until the remote tip equals the integrated commit; `git ls-remote
 origin refs/heads/main` is that proof, and a worktree whose branch is unproven on the remote stays
@@ -290,11 +307,13 @@ them, commit the result, and rerun the checks the conflict invalidates. `git mer
 followed by an unchanged retry is not acceptable; only an integration that removes the conflict
 may follow an abort.
 
-A nonzero `PUSH_EXIT` or differing local and remote commits is a rejected or unproven push: fetch
-the new tip, rebase the task branch onto `origin/main` inside the worktree, rerun the invalidated
-checks, and repeat the same block unchanged. Never re-push blind and never report done from a bare
-`git push` line. The landing merge is fast-forward only: never `--no-ff`, `--no-edit`, or a
-non-fast-forward `git merge origin/main` on `main`. Push before publish, never after.
+A nonzero `PUSH_EXIT` or differing local and remote commits is a rejected or unproven push: report
+the rejection lines the block printed as-is, fetch the new tip, rebase the task branch onto
+`origin/main` inside the worktree, rerun the invalidated checks, and repeat the same block
+unchanged. Never re-push blind, never substitute a different ad-hoc verification command, and never
+report done from a bare `git push` line. The landing merge is fast-forward only: never `--no-ff`,
+`--no-edit`, or a non-fast-forward `git merge origin/main` on `main`. Push before publish, never
+after.
 
 After that block, release from the integration checkout with the single Publish invocation below.
 
