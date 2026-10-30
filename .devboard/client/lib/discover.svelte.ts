@@ -109,7 +109,6 @@ export class DiscoverStore {
     this.question = null;
     this.answerDraft = "";
     this.interrupted = false;
-    this.transition = null;
   }
 
   state = $state<DiscoverStatePayload | null>(null);
@@ -138,7 +137,6 @@ export class DiscoverStore {
   error = $state<string | null>(null);
   warnings = $state<string[]>([]);
   interrupted = $state(false);
-  transition = $state<string | null>(null);
   answerDraft = $state("");
   glossarySearch = $state("");
   /** The URL field of the source-checkout-only remote target strip. */
@@ -642,7 +640,6 @@ export class DiscoverStore {
       this.question = null;
       this.answerDraft = "";
       this.error = null;
-      this.transition = null;
       return;
     }
     if (type === "discoverActivity" && typeof message.text === "string") {
@@ -684,13 +681,6 @@ export class DiscoverStore {
       this.activeAgent = null;
       this.question = null;
       this.answerDraft = "";
-      if (message.completed === true) {
-        this.transition = null;
-      } else if (typeof message.reason === "string" && message.reason.length > 0) {
-        this.transition = `Discover run stopped: ${message.reason}`;
-      } else {
-        this.transition = "Discover run stopped.";
-      }
       return;
     }
     if (type === "discoverPromptState" && typeof message.agent === "string") {

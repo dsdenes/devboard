@@ -677,13 +677,23 @@ try {
   await devtools.send("Runtime.enable");
   await devtools.send("Page.enable");
 
-  /* 1. The sidebar section and both entries. */
+  /* 1. The sidebar section and all four entries. */
   await waitFor(
     async () => ((await present(devtools!, "mode-issues")) ? true : undefined),
     "the Issues mode control",
     30_000,
   );
   await click(devtools, "mode-issues");
+  await waitFor(
+    async () => ((await present(devtools!, "open-issues-queue")) ? true : undefined),
+    "the Issues sidebar",
+    15_000,
+  );
+  assertTrue(
+    !(await present(devtools!, "sidebar-background-agents")),
+    "the Issues sidebar still carries the Background agents section",
+  );
+  await click(devtools, "mode-devboard");
   await waitFor(
     async () => ((await present(devtools!, "sidebar-background-agents")) ? true : undefined),
     "the Background agents section",
@@ -693,7 +703,7 @@ try {
     ...document.querySelectorAll('[data-testid="sidebar-background-agents"]')
   ].map((section) => ({
     heading: section.querySelector('.sidebar-group__title')?.textContent?.trim() ?? '',
-    ids: [...section.querySelectorAll('[data-testid^="open-issues-"]')]
+    ids: [...section.querySelectorAll('[data-testid^="open-devboard-"]')]
       .map((button) => button.getAttribute('data-testid') ?? ''),
   })))()`);
   assertTrue(
@@ -701,10 +711,10 @@ try {
       (groups as Array<{ heading: string; ids: string[] }>)[0]?.heading === "Background agents" &&
       JSON.stringify((groups as Array<{ ids: string[] }>)[0]?.ids) ===
         JSON.stringify([
-          "open-issues-scout",
-          "open-issues-watchdog",
-          "open-issues-design",
-          "open-issues-coach",
+          "open-devboard-scout",
+          "open-devboard-watchdog",
+          "open-devboard-design",
+          "open-devboard-coach",
         ]),
     `the Background agents section is wrong: ${JSON.stringify(groups)}`,
   );
@@ -713,8 +723,8 @@ try {
   ].map((section) => section.getAttribute('aria-label') ?? ''))()`);
   assertTrue(
     JSON.stringify(sidebarOrder) ===
-      JSON.stringify(["Issues surfaces", "Background agents", "Issues work"]),
-    `the Issues sidebar groups are out of order: ${JSON.stringify(sidebarOrder)}`,
+      JSON.stringify(["Background agents", "Devboard sections"]),
+    `the Devboard sidebar groups are out of order: ${JSON.stringify(sidebarOrder)}`,
   );
   for (const [id, label] of [
     ["scout", "Auto Scout"],
@@ -723,7 +733,7 @@ try {
     ["coach", "Coach"],
   ]) {
     const entry = await devtools.evaluate(`(() => {
-      const button = document.querySelector('[data-testid="open-issues-${id}"]');
+      const button = document.querySelector('[data-testid="open-devboard-${id}"]');
       if (button === null) return null;
       return {
         label: button.querySelector('.sidebar-item__label')?.textContent?.trim() ?? '',
@@ -739,7 +749,7 @@ try {
   console.log("PASS sidebar-background-agents");
 
   /* 2. Both pages share one empty shape and their detail panels. */
-  await click(devtools, "open-issues-scout");
+  await click(devtools, "open-devboard-scout");
   await waitFor(
     async () => ((await present(devtools!, "agent-page")) ? true : undefined),
     "the Auto Scout page",
@@ -758,7 +768,7 @@ try {
     `the Auto Scout core ids differ: ${JSON.stringify(scoutCore)}`,
   );
 
-  await click(devtools, "open-issues-design");
+  await click(devtools, "open-devboard-design");
   await waitFor(
     async () => ((await present(devtools!, "agent-page")) ? true : undefined),
     "the Design System page",
@@ -777,7 +787,7 @@ try {
     `the Design System core ids differ: ${JSON.stringify(designCore)}`,
   );
 
-  await click(devtools, "open-issues-watchdog");
+  await click(devtools, "open-devboard-watchdog");
   await waitFor(
     async () => ((await present(devtools!, "agent-page")) ? true : undefined),
     "the Watchdog page",
@@ -802,7 +812,7 @@ try {
   );
   console.log("PASS shared-page-shape");
 
-  await click(devtools, "open-issues-coach");
+  await click(devtools, "open-devboard-coach");
   await waitFor(
     async () => ((await present(devtools!, "agent-page")) ? true : undefined),
     "the Coach page",
@@ -844,7 +854,7 @@ try {
   console.log("PASS coach-page");
 
   /* 2b. The prompt section: read-only here. */
-  await click(devtools, "open-issues-scout");
+  await click(devtools, "open-devboard-scout");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
     "the Auto Scout prompt section",
@@ -887,7 +897,7 @@ try {
     "the installed prompt file changed",
   );
 
-  await click(devtools, "open-issues-design");
+  await click(devtools, "open-devboard-design");
   await waitFor(
     async () =>
       (await devtools!
@@ -921,7 +931,7 @@ try {
   }
   console.log("PASS design-prompt-read-only");
 
-  await click(devtools, "open-issues-watchdog");
+  await click(devtools, "open-devboard-watchdog");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
     "the Watchdog prompt section",
@@ -1169,7 +1179,7 @@ try {
   );
   console.log("PASS lifecycle");
 
-  await click(devtools, "open-issues-scout");
+  await click(devtools, "open-devboard-scout");
   await waitFor(
     async () => ((await present(devtools!, "agent-page")) ? true : undefined),
     "the Auto Scout page",
@@ -1224,7 +1234,7 @@ try {
     error: null,
     issues: [{ url: ISSUE_URLS[0]!, state: "pending", version: null }],
   });
-  await click(devtools, "open-issues-watchdog");
+  await click(devtools, "open-devboard-watchdog");
   await waitFor(
     async () => ((await rows(devtools!)).length === 2 ? true : undefined),
     "the seeded Watchdog rows without a reload",
@@ -1265,7 +1275,7 @@ try {
     },
   ];
   writeState(statePath(stateDir, host.directory), scoutState);
-  await click(devtools, "open-issues-scout");
+  await click(devtools, "open-devboard-scout");
   await waitFor(
     async () => ((await rows(devtools!)).length === 2 ? true : undefined),
     "the seeded Auto Scout rows without a reload",
@@ -1326,7 +1336,7 @@ try {
       pending: 0,
     }),
   );
-  await click(devtools, "open-issues-coach");
+  await click(devtools, "open-devboard-coach");
   await waitFor(
     async () => ((await rows(devtools!)).length === 1 ? true : undefined),
     "the seeded Coach row without a reload",
@@ -1376,7 +1386,7 @@ try {
   console.log("PASS freshness-and-table");
 
   /* 7. Watchdog cap keeps a fingerprint pending. */
-  await click(devtools, "open-issues-watchdog");
+  await click(devtools, "open-devboard-watchdog");
   await waitFor(
     async () => ((await present(devtools!, "agent-page")) ? true : undefined),
     "the Watchdog page",
@@ -1498,7 +1508,7 @@ try {
     async () =>
       (await devtools!
         .evaluate(
-          `document.readyState === 'complete' && document.querySelector('[data-testid="mode-issues"]') !== null`,
+          `document.readyState === 'complete' && document.querySelector('[data-testid="mode-devboard"]') !== null`,
         )
         .catch(() => false)) === true
         ? true
@@ -1506,8 +1516,8 @@ try {
     "the source dashboard",
     30_000,
   );
-  await click(devtools, "mode-issues");
-  await click(devtools, "open-issues-scout");
+  await click(devtools, "mode-devboard");
+  await click(devtools, "open-devboard-scout");
   await waitFor(
     async () => ((await present(devtools!, "agent-prompt")) ? true : undefined),
     "the source Auto Scout prompt section",
@@ -1620,7 +1630,7 @@ try {
   console.log("PASS prompt-save");
 
   /* 11. The source checkout's Design System prompt is the same editable surface. */
-  await click(devtools, "open-issues-design");
+  await click(devtools, "open-devboard-design");
   await waitFor(
     async () =>
       (await devtools!

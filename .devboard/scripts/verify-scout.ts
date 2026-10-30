@@ -611,11 +611,11 @@ try {
   /* ---------------------------------------------------------------- */
   /* 1. Open Auto Scout without starting a worker                      */
   /* ---------------------------------------------------------------- */
-  await click(devtools, "mode-issues");
+  await click(devtools, "mode-devboard");
   await waitFor(
     async () =>
       (await devtools!
-        .evaluate(`document.querySelector('[data-testid="open-issues-scout"]') !== null`)
+        .evaluate(`document.querySelector('[data-testid="open-devboard-scout"]') !== null`)
         .catch(() => false)) === true
         ? true
         : undefined,
@@ -624,7 +624,7 @@ try {
   );
   const scoutEntry = await devtools.evaluate(
     `(() => {
-      const button = document.querySelector('[data-testid="open-issues-scout"]');
+      const button = document.querySelector('[data-testid="open-devboard-scout"]');
       if (button === null) return null;
       return {
         command: button.dataset.command ?? '',
@@ -634,7 +634,7 @@ try {
     })()`,
   );
   check(
-    (scoutEntry as Record<string, unknown> | null)?.command === "open.issues.scout",
+    (scoutEntry as Record<string, unknown> | null)?.command === "open.devboard.scout",
     "the Auto Scout button has no command",
     scoutEntry,
   );
@@ -644,12 +644,12 @@ try {
     scoutEntry,
   );
   check(
-    String((scoutEntry as Record<string, unknown> | null)?.label).includes("Issues"),
+    String((scoutEntry as Record<string, unknown> | null)?.label).includes("Devboard"),
     "the accessible name omits the mode",
     scoutEntry,
   );
   await devtools.evaluate(
-    `(() => { document.querySelector('[data-testid="open-issues-scout"]').click(); return true; })()`,
+    `(() => { document.querySelector('[data-testid="open-devboard-scout"]').click(); return true; })()`,
   );
   await waitFor(
     async () =>

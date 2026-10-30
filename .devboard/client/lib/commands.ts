@@ -218,9 +218,12 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     ["goal", { id: "skills", kind: "skills", resourceId: "skills", title: "Skills" }],
     ["issues", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
     ["issues", { id: "agents", kind: "agents", resourceId: "agents", title: "Agents" }],
+    ["issues", { id: "issues", kind: "queue", resourceId: "issues", title: "Issues" }],
+    ["issues", { id: "runs", kind: "runs", resourceId: "runs", title: "Runs" }],
+    ["issues", { id: "drafts", kind: "drafts", resourceId: "drafts", title: "Draft goals" }],
     ...agentRegistry.descriptors.map(
       (descriptor): [Mode, WorkspaceTab] => [
-        "issues",
+        "devboard",
         {
           id: descriptor.tab.id,
           kind: descriptor.tab.kind,
@@ -229,9 +232,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
         },
       ],
     ),
-    ["issues", { id: "issues", kind: "queue", resourceId: "issues", title: "Issues" }],
-    ["issues", { id: "runs", kind: "runs", resourceId: "runs", title: "Runs" }],
-    ["issues", { id: "drafts", kind: "drafts", resourceId: "drafts", title: "Draft goals" }],
     ["flow", { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" }],
     ["flow", { id: "decisions", kind: "decisions", resourceId: "decisions", title: "Decision board" }],
     ["flow", { id: "steering", kind: "steering", resourceId: "steering", title: "Steering" }],
