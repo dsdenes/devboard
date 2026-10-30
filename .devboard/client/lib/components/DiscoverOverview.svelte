@@ -762,12 +762,6 @@
           >
             <div class="panel__header">
               <h2 class="panel__title">Quality gates</h2>
-              {#if qualityGatesLeaf !== undefined && qualityGatesLeaf.confidence !== "unknown"}
-                <span class="panel__subtitle">
-                  {qualityGateRows.length}
-                  {qualityGateRows.length === 1 ? "gate" : "gates"}
-                </span>
-              {/if}
             </div>
             <div class="panel__body">
               {#if qualityGatesLeaf === undefined}
