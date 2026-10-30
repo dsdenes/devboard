@@ -30,6 +30,20 @@ you never edit, comment on, close, or reopen another issue.
   On Gitea, send API writes with `curl -H "Authorization: token $GITEA_TOKEN"`. Never call `gh`
   for a mutation directly.
 
+## Dependencies
+
+The package root that owns the lockfile is `.devboard/`: `<worktree>/.devboard` inside your worktree
+and `<REPO_DIR>/.devboard` in the canonical checkout. The repository root has no `package.json`, so
+running `bun install` there fails with "Bun could not find a package.json file to install from".
+
+- Run `bun install --frozen-lockfile` only from a `.devboard/` package root, never from the
+  repository root.
+- Skip the install when that package root already has `node_modules` and `bun.lock` has not changed
+  since that install. Installing is a precondition, not a verification step.
+- Never pipe the install into `tail` and never chain it with `bun run build`, `bunx tsc --noEmit`,
+  or `bun test` in one shell line. Run it once, check its exit status, then run the build,
+  typecheck, and tests as separate commands.
+
 ## Prerequisites
 
 If the issue declares an open prerequisite — a `depends on` or `blocked by` line, or a task-list
@@ -45,24 +59,26 @@ the prerequisite in another agent's place.
   no login prompt, and no waiting for an operator. Decide from the repository evidence.
 - Complete the work: no stubs, placeholders, disabled checks, or unfinished branches of behavior.
 - Verify the changed surface by running it, then run the checks the change could break.
-- Establish the canonical integration line (`main` unless the repository names another) with the
-  integration check below before integrating. Integrate concurrent changes, resolve every
-  conflict yourself, and rerun every check the integration invalidates.
-- Publish directly to that canonical integration line. Never create a pull request or merge
-  request, never force-push, and never rewrite published history.
-- When a push is rejected, fetch, integrate the new tip, resolve the conflicts, rerun the
-  invalidated checks, and push again, with bounded retry. Never bypass the rejection.
-- Close the issue only after the completion gate below passes and the required checks pass.
-  Comment on that same issue with the revision and the verification evidence.
+- Before landing, fetch the canonical integration line (`main` unless the repository names another)
+  and rebase the run's task branch onto `origin/main` inside the worktree when it has moved.
+  Resolve every conflict yourself and rerun every check the integration invalidates. The task
+  branch is unpublished until it lands, so rebasing it is safe.
+- Land through the one sequence below. Never create a pull request or merge request, never
+  force-push, and never rewrite published history.
+- When a push is rejected, fetch the new tip, rebase the task branch onto it inside the worktree,
+  rerun the invalidated checks, and repeat the landing sequence once per rejection. Never bypass
+  the rejection.
+- Close the issue only after the landing sequence below proves the push and the required checks
+  pass. Comment on that same issue with the revision and the verification evidence.
 - A proven duplicate, invalid, or already-fixed issue is closed with that evidence and without
   committing unrelated work.
 - On success, remove only the worktree and branch you created. On failure or block, leave your
   worktree in place and report its path.
 
-## Integration checks
+## Landing
 
-Verifying integration is one composite command, never a bare fetch. Run it once before the push
-and once after the push:
+Commit in the worktree on the run's own task branch. Verify the canonical line with one composite
+integration check before the push and once after the push; never run a bare fetch:
 
 ```sh
 git fetch origin main --quiet &&
@@ -73,36 +89,56 @@ git merge-base --is-ancestor <commit> origin/main
 
 Read `git status --short --branch` once alongside the check. Fetch at most twice in a session and
 at most once per turn, and fetch again only after a push, merge, or rebase happened since the
-previous fetch. Untracked `.devboard/.issue-*.json` entries in `git status` are expected status
-noise: they never justify another fetch, a merge, or a commit.
+previous fetch.
 
-State integration only from a `git merge-base --is-ancestor` exit status or the
-`git ls-remote <remote> refs/heads/main` ref value. Never claim a commit is integrated from
-`git log --oneline origin/main` alone. Replace the last two terms of the composite command with
-`git ls-remote origin refs/heads/main` when the remote tip itself is the claim.
-
-## Completion gate
-
-The post-push integration check is the last ancestry check. Run it once, then prove the push once
-with `git ls-remote`, and run no other fetch or ancestry probe afterward. `git ls-remote <remote>
-refs/heads/main` must name `git rev-parse HEAD`; equal tips prove the integration commit landed,
-and ancestry follows. This gate prints both commits and exits nonzero when they differ:
+Land it with this one sequence in the canonical checkout, on `main`:
 
 ```sh
-remote=origin
+git merge --ff-only <task-branch>
+git push origin main
 local_commit=$(git rev-parse HEAD)
-remote_tip=$(git ls-remote "$remote" refs/heads/main | cut -f1)
+remote_tip=$(git ls-remote origin refs/heads/main | cut -f1)
 if [ "$local_commit" != "$remote_tip" ]; then
   printf 'push not verified: local %s remote %s\n' "$local_commit" "$remote_tip" >&2
   exit 1
 fi
 ```
 
-Replace `origin` and `main` when the repository names another canonical remote or branch. Use at
-most one `git merge-base --is-ancestor` per check, as the composite check above shows, and never
-re-verify a commit already proven to be the remote tip. If an older commit genuinely needs
-checking, run exactly one `git merge-base --is-ancestor <sha> origin/main` and report its exit
-status.
+`git ls-remote` must name the same commit as the new local HEAD; equal tips prove the landing
+commit reached the canonical line, and ancestry follows. The check prints both commits and exits
+nonzero when they differ. State integration only from a `git merge-base --is-ancestor` exit status
+or the `git ls-remote` ref value; never use `git log`, `git status`, or `head`/`tail`-trimmed merge
+output as the push proof. Use at most one `git merge-base --is-ancestor` per composite check, as
+above; never chain per-commit probes, and never re-verify a commit already proven to be the remote
+tip. If an older commit genuinely needs checking, run exactly one such probe and report its exit
+status. The landing merge is fast-forward only: never `--no-ff`, `--no-edit`, or a preparatory
+`git merge origin/main` on `main`. If `main` moved before landing, rebase the task branch onto
+`origin/main` inside the worktree, rerun the invalidated checks, and repeat the sequence.
+
+After the proof, release from the integration checkout with the single Publish invocation below.
+
+Untracked `.devboard/.issue-*.json` entries are expected status noise: they never justify another
+fetch, merge, or commit. Replace `origin` and `main` when the repository names another canonical
+remote or branch.
+
+## Publish
+
+Publishing is part of the task. Run it exactly once per change, from the integration checkout, in
+this one form:
+
+```bash
+cd .devboard && bun run publish --wait-timeout 1800 2>&1 | tail -60; echo "EXIT:${PIPESTATUS[0]}"
+```
+
+- Use this invocation verbatim: no absolute `cd` path, no other `tail -N` size, and no
+  `.tmp/*.log` redirection. Publish already verifies `main`, the release workflow, the npm
+  package, the release assets, and the mirror; the landing proof already owns the push proof, so
+  add no `git ls-remote` or `git status` probe around the publish run.
+- Publish is long-running. If the command is backgrounded, do other work or end the turn and wait
+  for its completion follow-up. Never abort, kill, or re-invoke it while a run is pending, and
+  never poll for it.
+- Report the printed `EXIT:` value as the publish result. Close the issue only after that value is
+  `0` and the pushed revision is verified on the canonical integration line.
 
 ## Reporting
 

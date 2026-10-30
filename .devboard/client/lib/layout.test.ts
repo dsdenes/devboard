@@ -156,3 +156,27 @@ test("restores a snapshot written before Devboard existed without losing a mode"
   ]);
   expect(store.activeTab.devboard).toBe("tools");
 });
+
+test("drops a Background agent page stored in Issues mode", () => {
+  const storage = installStorage();
+  storage.setItem(
+    LAYOUT_KEY,
+    JSON.stringify({
+      version: 1,
+      mode: "issues",
+      theme: "dark",
+      tabs: {
+        issues: [{ id: "scout", kind: "scout", resourceId: "scout", title: "Auto Scout" }],
+      },
+      activeTab: { issues: "scout" },
+    }),
+  );
+
+  const store = new LayoutStore();
+
+  expect(store.mode).toBe("issues");
+  expect(store.tabs.issues).toEqual([
+    { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" },
+  ]);
+  expect(store.activeTab.issues).toBe("overview");
+});

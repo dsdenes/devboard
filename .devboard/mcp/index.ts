@@ -1,8 +1,9 @@
 import { readHarnessVersion } from "../server/version";
-import { MCP_TOOL_NAMES, toolListPayload } from "./catalog";
+import { MCP_TOOL_NAMES, toolDefinition, toolListPayload } from "./catalog";
 import { resolveContext, type McpContext } from "./context";
 import { redactSecrets } from "../lib/secret-redaction";
 import { callTool } from "./tools";
+import { recordToolInvocation } from "./invocations";
 
 /**
  * The Devboard stdio MCP server.
@@ -99,6 +100,15 @@ async function handle(
       typeof request.params === "object" && request.params !== null
         ? (request.params as Json)
         : {};
+    if (typeof params.name === "string" && toolDefinition(params.name) !== undefined) {
+      // Statistics are diagnostics: a tool call never fails because its
+      // counter could not be written.
+      try {
+        recordToolInvocation(context.stateDir, context.repoDir, params.name);
+      } catch {
+        // Ignore: the tool result is decided below.
+      }
+    }
     const result = await callTool(context, params.name, params.arguments);
     if (result.error !== undefined) {
       return response(id, {

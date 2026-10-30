@@ -21,6 +21,7 @@ import { journalKey } from "../server/journal";
 import { saveSubscriptions } from "../server/providers";
 import { REDESIGN_INSTRUCTION as redesignInstruction, REMOVAL_INSTRUCTION as removalInstruction } from "../server/feedback";
 import { toolListPayload } from "../mcp/catalog";
+import { recordToolInvocation } from "../mcp/invocations";
 import { stateFile } from "../server/state";
 import { readHarnessVersion, runningHarnessDir } from "../server/version";
 import { dashboardsFor, freePort, processRunning, run, waitFor } from "./verification";
@@ -1114,6 +1115,15 @@ try {
   // state stays under the excluded `.devboard/` tree.
   const stateDir = join(host, ".devboard", ".tmp", "state");
   await mkdir(stateDir, { recursive: true });
+  // Two tools carry recorded calls so the page renders both a plural and a
+  // singular label, and every other catalog tool renders zero.
+  const expectedInvocations: Record<string, number> = {
+    journal_search: 2,
+    devboard_status: 1,
+  };
+  for (const [name, count] of Object.entries(expectedInvocations)) {
+    for (let call = 0; call < count; call += 1) recordToolInvocation(stateDir, host, name);
+  }
   const providerStamp = new Date().toISOString();
   saveSubscriptions(stateDir, [
     {
@@ -2204,17 +2214,18 @@ try {
   const sidebarAfterShortcut = await page.eval<boolean>(`document.querySelector('[data-testid="sidebar"]') !== null`);
   check(sidebarAfterShortcut, "Ctrl+B still hides the sidebar");
 
-  // 5b. Devboard mode: fifth tab, one sidebar entry, read-only MCP tool list.
+  // 5b. Devboard mode: fifth tab, the background agents with the MCP entry, read-only tool list.
   const catalog = toolListPayload().tools.map(({ name, title, description }) => ({
     name,
     title,
     description,
+    invocations: expectedInvocations[name] ?? 0,
   }));
   const layoutBeforeDevboard = await page.eval<string>(
     `localStorage.getItem("devboard.layout.v1") ?? ""`,
   );
   const framesBeforeDevboard = await page.eval<string[]>(
-    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion"))`,
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools"))`,
   );
   await page.click('[data-testid="mode-devboard"]');
   await page.wait(
@@ -2283,7 +2294,14 @@ try {
     workspace: boolean;
     list: boolean;
     count: number;
-    rows: Array<{ tool: string; name: string; title: string; description: string }>;
+    rows: Array<{
+      tool: string;
+      name: string;
+      title: string;
+      description: string;
+      invocations: string;
+      label: string;
+    }>;
     controls: number;
     commands: number;
   }>(`(() => {
@@ -2294,12 +2312,17 @@ try {
       workspace: workspace !== null,
       list: list !== null,
       count: rows.length,
-      rows: rows.map((row) => ({
-        tool: row.getAttribute("data-tool") ?? "",
-        name: row.querySelector('.devboard-tool__name')?.textContent ?? "",
-        title: row.querySelector('.devboard-tool__title')?.textContent ?? "",
-        description: row.querySelector('.devboard-tool__description')?.textContent ?? "",
-      })),
+      rows: rows.map((row) => {
+        const stats = row.querySelector('[data-testid="mcp-tool-invocations"]');
+        return {
+          tool: row.getAttribute("data-tool") ?? "",
+          name: row.querySelector('.devboard-tool__name')?.textContent ?? "",
+          title: row.querySelector('.devboard-tool__title')?.textContent ?? "",
+          description: row.querySelector('.devboard-tool__description')?.textContent ?? "",
+          invocations: stats?.getAttribute("data-invocations") ?? "",
+          label: stats?.textContent?.trim() ?? "",
+        };
+      }),
       controls:
         workspace === null
           ? -1
@@ -2320,7 +2343,8 @@ try {
       row.tool !== expected.name ||
       row.name !== expected.name ||
       row.title !== expected.title ||
-      row.description !== expected.description
+      row.description !== expected.description ||
+      row.invocations !== String(expected.invocations)
     );
   });
   check(toolMismatch < 0, "a rendered MCP tool differs from the catalog", {
@@ -2328,30 +2352,61 @@ try {
     rendered: toolPage.rows[toolMismatch],
     expected: catalog[toolMismatch],
   });
+  const journalLabel = toolPage.rows.find((row) => row.tool === "journal_search")?.label ?? "";
+  const statusLabel = toolPage.rows.find((row) => row.tool === "devboard_status")?.label ?? "";
+  check(
+    journalLabel === "2 invocations" && statusLabel === "1 invocation",
+    "a rendered invocation count is not the server's count with its singular or plural label",
+    { journalLabel, statusLabel },
+  );
+  recordToolInvocation(stateDir, host, "journal_search");
+  await page.wait(
+    `document.querySelector('[data-testid="mcp-tool"][data-tool="journal_search"] ` +
+      `[data-testid="mcp-tool-invocations"]')?.getAttribute("data-invocations") === "3"`,
+    "the refreshed invocation count",
+  );
 
   const devboardSidebar = await page.eval<{
     entries: number;
     items: number;
     label: string;
     command: string;
+    agentLabels: string[];
+    agentCommands: string[];
     toolNames: string[];
   }>(`(() => {
     const sidebar = document.querySelector('[data-testid="sidebar"]');
     const entries = [...(sidebar?.querySelectorAll('[data-testid="devboard-tab"]') ?? [])];
+    const agents = [...(sidebar?.querySelectorAll('[data-testid^="open-devboard-"]') ?? [])];
     const text = sidebar?.textContent ?? "";
     return {
       entries: entries.length,
       items: sidebar?.querySelectorAll('.sidebar-item').length ?? 0,
       label: entries[0]?.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
       command: entries[0]?.getAttribute("data-command") ?? "",
+      agentLabels: agents.map(
+        (button) =>
+          button.querySelector('.sidebar-item__label')?.textContent?.trim() ?? "",
+      ),
+      agentCommands: agents.map((button) => button.getAttribute("data-command") ?? ""),
       toolNames: ${JSON.stringify(catalog.map((tool) => tool.name))}.filter((name) =>
         text.includes(name),
       ),
     };
   })()`);
   check(
-    devboardSidebar.entries === 1 && devboardSidebar.items === 1,
-    "the Devboard sidebar does not carry exactly one entry",
+    devboardSidebar.entries === 1 &&
+      devboardSidebar.items === 5 &&
+      JSON.stringify(devboardSidebar.agentLabels) ===
+        JSON.stringify(["Auto Scout", "Watchdog", "Design System", "Coach"]) &&
+      JSON.stringify(devboardSidebar.agentCommands) ===
+        JSON.stringify([
+          "open.devboard.scout",
+          "open.devboard.watchdog",
+          "open.devboard.design",
+          "open.devboard.coach",
+        ]),
+    "the Devboard sidebar does not carry the background agents beside the MCP tools entry",
     devboardSidebar,
   );
   check(
@@ -2412,7 +2467,7 @@ try {
     "Devboard from the palette",
   );
   const framesAfterDevboard = await page.eval<string[]>(
-    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion"))`,
+    `(window.__viFrames ?? []).filter((frame) => !String(frame).includes("getVersion") && !String(frame).includes("getMcpTools"))`,
   );
   check(
     JSON.stringify(framesAfterDevboard) === JSON.stringify(framesBeforeDevboard),

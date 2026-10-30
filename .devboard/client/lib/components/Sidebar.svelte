@@ -339,46 +339,6 @@
         </button>
       </section>
 
-      <section
-        class="sidebar-group"
-        aria-label="Background agents"
-        data-testid="sidebar-background-agents"
-      >
-        <div class="sidebar-group__title">Background agents</div>
-        {#each agents.descriptors as descriptor (descriptor.id)}
-          {@const snapshot = agents.snapshot(descriptor.id)}
-          <button
-            type="button"
-            class="sidebar-item"
-            aria-current={isActive(descriptor.tab.id) ? "true" : undefined}
-            aria-label={`${descriptor.label} (${modeLabel})`}
-            data-command={`open.issues.${descriptor.id}`}
-            data-testid={`open-issues-${descriptor.id}`}
-            onclick={() =>
-              open(
-                "issues",
-                descriptor.tab.id,
-                descriptor.tab.kind,
-                descriptor.tab.id,
-                descriptor.tab.title,
-              )}
-          >
-            <span class="sidebar-item__label">{descriptor.label}</span>
-            <span
-              class="badge"
-              data-tone={statusTone(snapshot?.lifecycle ?? "stopped")}
-              data-testid={`agent-state-${descriptor.id}`}
-              data-state={snapshot?.lifecycle ?? "stopped"}
-            >
-              {snapshot?.lifecycle ?? "stopped"}
-            </span>
-            <span class="sidebar-item__meta" data-testid={`agent-count-${descriptor.id}`}>
-              {agents.count(descriptor.id)}
-            </span>
-          </button>
-        {/each}
-      </section>
-
       <section class="sidebar-group" aria-label="Issues work">
         <div class="sidebar-group__title">Issues work</div>
         <button
@@ -727,6 +687,46 @@
         </section>
       {/if}
     {:else}
+      <section
+        class="sidebar-group"
+        aria-label="Background agents"
+        data-testid="sidebar-background-agents"
+      >
+        <div class="sidebar-group__title">Background agents</div>
+        {#each agents.descriptors as descriptor (descriptor.id)}
+          {@const snapshot = agents.snapshot(descriptor.id)}
+          <button
+            type="button"
+            class="sidebar-item"
+            aria-current={isActive(descriptor.tab.id) ? "true" : undefined}
+            aria-label={`${descriptor.label} (${modeLabel})`}
+            data-command={`open.devboard.${descriptor.id}`}
+            data-testid={`open-devboard-${descriptor.id}`}
+            onclick={() =>
+              open(
+                "devboard",
+                descriptor.tab.id,
+                descriptor.tab.kind,
+                descriptor.tab.id,
+                descriptor.tab.title,
+              )}
+          >
+            <span class="sidebar-item__label">{descriptor.label}</span>
+            <span
+              class="badge"
+              data-tone={statusTone(snapshot?.lifecycle ?? "stopped")}
+              data-testid={`agent-state-${descriptor.id}`}
+              data-state={snapshot?.lifecycle ?? "stopped"}
+            >
+              {snapshot?.lifecycle ?? "stopped"}
+            </span>
+            <span class="sidebar-item__meta" data-testid={`agent-count-${descriptor.id}`}>
+              {agents.count(descriptor.id)}
+            </span>
+          </button>
+        {/each}
+      </section>
+
       <section class="sidebar-group" aria-label="Devboard sections">
         {#each DEVBOARD_SIDEBAR as entry (entry.id)}
           <button

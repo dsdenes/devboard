@@ -130,3 +130,32 @@ test("settings feedback waits for the snapshot that echoes the saved values", ()
   socket.deliver({ type: "agentState", agent: scout(60, 2, 1) });
   expect(saveFeedback.text).toBe("Auto Scout settings saved.");
 });
+
+function filed(filedCount: number, pending: number): AgentSnapshot {
+  return {
+    ...scout(30, null, null),
+    issues: Array.from({ length: filedCount }, (_, index) => ({
+      title: `Filed issue ${index + 1}`,
+      category: null,
+      filedAt: "2026-10-30T00:00:00.000Z",
+      url: `https://example.invalid/issues/${index + 1}`,
+      state: "pending" as const,
+      version: null,
+    })),
+    pending,
+  };
+}
+
+test("the sidebar count matches the filed rows, not the pending-filing queue", () => {
+  installGlobals();
+  const store = new AgentsStore();
+  connection.onMessage((message) => store.handleEvent(message as Record<string, unknown>));
+  connection.connect();
+  const socket = FakeSocket.instances[0];
+  if (socket === undefined) throw new Error("no socket created");
+  socket.open();
+
+  socket.deliver({ type: "agentState", agent: filed(2, 11) });
+  expect(store.count("scout")).toBe(2);
+  expect(store.count("missing")).toBe(0);
+});

@@ -571,7 +571,7 @@ try {
   );
   console.log("PASS discovery-group");
 
-  /* 2. Each card shows its own complete prompt and its command. */
+  /* 2. Each card shows its own command and, in a source checkout, its prompt. */
   const expectedPrompts = new Map(
     AGENTS.map((agent) => {
       const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
@@ -580,12 +580,6 @@ try {
   );
   for (const agent of AGENTS) {
     await openCard(devtools, agent.id);
-    const promptText = await text(devtools, "discover-agent-prompt-text");
-    check(
-      promptText === expectedPrompts.get(agent.id),
-      `the ${agent.id} card does not show its own complete prompt`,
-      { got: promptText.length, want: (expectedPrompts.get(agent.id) ?? "").length },
-    );
     const command = await text(devtools, "discover-agent-prompt-command");
     check(
       command === `${agent.command} <staging-dir>`,
@@ -609,11 +603,11 @@ try {
       );
     }
   }
-  // No card shows another agent's prompt.
+  // No card's editor holds another agent's prompt.
   const shown = new Set<string>();
   for (const agent of AGENTS) {
     await openCard(devtools, agent.id);
-    shown.add(await text(devtools, "discover-agent-prompt-text"));
+    shown.add(await valueOf(devtools, "discover-agent-prompt-editor"));
   }
   check(shown.size === 6, "two cards share one prompt text");
   console.log("PASS per-agent-prompts");
@@ -897,10 +891,13 @@ try {
   );
   console.log("PASS prompt-reset");
 
-  /* 8. An installed host shows every prompt read-only and refuses a save. */
+  /* 8. An installed host renders no prompt editor and refuses a save. */
   const installed = await makeInstalledHost(root, "installed-host");
   const installedPrompts = new Map(
-    PROMPT_FILES.map((file) => [file, readFileSync(join(installed, ".devboard", "prompts", file), "utf8")]),
+    PROMPT_FILES.map((file) => [
+      file,
+      readFileSync(join(installed, ".devboard", "prompts", file), "utf8"),
+    ]),
   );
   const installedDashboard = await startDashboard({
     repoDir: installed,
@@ -912,14 +909,6 @@ try {
   await openDiscoverMode(devtools, "the installed dashboard");
   for (const agent of AGENTS) {
     await openCard(devtools, agent.id);
-    const file = agent.id === "sheet" ? "discover-sheet.md" : `${agent.id}.md`;
-    const want = installedPrompts.get(file) ?? "";
-    await waitFor(
-      async () =>
-        (await text(devtools!, "discover-agent-prompt-text")) === want ? true : undefined,
-      `the installed ${agent.id} prompt bytes`,
-      20_000,
-    );
     for (const testid of [
       "discover-agent-prompt-editor",
       "discover-agent-prompt-chat-log",
@@ -958,7 +947,7 @@ try {
   console.log(
     "verify:discover: the six-entry Discovery group, per-agent prompts and publication, the " +
       "one-at-a-time rule, Run all order and stop-at-first-failure, prompt chat/save/reset, and " +
-      "the installed read-only prompt all hold",
+      "the installed save refusal all hold",
   );
 } finally {
   for (const pid of [...pids, chromePid]) {
