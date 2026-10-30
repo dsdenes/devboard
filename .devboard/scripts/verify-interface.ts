@@ -3554,6 +3554,61 @@ try {
   );
   const flowLabel = await page.eval<string>(`document.querySelector('[data-testid="flow-goal-text"] textarea')?.getAttribute("aria-label") ?? ""`);
   check(flowLabel.length > 0, "the Flow goal editor has no accessible label", flowLabel);
+  // The filled primary follows the goal state: without a saved goal the create
+  // control owns it, and only a saved goal with an unsaved draft promotes Save.
+  const goalEmphasis = () =>
+    page.eval<{ primary: string[]; saveSecondary: boolean; createOutline: boolean; saveEnabled: boolean }>(`(() => {
+      const actions = document.querySelector('[data-testid="flow-goal"] .flow-goal__actions');
+      const buttons = [...(actions?.querySelectorAll('button') ?? [])];
+      const save = actions?.querySelector('[data-testid="save-flow-goal"]');
+      const create = actions?.querySelector('[data-testid="create-flow-goal"]');
+      return {
+        primary: buttons
+          .filter((button) => button.classList.contains('bg-[var(--primary)]'))
+          .map((button) => button.getAttribute('data-testid') ?? ''),
+        saveSecondary: save?.classList.contains('bg-[var(--secondary)]') ?? false,
+        createOutline: create?.classList.contains('bg-transparent') ?? false,
+        saveEnabled: save?.disabled === false,
+      };
+    })()`);
+  await page.eval(`window.__devboardEditors.get("flow-goal-text").setValue("")`);
+  await page.wait(`document.querySelector('[data-testid="flow-goal-text"]')?.getAttribute("data-dirty") === "true"`, "the cleared Flow goal draft");
+  await page.click('[data-testid="save-flow-goal"]');
+  await page.wait(`document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() === "No goal yet"`, "the empty Flow goal save");
+  await page.eval(`window.__devboardEditors.get("flow-goal-text").setValue("# Draft without a saved goal")`);
+  await page.wait(
+    `document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() === "Unsaved changes"`,
+    "the unsaved Flow goal draft",
+  );
+  const emptyGoalEmphasis = await goalEmphasis();
+  check(
+    emptyGoalEmphasis.primary.length === 1 && emptyGoalEmphasis.primary[0] === "create-flow-goal",
+    "an unsaved draft without a saved goal does not leave Create flow goal as the only filled primary",
+    emptyGoalEmphasis,
+  );
+  check(
+    emptyGoalEmphasis.saveSecondary && emptyGoalEmphasis.saveEnabled,
+    "Save is not the enabled secondary control while no goal is saved",
+    emptyGoalEmphasis,
+  );
+  await page.click('[data-testid="save-flow-goal"]');
+  await page.wait(`document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() === "Saved"`, "the saved draft");
+  await page.eval(`window.__devboardEditors.get("flow-goal-text").setValue("# Draft without a saved goal\\n\\nUnsaved.")`);
+  await page.wait(
+    `document.querySelector('[data-testid="flow-goal-state"]')?.textContent?.trim() === "Unsaved changes"`,
+    "the second unsaved Flow goal draft",
+  );
+  const savedGoalEmphasis = await goalEmphasis();
+  check(
+    savedGoalEmphasis.primary.length === 1 && savedGoalEmphasis.primary[0] === "save-flow-goal",
+    "an unsaved draft with a saved goal does not make Save the only filled primary",
+    savedGoalEmphasis,
+  );
+  check(
+    savedGoalEmphasis.createOutline,
+    "Recreate flow goal is not the outline control beside a dirty saved goal",
+    savedGoalEmphasis,
+  );
   await page.click('[data-testid="dismiss-flow-blocker"]');
   await page.wait(`document.querySelector('[data-testid="flow-blocker"]')?.getAttribute("data-dismissed") === "true"`, "the dismissed blocker");
   await page.click('[data-testid="sidebar"] [data-command="flow.blocker.open.block-1"]');

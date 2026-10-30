@@ -397,7 +397,7 @@
           {hasGoal ? "Recreate flow goal" : "Create flow goal"}
         </Button>
         <Button
-          variant={flow.goalDirty ? "default" : "secondary"}
+          variant={hasGoal && flow.goalDirty ? "default" : "secondary"}
           data-command="flow.goal.save"
           data-testid="save-flow-goal"
           disabled={!flow.goalDirty || flow.goalCreation !== null}
