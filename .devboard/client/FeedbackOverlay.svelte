@@ -830,7 +830,6 @@
     animation: feedback-toast-in 120ms ease-out;
     background: var(--surface-raised);
     border: 1px solid var(--border-strong);
-    border-left: 3px solid var(--success);
     border-radius: 4px;
     bottom: 40px;
     color: var(--text);
@@ -842,11 +841,6 @@
     position: fixed;
     transform: translateX(-50%);
     z-index: 2147483647;
-  }
-
-  .feedback-result--error {
-    border-color: var(--error);
-    border-left-color: var(--error);
   }
 
   .feedback-result__icon {
