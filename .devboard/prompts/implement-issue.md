@@ -288,8 +288,11 @@ git status --short --branch
 ```
 
 One revision per `git rev-parse --short=12` call: `git rev-parse --short=12 HEAD origin/main`
-exits 128 with `fatal: Needed a single revision`, so invoke the command once for each revision
-whose hash is needed and never pass several revisions to one `--short` call.
+exits 128 with `fatal: Needed a single revision` even when both refs exist, because `--short`
+accepts exactly one revision. That message reports a ref that did not resolve to one revision — a
+missing ref, or several revisions passed to one `--short` call — never that the branches diverged.
+Invoke the command once for each revision whose hash is needed and never pass several revisions to
+one `--short` call.
 
 An unpublished task branch has no upstream, so its status line carries no counts: add exactly one
 `git rev-list --left-right --count HEAD...origin/main` to that same call, which prints
@@ -335,37 +338,45 @@ the canonical checkout and read as-is:
 
 ```sh
 git push origin main; echo "PUSH_EXIT:$?"
-git ls-remote origin refs/heads/main
+git status --short --branch
+git rev-list --left-right --count HEAD...origin/main
 git rev-parse HEAD
+git rev-parse origin/main
+git ls-remote origin refs/heads/main
 ```
 
-The first line is the only push invocation. The push is verified only when `PUSH_EXIT:0` prints and
-the SHA `git ls-remote` reads for `refs/heads/main` equals the SHA `git rev-parse HEAD` prints:
-that equality says the remote tip is the integrated commit. Run this check once per landing attempt
-and stop. After it passes, never repeat it in the same session — no second
+The first line is the only push invocation. The push is verified only when `PUSH_EXIT:0` prints,
+`git status --short --branch` reports no ahead/behind marker, the count is `0 0`, and the SHA
+`git rev-parse HEAD` prints equals the SHA `git rev-parse origin/main` prints and the SHA
+`git ls-remote` reads for `refs/heads/main`. `0 0` means neither side has a commit the other lacks,
+and the matching SHAs say the fetched tip, the local branch, and the remote tip are the landing
+commit. Resolve `HEAD` and `origin/main` in separate `git rev-parse` calls: never pass `HEAD`,
+`origin/main`, and an issue branch to one invocation, because one missing ref aborts the whole
+command. `fatal: Needed a single revision` is a ref-resolution error — a missing ref, or several
+revisions where exactly one is expected — never a divergence signal. Run this check once per
+landing attempt and stop. After it passes, never repeat it in the same session — no second
 `git status --short --branch`, `git rev-list`, `git ls-remote`, `git log`, or `git merge-base`
 readback to reconfirm output it already printed. Never append `tail`, `head`, `diff`, `git status`,
-`git rev-list`, a `PIPESTATUS` echo, or any other probe to the push: those suffixes discard the
-rejection text or its exit status, and the sync check's `git ls-remote` line plus
-`git rev-parse HEAD` is the one verification. Never use `git log` or a trimmed merge output as the
-push proof. The fetch budget above governs the push block too: the landing fetch and the pre-push
-probe answer every question about `HEAD...origin/main`, the sync check reads the remote tip
-directly without fetching, and a further fetch needs a push, merge, or rebase since the previous
-one.
+`git rev-list`, a `PIPESTATUS` echo, or any other probe to the `git push` line: those suffixes
+discard the rejection text or its exit status, and the sync check's separate lines are the one
+verification. Never use `git log` or a trimmed merge output as the push proof. The fetch budget
+above governs the push block too: the landing fetch and the pre-push probe answer every question
+about `HEAD...origin/main`, the sync check reads the remote tip directly without fetching, and a
+further fetch needs a push, merge, or rebase since the previous one.
 
-An equal tip proves the landing commit is the canonical tip; `PUSH_EXIT:0` with matching SHAs is
-the complete done check. Read the check once and move on: never follow it with a per-commit
-re-check, a `git log` dump, or a Gitea actions-endpoint query in the same breath. When a different
-ancestry question genuinely arises, answer it with one `git branch --contains <sha>` or one
-`git merge-base --is-ancestor <sha> origin/main` to confirm that one commit landed, and stop. Never
-split the check into separate calls, drop its push, reorder it, or rerun it to reconfirm output it
-already printed; a nonzero `PUSH_EXIT` or a remote tip that differs from `git rev-parse HEAD` is
-evidence to read.
+An equal tip proves the landing commit is the canonical tip; `PUSH_EXIT:0`, `0 0`, and matching
+`git rev-parse` and `git ls-remote` SHAs are the complete done check. Read the check once and move
+on: never follow it with a per-commit re-check, a `git log` dump, or a Gitea actions-endpoint query
+in the same breath. When a different ancestry question genuinely arises, answer it with one
+`git branch --contains <sha>` or one `git merge-base --is-ancestor <sha> origin/main` to confirm
+that one commit landed, and stop. Never split the check into separate calls, drop its push, reorder
+it, or rerun it to reconfirm output it already printed; a nonzero `PUSH_EXIT`, a nonzero count, an
+ahead/behind marker, or a SHA that differs from the `git ls-remote` SHA is evidence to read.
 
-Never delete the worktree until the canonical sync check printed `PUSH_EXIT:0` with the remote tip
-equal to `git rev-parse HEAD`; that is the proof the integrated commit landed, and a worktree whose
-branch is unproven on the remote stays in place. A local-only merge or a deleted worktree before
-that equality is a failed task.
+Never delete the worktree until the canonical sync check printed `PUSH_EXIT:0`, `0 0`, an unmarked
+status, and matching `git rev-parse` and `git ls-remote` SHAs; that is the proof the integrated
+commit landed, and a worktree whose branch is unproven on the remote stays in place. A local-only
+merge or a deleted worktree before that equality is a failed task.
 
 `Diverging branches can't be fast-forwarded` or "Not possible to fast-forward" is a diagnosis,
 not an instruction to repeat the merge. Never rerun the same `--ff-only` command, and never fall
@@ -381,13 +392,13 @@ them, commit the result, and rerun the checks the conflict invalidates. `git mer
 followed by an unchanged retry is not acceptable; only an integration that removes the conflict
 may follow an abort.
 
-A nonzero `PUSH_EXIT` or a remote tip that differs from `git rev-parse HEAD` is a rejected or
-unproven push: report the rejection lines the check printed as-is, fetch the new tip, rebase the
-task branch onto `origin/main` inside the worktree, rerun the invalidated checks, and repeat the
-same check unchanged. Never re-push blind, never substitute a different ad-hoc verification
-command, and never report done from a bare `git push` line. The landing merge is fast-forward
-only: never `--no-ff`, `--no-edit`, or a non-fast-forward `git merge origin/main` on `main`. Push
-before publish, never after.
+A nonzero `PUSH_EXIT`, a nonzero count, an ahead/behind marker, or a `git rev-parse` SHA that
+differs from the `git ls-remote` SHA is a rejected or unproven push: report the rejection lines the
+check printed as-is, fetch the new tip, rebase the task branch onto `origin/main` inside the
+worktree, rerun the invalidated checks, and repeat the same check unchanged. Never re-push blind,
+never substitute a different ad-hoc verification command, and never report done from a bare
+`git push` line. The landing merge is fast-forward only: never `--no-ff`, `--no-edit`, or a
+non-fast-forward `git merge origin/main` on `main`. Push before publish, never after.
 
 After that block, release from the integration checkout with the single Publish invocation below.
 
