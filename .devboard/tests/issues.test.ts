@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readlinkSync, readdirSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { AcpActivity, AcpQuestion } from "../server/acp";
 import { IssuesBridge } from "../server/issues";
@@ -1008,6 +1008,47 @@ describe("history and isolation", () => {
       expect(f.state().runs.every((run) => run.status === "running")).toBe(true);
     } finally {
       await stop(f);
+    }
+  });
+
+  test("a cwd reached through a symlink still proves its recorded child", async () => {
+    const base = await temporaryDirectory("recorded-symlink");
+    const real = join(base, "real");
+    const link = join(base, "link");
+    await mkdir(real, { recursive: true });
+    await symlink(real, link);
+    const child = Bun.spawn({
+      cmd: [process.execPath, "-e", "setTimeout(() => undefined, 60_000)"],
+      cwd: link,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      const identity = await waitFor(
+        () => {
+          try {
+            const argv = readFileSync(`/proc/${child.pid}/cmdline`, "utf8")
+              .split("\u0000")
+              .filter(Boolean);
+            return argv.length > 0 ? { pid: child.pid, argv, cwd: link } : undefined;
+          } catch {
+            return undefined;
+          }
+        },
+        "the symlinked child identity",
+        2000,
+      );
+      expect(recordedChildAlive(identity)).toBe(true);
+      child.kill("SIGKILL");
+      await child.exited;
+      expect(recordedChildAlive(identity)).toBe(false);
+    } finally {
+      try {
+        process.kill(child.pid, "SIGKILL");
+      } catch {
+        // Already exited.
+      }
     }
   });
 

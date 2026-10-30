@@ -33,7 +33,7 @@ import { pidAlive } from "../issues/lock";
 import { appendActivityLine, trimActivityLines } from "../issues/state";
 import { journalKey } from "./journal";
 import type { GoalDraftQuestion, GoalDraftRun, GoalDraftStatus } from "./goal-drafts";
-import { recordedChildAlive, type RecordedChild } from "./state";
+import { canonicalProcessPath, recordedChildAlive, type RecordedChild } from "./state";
 
 /** Envelope version of the owner state file. */
 export const GOAL_DRAFT_OWNER_VERSION = 1;
@@ -388,7 +388,7 @@ function selfChild(cwd: string): RecordedChild {
     // Without /proc the identity is still useful to the dashboard's own reads.
   }
   if (argv.length === 0) argv = [...process.argv];
-  return { pid: process.pid, argv, cwd };
+  return { pid: process.pid, argv, cwd: canonicalProcessPath(cwd) };
 }
 
 /** Ends the peer and proves it gone before the owner records its outcome. */

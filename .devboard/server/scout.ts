@@ -30,6 +30,7 @@ import {
   type ScoutSync,
 } from "../issues/scout/state";
 import { readActivity } from "../issues/state";
+import { canonicalProcessPath } from "./state";
 import { activityDelta } from "./activity";
 import { projectAgentSnapshot, type AgentSnapshotInput } from "./agents/registry";
 import type { AgentAdapter, AgentCommandResult } from "./agents/types";
@@ -87,6 +88,8 @@ const START_PROOF_MS = 5_000;
 export class ScoutBridge implements AgentAdapter {
   readonly descriptor: AgentDescriptor;
   private readonly repoDir: string;
+  /** The repo path the kernel reports for a worker's cwd. */
+  private readonly canonicalRepoDir: string;
   private readonly stateDir: string;
   private readonly agentCommand: string;
   private readonly agentEnvironment: () => Promise<Record<string, string | undefined>>;
@@ -116,6 +119,7 @@ export class ScoutBridge implements AgentAdapter {
   constructor(options: ScoutBridgeOptions) {
     this.descriptor = options.descriptor;
     this.repoDir = resolve(options.repoDir);
+    this.canonicalRepoDir = canonicalProcessPath(this.repoDir);
     this.stateDir = resolve(options.stateDir);
     this.agentCommand = options.agentCommand;
     this.agentEnvironment = options.agentEnvironment;
@@ -638,7 +642,7 @@ export class ScoutBridge implements AgentAdapter {
     if (!argv.some((entry) => entry.endsWith(join("scout", "worker.ts")))) return false;
     if (!argv.includes(this.repoDir)) return false;
     try {
-      return readlinkSync(`/proc/${pid}/cwd`) === this.repoDir;
+      return readlinkSync(`/proc/${pid}/cwd`) === this.canonicalRepoDir;
     } catch {
       return false;
     }

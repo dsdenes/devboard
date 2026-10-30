@@ -45,7 +45,7 @@ import {
   type GoalDraftLease,
   type GoalDraftOwnerState,
 } from "./goal-draft-owner";
-import { recordedChildAlive, type RecordedChild } from "./state";
+import { canonicalProcessPath, recordedChildAlive, type RecordedChild } from "./state";
 
 export type GoalDraftStatus = "idle" | "running" | "succeeded" | "failed" | "stopped";
 
@@ -648,7 +648,7 @@ export class GoalDraftManager {
       return { ok: false, message };
     }
 
-    this.persistRun(path, run, { pid, argv, cwd: this.repoDir });
+    this.persistRun(path, run, { pid, argv, cwd: canonicalProcessPath(this.repoDir) });
     this.owned.add(path);
     this.emit(path);
     this.publishDrafts();

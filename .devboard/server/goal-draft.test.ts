@@ -255,6 +255,35 @@ describe("elaboration", () => {
     expect(startPids(log)).toHaveLength(1);
   });
 
+  test("a draft under a symlinked repository root stays owned through start, refusal, and stop", async () => {
+    const { root, drafts, stateDir, log } = await fixture();
+    writeFileSync(join(drafts, "linked.md"), draftText("Linked", "STUB-HANG body"));
+    const link = join(root, "linked-root");
+    symlinkSync(root, link);
+    const { manager } = managerFor(link, stateDir, log);
+    const path = draftPath("linked.md");
+
+    expect((await manager.start(path)).ok).toBe(true);
+    await waitFor(() => startPids(log)[0], "the peer");
+    await waitFor(
+      () => readGoalDraftOwnerState(stateDir, link, path)?.owner != null,
+      "the recorded owner",
+    );
+    expect(manager.isRunning(path)).toBe(true);
+    expect(manager.snapshot(path).status).toBe("running");
+    expect(await manager.start(path)).toEqual({
+      ok: false,
+      message: "This draft is being elaborated.",
+    });
+    expect(startPids(log)).toHaveLength(1);
+    expect(manager.stop(path)).toBe(true);
+    await waitFor(
+      () => (manager.snapshot(path).status === "stopped" ? true : undefined),
+      "the stopped draft",
+    );
+    expect(readGoalDraftOwnerState(stateDir, link, path)?.run.status).toBe("stopped");
+  });
+
   test("answers one draft's question without reaching another", async () => {
     const { root, drafts, stateDir, log } = await fixture();
     writeFileSync(join(drafts, "a.md"), draftText("A", "STUB-QUESTION body"));

@@ -1,4 +1,12 @@
-import { readFileSync, readlinkSync, unlinkSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import {
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+  mkdirSync,
+  renameSync,
+} from "node:fs";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { journalKey } from "./journal";
@@ -233,6 +241,18 @@ export function appendActivity(store: string[], text: string, append: boolean): 
   trimActivity(store);
 }
 
+/**
+ * The canonical path a process table entry reports for a working directory.
+ * A path that no longer resolves is compared exactly as recorded.
+ */
+export function canonicalProcessPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 /** One ACP child recorded in the state so a replacement can prove and end it. */
 export interface RecordedChild {
   pid: number;
@@ -260,7 +280,7 @@ export function recordedChildAlive(child: RecordedChild): boolean {
     if (argv[index] !== entry) return false;
   }
   try {
-    return readlinkSync(`/proc/${child.pid}/cwd`) === child.cwd;
+    return readlinkSync(`/proc/${child.pid}/cwd`) === canonicalProcessPath(child.cwd);
   } catch {
     return false;
   }
