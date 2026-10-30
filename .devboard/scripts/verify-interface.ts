@@ -3613,6 +3613,9 @@ try {
     contextHeader: string;
     contextRows: number;
     contextRoles: string[];
+    sharedKernelTitle: string;
+    sharedKernelRows: number;
+    sharedKernelTexts: string[];
     externalBoundaries: string | null;
     stackedSections: number;
     staticText: number;
@@ -3695,6 +3698,10 @@ try {
       contextRows: document.querySelectorAll('#workspace-discover [data-testid="discover-contexts"] .discover-context').length,
       contextRoles: [...document.querySelectorAll('#workspace-discover .discover-boundary dt')]
         .map((term) => term.textContent.trim()),
+      sharedKernelTitle: document.querySelector('#workspace-discover [data-field="shared-kernels"] .panel__title')?.textContent?.trim() ?? "",
+      sharedKernelRows: document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] .discover-context').length,
+      sharedKernelTexts: [...document.querySelectorAll('#workspace-discover [data-testid="discover-shared-kernels"] .discover-context')]
+        .map((row) => row.textContent.replace(/\\s+/g, " ").trim()),
       externalBoundaries: (() => {
         const block = document.querySelector('#workspace-discover [data-field="external-boundaries"] [data-role="externalBoundaries"]');
         return block === null ? null : block.textContent.replace(/\s+/g, " ").trim();
@@ -3844,6 +3851,14 @@ try {
   check(discoverTables.contextRoles.includes("Dependency direction"), "the boundary map does not label the dependency direction", discoverTables.contextRoles);
   check(discoverTables.externalBoundaries === "None detected.", "the External boundaries block does not render the observed empty list", discoverTables.externalBoundaries);
   check(!(discoverTables.externalBoundaries ?? "").includes("node:"), "the External boundaries block names a runtime built-in", discoverTables.externalBoundaries);
+  check(discoverTables.sharedKernelTitle === "Shared kernels", "shared kernels is not a separate Discover widget", discoverTables.sharedKernelTitle);
+  check(!discoverTables.contextRoles.includes("Shared kernels"), "the boundary map still lists shared kernels", discoverTables.contextRoles);
+  check(discoverTables.sharedKernelRows === 1, "the Shared kernels widget does not render one band per kernel", discoverTables.sharedKernelRows);
+  check(
+    JSON.stringify(discoverTables.sharedKernelTexts) === JSON.stringify(["src/shared"]),
+    "the Shared kernels widget does not render the recorded kernel",
+    discoverTables.sharedKernelTexts,
+  );
   check(!discoverTables.sidebarHeader, "the sidebar still repeats the mode and project header", discoverTables);
   check(
     discoverTables.commandChips === discoverTables.commands,

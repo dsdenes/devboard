@@ -1175,7 +1175,7 @@ function discoverSheet(): Record<string, unknown> {
         ? discoverLeaf([], ["src"], "observed")
         : discoverUnknown("No source directory was found in the crawled files."),
       sharedKernels: paths.hasSource
-        ? discoverLeaf([], ["src"], "observed")
+        ? discoverLeaf(["src/shared"], ["src"], "observed")
         : discoverUnknown("No source directory was found in the crawled files."),
     },
     ci: {

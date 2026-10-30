@@ -41,11 +41,11 @@
   const QUALITY_GATE_WIDTHS = { gate: "220px" };
   /** The architecture leaves that share the Bounded contexts card. */
   const BOUNDARY_GROUPS = [
-    { key: "sharedKernels", label: "Shared kernels", kind: "chips" },
     { key: "dependencyDirection", label: "Dependency direction", kind: "sentence" },
   ] as const;
 
   type BoundaryGroup = (typeof BOUNDARY_GROUPS)[number];
+  type BoundaryKind = "chips" | "sentence";
 
   interface ContextRow {
     name: string;
@@ -57,7 +57,7 @@
   interface BoundaryRow {
     key: BoundaryGroup["key"];
     label: string;
-    kind: BoundaryGroup["kind"];
+    kind: BoundaryKind;
     values: string[];
   }
 
@@ -161,6 +161,15 @@
 
   const architectureSection = $derived(sheet?.architecture);
   const contextsLeaf = $derived(sectionLeaf(architectureSection, "contexts"));
+  const sharedKernelsLeaf = $derived(sectionLeaf(architectureSection, "sharedKernels"));
+  const sharedKernelValues: string[] = $derived.by(() => {
+    const leaf = sharedKernelsLeaf;
+    if (leaf === undefined || leaf.confidence === "unknown" || !Array.isArray(leaf.value)) {
+      return [];
+    }
+    const values = leaf.value.map((value) => scalarText(value).trim()).filter(Boolean);
+    return [...new Set(values)].filter((value) => value.toLowerCase() !== "none detected");
+  });
   const contextRows: ContextRow[] = $derived(
     recordItems(contextsLeaf)
       .map((record) => {
@@ -232,7 +241,7 @@
     return leafLines(leaf.value).map(technologyName).join(", ");
   }
 
-  function boundaryValues(leaf: Leaf, kind: BoundaryGroup["kind"]): string[] {
+  function boundaryValues(leaf: Leaf, kind: BoundaryKind): string[] {
     if (kind === "sentence") {
       const text = scalarText(leaf.value).trim();
       return text.length > 0 && text.toLowerCase() !== "none detected" ? [text] : [];
@@ -864,6 +873,41 @@
                 >
                   {@render plainChips(externalBoundaryValues)}
                 </div>
+              {/if}
+            </div>
+          </section>
+        {/if}
+
+        {#if sharedKernelsLeaf !== undefined}
+          <section
+            class="panel discover-card"
+            data-testid="discover-card"
+            data-field="shared-kernels"
+          >
+            <div class="panel__header">
+              <h2 class="panel__title">Shared kernels</h2>
+              {#if sharedKernelValues.length > 0}
+                <span class="panel__subtitle">
+                  {sharedKernelValues.length}
+                  {sharedKernelValues.length === 1 ? "kernel" : "kernels"}
+                </span>
+              {/if}
+            </div>
+            <div class="panel__body">
+              {#if sharedKernelsLeaf.confidence === "unknown"}
+                <p class="empty">{unknownText(sharedKernelsLeaf)}</p>
+              {:else if sharedKernelValues.length > 0}
+                <ul class="discover-contexts" data-testid="discover-shared-kernels">
+                  {#each sharedKernelValues as kernel (kernel)}
+                    <li class="discover-context" data-kernel={kernel}>
+                      <div class="discover-context__head">
+                        <code class="code-chip">{kernel}</code>
+                      </div>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="empty">No shared kernel was detected.</p>
               {/if}
             </div>
           </section>
