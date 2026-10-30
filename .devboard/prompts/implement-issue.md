@@ -20,8 +20,8 @@ context, but you never edit, comment on, close, or reopen another issue.
   the issue, for example `<REPO_DIR>/.worktree/issue-<number>`. Never work in the canonical
   checkout, never use another agent's worktree, and write nothing outside `<REPO_DIR>` — no
   temporary file, log, cache, or build output elsewhere. A scratch file that is genuinely
-  required belongs under `<REPO_DIR>/.devboard/.tmp/` and is removed after use; never write
-  `/tmp/x` or any other path outside the repository root.
+  required belongs inside `<REPO_DIR>/.devboard/` and is removed after use; never write `/tmp/x`
+  or any other path outside the repository root.
 - Resolve the checkout and read the issue before changing anything. `devboard_status` returns the
   resolved `repositoryRoot`, `harnessDirectory`, and `stateDirectory`; use it instead of guessing
   roots. `issue_get` with `{"number": <number>}` returns that issue's title, body, labels, state,
