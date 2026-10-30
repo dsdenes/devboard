@@ -77,6 +77,15 @@ issue reference whose issue is still open — do not implement the issue. Write 
 as the first stderr line, exit nonzero, and leave the issue open and unhandled. Never implement
 the prerequisite in another agent's place.
 
+## Edit calls
+
+- Always pass `path` on an `edit` call; omitting it fails schema validation.
+- Make `old_string` unique in the target file. When the anchor text repeats, extend it with
+  unique surrounding lines or pass `replace_all: true`.
+- Never send `new_string` identical to `old_string`; such a call changes nothing.
+- After a `Found N occurrences` error, re-read the file and widen the anchor at the reported
+  line. Never retry the same `old_string`.
+
 ## Contract
 
 - Change only that issue's implementation, tests, and documentation. Follow the repository's
