@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createServer } from "node:net";
 import type { AddressInfo, Socket } from "node:net";
 import {
@@ -43,6 +44,7 @@ async function installedPrefix(version: string): Promise<string> {
 /** A release tarball and its checksum, named as the release assets expect. */
 async function releaseArtifacts(
   version: string,
+  files: Record<string, string> = {},
 ): Promise<{ tarball: string; checksum: string }> {
   const root = await temporaryDirectory();
   const packageDirectory = join(root, "package");
@@ -51,6 +53,11 @@ async function releaseArtifacts(
     join(packageDirectory, "package.json"),
     `${JSON.stringify({ name: "@dsdenes/devboard", version })}\n`,
   );
+  for (const [relative, content] of Object.entries(files)) {
+    const target = join(packageDirectory, relative);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content);
+  }
   const tarball = join(root, tarballName(version));
   const packed = Bun.spawnSync({
     cmd: ["tar", "-czf", tarball, "-C", root, "package"],
@@ -153,6 +160,76 @@ describe("startUpdater", () => {
       updater.stop();
     }
   });
+
+  test("an automatic install syncs the host wrappers and harness trees", async () => {
+    const host = await temporaryDirectory();
+    const prefix = join(host, ".devboard");
+    const installedRoot = join(prefix, "node_modules", "@dsdenes", "devboard");
+    await mkdir(installedRoot, { recursive: true });
+    await writeFile(
+      join(installedRoot, "package.json"),
+      `${JSON.stringify({ name: "@dsdenes/devboard", version: "0.1.0" })}\n`,
+    );
+    // Host copies from the previous release, including one the package no
+    // longer ships.
+    await mkdir(join(host, ".omp", "commands"), { recursive: true });
+    await writeFile(join(host, ".omp", "commands", "stale.md"), "stale\n");
+    await mkdir(join(host, ".devboard", "prompts"), { recursive: true });
+    await writeFile(join(host, ".devboard", "prompts", "stale.md"), "stale\n");
+    // A tracked wrapper is host content the sync must preserve.
+    const tracked = join(host, ".omp", "commands", "tracked.md");
+    await writeFile(tracked, "tracked\n");
+    const git = (...args: string[]) =>
+      Bun.spawnSync({ cmd: ["git", "-C", host, ...args], stdout: "pipe", stderr: "pipe" });
+    expect(git("init", "-q").exitCode).toBe(0);
+    expect(git("config", "user.email", "devboard@example.test").exitCode).toBe(0);
+    expect(git("config", "user.name", "Devboard Test").exitCode).toBe(0);
+    expect(git("add", "--", ".omp/commands/tracked.md").exitCode).toBe(0);
+    expect(git("commit", "-q", "-m", "tracked wrapper").exitCode).toBe(0);
+
+    const files = {
+      "omp/commands/example.md": "command\n",
+      "omp/extensions/example.ts": "export {};\n",
+      "omp/mcp.json": "{}\n",
+      "prompts/example.md": "prompt\n",
+      "extensions/example.ts": "export {};\n",
+      "lib/example.ts": "export {};\n",
+      "scripts/forge-auth.ts": "export {};\n",
+    };
+    const artifacts = await releaseArtifacts("0.1.1", files);
+    const { journal } = journalRecorder();
+    const updater = startUpdater({
+      repoDir: host,
+      prefixDir: prefix,
+      stateDir: host,
+      currentVersion: "0.1.0",
+      journal,
+      startImmediately: false,
+      source: { kind: "dir", directory: dirname(artifacts.tarball) },
+      fetchRelease: async () => ({
+        version: "0.1.1",
+        tag: "v0.1.1",
+        assets: [{ name: tarballName("0.1.1") }, { name: checksumName("0.1.1") }],
+      }),
+    });
+    try {
+      expect(await updater.checkNow()).toBe("installed");
+    } finally {
+      updater.stop();
+    }
+    for (const relative of Object.keys(files)) {
+      const hostCopy = relative.startsWith("omp/")
+        ? join(host, ".omp", relative.slice("omp/".length))
+        : join(host, ".devboard", relative);
+      expect({ relative, content: await readFile(hostCopy, "utf8") }).toEqual({
+        relative,
+        content: await readFile(join(installedRoot, relative), "utf8"),
+      });
+    }
+    expect(existsSync(join(host, ".omp", "commands", "stale.md"))).toBe(false);
+    expect(existsSync(join(host, ".devboard", "prompts", "stale.md"))).toBe(false);
+    expect(await readFile(tracked, "utf8")).toBe("tracked\n");
+  }, 60_000);
 
   test("records the fallback install version, never a filesystem path", async () => {
     const prefix = await installedPrefix("0.1.0");
