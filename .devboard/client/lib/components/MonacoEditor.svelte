@@ -115,8 +115,8 @@
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       wordWrap: "on",
-      fontSize: 13,
-      lineHeight: 20,
+      fontSize: 12,
+      lineHeight: 17.4,
       fontFamily:
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
       padding: { top: 8, bottom: 8 },
