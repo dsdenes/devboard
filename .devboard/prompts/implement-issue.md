@@ -1,5 +1,5 @@
 ---
-description: Implement exactly one open GitHub issue, integrate it into the canonical line, and close it only after the push is verified.
+description: Implement exactly one open issue, integrate it into the canonical line, and close it only after the push is verified.
 ---
 
 `/implement-issue <number>`: implement exactly one open issue end to end.
@@ -8,9 +8,9 @@ The argument must be exactly one positive integer issue number. If it is missing
 carries more than one token, refuse before changing anything: write the refusal to stderr, exit
 nonzero, and stop. Never guess an issue number and never accept a range, a list, or a URL.
 
-This run serves one issue. Fetch exactly that one issue and never fetch, survey, or build a
-dependency graph for the rest of the backlog. You may read other issues and code for context, but
-you never edit, comment on, close, or reopen another issue.
+This run serves one issue. Read exactly that one issue with `issue_get` and never fetch, survey, or
+build a dependency graph for the rest of the backlog. You may read other issues and code for
+context, but you never edit, comment on, close, or reopen another issue.
 
 ## Inputs and paths
 
@@ -19,16 +19,21 @@ you never edit, comment on, close, or reopen another issue.
 - Worktree root: `<REPO_DIR>/.worktree/`. Create and work in exactly one worktree there, named for
   the issue, for example `<REPO_DIR>/.worktree/issue-<number>`. Never work in the canonical
   checkout, never use another agent's worktree, and write nothing outside `<REPO_DIR>` — no
-  temporary file, log, cache, or build output elsewhere.
-- Resolve the forge and read the issue before changing anything. Run
-  `bun <REPO_DIR>/.devboard/scripts/forge-auth.ts check --host <host> --project <owner/repo> --required write`
-  and use the forge it names: `gh issue view <number> --json
-  number,title,body,state,labels,url,comments` on GitHub, `glab issue view <number>` on GitLab,
-  and the Gitea API (`GET /api/v1/repos/<owner/repo>/issues/<number>`) on Gitea.
-- Every GitHub or GitLab tracker command goes through the harness forge-auth wrapper:
-  `bun <REPO_DIR>/.devboard/scripts/forge-auth.ts exec --host <host> --project <owner/repo> --required write -- <gh|glab args>`.
-  On Gitea, send API writes with `curl -H "Authorization: token $GITEA_TOKEN"`. Never call `gh`
-  for a mutation directly.
+  temporary file, log, cache, or build output elsewhere. A scratch file that is genuinely
+  required belongs under `<REPO_DIR>/.devboard/.tmp/` and is removed after use; never write
+  `/tmp/x` or any other path outside the repository root.
+- Resolve the checkout and read the issue before changing anything. `devboard_status` returns the
+  resolved `repositoryRoot`, `harnessDirectory`, and `stateDirectory`; use it instead of guessing
+  roots. `issue_get` with `{"number": <number>}` returns that issue's title, body, labels, state,
+  and URL on whichever forge the repository uses. Use `issues_list` only to confirm the state of a
+  referenced prerequisite, never to survey the backlog.
+- Forge state — issues, labels, releases, and workflow runs or jobs — MUST be read and mutated
+  through the `devboard` MCP tools: `issue_get` and `issues_list` for reads, `issue_close` for the
+  one close, and `verification_run` for an allowlisted check. NEVER source `.env` (including
+  `set -a; . ./.env; set +a`) or call `curl` with `$GITEA_TOKEN` or `$DEVBOARD_GITEA_URL` to read
+  or write an issue, label, run, job, or release. Never call `gh` or `glab` for a tracker read or
+  mutation. Release and workflow verification goes through `bun run publish` as specified below,
+  never through a forge API.
 
 ## Dependencies
 
@@ -43,6 +48,9 @@ running `bun install` there fails with "Bun could not find a package.json file t
 - Never pipe the install into `tail` and never chain it with `bun run build`, `bunx tsc --noEmit`,
   or `bun test` in one shell line. Run it once, check its exit status, then run the build,
   typecheck, and tests as separate commands.
+- `verification_run` runs an allowlisted check from the canonical `.devboard/`, so it is for the
+  integration checkout after landing. In the worktree, run the same check from
+  `<worktree>/.devboard/` so the changed revision is what executes.
 
 ## Prerequisites
 
@@ -69,9 +77,12 @@ the prerequisite in another agent's place.
   rerun the invalidated checks, and repeat the landing sequence once per rejection. Never bypass
   the rejection.
 - Close the issue only after the landing sequence below proves the push and the required checks
-  pass. Comment on that same issue with the revision and the verification evidence.
-- A proven duplicate, invalid, or already-fixed issue is closed with that evidence and without
-  committing unrelated work.
+  pass. Use `issue_close` with `{"number": <number>, "reason": "completed"}`; it is the only forge
+  mutation in this run. Do not post a tracker comment — no comment tool is exposed — and put the
+  revision and the verification evidence in the final response instead.
+- A proven duplicate, invalid, or already-fixed issue is closed with `issue_close` and the
+  evidence, using reason `not planned` when no work is delivered, and without committing unrelated
+  work.
 - On success, remove only the worktree and branch you created. On failure or block, leave your
   worktree in place and report its path.
 
@@ -130,9 +141,9 @@ checks, and push again through this same block.
 
 After the proof, release from the integration checkout with the single Publish invocation below.
 
-Untracked `.devboard/.issue-*.json` entries are expected status noise: they never justify another
-fetch, merge, or commit. Replace `origin` and `main` when the repository names another canonical
-remote or branch.
+Untracked scratch entries already present under `.devboard/` are expected status noise: they never
+justify another fetch, merge, or commit. Create no new scratch file outside `.devboard/`. Replace
+`origin` and `main` when the repository names another canonical remote or branch.
 
 ## Publish
 
@@ -146,12 +157,13 @@ cd .devboard && bun run publish --wait-timeout 1800 2>&1 | tail -60; echo "EXIT:
 - Use this invocation verbatim: no absolute `cd` path, no other `tail -N` size, and no
   `.tmp/*.log` redirection. Publish already verifies `main`, the release workflow, the npm
   package, the release assets, and the mirror; the landing proof already owns the push proof, so
-  add no `git ls-remote` or `git status` probe around the publish run.
+  add no `git ls-remote` or `git status` probe around the publish run. Read no release or workflow
+  state through `curl`, `gh`, or `glab`; publish prints the verification result.
 - Publish is long-running. If the command is backgrounded, do other work or end the turn and wait
   for its completion follow-up. Never abort, kill, or re-invoke it while a run is pending, and
   never poll for it.
-- Report the printed `EXIT:` value as the publish result. Close the issue only after that value is
-  `0` and the pushed revision is verified on the canonical integration line.
+- Report the printed `EXIT:` value as the publish result. Close the issue with `issue_close` only
+  after that value is `0` and the pushed revision is verified on the canonical integration line.
 
 ## Reporting
 
